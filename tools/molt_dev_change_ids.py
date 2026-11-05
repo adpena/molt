@@ -238,7 +238,7 @@ def resolve(
     documents: Mapping[str, bytes],
     owners: Mapping[str, str],
     *,
-    tip: str,
+    tip: str | None,
     abbreviate: Callable[[str], str],
 ) -> tuple[dict[str, bytes], list[Resolution]]:
     """Rewrite every citation, or refuse the landing with every unresolved one."""
@@ -262,7 +262,8 @@ def resolve(
                 )
                 return match.group(0)
             commit = owners[matches[0]]
-            if commit == tip:
+            # An amend changes the tip's id; a new commit (tip None) does not.
+            if tip is not None and commit == tip:
                 errors.append(
                     f"{path}: change:{token} cites the landing's last commit, whose id "
                     "the citation itself changes; cite it from a later landing"
@@ -291,8 +292,14 @@ def resolve_change_references(
     *,
     dry: bool,
     assert_source: Callable[[str], None],
+    amend: bool = True,
 ) -> str:
-    """Rewrite the landing's change citations and amend its last commit."""
+    """Rewrite the landing's change citations and amend its last commit.
+
+    ``amend=False`` (``land --fast``, which merges instead of rebasing, so lane
+    commit ids stay) records the rewrite as a new commit, with its hooks, and
+    leaves every existing commit id unchanged.
+    """
 
     def run_git(arguments: list[str]) -> str:
         return git._run(arguments).stdout
@@ -310,7 +317,7 @@ def resolve_change_references(
         rewritten, resolutions = resolve(
             documents,
             change_ids(run_git, f"{upstream}..{selected_commit}"),
-            tip=selected_commit,
+            tip=selected_commit if amend else None,
             abbreviate=lambda commit: git._run(
                 ["rev-parse", f"--short={SHORT_ID_LENGTH}", commit]
             ).stdout.strip(),
@@ -325,6 +332,21 @@ def resolve_change_references(
     for path, content in rewritten.items():
         (repo / path).write_bytes(content)
     git._run(["add", "--", *rewritten])
+    if not amend:
+        git._run(
+            [
+                "commit",
+                "--quiet",
+                "-m",
+                "Resolve change citations to landed commit ids",
+                "--",
+                *rewritten,
+            ]
+        )
+        resolved = require_git_object_id(git.head_sha(), label="citation commit")
+        assert_source(resolved)
+        _ok(f"recorded resolved citations as {git.short(resolved)}")
+        return resolved
     # The message is unchanged and already passed its commit-msg hook.
     git._run(["commit", "--amend", "--no-edit", "--no-verify", "--quiet"])
     amended = require_git_object_id(git.head_sha(), label="resolved integration commit")

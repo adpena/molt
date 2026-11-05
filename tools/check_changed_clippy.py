@@ -467,6 +467,23 @@ def changed_paths(base: str) -> tuple[str, ...]:
     return tuple(branch_changed_paths(base, run_git=_git))
 
 
+def base_reader(base: str) -> Callable[[str], str]:
+    """Read a file at the merge base of `base` and HEAD; the merge base is
+    resolved once, on the first read (dependency_reach reads only for root
+    Cargo inputs)."""
+    base_commit: str | None = None
+
+    def read_base(path: str) -> str:
+        nonlocal base_commit
+        if base_commit is None:
+            base_commit = require_git_object_id(
+                _git(["merge-base", base, "HEAD"]).strip()
+            )
+        return _git(["show", f"{base_commit}:{path}"])
+
+    return read_base
+
+
 def run(command: ProofCommand, plan: ProofPlan) -> int:
     env = dict(os.environ)
     env.update(
@@ -507,17 +524,7 @@ def main(argv: list[str] | None = None) -> int:
     plan = ProofPlan.load()
     paths = changed_paths(args.base)
     workspace = Workspace.load(ROOT)
-
-    def read_base(path: str) -> str:
-        nonlocal base_commit
-        if base_commit is None:
-            base_commit = require_git_object_id(
-                _git(["merge-base", args.base, "HEAD"]).strip()
-            )
-        return _git(["show", f"{base_commit}:{path}"])
-
-    base_commit: str | None = None
-    change = dependency_reach(workspace, paths, read_base)
+    change = dependency_reach(workspace, paths, base_reader(args.base))
     selected = select(local_clippy_commands(plan), change)
     if not selected:
         print("changed-clippy: no Cargo package reached; nothing to lint")

@@ -424,8 +424,7 @@ One runner owns main. Agents enqueue and continue.
   starts, so a worker proves its handoff on the landing path itself.
   `--static-only` repairs and runs only the static gates, the cheap
   deterministic tier (rustc's `x.py test tidy`, Chromium's upload
-  presubmit): a fast-path push runs it and never waives it, and names the
-  try run it waives in its commit. It
+  presubmit). `--fast` is the integrator's push (section 9). `land`
   starts the runner if none holds the runner lock. `land` and the runner run from the pinned
   controller: a lane branched before a driver fix once queued itself with
   its own old driver, which started a runner that could not import `tools`.
@@ -679,9 +678,10 @@ controller like every `land`; this lane's own first landing uses the existing
 
 Steps:
 
-1. **Source.** A clean committed checkout on a managed `lane/` branch
-   (`_assert_integration_source`, `validate_lane_handoff`). A pending queue
-   request for the lane refuses (the existing `EnrolledLaneRefusal`).
+1. **Source.** A clean committed checkout on a branch
+   (`_assert_integration_source`); a managed `lane/` branch also passes
+   `validate_lane_handoff`, as `land` requires. A pending queue request for
+   the lane refuses (the existing `EnrolledLaneRefusal`).
 2. **Lock (publication only).** The repository integration lock
    (`integrate`'s) is taken for steps 10 and 11 only, so the queue is never
    blocked by a fast landing's tests. When the queue publishes during the
@@ -775,8 +775,9 @@ prints each as unverified.
 string of every `[[rule]]` (rules have no tiers: they are the local tier),
 and each `[[command]]` argv whose `tiers` include `pre-push`, both parsed by
 `parse_cargo_invocation`. Its packages are its
-`-p` values; a pkgid `name@version` names a registry or vendored crate and
-never a member, so it never matches a reached member. A source is not
+`-p` values; a pkgid `name@version` is matched by its name (members such as
+`cranelift-object@0.137.0` and `zlib-rs@0.6.8` keep the spec as written in
+the cell; registry crates never match a member). A source is not
 runnable here when it has `--no-run`, or a `--target` that is not the host
 triple; the selector prints each such (source, crate) pair as unverified.
 
@@ -855,8 +856,15 @@ counts, unverified, dropped features). It fails when:
   summary);
 - a selected crate has no summary in its cell;
 - a crate that a **declared** source names runs 0 tests across all its cells
-  (the `molt-backend-wasm` trap). An undeclared crate's 0 is printed, not
-  failed: the plan names no tests for it.
+  (the `molt-backend-wasm` trap), unless it is in the typed
+  `LIBS_WITHOUT_TESTS` list of members measured to have no lib unit tests
+  (`molt-backend`: its tests live in its bins and integration targets); an
+  entry that runs tests fails too, so the list only shrinks. An undeclared
+  crate's 0 is printed, not failed: the plan names no tests for it.
+- Each cell runs with the union of its sources' declared toolchains,
+  projected through `tools/toolchain_env.py` (the LLVM cell needs
+  `llvm-sdk`); a toolchain that is not provisioned stops the gate with its
+  install command, as changed-crate Clippy does.
 
 **Cost by reach class.** A leaf crate change runs its own cells. A shared
 crate (`molt-ir`: 9 members) runs about 8 cells. A root Cargo input or
@@ -944,19 +952,19 @@ clone without the hooks, and a non-Molt client bypass it. Break-glass for a
 red main stays the owner's explicit `--no-verify` push, recorded in the
 ledger.
 
-**Bootstrap.** `checkout_provisioning._provision_owned` installs hooks only
-from a checkout whose `.githooks` matches `origin/main`
-(`_require_published_sources`: `git diff --quiet origin/main -- .githooks`),
-and raises otherwise, so a lane that changes `.githooks` cannot `land`. This
-change makes `_provision_owned` return "not provisioned" in that case:
-installing unpublished hooks stays refused, landing such a lane does not.
-The hook table (`install_git_hooks.HOOKS`) has one `pre-push` entry, active,
-with the new marker; the old drift-gate marker stays in a retired-marker
-list, so the installer still removes an old drift hook and never removes the
-new one (a test proves it). Rollout: this lane lands `integrate`'s receipt
-writer, `land --fast` and the hook together. I1 takes effect when the hook is
-installed: `land --fast` itself installs it after its first confirmed landing
-(step 12), and every later provisioning of a main checkout keeps it.
+**Bootstrap.** `checkout_provisioning` installs hooks only from a checkout
+whose `.githooks` matches `origin/main`, and `land` never provisions the
+`git-hooks` input (`test_land_leaves_the_shared_hooks_to_lane_start`), so a
+lane that changes `.githooks` lands without installing unpublished hooks; no
+provisioning change is needed. The hook table (`install_git_hooks.HOOKS`)
+keeps the retired drift-gate `pre-push` entry first, which removes only a
+hook that carries its own marker, then the active landing-receipt entry
+(tests prove both orders). A chained foreign `pre-push` hook gets its own
+copy of stdin, so it cannot consume the refs the check reads. Rollout: this
+lane lands `integrate`'s receipt writer, `land --fast` and the hook together.
+I1 takes effect when the hook is installed: `land --fast` installs it after
+a confirmed landing of a managed lane (step 12; the lane then equals main),
+and `lane start` provisions it for every later lane.
 
 #### 4.5 Worker contract
 
@@ -1002,7 +1010,10 @@ installed: `land --fast` itself installs it after its first confirmed landing
 | `tools/landing_receipt.py` | Create |
 | `.githooks/pre-push` | Create |
 | `tools/install_git_hooks.py` | Modify: active pre-push hook |
-| `src/molt/checkout_provisioning.py` | Modify: unpublished hooks are left uninstalled, not an error |
+| `tools/check_subprocess_guard_coverage.py` | Modify: allow the hook checker's bounded raw `git` (stdlib-only, before any environment) |
+| `tools/molt_dev_land_fast.py` | Create: the fast landing flow |
+| `tools/molt_dev_change_ids.py` | Modify: `amend=False` records resolved citations as a new commit |
+| `tools/check_changed_clippy.py` | Modify: `base_reader` shared with the crate-test gate |
 | `tools/subagent_contract.py`, `tools/check_subagent_contract.py` | Modify |
 | `docs/design/landing_queue.md`, `docs/ops/INTEGRATION.md` | Modify |
 | `docs/agent/PROOF_PLAN.generated.md` and other plan projections | Regenerate (`tools/generators.py write`) |

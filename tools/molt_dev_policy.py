@@ -133,6 +133,10 @@ class PrecheckBudget:
 
 
 PRECHECK_BUDGET = PrecheckBudget(seconds=15 * 60)
+# The ceiling of one `land --fast` attempt's try run (docs/design/
+# landing_queue.md, section 9). A fast landing pushes only a complete run, so
+# a refusal at this ceiling fails the landing instead of queueing its gates.
+FAST_LANDING_BUDGET = PrecheckBudget(seconds=90 * 60)
 
 
 @dataclass(frozen=True)
