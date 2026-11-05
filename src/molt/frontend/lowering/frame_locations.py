@@ -11,6 +11,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from molt.frontend.lowering.op_kinds_generated import (
+    ExceptionEdgeKind,
+    FRONTEND_ARBITRARY_HEAP_EFFECT,
+    CHECK_EXCEPTION_SKIP_KINDS,
     FRONTEND_EFFECT_PURE_KINDS,
     FRONTEND_EFFECT_CONTROL_KINDS,
     FRONTEND_WIRE_KIND,
@@ -79,13 +82,18 @@ _CONTROL_WIRE = frozenset(
     for kind in FRONTEND_EFFECT_CONTROL_KINDS
     if kind in FRONTEND_WIRE_KIND
 )
-# Operations that neither raise, call nor suspend, so no frame location is
-# observable at them. The exception-region markers delimit a handler region and
-# execute nothing; a store before them would only split the landing/try_end and
-# try_start/body adjacency that region analysis relies on. Being control
-# operations, they reset the known location, so the next operation that can
-# observe one publishes its own.
+# Structural control and exception-state transport do not execute a source
+# operation. Reuse the generated callback effects, independently of their
+# control classification. Suspension, returns and Python truthiness remain
+# observers. Region markers execute nothing despite their conservative effects.
 _NO_LOCATION_OBSERVER = frozenset(
+    FRONTEND_WIRE_KIND[kind]
+    for kind in FRONTEND_EFFECT_CONTROL_KINDS
+    if kind in FRONTEND_WIRE_KIND
+    and kind in CHECK_EXCEPTION_SKIP_KINDS
+    and FRONTEND_ARBITRARY_HEAP_EFFECT.get(kind) is False
+    and FRONTEND_WIRE_KIND[kind] not in {WireKinds.RET, WireKinds.RET_VOID}
+) | frozenset(
     {
         WireKinds.LINE,
         WireKinds.CHECK_EXCEPTION,
@@ -177,6 +185,19 @@ def publish_frame_locations(
                 and position is not None
                 and kind not in _PURE_WIRE
                 and kind not in _NO_LOCATION_OBSERVER
+                # A scope restore forwards the incoming execution site. Its
+                # release may run a finalizer, but is not a new source binding
+                # statement; do not replace the incoming site with the scope's
+                # synthetic coordinates, or split its landing/restore pair.
+                and not (
+                    op.get("exception_source") == ExceptionEdgeKind.UNWIND
+                    and kind
+                    in {
+                        WireKinds.FRAME_HOME_STORE,
+                        WireKinds.FRAME_HOME_CELL,
+                        WireKinds.FRAME_HOME_PRIVATE_CELL,
+                    }
+                )
                 and not (
                     kind in {WireKinds.RET, WireKinds.RET_VOID}
                     and rewritten

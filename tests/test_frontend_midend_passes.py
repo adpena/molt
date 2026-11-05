@@ -2554,7 +2554,12 @@ def test_guard_mismatch_preserves_pending_exception_routing() -> None:
             [MoltValue("value"), MoltValue("float_tag")],
             MoltValue("none"),
         ),
-        MoltOp("CHECK_EXCEPTION", [99], MoltValue("none")),
+        MoltOp(
+            "CHECK_EXCEPTION",
+            [99],
+            MoltValue("none"),
+            exception_edge=ExceptionEdgeKind.ORIGIN,
+        ),
         MoltOp("TRY_END", [99], MoltValue("none")),
         MoltOp("ret", [MoltValue("value")], MoltValue("none")),
         MoltOp("LABEL", [99], MoltValue("none")),
