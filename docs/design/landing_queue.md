@@ -714,8 +714,8 @@ Steps:
    cohort (`pytest` or `pytest_select`) now splits: the graph's direct
    readers form a try-run cohort with the rule's own envelope and selector,
    and the rest stays with the batch, which runs both.
-7. **Run** through `precheck_landing(..., budget=FAST_LANDING_BUDGET,
-   refusal_fails=True)`: static gates first, then the try run under a 90 min
+7. **Run** through `precheck_landing(..., budget=FAST_LANDING_BUDGET)`, and
+   fail unless the result is `complete`: static gates first, then the try run under a 90 min
    ceiling (`FAST_LANDING_BUDGET` in `molt_dev_policy`, beside
    `PRECHECK_BUDGET`; the default `budget=None` keeps meaning the policy's
    900 s). Any refusal (budget or disk capacity) or failure stops the landing;

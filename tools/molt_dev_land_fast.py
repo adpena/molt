@@ -14,6 +14,7 @@ section 9.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import time
 from datetime import UTC, datetime
@@ -107,6 +108,9 @@ def _receipt_for(
         for run in precheck.runs
         for gate in run.gates
     ]
+    # The crate-test gate's typed summary line, never its human text.
+    from tools.check_changed_crate_tests import SCHEMA as CRATE_TESTS_SCHEMA
+
     unverified: list[str] = []
     narrowed: list[str] = []
     for gate in gates:
@@ -116,12 +120,23 @@ def _receipt_for(
         for line in (
             Path(str(log)).read_text(encoding="utf-8", errors="replace").splitlines()
         ):
-            if line.startswith("changed-crate-tests: unverified: "):
-                unverified.append(
-                    line.removeprefix("changed-crate-tests: unverified: ")
-                )
-            elif line.startswith("changed-crate-tests:   narrowed: "):
-                narrowed.append(line.removeprefix("changed-crate-tests:   narrowed: "))
+            if not line.startswith("{"):
+                continue
+            try:
+                summary = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (
+                not isinstance(summary, dict)
+                or summary.get("schema") != CRATE_TESTS_SCHEMA
+            ):
+                continue
+            unverified.extend(summary.get("unverified", ()))
+            narrowed.extend(
+                "[" + "+".join(cell["sources"]) + "] " + ", ".join(cell["narrowed"])
+                for cell in summary.get("cells", ())
+                if cell.get("narrowed")
+            )
     return landing_receipt.build_receipt(
         mode="fast",
         base=base,

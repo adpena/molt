@@ -6936,6 +6936,70 @@ def test_land_fast_merges_main_tests_the_merge_and_pushes_its_receipted_commit(
     )
 
 
+def test_land_fast_receipt_reads_counts_and_the_crate_gate_summary(tmp_path):
+    """Counts come from each gate's log; unverified and narrowed cells from the
+    crate-test gate's typed summary line, never from its human text."""
+    from tools.molt_dev_land_fast import _receipt_for
+    from tools.molt_dev_policy import PRECHECK_BUDGET, SelectedGate
+    from tools.molt_dev_precheck import GateRun, PrecheckResult
+    from tools.check_changed_crate_tests import SCHEMA
+
+    static = SelectedGate("python -m ruff check .", ("python",))
+    crates = SelectedGate(
+        "python tools/check_changed_crate_tests.py --base x", ("python",)
+    )
+    readers = SelectedGate(
+        ("python", "-m", "pytest", "tests/a.py"), ("python",), pytest=True
+    )
+    batch = SelectedGate("cargo test -p a", ("cargo",))
+    (tmp_path / "s").mkdir()
+    (tmp_path / "t").mkdir()
+    (tmp_path / "s" / "gate-001.stdout.log").write_text("All checks passed!\n")
+    summary = {
+        "schema": SCHEMA,
+        "status": "passed",
+        "cells": [
+            {"sources": ["rule:r"], "narrowed": ["b/f"], "argv": [], "counts": {}}
+        ],
+        "unverified": ["c: no lib target"],
+        "failures": [],
+    }
+    (tmp_path / "t" / "gate-001.stdout.log").write_text(
+        "changed-crate-tests: unverified: decoy text\n"
+        "test result: ok. 4 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; "
+        "finished in 0.01s\n" + json.dumps(summary, sort_keys=True) + "\n"
+    )
+    (tmp_path / "t" / "gate-002.stdout.log").write_text("3 passed in 0.10s\n")
+    precheck = PrecheckResult(
+        (static, crates, readers),
+        None,
+        PRECHECK_BUDGET,
+        (
+            GateRun("static", tmp_path / "s", (static,)),
+            GateRun("try-run", tmp_path / "t", (crates, readers)),
+        ),
+        (("python -m ruff check .", 1.5),),
+        waived=(batch,),
+    )
+    receipt = _receipt_for(
+        precheck,
+        base="b" * 40,
+        tree="a" * 40,
+        head="c" * 40,
+        controller=None,
+        started_at="t",
+    )
+    assert [(g["phase"], g["counts"]) for g in receipt["gates"]] == [
+        ("static", None),
+        ("try-run", {"passed": 4, "failed": 0, "skipped": 1}),
+        ("try-run", {"passed": 3, "failed": 0, "skipped": 0}),
+    ]
+    assert receipt["gates"][0]["seconds"] == 1.5
+    assert receipt["unverified"] == ["c: no lib target"]
+    assert receipt["narrowed"] == ["[rule:r] b/f"]
+    assert receipt["waived"] == ["cargo test -p a"]
+
+
 def test_land_fast_failing_try_run_pushes_nothing_and_writes_no_receipt(
     drv, origin_and_clone, tmp_path
 ):
