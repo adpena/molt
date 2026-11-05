@@ -15,6 +15,7 @@ import pytest
 from tests.process_guard_common import run_guarded_test_process
 
 from molt.builtin_callables import BUILTIN_FUNC_SPECS
+from molt.compiler_analysis.python_identity_catalog_generated import PythonIdentity
 from molt._wasm_abi_generated import wasm_runtime_callable_arity
 from molt.compat import CompatibilityError
 from molt.compiler_analysis.python_binding_flow import analyze_python_source_bindings
@@ -773,18 +774,22 @@ def test_former_globals_wrapper_name_is_an_ordinary_user_frame() -> None:
 
 
 def test_synthesized_dir_sorting_does_not_acquire_a_public_sorted_binding() -> None:
-    generator = SimpleTIRGenerator(module_name="dir_internal_sort")
-    result = generator._try_emit_named_call(ast.parse("dir()", mode="eval").body, False)
-    call = next(op for op in generator.current_ops if op.result == result)
-    assert call.kind == "CALL" and call.args[0] == "molt_sorted_builtin"
-    assert not any(op.kind == "BUILTIN_FUNC" for op in generator.current_ops)
-    keys, key, reverse = call.args[1:]
-    definitions = {
-        op.result.name: op for op in generator.current_ops if op.result is not None
-    }
-    assert definitions[keys.name].kind == "DICT_KEYS"
-    assert definitions[key.name].kind == "CONST_NONE"
-    assert definitions[reverse.name].args == [False]
+    # The module-scope read is proved (no writer, no callback before it), so
+    # the zero-argument form lowers to the sorted locals keys (HF-776).
+    ir = compile_to_tir("result = dir()\n")
+    ops = [op for function in ir["functions"] for op in function["ops"]]
+    calls = [
+        op
+        for op in ops
+        if op["kind"] == "call" and op.get("s_value") == "molt_sorted_builtin"
+    ]
+    assert len(calls) == 1
+    assert not any(op["kind"] == "builtin_func" for op in ops)
+    keys, key, reverse = calls[0]["args"]
+    definitions = {op["out"]: op for op in ops if op.get("out")}
+    assert definitions[keys]["kind"] == "dict_keys"
+    assert definitions[key]["kind"] == "const_none"
+    assert definitions[reverse]["kind"] == "const_bool"
 
 
 @pytest.mark.parametrize("name", ["print", "len", "abs", "sorted", "sum"])
@@ -6039,7 +6044,7 @@ def test_except_star_captures_and_clears_replacement_before_cleanup(
 def test_known_anext_default_acquires_through_runtime_call_before_await() -> None:
     gen = SimpleTIRGenerator(module_name="main")
     result = gen._try_emit_named_builtin_iter_call(
-        ast.parse("anext(1, 2)", mode="eval").body, "anext", False
+        ast.parse("anext(1, 2)", mode="eval").body, PythonIdentity.BUILTIN_ANEXT, False
     )
     ops = gen.current_ops
     call_index = next(
@@ -6073,7 +6078,7 @@ def test_invalid_iter_shape_defers_to_argument_binding(source: str) -> None:
     gen = SimpleTIRGenerator(module_name="main")
     initial_ops = list(gen.current_ops)
     result = gen._try_emit_named_builtin_iter_call(
-        ast.parse(source, mode="eval").body, "iter", False
+        ast.parse(source, mode="eval").body, PythonIdentity.BUILTIN_ITER, False
     )
     assert result is CALL_NOT_HANDLED
     assert gen.current_ops == initial_ops
@@ -6082,13 +6087,13 @@ def test_invalid_iter_shape_defers_to_argument_binding(source: str) -> None:
 @pytest.mark.parametrize(
     "source, name",
     [
-        ("iter(1, 2)", "iter"),
-        ("next(1, 2)", "next"),
-        ("getattr(1, 2, 3)", "getattr"),
+        ("iter(1, 2)", PythonIdentity.BUILTIN_ITER),
+        ("next(1, 2)", PythonIdentity.BUILTIN_NEXT),
+        ("getattr(1, 2, 3)", PythonIdentity.BUILTIN_GETATTR),
     ],
 )
 def test_positional_diagnostic_policy_does_not_force_call_packing(
-    source: str, name: str
+    source: str, name: PythonIdentity
 ) -> None:
     gen = SimpleTIRGenerator(module_name="main")
     gen._try_emit_named_builtin_fallback_call(

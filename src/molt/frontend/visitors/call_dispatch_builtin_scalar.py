@@ -7,6 +7,7 @@ from typing import (
     Any,
 )
 
+from molt.compiler_analysis.python_identity_catalog_generated import PythonIdentity
 from molt.frontend._types import (
     MoltOp,
     MoltValue,
@@ -21,9 +22,9 @@ from molt.frontend._mixin_base import GeneratorMixinBase
 
 class CallNamedBuiltinScalarDispatchMixin(GeneratorMixinBase):
     def _try_emit_named_builtin_scalar_call(
-        self, node: ast.Call, func_id: str, needs_bind: bool
+        self, node: ast.Call, builtin: PythonIdentity, needs_bind: bool
     ) -> Any:
-        if func_id == "type":
+        if builtin is PythonIdentity.BUILTIN_TYPE:
             if node.keywords or len(node.args) != 1:
                 callee = self.visit(node.func)
                 if callee is None:
@@ -35,7 +36,7 @@ class CallNamedBuiltinScalarDispatchMixin(GeneratorMixinBase):
             res = MoltValue(self.next_var(), type_hint="type")
             self.emit(MoltOp(kind="TYPE_OF", args=[arg], result=res))
             return res
-        if func_id == "isinstance":
+        if builtin is PythonIdentity.BUILTIN_ISINSTANCE:
             if node.keywords or len(node.args) != 2:
                 return CALL_NOT_HANDLED
             obj = self.visit(node.args[0])
@@ -47,7 +48,7 @@ class CallNamedBuiltinScalarDispatchMixin(GeneratorMixinBase):
             res = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="ISINSTANCE", args=[obj, clsinfo], result=res))
             return res
-        if func_id == "issubclass":
+        if builtin is PythonIdentity.BUILTIN_ISSUBCLASS:
             if node.keywords or len(node.args) != 2:
                 return CALL_NOT_HANDLED
             sub = self.visit(node.args[0])
@@ -59,13 +60,13 @@ class CallNamedBuiltinScalarDispatchMixin(GeneratorMixinBase):
             res = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="ISSUBCLASS", args=[sub, clsinfo], result=res))
             return res
-        if func_id == "object":
+        if builtin is PythonIdentity.BUILTIN_OBJECT:
             if node.args:
                 return CALL_NOT_HANDLED
             res = MoltValue(self.next_var(), type_hint="object")
             self.emit(MoltOp(kind="OBJECT_NEW", args=[], result=res))
             return res
-        if func_id == "id":
+        if builtin is PythonIdentity.BUILTIN_ID:
             if node.keywords or len(node.args) != 1:
                 return CALL_NOT_HANDLED
             arg = self.visit(node.args[0])
@@ -76,7 +77,7 @@ class CallNamedBuiltinScalarDispatchMixin(GeneratorMixinBase):
             res = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="ID", args=[arg], result=res))
             return res
-        if func_id == "ord":
+        if builtin is PythonIdentity.BUILTIN_ORD:
             if node.keywords or len(node.args) != 1:
                 return CALL_NOT_HANDLED
             raw_arg = node.args[0]
@@ -101,7 +102,7 @@ class CallNamedBuiltinScalarDispatchMixin(GeneratorMixinBase):
             res = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="ORD", args=[arg], result=res))
             return res
-        if func_id == "chr":
+        if builtin is PythonIdentity.BUILTIN_CHR:
             if node.keywords or len(node.args) != 1:
                 return CALL_NOT_HANDLED
             arg = self.visit(node.args[0])
@@ -112,7 +113,7 @@ class CallNamedBuiltinScalarDispatchMixin(GeneratorMixinBase):
             res = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CHR", args=[arg], result=res))
             return res
-        if func_id == "repr":
+        if builtin is PythonIdentity.BUILTIN_REPR:
             if node.keywords or len(node.args) != 1:
                 return CALL_NOT_HANDLED
             arg = self.visit(node.args[0])
@@ -121,7 +122,7 @@ class CallNamedBuiltinScalarDispatchMixin(GeneratorMixinBase):
                     Diagnostic.OPERAND_VALUE, "Unsupported repr argument"
                 )
             return self._emit_repr_from_obj(arg)
-        if func_id == "callable":
+        if builtin is PythonIdentity.BUILTIN_CALLABLE:
             if node.keywords or len(node.args) != 1:
                 return CALL_NOT_HANDLED
             arg = self.visit(node.args[0])

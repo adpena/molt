@@ -7,7 +7,9 @@ from molt.frontend.lowering.op_kinds_generated import FrontendOpKind
 import ast
 
 from molt.compiler_analysis.python_identity_catalog_generated import (
+    BUILTIN_SHAPE_IDENTITIES,
     BUILTIN_SHAPE_NAMES,
+    PythonIdentity,
 )
 
 from typing import (
@@ -29,6 +31,10 @@ from molt.frontend.visitors.call_dispatch_builtin_scalar import (
 )
 from molt.frontend.visitors.call_dispatch_common import CALL_NOT_HANDLED
 from molt.frontend._mixin_base import GeneratorMixinBase
+
+_SHAPE_IDENTITY_MASK = sum(
+    int(identity) for identity in BUILTIN_SHAPE_IDENTITIES.values()
+)
 
 _EMPTY_CONTAINER_OPS: dict[str, FrontendOpKind] = {
     "list": "LIST_NEW",
@@ -212,32 +218,23 @@ class CallNamedBuiltinDispatchMixin(
         return result
 
     def _try_emit_named_builtin_call(
-        self, node: ast.Call, func_id: str, needs_bind: bool
+        self, node: ast.Call, builtin: PythonIdentity | None, needs_bind: bool
     ) -> Any:
-        if func_id in BUILTIN_SHAPE_NAMES:
-            # Imported-name rewrites and legacy named dispatch are not a second
-            # authority for this family. Preserve the actual source callable.
-            lowered = self._try_emit_shape_builtin_call(node)
-            if lowered is not CALL_NOT_HANDLED:
-                return lowered
-            callee = self.visit(node.func)
-            if callee is None:
-                raise FrontendRejection(
-                    Diagnostic.CALL_TARGET, "Unsupported call target"
-                )
-            return self._emit_dynamic_call(node, callee)
-        if (
-            func_id in {"pow", "round"}
-            or self._named_builtin_unproved(node, func_id)
-            or any(isinstance(arg, ast.Starred) for arg in node.args)
-            or any(keyword.arg is None for keyword in node.keywords)
+        """Lower a call whose callee read is proved to select ``builtin``.
+
+        ``builtin`` is the proved identity (``_proven_builtin_identity``), never
+        a spelling: an unproved read has none and keeps the live read and a
+        dynamic call (HF-776). The shape family owns its own proof
+        (``_try_emit_shape_builtin_call``), which ``visit_Call`` runs first.
+        """
+        if builtin is None or int(builtin) & _SHAPE_IDENTITY_MASK:
+            return CALL_NOT_HANDLED
+        if any(isinstance(arg, ast.Starred) for arg in node.args) or any(
+            keyword.arg is None for keyword in node.keywords
         ):
-            # Numeric builtin calls retain the actual callable and use its
-            # published argument contract. Splat cardinality and keyword errors
-            # likewise belong to the runtime binder. Individual builtin lowerers
-            # only see explicit arguments; a starred operand is not one argument.
-            # Residual user names take the same generic path, without relying
-            # on an incomplete builtin-name catalog to establish callability.
+            # Splat cardinality and keyword errors belong to the runtime
+            # binder. Individual builtin lowerers only see explicit arguments;
+            # a starred operand is not one argument.
             callee = self.visit(node.func)
             if callee is None:
                 raise FrontendRejection(
@@ -249,7 +246,7 @@ class CallNamedBuiltinDispatchMixin(
             self._try_emit_named_builtin_iter_call,
             self._try_emit_named_builtin_fallback_call,
         ):
-            lowered = lower(node, func_id, needs_bind)
+            lowered = lower(node, builtin, needs_bind)
             if lowered is not CALL_NOT_HANDLED:
                 return lowered
         return CALL_NOT_HANDLED
