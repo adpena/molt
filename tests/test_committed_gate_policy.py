@@ -81,7 +81,12 @@ def test_clippy_selector_edits_do_not_run_landing_simulations(path):
     assert _selected_pytest_targets(cfg, [path]) == {
         "tests/tools/test_import_file.py",
         "tests/tools/test_check_changed_clippy.py",
-        *([POLICY_ORACLE] if path.startswith("tools/") else []),
+        # The crate-test selector imports the clippy selector's reach.
+        *(
+            [POLICY_ORACLE, "tests/tools/test_check_changed_crate_tests.py"]
+            if path.startswith("tools/")
+            else []
+        ),
     }
     gates, _ = cfg.select([path])
     assert {gate.command for gate in gates} >= set(cfg.always)
@@ -779,6 +784,7 @@ def test_committed_gate_manifest_selects_tir_midend_ratchet(path):
         assert [r.name for r in matched] == [
             *(["op-kind-registry"] if reads_op_kind_sources else []),
             "rust-clippy-changed",
+            "rust-test-changed",
             "tir-midend",
             # The pending-call authority test reads ops.rs (21c55b2710).
             *(
@@ -917,6 +923,7 @@ def test_committed_source_checks_precede_complete_native_build_selection():
     )
     assert {rule.name for rule in matched} == source_names | set(build_names) | {
         "rust-clippy-changed",
+        "rust-test-changed",
         "pending-call-source-authority",
     }
     source_rules = [rule for rule in matched if rule.name in source_names]
@@ -955,6 +962,7 @@ def test_committed_gate_manifest_selects_molt_ir_op_kind_registry():
     assert [r.name for r in matched] == [
         "op-kind-registry",
         "rust-clippy-changed",
+        "rust-test-changed",
         "backend-luau",
         "tir-midend",
         "pending-call-source-authority",
@@ -976,6 +984,7 @@ def test_committed_gate_manifest_selects_backend_native_llvm():
     assert [r.name for r in matched] == [
         "op-kind-registry",
         "rust-clippy-changed",
+        "rust-test-changed",
         "backend-llvm",
     ]
     assert (
@@ -1024,6 +1033,7 @@ def test_committed_gate_manifest_selects_wasm_host_ratchet():
 
     assert [r.name for r in matched] == [
         "rust-clippy-changed",
+        "rust-test-changed",
         "wasm-host",
     ]
     # Clippy for every reached crate belongs to the changed-crate gate.
@@ -1057,19 +1067,35 @@ def test_land_precheck_runs_static_gates_and_the_lane_try_run():
     # Every always gate and the frontend type check read files only.
     assert {display(command) for command in cfg.always} <= pre
     assert "python -m ty check src" in pre
-    # Changed-crate Clippy runs in the lane: its rule declares `precheck`.
+    # Changed-crate Clippy and whole-crate lib tests run in the lane: their
+    # rules declare `precheck`.
     clippy = "python tools/check_changed_clippy.py --base {integration_upstream_commit}"
-    assert clippy in pre and "cargo" in shown[clippy].toolchains
+    crate_tests = (
+        "python tools/check_changed_crate_tests.py --base {integration_upstream_commit}"
+    )
+    for lane_gate in (clippy, crate_tests):
+        assert lane_gate in pre and "cargo" in shown[lane_gate].toolchains
     for name, gate in shown.items():
         args = _gate_args(gate.command)
+        tests = {arg for arg in args if arg.startswith("tests/")}
         graph_cohort = runs_pytest(gate) and "--maxfail=1" in args
         if graph_cohort:
             # Every graph cohort runs in the lane, and only graph targets.
             assert name in pre, name
-            assert {arg for arg in args if arg.startswith("tests/")} <= graph_targets
-        elif runs_pytest(gate) or ("cargo" in gate.toolchains and name != clippy):
-            # Curated rule cohorts, Cargo builds and compiled programs wait
-            # for the queue's batch.
+            assert tests <= graph_targets
+            continue
+        # A rule names whole files or nodes; the graph selects files.
+        tests = {arg.partition("::")[0] for arg in tests}
+        graph_files = {target.partition("::")[0] for target in graph_targets}
+        if runs_pytest(gate) and gate.cells:
+            # Another OS's portability cell runs with the batch on that OS.
+            assert name not in pre, name
+        elif runs_pytest(gate):
+            # A curated rule cohort runs in the lane exactly when it holds the
+            # direct readers the graph selected; the rest waits for the batch.
+            assert (name in pre) == (tests <= graph_files), name
+        elif "cargo" in gate.toolchains and name not in {clippy, crate_tests}:
+            # Cargo builds and compiled programs wait for the queue's batch.
             assert name not in pre, name
         else:
             assert name in pre or not set(gate.toolchains) <= {
@@ -1232,3 +1258,26 @@ def test_plan_changes_read_the_upstream_plan_through_git():
     # No plan upstream, or one that does not parse: every rule matches.
     assert _plan_changes(Git(128, ""), "a" * 40, policy) is EVERY_PLAN_ENTITY
     assert _plan_changes(Git(0, "not = [toml"), "a" * 40, policy) is EVERY_PLAN_ENTITY
+
+
+def test_rule_curated_direct_readers_run_in_the_lane_try_run():
+    """HF-701: tests/test_molt_dev.py reads tools/molt_dev.py; the dev-tooling
+    rule also runs it, which once left it to the batch alone."""
+    cfg = GateConfig.load(COMMITTED_GATES)
+    gates, _rules = cfg.select(["tools/molt_dev.py"])
+    lane = {
+        argument
+        for gate in gates
+        if gate.precheck and isinstance(gate.command, tuple)
+        for argument in gate.command
+        if argument.startswith("tests/")
+    }
+    assert "tests/test_molt_dev.py" in lane
+    batch_only = {
+        argument
+        for gate in gates
+        if not gate.precheck and isinstance(gate.command, tuple)
+        for argument in gate.command
+        if argument.startswith("tests/")
+    }
+    assert "tests/test_molt_dev.py" not in batch_only

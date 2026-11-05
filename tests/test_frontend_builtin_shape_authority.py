@@ -12,6 +12,7 @@ from molt.frontend import (
     SimpleTIRGenerator,
     compile_to_tir,
 )
+from molt.frontend._types import BUILTIN_TYPE_TAGS
 from molt.frontend.diagnostics import FrontendRejection
 
 
@@ -68,10 +69,18 @@ def test_shape_specialization_uses_captured_identity(
 def test_shape_call_captures_live_callee_before_argument_callback(name: str) -> None:
     ops = _raw_ops(f"value = {name}(argument())\n")
     constants = {op.result.name: op.args[0] for op in ops if op.kind == "CONST_STR"}
+    tags = {op.result.name: op.args[0] for op in ops if op.kind == "CONST"}
+    # The callee is the live read, or the canonical type the binding flow
+    # proves that read selects (HF-226). Either is captured before the
+    # argument callback and is the object the call invokes.
     callee_loads = [
         (position, op.result)
         for position, op in enumerate(ops)
-        if op.kind == "MODULE_GET_GLOBAL" and constants.get(op.args[1].name) == name
+        if op.kind == "MODULE_GET_GLOBAL"
+        and constants.get(op.args[1].name) == name
+        or op.kind == "BUILTIN_TYPE"
+        and name in BUILTIN_TYPE_TAGS
+        and tags.get(op.args[0].name) == BUILTIN_TYPE_TAGS[name]
     ]
     assert len(callee_loads) == 1
     load_position, callee = callee_loads[0]

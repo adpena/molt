@@ -39,6 +39,7 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
     ANY_CANONICAL_MODULE_IDENTITY,
     BUILTIN_IDENTITIES,
     BUILTIN_SHAPE_IDENTITIES,
+    BUILTIN_SHAPE_NAMES_BY_IDENTITY,
     CANONICAL_FROM_IMPORT_IDENTITIES,
     CANONICAL_IMPORT_IDENTITIES,
     CANONICAL_MEMBER_IDENTITIES,
@@ -245,7 +246,8 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 64
+_ANALYSIS_SCHEMA: Final = 65
+_BUILTIN_SHAPE_IDENTITY_MASK: Final[IdentityMask] = sum(BUILTIN_SHAPE_NAMES_BY_IDENTITY)
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
     RELEASES_REFERENCE | RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
@@ -3054,6 +3056,17 @@ class _Analyzer:
         assert self.module_scope is not None
         return self.module_scope.slots.get(name)
 
+    def _builtins_mapping_rebindable(self) -> bool:
+        """This module's own code or a named foreign writer binds ``__builtins__``.
+
+        An open premise (no foreign-writer list) already invalidates builtin
+        reads after every callback; it does not change pristine entry reads.
+        """
+        foreign = self.policy.foreign_namespace_writes
+        return self._module_slot("__builtins__") is not None or (
+            foreign is not None and "__builtins__" in foreign
+        )
+
     def _module_metadata_borrowing_snapshot(
         self, state_id: int, scope: _Scope
     ) -> PythonModuleMetadataProof:
@@ -3320,6 +3333,12 @@ class _Analyzer:
                 if declaration is not None
                 else OTHER_IDENTITY | UNBOUND_IDENTITY
             )
+            if self._builtins_mapping_rebindable():
+                # A frame's builtins come from globals["__builtins__"] when the
+                # function or module frame is created (CPython
+                # _PyEval_BuiltinsFromGlobals). A writer of that key selects
+                # another mapping, so the canonical member proves nothing.
+                fallback |= OTHER_IDENTITY
             static_value, result = _join_binding_payloads(
                 (
                     (value, static_value, result),
@@ -5308,6 +5327,23 @@ class _Analyzer:
             effects = evaluation_effects | invocation_effects | cleanup_effects
             key = self._node_key(node)
             previous_call = self.calls.get(key)
+            builtin_specializations = NO_IDENTITIES
+            candidates = callee_result.identities & _BUILTIN_SHAPE_IDENTITY_MASK
+            while candidates:
+                identity = candidates & -candidates
+                candidates ^= identity
+                if (
+                    call_semantics.specialization_valid
+                    if callee_result.identities == identity
+                    else builtin_call_shape(
+                        BUILTIN_SHAPE_NAMES_BY_IDENTITY[identity],
+                        node,
+                        argument_results,
+                    ).specialization_valid
+                ):
+                    builtin_specializations |= identity
+            if previous_call is not None:
+                builtin_specializations &= previous_call.builtin_specializations
             after = self.states.get(state_id)
             self.calls[key] = PythonCallSiteFact(
                 key,
@@ -5365,6 +5401,7 @@ class _Analyzer:
                 else metadata_at_invocation.intersect(
                     previous_call.module_metadata_at_invocation
                 ),
+                builtin_specializations=builtin_specializations,
             )
         elif isinstance(node, ast.NamedExpr):
             if self._target_may_write_import_metadata(node.target):
@@ -8526,9 +8563,11 @@ class _Analyzer:
         return self.states.set_bindings(state_id, updates)
 
     def _project_builtin_guard_bits(self) -> Iterator[PythonExpressionFact]:
-        """Attach a guard bit to each builtin read the module never binds.
+        """Attach a guard bit to each unproved builtin read the module never binds.
 
-        A function's read of `len` is a live lookup. When no module statement,
+        A function's read of `len` is a live lookup. When the closed writer
+        premise proves the read selects the builtin, it needs no guard: no code
+        in the graph can rebind it. Otherwise, when no module statement,
         `global` declaration or literal reflective write binds `len`, the
         compiler may specialize the read behind a runtime binding guard; the
         guard, not this projection, proves the binding at run time. A name the
@@ -8537,7 +8576,11 @@ class _Analyzer:
         assert self.module_scope is not None
         for key, fact in self.expressions.items():
             name = self._builtin_guard_reads.get(key)
-            if name is None or self._module_slot(name) is not None:
+            if (
+                name is None
+                or self._module_slot(name) is not None
+                or fact.exact_builtin_name() == name
+            ):
                 yield fact
             else:
                 yield replace(fact, builtin_guard_bit=BUILTIN_BINDING_GUARD_BITS[name])

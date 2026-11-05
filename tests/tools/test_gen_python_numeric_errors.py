@@ -13,6 +13,14 @@ from tools import gen_python_numeric_errors as policy  # noqa: E402
 from tests.process_guard_common import run_guarded_test_process  # noqa: E402
 
 
+# The compiled checks run in microseconds; this bound only catches a hang.
+# On macOS the first exec of a freshly linked binary can wait in admission:
+# under landing-gate concurrency (pytest -n auto beside Cargo) each binary
+# sat at 32 KB RSS for the whole 10 s it was given (main postsubmit
+# dd02641179, three of four land --fast runs on 2026-11-04).
+EXEC_TIMEOUT_SECONDS = 60
+
+
 def test_policy_coordinates_and_class_contract():
     # Independent CPython3.12.13/3.13.11/3.14.3 oracle observations; these are
     # conformance assertions, not generated aliases of the policy authority.
@@ -156,7 +164,11 @@ def test_compiled_policy_and_integer_sign_family(tmp_path):
         timeout=60,
     )
     run_guarded_test_process(
-        [str(binary)], check=True, capture_output=True, text=True, timeout=10
+        [str(binary)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=EXEC_TIMEOUT_SECONDS,
     )
 
 
@@ -248,7 +260,7 @@ fn molt_sys_version_state()->&'static std::sync::Mutex<Target> { static STATE:st
     )
     assert result.returncode == 0, result.stderr
     result = run_guarded_test_process(
-        [str(binary)], capture_output=True, text=True, timeout=10
+        [str(binary)], capture_output=True, text=True, timeout=EXEC_TIMEOUT_SECONDS
     )
     assert result.returncode == 0, result.stderr
 
@@ -302,7 +314,7 @@ def test_actual_timedelta_integer_normalizer_sign_range_and_overflow(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     result = run_guarded_test_process(
-        [str(binary)], capture_output=True, text=True, timeout=10
+        [str(binary)], capture_output=True, text=True, timeout=EXEC_TIMEOUT_SECONDS
     )
     assert result.returncode == 0, result.stderr
 
@@ -374,7 +386,7 @@ def test_compiled_float_divmod_against_host_cpython(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     result = run_guarded_test_process(
-        [str(binary)], capture_output=True, text=True, timeout=10
+        [str(binary)], capture_output=True, text=True, timeout=EXEC_TIMEOUT_SECONDS
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines() == expected

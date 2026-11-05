@@ -262,12 +262,31 @@ class TryRunRefusal:
 
 
 @dataclass(frozen=True)
+class GateRun:
+    """One executed gate block: ``gates[i]`` wrote ``gate-{i+1:03d}.stdout.log``
+    under ``output_dir`` (run_selected_gates numbers gates from 1)."""
+
+    phase: str  # "static" or "try-run"
+    output_dir: Path
+    gates: tuple[SelectedGate, ...]
+
+    def log(self, gate: SelectedGate) -> Path:
+        return self.output_dir / f"gate-{self.gates.index(gate) + 1:03d}.stdout.log"
+
+
+@dataclass(frozen=True)
 class PrecheckResult:
     """What one lane precheck ran; ``refusal`` names what it left undone."""
 
     passed: tuple[SelectedGate, ...]
     refusal: TryRunRefusal | None
     budget: PrecheckBudget
+    # The executed blocks, for a landing receipt's per-gate logs and counts.
+    runs: tuple[GateRun, ...] = ()
+    # Seconds per gate, keyed by its displayed command.
+    seconds: tuple[tuple[str, float], ...] = ()
+    # Selected gates the precheck does not run: the queue batch's.
+    waived: tuple[SelectedGate, ...] = ()
 
     @property
     def complete(self) -> bool:
@@ -296,8 +315,8 @@ def precheck_landing(
 ) -> PrecheckResult:
     """Run ``head``'s static gates, then its try run within ``budget``.
 
-    ``static_only`` stops after the static gates: the never-waived tier a
-    fast-path push runs, whose try run the push names as waived.
+    ``static_only`` stops after the static gates. ``land --fast`` passes
+    ``FAST_LANDING_BUDGET`` and pushes only a complete result.
 
     The gates, their toolchains and their environment come from the same
     authorities ``integrate`` uses (``select_landing_gates``, ``prepare``,
@@ -324,6 +343,7 @@ def precheck_landing(
     selected = [
         gate for gate in gates if gate.precheck and (gate.static or not static_only)
     ]
+    waived = tuple(gate for gate in gates if gate not in selected)
     tried = sum(1 for gate in selected if not gate.static)
     _step(
         f"static gates in the lane ({len(selected)} of {len(gates)} selected gate(s); "
@@ -334,7 +354,7 @@ def precheck_landing(
         "the queue's batch runs every gate)"
     )
     if not selected:
-        return PrecheckResult((), None, budget)
+        return PrecheckResult((), None, budget, waived=waived)
     drv._assert_integration_source(git, head)
     prepared = config.prepare(
         selected,
@@ -376,9 +396,16 @@ def precheck_landing(
             static, checked, gate_seconds, host_limit=lambda: concurrent_gate_limit()
         )
     passed = tuple(checked.passed)
+    runs = [GateRun("static", checked.output_dir, tuple(static))] if static else []
+
+    def seconds() -> tuple[tuple[str, float], ...]:
+        return tuple((shown, elapsed) for elapsed, shown in gate_seconds)
+
     if not trial:
         _say(gate_time_summary(gate_seconds))
-        return PrecheckResult(passed, None, budget)
+        return PrecheckResult(
+            passed, None, budget, tuple(runs), seconds(), waived=waived
+        )
     from molt.disk_capacity import DiskCapacityError
 
     # Only the capacity verdict is a refusal; any other fault stays a fault.
@@ -390,6 +417,9 @@ def precheck_landing(
             passed,
             TryRunRefusal(RefusalReason.DISK_CAPACITY, tuple(trial), str(exc)),
             budget,
+            tuple(runs),
+            seconds(),
+            waived=waived,
         )
         _warn(result.report())
         return result
@@ -427,7 +457,15 @@ def precheck_landing(
                 ),
             )
     _say(gate_time_summary(gate_seconds))
-    result = PrecheckResult((*passed, *tried_runtime.passed), refusal, budget)
+    runs.append(GateRun("try-run", tried_runtime.output_dir, tuple(trial)))
+    result = PrecheckResult(
+        (*passed, *tried_runtime.passed),
+        refusal,
+        budget,
+        tuple(runs),
+        seconds(),
+        waived=waived,
+    )
     if refusal is not None:
         _warn(result.report())
     return result

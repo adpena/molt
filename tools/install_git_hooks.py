@@ -6,6 +6,10 @@ so it fires in the checkout AND every linked worktree:
 
   * ``commit-msg`` — the commit-attribution policy (no Claude attribution);
                      CI enforces the same rule over every pushed range.
+  * ``pre-push``   — refuses a main update without a landing receipt for the
+                     pushed tree on the main it replaces (HF-701;
+                     ``tools/landing_receipt.py``, docs/design/landing_queue.md
+                     section 9).
 
 The attribution hook starts Python through ``.githooks/molt-hook-launch.sh``.
 
@@ -20,9 +24,9 @@ Why not ``core.hooksPath=.githooks``? That would ALSO enable ``.githooks/pre-com
 commit for every agent. So this installer wires ONLY the managed hooks, straight
 into ``<git-common-dir>/hooks/``.
 
-The obsolete Molt pre-push hook is retired, restoring any preserved foreign
-hook. Drift maintenance stays explicit; integrate validates its selected commit
-and CI checks generated projections. No replacement push hook is installed.
+The obsolete drift-gate pre-push hook stays retired: its entry runs first and
+removes only a hook carrying its own marker, restoring any preserved foreign
+hook; the landing-receipt hook then installs (and chains a foreign hook).
 
 Idempotent and non-destructive, per active hook:
   * Already-current Molt hook  -> no-op.
@@ -67,6 +71,9 @@ class ManagedHook:
     marker: str
     purpose: str
     retired: bool = False
+    # Git feeds the hook's input on stdin (pre-push): a chained foreign hook
+    # gets its own copy, so it cannot consume ours.
+    reads_stdin: bool = False
 
     @property
     def source(self) -> Path:
@@ -74,8 +81,16 @@ class ManagedHook:
 
 
 HOOKS_SOURCE_DIR = REPO_ROOT / ".githooks"
+# A retired entry precedes the active hook of the same name: it removes only a
+# hook that carries its own marker.
 HOOKS: tuple[ManagedHook, ...] = (
     ManagedHook("pre-push", "molt-drift-gate-hook", "retired drift gate", retired=True),
+    ManagedHook(
+        "pre-push",
+        "molt-landing-receipt-hook",
+        "main landing receipt check",
+        reads_stdin=True,
+    ),
     ManagedHook(
         "commit-msg", "molt-commit-attribution-hook", "commit attribution policy"
     ),
@@ -148,8 +163,19 @@ def _chained_wrapper(source_text: str, hook: ManagedHook) -> str:
     )
     rest = "".join(lines[1:]) if lines and lines[0].startswith("#!") else source_text
     chain = (
-        f'local_hook="$(dirname "$0")/{hook.name}.local"\n'
-        'if [ -x "$local_hook" ]; then "$local_hook" "$@" || exit $?; fi\n'
+        (
+            'molt_hook_stdin="$(cat)"\n'
+            f'local_hook="$(dirname "$0")/{hook.name}.local"\n'
+            'if [ -x "$local_hook" ]; then\n'
+            '  printf \'%s\\n\' "$molt_hook_stdin" | "$local_hook" "$@" || exit $?\n'
+            "fi\n"
+            'exec <<<"$molt_hook_stdin"\n'
+        )
+        if hook.reads_stdin
+        else (
+            f'local_hook="$(dirname "$0")/{hook.name}.local"\n'
+            'if [ -x "$local_hook" ]; then "$local_hook" "$@" || exit $?; fi\n'
+        )
     )
     return f"{shebang}{chain}{rest}"
 

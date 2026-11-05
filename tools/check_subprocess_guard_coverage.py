@@ -388,6 +388,13 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "policy; runs before the project environment exists",
     ),
     AllowedRawSubprocessUse(
+        "tools/landing_receipt.py",
+        "_git",
+        "run",
+        "bounded git rev-parse metadata for the pre-push landing-receipt check; "
+        "runs from a Git hook before the project environment exists",
+    ),
+    AllowedRawSubprocessUse(
         "tools/check_public_source_boundary.py",
         "_git",
         "run",
