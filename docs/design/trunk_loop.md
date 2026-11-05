@@ -25,9 +25,13 @@ No task is a shell command supplied by an operator: the selected commit's
 Commands run serially on a host; a failed cell retains its result and does not
 authorize changing workers, deadlines or selecting another workload.
 
-The canonical checkout is a Git object donor, never reset or moved. A new
-detached worktree is allocated under its custody root for each run, using a
-controller-created bundle and bounded Git-transfer semantics. Staging and
+The canonical checkout is a Git object donor: a run never resets or moves it.
+Only provision moves it, to the commit it provisions, and never over tracked
+edits ([Provision before testing](#provision-before-testing)). A new detached
+worktree is allocated under its custody root for each run. A controller-created
+bundle carries the commits the host lacks, with bounded Git-transfer semantics.
+When the checkout already contains the subject and the controller, no bundle is
+made; git refuses an empty one. Staging and
 worktree identities are retained in a local run record before launch. No source,
 toolchain, environment or seal is placed on bat00's exFAT volume. Existing
 `E:\\Molt\\trunk` and the hand-written scratch runner are donors for evidence only;

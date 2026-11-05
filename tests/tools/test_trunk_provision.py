@@ -870,6 +870,61 @@ def test_worker_refuses_a_path_that_selects_another_uv(tmp_path):
             trunk_loop.require_pinned_uv(path, str(pinned), "macmini")
 
 
+def test_run_ships_no_bundle_when_the_host_has_both_commits(tmp_path):
+    """Provision checks out the commit it provisions, so the host often holds
+    the run's subject and controller already; git refuses an empty bundle
+    (macmini, 2026-11-04)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    commits = []
+    for message in ("first", "second"):
+        subprocess.run(
+            [*git, "commit", "-q", "--allow-empty", "-m", message], check=True
+        )
+        commits.append(
+            subprocess.run(
+                [*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+            ).stdout.strip()
+        )
+    first, second = commits
+    assert trunk_loop.is_ancestor(first, second, repo)
+    assert trunk_loop.is_ancestor(second, second, repo)
+    assert not trunk_loop.is_ancestor(second, first, repo)
+
+    host = host_named("macmini")
+
+    class Transport:
+        def __init__(self):
+            self.pushed, self.commands = [], []
+
+        def push(self, paths):
+            self.pushed.extend(paths)
+
+        def remote_path(self, name):
+            return "/stage/" + name
+
+        def shell_command(self, script, *, timeout=60):
+            self.commands.append(script)
+            return ""
+
+    without = Transport()
+    trunk_loop.prepare_checkouts(host, without, None, second, second, "/w/s", "/w/c")
+    assert without.pushed == []
+    assert not any("bundle" in command for command in without.commands)
+    assert len(without.commands) == 2  # the subject and controller worktrees
+    bundle = tmp_path / "source.bundle"
+    shipped = Transport()
+    trunk_loop.prepare_checkouts(host, shipped, bundle, second, second, "/w/s", "/w/c")
+    assert shipped.pushed == [bundle]
+    assert [c for c in shipped.commands if "bundle" in c] == [
+        c for c in shipped.commands[:2]
+    ]
+    assert "bundle verify" in shipped.commands[0]
+    assert "bundle unbundle" in shipped.commands[1]
+
+
 def test_farm_hosts_run_no_command_that_needs_a_runner_image_toolchain():
     """`hosted-*` toolchains (the GitHub runner image's CMake and clang-cl) do not
     exist on farm hosts, so provisioning never installs them: no farm host may be

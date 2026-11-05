@@ -809,6 +809,20 @@ def acknowledge(raw: str) -> tuple[int, ProcessProbe | None]:
     return result["ProcessId"], ProcessProbe.parse(rest) if rest.strip() else None
 
 
+def is_ancestor(commit: str, descendant: str, repo: Path) -> bool:
+    result = authorities()._guarded_run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", commit, descendant],
+        cwd=repo,
+        timeout=180,
+    )
+    if result.returncode not in (0, 1):
+        raise RuntimeError(
+            f"git merge-base --is-ancestor {commit} {descendant}: exit "
+            f"{result.returncode}\n{result.stderr[-4000:]}"
+        )
+    return result.returncode == 0
+
+
 def checked(argv: list[str], *, cwd: Path = _REPO_ROOT, timeout: int = 180) -> str:
     result = authorities()._guarded_run(argv, cwd=cwd, timeout=timeout)
     if result.returncode:
@@ -983,32 +997,29 @@ def seed_inputs(descriptor: dict, transport, local: Path) -> list[dict]:
 def prepare_checkouts(
     host,
     transport,
-    bundle: Path,
+    bundle: Path | None,
     subject: str,
     controller: str,
     checkout: str,
     control: str,
 ) -> None:
-    transport.push([bundle])
+    """Add the run's subject and controller worktrees on the host.
+
+    ``bundle`` carries the commits the host lacks; ``None`` when its checkout
+    already contains both (provision checks out the commit it provisions).
+    """
+    imports: list[list[str]] = []
+    if bundle is not None:
+        transport.push([bundle])
+        remote = transport.remote_path(bundle.name)
+        imports = [
+            ["git", "-C", host.checkout, "bundle", "verify", remote],
+            ["git", "-C", host.checkout, "bundle", "unbundle", remote],
+        ]
     # These are local object reads/imports, not network Git transfers. SSH/SCP
     # use cross_run's guarded transport; no unattended Git credentials are used.
     for argv in (
-        [
-            "git",
-            "-C",
-            host.checkout,
-            "bundle",
-            "verify",
-            transport.remote_path(bundle.name),
-        ],
-        [
-            "git",
-            "-C",
-            host.checkout,
-            "bundle",
-            "unbundle",
-            transport.remote_path(bundle.name),
-        ],
+        *imports,
         ["git", "-C", host.checkout, "worktree", "add", "--detach", checkout, subject],
         [
             "git",
@@ -1095,20 +1106,26 @@ def start(args, *, landing: dict | None = None, repo: Path = _REPO_ROOT) -> Path
     if not re.fullmatch(r"[0-9a-f]{40}", remote_head):
         raise ValueError("cannot bind canonical checkout donor")
     checked(["git", "-C", str(repo), "cat-file", "-e", remote_head + "^{commit}"])
-    bundle = run_root / "source.bundle"
-    checked(
-        [
-            "git",
-            "-C",
-            str(repo),
-            "bundle",
-            "create",
-            str(bundle),
-            "HEAD",
-            "^" + remote_head,
-        ],
-        timeout=600,
-    )
+    # A host whose checkout already contains the subject and the controller
+    # needs no bundle, and git refuses to create an empty one.
+    bundle: Path | None = None
+    if not all(
+        is_ancestor(commit, remote_head, repo) for commit in (subject, controller)
+    ):
+        bundle = run_root / "source.bundle"
+        checked(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "bundle",
+                "create",
+                str(bundle),
+                "HEAD",
+                "^" + remote_head,
+            ],
+            timeout=600,
+        )
     prepare_checkouts(host, transport, bundle, subject, controller, checkout, control)
     descriptor = (
         describe(host, transport, checkout, args.cell, toolchains=landing["toolchains"])
