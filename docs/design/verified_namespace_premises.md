@@ -593,6 +593,21 @@ raises `TypeError: Object of type DataclassInitField is not JSON serializable`
 `dataclass_construction` primitive with the lowering cache enabled fails. This
 is outside this lane's mechanism; the lane reports it to the integrator.
 
+HF-561's required primitive baseline reproduced HF-777 on `5bdef368edd3` before
+any runtime edit. Its selected repair adds `DataclassInitField` as a typed leaf
+of the existing metadata codec (`cli/cache_keys.py`, decoded by
+`cli/module_cache.py`), using its five-field `schema()` projection and strict
+restoration of name, three bools and default kind 0/1/2. Lowering records move
+from schema 10 to 11; old records are not admitted. The new leaf tag participates
+in the existing name-map escaping contract. Restored fields must remain typed
+because inherited dataclass lowering reads their attributes. Generic dataclass
+serialization, cache-off retries and a second cache schema are excluded.
+The final independent Goldfish design/readiness review returned no findings
+after the caller and oracle responses. This is a reviewed repair design;
+implementation qualification requires the direct codec readers, an independently
+specified field schema and inherited consumer, and actual cold/warm dataclass
+primitive builds with the lowering cache enabled. The parent owns ledger closure.
+
 ### Acceptance and evidence rules
 
 The five-pair primitive A/B (`tools/perf_scoreboard.py primitives`, exact
