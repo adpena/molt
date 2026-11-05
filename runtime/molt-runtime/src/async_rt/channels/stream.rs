@@ -802,9 +802,7 @@ mod stream_tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn io_hook_return_custody_child() {
-        let Ok(mode) = std::env::var(
-            crate::runtime_flags::RuntimeFlag::MOLT_IO_HOOK_RETURN_CUSTODY_CHILD.name(),
-        ) else {
+        let Ok(mode) = std::env::var("MOLT_IO_HOOK_RETURN_CUSTODY_CHILD") else {
             return;
         };
         let fields: Vec<_> = mode.split(':').collect();
@@ -900,10 +898,7 @@ mod stream_tests {
                         "--nocapture",
                         "--test-threads=1",
                     ]);
-                    command.env(
-                        crate::runtime_flags::RuntimeFlag::MOLT_IO_HOOK_RETURN_CUSTODY_CHILD.name(),
-                        &mode,
-                    );
+                    command.env("MOLT_IO_HOOK_RETURN_CUSTODY_CHILD", &mode);
                     let output = crate::test_support::captured_runtime_children::capture(
                         &mut command,
                         "io-hook-return-custody",
