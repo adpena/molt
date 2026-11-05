@@ -1,10 +1,13 @@
 # Native default import finders (HF-737)
 
-**Status:** design, reviewed 2026-11-04 (one round, two reviewers; record in section 11).
+**Status:** implemented; integration qualification remains open (section 13). Reviewed 2026-11-04 (one round, two reviewers; record in section 11).
 **Owner contract:** [import system contract](../../spec/areas/compat/contracts/import_system_contract.md), section 1.
 **Related:** [frozen module layer](import_bedrock_frozen_module_layer.md), HF-693 (finder code size), HF-297 (loader details).
 
 ## 1. Problem
+
+This section describes the pre-migration baseline. Sections 3 and 13 describe
+the implemented native defaults.
 
 At bootstrap the runtime seeds `sys.meta_path = [BuiltinImporter]` and
 `sys.path_hooks = []` (`runtime/molt-runtime/src/builtins/modules.rs`,
@@ -623,3 +626,18 @@ pre-import observation and mutation differentials as the semantic authority.
 Any remaining execution of `importlib.machinery` must be traced to an actual
 consumer, not assigned the old completion cost. Family W's measurement and
 runtime-init plan lives in [startup design section 10](62_startup_cold_start.md#10-runtime-startup-work-family-w-2026-11-05).
+
+Family W recorded CPython 3.12.16 matches on native, LLVM and WASM for the
+existing identity, append-first and insert-first controls. These cover a catalog
+hit, miss, pre-import observation and user mutation. The enclosing matrix
+exited nonzero with other failures and indeterminate guard custody; it is not
+integration or release acceptance.
+
+The static-extension catalog path has a separate existing consumer gap. The
+pending-call C fixture runs its initializer, then the compiled loader reports
+no compiler-emitted body. A controlled reversal of HF-749 reproduces the same
+error. The private Python execution context captures CompilerNamespace
+publication, while C initialization publishes exact module identity as
+Extension. The parent must settle the typed C create/exec connection; a generic
+cache lookup or missing-body fallback would hide that boundary. Native finder
+bootstrap does not qualify this path.
