@@ -82,7 +82,10 @@ then the tuple's missing slot is replaced with the list. Frozensets and slices
 reserve an unresolved reference before children and publish only on completion;
 references to unresolved slots fail. Empty frozensets can publish immediately.
 On failure frame owners and reference roots release; cyclic residuals are owned
-by the normal cycle collector. No partial object escapes through the result.
+by the normal cycle collector. Immutable-only tuple cycles retain their edges
+under the existing no-tp_clear contract; a synthetic fixture must keep a tuple
+owner and explicitly retire its edge, rather than polluting later GC tests.
+No partial object escapes through the result.
 Before hashing a decoded dict key or set element, walk its immutable dependencies
 iteratively. An edge to any still-constructing tuple is invalid and raises
 ValueError("bad marshal data (invalid reference)") before insertion. The walk
@@ -111,9 +114,14 @@ also remain semantic. This matters when a tuple is owned only by a set.
 Standalone key serialization is scheduled as a fresh context in the same
 iterative writer machine, with its own output, references and depth starting at
 one. The suspended set frame resumes with the returned key bytes; there is no
-recursive call of the codec. Singleton sets need no sort key and emit their one
-element directly with the semantic retain; this removes exponential repeated
-key work for deeply nested singleton frozensets without changing ordering.
+recursive call of the codec. Singleton sets skip the sort key only after an
+iterative proof that their element's immutable subtree consists of exact
+builtins, fits the remaining record depth and cannot call a buffer exporter.
+That typed proof travels down child frames, avoiding repeated scans of nested
+singleton frozensets. Unknown exporters
+still run standalone key serialization, preserving callback effects even when
+ordering is trivial. The semantic element retain remains present in both cases.
+Target 3.14 checks set size after callbacks, following its iterator-based source.
 
 ## Wire rules
 
@@ -141,12 +149,17 @@ key work for deeply nested singleton frozensets without changing ordering.
   elements by standalone dumps under the selected version. 3.14 sorts
   (dump, traversal-index, value), so ties retain traversal order and never
   compare unorderable values. 3.12/3.13 sort (dump, value): compare equal-key
-  values with Python equality followed by less-than, propagating TypeError
-  for unorderable unequal values. Stable insertion of ties matches list.sort.
+  values with Python equality followed by less-than. marshal.c maps any sort
+  failure, including unorderable unequal values, to MemoryError. Reuse Molt's
+  target-aware fallible Timsort with less-than alone, as list.sort does.
+  NaNs do not form the total order
+  required by Rust sort_by; they must not turn a valid graph into a Rust panic.
+  A failed standalone key dump becomes ValueError("unmarshallable object")
+  in its enclosing writer, including nested depth, exporter or comparison errors.
 * Slice `:` writes only when both target >=3.14 and version >=5; otherwise
   writing raises the existing unmarshallable-object ValueError. The reader
-  accepts it only on target >=3.14. Other tags are accepted regardless of writer version. Target facts
-  come from `runtime_target_python_info`, never the build host. 3.15 and its
+  accepts it only on target >=3.14. Other tags are accepted regardless of writer
+  version. Target facts come from `runtime_target_python_info`, never the build host. 3.15 and its
   frozendict format are outside the admitted target set.
 
 All lengths/IDs use checked conversions, checked reservations and typed
@@ -184,11 +197,21 @@ gains an explicit AOT-boundary outcome/provenance, rather than pretending that
 Molt's diagnostic is a CPython source quotation.
 
 `PyMarshal_WriteObjectToString` and `PyMarshal_ReadObjectFromString` use the same
-runtime codec through the public C handle boundary, including version, errors
+runtime codec through typed `RuntimeHooks::marshal_write/marshal_read`, including version, errors
 and ownership conversion. Delete both fake delegates in the same implementation
 commit. Intrinsic declarations and WASM ABI sources generate all their consumers.
 Exact builtin admission must include native C-ABI values; it must not silently
 accept subclasses through numeric conversion or lose their physical ownership.
+Both source and linked ABI headers include `_marshal_exports.h`; neither imports
+a Python serialization module. The C-ABI crate owns public PyObject ingress and
+result projection; the runtime owns encoding/decoding. Hook ABI version 76 adds
+the two optional capability fields. A host without a runtime refuses explicitly;
+there is no alternative codec. Existing managed callers remain borrowed from
+their C owners; native values use canonical temporary wrapper custody. A typed
+MarshalInputOwnership distinguishes those two cases so the writer excludes
+only transport pins. Foreign heap sharing accounts for both runtime owners and
+physical C owners, subtracting the wrapper's one physical reference. Neither
+ingress nor container snapshots silently change FLAG_REF.
 
 ## Review answers
 

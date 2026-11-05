@@ -24,6 +24,41 @@ pub(crate) struct IntrinsicSpec {
 
 pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
+        name: "molt_marshal_version",
+        symbol: "molt_marshal_version",
+        arity: 0,
+        defaults: &[],
+        public: None,
+    },
+    IntrinsicSpec {
+        name: "molt_marshal_dumps",
+        symbol: "molt_marshal_dumps",
+        arity: 2,
+        defaults: &[],
+        public: None,
+    },
+    IntrinsicSpec {
+        name: "molt_marshal_loads",
+        symbol: "molt_marshal_loads",
+        arity: 1,
+        defaults: &[],
+        public: None,
+    },
+    IntrinsicSpec {
+        name: "molt_marshal_dump",
+        symbol: "molt_marshal_dump",
+        arity: 3,
+        defaults: &[],
+        public: None,
+    },
+    IntrinsicSpec {
+        name: "molt_marshal_load",
+        symbol: "molt_marshal_load",
+        arity: 1,
+        defaults: &[],
+        public: None,
+    },
+    IntrinsicSpec {
         name: "molt_native_callable_reduce",
         symbol: "molt_native_callable_reduce",
         arity: 1,

@@ -1,5 +1,12 @@
 {
   "schema_version": 1,
+  "aot_boundaries": {
+    "MarshalCodeObject": {
+      "exception": "ValueError",
+      "message": "cannot unmarshal code objects across Molt's AOT boundary",
+      "contract": "docs/design/marshal.md"
+    }
+  },
   "sources": [
     {
       "version": "3.12.0",

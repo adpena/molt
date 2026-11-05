@@ -4,6 +4,11 @@
 from __future__ import annotations
 
 INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
+    "molt_marshal_version": ("molt_marshal_version", 0),
+    "molt_marshal_dumps": ("molt_marshal_dumps", 2),
+    "molt_marshal_loads": ("molt_marshal_loads", 1),
+    "molt_marshal_dump": ("molt_marshal_dump", 3),
+    "molt_marshal_load": ("molt_marshal_load", 1),
     "molt_native_callable_reduce": ("molt_native_callable_reduce", 1),
     "molt_compatibility_error": ("molt_compatibility_error", 1),
     "molt_capabilities_list": ("molt_capabilities_list", 0),

@@ -1163,6 +1163,31 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 0,
     },
     RuntimeCallableImportSpec {
+        runtime_name: "molt_marshal_version",
+        import: WasmRuntimeImport::MarshalVersion,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_marshal_dumps",
+        import: WasmRuntimeImport::MarshalDumps,
+        arity: 2,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_marshal_loads",
+        import: WasmRuntimeImport::MarshalLoads,
+        arity: 1,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_marshal_dump",
+        import: WasmRuntimeImport::MarshalDump,
+        arity: 3,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_marshal_load",
+        import: WasmRuntimeImport::MarshalLoad,
+        arity: 1,
+    },
+    RuntimeCallableImportSpec {
         runtime_name: "molt_chan_drop",
         import: WasmRuntimeImport::ChanDrop,
         arity: 1,
@@ -12906,6 +12931,11 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_sys_stdout" => Some(WasmRuntimeImport::SysStdout),
         "molt_sys_version" => Some(WasmRuntimeImport::SysVersion),
         "molt_sys_version_info" => Some(WasmRuntimeImport::SysVersionInfo),
+        "molt_marshal_version" => Some(WasmRuntimeImport::MarshalVersion),
+        "molt_marshal_dumps" => Some(WasmRuntimeImport::MarshalDumps),
+        "molt_marshal_loads" => Some(WasmRuntimeImport::MarshalLoads),
+        "molt_marshal_dump" => Some(WasmRuntimeImport::MarshalDump),
+        "molt_marshal_load" => Some(WasmRuntimeImport::MarshalLoad),
         "molt_chan_drop" => Some(WasmRuntimeImport::ChanDrop),
         "molt_chan_new" => Some(WasmRuntimeImport::ChanNew),
         "molt_chan_recv" => Some(WasmRuntimeImport::ChanRecv),

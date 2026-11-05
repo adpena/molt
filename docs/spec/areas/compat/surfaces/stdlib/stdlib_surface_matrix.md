@@ -28,6 +28,24 @@
 - **Capability parity:** submodules that touch I/O/OS/process boundaries inherit the same capability gates as their parent module.
 
 ## 0.3 Coverage Notes
+
+### Explicit marshal deviation: `MarshalScalarIdentity` (HF-744)
+
+Molt's scalar int/float/complex values do not promise CPython allocation
+identities. The Python [data model](https://docs.python.org/3/reference/datamodel.html#objects-values-and-types)
+allows immutable-value identity reuse. For marshal format >=3, integers in
+[-5, 256] use flagged value-keyed references; every other scalar occurrence is
+an unflagged record. Incoming scalar references yield the referenced value.
+Heap sharing (str, bytes, tuple, list, dict, set, frozenset, slice and buffer
+exporters encoded as bytes) retains identity-based references. Byte equality
+requires matching interning/refcounts and unshared non-cached scalars in the
+CPython input; outside that partition cross-load values, including heap sharing,
+remain required. NaN writing uses canonical positive quiet-NaN bits; payload and
+sign variants are outside exact-byte proof. Code records raise the registered
+`MarshalCodeObject` AOT-boundary ValueError. [The owning design](../../../../../design/marshal.md)
+defines the rules and qualification obligations; implementation is not release
+acceptance.
+
 - Differential coverage includes a Click/Trio stdlib surface pack (see `tests/differential/COVERAGE_INDEX.yaml` and `tests/differential/stdlib/*_basic.py`).
 
 ## 0.4 Version Policy
@@ -208,7 +226,7 @@ entries must obey the policy in Section 0.
 | encodings | Stdlib | Partial | P3 | SL3 | stdlib/runtime | Minimal package + aliases present; `encodings.quopri_codec` implemented; broader encoding package import hooks still pending. |
 | faulthandler | Stdlib | Planned | P3 | SL3 | runtime | Runtime hooks pending; import-only stub. |
 | graphlib | Stdlib | Supported | P3 | SL3 | stdlib/runtime | Fully intrinsic-lowered `TopologicalSorter` + `CycleError` parity for 3.12+ with CPython-derived exhaustive differential coverage (messages, cycle payload shape, readiness progression, insertion-order grouping invariants, and `GenericAlias`). Non-goal: no guarantee of byte-for-byte traceback text formatting beyond exception class/message parity. |
-| marshal | Stdlib | Planned | P3 | SL3 | runtime | Marshal format parity pending. |
+| marshal | Stdlib | Partial | P3 | SL3 | runtime | Shared runtime wire codec; qualification and explicit scalar-identity deviation: [marshal](../../../../../design/marshal.md). |
 | opcode | Stdlib | Supported | P3 | SL3 | stdlib/runtime | Intrinsic payload-backed CPython 3.12 opcode tables/constants plus `_opcode` bridge surface (`stack_effect`, `get_specialization_stats`); `_opcode_metadata` loads intrinsic 3.14 metadata payload and remains version-gated absent on `<3.14`. |
 | optparse | Stdlib | Planned | P3 | SL3 | stdlib | Legacy CLI parser; parity pending. |
 | pickletools | Stdlib | Planned | P3 | SL3 | stdlib | Pickle analysis helpers; import-only stub. |

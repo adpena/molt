@@ -58,6 +58,7 @@ mod locale_resolver;
 mod lock_resolver;
 mod logging_ext_resolver;
 mod logging_resolver;
+mod marshal_resolver;
 mod math_resolver;
 mod memoryview_resolver;
 mod multiprocessing_resolver;
@@ -287,6 +288,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         return Some(v);
     }
     if let Some(v) = logging_ext_resolver::resolve_symbol(symbol) {
+        return Some(v);
+    }
+    if let Some(v) = marshal_resolver::resolve_symbol(symbol) {
         return Some(v);
     }
     if let Some(v) = math_resolver::resolve_symbol(symbol) {
