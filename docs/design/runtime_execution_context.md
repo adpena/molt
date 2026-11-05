@@ -420,6 +420,11 @@ closed. The later runtime TLS sentinel performs allocator-only cleanup. A late e
 sentinel must either retain the published origin or have transferred its roots into that drain.
 `tls_guard_touched` prevents reinitializing an already armed or destroying sentinel.
 
+Foreign-return validation captures that actual current C record, including a shutdown drain
+borrowing its retained owner. The ordinary runtime attachment-unit flag describes ownership;
+it cannot reject a destruction phase that intentionally owns no ordinary unit. The current-record
+query still checks runtime identity and execution custody before a snapshot can be published.
+
 The C record, managed frame/context/exception stacks, attribute cache and thread-local dictionary
 inverse edges have permanent initialized storage with explicit cleanup. Native TLS destruction
 cannot silently discard their integer-carried strong edges or make a callback's storage

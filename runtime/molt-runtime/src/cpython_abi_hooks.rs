@@ -248,9 +248,10 @@ unsafe extern "C" fn hook_foreign_execution_capture()
     if tls.gil_depth.get() == 0 {
         return ForeignExecutionSnapshot::UNAVAILABLE;
     }
-    if !molt_cpython_abi::api::object::runtime_execution_thread_is_attached() {
-        return ForeignExecutionSnapshot::UNAVAILABLE;
-    }
+    // The current C record is authoritative for execution, including a
+    // teardown phase borrowing its retained owner. The ordinary runtime
+    // attachment-unit flag records ownership, not whether that C record is
+    // current; a destruction phase intentionally owns no ordinary unit.
     let thread_state = unsafe { molt_cpython_abi::api::object::_PyThreadState_UncheckedGet() };
     if thread_state.is_null() {
         return ForeignExecutionSnapshot::UNAVAILABLE;
@@ -6049,6 +6050,19 @@ mod tests {
             crate::concurrency::execution::current_thread_has_c_extension_execution_context(),
             "shutdown finalizer callback lost destruction execution custody"
         );
+        assert!(!molt_cpython_abi::api::object::runtime_execution_thread_is_attached());
+        let current = unsafe { molt_cpython_abi::api::object::_PyThreadState_UncheckedGet() };
+        assert!(
+            !current.is_null(),
+            "the destruction phase owns a current C record"
+        );
+        let snapshot = unsafe { hook_foreign_execution_capture() };
+        assert_eq!(
+            snapshot.domain,
+            molt_cpython_abi::hooks::ForeignExecutionDomain::AttachedRuntime
+        );
+        assert_eq!(snapshot.thread_state, current as u64);
+        assert!(snapshot.gil_depth > 0 && snapshot.shutdown_depth > 0);
         let closure_bits = SHUTDOWN_DRAIN_CEXT_CLOSURE_BITS.swap(0, AtomicOrdering::AcqRel);
         let result = crate::with_gil_entry_nopanic!(__entry_py, {
             molt_cpython_abi_cext_call_trampoline_admitted_attached_body(
@@ -6281,6 +6295,7 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         crate::with_gil_entry_nopanic!(py, {
             let first =
                 crate::builtins::exceptions::alloc_exception(py, BuiltinExc::ValueError, "first");
@@ -6366,6 +6381,7 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         crate::with_gil_entry_nopanic!(py, {
             let key = crate::builtins::exceptions::alloc_exception(py, BuiltinExc::KeyError, "x");
             assert!(!key.is_null());
@@ -6446,6 +6462,7 @@ mod tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         crate::with_gil_entry_nopanic!(py, {
             let name = MoltObject::from_ptr(alloc_string(py, b"Original")).bits();
             let class_bits = crate::molt_class_new_attached_body(py, name);
@@ -6545,6 +6562,7 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         crate::with_gil_entry_nopanic!(_py, {
             let ptr = crate::builtins::exceptions::alloc_exception(
                 _py,
@@ -6798,6 +6816,7 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         crate::with_gil_entry_nopanic!(_py, {
             let child_ptr = crate::builtins::exceptions::alloc_exception(
                 _py,
@@ -6966,6 +6985,7 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         crate::with_gil_entry_nopanic!(_py, {
             let child_ptr = crate::builtins::exceptions::alloc_exception(
                 _py,
@@ -7024,6 +7044,7 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         crate::with_gil_entry_nopanic!(_py, {
             let a_ptr =
                 crate::builtins::exceptions::alloc_exception(_py, BuiltinExc::ValueError, "a");
@@ -7191,6 +7212,7 @@ mod tests {
         use molt_cpython_abi::api::{errors, sequences};
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         with_gil(|py| unsafe {
             for inspect_attributes in [false, true] {
                 let args = OwnedPyObject::from_owned(sequences::PyTuple_New(0));
@@ -7250,6 +7272,7 @@ mod tests {
     fn c_error_normalization_uses_cpython_argument_shapes() {
         let _test_guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
         let _ = crate::with_gil_entry_nopanic!(__entry_py, {
             crate::molt_exception_clear_attached_body(__entry_py)
@@ -7337,6 +7360,7 @@ mod tests {
     fn c_unicode_codec_errors_preserve_cpython_args_and_attributes() {
         let _test_guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
         let _ = crate::with_gil_entry_nopanic!(__entry_py, {
             crate::molt_exception_clear_attached_body(__entry_py)
@@ -7507,6 +7531,7 @@ mod tests {
     fn c_error_normalization_preserves_subclass_instance_and_actual_type() {
         let _test_guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         let index_handle = molt_cpython_abi::bridge::GLOBAL_BRIDGE
             .molt_handle_for_pyobj((&raw mut PyExc_IndexError).cast::<PyObject>())
             .expect("IndexError singleton must be bound")
@@ -7600,6 +7625,7 @@ mod tests {
     fn c_error_restore_and_managed_traceback_get_set_roundtrip_identity() {
         let _test_guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         unsafe {
             molt_cpython_abi::api::errors::PyErr_Clear();
             molt_cpython_abi::api::errors::PyErr_SetNone(
@@ -7965,6 +7991,14 @@ mod tests {
         );
         assert_eq!(unsafe { hook_exception_pending() }, 0);
         assert_eq!(PENDING_CALL_TEST_CALLBACKS.load(AtomicOrdering::Relaxed), 0);
+        let detached_error = molt_cpython_abi::api::errors::take_current_error()
+            .expect("detached refusal owns one C indicator");
+        assert!(
+            detached_error.value.is_null(),
+            "detached refusal must not construct a Python instance"
+        );
+        assert!(detached_error.traceback.is_null());
+        molt_cpython_abi::api::errors::restore_current_error_exact(detached_error);
         unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
         assert_eq!(
             unsafe { hook_exception_pending() },
@@ -8450,6 +8484,7 @@ mod tests {
         use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         with_gil(|py| unsafe {
             let qualname = crate::dynamic_attr_name_bits(&py, b"__qualname__").unwrap();
             let register_and_check = |receiver, self_is_null, expected: &str| {
@@ -9095,6 +9130,7 @@ mod tests {
     fn raw_c_object_getattr_bypasses_molt_value_dispatch() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         with_gil(|_py| crate::clear_exception(&_py));
         RAW_GETATTRO_CALLS.store(0, AtomicOrdering::SeqCst);
 
@@ -9133,6 +9169,7 @@ mod tests {
     fn native_constructor_ownership_is_acquired_only_at_runtime_crossing() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         with_gil(|py| unsafe {
             let capsule = molt_cpython_abi::api::capsule::PyCapsule_New(
                 (&raw mut RAW_GETATTRO_RESULT).cast(),
@@ -9196,6 +9233,7 @@ mod tests {
     fn rejected_foreign_crossing_preserves_error_without_publishing_identity() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         with_gil(|py| unsafe {
             let mut native_type: PyTypeObject = std::mem::zeroed();
             native_type.tp_flags = molt_cpython_abi::abi_types::Py_TPFLAGS_HAVE_GC;
@@ -9253,6 +9291,7 @@ mod tests {
     fn failed_managed_observation_cannot_acquire_a_foreign_identity() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         with_gil(|py| unsafe {
             use molt_cpython_abi::api::{errors, mapping, modules, refcount, sequences};
             let list = sequences::PyList_New(0);
@@ -9298,6 +9337,7 @@ mod tests {
     fn incomplete_list_projection_rejections_release_bridge_locks_before_raising() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         with_gil(|py| unsafe {
             use molt_cpython_abi::api::{errors, refcount, sequences};
             let list = sequences::PyList_New(1);
@@ -9325,6 +9365,7 @@ mod tests {
     fn module_and_generic_mapping_crossings_release_native_owners() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         with_gil(|py| unsafe {
             use molt_cpython_abi::api::{capsule, mapping, modules, object, refcount, strings};
             let destroyed = TestAtomicUsize::new(0);
@@ -9508,6 +9549,7 @@ mod tests {
     fn c_api_attribute_assignment_distinguishes_zero_from_deletion() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         unsafe {
             use molt_cpython_abi::api::{errors, modules, numbers, object, refcount};
             let module = modules::PyModule_New(c"attribute_hook_consumer".as_ptr());
@@ -9547,6 +9589,7 @@ mod tests {
     fn foreign_slot_crossings_borrow_arguments_and_preserve_exact_errors() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         with_gil(|py| unsafe {
             use molt_cpython_abi::api::errors;
             use molt_cpython_abi::bridge::{
@@ -9700,6 +9743,7 @@ mod tests {
     fn module_and_mapping_reference_edges_allow_valid_incomplete_containers() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         with_gil(|py| unsafe {
             use molt_cpython_abi::api::{errors, mapping, modules, numbers, refcount, sequences};
             let module = modules::PyModule_New(c"construction_edges".as_ptr());
@@ -9733,6 +9777,7 @@ mod tests {
     fn c_api_container_results_distinguish_float_zero_from_missing_slots() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         with_gil(|py| unsafe {
             use molt_cpython_abi::api::{
                 abstract_number, errors, mapping, numbers, refcount, sequences,
@@ -9781,6 +9826,7 @@ mod tests {
     fn c_api_power_preserves_absent_none_and_zero_modulus_semantics() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         with_gil(|py| unsafe {
             use molt_cpython_abi::abi_types::Py_None;
             use molt_cpython_abi::api::{abstract_number, errors, numbers, refcount};
@@ -9855,6 +9901,7 @@ mod tests {
 
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         with_gil(|py| unsafe {
             crate::clear_exception(&py);
             // Lookup readies this declaration and publishes MRO, namespace and
@@ -10156,6 +10203,7 @@ mod tests {
     fn pyimport_importmodule_routes_through_runtime_import_pipeline() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         // Hook registration installs callbacks. Ordered finder admission also
         // needs the real sys namespace and its early BuiltinImporter producer.
         let _sys_restore = with_gil(|py| {
@@ -10210,6 +10258,7 @@ mod tests {
     fn pysys_getobject_missing_sys_module_clears_speculative_import_failure() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         let _cache_restore = with_gil(|_py| {
             let name_ptr = alloc_string(&_py, b"sys");
             assert!(!name_ptr.is_null());
@@ -10232,6 +10281,7 @@ mod tests {
     fn pysys_getobject_reads_interpreter_sys_module_attribute() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
 
         let (_cache_restore, expected_flags_bits, sys_module_bits) = with_gil(|_py| unsafe {
             let name_ptr = alloc_string(&_py, b"sys");
@@ -10343,6 +10393,7 @@ mod tests {
     fn pysys_getobject_missing_attr_on_cold_module_fails_closed() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
 
         let (_cache_restore, sys_module_bits) = with_gil(|_py| {
             let name_ptr = alloc_string(&_py, b"sys");
@@ -10743,6 +10794,7 @@ mod tests {
     fn abi_public_bytearray_constructor_roundtrips_through_python_operations() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         with_gil(|py| unsafe {
             use molt_cpython_abi::abi_types::{Py_buffer, PyBUF_WRITABLE};
             use molt_cpython_abi::api::{buffer, errors, refcount, strings};
@@ -10831,6 +10883,7 @@ mod tests {
     fn abi_bytearray_storage_aliases_managed_exact_and_subclass_backing() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         with_gil(|py| unsafe {
             use crate::object::native_instance::NativePayload;
             use molt_cpython_abi::abi_types::{Py_buffer, PyBUF_WRITABLE, PyExc_BufferError};
@@ -10981,6 +11034,7 @@ mod tests {
     fn pyinit_module_to_bits_accepts_static_module_def_pointer() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         let cache_restore = static_extension_cache_restore("pkg.static_def_module");
         let mut def = PyModuleDef {
             m_base: PyModuleDef_Base {
@@ -11114,6 +11168,7 @@ mod tests {
     fn pyinit_module_to_bits_executes_canonically_initialized_module_definition() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         let cache_restore =
             static_extension_cache_restore("pkg.source_recompiled_structural_module");
         CANONICAL_EXEC_MODULE_BITS.store(0, AtomicOrdering::Relaxed);
@@ -11217,6 +11272,7 @@ mod tests {
         }
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         let cache_restore = static_extension_cache_restore("pkg.dynamic_extension");
         let origin_bits = with_gil(|py| {
             MoltObject::from_ptr(alloc_string(&py, b"/extensions/dynamic.so")).bits()
@@ -11300,6 +11356,7 @@ mod tests {
     fn r0_static_extension_moduledef_exec_failure_rolls_back_and_retries() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         let cache_restore = static_extension_cache_restore("pkg.moduledef_exec_error_module");
         CANONICAL_EXEC_MODULE_NAME_BITS.store(cache_restore.name_bits, AtomicOrdering::Relaxed);
         CANONICAL_EXEC_MODULE_BITS.store(0, AtomicOrdering::Relaxed);
@@ -11443,6 +11500,7 @@ mod tests {
     fn c_api_cfunction_module_metadata_tracks_assignment_and_deletion() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         unsafe {
             use molt_cpython_abi::api::refcount::OwnedPyObject;
             use molt_cpython_abi::api::{errors, modules, object, strings};
@@ -11559,6 +11617,7 @@ mod tests {
                 }
             }
             register_cpython_hooks();
+            let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
             unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
             let _ = crate::molt_exception_clear_attached_body(__entry_py);
             with_gil(|py| {
@@ -11840,6 +11899,7 @@ mod tests {
     fn pyinit_module_to_bits_reports_static_pyinit_error_state() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         let cache_restore = static_extension_cache_restore("pkg.pyinit_error");
         unsafe {
             molt_cpython_abi::api::errors::PyErr_SetString(
@@ -11862,6 +11922,7 @@ mod tests {
     fn pyinit_module_to_bits_reports_invalid_handle_error_state() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         let cache_restore = static_extension_cache_restore("pkg.invalid_module_def");
         let mut def = PyModuleDef {
             m_base: PyModuleDef_Base {
@@ -12049,6 +12110,7 @@ mod tests {
     fn pyset_new_from_iterable_dedups() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         let _ = crate::with_gil_entry_nopanic!(__entry_py, {
             crate::molt_exception_clear_attached_body(__entry_py)
         });
@@ -12152,6 +12214,7 @@ mod tests {
     fn pyset_add_unhashable_key_raises_typeerror() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         let _ = crate::with_gil_entry_nopanic!(__entry_py, {
             crate::molt_exception_clear_attached_body(__entry_py)
         });
@@ -12204,6 +12267,7 @@ mod tests {
     fn abi_list_projection_retains_heap_fill_and_promotes_inline_storage() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         with_gil(|py| unsafe {
             let fill = crate::int_bits_from_i64(&py, 1_i64 << 62);
             let ptr = crate::object::builders::alloc_list_int_from_fill(&py, 3, fill).unwrap();
@@ -12238,6 +12302,7 @@ mod tests {
     fn hook_list_family_supports_specialized_int_and_bool_storage() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         with_gil(|_py| unsafe {
             let int_ptr = crate::object::builders::alloc_list_int_from_raw_slice(&_py, &[1, 2, 3])
                 .expect("specialized int-list allocation");
@@ -12468,6 +12533,7 @@ mod tests {
     fn pylist_append_preserves_exact_c_origin_identity() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         let _ = crate::with_gil_entry_nopanic!(__entry_py, {
             crate::molt_exception_clear_attached_body(__entry_py)
         });
@@ -12502,6 +12568,7 @@ mod tests {
     fn projected_sequence_family_preserves_non_small_c_identity() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         let _ = crate::with_gil_entry_nopanic!(__entry_py, {
             crate::molt_exception_clear_attached_body(__entry_py)
         });
@@ -12716,6 +12783,7 @@ mod tests {
     fn list_read_and_exact_publication_share_one_cpython_authority() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         let _ = crate::with_gil_entry_nopanic!(__entry_py, {
             crate::molt_exception_clear_attached_body(__entry_py)
         });
@@ -12860,6 +12928,7 @@ mod tests {
     fn integer_byte_and_bit_hooks_are_arbitrary_width_and_partial_fill_correct() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
 
         let mut source = [0u8; 17];
         source[0] = 0xf0;
@@ -12932,6 +13001,7 @@ mod tests {
     fn integer_byte_hook_refuses_float_and_accepts_bool_without_conversion() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         let mut output = [0xa5; 4];
         assert_eq!(
             unsafe {
@@ -12981,6 +13051,7 @@ mod tests {
     fn hook_tuple_set_checked_index_and_tag_guard() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
+        let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         with_gil(|_py| unsafe {
             let ptr = alloc_tuple_uninitialized(&_py, 4);
             assert!(!ptr.is_null());

@@ -664,7 +664,15 @@ impl ForeignExecutionGuard {
         if self.snapshot.domain == ForeignExecutionDomain::Unavailable
             || unsafe { (self.validate)(self.snapshot) } == 0
         {
-            eprintln!("molt fatal: foreign callback returned with invalid execution custody");
+            let observed = unsafe { (hooks_or_stubs().foreign_execution_capture)() };
+            eprintln!(
+                "molt fatal: foreign callback returned with invalid execution custody; expected={:?}; observed={observed:?}",
+                self.snapshot
+            );
+            let backtrace = std::backtrace::Backtrace::capture();
+            if backtrace.status() == std::backtrace::BacktraceStatus::Captured {
+                eprintln!("{backtrace}");
+            }
             std::process::abort();
         }
     }
