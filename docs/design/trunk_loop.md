@@ -25,9 +25,13 @@ No task is a shell command supplied by an operator: the selected commit's
 Commands run serially on a host; a failed cell retains its result and does not
 authorize changing workers, deadlines or selecting another workload.
 
-The canonical checkout is a Git object donor, never reset or moved. A new
-detached worktree is allocated under its custody root for each run, using a
-controller-created bundle and bounded Git-transfer semantics. Staging and
+The canonical checkout is a Git object donor: a run never resets or moves it.
+Only provision moves it, to the commit it provisions, and never over tracked
+edits ([Provision before testing](#provision-before-testing)). A new detached
+worktree is allocated under its custody root for each run. A controller-created
+bundle carries the commits the host lacks, with bounded Git-transfer semantics.
+When the checkout already contains the subject and the controller, no bundle is
+made; git refuses an empty one. Staging and
 worktree identities are retained in a local run record before launch. No source,
 toolchain, environment or seal is placed on bat00's exFAT volume. Existing
 `E:\\Molt\\trunk` and the hand-written scratch runner are donors for evidence only;
@@ -35,21 +39,102 @@ the integrator reconciles and retires them after landing.
 
 ## Provision before testing
 
-`tools/trunk_loop.py provision --host NAME` automates the
-[documented local install](../getting-started.md#local-repo-workflow).
+`tools/trunk_loop.py provision --host NAME --commit COMMIT` automates the
+[documented local install](../getting-started.md#local-repo-workflow) at
+`COMMIT`. The controller resolves `COMMIT` to a full id and refuses it unless an
+`origin` branch contains it. The host fetches that exact commit from the
+controller's `origin` URL, the public repository, and checks it out before
+`uv sync` and doctor. It never fetches from the farm checkout's own `origin`:
+on 2026-11-04 bat00's was an SSH URL, and the fetch waited forever on the
+user's key. `GIT_TERMINAL_PROMPT=0` and SSH `BatchMode=yes` make any prompt fail
+instead of hanging. A fetch alone
+leaves the checkout at whatever commit it held: on 2026-11-04 the macmini's
+doctor judged pre-fix code and reported an error that main had already removed.
+The farm checkout is tool-owned. Provision refuses a checkout with tracked edits
+(exit 2 on POSIX), because doctor would judge them instead of `COMMIT`, and it
+never discards them.
 uv owns bootstrap Python and dependencies; the inventory cannot select a
 hand-made interpreter. Host-side Python entry points use
 `uv run --locked python -B` in the selected checkout. The existing immutable
 development-image publisher still owns proof environments and their admission.
-Provisioning requires CMake among its system prerequisites and runs
+Provisioning requires only what the farm cells need. The commands farm hosts run
+(`portability.queue.*`, `portability.cargo-custody.*`) declare Python, uv, Rust
+and Node; none declares system CMake. Cargo builds AWS-LC with its `cc` builder:
+`molt.cargo_execution_policy` refuses AWS-LC's CMake builder and the controls that
+would need it. Commands that need the GitHub runner image's toolchains
+(`hosted-cmake`, `hosted-clang-cl`, as `portability.headers.windows` does) run on
+hosted runners, never on the farm; a test refuses any farm assignment that
+declares a `hosted-*` toolchain. So the host prerequisites are git, curl and
+clang (the compiler doctor requires); macOS ships curl, so provision checks only
+the Command Line Tools there. Provision then runs
 `molt doctor --json --strict`: a JSON error report cannot count as a successful
-install merely because the report-only doctor mode exits zero.
-System packages stay an operator step, except on a WSL gate guest whose inventory
-record carries `install_system_packages = true`, the owner's per-host approval
-(molt-gate, 2026-11-04). There provision installs the missing packages of
-`trunk_loop.WSL_GUEST_PACKAGES` as root inside the guest (`wsl.exe --user root`)
-before the user-level install, and reports what it installed; a second run
-installs nothing.
+install merely because the report-only doctor mode exits zero. Doctor reports
+system CMake and Ninja as warnings, not errors. Only building LLVM from source
+(`tools/bootstrap_llvm.py`) uses them, and it refuses at the point of use with
+the fix. Doctor's `native` backend readiness needs Cargo and a C compiler, not
+CMake. Source-built extensions use the environment's attested Ninja
+(`source_extension_producer`, pinned through `uv.lock`), not a system one.
+
+On 2026-11-04 the Intel Mac mini showed why a package manager is the wrong
+dependency here. Homebrew made Intel macOS a Tier 3 configuration with no
+prebuilt bottles, so `brew install cmake` could not succeed, and nothing needed
+CMake anyway.
+
+System packages stay an operator step, except on a WSL gate guest whose
+inventory record carries `install_system_packages = true`, the owner's per-host
+approval (molt-gate, 2026-11-04). There provision installs the missing packages
+of `trunk_loop.WSL_GUEST_PACKAGES` as root inside the guest
+(`wsl.exe --user root`) before the user-level install, and reports what it
+installed. A second run installs nothing.
+
+On POSIX hosts, a prerequisite that is still missing is named with its own fix,
+and provision exits 2. It never prints a blanket list that asks for an install
+the host already has. On macOS the Command Line Tools provide the compiler and
+git. Their presence test is `xcode-select -p`, because `/usr/bin/cc` and
+`/usr/bin/git` are shims that exist without them. Their installer needs the
+owner's GUI consent, so it stays an operator step. On Windows provision checks
+git and the MSVC Build Tools through the same vswhere query that builds use
+(`molt.platform_toolchain.visual_studio_installation`), and like it requires
+exactly one selected installation. Builds construct their own MSVC environment,
+so no developer shell and no `cl.exe` on `PATH` is needed. Windows farm hosts are
+x86_64 only: the query names the x64 component, and an ARM64 host would need the
+ARM64 component in `config/llvm_toolchain_arches.toml`, so provision refuses it.
+
+Provision installs the pinned uv (`tool_releases` `uv.version`) into its own
+directory, `<custody_root>/bootstrap/uv/<version>/`, through the official
+installer with `UV_UNMANAGED_INSTALL` set to that directory. That mode writes only
+the directory: it edits no `PATH` or shell profile and installs no self-updater.
+It installs whenever that directory's uv is absent or reports another version,
+on POSIX and Windows alike, and every run re-reads `uv --version`. So an
+interrupted install converges on the next run. The installer is the release's
+own versioned script (`astral.sh/uv/<version>/install.*`), fetched over HTTPS.
+The POSIX script checks the archive's SHA-256 only when `sha256sum` exists, and
+the PowerShell script does not check it; this is the same trust the documented
+local install grants. The toolchain contract admits only the pinned version,
+and an older uv cannot install the pinned Python patch release: on 2026-11-04 the
+macmini's uv 0.10.9 failed with "No interpreter found for Python 3.12.15".
+
+The farm never uses the user's own uv (`~/.local/bin`). Other projects on a farm
+host run that binary, and Windows cannot replace a running `uv.exe`: on
+2026-11-04 bat00's long-running `fleet` agent held uv 0.13.1 open, the installer
+failed, and the worker then failed the contract `^uv 0\.13\.6\b`. Replacing that
+binary would also change another project's tool. A new pin installs beside the
+old one, so provisioning never replaces a running uv. `tools/trunk_loop.py::bootstrap_uv`
+is the one authority for the path. Every farm command names it: provision, remote
+commands, the POSIX, CIM and WSL worker launches, and the worker's own children. A
+CIM-created Windows process inherits the user's registry `PATH`, not the SSH
+session's, so a bare `uv` there would select the user's binary. Every farm shell
+(provision, remote commands, launches) and the worker put the pinned directory
+first on `PATH`, then `~/.cargo/bin`: proof commands run `uv` by name, and rustup
+installs with `--no-modify-path`, so a CIM worker's registry `PATH` may lack
+Cargo. Before its first test the worker refuses unless `PATH` selects the pinned
+uv (`require_pinned_uv`), naming the provision command to run.
+
+Each run's controller names its own pin, and a worker lives for one run, so a
+pin change reaches the next run with no restart. The WSL guest installs under its
+own Linux custody root, never under `/mnt/c`. The cost of isolation is about
+40 MB per host per pin, even where the user's uv already matches. Old pin
+directories stay until an operator removes them.
 
 `molt-gate` is Linux x86_64 behind bat00's Windows SSH endpoint. Scripts enter
 `wsl.exe -d molt-gate -- bash -s` through stdin, avoiding Windows re-quoting of
@@ -207,6 +292,28 @@ No `.wslconfig` key changes: `instanceIdleTimeout=-1` would keep every
 distribution alive with no worker, and the source shows that a held client is
 enough.
 
+### Worker standard streams
+
+A worker owns real standard streams before it loads repository authorities:
+stdin reads the null device, and stdout and stderr append to its stage
+`worker.log`. The POSIX and WSL launchers get this from
+`exec </dev/null >>worker.log 2>&1`. A Windows worker is created by CIM
+`Win32_Process.Create`, so it starts without valid standard handles, and
+`os.dup2` rebinds only the C runtime descriptors. A `subprocess` child started
+without explicit stdio still duplicates the invalid OS handles and fails with
+WinError 6. On 2026-11-04 the bat00 worker lost `sys.stderr` this way and vanished
+without a receipt. So `bind_standard_streams` also points the OS standard handles
+at the rebound descriptors (`SetStdHandle` with `msvcrt.get_osfhandle`) and
+rebuilds `sys.stdin`, `sys.stdout` and `sys.stderr`. This matches CPython's
+`subprocess`, which reads `GetStdHandle` for any stream the caller leaves unset.
+PowerShell redirection stays excluded because it re-encodes output as UTF-16.
+`bind_standard_streams` is the one authority for a detached Windows Python worker.
+A sibling such as `tools/calib_daemon.py`, which uses bare `dup2`, must call it
+before it can run under CIM. The log descriptor is inheritable, so a grandchild
+that outlives the worker (a build-cache daemon, for example) keeps `worker.log`
+open. Stage retention must tolerate that. `worker.log` is diagnostic bytes in each
+writer's own encoding, not decoded evidence.
+
 ### Worker liveness
 
 Every launcher acknowledges the worker's identity: pid, the start stamp that
@@ -285,7 +392,22 @@ second JUnit parser or uncorrected review-v2 behavior would duplicate authority.
 Provisioning tests use fake transports for each inventoried OS, reject settings
 drift and insufficient physical headroom before installation, and execute the
 POSIX script twice against fake tools to check that an existing installation
-does not reinstall prerequisites or clone another checkout.
+does not reinstall prerequisites or clone another checkout. Fake-tool runs cover
+the macOS host with and without the Command Line Tools (no package manager, no
+CMake), the per-tool report, and the pinned uv's installation into its own
+directory with its convergence check. Each fake host also holds a user uv first
+on the shell's `PATH`; the tests fail if provisioning runs or rewrites it. They
+also require the checkout of the provisioned commit before `uv sync` and doctor.
+The provision script, remote commands and the WSL launch must put the pinned
+directory first on `PATH`, never `~/.local/bin`. Provision must refuse tracked
+edits and an unpublished commit before touching the host. The worker's
+`require_pinned_uv` must refuse a `PATH` whose first uv is any other binary. A doctor test proves missing
+CMake and Ninja are warnings, not errors. A child-process
+test proves the standard-stream contract on POSIX: the worker's and a
+default-stdio grandchild's output reach `worker.log`, and stdin reads EOF. The
+Windows `SetStdHandle` path is covered only for call order by an injected fake.
+The real proof is a live bat00 `portability.queue.windows` run whose CIM worker
+spawns default-stdio children and reaches a terminal receipt.
 
 Unit controls must reject corrupt, truncated or substituted archives without
 network access or publication; execute a real POSIX detached child across parent

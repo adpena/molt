@@ -25,6 +25,11 @@ pub(crate) struct CallArgs {
     pub(super) form: CallForm,
 }
 
+// The managed allocation's payload contains the Rust value itself. Both native
+// and wasm32 payloads satisfy this alignment; no secondary allocation or pointer
+// provenance table participates in the builder's lifetime.
+const _: () = assert!(std::mem::align_of::<CallArgs>() <= std::mem::align_of::<MoltHeader>());
+
 impl CallArgs {
     /// Read the live dictionary, never a projection cached during expansion.
     #[cfg(any(test, feature = "molt_gpu_primitives"))]
@@ -974,79 +979,6 @@ fn trace_callargs_enabled() -> bool {
     runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_CALLARGS)
 }
 
-#[derive(Copy, Clone)]
-struct CallArgsPtr(*mut CallArgs);
-
-// CallArgs allocations are owned by the runtime object they are attached to
-// and protected by the GIL-like runtime lock. The registry only preserves
-// pointer provenance for lookups from object payload addresses.
-unsafe impl Send for CallArgsPtr {}
-unsafe impl Sync for CallArgsPtr {}
-
-pub(crate) struct CallBindRuntimeState {
-    callargs_builder_map: HashMap<usize, CallArgsPtr>,
-    callargs_storage_registry: HashSet<usize>,
-}
-
-impl CallBindRuntimeState {
-    pub(crate) fn new() -> Self {
-        Self {
-            callargs_builder_map: HashMap::new(),
-            callargs_storage_registry: HashSet::new(),
-        }
-    }
-}
-
-fn call_bind_runtime_state(_py: &PyToken<'_>) -> MutexGuard<'static, CallBindRuntimeState> {
-    runtime_state(_py)
-        .call_bind
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-fn call_bind_runtime_state_if_available() -> Option<MutexGuard<'static, CallBindRuntimeState>> {
-    runtime_state_for_gil().map(|state| {
-        state
-            .call_bind
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    })
-}
-
-pub(crate) fn note_callargs_alloc(
-    _py: &PyToken<'_>,
-    builder_ptr: *mut u8,
-    args_ptr: *mut CallArgs,
-) {
-    let mut state = call_bind_runtime_state(_py);
-    if !builder_ptr.is_null() {
-        state
-            .callargs_builder_map
-            .insert(builder_ptr as usize, CallArgsPtr(args_ptr));
-    }
-    if args_ptr.is_null() {
-        return;
-    }
-    state.callargs_storage_registry.insert(args_ptr as usize);
-}
-
-pub(crate) fn note_callargs_free(_py: &PyToken<'_>, builder_ptr: *mut u8, args_ptr: *mut CallArgs) {
-    if trace_callargs_enabled() && !builder_ptr.is_null() {
-        eprintln!(
-            "[molt callargs] free builder_ptr=0x{:x} args_ptr=0x{:x}",
-            builder_ptr as usize, args_ptr as usize,
-        );
-    }
-    let mut state = call_bind_runtime_state(_py);
-    if !builder_ptr.is_null() {
-        state.callargs_builder_map.remove(&(builder_ptr as usize));
-    }
-    if args_ptr.is_null() {
-        return;
-    }
-    state.callargs_storage_registry.remove(&(args_ptr as usize));
-}
-
 #[cfg(any(test, feature = "molt_gpu_primitives"))]
 pub(crate) unsafe fn clone_callargs_builder_bits(
     _py: &PyToken<'_>,
@@ -1129,36 +1061,18 @@ pub(crate) unsafe fn callargs_positional_snapshot(
     Ok(args.pos.clone())
 }
 
-pub(super) fn callargs_builder_is_live(_py: &PyToken<'_>, builder_ptr: *mut u8) -> bool {
-    if builder_ptr.is_null() {
-        return false;
-    }
-    call_bind_runtime_state(_py)
-        .callargs_builder_map
-        .contains_key(&(builder_ptr as usize))
-}
-
-fn callargs_storage_is_live(_py: &PyToken<'_>, args_ptr: *mut CallArgs) -> bool {
-    if args_ptr.is_null() {
-        return false;
-    }
-    call_bind_runtime_state(_py)
-        .callargs_storage_registry
-        .contains(&(args_ptr as usize))
-}
-
+/// Project the sole builder storage, without changing its ownership.
+///
+/// # Safety
+/// `ptr` is null or a live managed object owned by the caller. The caller holds
+/// the runtime token and keeps that allocation alive across every use of the
+/// returned raw pointer. This is not admission of a freed or forged address.
+#[inline]
 pub(crate) unsafe fn callargs_ptr(ptr: *mut u8) -> *mut CallArgs {
-    if ptr.is_null() {
+    if ptr.is_null() || unsafe { object_type_id(ptr) } != TYPE_ID_CALLARGS {
         return std::ptr::null_mut();
     }
-    let Some(state) = call_bind_runtime_state_if_available() else {
-        return std::ptr::null_mut();
-    };
-    state
-        .callargs_builder_map
-        .get(&(ptr as usize))
-        .copied()
-        .map_or(std::ptr::null_mut(), |raw| raw.0)
+    ptr.cast()
 }
 
 pub(super) unsafe fn require_callargs_ptr(
@@ -1169,7 +1083,8 @@ pub(super) unsafe fn require_callargs_ptr(
         if builder_ptr.is_null() {
             return Ok(std::ptr::null_mut());
         }
-        if !callargs_builder_is_live(_py, builder_ptr) {
+        let args_ptr = callargs_ptr(builder_ptr);
+        if args_ptr.is_null() {
             if trace_callargs_enabled() {
                 eprintln!(
                     "[molt callargs] invalid_builder builder_ptr=0x{:x}",
@@ -1180,20 +1095,6 @@ pub(super) unsafe fn require_callargs_ptr(
                 _py,
                 BuiltinExc::TypeError,
                 "invalid callargs builder",
-            ));
-        }
-        let args_ptr = callargs_ptr(builder_ptr);
-        if args_ptr.is_null() || !callargs_storage_is_live(_py, args_ptr) {
-            if trace_callargs_enabled() {
-                eprintln!(
-                    "[molt callargs] invalid_storage builder_ptr=0x{:x} args_ptr=0x{:x}",
-                    builder_ptr as usize, args_ptr as usize,
-                );
-            }
-            return Err(raise_exception::<_>(
-                _py,
-                BuiltinExc::TypeError,
-                "invalid callargs storage",
             ));
         }
         Ok(args_ptr)
@@ -1213,32 +1114,36 @@ pub(crate) unsafe fn callargs_visit_owned(args_ptr: *mut CallArgs, mut visit: im
     }
 }
 
-pub(crate) unsafe fn callargs_detach_owned(
-    _py: &PyToken<'_>,
-    builder_ptr: *mut u8,
-    args_ptr: *mut CallArgs,
-    mut detach: impl FnMut(u64),
-) {
+pub(crate) unsafe fn callargs_detach_owned(args_ptr: *mut CallArgs, mut detach: impl FnMut(u64)) {
     unsafe {
         if args_ptr.is_null() {
             return;
         }
-        // Registry visibility is retired before any edge can be released by
-        // the caller's object-wide sink.
-        note_callargs_free(_py, builder_ptr, args_ptr);
-        let args = &mut *args_ptr;
+        // Publish the complete inline owner empty before a callback-capable
+        // sink sees any edge. No Rust reference spans those callbacks.
+        let (keywords, positional) = {
+            let args = &mut *args_ptr;
+            (
+                std::mem::replace(&mut args.keywords, MoltObject::none().bits()),
+                std::mem::take(&mut args.pos),
+            )
+        };
+        if trace_callargs_enabled() {
+            eprintln!(
+                "[molt callargs] free builder_ptr=0x{:x} args_ptr=0x{:x}",
+                args_ptr as usize, args_ptr as usize,
+            );
+        }
         // Consuming calls take the builder's edges at entry, so a builder that
         // still holds arguments is the value stack of a failed preparation. It
         // unwinds as CPython's does: the keyword mapping sits above the
         // positional entries, which release last to first.
-        detach(std::mem::replace(
-            &mut args.keywords,
-            MoltObject::none().bits(),
-        ));
-        for bits in std::mem::take(&mut args.pos).into_iter().rev() {
+        detach(keywords);
+        for bits in positional.into_iter().rev() {
             detach(bits);
         }
-        drop(Box::from_raw(args_ptr));
+        // The old Vec has dropped once. The inline value remains valid and
+        // empty until the managed allocation is freed by its lifecycle owner.
     }
 }
 
@@ -1300,11 +1205,11 @@ fn callargs_new_with_form(
         );
         return 0;
     };
-    let mut args = Box::new(CallArgs {
+    let mut args = CallArgs {
         pos: Vec::new(),
         keywords: MoltObject::none().bits(),
         form,
-    });
+    };
     if args.pos.try_reserve_exact(pos_capacity).is_err() {
         raise_exception::<()>(
             _py,
@@ -1322,19 +1227,26 @@ fn callargs_new_with_form(
         }
         args.keywords = MoltObject::from_ptr(dict).bits();
     }
-    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<*mut CallArgs>();
-    let ptr = alloc_object(_py, total, TYPE_ID_CALLARGS);
+    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<CallArgs>();
+    let ptr = crate::object::alloc_object_zeroed_unpublished_with_aux(
+        _py,
+        total,
+        TYPE_ID_CALLARGS,
+        crate::object::ObjectAuxPreselection::Default,
+    );
     if ptr.is_null() {
         dec_ref_bits(_py, args.keywords);
         return 0;
     }
-    let callargs_bytes =
-        std::mem::size_of::<CallArgs>() + args.pos.capacity() * std::mem::size_of::<u64>();
+    // Inline bytes belong to the ordinary object-allocation counter. This
+    // counter owns only the external positional allocation now.
+    let callargs_bytes = args.pos.capacity() * std::mem::size_of::<u64>();
     ALLOC_BYTES_CALLARGS.fetch_add(callargs_bytes as u64, std::sync::atomic::Ordering::Relaxed);
     unsafe {
-        let args_ptr = Box::into_raw(args);
-        note_callargs_alloc(_py, ptr, args_ptr);
-        *(ptr as *mut *mut CallArgs) = args_ptr;
+        let args_ptr = ptr.cast::<CallArgs>();
+        args_ptr.write(args);
+        // CALLARGS is linear_unpublished: only its owning compiler operand
+        // sees this initialized value; it is never published to Python/GC.
         if trace_callargs_enabled() {
             eprintln!(
                 "[molt callargs] new builder_bits=0x{:x} builder_ptr=0x{:x} args_ptr=0x{:x} pos_cap={} kw_cap={} form={:?}",
@@ -1367,13 +1279,6 @@ pub(crate) unsafe fn molt_callargs_push_pos_attached_body(
             let builder_ptr = ptr_from_bits(builder_bits);
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();
-            }
-            if !callargs_builder_is_live(_py, builder_ptr) {
-                return raise_exception::<_>(
-                    _py,
-                    BuiltinExc::TypeError,
-                    "invalid callargs builder",
-                );
             }
             if trace_callargs_enabled() {
                 eprintln!(
@@ -1486,13 +1391,6 @@ pub(crate) unsafe fn molt_callargs_push_kw_attached_body(
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();
             }
-            if !callargs_builder_is_live(_py, builder_ptr) {
-                return raise_exception::<_>(
-                    _py,
-                    BuiltinExc::TypeError,
-                    "invalid callargs builder",
-                );
-            }
             callargs_push_kw(_py, builder_ptr, name_bits, val_bits)
         })
     }
@@ -1514,13 +1412,6 @@ pub(crate) unsafe fn molt_callargs_expand_star_attached_body(
             let builder_ptr = ptr_from_bits(builder_bits);
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();
-            }
-            if !callargs_builder_is_live(_py, builder_ptr) {
-                return raise_exception::<_>(
-                    _py,
-                    BuiltinExc::TypeError,
-                    "invalid callargs builder",
-                );
             }
             if trace_callargs_enabled() {
                 eprintln!(
@@ -1600,13 +1491,6 @@ pub(crate) unsafe fn molt_callargs_expand_kwstar_attached_body(
             let builder_ptr = ptr_from_bits(builder_bits);
             if builder_ptr.is_null() {
                 return MoltObject::none().bits();
-            }
-            if !callargs_builder_is_live(_py, builder_ptr) {
-                return raise_exception::<_>(
-                    _py,
-                    BuiltinExc::TypeError,
-                    "invalid callargs builder",
-                );
             }
             let args = match require_callargs_ptr(_py, builder_ptr) {
                 Ok(args) => args,

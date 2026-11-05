@@ -720,6 +720,7 @@ fn ordinary_task_initialization_is_guarded_before_payload_or_cancellation() {
         );
         let function = &compiled.function;
         let (_, success, _) = assert_task_allocation_admission(&compiled);
+        let admission = assert_refcount_word_access_is_admitted(&compiled);
         let cfg = ControlFlowGraph::with_function(function);
         let dominators =
             cranelift_codegen::dominator_tree::DominatorTree::with_function(function, &cfg);
@@ -737,12 +738,7 @@ fn ordinary_task_initialization_is_guarded_before_payload_or_cancellation() {
                             function.dfg.value_type(v) == cranelift_codegen::ir::types::I64
                         }),
                 );
-                let is_invocation_admission = call_sites_for_import(
-                    function,
-                    compiled.import_ids[crate::runtime_import_abi::MOLT_REFCOUNT_ADMISSION.name],
-                )
-                .iter()
-                .any(|(_, call)| *call == inst);
+                let is_invocation_admission = admission.iter().any(|(_, call)| *call == inst);
                 if inst != allocator
                     && !is_invocation_admission
                     && (opcode.can_load() || opcode.can_store() || opcode.is_call())

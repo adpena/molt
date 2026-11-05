@@ -2,6 +2,7 @@ use super::*;
 use crate::TrampolineSpec;
 use crate::runtime_import_abi::{MOLT_ASYNCGEN_NEW, MOLT_DEC_REF_OBJ};
 use cranelift_module::Linkage;
+use molt_codegen_abi::inline_refcount::RefcountStorage;
 use molt_ir::OpKind;
 use molt_tir::trampolines::TrampolineTaskKind;
 
@@ -124,15 +125,22 @@ fn assert_task_allocation_guard(
             })
         })
         .collect();
-    let admission = compiled
-        .import_ids
-        .get(crate::runtime_import_abi::MOLT_REFCOUNT_ADMISSION.name)
-        .map_or_else(Vec::new, |&id| call_sites_for_import(function, id));
+    // Payload retains and the AsyncGen release are RC sites in every build.
+    // A plain-storage compiler inlines each one as one count load and one
+    // store; debug and atomic compilers send all of them to the runtime.
+    // Only an inlined transition consumes invocation admission.
+    let rc_sites = payload.slot_count() + usize::from(task_kind == TrampolineTaskKind::AsyncGen);
+    let inlined_accesses = match RefcountStorage::for_build(molt_codegen_abi::MOLT_REFCOUNT_ATOMIC)
+    {
+        RefcountStorage::Plain => 2 * rc_sites,
+        RefcountStorage::HardenedPlain | RefcountStorage::Atomic => 0,
+    };
     assert_eq!(
-        admission.len(),
-        usize::from(!stores.is_empty() || task_kind == TrampolineTaskKind::AsyncGen),
-        "admission only for generated transitions: {clif}"
+        refcount_word_accesses(function).len(),
+        inlined_accesses,
+        "{clif}"
     );
+    let admission = assert_refcount_word_access_is_admitted(compiled);
     let calls: Vec<_> = calls
         .into_iter()
         .filter(|call| !admission.contains(call))

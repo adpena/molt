@@ -58,7 +58,6 @@ ALLOWED = {
     "layout": {
         "async_generator",
         "boxed",
-        "boxed_bits",
         "boxed_i64",
         "boxed_u8",
         "code",

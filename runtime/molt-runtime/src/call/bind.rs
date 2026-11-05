@@ -21,8 +21,7 @@ use crate::{
     INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT, MoltHeader, MoltObject, PtrDropGuard, PyToken,
     TYPE_ID_BOUND_METHOD, TYPE_ID_CALLARGS, TYPE_ID_DICT, TYPE_ID_FOREIGN, TYPE_ID_FROZENSET,
     TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_SET, TYPE_ID_STRING, TYPE_ID_TUPLE,
-    TYPE_ID_TYPE, alloc_dict_with_pairs, alloc_instance_for_default_object_new, alloc_object,
-    alloc_tuple,
+    TYPE_ID_TYPE, alloc_dict_with_pairs, alloc_instance_for_default_object_new, alloc_tuple,
     audit::{AuditArgs, audit_capability_decision},
     bits_from_ptr, bound_method_func_bits, bound_method_self_bits, builtin_classes,
     call_class_init_with_args, call_function_obj_bound_vec, class_attr_lookup_raw_mro,
@@ -57,11 +56,10 @@ use crate::{
     molt_string_split_max, molt_string_splitlines, molt_string_startswith_slice,
     molt_tuple_index_range, molt_type_call, molt_type_init, molt_type_new,
     molt_type_new_attached_body, obj_from_bits, object_class_bits, object_type_id,
-    profile_hit_unchecked, ptr_from_bits, raise_exception, raise_not_callable, runtime_state,
-    runtime_state_for_gil, string_obj_to_owned, type_name, type_of_bits,
+    profile_hit_unchecked, ptr_from_bits, raise_exception, raise_not_callable, string_obj_to_owned,
+    type_name, type_of_bits,
 };
-use std::collections::{HashMap, HashSet};
-use std::sync::{MutexGuard, OnceLock};
+use std::sync::OnceLock;
 
 mod arguments;
 mod builtin_args;
@@ -72,8 +70,8 @@ mod test_support;
 
 use arguments::{Admission, ArgumentCustody, callee_custody};
 pub(crate) use arguments::{
-    CallArguments, CallBindRuntimeState, CallForm, EntryArguments, ReceiverOrigin,
-    callargs_detach_owned, callargs_ptr, callargs_visit_owned, release_stack_arguments,
+    CallArguments, CallForm, EntryArguments, ReceiverOrigin, callargs_detach_owned, callargs_ptr,
+    callargs_visit_owned, release_stack_arguments,
 };
 #[cfg(feature = "molt_gpu_primitives")]
 pub(crate) use arguments::{

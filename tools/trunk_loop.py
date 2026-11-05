@@ -60,36 +60,114 @@ def ps(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def uv_python(*argv: str) -> list[str]:
-    return ["uv", "run", "--locked", "python", "-B", *argv]
+def uv_python(uv: str, *argv: str) -> list[str]:
+    return [uv, "run", "--locked", "python", "-B", *argv]
+
+
+def bootstrap_uv(custody_root: str, *, windows: bool) -> str:
+    """The farm host's pinned uv: the official installer's binary, alone in a
+    directory named by its version under the host's custody root.
+
+    Never the user-global ``~/.local/bin/uv``. Other projects on a farm host run
+    that binary, and Molt must not replace their tool; on Windows a running
+    ``uv.exe`` cannot be replaced at all (bat00, 2026-11-04). A new pin installs
+    beside the old one, so provisioning never replaces a running uv. Farm
+    commands name this path; a CIM-created Windows worker inherits the user's
+    registry PATH, not the SSH session's, so a bare ``uv`` would select the
+    user's binary.
+    """
+    from molt.tool_releases import tool_release
+
+    version = tool_release("uv", _REPO_ROOT).version
+    path_type = PureWindowsPath if windows else PurePosixPath
+    executable = "uv.exe" if windows else "uv"
+    return str(path_type(custody_root) / "bootstrap" / "uv" / version / executable)
+
+
+def host_uv(host) -> str:
+    return bootstrap_uv(host.custody_root, windows=host.is_windows)
+
+
+def require_pinned_uv(path: str, pinned: str, host_name: str) -> None:
+    """Refuse before testing unless ``path`` selects the host's pinned uv:
+    proof commands run ``uv`` by name."""
+    import shutil
+
+    resolved = shutil.which("uv", path=path)
+    if resolved is None or os.path.normcase(
+        os.path.abspath(resolved)
+    ) != os.path.normcase(pinned):
+        raise RuntimeError(
+            f"PATH selects uv {resolved!r}, not the pinned {pinned}; run: "
+            f"tools/trunk_loop.py provision --host {host_name} --commit <commit>"
+        )
 
 
 # The apt packages the documented Linux workflow needs (docs/getting-started.md).
-LINUX_SYSTEM_PACKAGES = ("git", "curl", "clang", "lld", "cmake", "build-essential")
+# No farm cell declares system CMake (proof-plan toolchains): Cargo builds take
+# AWS-LC's cc builder (molt.cargo_execution_policy refuses its CMake builder), and
+# only LLVM source bootstrap uses system CMake, checking at the point of use.
+LINUX_SYSTEM_PACKAGES = (
+    "git",
+    "curl",
+    "clang",
+    "lld",
+    "build-essential",
+    "valgrind",
+)
 # A WSL gate guest also runs systemd and udev for root UUID admission (HF-761).
 WSL_GUEST_PACKAGES = (*LINUX_SYSTEM_PACKAGES, "systemd", "systemd-sysv", "udev")
 
 
-def provision_script(host, *, repository: str, uv_version: str) -> str:
-    """The documented local workflow, with report-only system prerequisites.
+def provision_script(host, *, repository: str, commit: str) -> str:
+    """The documented local workflow at ``commit``, with report-only system
+    prerequisites.
 
     Official user installers own their binaries; uv owns Python and the lock.
-    Never import Molt before uv has resolved the project's dependencies.
+    Never import Molt before uv has resolved the project's dependencies. ``uv``
+    The official installer places the pinned uv at ``host_uv(host)``, never in
+    the user's own install directory.
+    Doctor and ``uv sync`` run at ``commit``: a fetch alone leaves the checkout
+    at whatever commit it held, and doctor then judges stale code (macmini,
+    2026-11-04).
     """
+    if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+        raise ValueError("provision needs a full commit id")
+    from molt.tool_releases import tool_release
+
+    uv = host_uv(host)
+    uv_version = tool_release("uv", _REPO_ROOT).version
     checkout = host.checkout
+    if host.is_windows and not (host.target or "").startswith("x86_64-"):
+        # The vswhere query below names the x64 MSVC component; an ARM64 host
+        # needs config/llvm_toolchain_arches.toml's ARM64 component.
+        raise ValueError(f"{host.name}: Windows farm hosts are x86_64 only")
     if host.is_windows:
         return f"""$ErrorActionPreference='Stop'
 $env:UV_PROJECT_ENVIRONMENT=$null
 $env:VIRTUAL_ENV=$null
 $env:MOLT_VENV=$null
-$env:PATH="$env:USERPROFILE\\.local\\bin;$env:USERPROFILE\\.cargo\\bin;$env:PATH"
-foreach ($tool in @('git','cl.exe','link.exe')) {{
- if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {{
-  throw 'Missing system toolchain; run: winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"; then use its developer shell'
- }}
+# The public repository needs no credentials: a prompt fails instead of hanging
+# (bat00, 2026-11-04: a fetch through the user's SSH key waited forever).
+$env:GIT_TERMINAL_PROMPT='0'
+$env:GIT_SSH_COMMAND='ssh -o BatchMode=yes'
+$env:PATH={ps(str(PureWindowsPath(uv).parent) + ";")} + "$env:USERPROFILE\\.cargo\\bin;$env:PATH"
+$uv={ps(uv)}
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {{ throw 'Missing system prerequisite git; run: winget install --id Git.Git' }}
+# Builds select MSVC through vswhere and build their own environment
+# (molt.platform_toolchain.visual_studio_installation); no developer shell is
+# needed. This mirrors that query because Molt is not importable before uv sync.
+$vswhere=Join-Path ${{env:ProgramFiles(x86)}} 'Microsoft Visual Studio\\Installer\\vswhere.exe'
+if (-not (Test-Path -LiteralPath $vswhere) -or @(& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Count -ne 1) {{
+ throw 'Missing MSVC Build Tools; run: winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"'
 }}
-if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {{
+# The pinned uv in its own versioned directory (the toolchain contract pins it).
+# UV_UNMANAGED_INSTALL: that directory only, no PATH edit, no self-updater.
+if (-not (Test-Path -LiteralPath $uv) -or ((& $uv --version) -split ' ')[1] -ne {ps(uv_version)}) {{
+ $env:UV_UNMANAGED_INSTALL={ps(str(PureWindowsPath(uv).parent))}
  Invoke-RestMethod https://astral.sh/uv/{uv_version}/install.ps1 | Invoke-Expression
+ Remove-Item Env:UV_UNMANAGED_INSTALL
+ if (-not (Test-Path -LiteralPath $uv) -or ((& $uv --version) -split ' ')[1] -ne {ps(uv_version)}) {{ throw {ps("uv: the official installer did not place the pinned " + uv_version + " at " + uv)} }}
 }}
 if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {{
  $installer=Join-Path $env:TEMP ('molt-rustup-'+[guid]::NewGuid().ToString('N')+'.exe')
@@ -107,35 +185,69 @@ if (-not (Test-Path -LiteralPath {ps(checkout)})) {{
  & git clone -- {ps(repository)} {ps(checkout)}
  if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
 }} else {{
- & git -C {ps(checkout)} fetch origin
+ & git -C {ps(checkout)} fetch --no-tags -- {ps(repository)} {commit}
  if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
 }}
+if (& git -C {ps(checkout)} status --porcelain --untracked-files=no) {{ throw {ps(checkout + " has tracked edits; provision never discards them")} }}
+& git -C {ps(checkout)} checkout --quiet --detach {commit}
+if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
 Set-Location -LiteralPath {ps(checkout)}
 & rustup show active-toolchain
 if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
-& uv sync --locked --group dev
+& $uv sync --locked --group dev
 if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
-& uv run --locked molt doctor --json --strict
+& $uv run --locked molt doctor --json --strict
 if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
 """
-    system_command = (
-        "xcode-select --install; brew install cmake"
-        if host.os == authorities().HostOS.MACOS
-        else "sudo apt-get update && sudo apt-get install "
-        + " ".join(LINUX_SYSTEM_PACKAGES)
+    macos = host.os == authorities().HostOS.MACOS
+    # Each missing tool names its own fix, so the message never asks for an
+    # install the host already has.
+    fixes = (
+        {"cc": "xcode-select --install", "git": "xcode-select --install"}
+        if macos
+        else {
+            tool: "sudo apt-get update && sudo apt-get install "
+            + " ".join(LINUX_SYSTEM_PACKAGES)
+            for tool in ("git", "curl", "clang")
+        }
     )
+    checks = "\n".join(
+        (
+            # /usr/bin/cc and /usr/bin/git are shims that exist without the
+            # Command Line Tools; xcode-select -p is the real presence test.
+            "xcode-select -p >/dev/null 2>&1 || missing_fix "
+            if macos and tool in ("cc", "git")
+            else f"command -v {tool} >/dev/null || missing_fix "
+        )
+        + shlex.quote(f"{tool}: run {fix}")
+        for tool, fix in fixes.items()
+    )
+    # The owner approves package installation per host (its inventory record).
     return f"""set -eu
 unset UV_PROJECT_ENVIRONMENT VIRTUAL_ENV MOLT_VENV
-export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-for tool in git curl cc cmake; do
- command -v "$tool" >/dev/null || {{ echo {shlex.quote("Missing system prerequisites; run: " + system_command)} >&2; exit 2; }}
-done
-if ! command -v uv >/dev/null; then
+# The public repository needs no credentials: a prompt fails instead of hanging
+# (bat00, 2026-11-04: a fetch through the user's SSH key waited forever).
+export GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes'
+{posix_path_head(host)}
+uv={shlex.quote(uv)}
+missing=""
+missing_fix() {{ missing="$missing
+ $1"; }}
+{checks}
+if test -n "$missing"; then
+ printf 'Missing system prerequisites:%s\n' "$missing" >&2
+ exit 2
+fi
+# The pinned uv in its own versioned directory: an older uv cannot install the
+# pinned Python patch release ("No interpreter found"). UV_UNMANAGED_INSTALL:
+# that directory only, no PATH or profile edit, no self-updater.
+if ! test -x "$uv" || test "$("$uv" --version | cut -d' ' -f2)" != {shlex.quote(uv_version)}; then
  installer=$(mktemp)
  trap 'rm -f "$installer"' EXIT
  curl -LsSf https://astral.sh/uv/{uv_version}/install.sh -o "$installer"
- sh "$installer"
+ UV_UNMANAGED_INSTALL={shlex.quote(str(PurePosixPath(uv).parent))} sh "$installer"
  rm "$installer"
+ test -x "$uv" && test "$("$uv" --version | cut -d' ' -f2)" = {shlex.quote(uv_version)} || {{ echo {shlex.quote("uv: the official installer did not place the pinned " + uv_version + " at " + uv)} >&2; exit 2; }}
 fi
 if ! command -v rustup >/dev/null; then
  installer=$(mktemp)
@@ -146,14 +258,16 @@ if ! command -v rustup >/dev/null; then
 fi
 mkdir -p {shlex.quote(host.custody_root)}
 if test -e {shlex.quote(checkout)}; then
- git -C {shlex.quote(checkout)} fetch origin
+ git -C {shlex.quote(checkout)} fetch --no-tags -- {shlex.quote(repository)} {commit}
 else
  git clone -- {shlex.quote(repository)} {shlex.quote(checkout)}
 fi
+test -z "$(git -C {shlex.quote(checkout)} status --porcelain --untracked-files=no)" || {{ echo {shlex.quote(checkout + " has tracked edits; provision never discards them")} >&2; exit 2; }}
+git -C {shlex.quote(checkout)} checkout --quiet --detach {commit}
 cd {shlex.quote(checkout)}
 rustup show active-toolchain
-uv sync --locked --group dev
-uv run --locked molt doctor --json --strict
+"$uv" sync --locked --group dev
+"$uv" run --locked molt doctor --json --strict
 """
 
 
@@ -413,31 +527,52 @@ def provision_host(args, *, transport=None) -> dict:
         else None
     )
     guest = provision_wsl_guest(host, transport) if host.wsl_distribution else None
-    import tomllib
-
-    releases = tomllib.loads(
-        (_REPO_ROOT / "config/tool_releases.toml").read_text(encoding="utf-8")
-    )
     repository = checked(["git", "-C", str(_REPO_ROOT), "remote", "get-url", "origin"])
+    # The host fetches from origin, so the commit must be published there.
+    commit = checked(
+        [
+            "git",
+            "-C",
+            str(_REPO_ROOT),
+            "rev-parse",
+            "--verify",
+            args.commit + "^{commit}",
+        ]
+    )
+    if not checked(
+        [
+            "git",
+            "-C",
+            str(_REPO_ROOT),
+            "for-each-ref",
+            "--contains",
+            commit,
+            "--format=%(refname)",
+            "refs/remotes/origin",
+        ]
+    ):
+        raise ValueError(
+            f"{commit} is on no origin branch, and {host.name} fetches from origin; "
+            "push it (or fetch origin) before provisioning"
+        )
+    uv = host_uv(host)
     result = transport.shell_command(
-        provision_script(
-            host,
-            repository=repository,
-            uv_version=releases["tools"]["uv"]["version"],
-        ),
+        provision_script(host, repository=repository, commit=commit),
         timeout=1800,
     )
     retention = json.loads(
         transport.shell_command(
             remote_argv(
                 host,
-                uv_python("-c", RETENTION_STATUS),
+                uv_python(uv, "-c", RETENTION_STATUS),
                 cwd=host.checkout,
             )
         )
     )
     record = {
         "host": host.name,
+        "commit": commit,
+        "uv": uv,
         "free_bytes": free,
         "proof_build_gb": host.proof_build_gb,
         "wsl": profile,
@@ -463,11 +598,20 @@ print(json.dumps({'cache':str(root),'epoch':str(latest) if latest else None,
 """
 
 
+def posix_path_head(host) -> str:
+    """Every farm shell's PATH: the pinned uv, then rustup's Cargo; never the
+    user's ``~/.local/bin``, where another project's uv lives."""
+    uv_dir = shlex.quote(str(PurePosixPath(host_uv(host)).parent))
+    return f'export PATH={uv_dir}:"$HOME/.cargo/bin:$PATH"'
+
+
 def remote_argv(host, argv: list[str], *, cwd: str | None = None) -> str:
     if host.is_windows:
+        uv_dir = str(PureWindowsPath(host_uv(host)).parent)
         prefix = (
             "$ErrorActionPreference='Stop'; "
-            '$env:PATH="$env:USERPROFILE\\.local\\bin;$env:USERPROFILE\\.cargo\\bin;$env:PATH"; '
+            f"$env:PATH={ps(uv_dir + ';')}"
+            ' + "$env:USERPROFILE\\.cargo\\bin;$env:PATH"; '
         )
         if cwd:
             prefix += f"Set-Location -LiteralPath {ps(cwd)}; "
@@ -477,7 +621,7 @@ def remote_argv(host, argv: list[str], *, cwd: str | None = None) -> str:
             + " ".join(ps(a) for a in argv)
             + "; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
         )
-    prefix = 'export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"; '
+    prefix = posix_path_head(host) + "; "
     if cwd is not None:
         prefix += f"cd {shlex.quote(cwd)} && "
     return prefix + shlex.join(argv)
@@ -583,7 +727,7 @@ def wsl_launch_script(host, argv: list[str], directory: str, stage: str) -> str:
 exec </dev/null >>{shlex.quote(str(stage_path / "worker.log"))} 2>&1
 {posix_probe(host)}molt_probe $$ > {identity}.partial
 mv -- {identity}.partial {identity}
-export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+{posix_path_head(host)}
 cd {shlex.quote(directory)}
 exec {shlex.join(argv)}
 """
@@ -645,7 +789,7 @@ def detached_script(host, argv: list[str], directory: str, stage: str) -> str:
             "print(p.pid)"
         )
         launch = remote_argv(
-            host, uv_python("-c", code, directory, *argv), cwd=directory
+            host, uv_python(host_uv(host), "-c", code, directory, *argv), cwd=directory
         )
         return (
             f"set -eu\n{posix_probe(host)}pid=$({launch})\n"
@@ -670,6 +814,20 @@ def acknowledge(raw: str) -> tuple[int, ProcessProbe | None]:
     ):
         raise ValueError("detached launcher did not acknowledge a process")
     return result["ProcessId"], ProcessProbe.parse(rest) if rest.strip() else None
+
+
+def is_ancestor(commit: str, descendant: str, repo: Path) -> bool:
+    result = authorities()._guarded_run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", commit, descendant],
+        cwd=repo,
+        timeout=180,
+    )
+    if result.returncode not in (0, 1):
+        raise RuntimeError(
+            f"git merge-base --is-ancestor {commit} {descendant}: exit "
+            f"{result.returncode}\n{result.stderr[-4000:]}"
+        )
+    return result.returncode == 0
 
 
 def checked(argv: list[str], *, cwd: Path = _REPO_ROOT, timeout: int = 180) -> str:
@@ -787,6 +945,7 @@ def describe(
         remote_argv(
             host,
             uv_python(
+                host_uv(host),
                 "-c",
                 DESCRIBE,
                 *(cells if toolchains is None else ["--toolchains", *toolchains]),
@@ -845,32 +1004,29 @@ def seed_inputs(descriptor: dict, transport, local: Path) -> list[dict]:
 def prepare_checkouts(
     host,
     transport,
-    bundle: Path,
+    bundle: Path | None,
     subject: str,
     controller: str,
     checkout: str,
     control: str,
 ) -> None:
-    transport.push([bundle])
+    """Add the run's subject and controller worktrees on the host.
+
+    ``bundle`` carries the commits the host lacks; ``None`` when its checkout
+    already contains both (provision checks out the commit it provisions).
+    """
+    imports: list[list[str]] = []
+    if bundle is not None:
+        transport.push([bundle])
+        remote = transport.remote_path(bundle.name)
+        imports = [
+            ["git", "-C", host.checkout, "bundle", "verify", remote],
+            ["git", "-C", host.checkout, "bundle", "unbundle", remote],
+        ]
     # These are local object reads/imports, not network Git transfers. SSH/SCP
     # use cross_run's guarded transport; no unattended Git credentials are used.
     for argv in (
-        [
-            "git",
-            "-C",
-            host.checkout,
-            "bundle",
-            "verify",
-            transport.remote_path(bundle.name),
-        ],
-        [
-            "git",
-            "-C",
-            host.checkout,
-            "bundle",
-            "unbundle",
-            transport.remote_path(bundle.name),
-        ],
+        *imports,
         ["git", "-C", host.checkout, "worktree", "add", "--detach", checkout, subject],
         [
             "git",
@@ -957,20 +1113,26 @@ def start(args, *, landing: dict | None = None, repo: Path = _REPO_ROOT) -> Path
     if not re.fullmatch(r"[0-9a-f]{40}", remote_head):
         raise ValueError("cannot bind canonical checkout donor")
     checked(["git", "-C", str(repo), "cat-file", "-e", remote_head + "^{commit}"])
-    bundle = run_root / "source.bundle"
-    checked(
-        [
-            "git",
-            "-C",
-            str(repo),
-            "bundle",
-            "create",
-            str(bundle),
-            "HEAD",
-            "^" + remote_head,
-        ],
-        timeout=600,
-    )
+    # A host whose checkout already contains the subject and the controller
+    # needs no bundle, and git refuses to create an empty one.
+    bundle: Path | None = None
+    if not all(
+        is_ancestor(commit, remote_head, repo) for commit in (subject, controller)
+    ):
+        bundle = run_root / "source.bundle"
+        checked(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "bundle",
+                "create",
+                str(bundle),
+                "HEAD",
+                "^" + remote_head,
+            ],
+            timeout=600,
+        )
     prepare_checkouts(host, transport, bundle, subject, controller, checkout, control)
     descriptor = (
         describe(host, transport, checkout, args.cell, toolchains=landing["toolchains"])
@@ -983,6 +1145,7 @@ def start(args, *, landing: dict | None = None, repo: Path = _REPO_ROOT) -> Path
     transport.push([record_path])
     path_type = PureWindowsPath if host.is_windows else PurePosixPath
     argv = uv_python(
+        host_uv(host),
         str(path_type(control) / "tools" / "trunk_loop.py"),
         "_worker",
         "--record",
@@ -1018,17 +1181,22 @@ def start(args, *, landing: dict | None = None, repo: Path = _REPO_ROOT) -> Path
     return record_path
 
 
+def record_host(record: dict):
+    cross = authorities()
+    data = dict(record["host"])
+    data["os"] = cross.HostOS(data["os"])
+    data["launcher"] = cross.DetachedLauncher(data["launcher"])
+    data["proof_cells"] = tuple(data["proof_cells"])
+    return cross.Host(**data)
+
+
 def transfer_for_record(record: dict):
     cross = authorities()
     if record.get("schema") != SCHEMA or not re.fullmatch(
         r"[0-9a-f]{32}", record.get("nonce", "")
     ):
         raise ValueError("invalid run recovery record")
-    data = dict(record["host"])
-    data["os"] = cross.HostOS(data["os"])
-    data["launcher"] = cross.DetachedLauncher(data["launcher"])
-    data["proof_cells"] = tuple(data["proof_cells"])
-    host = cross.Host(**data)
+    host = record_host(record)
     checkout, control = host_paths(host, record["nonce"])
     transport = cross.SSHTransport(host)
     transport._nonce = record["nonce"]
@@ -1250,6 +1418,16 @@ def worker_environment(record: dict) -> dict[str, str]:
     baseline["CARGO_TARGET_DIR"] = str(root / "cache" / "cargo-workspace")
     baseline["MOLT_DIFF_CARGO_TARGET_DIR"] = baseline["CARGO_TARGET_DIR"]
     baseline["RUSTUP_AUTO_INSTALL"] = "0"
+    # The same PATH head as every farm shell (posix_path_head): the pinned uv,
+    # because proof commands run `uv` by name, then rustup's Cargo, which a CIM
+    # worker's registry PATH may lack (rustup installs with --no-modify-path).
+    baseline["PATH"] = os.pathsep.join(
+        (
+            str(Path(host_uv(record_host(record))).parent),
+            str(Path.home() / ".cargo" / "bin"),
+            baseline.get("PATH", ""),
+        )
+    )
     env = dict(
         RunContext(Path(record["checkout"])).dx_env(ProcessEnvironment(baseline))
     )
@@ -1345,6 +1523,9 @@ def provision(record: dict, stage: Path) -> dict[str, str]:
     python = venv_python(ensured.environment_root)
     env = dict(venv_env(venv=ensured.environment_root, env=env, managed=True))
     env["PYTHONPATH"] = os.pathsep.join((str(checkout), str(checkout / "src")))
+    require_pinned_uv(
+        env.get("PATH", ""), host_uv(record_host(record)), record["host"]["name"]
+    )
     # Canonical subject admission checks the UNION before the first test. The
     # proof executor then retains its own per-command fingerprints/receipts.
     code = (
@@ -1356,6 +1537,7 @@ def provision(record: dict, stage: Path) -> dict[str, str]:
     )
     result = authorities()._guarded_run(
         uv_python(
+            host_uv(record_host(record)),
             "-c",
             code,
             json.dumps(record["selection"]["toolchains"]),
@@ -1386,16 +1568,62 @@ def provision(record: dict, stage: Path) -> dict[str, str]:
     return env
 
 
-def worker(record_path: Path) -> int:
-    stage = record_path.parent
-    # Redirect native file descriptors before loading repository authorities.
-    # No PowerShell redirection (which writes UTF-16) and no inherited SSH pipe.
-    with (stage / "worker.log").open("ab", buffering=0) as log:
+_WINDOWS_STD_HANDLES = ((-10, 0), (-11, 1), (-12, 2))  # STD_INPUT/OUTPUT/ERROR
+
+
+def bind_standard_streams(
+    log_path: Path, *, set_std_handle=None, get_osfhandle=None
+) -> None:
+    """Give the worker real standard streams: stdin from the null device, output to the log.
+
+    A CIM-created Windows process starts with invalid standard handles. dup2
+    rebinds only the C runtime descriptors, so `subprocess` children without
+    explicit stdio still duplicate the invalid OS handles and fail with
+    WinError 6 (the 2026-11-04 bat00 run lost sys.stderr this way). On Windows
+    the OS standard handles are pointed at the same descriptors, which is what
+    the POSIX launchers already get from `exec </dev/null >>worker.log 2>&1`.
+    """
+    null = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(null, 0)
+    os.close(null)
+    with log_path.open("ab", buffering=0) as log:
         os.dup2(log.fileno(), 1)
         os.dup2(log.fileno(), 2)
+    if (set_std_handle is None) != (get_osfhandle is None):
+        raise TypeError("pass both set_std_handle and get_osfhandle, or neither")
+    if os.name == "nt" or set_std_handle is not None:
+        if set_std_handle is None:
+            import ctypes
+            import msvcrt
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+            def set_std_handle(which: int, handle: int) -> None:
+                if not kernel32.SetStdHandle(which, handle):
+                    raise ctypes.WinError(ctypes.get_last_error())
+
+            get_osfhandle = msvcrt.get_osfhandle
+        for which, fd in _WINDOWS_STD_HANDLES:
+            set_std_handle(which, get_osfhandle(fd))
+    # Python's stream objects were built from the startup handles; rebuild them.
+    sys.stdin = open(0, encoding="utf-8", closefd=False)
+    sys.stdout = open(
+        1, "w", encoding="utf-8", errors="backslashreplace", buffering=1, closefd=False
+    )
+    sys.stderr = open(
+        2, "w", encoding="utf-8", errors="backslashreplace", buffering=1, closefd=False
+    )
+
+
+def worker(record_path: Path) -> int:
+    stage = record_path.parent
+    # Bind standard streams before loading repository authorities. No
+    # PowerShell redirection (which writes UTF-16) and no inherited SSH pipe.
+    bind_standard_streams(stage / "worker.log")
     authorities()
     record = json.loads(record_path.read_text(encoding="utf-8"))
     transfer_for_record(record)
+    uv = host_uv(record_host(record))
     status = "infrastructure"
     cells = []
     lock = None
@@ -1445,6 +1673,7 @@ def worker(record_path: Path) -> int:
             directory = stage / cell
             directory.mkdir(exist_ok=False)
             argv = uv_python(
+                uv,
                 str(Path(record["checkout"]) / "tools" / "proof_plan.py"),
                 "--run-command",
                 cell,
@@ -1453,6 +1682,7 @@ def worker(record_path: Path) -> int:
             )
             if "landing" in record:
                 argv = uv_python(
+                    uv,
                     "-m",
                     "tools.trunk_landing",
                     "--record",
@@ -1592,6 +1822,11 @@ def main(argv: list[str] | None = None) -> int:
         "--inventory", type=Path, default=_REPO_ROOT / "tools/cross_hosts.toml"
     )
     setup.add_argument("--host", required=True)
+    setup.add_argument(
+        "--commit",
+        required=True,
+        help="commit (on origin) whose doctor and lock the host provisions",
+    )
     get = sub.add_parser("collect")
     get.add_argument("--record", type=Path, required=True)
     get.add_argument("--no-wait", action="store_true")

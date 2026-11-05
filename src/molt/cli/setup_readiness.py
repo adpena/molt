@@ -540,12 +540,16 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         advice=_clang_setup_advice(system) if not cc_path else None,
     )
 
+    # System CMake and Ninja serve one capability: building LLVM from source
+    # (tools/bootstrap_llvm.py), which checks at the point of use. Source-built
+    # extensions use the environment's Ninja. So absence is reported, never a
+    # setup error.
     cmake_path = shutil.which("cmake")
     record(
         "cmake",
         bool(cmake_path),
-        cmake_path or "not found",
-        level="error",
+        cmake_path or "not found (needed only to build LLVM from source)",
+        level="warning",
         advice=_cmake_setup_advice(system) if not cmake_path else None,
     )
 
@@ -553,8 +557,8 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
     record(
         "ninja",
         bool(ninja_path),
-        ninja_path or "not found",
-        level="error",
+        ninja_path or "not found (needed only to build LLVM from source)",
+        level="warning",
         advice=_ninja_setup_advice(system) if not ninja_path else None,
     )
 
@@ -975,7 +979,7 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         }
     else:
         backends = {
-            "native": bool(cargo_path and cc_path and cmake_path and ninja_path),
+            "native": bool(cargo_path and cc_path),
             "llvm": bool(cargo_path and cc_path and llvm_toolchain),
             "wasm": bool(cargo_path and wasm_target_ok and wasm_tools_path),
             "linked-wasm": bool(

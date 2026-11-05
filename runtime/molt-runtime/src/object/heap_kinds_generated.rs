@@ -127,7 +127,6 @@ pub(crate) const ALL_HEAP_TYPE_IDS: [u32; 59] = [
 pub(crate) enum HeapLayoutPolicy {
     AsyncGenerator,
     Boxed,
-    BoxedBits,
     BoxedI64,
     BoxedU8,
     Code,
@@ -905,7 +904,7 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [Option<HeapKindDescriptor>; 63] = [
     Some(HeapKindDescriptor {
         type_id: TYPE_ID_CALLARGS,
         name: "CALLARGS",
-        layout: HeapLayoutPolicy::BoxedBits,
+        layout: HeapLayoutPolicy::InlineRust,
         edges: HeapEdgePolicy::Dynamic,
         cycle: HeapCyclePolicy::Never,
         weakref: HeapWeakrefPolicy::Deny,
@@ -1702,7 +1701,7 @@ pub(crate) const fn heap_layout_policy(type_id: u32) -> Option<HeapLayoutPolicy>
         TYPE_ID_BIGINT => Some(HeapLayoutPolicy::InlineRust),
         TYPE_ID_COMPLEX => Some(HeapLayoutPolicy::Inline),
         TYPE_ID_ENUMERATE => Some(HeapLayoutPolicy::Iterator),
-        TYPE_ID_CALLARGS => Some(HeapLayoutPolicy::BoxedBits),
+        TYPE_ID_CALLARGS => Some(HeapLayoutPolicy::InlineRust),
         TYPE_ID_NOT_IMPLEMENTED => Some(HeapLayoutPolicy::Inline),
         TYPE_ID_CALL_ITER => Some(HeapLayoutPolicy::Iterator),
         TYPE_ID_REVERSED => Some(HeapLayoutPolicy::Iterator),

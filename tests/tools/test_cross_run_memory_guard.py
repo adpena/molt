@@ -6,6 +6,7 @@ import shutil
 from tests.process_guard_common import install_module_view, run_custody_subject_process
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -210,7 +211,12 @@ def test_trunk_posix_child_outlives_launcher_and_owns_new_session(tmp_path):
         transport="ssh",
         os=cross_run.HostOS.MACOS,
         launcher=cross_run.DetachedLauncher.POSIX_SESSION,
+        custody_root=str(tmp_path / "host"),
     )
+    # The host's pinned uv, where provisioning places it.
+    pinned = Path(trunk_loop.host_uv(host))
+    pinned.parent.mkdir(parents=True)
+    pinned.symlink_to(shutil.which("uv"))
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname="detached-probe"\nversion="0.0.0"\nrequires-python=">=3.12"\n',
         encoding="utf-8",
@@ -244,7 +250,9 @@ if g.exists():publish(c,'completed after launcher exit')
 """
     script = trunk_loop.detached_script(
         host,
-        trunk_loop.uv_python("-c", child, str(ready), str(release), str(complete)),
+        trunk_loop.uv_python(
+            str(pinned), "-c", child, str(ready), str(release), str(complete)
+        ),
         str(tmp_path),
         str(tmp_path),
     )
@@ -452,7 +460,9 @@ def test_wsl_launcher_holds_one_wsl_client_for_the_worker_lifetime():
 
     host = _wsl_gate()
     stage = "/home/adpena/Molt/scratch/trunk-loop/molt-cross-" + "a" * 32
-    argv = trunk_loop.uv_python("/w/tools/trunk_loop.py", "_worker", "--record", "r")
+    argv = trunk_loop.uv_python(
+        trunk_loop.host_uv(host), "/w/tools/trunk_loop.py", "_worker", "--record", "r"
+    )
     script = trunk_loop.detached_script(host, argv, "/w", stage)
     # CIM creates the client outside the SSH job; --exec runs no Windows-quoted
     # shell, and the launch script itself crosses only as a stage file.
@@ -461,7 +471,7 @@ def test_wsl_launcher_holds_one_wsl_client_for_the_worker_lifetime():
         + stage
         + "/launch.sh'}"
     ) in script
-    assert "uv run" not in script and "_worker" not in script
+    assert " run --locked" not in script and "_worker" not in script
     # The client is observed before the identity: no identity after its exit
     # means none will come, so the launcher never waits on a dead client.
     loop = script[script.index("do {") :]
@@ -472,7 +482,10 @@ def test_wsl_launcher_holds_one_wsl_client_for_the_worker_lifetime():
     launch = trunk_loop.wsl_launch_script(host, argv, "/w", stage)
     assert launch.startswith("set -eu\nexec </dev/null >>")
     assert launch.rstrip().endswith("exec " + shlex.join(argv))
-    assert launch.index("molt_probe $$") < launch.index("exec uv run")
+    assert launch.index("molt_probe $$") < launch.index("exec " + argv[0])
+    # The worker resolves the host's pinned uv first, never the user's own.
+    assert ".local" not in launch
+    assert "export PATH=" + str(Path(argv[0]).parent) + ':"$HOME/.cargo/bin' in launch
     for unsafe in ("/home/a b", "/home/a'b"):
         with pytest.raises(ValueError, match="need no quoting"):
             trunk_loop.detached_script(host, argv, "/w", unsafe)
@@ -2192,3 +2205,62 @@ def test_pinned_archive_seed_closes_source_fence_before_publication(
     assert mutated
     assert destination.read_bytes() == b"previous generation"
     assert not any(child.is_dir() for child in cache.iterdir())
+
+
+def _run_stdio_child(code: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    # The raw interpreter's standard streams are the test subject.
+    return run_custody_subject_process(
+        [sys.executable, "-B", "-c", code],
+        timeout=60,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_worker_standard_streams_reach_the_log_and_inherit_to_children(tmp_path):
+    """The bat00 worker lost sys.stderr: its children inherited invalid handles."""
+    log = tmp_path / "worker.log"
+    repo = Path(__file__).resolve().parents[2]
+    code = (
+        "import subprocess, sys\n"
+        f"sys.path.insert(0, {str(repo)!r})\n"
+        "from pathlib import Path\n"
+        "from tools.trunk_loop import bind_standard_streams\n"
+        f"bind_standard_streams(Path({str(log)!r}))\n"
+        "print('worker-out')\n"
+        "print('worker-err', file=sys.stderr)\n"
+        "print('stdin=' + repr(sys.stdin.read()))\n"
+        "subprocess.run([sys.executable, '-c', \"import sys; print('child-out'); "
+        "print('child-err', file=sys.stderr)\"], check=True)\n"
+    )
+    result = _run_stdio_child(code, tmp_path)
+    assert result.returncode == 0, result.stderr
+    # Nothing escapes to the launcher's pipes; everything lands in the log.
+    assert result.stdout == "" and result.stderr == ""
+    text = log.read_text(encoding="utf-8")
+    for line in ("worker-out", "worker-err", "stdin=''", "child-out", "child-err"):
+        assert line in text
+
+
+def test_windows_standard_handles_point_at_the_rebound_descriptors(tmp_path):
+    """On Windows the OS std handles must follow fds 0, 1 and 2 (WinError 6)."""
+    log = tmp_path / "worker.log"
+    repo = Path(__file__).resolve().parents[2]
+    code = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(repo)!r})\n"
+        "from pathlib import Path\n"
+        "from tools.trunk_loop import bind_standard_streams\n"
+        "calls = []\n"
+        "bind_standard_streams(Path(%r), set_std_handle=lambda w, h: calls.append((w, h)),"
+        " get_osfhandle=lambda fd: 1000 + fd)\n"
+        "sys.__stdout__.flush()\n"
+        "open(%r, 'w').write(repr(calls))\n"
+    ) % (str(log), str(tmp_path / "calls.txt"))
+    result = _run_stdio_child(code, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "calls.txt").read_text(
+        encoding="utf-8"
+    ) == "[(-10, 1000), (-11, 1001), (-12, 1002)]"

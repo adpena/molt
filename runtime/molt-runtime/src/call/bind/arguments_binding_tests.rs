@@ -83,10 +83,6 @@ fn callargs_pending_error_stops_mutation_and_consuming_dispatch() {
                 };
                 assert!(obj_from_bits(result).is_none());
                 assert_eq!(crate::exception_last_bits_noinc(_py), Some(original));
-                assert!(!crate::call::bind::arguments::callargs_builder_is_live(
-                    _py,
-                    builder_ptr
-                ));
                 assert_eq!(
                     (*crate::header_from_obj_ptr(item)).ref_count_snapshot(),
                     baseline
@@ -654,43 +650,120 @@ fn keyword_mapping_keeps_the_exception_a_name_callback_raised() {
 }
 
 #[test]
-fn callargs_registries_are_runtime_scoped() {
+fn callargs_detach_publishes_empty_storage_before_reentrant_release() {
     let _test = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let state = runtime_state(_py);
-        {
-            let mut guard = state.call_bind.lock().unwrap();
-            guard.callargs_builder_map.clear();
-            guard.callargs_storage_registry.clear();
-        }
-
-        let builder_bits = crate::call::bind::arguments::molt_callargs_new_attached_body(_py, 1, 0);
-        assert!(!obj_from_bits(builder_bits).is_none());
-        let builder_ptr = ptr_from_bits(builder_bits);
-        assert!(!builder_ptr.is_null());
-        let args_ptr = unsafe { crate::call::bind::arguments::callargs_ptr(builder_ptr) };
-        assert!(!args_ptr.is_null());
-        {
-            let guard = state.call_bind.lock().unwrap();
-            assert_eq!(guard.callargs_builder_map.len(), 1);
-            assert_eq!(guard.callargs_storage_registry.len(), 1);
-            assert!(
-                guard
-                    .callargs_builder_map
-                    .contains_key(&(builder_ptr as usize))
+        unsafe {
+            RELEASED.lock().unwrap().clear();
+            let probes = ReleaseProbes::new(_py);
+            let values = probes.instances(_py, 2);
+            let key = MoltObject::from_ptr(crate::alloc_string(_py, b"argument")).bits();
+            let builder = crate::call::bind::arguments::molt_callargs_new_attached_body(_py, 1, 1);
+            crate::call::bind::arguments::molt_callargs_push_pos_attached_body(
+                _py, builder, values[0],
             );
-            assert!(
-                guard
-                    .callargs_storage_registry
-                    .contains(&(args_ptr as usize))
+            crate::call::bind::arguments::molt_callargs_push_kw_attached_body(
+                _py, builder, key, values[1],
             );
-        }
+            assert!(!crate::exception_pending(_py));
+            for &value in &values {
+                dec_ref_bits(_py, value);
+            }
+            assert!(ReleaseProbes::released(&values).is_empty());
 
-        dec_ref_bits(_py, builder_bits);
-        {
-            let guard = state.call_bind.lock().unwrap();
-            assert!(guard.callargs_builder_map.is_empty());
-            assert!(guard.callargs_storage_registry.is_empty());
+            let builder_ptr = ptr_from_bits(builder);
+            let args = crate::call::bind::arguments::callargs_ptr(builder_ptr);
+            crate::call::bind::arguments::callargs_detach_owned(args, |bits| {
+                // A destructor or another call sees the complete empty owner,
+                // including the positional edge when the dictionary retires.
+                let current = crate::call::bind::arguments::callargs_ptr(builder_ptr);
+                assert!((*current).pos.is_empty());
+                assert!(obj_from_bits((*current).keywords).is_none());
+                let nested =
+                    crate::call::bind::arguments::molt_callargs_new_attached_body(_py, 0, 0);
+                assert_ne!(nested, 0);
+                dec_ref_bits(_py, nested);
+                dec_ref_bits(_py, bits);
+            });
+            assert_eq!(ReleaseProbes::released(&values), [1, 0]);
+            dec_ref_bits(_py, builder);
+            assert_eq!(ReleaseProbes::released(&values), [1, 0]);
+            dec_ref_bits(_py, key);
+            probes.release(_py);
+        }
+    });
+}
+
+#[test]
+fn callargs_projection_rejects_a_live_object_of_another_kind() {
+    let _test = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            let list = alloc_list(_py, &[]);
+            assert!(!list.is_null());
+            assert!(crate::call::bind::arguments::callargs_ptr(list).is_null());
+            assert!(crate::call::bind::arguments::require_callargs_ptr(_py, list).is_err());
+            assert!(crate::exception_pending(_py));
+            let error = obj_from_bits(crate::exception_last_bits_noinc(_py).unwrap())
+                .as_ptr()
+                .unwrap();
+            assert_eq!(
+                crate::object_class_bits(error),
+                crate::builtins::exceptions::exception_class_bits(_py, BuiltinExc::TypeError)
+            );
+            crate::molt_exception_clear_attached_body(_py);
+            dec_ref_bits(_py, MoltObject::from_ptr(list).bits());
+        }
+    });
+}
+
+#[test]
+fn callargs_construction_refusal_releases_every_prepared_allocation() {
+    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    let _test = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                set_tracker(Box::new(UnlimitedTracker));
+            }
+        }
+        // Cover refusal before/during keyword backing and after it is prepared.
+        // A distinct bigint producer probes every unit of capacity afterwards;
+        // retaining a partial builder or dictionary makes that probe fail.
+        for budget in 0..=4 {
+            let reset = Reset;
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_allocations: Some(budget),
+                ..ResourceLimits::default()
+            })));
+            let builder = crate::call::bind::arguments::molt_callargs_new_attached_body(_py, 2, 1);
+            if builder == 0 {
+                crate::test_support::assert_and_clear_emergency_memory_error(_py);
+            } else {
+                assert!(!crate::exception_pending(_py));
+                dec_ref_bits(_py, builder);
+            }
+            let mut probes = Vec::new();
+            for index in 0..budget {
+                let value = crate::int_bits_from_bigint(
+                    _py,
+                    (num_bigint::BigInt::from(1u8) << 100) + index,
+                );
+                assert!(
+                    !crate::exception_pending(_py),
+                    "leaked capacity at {budget}/{index}"
+                );
+                assert!(obj_from_bits(value).as_ptr().is_some());
+                probes.push(value);
+            }
+            let refused = crate::int_bits_from_bigint(_py, num_bigint::BigInt::from(1u8) << 100);
+            assert!(obj_from_bits(refused).is_none());
+            crate::test_support::assert_and_clear_emergency_memory_error(_py);
+            for value in probes.into_iter().rev() {
+                dec_ref_bits(_py, value);
+            }
+            drop(reset);
         }
     });
 }

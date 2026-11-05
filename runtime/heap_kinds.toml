@@ -384,7 +384,7 @@ metrics = "none"
 [[kind]]
 name = "CALLARGS"
 id = 236
-layout = "boxed_bits"
+layout = "inline_rust"
 edges = "dynamic"
 cycle = "never"
 publication = "linear_unpublished"

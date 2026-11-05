@@ -62,12 +62,16 @@ The checked-in `.python-version` selects the development interpreter through uv;
 no separately created Python environment is required for this bootstrap.
 
 For an inventoried farm host, the same workflow is automated by
-`python -B tools/trunk_loop.py provision --host NAME` from a provisioned controller.
+`python -B tools/trunk_loop.py provision --host NAME --commit COMMIT` from a
+provisioned controller; `COMMIT` must be published on origin.
 The implementation in `tools/trunk_loop.py::provision_script` owns the automated
-sequence: check system prerequisites (including CMake), install missing uv and rustup through their
-official user installers, clone or fetch, admit `rust-toolchain.toml`, synchronize
-the locked development dependencies, then run the strict doctor command above.
-It does not upgrade existing system tools or reset an existing checkout.
+sequence: check system prerequisites (git, curl and a C compiler), install the
+pinned uv into its own versioned directory under the host's custody root and
+rustup, both through their official installers, clone or fetch, check out
+`COMMIT`, admit `rust-toolchain.toml`, synchronize the locked development
+dependencies, then run the strict doctor command above. It never runs or
+replaces the user's own uv, does not upgrade existing system tools, and never
+discards local changes: Git refuses a checkout that would overwrite them.
 Missing C tools are reported with installation guidance; system installation
 remains an operator step, except on a WSL gate guest whose inventory record
 approves `install_system_packages`. See [farm provisioning](design/trunk_loop.md#provision-before-testing)

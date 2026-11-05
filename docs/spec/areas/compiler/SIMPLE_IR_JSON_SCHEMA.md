@@ -541,6 +541,12 @@ symbol identity. The source of these roles and requirements is
   owned value returned to the wrapper. Builders assembled for a borrowed
   callargs payload therefore remain wrapper-owned and are explicitly released
   once on both successful dispatch and every post-allocation failure path.
+  A builder's managed allocation contains its typed `CallArgs` value inline;
+  `runtime/heap_kinds.toml` declares its Rust layout and linear-unpublished
+  lifetime. Runtime entries borrow a live compiler-owned builder or consume its
+  owning handle. Argument storage has no second box or pointer registry.
+  Terminal cleanup empties both positional and keyword owners before releasing
+  either, preserving reentrant observation and CALL/CALL_FUNCTION_EX release order.
   For a fixed-arity ABI, its length equals the registry payload arity; a
   variadic public export carries an admitted manifest arity. SimpleIR and TIR
   both enforce that generated arity contract before native or WASM code
