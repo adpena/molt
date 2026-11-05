@@ -88,6 +88,21 @@ def host_uv(host) -> str:
     return bootstrap_uv(host.custody_root, windows=host.is_windows)
 
 
+def require_pinned_uv(path: str, pinned: str, host_name: str) -> None:
+    """Refuse before testing unless ``path`` selects the host's pinned uv:
+    proof commands run ``uv`` by name."""
+    import shutil
+
+    resolved = shutil.which("uv", path=path)
+    if resolved is None or os.path.normcase(
+        os.path.abspath(resolved)
+    ) != os.path.normcase(pinned):
+        raise RuntimeError(
+            f"PATH selects uv {resolved!r}, not the pinned {pinned}; run: "
+            f"tools/trunk_loop.py provision --host {host_name} --commit <commit>"
+        )
+
+
 # The apt packages the documented Linux workflow needs (docs/getting-started.md).
 # No farm cell declares system CMake (proof-plan toolchains): Cargo builds take
 # AWS-LC's cc builder (molt.cargo_execution_policy refuses its CMake builder), and
@@ -104,22 +119,24 @@ LINUX_SYSTEM_PACKAGES = (
 WSL_GUEST_PACKAGES = (*LINUX_SYSTEM_PACKAGES, "systemd", "systemd-sysv", "udev")
 
 
-def provision_script(
-    host, *, repository: str, commit: str, uv: str, uv_version: str
-) -> str:
+def provision_script(host, *, repository: str, commit: str) -> str:
     """The documented local workflow at ``commit``, with report-only system
     prerequisites.
 
     Official user installers own their binaries; uv owns Python and the lock.
     Never import Molt before uv has resolved the project's dependencies. ``uv``
-    is the host's bootstrap uv (``bootstrap_uv``); the official installer places
-    the pinned ``uv_version`` there, never in the user's own install directory.
+    The official installer places the pinned uv at ``host_uv(host)``, never in
+    the user's own install directory.
     Doctor and ``uv sync`` run at ``commit``: a fetch alone leaves the checkout
     at whatever commit it held, and doctor then judges stale code (macmini,
     2026-11-04).
     """
     if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
         raise ValueError("provision needs a full commit id")
+    from molt.tool_releases import tool_release
+
+    uv = host_uv(host)
+    uv_version = tool_release("uv", _REPO_ROOT).version
     checkout = host.checkout
     if host.is_windows and not (host.target or "").startswith("x86_64-"):
         # The vswhere query below names the x64 MSVC component; an ARM64 host
@@ -130,7 +147,7 @@ def provision_script(
 $env:UV_PROJECT_ENVIRONMENT=$null
 $env:VIRTUAL_ENV=$null
 $env:MOLT_VENV=$null
-$env:PATH="$env:USERPROFILE\\.cargo\\bin;$env:PATH"
+$env:PATH={ps(str(PureWindowsPath(uv).parent) + ";")} + "$env:USERPROFILE\\.cargo\\bin;$env:PATH"
 $uv={ps(uv)}
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {{ throw 'Missing system prerequisite git; run: winget install --id Git.Git' }}
 # Builds select MSVC through vswhere and build their own environment
@@ -167,6 +184,7 @@ if (-not (Test-Path -LiteralPath {ps(checkout)})) {{
  & git -C {ps(checkout)} fetch origin
  if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
 }}
+if (& git -C {ps(checkout)} status --porcelain --untracked-files=no) {{ throw {ps(checkout + " has tracked edits; provision never discards them")} }}
 & git -C {ps(checkout)} checkout --quiet --detach {commit}
 if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
 Set-Location -LiteralPath {ps(checkout)}
@@ -203,7 +221,7 @@ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
     # The owner approves package installation per host (its inventory record).
     return f"""set -eu
 unset UV_PROJECT_ENVIRONMENT VIRTUAL_ENV MOLT_VENV
-export PATH="$HOME/.cargo/bin:$PATH"
+{posix_path_head(host)}
 uv={shlex.quote(uv)}
 missing=""
 missing_fix() {{ missing="$missing
@@ -237,6 +255,7 @@ if test -e {shlex.quote(checkout)}; then
 else
  git clone -- {shlex.quote(repository)} {shlex.quote(checkout)}
 fi
+test -z "$(git -C {shlex.quote(checkout)} status --porcelain --untracked-files=no)" || {{ echo {shlex.quote(checkout + " has tracked edits; provision never discards them")} >&2; exit 2; }}
 git -C {shlex.quote(checkout)} checkout --quiet --detach {commit}
 cd {shlex.quote(checkout)}
 rustup show active-toolchain
@@ -501,8 +520,6 @@ def provision_host(args, *, transport=None) -> dict:
         else None
     )
     guest = provision_wsl_guest(host, transport) if host.wsl_distribution else None
-    from molt.tool_releases import tool_release
-
     repository = checked(["git", "-C", str(_REPO_ROOT), "remote", "get-url", "origin"])
     # The host fetches from origin, so the commit must be published there.
     commit = checked(
@@ -515,15 +532,25 @@ def provision_host(args, *, transport=None) -> dict:
             args.commit + "^{commit}",
         ]
     )
+    if not checked(
+        [
+            "git",
+            "-C",
+            str(_REPO_ROOT),
+            "for-each-ref",
+            "--contains",
+            commit,
+            "--format=%(refname)",
+            "refs/remotes/origin",
+        ]
+    ):
+        raise ValueError(
+            f"{commit} is on no origin branch, and {host.name} fetches from origin; "
+            "push it (or fetch origin) before provisioning"
+        )
     uv = host_uv(host)
     result = transport.shell_command(
-        provision_script(
-            host,
-            repository=repository,
-            commit=commit,
-            uv=uv,
-            uv_version=tool_release("uv", _REPO_ROOT).version,
-        ),
+        provision_script(host, repository=repository, commit=commit),
         timeout=1800,
     )
     retention = json.loads(
@@ -1367,11 +1394,15 @@ def worker_environment(record: dict) -> dict[str, str]:
     baseline["CARGO_TARGET_DIR"] = str(root / "cache" / "cargo-workspace")
     baseline["MOLT_DIFF_CARGO_TARGET_DIR"] = baseline["CARGO_TARGET_DIR"]
     baseline["RUSTUP_AUTO_INSTALL"] = "0"
-    # Proof commands run `uv` by name: resolve the host's pinned uv first.
-    baseline["PATH"] = (
-        str(Path(host_uv(record_host(record))).parent)
-        + os.pathsep
-        + baseline.get("PATH", "")
+    # The same PATH head as every farm shell (posix_path_head): the pinned uv,
+    # because proof commands run `uv` by name, then rustup's Cargo, which a CIM
+    # worker's registry PATH may lack (rustup installs with --no-modify-path).
+    baseline["PATH"] = os.pathsep.join(
+        (
+            str(Path(host_uv(record_host(record))).parent),
+            str(Path.home() / ".cargo" / "bin"),
+            baseline.get("PATH", ""),
+        )
     )
     env = dict(
         RunContext(Path(record["checkout"])).dx_env(ProcessEnvironment(baseline))
@@ -1468,6 +1499,9 @@ def provision(record: dict, stage: Path) -> dict[str, str]:
     python = venv_python(ensured.environment_root)
     env = dict(venv_env(venv=ensured.environment_root, env=env, managed=True))
     env["PYTHONPATH"] = os.pathsep.join((str(checkout), str(checkout / "src")))
+    require_pinned_uv(
+        env.get("PATH", ""), host_uv(record_host(record)), record["host"]["name"]
+    )
     # Canonical subject admission checks the UNION before the first test. The
     # proof executor then retains its own per-command fingerprints/receipts.
     code = (

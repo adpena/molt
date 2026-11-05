@@ -93,6 +93,14 @@ def test_provision_transport_runs_documented_workflow_twice(name, monkeypatch):
     )
     assert "run --locked molt doctor --json --strict" in install
     assert uv in install
+    # Doctor and everything uv sync spawns resolve the pinned uv first.
+    uv_dir = (PureWindowsPath if host.is_windows else PurePosixPath)(uv).parent
+    head = (
+        f"$env:PATH={trunk_loop.ps(str(uv_dir) + ';')}"
+        if host.is_windows
+        else trunk_loop.posix_path_head(host)
+    )
+    assert head in install
     # Every farm shell resolves the pinned uv, never the user's ~/.local/bin.
     assert not any(".local" in script for script in scripts)
     (retention,) = {script for script in scripts if "cache_retention" in script}
@@ -685,8 +693,6 @@ def test_existing_posix_install_does_no_bootstrap_work(tmp_path, name, doctor_er
         host,
         repository="https://example.test/repo.git",
         commit=commit,
-        uv=str(uv),
-        uv_version=version,
     )
     env = dict(
         os.environ,
@@ -707,6 +713,7 @@ def test_existing_posix_install_does_no_bootstrap_work(tmp_path, name, doctor_er
         calls
         == [
             f"git -C {checkout} fetch origin",
+            f"git -C {checkout} status --porcelain --untracked-files=no",
             f"git -C {checkout} checkout --quiet --detach {commit}",
             "rustup show active-toolchain",
             "uv sync --locked --group dev",
@@ -758,8 +765,6 @@ def test_macos_provision_needs_no_package_manager_and_pins_uv(
         host,
         repository="https://example.test/repo.git",
         commit="c" * 40,
-        uv=str(uv),
-        uv_version=version,
     )
     assert "brew" not in script and "cmake" not in script
     result = run_custody_subject_process(
@@ -785,6 +790,84 @@ def test_macos_provision_needs_no_package_manager_and_pins_uv(
     )
     assert f"installer into {uv.parent}" in calls
     assert uv.is_file()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX bootstrap script execution")
+def test_provision_refuses_tracked_edits_before_checkout(tmp_path):
+    """Doctor must judge the provisioned commit, never local edits carried
+    across a checkout; provision never discards them either."""
+    from tests.process_guard_common import run_custody_subject_process
+
+    root = tmp_path / "host"
+    checkout = root / "molt-src"
+    checkout.mkdir(parents=True)
+    host = replace(
+        host_named("molt-gate"), custody_root=str(root), checkout=str(checkout)
+    )
+    uv = Path(trunk_loop.host_uv(host))
+    _fake_tool(uv, f'echo "uv {uv.parent.name} (pinned)"\n')
+    for command in ("rustup", "curl", "clang"):
+        _fake_tool(root / ".cargo/bin" / command, "exit 0\n")
+    _fake_tool(
+        root / ".cargo/bin/git",
+        'printf "%s\\n" "git $*" >> "$HOME/calls"\n'
+        'case "$*" in *"status --porcelain"*) echo " M src/molt/cli/doctor.py";; esac\n',
+    )
+    script = trunk_loop.provision_script(
+        host, repository="https://example.test/repo.git", commit="c" * 40
+    )
+    result = run_custody_subject_process(
+        ["/bin/sh"],
+        input=script,
+        text=True,
+        capture_output=True,
+        env=dict(os.environ, HOME=str(root)),
+    )
+    assert result.returncode == 2
+    assert "has tracked edits; provision never discards them" in result.stderr
+    calls = (root / "calls").read_text(encoding="utf-8")
+    assert "checkout --quiet --detach" not in calls
+
+
+def test_provision_refuses_a_commit_origin_does_not_have(monkeypatch):
+    class Transport:
+        def shell_command(self, script, **_kwargs):
+            if script.startswith(("df -Pk", "p=")):
+                return str(30 * 1024**2)
+            raise AssertionError("provision reached the host: " + script[:80])
+
+    monkeypatch.setattr(
+        trunk_loop,
+        "checked",
+        lambda argv: (
+            ""
+            if "for-each-ref" in argv
+            else "c" * 40
+            if "rev-parse" in argv
+            else "https://github.com/adpena/molt.git"
+        ),
+    )
+    with pytest.raises(ValueError, match="on no origin branch"):
+        trunk_loop.provision_host(
+            SimpleNamespace(
+                inventory=cross_run.DEFAULT_INVENTORY, host="macmini", commit="HEAD"
+            ),
+            transport=Transport(),
+        )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable bits")
+def test_worker_refuses_a_path_that_selects_another_uv(tmp_path):
+    pinned = tmp_path / "bootstrap/uv/0.0.0/uv"
+    user = tmp_path / ".local/bin/uv"
+    for executable in (pinned, user):
+        _fake_tool(executable, "exit 0\n")
+    trunk_loop.require_pinned_uv(
+        f"{pinned.parent}{os.pathsep}{user.parent}", str(pinned), "macmini"
+    )
+    for path in (f"{user.parent}{os.pathsep}{pinned.parent}", str(tmp_path)):
+        with pytest.raises(RuntimeError, match="not the pinned"):
+            trunk_loop.require_pinned_uv(path, str(pinned), "macmini")
 
 
 def test_farm_hosts_run_no_command_that_needs_a_runner_image_toolchain():

@@ -37,10 +37,14 @@ the integrator reconciles and retires them after landing.
 
 `tools/trunk_loop.py provision --host NAME --commit COMMIT` automates the
 [documented local install](../getting-started.md#local-repo-workflow) at
-`COMMIT`, a commit published on origin. Provision checks the checkout out at that
-commit before `uv sync` and doctor. A fetch alone leaves the checkout at whatever
-commit it held: on 2026-11-04 the macmini's doctor judged pre-fix code and
-reported an error that main had already removed.
+`COMMIT`. The controller resolves `COMMIT` to a full id and refuses it unless an
+`origin` branch contains it, since the host fetches from origin. The host then
+fetches and checks out that commit before `uv sync` and doctor. A fetch alone
+leaves the checkout at whatever commit it held: on 2026-11-04 the macmini's
+doctor judged pre-fix code and reported an error that main had already removed.
+The farm checkout is tool-owned. Provision refuses a checkout with tracked edits
+(exit 2 on POSIX), because doctor would judge them instead of `COMMIT`, and it
+never discards them.
 uv owns bootstrap Python and dependencies; the inventory cannot select a
 hand-made interpreter. Host-side Python entry points use
 `uv run --locked python -B` in the selected checkout. The existing immutable
@@ -53,7 +57,8 @@ would need it. Commands that need the GitHub runner image's toolchains
 (`hosted-cmake`, `hosted-clang-cl`, as `portability.headers.windows` does) run on
 hosted runners, never on the farm; a test refuses any farm assignment that
 declares a `hosted-*` toolchain. So the host prerequisites are git, curl and
-clang (the compiler doctor requires). Provision then runs
+clang (the compiler doctor requires); macOS ships curl, so provision checks only
+the Command Line Tools there. Provision then runs
 `molt doctor --json --strict`: a JSON error report cannot count as a successful
 install merely because the report-only doctor mode exits zero. Doctor reports
 system CMake and Ninja as warnings, not errors. Only building LLVM from source
@@ -91,8 +96,13 @@ Provision installs the pinned uv (`tool_releases` `uv.version`) into its own
 directory, `<custody_root>/bootstrap/uv/<version>/`, through the official
 installer with `UV_UNMANAGED_INSTALL` set to that directory. That mode writes only
 the directory: it edits no `PATH` or shell profile and installs no self-updater.
-It installs whenever that directory's uv is absent or differs from the pin, on
-POSIX and Windows alike. The toolchain contract admits only the pinned version,
+It installs whenever that directory's uv is absent or reports another version,
+on POSIX and Windows alike, and every run re-reads `uv --version`. So an
+interrupted install converges on the next run. The installer is the release's
+own versioned script (`astral.sh/uv/<version>/install.*`), fetched over HTTPS.
+The POSIX script checks the archive's SHA-256 only when `sha256sum` exists, and
+the PowerShell script does not check it; this is the same trust the documented
+local install grants. The toolchain contract admits only the pinned version,
 and an older uv cannot install the pinned Python patch release: on 2026-11-04 the
 macmini's uv 0.10.9 failed with "No interpreter found for Python 3.12.15".
 
@@ -106,8 +116,17 @@ is the one authority for the path. Every farm command names it: provision, remot
 commands, the POSIX, CIM and WSL worker launches, and the worker's own children. A
 CIM-created Windows process inherits the user's registry `PATH`, not the SSH
 session's, so a bare `uv` there would select the user's binary. Every farm shell
-and the worker put the pinned directory first on `PATH`, then `~/.cargo/bin`,
-because proof commands run `uv` by name.
+(provision, remote commands, launches) and the worker put the pinned directory
+first on `PATH`, then `~/.cargo/bin`: proof commands run `uv` by name, and rustup
+installs with `--no-modify-path`, so a CIM worker's registry `PATH` may lack
+Cargo. Before its first test the worker refuses unless `PATH` selects the pinned
+uv (`require_pinned_uv`), naming the provision command to run.
+
+Each run's controller names its own pin, and a worker lives for one run, so a
+pin change reaches the next run with no restart. The WSL guest installs under its
+own Linux custody root, never under `/mnt/c`. The cost of isolation is about
+40 MB per host per pin, even where the user's uv already matches. Old pin
+directories stay until an operator removes them.
 
 `molt-gate` is Linux x86_64 behind bat00's Windows SSH endpoint. Scripts enter
 `wsl.exe -d molt-gate -- bash -s` through stdin, avoiding Windows re-quoting of
@@ -372,7 +391,9 @@ directory with its convergence check. Each fake host also holds a user uv first
 on the shell's `PATH`; the tests fail if provisioning runs or rewrites it. They
 also require the checkout of the provisioned commit before `uv sync` and doctor.
 The provision script, remote commands and the WSL launch must put the pinned
-directory first on `PATH`, never `~/.local/bin`. A doctor test proves missing
+directory first on `PATH`, never `~/.local/bin`. Provision must refuse tracked
+edits and an unpublished commit before touching the host. The worker's
+`require_pinned_uv` must refuse a `PATH` whose first uv is any other binary. A doctor test proves missing
 CMake and Ninja are warnings, not errors. A child-process
 test proves the standard-stream contract on POSIX: the worker's and a
 default-stdio grandchild's output reach `worker.log`, and stdin reads EOF. The
