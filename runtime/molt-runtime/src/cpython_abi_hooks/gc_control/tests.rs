@@ -126,13 +126,13 @@ fn builtin_gc_slots_share_runtime_edges_and_reject_opaque_native_storage() {
         assert_eq!(molt_cpython_abi::api::typeobj::molt_type_clear(subtype), 0);
         molt_cpython_abi::api::refcount::Py_DECREF(subtype);
 
-        let child = crate::alloc_list(&py, &[]);
+        let child = crate::alloc_list(py, &[]);
         let child_bits = MoltObject::from_ptr(child).bits();
-        let source = crate::alloc_list(&py, &[child_bits, child_bits]);
+        let source = crate::alloc_list(py, &[child_bits, child_bits]);
         let source_bits = MoltObject::from_ptr(source).bits();
         let view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(source_bits);
         let child_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(child_bits);
-        dec_ref_bits(&py, child_bits);
+        dec_ref_bits(py, child_bits);
         let traverse = PyList_Type.tp_traverse.unwrap();
         let mut witness = TraverseWitness {
             source: view,
@@ -176,8 +176,8 @@ fn builtin_gc_slots_share_runtime_edges_and_reject_opaque_native_storage() {
             "snapshot pins must drain after reentrant source clear"
         );
         assert_eq!(memory::molt_managed_gc_clear(view), 0);
-        dec_ref_bits(&py, source_bits);
-        assert!(!crate::exception_pending(&py));
+        dec_ref_bits(py, source_bits);
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -185,17 +185,17 @@ fn builtin_gc_slots_share_runtime_edges_and_reject_opaque_native_storage() {
 fn public_traversal_omits_internal_owners_but_keeps_physical_edges_and_errors() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     with_gil(|py| unsafe {
-        let hidden = crate::object::builders::alloc_internal_dict(&py);
+        let hidden = crate::object::builders::alloc_internal_dict(py);
         let hidden_bits = MoltObject::from_ptr(hidden).bits();
-        let ordinary = crate::alloc_list(&py, &[]);
+        let ordinary = crate::alloc_list(py, &[]);
         let ordinary_bits = MoltObject::from_ptr(ordinary).bits();
         assert!(crate::dict_set_in_place(
-            &py,
+            py,
             hidden,
             MoltObject::from_int(1).bits(),
             ordinary_bits
         ));
-        let source = crate::alloc_list(&py, &[hidden_bits, ordinary_bits, ordinary_bits]);
+        let source = crate::alloc_list(py, &[hidden_bits, ordinary_bits, ordinary_bits]);
         let source_bits = MoltObject::from_ptr(source).bits();
         let source_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(source_bits);
         let hidden_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(hidden_bits);
@@ -215,7 +215,7 @@ fn public_traversal_omits_internal_owners_but_keeps_physical_edges_and_errors() 
         }
         let mut physical = Vec::new();
         assert_eq!(
-            crate::object::heap_lifecycle::visit_owned_gc_edges(&py, source, &mut |edge| {
+            crate::object::heap_lifecycle::visit_owned_gc_edges(py, source, &mut |edge| {
                 if edge.kind == molt_cpython_abi::NativeGcEdgeKind::ManagedHandle as u8 {
                     physical.push(edge.value);
                 }
@@ -302,12 +302,12 @@ fn public_traversal_omits_internal_owners_but_keeps_physical_edges_and_errors() 
             0
         );
         assert!(!edges.contains(&hidden_bits));
-        dec_ref_bits(&py, iterator);
-        dec_ref_bits(&py, items);
-        dec_ref_bits(&py, source_bits);
-        dec_ref_bits(&py, ordinary_bits);
-        dec_ref_bits(&py, hidden_bits);
-        assert!(!crate::exception_pending(&py));
+        dec_ref_bits(py, iterator);
+        dec_ref_bits(py, items);
+        dec_ref_bits(py, source_bits);
+        dec_ref_bits(py, ordinary_bits);
+        dec_ref_bits(py, hidden_bits);
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -477,7 +477,7 @@ fn native_list_clear_and_terminal_retirement_preserve_distinct_callback_phases()
             assert_eq!(observed.as_ptr(), prior.as_ptr());
             assert_eq!((*replacement.as_ptr()).ob_refcnt, 1);
             assert!(!crate::object::gc::native_gc_is_enrolled(address));
-            assert!(!crate::exception_pending(&py));
+            assert!(!crate::exception_pending(py));
         }
     });
 }
@@ -514,14 +514,14 @@ fn native_list_self_and_mixed_cycles_share_runtime_collector_identity() {
             }
             refcount::Py_DECREF(native);
             assert_eq!(
-                crate::object::gc::collect_cycles(&py).status,
+                crate::object::gc::collect_cycles(py).status,
                 crate::object::gc::GcCollectStatus::Completed
             );
             assert!(!crate::object::gc::native_gc_is_enrolled(native_address));
             if mixed {
                 assert!(GLOBAL_BRIDGE.managed_handle_for_pyobj(managed).is_none());
             }
-            assert!(!crate::exception_pending(&py));
+            assert!(!crate::exception_pending(py));
             assert!(errors::PyErr_Occurred().is_null());
         }
     });
@@ -668,7 +668,7 @@ fn module_gc_callbacks_share_state_ownership_through_clear_and_terminal_free() {
         let mut graph_matches = 0;
         assert_eq!(
             crate::object::heap_lifecycle::visit_owned_gc_edges(
-                &py,
+                py,
                 crate::obj_from_bits(bits).as_ptr().unwrap(),
                 &mut |found| {
                     if found.kind == molt_cpython_abi::NativeGcEdgeKind::ManagedHandle as u8
@@ -701,7 +701,7 @@ fn module_gc_callbacks_share_state_ownership_through_clear_and_terminal_free() {
         assert_eq!(errors::PyErr_Occurred(), outer);
         assert!(GLOBAL_BRIDGE.managed_handle_for_pyobj(module).is_none());
         errors::PyErr_Clear();
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -758,15 +758,15 @@ fn module_gc_callback_failures_keep_namespace_and_release_snapshot_pins() {
         );
         assert!(!errors::PyErr_Occurred().is_null());
         errors::PyErr_Clear();
-        let args = crate::alloc_tuple(&py, &[bits]);
+        let args = crate::alloc_tuple(py, &[bits]);
         assert!(matches!(
-            crate::object::gc::get_referents(&py, args),
+            crate::object::gc::get_referents(py, args),
             Err(crate::object::gc::GcIntrospectionError::Callback(_))
         ));
         assert!(!errors::PyErr_Occurred().is_null());
         errors::PyErr_Clear();
-        dec_ref_bits(&py, MoltObject::from_ptr(args).bits());
-        let outcome = crate::object::gc::collect_cycles(&py);
+        dec_ref_bits(py, MoltObject::from_ptr(args).bits());
+        let outcome = crate::object::gc::collect_cycles(py);
         assert!(matches!(
             outcome.status,
             crate::object::gc::GcCollectStatus::CallbackError(_)
@@ -774,16 +774,16 @@ fn module_gc_callback_failures_keep_namespace_and_release_snapshot_pins() {
         assert!(!(*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_GC_PINNED));
         assert!(!(*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_GC_COLLECTING));
         errors::PyErr_Clear();
-        let gc = &crate::runtime_state(&py).gc;
+        let gc = &crate::runtime_state(py).gc;
         gc.set_thresholds([1, 10, 10]);
         gc.set_enabled(true);
-        let pressure = [crate::alloc_list(&py, &[]), crate::alloc_list(&py, &[])];
+        let pressure = [crate::alloc_list(py, &[]), crate::alloc_list(py, &[])];
         errors::PyErr_SetString(
             (&raw mut PyExc_RuntimeError).cast(),
             c"outer automatic GC error".as_ptr(),
         );
         let outer = errors::PyErr_Occurred();
-        let automatic = crate::object::gc::collect_pending(&py, gc);
+        let automatic = crate::object::gc::collect_pending(py, gc);
         assert!(matches!(
             automatic.status,
             crate::object::gc::GcCollectStatus::CallbackError(_)
@@ -792,7 +792,7 @@ fn module_gc_callback_failures_keep_namespace_and_release_snapshot_pins() {
         errors::PyErr_Clear();
         gc.set_thresholds([0, 10, 10]);
         for root in pressure {
-            dec_ref_bits(&py, MoltObject::from_ptr(root).bits());
+            dec_ref_bits(py, MoltObject::from_ptr(root).bits());
         }
         (*state).traverse_status = 0;
         (*state).clear_status = -71;
@@ -815,7 +815,7 @@ fn module_gc_callback_failures_keep_namespace_and_release_snapshot_pins() {
         molt_cpython_abi::api::refcount::Py_DECREF(module);
         assert_eq!(MODULE_FREE_CALLS.load(Ordering::SeqCst), 1);
         assert!(GLOBAL_BRIDGE.managed_handle_for_pyobj(module).is_none());
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -846,7 +846,7 @@ fn module_traversal_can_remove_the_last_registry_root_in_every_graph_consumer() 
             molt_cpython_abi::api::refcount::Py_DECREF(module);
             match consumer {
                 0 => assert_eq!(
-                    crate::object::heap_lifecycle::visit_owned_gc_edges(&py, ptr, &mut |_| {}),
+                    crate::object::heap_lifecycle::visit_owned_gc_edges(py, ptr, &mut |_| {}),
                     0
                 ),
                 1 => {
@@ -869,18 +869,18 @@ fn module_traversal_can_remove_the_last_registry_root_in_every_graph_consumer() 
                     assert_eq!(witness.matches, 1);
                 }
                 2 => assert_eq!(
-                    crate::object::gc::collect_cycles(&py).status,
+                    crate::object::gc::collect_cycles(py).status,
                     crate::object::gc::GcCollectStatus::Completed
                 ),
                 _ => {
-                    let args = crate::alloc_tuple(&py, &[edge_bits]);
-                    let referrers = crate::object::gc::get_referrers(&py, args).unwrap();
+                    let args = crate::alloc_tuple(py, &[edge_bits]);
+                    let referrers = crate::object::gc::get_referrers(py, args).unwrap();
                     let found = crate::object::seq_access::with_borrowed(referrers, |values| {
                         values.contains(&bits)
                     });
                     assert!(found);
-                    dec_ref_bits(&py, MoltObject::from_ptr(referrers).bits());
-                    dec_ref_bits(&py, MoltObject::from_ptr(args).bits());
+                    dec_ref_bits(py, MoltObject::from_ptr(referrers).bits());
+                    dec_ref_bits(py, MoltObject::from_ptr(args).bits());
                 }
             }
             assert_eq!(MODULE_FREE_CALLS.load(Ordering::SeqCst), 1);
@@ -889,7 +889,7 @@ fn module_traversal_can_remove_the_last_registry_root_in_every_graph_consumer() 
                 molt_cpython_abi::api::modules::PyState_FindModule(&raw mut definition).is_null()
             );
             assert!(errors::PyErr_Occurred().is_null());
-            assert!(!crate::exception_pending(&py));
+            assert!(!crate::exception_pending(py));
         }
     });
 }
@@ -917,7 +917,7 @@ fn module_state_cycle_reclaims_aliased_runtime_and_c_owners_once() {
         }
         molt_cpython_abi::api::refcount::Py_DECREF(module);
         assert_eq!(
-            crate::object::gc::collect_cycles(&py).status,
+            crate::object::gc::collect_cycles(py).status,
             crate::object::gc::GcCollectStatus::Completed
         );
         assert_eq!(MODULE_CLEAR_CALLS.load(Ordering::SeqCst), 1);
@@ -925,7 +925,7 @@ fn module_state_cycle_reclaims_aliased_runtime_and_c_owners_once() {
         assert!(GLOBAL_BRIDGE.managed_handle_for_pyobj(module).is_none());
         assert!(GLOBAL_BRIDGE.managed_handle_for_pyobj(list).is_none());
         assert!(errors::PyErr_Occurred().is_null());
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -950,7 +950,7 @@ unsafe extern "C" fn module_shutdown_free(raw: *mut c_void) {
             };
         }
         with_gil(|py| {
-            crate::c_api::c_api_module_clear_state(&py, crate::runtime_state(&py));
+            crate::c_api::c_api_module_clear_state(py, crate::runtime_state(py));
         });
         assert_eq!(
             unsafe { molt_cpython_abi::api::modules::PyModule_GetState(object) },
@@ -976,8 +976,8 @@ fn module_shutdown_pins_the_original_cohort_through_recursive_free() {
             MODULE_SHUTDOWN_EXTERNAL_OWNERS[index].store((*module).addr(), Ordering::SeqCst);
         }
         assert!(crate::c_api::c_api_module_clear_state(
-            &py,
-            crate::runtime_state(&py)
+            py,
+            crate::runtime_state(py)
         ));
         assert_eq!(MODULE_SHUTDOWN_FREE_CALLS.load(Ordering::SeqCst), 2);
         for module in modules {
@@ -999,9 +999,9 @@ fn c_gc_controls_use_runtime_membership_without_recounting_or_clearing_errors() 
     molt_cpython_abi_test_support::link();
     with_gil(|py| unsafe {
         let objects = [
-            crate::alloc_list(&py, &[]),
-            crate::alloc_dict_with_pairs(&py, &[]),
-            crate::alloc_tuple(&py, &[MoltObject::from_int(7).bits()]),
+            crate::alloc_list(py, &[]),
+            crate::alloc_dict_with_pairs(py, &[]),
+            crate::alloc_tuple(py, &[MoltObject::from_int(7).bits()]),
         ];
         for ptr in objects {
             let bits = MoltObject::from_ptr(ptr).bits();
@@ -1014,20 +1014,20 @@ fn c_gc_controls_use_runtime_membership_without_recounting_or_clearing_errors() 
             );
             let pending = errors::PyErr_Occurred();
             assert!(!pending.is_null());
-            let counts = crate::runtime_state(&py).gc.counts();
+            let counts = crate::runtime_state(py).gc.counts();
             let refs = (*header_from_obj_ptr(ptr)).ref_count_snapshot();
             for probe in CONTROL_PROBES {
                 assert_eq!(probe(view, c_int::from(initial), 0), 0);
                 assert_eq!(crate::object::gc::gc_is_tracked(ptr), initial);
-                assert_eq!(crate::runtime_state(&py).gc.counts(), counts);
+                assert_eq!(crate::runtime_state(py).gc.counts(), counts);
                 assert_eq!((*header_from_obj_ptr(ptr)).ref_count_snapshot(), refs);
                 assert_eq!(errors::PyErr_Occurred(), pending);
                 assert!(!crate::object::gc::native_gc_is_enrolled(view.addr()));
             }
             errors::PyErr_Clear();
-            dec_ref_bits(&py, bits);
+            dec_ref_bits(py, bits);
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -1036,15 +1036,15 @@ fn promoted_scalar_lists_keep_one_gc_claim_through_both_c_control_facades() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     molt_cpython_abi_test_support::link();
     with_gil(|py| unsafe {
-        let state = &crate::runtime_state(&py).gc;
+        let state = &crate::runtime_state(py).gc;
         state.set_enabled(false);
         for integers in [true, false] {
             for promote_before_view in [true, false] {
                 let allocation_count = state.counts()[0];
                 let ptr = if integers {
-                    crate::object::builders::alloc_list_int_from_raw_slice(&py, &[])
+                    crate::object::builders::alloc_list_int_from_raw_slice(py, &[])
                 } else {
-                    crate::object::builders::alloc_list_bool_from_raw_slice(&py, &[])
+                    crate::object::builders::alloc_list_bool_from_raw_slice(py, &[])
                 }
                 .expect("scalar list allocation");
                 let bits = MoltObject::from_ptr(ptr).bits();
@@ -1052,7 +1052,7 @@ fn promoted_scalar_lists_keep_one_gc_claim_through_both_c_control_facades() {
                 assert_eq!(state.counts()[0], allocation_count);
                 if promote_before_view {
                     crate::molt_list_append_attached_body(py, bits, MoltObject::none().bits());
-                    assert!(!crate::exception_pending(&py));
+                    assert!(!crate::exception_pending(py));
                     assert!(crate::object::gc::gc_is_tracked(ptr));
                     assert_eq!(state.counts()[0], allocation_count + 1);
                 }
@@ -1067,12 +1067,12 @@ fn promoted_scalar_lists_keep_one_gc_claim_through_both_c_control_facades() {
                     assert_eq!(state.counts()[0], allocation_count + 1);
                     assert!(!crate::object::gc::native_gc_is_enrolled(view.addr()));
                 }
-                dec_ref_bits(&py, bits);
+                dec_ref_bits(py, bits);
                 assert!(!crate::object::gc::gc_is_tracked(ptr));
                 assert_eq!(state.counts()[0], allocation_count);
             }
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -1090,7 +1090,7 @@ extern "C" fn finalized(__context: u64, receiver: u64) -> u64 {
     FINALIZER_CALLS.fetch_add(1, Ordering::SeqCst);
     {
         let py = __py;
-        crate::inc_ref_bits(&py, receiver)
+        crate::inc_ref_bits(py, receiver)
     };
     RESURRECTED.store(receiver, Ordering::SeqCst);
     MoltObject::none().bits()
@@ -1103,14 +1103,14 @@ fn c_gc_finalized_query_survives_untracking_and_retracking_real_finalization() {
     with_gil(|py| unsafe {
         FINALIZER_CALLS.store(0, Ordering::SeqCst);
         assert_eq!(RESURRECTED.load(Ordering::SeqCst), 0);
-        let name = crate::dynamic_attr_name_bits(&py, b"ManagedGcFinalization").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"ManagedGcFinalization").unwrap();
         let class = crate::molt_class_new_attached_body(py, name);
-        crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(&py).object);
+        crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).object);
         let class_ptr = MoltObject::from_bits(class).as_ptr().unwrap();
-        let del = crate::dynamic_attr_name_bits(&py, b"__del__").unwrap();
+        let del = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
         let callback =
             MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
-                &py,
+                py,
                 crate::builtins::functions::runtime_fn_addr(
                     "managed_gc_finalized",
                     finalized as *const (),
@@ -1119,12 +1119,12 @@ fn c_gc_finalized_query_survives_untracking_and_retracking_real_finalization() {
             ))
             .bits();
         crate::molt_set_attr_name_attached_body(py, class, del, callback);
-        crate::object::class_finish_definition(&py, class_ptr).unwrap();
-        let bits = crate::alloc_instance_for_class(&py, class_ptr);
+        crate::object::class_finish_definition(py, class_ptr).unwrap();
+        let bits = crate::alloc_instance_for_class(py, class_ptr);
         let view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits);
         assert!(!view.is_null());
         assert_eq!(memory::PyObject_GC_IsFinalized(view), 0);
-        dec_ref_bits(&py, bits);
+        dec_ref_bits(py, bits);
         assert_eq!(FINALIZER_CALLS.load(Ordering::SeqCst), 1);
         assert_eq!(RESURRECTED.load(Ordering::SeqCst), bits);
         assert_eq!(
@@ -1141,10 +1141,10 @@ fn c_gc_finalized_query_survives_untracking_and_retracking_real_finalization() {
             class,
             name,
         ] {
-            dec_ref_bits(&py, value);
+            dec_ref_bits(py, value);
         }
         assert_eq!(FINALIZER_CALLS.load(Ordering::SeqCst), 1);
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -1174,23 +1174,23 @@ fn both_c_headers_use_native_gc_allocation_and_the_runtime_collector() {
                 as unsafe extern "C" fn(*mut PyTypeObject) -> c_int,
             molt_public_type_identity_probe_gc_allocation,
         ] {
-            let counts = crate::runtime_state(&py).gc.counts();
+            let counts = crate::runtime_state(py).gc.counts();
             assert_eq!(allocate(&raw mut native_type), 0);
-            assert_eq!(crate::runtime_state(&py).gc.counts(), counts);
+            assert_eq!(crate::runtime_state(py).gc.counts(), counts);
         }
         for collect in [
             molt_linked_type_identity_probe_gc_collect as unsafe extern "C" fn() -> isize,
             molt_public_type_identity_probe_gc_collect,
         ] {
-            let ptr = crate::alloc_list(&py, &[]);
+            let ptr = crate::alloc_list(py, &[]);
             let bits = MoltObject::from_ptr(ptr).bits();
             crate::molt_list_append_attached_body(py, bits, bits);
-            dec_ref_bits(&py, bits);
+            dec_ref_bits(py, bits);
             let enabled = memory::PyGC_IsEnabled();
             assert!(collect() >= 1);
             assert!(!crate::object::gc::gc_is_tracked(ptr));
             assert_eq!(memory::PyGC_IsEnabled(), enabled);
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }

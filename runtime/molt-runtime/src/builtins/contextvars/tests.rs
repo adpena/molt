@@ -9,7 +9,7 @@ use std::ptr;
 fn fixture(body: impl FnOnce(&PyToken<'_>)) {
     let _runtime = crate::test_support::RuntimeTestTransaction::new();
     assert!(crate::cpython_abi_hooks::register_cpython_hooks());
-    with_gil(|py| body(&py));
+    with_gil(|py| body(py));
 }
 fn variable_named(py: &PyToken<'_>, name: &str, default: Option<u64>) -> u64 {
     let p = crate::alloc_string(py, name.as_bytes());
@@ -49,14 +49,14 @@ fn cold_missing_and_every_context_payload_have_disjoint_shared_backing() {
             use molt_cpython_abi::abi_types::PyContextToken_Type;
             use molt_cpython_abi::api::object::PyObject_GetAttrString;
             use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
-            let var = variable_named(&py, "layout", Some(none()));
-            let selected = new_context(&py).unwrap();
-            assert!(enter(&py, selected));
+            let var = variable_named(py, "layout", Some(none()));
+            let selected = new_context(py).unwrap();
+            assert!(enter(py, selected));
             // The first set constructs Token.MISSING from a zero-sized native
             // prefix. The second gives Token a nonzero final native flags word.
-            let first = set_variable(&py, var, integer(11)).unwrap();
-            let second = set_variable(&py, var, integer(22)).unwrap();
-            assert!(!exception_pending(&py));
+            let first = set_variable(py, var, integer(11)).unwrap();
+            let second = set_variable(py, var, integer(22)).unwrap();
+            assert!(!exception_pending(py));
             let token_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(first);
             assert!(!token_view.is_null());
             let old = PyObject_GetAttrString(token_view, c"old_value".as_ptr());
@@ -86,17 +86,17 @@ fn cold_missing_and_every_context_payload_have_disjoint_shared_backing() {
                     iterator,
                     std::mem::size_of::<ContextIterator>(),
                 );
-                dec_ref_bits(&py, iterator);
+                dec_ref_bits(py, iterator);
             }
             refcount::Py_DECREF(old);
             refcount::Py_DECREF(missing);
-            assert!(reset_variable(&py, var, second));
-            assert!(reset_variable(&py, var, first));
-            assert!(exit(&py, selected));
+            assert!(reset_variable(py, var, second));
+            assert!(reset_variable(py, var, first));
+            assert!(exit(py, selected));
             for bits in [first, second, selected, var] {
-                dec_ref_bits(&py, bits);
+                dec_ref_bits(py, bits);
             }
-            clear_thread_context(&py);
+            clear_thread_context(py);
         });
     });
 }
@@ -539,7 +539,7 @@ extern "C" fn observe_context_poll(__context: u64, raw_task: u64) -> i64 {
         unsafe {
             let task = std::ptr::with_exposed_provenance_mut::<u64>(raw_task as usize);
             let var = *task;
-            get_variable(&py, var, None).flatten().unwrap_or_else(none) as i64
+            get_variable(py, var, None).flatten().unwrap_or_else(none) as i64
         }
     }
 }
@@ -629,7 +629,7 @@ fn cold_c_shell_export_precedes_module_identity_and_constructor_dispatch() {
                     (&raw mut PyContextToken_Type).cast::<PyObject>(),
                 ];
                 assert_eq!(
-                    crate::runtime_state(&py)
+                    crate::runtime_state(py)
                         .types
                         .context_class
                         .load(std::sync::atomic::Ordering::Acquire),
@@ -645,7 +645,7 @@ fn cold_c_shell_export_precedes_module_identity_and_constructor_dispatch() {
                     refcount::Py_DECREF(object);
                 }
                 if ordering == 3 {
-                    let name = MoltObject::from_ptr(crate::alloc_string(&py, b"cold-var")).bits();
+                    let name = MoltObject::from_ptr(crate::alloc_string(py, b"cold-var")).bits();
                     let argument = GLOBAL_BRIDGE.owned_handle_to_pyobj(name);
                     let variable =
                         molt_cpython_abi::api::object::PyObject_CallOneArg(shells[1], argument);
@@ -667,7 +667,7 @@ fn cold_c_shell_export_precedes_module_identity_and_constructor_dispatch() {
                 }
                 let exported =
                     shells.map(|shell| GLOBAL_BRIDGE.molt_value_for_pyobj(shell).unwrap());
-                let name = crate::alloc_string(&py, b"_contextvars");
+                let name = crate::alloc_string(py, b"_contextvars");
                 let name_bits = MoltObject::from_ptr(name).bits();
                 let module = crate::molt_module_new_attached_body(py, name_bits);
                 let namespace = molt_contextvars_types_attached_body(py, module);
@@ -686,16 +686,16 @@ fn cold_c_shell_export_precedes_module_identity_and_constructor_dispatch() {
                     );
                     assert!(!name.is_null());
                     refcount::Py_DECREF(name);
-                    dec_ref_bits(&py, bits);
+                    dec_ref_bits(py, bits);
                 }
                 let token = molt_cpython_abi::api::object::PyObject_CallNoArgs(shells[2]);
                 assert!(token.is_null());
                 assert!(!errors::PyErr_Occurred().is_null());
                 errors::PyErr_Clear();
                 for bits in [namespace, module, name_bits] {
-                    dec_ref_bits(&py, bits);
+                    dec_ref_bits(py, bits);
                 }
-                clear_thread_context(&py);
+                clear_thread_context(py);
             });
         });
     }
@@ -831,9 +831,9 @@ extern "C" fn mutate_empty_context_poll(__context: u64, raw_task: u64) -> i64 {
         unsafe {
             let task = std::ptr::with_exposed_provenance_mut::<u64>(raw_task as usize);
             let var = *task;
-            let observed = get_variable(&py, var, None).flatten().unwrap_or(0);
-            if let Some(token) = set_variable(&py, var, integer(99)) {
-                dec_ref_bits(&py, token);
+            let observed = get_variable(py, var, None).flatten().unwrap_or(0);
+            if let Some(token) = set_variable(py, var, integer(99)) {
+                dec_ref_bits(py, token);
             }
             observed as i64
         }

@@ -3,7 +3,6 @@ use super::*;
 use crate::BuiltinExc;
 
 #[cfg(molt_has_net_io)]
-
 pub(crate) fn molt_socket_new_attached_body(
     _py: &crate::PyToken<'_>,
     family_bits: u64,
@@ -179,7 +178,6 @@ pub(crate) fn molt_socket_new_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_close_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -198,7 +196,6 @@ pub(crate) unsafe fn molt_socket_close_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_drop_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -216,7 +213,6 @@ pub(crate) unsafe fn molt_socket_drop_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_clone_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -234,7 +230,6 @@ pub(crate) unsafe fn molt_socket_clone_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_fileno_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -280,7 +275,6 @@ pub(crate) unsafe fn molt_socket_fileno_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_gettimeout_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -301,7 +295,6 @@ pub(crate) unsafe fn molt_socket_gettimeout_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_settimeout_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -344,7 +337,6 @@ pub(crate) unsafe fn molt_socket_settimeout_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_getblocking_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -367,7 +359,6 @@ pub(crate) unsafe fn molt_socket_getblocking_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_bind_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -431,7 +422,6 @@ pub(crate) unsafe fn molt_socket_bind_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_listen_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -520,7 +510,6 @@ pub(crate) unsafe fn molt_socket_listen_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_accept_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -628,7 +617,6 @@ pub(crate) unsafe fn molt_socket_accept_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_connect_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -840,7 +828,6 @@ pub(crate) unsafe fn molt_socket_connect_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_connect_ex_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -1055,7 +1042,6 @@ pub(crate) unsafe fn molt_socket_connect_ex_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_shutdown_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -1093,7 +1079,6 @@ pub(crate) unsafe fn molt_socket_shutdown_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_getsockname_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -1137,7 +1122,6 @@ pub(crate) unsafe fn molt_socket_getsockname_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_getpeername_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -1181,7 +1165,6 @@ pub(crate) unsafe fn molt_socket_getpeername_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_setsockopt_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -1263,7 +1246,6 @@ pub(crate) unsafe fn molt_socket_setsockopt_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_getsockopt_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -1343,7 +1325,6 @@ pub(crate) unsafe fn molt_socket_getsockopt_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_detach_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,

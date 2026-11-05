@@ -1099,7 +1099,7 @@ pub(crate) fn run_runtime_worker<R>(
             );
         molt_cpython_abi::api::object::detach_runtime_execution_thread();
         molt_cpython_abi::api::object::clear_runtime_execution_thread_state(|| {
-            clear_worker_thread_state(&gil.token())
+            clear_worker_thread_state(gil.token())
         });
     }));
     match (outcome, cleanup) {
@@ -1609,7 +1609,7 @@ pub(crate) mod tests {
                 let work =
                     crate::concurrency::execution::RuntimeServiceExecutionGuard::try_enter(origin)
                         .unwrap();
-                assert_eq!(runtime_state(&work.token()).identity(), origin.identity());
+                assert_eq!(runtime_state(work.token()).identity(), origin.identity());
                 assert_eq!(origin.state().thread_borrow_count(), 1);
                 assert!(
                     crate::state::runtime_state::current_thread_holds_runtime_execution_lease()
@@ -1620,10 +1620,10 @@ pub(crate) mod tests {
             {
                 let entry = crate::concurrency::RuntimeExecutionGuard::enter();
                 let py = entry.token();
-                let class = reentrant_context_class(&py);
+                let class = reentrant_context_class(py);
                 REENTRANT_CONTEXT_CLASS.store(class, Ordering::SeqCst);
-                publish_context_binding(&py, class);
-                crate::dec_ref_bits(&py, class);
+                publish_context_binding(py, class);
+                crate::dec_ref_bits(py, class);
                 // Production per-work entry retires its C record. Preserve a
                 // runtime TLS owner only, so the ordinary foreign-C-owner
                 // shutdown refusal cannot mask terminal service cleanup.
@@ -1800,12 +1800,12 @@ pub(crate) mod tests {
                 std::thread::spawn(move || {
                     let entry = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
                     let py = entry.token();
-                    let class = reentrant_context_class(&py);
+                    let class = reentrant_context_class(py);
                     REENTRANT_CONTEXT_CLASS.store(class, Ordering::SeqCst);
                     REENTRANT_CONTEXT_RELEASES.store(0, Ordering::SeqCst);
                     REENTRANT_CONTEXT_C_PUBLICATIONS.store(0, Ordering::SeqCst);
                     REENTRANT_CONTEXT_PUBLISH_C.store(publish_c, Ordering::SeqCst);
-                    publish_context_binding(&py, class);
+                    publish_context_binding(py, class);
                     if !initial_c_record {
                         // Remove only the empty C domain. The real runtime
                         // finalizers below still require repeated TLS cleanup.
@@ -1822,8 +1822,8 @@ pub(crate) mod tests {
                     assert!(crate::CONTEXT_STACK.with(|stack| stack.borrow().is_empty()));
                     let entry = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
                     let py = entry.token();
-                    assert!(!crate::builtins::contextvars::clear_thread_context(&py));
-                    crate::dec_ref_bits(&py, class);
+                    assert!(!crate::builtins::contextvars::clear_thread_context(py));
+                    crate::dec_ref_bits(py, class);
                     REENTRANT_CONTEXT_CLASS.store(0, Ordering::SeqCst);
                     REENTRANT_CONTEXT_PUBLISH_C.store(false, Ordering::SeqCst);
                 }).join().unwrap();

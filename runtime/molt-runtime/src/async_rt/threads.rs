@@ -296,7 +296,6 @@ fn call_thread_callable(
 /// # Safety
 /// `callable_bits`, `args_bits`, and `kwargs_bits` must be valid runtime objects.
 /// The runtime must be initialized and the call must be allowed to enter the GIL.
-
 pub(crate) unsafe fn molt_thread_submit_attached_body(
     _py: &crate::PyToken<'_>,
     callable_bits: u64,
@@ -374,7 +373,6 @@ pub(crate) unsafe fn molt_thread_submit_attached_body(
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `obj_bits` must be a valid thread wait future object from this runtime.
-
 pub(crate) unsafe fn molt_thread_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -431,7 +429,6 @@ pub(crate) unsafe fn molt_thread_poll_attached_body(
 // ---------------------------------------------------------------------------
 
 #[cfg(not(target_arch = "wasm32"))]
-
 pub(crate) fn molt_threading_available_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     MoltObject::from_bool(true).bits()
 }
@@ -490,7 +487,6 @@ pub(crate) unsafe fn molt_wasm_check_module_gate_attached_body(
 /// # Safety
 /// `name_bits` must be a valid NaN-boxed string object.
 #[cfg(not(target_arch = "wasm32"))]
-
 pub(crate) unsafe fn molt_wasm_check_module_gate_attached_body(
     _py: &crate::PyToken<'_>,
     _name_bits: u64,
@@ -522,7 +518,6 @@ pub(crate) fn molt_thread_start_attached_body(
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `callable_bits` must be a valid runtime callable object.
-
 pub(crate) unsafe fn molt_thread_start_attached_body(
     _py: &crate::PyToken<'_>,
     callable_bits: u64,

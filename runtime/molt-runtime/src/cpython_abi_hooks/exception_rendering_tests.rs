@@ -312,7 +312,7 @@ fn c_error_ingress_preserves_native_identity_and_api_specific_context() {
                 // The public C constructor owns native storage. Construct the
                 // other representation through the runtime's allocator.
                 let value =
-                    crate::builtins::exceptions::alloc_exception(&py, BuiltinExc::IndexError, "");
+                    crate::builtins::exceptions::alloc_exception(py, BuiltinExc::IndexError, "");
                 assert!(!value.is_null());
                 OwnedPyObject::from_owned(
                     GLOBAL_BRIDGE.owned_handle_to_pyobj(crate::MoltObject::from_ptr(value).bits()),
@@ -352,9 +352,9 @@ fn c_error_ingress_preserves_native_identity_and_api_specific_context() {
             drop(context);
             drop(raised);
 
-            let trace_class = crate::builtin_classes(&py).traceback;
+            let trace_class = crate::builtin_classes(py).traceback;
             let trace_class = crate::obj_from_bits(trace_class).as_ptr().unwrap();
-            let traceback_bits = crate::alloc_instance_for_class(&py, trace_class);
+            let traceback_bits = crate::alloc_instance_for_class(py, trace_class);
             let traceback_owner =
                 OwnedPyObject::from_owned(GLOBAL_BRIDGE.owned_handle_to_pyobj(traceback_bits));
             let traceback = traceback_owner.as_ptr();
@@ -468,10 +468,10 @@ fn c_error_normalization_transfers_constructor_failure_and_rejects_invalid_class
         assert_eq!(raised.value, failure);
         drop(raised);
 
-        let trace_class = crate::obj_from_bits(crate::builtin_classes(&py).traceback)
+        let trace_class = crate::obj_from_bits(crate::builtin_classes(py).traceback)
             .as_ptr()
             .unwrap();
-        let trace_bits = crate::alloc_instance_for_class(&py, trace_class);
+        let trace_bits = crate::alloc_instance_for_class(py, trace_class);
         let traceback = OwnedPyObject::from_owned(GLOBAL_BRIDGE.owned_handle_to_pyobj(trace_bits));
         let mut normalized = errors::OwnedCError {
             exc_type: object::Py_NewRef(class_ptr),
@@ -1051,7 +1051,7 @@ fn raised_exception_transfer_preserves_identity_through_finalizers() {
     assert!(super::register_cpython_hooks());
     let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
     crate::concurrency::gil::with_gil(|_py| unsafe {
-        raised_exception_transfer_cases(&_py);
+        raised_exception_transfer_cases(_py);
         assert!(errors::PyErr_Occurred().is_null());
     });
 }
@@ -4859,7 +4859,7 @@ mod decimal_output_limits {
                 assert_eq!(take_raw(typeobj::PyObject_Repr(value.as_ptr())), b"7");
                 assert_eq!(scalar_format(value.as_ptr(), b""), b"7");
                 assert_eq!(scalar_format(value.as_ptr(), b"04d"), b"0007");
-                assert_eq!(runtime_scalar_format(&_py, value.as_ptr(), b"04d"), b"0007");
+                assert_eq!(runtime_scalar_format(_py, value.as_ptr(), b"04d"), b"0007");
                 assert_eq!(scalar_format(value.as_ptr(), b"x"), b"7");
                 assert_eq!(SCALAR_CONVERSIONS.load(Ordering::SeqCst), 0);
                 assert!(
@@ -4876,7 +4876,7 @@ mod decimal_output_limits {
                 assert_eq!(take_raw(typeobj::PyObject_Repr(value.as_ptr())), b"1.25");
                 assert_eq!(scalar_format(value.as_ptr(), b""), b"1.25");
                 assert_eq!(scalar_format(value.as_ptr(), b".2f"), b"1.25");
-                assert_eq!(runtime_scalar_format(&_py, value.as_ptr(), b".2f"), b"1.25");
+                assert_eq!(runtime_scalar_format(_py, value.as_ptr(), b".2f"), b"1.25");
                 assert_eq!(SCALAR_CONVERSIONS.load(Ordering::SeqCst), 0);
                 assert!(
                     GLOBAL_BRIDGE
@@ -4902,7 +4902,7 @@ mod decimal_output_limits {
                 assert_eq!(scalar_format(value.as_ptr(), b""), b"(1.25-2.5j)");
                 assert_eq!(scalar_format(value.as_ptr(), b".2f"), b"1.25-2.50j");
                 assert_eq!(
-                    runtime_scalar_format(&_py, value.as_ptr(), b".2f"),
+                    runtime_scalar_format(_py, value.as_ptr(), b".2f"),
                     b"1.25-2.50j"
                 );
                 assert!(
@@ -4991,7 +4991,7 @@ mod decimal_output_limits {
             assert!(!value.as_ptr().is_null());
             assert_eq!(scalar_format(value.as_ptr(), b"d"), b"native-format");
             assert_eq!(
-                runtime_scalar_format(&_py, value.as_ptr(), b"d"),
+                runtime_scalar_format(_py, value.as_ptr(), b"d"),
                 b"native-format"
             );
             let base_format = OwnedPyObject::from_owned(object::PyObject_GetAttrString(

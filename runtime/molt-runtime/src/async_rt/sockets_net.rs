@@ -185,7 +185,6 @@ fn bytes_like_obj_to_vec(obj: MoltObject) -> Option<Vec<u8>> {
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socketpair_attached_body(
     _py: &crate::PyToken<'_>,
     family_bits: u64,
@@ -424,7 +423,6 @@ pub(crate) fn molt_socketpair_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_getaddrinfo_attached_body(
     _py: &crate::PyToken<'_>,
     host_bits: u64,
@@ -872,7 +870,6 @@ pub(crate) fn molt_socket_getaddrinfo_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_getnameinfo_attached_body(
     _py: &crate::PyToken<'_>,
     addr_bits: u64,
@@ -1014,7 +1011,6 @@ pub(crate) fn molt_socket_getnameinfo_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_gethostname_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     unsafe {
         crate::with_attached_entry_nopanic!(_py, _py, {
@@ -1783,7 +1779,6 @@ pub(crate) fn molt_socket_getfqdn_attached_body(_py: &crate::PyToken<'_>, name_b
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_getservbyname_attached_body(
     _py: &crate::PyToken<'_>,
     name_bits: u64,
@@ -1888,7 +1883,6 @@ pub(crate) fn molt_socket_getservbyname_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_getservbyport_attached_body(
     _py: &crate::PyToken<'_>,
     port_bits: u64,
@@ -1988,7 +1982,6 @@ pub(crate) fn molt_socket_getservbyport_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_getprotobyname_attached_body(
     _py: &crate::PyToken<'_>,
     name_bits: u64,
@@ -2071,7 +2064,6 @@ pub(crate) fn molt_socket_getprotobyname_attached_body(
 }
 
 #[cfg(molt_has_net_io)]
-
 pub(crate) fn molt_socket_has_ipv6_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let supported = std::net::TcpListener::bind("[::1]:0").is_ok();
@@ -2090,7 +2082,6 @@ pub(crate) fn molt_socket_has_ipv6_attached_body(_py: &crate::PyToken<'_>) -> u6
 // --- if_nameindex / if_nametoindex / if_indextoname ---
 
 #[cfg(unix)]
-
 pub(crate) fn molt_socket_if_nameindex_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe {
@@ -2149,7 +2140,6 @@ pub(crate) fn molt_socket_if_nameindex_attached_body(_py: &crate::PyToken<'_>) -
 }
 
 #[cfg(unix)]
-
 pub(crate) fn molt_socket_if_nametoindex_attached_body(
     _py: &crate::PyToken<'_>,
     name_bits: u64,
@@ -2204,7 +2194,6 @@ pub(crate) fn molt_socket_if_nametoindex_attached_body(
 }
 
 #[cfg(unix)]
-
 pub(crate) fn molt_socket_if_indextoname_attached_body(
     _py: &crate::PyToken<'_>,
     index_bits: u64,
@@ -2257,7 +2246,6 @@ pub(crate) fn molt_socket_if_indextoname_attached_body(
 // --- has_dualstack_ipv6 ---
 
 #[cfg(molt_has_net_io)]
-
 pub(crate) fn molt_socket_has_dualstack_ipv6_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let supported = (|| -> bool {
@@ -2281,7 +2269,6 @@ pub(crate) fn molt_socket_has_dualstack_ipv6_attached_body(_py: &crate::PyToken<
 #[cfg(unix)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_send_fds_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -2367,7 +2354,6 @@ pub(crate) unsafe fn molt_socket_send_fds_attached_body(
 #[cfg(unix)]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_recv_fds_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -2621,7 +2607,6 @@ pub(crate) unsafe fn molt_socket_sendfile_attached_body(
 #[cfg(all(target_os = "macos", molt_has_net_io))]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_sendfile_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -2837,7 +2822,6 @@ pub(crate) fn molt_socket_sendfile_attached_body(
 #[cfg(unix)]
 /// # Safety
 /// Caller must pass valid runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_sethostname_attached_body(
     _py: &crate::PyToken<'_>,
     name_bits: u64,

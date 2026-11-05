@@ -10,7 +10,7 @@ fn sequence_slice_failed_publication_retains_error_and_original_storage() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
         let item = MoltObject::from_int(7).bits();
-        let list = crate::alloc_list(&py, &[item]);
+        let list = crate::alloc_list(py, &[item]);
         assert!(!list.is_null());
         let bits = MoltObject::from_ptr(list).bits();
         // A malformed physical projection must fail before publishing either
@@ -30,18 +30,18 @@ fn sequence_slice_failed_publication_retains_error_and_original_storage() {
         assert!(!obj_from_bits(raised).is_none());
         let raised_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(raised);
         assert!(!raised_view.is_null());
-        assert_eq!(crate::exception_last_bits_noinc(&py), Some(raised));
+        assert_eq!(crate::exception_last_bits_noinc(py), Some(raised));
         assert_eq!(GLOBAL_BRIDGE.handle_to_borrowed_pyobj(raised), raised_view);
-        assert_eq!(crate::exception_last_bits_noinc(&py), Some(raised));
+        assert_eq!(crate::exception_last_bits_noinc(py), Some(raised));
         let observed = errors::PyErr_GetRaisedException();
         let observed_owner = refcount::OwnedPyObject::from_owned(observed);
         assert_eq!(observed, raised_view);
         drop(observed_owner);
         assert_eq!(crate::list_len(list), 1);
         assert_eq!((&*crate::seq_vec_ptr(list))[0], item);
-        dec_ref_bits(&py, raised);
-        dec_ref_bits(&py, bits);
-        assert!(!crate::exception_pending(&py));
+        dec_ref_bits(py, raised);
+        dec_ref_bits(py, bits);
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -56,30 +56,27 @@ fn cold_projection_preserves_independent_raised_channels() {
         let c_error = errors::take_current_error().expect("C error");
         let c_type = c_error.exc_type;
         let c_value = c_error.value;
-        let runtime_ptr = crate::builtins::exceptions::alloc_exception(
-            &py,
-            BuiltinExc::KeyError,
-            "runtime error",
-        );
+        let runtime_ptr =
+            crate::builtins::exceptions::alloc_exception(py, BuiltinExc::KeyError, "runtime error");
         let runtime = MoltObject::from_ptr(runtime_ptr).bits();
         // Restore already-owned independent channels without a new semantic
         // raise, which correctly replaces either previous indicator.
-        crate::test_support::restore_pending_channels(&py, c_error, runtime);
-        assert_eq!(crate::exception_last_bits_noinc(&py), Some(runtime));
+        crate::test_support::restore_pending_channels(py, c_error, runtime);
+        assert_eq!(crate::exception_last_bits_noinc(py), Some(runtime));
         assert_eq!(errors::PyErr_Occurred(), c_type);
         let projected = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(runtime);
         assert!(
             !projected.is_null(),
             "cold exception view must materialize its fields"
         );
-        assert_eq!(crate::exception_last_bits_noinc(&py), Some(runtime));
+        assert_eq!(crate::exception_last_bits_noinc(py), Some(runtime));
         let restored = errors::take_current_error().expect("C channel is independent");
         assert_eq!(restored.exc_type, c_type);
         assert_eq!(restored.value, c_value);
         assert!(restored.traceback.is_null());
         drop(restored);
-        crate::clear_exception(&py);
-        dec_ref_bits(&py, runtime);
+        crate::clear_exception(py);
+        dec_ref_bits(py, runtime);
         assert!(errors::PyErr_Occurred().is_null());
     });
 }
@@ -94,7 +91,7 @@ extern "C" fn forbidden_storage_iteration(__context: u64, _: u64) -> u64 {
 
     {
         let py = __py;
-        crate::raise_exception::<u64>(&py, BuiltinExc::AssertionError, "iterated list storage")
+        crate::raise_exception::<u64>(py, BuiltinExc::AssertionError, "iterated list storage")
     }
 }
 
@@ -110,10 +107,10 @@ extern "C" fn replacement_iteration(__context: u64, _: u64) -> u64 {
         let py = __py;
         {
             let values =
-                MoltObject::from_ptr(crate::alloc_list(&py, &[MoltObject::from_int(9).bits()]))
+                MoltObject::from_ptr(crate::alloc_list(py, &[MoltObject::from_int(9).bits()]))
                     .bits();
             let iterator = crate::molt_iter_attached_body(py, values);
-            dec_ref_bits(&py, values);
+            dec_ref_bits(py, values);
             iterator
         }
     }
@@ -148,10 +145,10 @@ fn sequence_materialization_separates_subtype_iteration_from_list_storage_mutati
     use molt_cpython_abi::api::{abstract_sequence, numbers, sequences};
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
-        let destination = list_subtype(&py, forbidden_storage_iteration as *const ());
+        let destination = list_subtype(py, forbidden_storage_iteration as *const ());
         crate::molt_list_append_attached_body(py, destination, MoltObject::from_int(1).bits());
         crate::molt_list_append_attached_body(py, destination, MoltObject::from_int(2).bits());
-        let source = list_subtype(&py, replacement_iteration as *const ());
+        let source = list_subtype(py, replacement_iteration as *const ());
         crate::molt_list_append_attached_body(py, source, MoltObject::from_int(5).bits());
         let dest_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(destination);
         let source_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(source);
@@ -193,9 +190,9 @@ fn sequence_materialization_separates_subtype_iteration_from_list_storage_mutati
             1
         );
         errors::PyErr_Clear();
-        dec_ref_bits(&py, source);
-        dec_ref_bits(&py, destination);
-        assert!(!crate::exception_pending(&py));
+        dec_ref_bits(py, source);
+        dec_ref_bits(py, destination);
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -368,7 +365,7 @@ fn sequence_length_hint_uses_type_lookup_and_distinguishes_lookup_from_call_fail
         refcount::Py_DECREF(name);
         assert_eq!(descriptor.ob_refcnt, 1);
         assert_eq!(receiver.ob_refcnt, 1);
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -377,12 +374,12 @@ fn sequence_headers_share_admission_materialization_and_pending_error_custody() 
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     molt_cpython_abi_test_support::link();
     crate::with_gil(|py| unsafe {
-        let marker = crate::alloc_string(&py, b"first");
+        let marker = crate::alloc_string(py, b"first");
         assert!(!marker.is_null());
         let marker_bits = MoltObject::from_ptr(marker).bits();
-        let list = crate::alloc_list(&py, &[marker_bits, MoltObject::from_float(0.0).bits()]);
-        dec_ref_bits(&py, marker_bits);
-        let dict = crate::alloc_dict_with_pairs(&py, &[]);
+        let list = crate::alloc_list(py, &[marker_bits, MoltObject::from_float(0.0).bits()]);
+        dec_ref_bits(py, marker_bits);
+        let dict = crate::alloc_dict_with_pairs(py, &[]);
         let list_bits = MoltObject::from_ptr(list).bits();
         let dict_bits = MoltObject::from_ptr(dict).bits();
         let list_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(list_bits);
@@ -394,7 +391,7 @@ fn sequence_headers_share_admission_materialization_and_pending_error_custody() 
             molt_public_type_identity_probe_sequence_materialization,
         ] {
             assert_eq!(probe(list_view, first), 0);
-            assert!(!crate::exception_pending(&py));
+            assert!(!crate::exception_pending(py));
             assert!(errors::PyErr_Occurred().is_null());
         }
         for probe in [
@@ -418,7 +415,7 @@ fn sequence_headers_share_admission_materialization_and_pending_error_custody() 
             assert_eq!(observed, incoming);
             drop(observed_owner);
             drop(incoming_owner);
-            crate::raise_exception::<()>(&py, BuiltinExc::LookupError, "incoming runtime error");
+            crate::raise_exception::<()>(py, BuiltinExc::LookupError, "incoming runtime error");
             let incoming =
                 crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
             assert_eq!(probe(list_view), 1);
@@ -426,13 +423,13 @@ fn sequence_headers_share_admission_materialization_and_pending_error_custody() 
             let observed =
                 crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
             assert_eq!(observed, incoming);
-            crate::clear_exception(&py);
-            dec_ref_bits(&py, observed);
-            dec_ref_bits(&py, incoming);
+            crate::clear_exception(py);
+            dec_ref_bits(py, observed);
+            dec_ref_bits(py, incoming);
         }
-        dec_ref_bits(&py, list_bits);
-        dec_ref_bits(&py, dict_bits);
-        assert!(!crate::exception_pending(&py));
+        dec_ref_bits(py, list_bits);
+        dec_ref_bits(py, dict_bits);
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -486,7 +483,7 @@ extern "C" fn projection_self_iter(__context: u64, value: u64) -> u64 {
     {
         let py = __py;
         {
-            inc_ref_bits(&py, value);
+            inc_ref_bits(py, value);
             value
         }
     }
@@ -542,29 +539,28 @@ fn managed_iteration_preserves_owned_values_completion_and_live_class_lookup() {
     use molt_cpython_abi::api::numbers;
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
-        let name = crate::dynamic_attr_name_bits(&py, b"ProjectedIterator").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"ProjectedIterator").unwrap();
         let class = crate::molt_class_new_attached_body(py, name);
-        dec_ref_bits(&py, name);
-        crate::molt_class_set_base_attached_body(py, class, builtin_classes(&py).object);
-        projection_install(&py, class, b"__iter__", projection_self_iter as *const ());
-        projection_install(&py, class, b"__next__", projection_next as *const ());
-        crate::object::class_finish_definition(&py, obj_from_bits(class).as_ptr().unwrap())
-            .unwrap();
-        let instance = crate::call_callable0(&py, class);
+        dec_ref_bits(py, name);
+        crate::molt_class_set_base_attached_body(py, class, builtin_classes(py).object);
+        projection_install(py, class, b"__iter__", projection_self_iter as *const ());
+        projection_install(py, class, b"__next__", projection_next as *const ());
+        crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap()).unwrap();
+        let instance = crate::call_callable0(py, class);
         let view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(instance);
         assert!(!view.is_null());
-        let payload = MoltObject::from_ptr(crate::alloc_list(&py, &[])).bits();
+        let payload = MoltObject::from_ptr(crate::alloc_list(py, &[])).bits();
         let payload_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(payload);
         let stop = MoltObject::from_ptr(crate::builtins::exceptions::alloc_exception(
-            &py,
+            py,
             BuiltinExc::StopIteration,
             "completion",
         ))
         .bits();
-        let value_name = crate::dynamic_attr_name_bits(&py, b"value").unwrap();
+        let value_name = crate::dynamic_attr_name_bits(py, b"value").unwrap();
         crate::molt_set_attr_name_attached_body(py, stop, value_name, payload);
-        dec_ref_bits(&py, value_name);
-        assert!(!crate::exception_pending(&py));
+        dec_ref_bits(py, value_name);
+        assert!(!crate::exception_pending(py));
         PROJECTION_NEXT.with(|state| state.set((0, stop)));
         assert_eq!(object::PyIter_Check(view), 1);
         assert_eq!(PROJECTION_NEXT.with(|state| state.get().0), 0);
@@ -598,7 +594,7 @@ fn managed_iteration_preserves_owned_values_completion_and_live_class_lookup() {
         }
 
         let failure = MoltObject::from_ptr(crate::builtins::exceptions::alloc_exception(
-            &py,
+            py,
             BuiltinExc::ValueError,
             "iterator callback",
         ))
@@ -623,7 +619,7 @@ fn managed_iteration_preserves_owned_values_completion_and_live_class_lookup() {
 
         // A previously projected class does not freeze its Python slot owner.
         projection_install(
-            &py,
+            py,
             class,
             b"__next__",
             projection_replaced_next as *const (),
@@ -635,9 +631,9 @@ fn managed_iteration_preserves_owned_values_completion_and_live_class_lookup() {
         refcount::Py_DECREF(iter);
         PROJECTION_NEXT.with(|state| state.set((0, 0)));
         for bits in [failure, stop, payload, instance, class] {
-            dec_ref_bits(&py, bits);
+            dec_ref_bits(py, bits);
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -645,7 +641,7 @@ fn managed_iteration_preserves_owned_values_completion_and_live_class_lookup() {
 fn managed_iteration_rejects_noniterator_results_and_noniterable_values() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
-        let instance = list_subtype(&py, projection_replaced_next as *const ());
+        let instance = list_subtype(py, projection_replaced_next as *const ());
         let view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(instance);
         assert!(!view.is_null());
         assert_eq!(object::PyIter_Check(view), 0);
@@ -662,8 +658,8 @@ fn managed_iteration_rejects_noniterator_results_and_noniterable_values() {
             1
         );
         errors::PyErr_Clear();
-        dec_ref_bits(&py, instance);
-        assert!(!crate::exception_pending(&py));
+        dec_ref_bits(py, instance);
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -684,32 +680,32 @@ fn indexed_reads_share_inherited_slots_and_normalize_negative_indices_once() {
     use molt_cpython_abi::api::{abstract_sequence, numbers};
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
-        let list = list_subtype(&py, forbidden_storage_iteration as *const ());
+        let list = list_subtype(py, forbidden_storage_iteration as *const ());
         for item in [11, 22, 33] {
             crate::molt_list_append_attached_body(py, list, MoltObject::from_int(item).bits());
         }
         let view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(list);
-        assert_eq!(sequence_check_bits(&py, list), 1);
+        assert_eq!(sequence_check_bits(py, list), 1);
         assert_eq!(
-            to_i64(obj_from_bits(sequence_item_at_index(&py, list, -1))),
+            to_i64(obj_from_bits(sequence_item_at_index(py, list, -1))),
             Some(33)
         );
-        let _ = sequence_item_at_index(&py, list, -4);
+        let _ = sequence_item_at_index(py, list, -4);
         assert_eq!(
             errors::PyErr_ExceptionMatches((&raw mut abi_types::PyExc_IndexError).cast()),
             1
         );
         errors::PyErr_Clear();
-        let class = type_of_bits(&py, list);
+        let class = type_of_bits(py, list);
         projection_install(
-            &py,
+            py,
             class,
             b"__len__",
             indexed_read_short_length as *const (),
         );
         // Inherited native sq_item uses the new length, then reads raw storage.
         assert_eq!(
-            to_i64(obj_from_bits(sequence_item_at_index(&py, list, -1))),
+            to_i64(obj_from_bits(sequence_item_at_index(py, list, -1))),
             Some(11)
         );
         let result = abstract_sequence::PySequence_GetItem(view, -1);
@@ -722,8 +718,8 @@ fn indexed_reads_share_inherited_slots_and_normalize_negative_indices_once() {
             1
         );
         errors::PyErr_Clear();
-        dec_ref_bits(&py, list);
-        assert!(!crate::exception_pending(&py));
+        dec_ref_bits(py, list);
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -761,18 +757,18 @@ fn indexed_foreign_reads_use_native_slots_and_preserve_result_ownership() {
             .molt_value_for_pyobj(&raw mut native)
             .expect("foreign receiver");
         assert_eq!(
-            to_i64(obj_from_bits(sequence_item_at_index(&py, receiver, -1))),
+            to_i64(obj_from_bits(sequence_item_at_index(py, receiver, -1))),
             Some(2)
         );
-        let _ = sequence_item_at_index(&py, receiver, -4);
+        let _ = sequence_item_at_index(py, receiver, -4);
         assert_eq!(
             errors::PyErr_ExceptionMatches((&raw mut abi_types::PyExc_IndexError).cast()),
             1
         );
         errors::PyErr_Clear();
-        dec_ref_bits(&py, receiver);
+        dec_ref_bits(py, receiver);
         assert_eq!(native.ob_refcnt, 1);
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -794,10 +790,10 @@ fn list_root_sequence_slots_preserve_storage_and_follow_override_mutation() {
     use molt_cpython_abi::type_slots as slots;
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
-        let value = list_subtype(&py, forbidden_storage_iteration as *const ());
+        let value = list_subtype(py, forbidden_storage_iteration as *const ());
         crate::molt_list_append_attached_body(py, value, MoltObject::from_int(1).bits());
         crate::molt_list_append_attached_body(py, value, MoltObject::from_int(2).bits());
-        let class = crate::type_of_bits(&py, value);
+        let class = crate::type_of_bits(py, value);
         let view = OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(value));
         let class_view =
             OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(class));
@@ -880,16 +876,16 @@ fn list_root_sequence_slots_preserve_storage_and_follow_override_mutation() {
         assert_eq!(sequences::PyList_Size(view.as_ptr()), 7);
 
         let method = MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
-            &py,
+            py,
             crate::provenance::abi::expose_function_address(
                 replacement_list_inplace_repeat as *const (),
             ),
             2,
         ))
         .bits();
-        let key = crate::dynamic_attr_name_bits(&py, b"__imul__").unwrap();
+        let key = crate::dynamic_attr_name_bits(py, b"__imul__").unwrap();
         crate::molt_set_attr_name_attached_body(py, class, key, method);
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
         assert!(
             typeobj::PyType_GetSlot(class_view.as_ptr().cast(), slots::Py_sq_inplace_repeat)
                 .is_null()
@@ -913,7 +909,7 @@ fn list_root_sequence_slots_preserve_storage_and_follow_override_mutation() {
         assert_eq!(numbers::PyLong_AsLongLong(overridden.as_ptr()), 71);
         assert_eq!(sequences::PyList_Size(view.as_ptr()), 7);
         crate::molt_del_attr_name_attached_body(py, class, key);
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
         assert_eq!(
             typeobj::PyType_GetSlot(class_view.as_ptr().cast(), slots::Py_sq_inplace_repeat),
             root_repeat
@@ -925,10 +921,10 @@ fn list_root_sequence_slots_preserve_storage_and_follow_override_mutation() {
         assert_eq!(cleared.as_ptr(), view.as_ptr());
         assert_eq!(sequences::PyList_Size(view.as_ptr()), 0);
         for bits in [key, method, value] {
-            dec_ref_bits(&py, bits);
+            dec_ref_bits(py, bits);
         }
         assert!(errors::PyErr_Occurred().is_null());
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -1098,7 +1094,7 @@ fn builtin_numeric_c_tables_keep_declaring_owner_and_complete_slot_domains() {
         let normal = OwnedPyObject::from_owned(abstract_number::PyNumber_And(truth, truth));
         assert_eq!(normal.as_ptr(), truth);
         assert!(errors::PyErr_Occurred().is_null());
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -1260,7 +1256,7 @@ fn builtin_numeric_declaring_slots_cover_unary_binary_power_and_truth() {
             );
         }
         assert!(errors::PyErr_Occurred().is_null());
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -1358,7 +1354,7 @@ fn builtin_container_number_tables_preserve_alias_and_view_fallback() {
         assert_eq!(sequences::PySet_Size(left.as_ptr()), 2);
 
         let pair = crate::alloc_tuple(
-            &py,
+            py,
             &[
                 MoltObject::from_int(7).bits(),
                 MoltObject::from_int(8).bits(),
@@ -1366,8 +1362,8 @@ fn builtin_container_number_tables_preserve_alias_and_view_fallback() {
         );
         assert!(!pair.is_null());
         let pair_bits = MoltObject::from_ptr(pair).bits();
-        let pairs = crate::alloc_list(&py, &[pair_bits]);
-        dec_ref_bits(&py, pair_bits);
+        let pairs = crate::alloc_list(py, &[pair_bits]);
+        dec_ref_bits(py, pair_bits);
         assert!(!pairs.is_null());
         let pairs = OwnedPyObject::from_owned(
             GLOBAL_BRIDGE.owned_handle_to_pyobj(MoltObject::from_ptr(pairs).bits()),
@@ -1383,6 +1379,6 @@ fn builtin_container_number_tables_preserve_alias_and_view_fallback() {
             8
         );
         assert!(errors::PyErr_Occurred().is_null());
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }

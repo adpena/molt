@@ -560,7 +560,7 @@ impl RuntimeServiceExecutionGuard {
             return None;
         }
         assert_eq!(
-            crate::runtime_state(&execution.token()).identity(),
+            crate::runtime_state(execution.token()).identity(),
             origin.identity()
         );
         Some(Self {
@@ -1392,7 +1392,7 @@ mod tests {
                 let resolved = crate::state::runtime_state::runtime_state_for_gil_in(tls)
                     .expect("an admitted thread resolves its runtime");
                 assert!(std::ptr::eq(bound, resolved));
-                assert!(std::ptr::eq(crate::runtime_state(&guard.token()), resolved));
+                assert!(std::ptr::eq(crate::runtime_state(guard.token()), resolved));
                 assert_eq!(
                     compiled_poll_word(guard.token()),
                     resolved.pending_work.word_ptr() as u64,
@@ -1424,10 +1424,7 @@ mod tests {
             let mut isolate = Box::new(crate::state::runtime_state::RuntimeState::new());
             crate::state::runtime_state::set_thread_runtime_state(&mut *isolate);
             assert!(std::ptr::eq(tls.bound_state.get(), &*isolate));
-            assert!(std::ptr::eq(
-                crate::runtime_state(&guard.token()),
-                &*isolate
-            ));
+            assert!(std::ptr::eq(crate::runtime_state(guard.token()), &*isolate));
             assert_eq!(
                 compiled_poll_word(guard.token()),
                 isolate.pending_work.word_ptr() as u64
@@ -1435,7 +1432,7 @@ mod tests {
             crate::state::runtime_state::clear_thread_runtime_state();
             assert!(tls.bound_state.get().is_null());
             assert_eq!(published_poll_word(std::ptr::from_ref(tls) as u64), 0);
-            assert!(std::ptr::eq(crate::runtime_state(&guard.token()), shared));
+            assert!(std::ptr::eq(crate::runtime_state(guard.token()), shared));
             // Internal full resolution after clear is distinct from publishing
             // a new compiled entry. The host boundary uses the same binder.
             assert_eq!(
@@ -1706,7 +1703,7 @@ mod tests {
         );
         assert!(!current_thread_has_c_extension_execution_context());
         assert!(!current_thread_holds_shutdown_drain_custody());
-        let profile = crate::object::ops::runtime_profile_payload(&gil.token(), false);
+        let profile = crate::object::ops::runtime_profile_payload(gil.token(), false);
         let safety = profile
             .get("execution_safety")
             .expect("runtime profile must expose execution-safety diagnostics");

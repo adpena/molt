@@ -503,14 +503,14 @@ extern "C" fn ws_recv_native_hook(ctx: *mut u8) -> i64 {
     loop {
         match guard.socket.read() {
             Ok(Message::Binary(bytes)) => {
-                let ptr = alloc_bytes(&crate::GilGuard::new().token(), &bytes);
+                let ptr = alloc_bytes(crate::GilGuard::new().token(), &bytes);
                 if ptr.is_null() {
                     return MoltObject::none().bits() as i64;
                 }
                 return MoltObject::from_ptr(ptr).bits() as i64;
             }
             Ok(Message::Text(text)) => {
-                let ptr = alloc_bytes(&crate::GilGuard::new().token(), text.as_bytes());
+                let ptr = alloc_bytes(crate::GilGuard::new().token(), text.as_bytes());
                 if ptr.is_null() {
                     return MoltObject::none().bits() as i64;
                 }
@@ -658,7 +658,6 @@ pub(crate) fn ws_wait_release_detached_resource(_py: &PyToken<'_>, ws_bits: u64)
 }
 
 #[cfg(molt_has_net_io)]
-
 pub(crate) fn molt_ws_set_connect_hook_attached_body(_py: &crate::PyToken<'_>, ptr: usize) {
     crate::with_attached_entry_nopanic!(_py, _py, {
         WS_CONNECT_HOOK.store(ptr, AtomicOrdering::Release);
@@ -668,7 +667,6 @@ pub(crate) fn molt_ws_set_connect_hook_attached_body(_py: &crate::PyToken<'_>, p
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass runtime-encoded values; returned handle is owned by the runtime.
-
 pub(crate) unsafe fn molt_asyncio_tls_client_connect_new_attached_body(
     _py: &crate::PyToken<'_>,
     host_bits: u64,
@@ -737,7 +735,6 @@ pub(crate) fn molt_asyncio_tls_client_connect_new_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass a valid socket fd encoded as runtime int bits.
-
 pub(crate) unsafe fn molt_asyncio_tls_client_from_fd_new_attached_body(
     _py: &crate::PyToken<'_>,
     fd_bits: u64,
@@ -800,7 +797,6 @@ pub(crate) fn molt_asyncio_tls_client_from_fd_new_attached_body(
 }
 
 #[cfg(molt_has_net_io)]
-
 pub(crate) fn molt_asyncio_tls_server_payload_attached_body(
     _py: &crate::PyToken<'_>,
     ssl_bits: u64,
@@ -882,7 +878,6 @@ pub(crate) fn molt_asyncio_tls_server_payload_attached_body(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass a valid socket fd and certificate/key path string bits.
-
 pub(crate) unsafe fn molt_asyncio_tls_server_from_fd_new_attached_body(
     _py: &crate::PyToken<'_>,
     fd_bits: u64,
@@ -940,7 +935,6 @@ pub(crate) fn molt_asyncio_tls_server_from_fd_new_attached_body(
 }
 
 #[cfg(molt_has_net_io)]
-
 /// # Safety
 /// Caller must ensure `url_ptr` is valid for `url_len` bytes and `out` is writable.
 pub(crate) unsafe fn molt_ws_connect_attached_body(
@@ -1122,7 +1116,6 @@ pub(crate) unsafe fn molt_ws_connect_attached_body(
 }
 
 #[cfg(molt_has_net_io)]
-
 pub(crate) fn molt_ws_wait_new_attached_body(
     _py: &crate::PyToken<'_>,
     ws_bits: u64,
@@ -1224,7 +1217,6 @@ pub(crate) fn molt_ws_wait_new_attached_body(
 }
 
 #[cfg(molt_has_net_io)]
-
 /// # Safety
 /// Caller must pass a valid ws-wait awaitable object bits value.
 pub(crate) unsafe fn molt_ws_wait_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> i64 {

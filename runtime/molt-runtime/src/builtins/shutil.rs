@@ -482,7 +482,6 @@ pub(crate) fn molt_shutil_move_attached_body(
 
 /// `shutil.disk_usage(path)` → tuple[int, int, int]  (total, used, free)
 #[cfg(not(target_arch = "wasm32"))]
-
 pub(crate) fn molt_shutil_disk_usage_attached_body(
     _py: &crate::PyToken<'_>,
     path_bits: u64,
@@ -605,7 +604,6 @@ pub(crate) fn molt_shutil_disk_usage_attached_body(
 ///
 /// `fallback_bits` is a tuple[int, int] or None (default 80×24).
 #[cfg(not(target_arch = "wasm32"))]
-
 pub(crate) fn molt_shutil_get_terminal_size_attached_body(
     _py: &crate::PyToken<'_>,
     fallback_bits: u64,
@@ -741,7 +739,6 @@ pub(crate) fn molt_shutil_get_terminal_size_attached_body(
 /// Supported formats: "zip", "tar", "gztar", "bztar", "xztar".
 /// Returns the path of the created archive.
 #[cfg(not(target_arch = "wasm32"))]
-
 pub(crate) fn molt_shutil_make_archive_attached_body(
     _py: &crate::PyToken<'_>,
     base_name_bits: u64,
@@ -887,7 +884,6 @@ pub(crate) fn molt_shutil_make_archive_attached_body(
 
 /// `shutil.unpack_archive(filename, extract_dir=None)` → None
 #[cfg(not(target_arch = "wasm32"))]
-
 pub(crate) fn molt_shutil_unpack_archive_attached_body(
     _py: &crate::PyToken<'_>,
     filename_bits: u64,
@@ -993,7 +989,6 @@ pub(crate) fn molt_shutil_unpack_archive_attached_body(
 ///
 /// `user_bits` / `group_bits` can be str (name) or int (uid/gid) or None.
 #[cfg(not(target_arch = "wasm32"))]
-
 pub(crate) fn molt_shutil_chown_attached_body(
     _py: &crate::PyToken<'_>,
     path_bits: u64,

@@ -203,7 +203,7 @@ unsafe fn pair(first: *mut PyObject, second: *mut PyObject) -> *mut PyObject {
 unsafe fn take_c_error(expected: *mut PyTypeObject) -> String {
     unsafe {
         let pending =
-            crate::with_gil(|py| crate::builtins::exceptions::pending_exception_diagnostic(&py));
+            crate::with_gil(|py| crate::builtins::exceptions::pending_exception_diagnostic(py));
         let observed = errors::PyErr_Occurred();
         assert_eq!(
             errors::PyErr_ExceptionMatches(expected.cast()),

@@ -7115,7 +7115,7 @@ mod tests {
                 let execution =
                     crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
                 MoltObject::from_ptr(alloc_exception(
-                    &execution.token(),
+                    execution.token(),
                     crate::BuiltinExc::RuntimeError,
                     "tls-shutdown",
                 ))
@@ -7186,7 +7186,7 @@ mod tests {
             {
                 let execution =
                     crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
-                dec_ref_bits(&execution.token(), exc_bits);
+                dec_ref_bits(execution.token(), exc_bits);
             }
             assert!(!molt_cpython_abi::api::object::current_thread_has_retained_runtime_state());
             assert_eq!(

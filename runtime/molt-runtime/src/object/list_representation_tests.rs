@@ -176,11 +176,10 @@ fn memoryview_cast_shape_reads_each_list_and_tuple_storage_without_promotion() {
     crate::concurrency::gil::with_gil(|py| unsafe {
         let one = MoltObject::from_int(1).bits();
         let mut shapes = vec![
-            MoltObject::from_ptr(crate::alloc_list(&py, &[one])).bits(),
-            MoltObject::from_ptr(crate::alloc_tuple(&py, &[one])).bits(),
-            MoltObject::from_ptr(builders::alloc_list_int_from_raw_slice(&py, &[1]).unwrap())
-                .bits(),
-            MoltObject::from_ptr(builders::alloc_list_bool_from_raw_slice(&py, &[1]).unwrap())
+            MoltObject::from_ptr(crate::alloc_list(py, &[one])).bits(),
+            MoltObject::from_ptr(crate::alloc_tuple(py, &[one])).bits(),
+            MoltObject::from_ptr(builders::alloc_list_int_from_raw_slice(py, &[1]).unwrap()).bits(),
+            MoltObject::from_ptr(builders::alloc_list_bool_from_raw_slice(py, &[1]).unwrap())
                 .bits(),
         ];
         let native_list =
@@ -200,9 +199,9 @@ fn memoryview_cast_shape_reads_each_list_and_tuple_storage_without_promotion() {
             assert!(GLOBAL_BRIDGE.molt_handle_for_pyobj(native).is_none());
             shapes.push(GLOBAL_BRIDGE.molt_value_for_pyobj(native).unwrap());
         }
-        let owner = MoltObject::from_ptr(crate::alloc_bytearray(&py, b"a")).bits();
+        let owner = MoltObject::from_ptr(crate::alloc_bytearray(py, b"a")).bits();
         let view = crate::molt_memoryview_new_attached_body(py, owner);
-        let format = MoltObject::from_ptr(crate::alloc_string(&py, b"B")).bits();
+        let format = MoltObject::from_ptr(crate::alloc_string(py, b"B")).bits();
         for shape in shapes {
             let original_type = object_type_id(obj_from_bits(shape).as_ptr().unwrap());
             let cast = crate::object::ops_memoryview::molt_memoryview_cast_attached_body(
@@ -213,7 +212,7 @@ fn memoryview_cast_shape_reads_each_list_and_tuple_storage_without_promotion() {
                 MoltObject::from_bool(true).bits(),
             );
             assert!(
-                !crate::exception_pending(&py),
+                !crate::exception_pending(py),
                 "shape storage {original_type}"
             );
             let cast_ptr = obj_from_bits(cast).as_ptr().unwrap();
@@ -223,12 +222,12 @@ fn memoryview_cast_shape_reads_each_list_and_tuple_storage_without_promotion() {
                 original_type
             );
             crate::molt_memoryview_release_attached_body(py, cast);
-            dec_ref_bits(&py, cast);
-            dec_ref_bits(&py, shape);
+            dec_ref_bits(py, cast);
+            dec_ref_bits(py, shape);
         }
         crate::molt_memoryview_release_attached_body(py, view);
-        dec_ref_bits(&py, format);
-        dec_ref_bits(&py, view);
-        dec_ref_bits(&py, owner);
+        dec_ref_bits(py, format);
+        dec_ref_bits(py, view);
+        dec_ref_bits(py, owner);
     });
 }

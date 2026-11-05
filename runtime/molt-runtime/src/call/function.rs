@@ -3720,7 +3720,7 @@ mod tests {
         if fail {
             crate::with_gil(|py| {
                 crate::raise_exception::<u64>(
-                    &py,
+                    py,
                     crate::BuiltinExc::ValueError,
                     "C dispatch failure",
                 );
@@ -3857,7 +3857,7 @@ mod tests {
             };
             let function = cext_dispatch_function();
             assert_ne!(function, 0);
-            let list = alloc_list(&py, &[]);
+            let list = alloc_list(py, &[]);
             assert!(!list.is_null());
             let value = MoltObject::from_ptr(list).bits();
             // The first borrowed C view owns one stable runtime hold.
@@ -3877,12 +3877,12 @@ mod tests {
                     for lane in 0..4 {
                         CEXT_DISPATCH.with(|state| *state.borrow_mut() = Default::default());
                         let result = match lane {
-                            0 => cext_bound_call(&py, function, &args),
-                            1 => super::call_function_obj_bound_vec(&py, function, &args),
-                            2 => super::call_function_obj_vec(&py, function, &args),
-                            _ => super::call_function_obj_trampoline(&py, function, &args),
+                            0 => cext_bound_call(py, function, &args),
+                            1 => super::call_function_obj_bound_vec(py, function, &args),
+                            2 => super::call_function_obj_vec(py, function, &args),
+                            _ => super::call_function_obj_trampoline(py, function, &args),
                         };
-                        assert!(!crate::exception_pending(&py));
+                        assert!(!crate::exception_pending(py));
                         assert_eq!(result, if width == 0 { int(197) } else { value });
                         assert_cext_dispatch(recursion, frames, width, 0);
                         assert!(current_thread_has_c_extension_execution_context());
@@ -3891,20 +3891,20 @@ mod tests {
                             execution_before,
                             "exact execution custody must be restored"
                         );
-                        dec_ref_bits(&py, result);
+                        dec_ref_bits(py, result);
                         assert_eq!(ref_count(value), baseline);
                     }
                 }
                 // Keyword binding must use the same dispatcher without an outer activation.
                 CEXT_DISPATCH.with(|state| *state.borrow_mut() = Default::default());
-                let builder = crate::molt_callargs_new_attached_body(&py, 1, 1);
+                let builder = crate::molt_callargs_new_attached_body(py, 1, 1);
                 assert_ne!(builder, 0);
-                let key = string_bits(&py, "named");
-                crate::molt_callargs_push_pos_attached_body(&py, builder, value);
-                crate::molt_callargs_push_kw_attached_body(&py, builder, key, value);
-                let result = crate::molt_call_bind_attached_body(&py, function, builder);
+                let key = string_bits(py, "named");
+                crate::molt_callargs_push_pos_attached_body(py, builder, value);
+                crate::molt_callargs_push_kw_attached_body(py, builder, key, value);
+                let result = crate::molt_call_bind_attached_body(py, function, builder);
                 assert_eq!(result, value);
-                assert!(!crate::exception_pending(&py));
+                assert!(!crate::exception_pending(py));
                 assert_cext_dispatch(recursion, frames, 1, 1);
                 assert!(current_thread_has_c_extension_execution_context());
                 assert_eq!(
@@ -3912,13 +3912,13 @@ mod tests {
                     execution_before,
                     "exact execution custody must be restored"
                 );
-                dec_ref_bits(&py, result);
-                dec_ref_bits(&py, key);
+                dec_ref_bits(py, result);
+                dec_ref_bits(py, key);
                 assert_eq!(ref_count(value), baseline);
             }
             assert!(current_thread_has_c_extension_execution_context());
-            dec_ref_bits(&py, value);
-            dec_ref_bits(&py, function);
+            dec_ref_bits(py, value);
+            dec_ref_bits(py, function);
         });
         assert!(!crate::concurrency::execution::current_thread_has_c_extension_execution_context());
     }
@@ -3963,8 +3963,8 @@ mod tests {
                     CEXT_DISPATCH.with(|state| *state.borrow_mut() = Default::default());
                     // Call private fixed arms directly: the public vector entry
                     // can intercept the trampoline before these arms are reached.
-                    let result = cext_bound_call(&py, function, &args[..width]);
-                    dec_ref_bits(&py, result);
+                    let result = cext_bound_call(py, function, &args[..width]);
+                    dec_ref_bits(py, result);
                     CEXT_DISPATCH.with(|state| assert_eq!(state.borrow().calls, 0));
                     {
                         let error =
@@ -3990,7 +3990,7 @@ mod tests {
                         );
                     }
                     assert!(errors::PyErr_Occurred().is_null());
-                    assert!(!crate::exception_pending(&py));
+                    assert!(!crate::exception_pending(py));
                     assert!(current_thread_has_c_extension_execution_context());
                     assert_eq!(
                         (molt_cpython_abi::hooks::hooks_or_stubs().foreign_execution_capture)(),
@@ -3998,7 +3998,7 @@ mod tests {
                         "exact execution custody must be restored"
                     );
                 }
-                dec_ref_bits(&py, function);
+                dec_ref_bits(py, function);
             }
             assert!(current_thread_has_c_extension_execution_context());
         });
@@ -4014,7 +4014,7 @@ mod tests {
             };
             let function = cext_dispatch_function();
             assert_ne!(function, 0);
-            let list = alloc_list(&py, &[]);
+            let list = alloc_list(py, &[]);
             assert!(!list.is_null());
             let value = MoltObject::from_ptr(list).bits();
             // The first borrowed C view owns one stable runtime hold.
@@ -4037,9 +4037,9 @@ mod tests {
                         };
                     });
                     // The same object occupies two separately owned operands.
-                    crate::inc_ref_bits(&py, value);
-                    crate::inc_ref_bits(&py, value);
-                    let result = super::call_function_obj_moved(&py, function, &[value, value]);
+                    crate::inc_ref_bits(py, value);
+                    crate::inc_ref_bits(py, value);
+                    let result = super::call_function_obj_moved(py, function, &[value, value]);
                     assert_cext_dispatch(recursion, frames, 2, 0);
                     assert!(current_thread_has_c_extension_execution_context());
                     assert_eq!(
@@ -4048,57 +4048,57 @@ mod tests {
                         "exact execution custody must be restored"
                     );
                     if fail {
-                        assert!(crate::exception_pending(&py));
+                        assert!(crate::exception_pending(py));
                         let raised = CEXT_DISPATCH.with(|state| state.borrow().raised);
-                        let pending = crate::molt_exception_last_pending_attached_body(&py);
+                        let pending = crate::molt_exception_last_pending_attached_body(py);
                         assert_ne!(raised, 0);
                         assert_eq!(
                             pending, raised,
                             "argument cleanup replaced the callback error"
                         );
-                        crate::molt_exception_clear_attached_body(&py);
+                        crate::molt_exception_clear_attached_body(py);
                         molt_cpython_abi::api::errors::PyErr_Clear();
-                        dec_ref_bits(&py, raised);
-                        dec_ref_bits(&py, pending);
+                        dec_ref_bits(py, raised);
+                        dec_ref_bits(py, pending);
                     } else {
-                        assert!(!crate::exception_pending(&py));
+                        assert!(!crate::exception_pending(py));
                         assert_eq!(result, value);
                     }
-                    dec_ref_bits(&py, result);
+                    dec_ref_bits(py, result);
                     assert_eq!(ref_count(value), baseline);
                 }
                 // The C borrowing rule does not authorize moved input to arbitrary
                 // borrowing functions, which are not identified by the C trampoline.
                 let ordinary = crate::builtins::functions::alloc_runtime_function_obj(
-                    &py,
+                    py,
                     identity_returns_owned_arg as *const () as usize as u64,
                     1,
                 );
                 assert!(!ordinary.is_null());
                 let ordinary = MoltObject::from_ptr(ordinary).bits();
-                crate::inc_ref_bits(&py, value);
-                let result = super::call_function_obj_moved(&py, ordinary, &[value]);
-                assert!(crate::exception_pending(&py));
-                let pending = crate::molt_exception_last_pending_attached_body(&py);
+                crate::inc_ref_bits(py, value);
+                let result = super::call_function_obj_moved(py, ordinary, &[value]);
+                assert!(crate::exception_pending(py));
+                let pending = crate::molt_exception_last_pending_attached_body(py);
                 assert_eq!(
-                    crate::builtins::exceptions::exception_class(&py, pending)
+                    crate::builtins::exceptions::exception_class(py, pending)
                         .unwrap()
                         .bits(),
                     crate::builtins::exceptions::exception_class_bits(
-                        &py,
+                        py,
                         crate::BuiltinExc::SystemError
                     ),
                 );
-                crate::molt_exception_clear_attached_body(&py);
+                crate::molt_exception_clear_attached_body(py);
                 molt_cpython_abi::api::errors::PyErr_Clear();
-                dec_ref_bits(&py, pending);
-                dec_ref_bits(&py, result);
-                dec_ref_bits(&py, ordinary);
+                dec_ref_bits(py, pending);
+                dec_ref_bits(py, result);
+                dec_ref_bits(py, ordinary);
                 assert_eq!(ref_count(value), baseline);
             }
             assert!(current_thread_has_c_extension_execution_context());
-            dec_ref_bits(&py, value);
-            dec_ref_bits(&py, function);
+            dec_ref_bits(py, value);
+            dec_ref_bits(py, function);
         });
         assert!(!crate::concurrency::execution::current_thread_has_c_extension_execution_context());
     }

@@ -20,7 +20,6 @@ static DB_QUERY_HOOK: AtomicUsize = AtomicUsize::new(0);
 static DB_EXEC_HOOK: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(not(target_arch = "wasm32"))]
-
 pub(crate) fn molt_db_set_query_hook_attached_body(_py: &crate::PyToken<'_>, ptr: usize) {
     crate::with_attached_entry_nopanic!(_py, _py, {
         DB_QUERY_HOOK.store(ptr, AtomicOrdering::Release);
@@ -28,7 +27,6 @@ pub(crate) fn molt_db_set_query_hook_attached_body(_py: &crate::PyToken<'_>, ptr
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-
 pub(crate) fn molt_db_set_exec_hook_attached_body(_py: &crate::PyToken<'_>, ptr: usize) {
     crate::with_attached_entry_nopanic!(_py, _py, {
         DB_EXEC_HOOK.store(ptr, AtomicOrdering::Release);

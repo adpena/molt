@@ -39,7 +39,7 @@ fn c_attribute_consumers_reject_non_string_names_before_callbacks() {
                 1
             );
             errors::PyErr_Clear();
-            crate::clear_exception(&py);
+            crate::clear_exception(py);
         }
         assert_eq!(receiver.calls, 0);
         refcount::Py_DECREF(name);
@@ -100,7 +100,7 @@ fn native_attribute_failures_reach_all_public_runtime_consumers() {
         let bits = GLOBAL_BRIDGE
             .molt_value_for_pyobj(&raw mut receiver.object)
             .unwrap();
-        let name = dynamic_attr_name_bits(&py, b"field").unwrap();
+        let name = dynamic_attr_name_bits(py, b"field").unwrap();
         let none = MoltObject::none().bits();
         for (legacy, malformed) in [(false, false), (false, true), (true, false), (true, true)] {
             kind.tp_getattro = if legacy { None } else { Some(attribute_get) };
@@ -124,9 +124,9 @@ fn native_attribute_failures_reach_all_public_runtime_consumers() {
                 }
                 assert_eq!(receiver.calls, before + 1, "callback must not be retried");
                 let error =
-                    crate::exception_last_bits_noinc(&py).expect("native failure is pending");
+                    crate::exception_last_bits_noinc(py).expect("native failure is pending");
                 assert!(crate::builtins::exceptions::exception_matches_kind(
-                    &py,
+                    py,
                     error,
                     if malformed {
                         crate::BuiltinExc::SystemError
@@ -150,8 +150,8 @@ fn native_attribute_failures_reach_all_public_runtime_consumers() {
                     errors::take_current_error().is_none(),
                     "observing the pending type must not create a C-owned error"
                 );
-                assert_eq!(crate::exception_last_bits_noinc(&py), Some(error));
-                crate::clear_exception(&py);
+                assert_eq!(crate::exception_last_bits_noinc(py), Some(error));
+                crate::clear_exception(py);
             }
         }
         kind.tp_setattro = None;
@@ -161,9 +161,9 @@ fn native_attribute_failures_reach_all_public_runtime_consumers() {
             } else {
                 crate::molt_set_attr_name_attached_body(py, bits, name, none);
             }
-            let error = crate::exception_last_bits_noinc(&py).expect("missing setter is an error");
+            let error = crate::exception_last_bits_noinc(py).expect("missing setter is an error");
             assert!(crate::builtins::exceptions::exception_matches_kind(
-                &py,
+                py,
                 error,
                 crate::BuiltinExc::TypeError
             ));
@@ -176,11 +176,11 @@ fn native_attribute_failures_reach_all_public_runtime_consumers() {
                 errors::take_current_error().is_none(),
                 "observing the pending type must not create a C-owned error"
             );
-            assert_eq!(crate::exception_last_bits_noinc(&py), Some(error));
-            crate::clear_exception(&py);
+            assert_eq!(crate::exception_last_bits_noinc(py), Some(error));
+            crate::clear_exception(py);
         }
-        dec_ref_bits(&py, name);
-        dec_ref_bits(&py, bits);
+        dec_ref_bits(py, name);
+        dec_ref_bits(py, bits);
         assert_eq!(receiver.object.ob_refcnt, 1);
         assert_eq!(kind.ob_base.ob_base.ob_refcnt, 1);
     });
@@ -248,7 +248,7 @@ fn legacy_attribute_slots_and_generic_calls_have_distinct_completion_contracts()
                 1
             );
             errors::PyErr_Clear();
-            crate::clear_exception(&py);
+            crate::clear_exception(py);
         }
         assert_eq!(receiver.calls, 2);
         // Calling the same physical receiver through tp_call is a generic

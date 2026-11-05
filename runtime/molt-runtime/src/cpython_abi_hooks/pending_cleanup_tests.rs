@@ -322,7 +322,7 @@ unsafe fn class_projection_numeric_result(object: *mut PyObject, index: bool) ->
     state.calls += 1;
     if state.fail {
         with_gil(|py| {
-            crate::record_exception(&py, crate::obj_from_bits(state.error).as_ptr().unwrap());
+            crate::record_exception(py, crate::obj_from_bits(state.error).as_ptr().unwrap());
         });
         ptr::null_mut()
     } else {
@@ -871,7 +871,7 @@ unsafe extern "C" fn pending_callback_call(
         refcount::Py_XDECREF(old);
     }
     if call.raise {
-        with_gil(|py| crate::record_memory_error_without_allocation(&py));
+        with_gil(|py| crate::record_memory_error_without_allocation(py));
     }
     if call.succeed {
         unsafe { refcount::Py_INCREF(call.result) };
@@ -886,7 +886,7 @@ unsafe extern "C" fn pending_callback_set(
     _name: *mut PyObject,
     _value: *mut PyObject,
 ) -> c_int {
-    with_gil(|py| crate::record_memory_error_without_allocation(&py));
+    with_gil(|py| crate::record_memory_error_without_allocation(py));
     if unsafe { (*receiver.cast::<PendingCallback>()).succeed } {
         0
     } else {

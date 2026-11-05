@@ -364,20 +364,20 @@ mod tests {
         crate::with_gil(|py| unsafe {
             // Class construction owns publication before reflection or a C
             // view. Ordinary lookup only consumes that completed namespace.
-            let base = builtin_classes(&py).base_exception;
+            let base = builtin_classes(py).base_exception;
             let base_ptr = obj_from_bits(base).as_ptr().unwrap();
-            let args_name = dynamic_attr_name_bits(&py, b"args").unwrap();
-            let cause_name = dynamic_attr_name_bits(&py, b"__cause__").unwrap();
+            let args_name = dynamic_attr_name_bits(py, b"args").unwrap();
+            let cause_name = dynamic_attr_name_bits(py, b"__cause__").unwrap();
             let namespace = obj_from_bits(class_dict_bits(base_ptr)).as_ptr().unwrap();
             let previous_cause =
-                dict_get_in_place(&py, namespace, cause_name).expect("dictionary lookup succeeds");
+                dict_get_in_place(py, namespace, cause_name).expect("dictionary lookup succeeds");
             assert!(previous_cause.is_some());
             assert!(crate::object::class_storage::class_declares(
                 base_ptr,
                 crate::object::class_storage::ClassDeclaration::NativeNamespacePublished,
             ));
             let args_descriptor =
-                crate::builtins::attr::class_namespace_lookup_raw(&py, base_ptr, args_name)
+                crate::builtins::attr::class_namespace_lookup_raw(py, base_ptr, args_name)
                     .expect("operation succeeds")
                     .expect("ordinary lookup sees the declared field immediately");
             assert_eq!(
@@ -385,10 +385,10 @@ mod tests {
                 crate::TYPE_ID_NATIVE_DESCRIPTOR
             );
             assert_eq!(
-                dict_get_in_place(&py, namespace, cause_name).expect("dictionary lookup succeeds"),
+                dict_get_in_place(py, namespace, cause_name).expect("dictionary lookup succeeds"),
                 previous_cause
             );
-            inc_ref_bits(&py, args_descriptor);
+            inc_ref_bits(py, args_descriptor);
 
             molt_cpython_abi::bridge::molt_cpython_abi_init();
             let c_args = sequences::PyTuple_New(0);
@@ -409,18 +409,18 @@ mod tests {
             // Runtime fields may own real native exceptions, and native
             // fields may own runtime views. Both projection directions retain
             // the same identity without interpreting foreign payload words.
-            let managed = alloc_exception(&py, BuiltinExc::ValueError, "mixed chain");
+            let managed = alloc_exception(py, BuiltinExc::ValueError, "mixed chain");
             assert!(!managed.is_null());
             let managed_bits = MoltObject::from_ptr(managed).bits();
-            let context_name = dynamic_attr_name_bits(&py, b"__context__").unwrap();
+            let context_name = dynamic_attr_name_bits(py, b"__context__").unwrap();
             for name in [cause_name, context_name] {
                 let result =
                     crate::molt_set_attr_name_attached_body(py, managed_bits, name, receiver);
-                dec_ref_bits(&py, result);
-                assert!(!exception_pending(&py));
+                dec_ref_bits(py, result);
+                assert!(!exception_pending(py));
                 let observed = crate::molt_get_attr_name_attached_body(py, managed_bits, name);
                 assert_eq!(observed, receiver);
-                dec_ref_bits(&py, observed);
+                dec_ref_bits(py, observed);
             }
             let managed_view = GLOBAL_BRIDGE
                 .handle_to_borrowed_pyobj(managed_bits)
@@ -436,7 +436,7 @@ mod tests {
                     name,
                     MoltObject::none().bits(),
                 );
-                dec_ref_bits(&py, result);
+                dec_ref_bits(py, result);
             }
             refcount::Py_INCREF(managed_view.cast());
             errors::PyException_SetCause(native, managed_view.cast());
@@ -446,26 +446,26 @@ mod tests {
             for name in [cause_name, context_name] {
                 let observed = crate::molt_get_attr_name_attached_body(py, receiver, name);
                 assert_eq!(observed, managed_bits);
-                dec_ref_bits(&py, observed);
+                dec_ref_bits(py, observed);
             }
             errors::PyException_SetCause(native, std::ptr::null_mut());
             errors::PyException_SetContext(native, std::ptr::null_mut());
-            dec_ref_bits(&py, context_name);
-            dec_ref_bits(&py, managed_bits);
-            assert!(!exception_pending(&py));
+            dec_ref_bits(py, context_name);
+            dec_ref_bits(py, managed_bits);
+            assert!(!exception_pending(py));
             assert!(errors::PyErr_Occurred().is_null());
 
-            let tuple = alloc_tuple(&py, &[MoltObject::from_int(1702).bits()]);
+            let tuple = alloc_tuple(py, &[MoltObject::from_int(1702).bits()]);
             assert!(!tuple.is_null());
             let tuple_bits = MoltObject::from_ptr(tuple).bits();
             let tuple_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(tuple_bits);
             let result = crate::builtins::types::native_descriptor_mutate(
-                &py,
+                py,
                 args_descriptor,
                 receiver,
                 Some(tuple_bits),
             );
-            assert!(!exception_pending(&py));
+            assert!(!exception_pending(py));
             assert!(errors::PyErr_Occurred().is_null());
             assert_eq!(
                 (*native.cast::<PyAttributeErrorObject>()).base.args,
@@ -473,51 +473,51 @@ mod tests {
             );
             assert_eq!(result, Ok(()));
             let observed = crate::builtins::types::native_descriptor_get(
-                &py,
+                py,
                 args_descriptor,
                 Some(receiver),
                 Some(base),
             )
             .expect("operation succeeds");
             assert_eq!(observed, tuple_bits);
-            dec_ref_bits(&py, observed);
+            dec_ref_bits(py, observed);
 
-            let typed_owner = exception_class_bits(&py, BuiltinExc::AttributeError);
-            let typed_name = dynamic_attr_name_bits(&py, b"obj").unwrap();
+            let typed_owner = exception_class_bits(py, BuiltinExc::AttributeError);
+            let typed_name = dynamic_attr_name_bits(py, b"obj").unwrap();
             let typed_descriptor = crate::builtins::attr::class_namespace_lookup_raw(
-                &py,
+                py,
                 obj_from_bits(typed_owner).as_ptr().unwrap(),
                 typed_name,
             )
             .expect("operation succeeds")
             .unwrap();
-            inc_ref_bits(&py, typed_descriptor);
+            inc_ref_bits(py, typed_descriptor);
             let result = crate::builtins::types::native_descriptor_mutate(
-                &py,
+                py,
                 typed_descriptor,
                 receiver,
                 Some(tuple_bits),
             );
             assert_eq!((*native.cast::<PyAttributeErrorObject>()).obj, tuple_view);
-            assert!(!exception_pending(&py));
+            assert!(!exception_pending(py));
             assert_eq!(result, Ok(()));
             let observed = crate::builtins::types::native_descriptor_get(
-                &py,
+                py,
                 typed_descriptor,
                 Some(receiver),
                 Some(typed_owner),
             )
             .expect("operation succeeds");
             assert_eq!(observed, tuple_bits);
-            dec_ref_bits(&py, observed);
+            dec_ref_bits(py, observed);
             let result = crate::builtins::types::native_descriptor_mutate(
-                &py,
+                py,
                 typed_descriptor,
                 receiver,
                 None,
             );
             assert!((*native.cast::<PyAttributeErrorObject>()).obj.is_null());
-            assert!(!exception_pending(&py));
+            assert!(!exception_pending(py));
             assert_eq!(result, Ok(()));
             for bits in [
                 typed_descriptor,
@@ -528,10 +528,10 @@ mod tests {
                 args_name,
                 cause_name,
             ] {
-                dec_ref_bits(&py, bits);
+                dec_ref_bits(py, bits);
             }
             refcount::Py_DECREF(native);
-            assert!(!exception_pending(&py));
+            assert!(!exception_pending(py));
             assert!(errors::PyErr_Occurred().is_null());
         });
     }

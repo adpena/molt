@@ -773,7 +773,7 @@ pub(super) fn molt_cpython_abi_pyinit_module_to_bits(
 ) -> u64 {
     with_gil(|py| {
         initialize_result(
-            &py,
+            py,
             result_pyobj as *mut PyObject,
             ExtensionInitialization {
                 name_bits: module_name_bits,
@@ -815,19 +815,19 @@ pub(crate) fn execute_prepared_extension(
         }
         let def = crate::c_api::molt_module_capi_get_def_attached_body(py, module_bits)
             as *mut PyModuleDef;
-        if crate::exception_pending(&py) {
+        if crate::exception_pending(py) {
             return MoltObject::none().bits();
         }
         if def.is_null() {
             return crate::raise_exception::<u64>(
-                &py,
+                py,
                 BuiltinExc::ImportError,
                 "extension exec requires a module created from a C module definition",
             );
         }
         let Some(name) = crate::string_obj_to_owned(MoltObject::from_bits(name_bits)) else {
             return crate::raise_exception::<u64>(
-                &py,
+                py,
                 BuiltinExc::TypeError,
                 "extension module name must be a str",
             );
@@ -835,7 +835,7 @@ pub(crate) fn execute_prepared_extension(
         let object =
             molt_cpython_abi::bridge::GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(module_bits);
         if object.is_null() {
-            return initialization_failure(&py, "extension module ABI view unavailable");
+            return initialization_failure(py, "extension module ABI view unavailable");
         }
         let mut publication = ModulePublication {
             object: NativeObjectOwner::from_owned(object),
@@ -849,21 +849,21 @@ pub(crate) fn execute_prepared_extension(
             // Direct loader execution does not participate in import caching.
             // Its caller retains both the module and any prior namespace entry.
             if molt_cpython_abi::api::modules::PyModule_ExecDef(object, def) != 0 {
-                return initialization_failure(&py, &format!("{name}: Py_mod_exec failed"));
+                return initialization_failure(py, &format!("{name}: Py_mod_exec failed"));
             }
             publication.committed = true;
             return MoltObject::none().bits();
         }
         if let Err(message) = publication.publish(
-            &py,
+            py,
             &name,
             module_bits,
             ExtensionPublicationAdmission::VacantOrSelf,
         ) {
-            return initialization_failure(&py, &message);
+            return initialization_failure(py, &message);
         }
         if molt_cpython_abi::api::modules::PyModule_ExecDef(object, def) != 0 {
-            return initialization_failure(&py, &format!("{name}: Py_mod_exec failed"));
+            return initialization_failure(py, &format!("{name}: Py_mod_exec failed"));
         }
         publication.committed = true;
         MoltObject::none().bits()
@@ -1023,16 +1023,16 @@ mod tests {
                 .set(crate::c_api::molt_module_state_find_attached_body(
                     py, probe.def,
                 ));
-            let imported = crate::c_api::module_extension_import(&py, &probe.identity);
+            let imported = crate::c_api::module_extension_import(py, &probe.identity);
             probe
                 .snapshot
                 .set(imported.is_some_and(|(_, snapshot)| snapshot.is_some()));
             if let Some((_, Some(snapshot))) = imported {
-                dec_ref_bits(&py, snapshot);
+                dec_ref_bits(py, snapshot);
             }
             if probe.reenter {
                 let nested = run_extension_init(
-                    &py,
+                    py,
                     reimport_init,
                     probe.name,
                     MoltObject::none().bits(),
@@ -1078,7 +1078,7 @@ mod tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
         with_gil(|py| unsafe {
-            let state = crate::runtime_state(&py);
+            let state = crate::runtime_state(py);
             let previous = crate::object::ops_sys::runtime_target_python_info(state);
             let sys_name = hook_alloc_str(b"sys".as_ptr(), 3);
             let mut sys =
@@ -1086,8 +1086,8 @@ mod tests {
             if MoltObject::from_bits(sys).is_none() {
                 sys = crate::builtins::modules::molt_module_new_attached_body(py, sys_name);
             }
-            crate::builtins::module_table::publish_interpreter_sys_for_test(&py, sys);
-            let modules = crate::builtins::modules::sys_modules_dict_bits(&py, sys).unwrap();
+            crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys);
+            let modules = crate::builtins::modules::sys_modules_dict_bits(py, sys).unwrap();
             let modules_ptr = MoltObject::from_bits(modules).as_ptr().unwrap();
             for minor in [12, 13, 14] {
                 let mut target = previous.clone();
@@ -1119,16 +1119,16 @@ mod tests {
                         snapshot: Cell::new(false),
                         nested: Cell::new(0),
                     };
-                    install_publication_probe(&py, modules_ptr, &probe);
+                    install_publication_probe(py, modules_ptr, &probe);
                     let first = run_extension_init(
-                        &py,
+                        py,
                         reimport_init,
                         name_bits,
                         MoltObject::none().bits(),
                         MoltObject::none().bits(),
                         true,
                     );
-                    assert!(!crate::exception_pending(&py));
+                    assert!(!crate::exception_pending(py));
                     assert_eq!(
                         probe.calls.get(),
                         1,
@@ -1142,26 +1142,26 @@ mod tests {
                             if minor >= 13 { 1 } else { 2 }
                         );
                         assert_eq!(probe.nested.get() == first, minor >= 13);
-                        dec_ref_bits(&py, probe.nested.get());
+                        dec_ref_bits(py, probe.nested.get());
                     } else {
                         // PyState removal must not turn an extension-cache
                         // reload into a first initialization on 3.13+.
                         assert_eq!(modules::PyState_RemoveModule(&raw mut def), 0);
                         assert!(
-                            crate::c_api::module_extension_import(&py, &probe.identity).is_some()
+                            crate::c_api::module_extension_import(py, &probe.identity).is_some()
                         );
                         probe.calls.set(0);
                         probe.registered.set(u64::MAX);
-                        install_publication_probe(&py, modules_ptr, &probe);
+                        install_publication_probe(py, modules_ptr, &probe);
                         let second = run_extension_init(
-                            &py,
+                            py,
                             reimport_init,
                             name_bits,
                             MoltObject::none().bits(),
                             MoltObject::none().bits(),
                             true,
                         );
-                        assert!(!crate::exception_pending(&py));
+                        assert!(!crate::exception_pending(py));
                         assert_eq!(probe.calls.get(), 1);
                         assert_eq!(
                             probe.registered.get(),
@@ -1175,17 +1175,17 @@ mod tests {
                             ),
                             second
                         );
-                        dec_ref_bits(&py, second);
+                        dec_ref_bits(py, second);
                     }
                     crate::builtins::modules::molt_module_cache_del_attached_body(py, name_bits);
-                    dec_ref_bits(&py, first);
-                    assert!(crate::c_api::c_api_module_clear_state(&py, state));
-                    dec_ref_bits(&py, name_bits);
+                    dec_ref_bits(py, first);
+                    assert!(crate::c_api::c_api_module_clear_state(py, state));
+                    dec_ref_bits(py, name_bits);
                 }
             }
             *state.sys_version_info.lock().unwrap() = Some(previous);
             for bits in [modules, sys, sys_name] {
-                dec_ref_bits(&py, bits);
+                dec_ref_bits(py, bits);
             }
         });
     }
@@ -1201,14 +1201,14 @@ mod tests {
             if MoltObject::from_bits(sys).is_none() {
                 sys = crate::builtins::modules::molt_module_new_attached_body(py, sys_name);
             }
-            crate::builtins::module_table::publish_interpreter_sys_for_test(&py, sys);
-            let modules = crate::builtins::modules::sys_modules_dict_bits(&py, sys).unwrap();
+            crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys);
+            let modules = crate::builtins::modules::sys_modules_dict_bits(py, sys).unwrap();
             let modules_ptr = MoltObject::from_bits(modules).as_ptr().unwrap();
             let text = "multiphase_current_publication.physical";
             let name = hook_alloc_str(text.as_ptr(), text.len());
             let old = crate::builtins::modules::molt_module_new_attached_body(py, name);
             crate::builtins::modules::molt_module_cache_set_attached_body(py, name, old);
-            assert!(crate::object::ops::dict_del_in_place(&py, modules_ptr, name).unwrap());
+            assert!(crate::object::ops::dict_del_in_place(py, modules_ptr, name).unwrap());
             let mut slots = [
                 PyModuleDef_Slot {
                     slot: 2,
@@ -1227,59 +1227,59 @@ mod tests {
             REIMPORT_FAIL.with(|value| value.set(false));
             EXEC_CALLS.with(|value| value.set(0));
             let created = run_extension_init(
-                &py,
+                py,
                 reimport_init,
                 name,
                 MoltObject::none().bits(),
                 MoltObject::none().bits(),
                 true,
             );
-            assert!(!crate::exception_pending(&py));
-            assert_eq!(dict_get_in_place(&py, modules_ptr, name).unwrap(), None);
+            assert!(!crate::exception_pending(py));
+            assert_eq!(dict_get_in_place(py, modules_ptr, name).unwrap(), None);
             execute_prepared_extension(created, name, true);
-            assert!(!crate::exception_pending(&py));
+            assert!(!crate::exception_pending(py));
             assert_eq!(EXEC_CALLS.with(Cell::get), 1);
             assert_eq!(
-                dict_get_in_place(&py, modules_ptr, name).unwrap(),
+                dict_get_in_place(py, modules_ptr, name).unwrap(),
                 Some(created)
             );
-            let stored = crate::builtins::module_table::module_lookup(&py, text).unwrap();
+            let stored = crate::builtins::module_table::module_lookup(py, text).unwrap();
             assert_eq!(stored, Some(created));
-            dec_ref_bits(&py, stored.unwrap());
+            dec_ref_bits(py, stored.unwrap());
             crate::builtins::modules::module_cache_publish(
                 name,
                 old,
                 crate::builtins::modules::ModuleCachePublication::Extension,
             );
             let already_public = run_extension_init(
-                &py,
+                py,
                 reimport_init,
                 name,
                 MoltObject::none().bits(),
                 MoltObject::none().bits(),
                 true,
             );
-            assert!(!crate::exception_pending(&py));
+            assert!(!crate::exception_pending(py));
             assert!(crate::dict_set_in_place(
-                &py,
+                py,
                 modules_ptr,
                 name,
                 already_public
             ));
             execute_prepared_extension(already_public, name, true);
-            assert!(!crate::exception_pending(&py));
+            assert!(!crate::exception_pending(py));
             assert_eq!(EXEC_CALLS.with(Cell::get), 2);
             assert_eq!(
-                dict_get_in_place(&py, modules_ptr, name).unwrap(),
+                dict_get_in_place(py, modules_ptr, name).unwrap(),
                 Some(already_public)
             );
-            let stored = crate::builtins::module_table::module_lookup(&py, text).unwrap();
+            let stored = crate::builtins::module_table::module_lookup(py, text).unwrap();
             assert_eq!(
                 stored,
                 Some(already_public),
                 "extension and public imports share one dictionary identity"
             );
-            dec_ref_bits(&py, stored.unwrap());
+            dec_ref_bits(py, stored.unwrap());
             let def_address = (&raw mut def).addr();
             for bits in [created, already_public] {
                 assert_eq!(
@@ -1296,7 +1296,7 @@ mod tests {
             let module_pointers =
                 [created, already_public].map(|bits| MoltObject::from_bits(bits).as_ptr().unwrap());
             for bits in [already_public, created, old, name, modules, sys, sys_name] {
-                dec_ref_bits(&py, bits);
+                dec_ref_bits(py, bits);
             }
             // The shared test runtime legitimately keeps other tests'
             // single-phase import identities and legacy snapshots as runtime
@@ -1304,7 +1304,7 @@ mod tests {
             // retirement to this test's own modules and definition.
             for module in module_pointers {
                 assert!(
-                    !crate::c_api::c_api_module_registered(&py, module, def_address),
+                    !crate::c_api::c_api_module_registered(py, module, def_address),
                     "final module release must already retire multiphase metadata"
                 );
             }
@@ -1359,10 +1359,10 @@ mod tests {
                 ),
                 0
             );
-            let (def, snapshot) = crate::c_api::module_extension_import(&py, &identity).unwrap();
+            let (def, snapshot) = crate::c_api::module_extension_import(py, &identity).unwrap();
             assert_eq!(def, b);
             assert_eq!(snapshot, Some(second_dict));
-            dec_ref_bits(&py, snapshot.unwrap());
+            dec_ref_bits(py, snapshot.unwrap());
             assert_eq!(
                 crate::c_api::molt_module_state_find_attached_body(py, a),
                 first,
@@ -1382,15 +1382,15 @@ mod tests {
                 crate::c_api::molt_module_state_remove_attached_body(py, b),
                 0
             );
-            let (def, snapshot) = crate::c_api::module_extension_import(&py, &identity).unwrap();
+            let (def, snapshot) = crate::c_api::module_extension_import(py, &identity).unwrap();
             assert_eq!(def, b);
-            dec_ref_bits(&py, snapshot.unwrap());
+            dec_ref_bits(py, snapshot.unwrap());
             assert!(crate::c_api::c_api_module_clear_state(
-                &py,
-                crate::runtime_state(&py)
+                py,
+                crate::runtime_state(py)
             ));
             for bits in [first_dict, second_dict, first, second, name] {
-                dec_ref_bits(&py, bits);
+                dec_ref_bits(py, bits);
             }
         });
     }
@@ -1405,12 +1405,12 @@ mod tests {
             if MoltObject::from_bits(sys).is_none() {
                 sys = crate::builtins::modules::molt_module_new_attached_body(py, sys_name);
             }
-            assert!(!crate::exception_pending(&py));
-            crate::builtins::module_table::publish_interpreter_sys_for_test(&py, sys);
-            let modules = crate::builtins::modules::sys_modules_dict_bits(&py, sys).unwrap();
+            assert!(!crate::exception_pending(py));
+            crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys);
+            let modules = crate::builtins::modules::sys_modules_dict_bits(py, sys).unwrap();
             let modules_ptr = MoltObject::from_bits(modules).as_ptr().unwrap();
-            dec_ref_bits(&py, sys_name);
-            dec_ref_bits(&py, sys);
+            dec_ref_bits(py, sys_name);
+            dec_ref_bits(py, sys);
             for (label, size, multiphase) in [
                 ("legacy", -1, false),
                 ("single", 0, false),
@@ -1439,17 +1439,17 @@ mod tests {
                 let name = format!("created_{label}.physical");
                 let name_bits = hook_alloc_str(name.as_ptr(), name.len());
                 let first = run_extension_init(
-                    &py,
+                    py,
                     reimport_init,
                     name_bits,
                     MoltObject::none().bits(),
                     MoltObject::none().bits(),
                     true,
                 );
-                assert!(!crate::exception_pending(&py));
+                assert!(!crate::exception_pending(py));
                 assert!(!MoltObject::from_bits(first).is_none());
                 assert_eq!(
-                    dict_get_in_place(&py, modules_ptr, name_bits).unwrap(),
+                    dict_get_in_place(py, modules_ptr, name_bits).unwrap(),
                     if multiphase { None } else { Some(first) }
                 );
                 // CPython _imp.create_dynamic publishes an executed single-
@@ -1464,16 +1464,16 @@ mod tests {
                         first
                     }
                 );
-                dec_ref_bits(&py, cached);
+                dec_ref_bits(py, cached);
                 let second = run_extension_init(
-                    &py,
+                    py,
                     reimport_init,
                     name_bits,
                     MoltObject::none().bits(),
                     MoltObject::none().bits(),
                     true,
                 );
-                assert!(!crate::exception_pending(&py));
+                assert!(!crate::exception_pending(py));
                 assert_eq!(first == second, size == -1);
                 assert_eq!(
                     REIMPORT_CALLS.with(Cell::get),
@@ -1481,24 +1481,24 @@ mod tests {
                 );
                 assert_eq!(EXEC_CALLS.with(Cell::get), 0);
                 assert_eq!(
-                    dict_get_in_place(&py, modules_ptr, name_bits).unwrap(),
+                    dict_get_in_place(py, modules_ptr, name_bits).unwrap(),
                     if multiphase { None } else { Some(second) }
                 );
                 if !multiphase {
                     // The trusted initializer reconciles transaction custody too;
                     // first-init-wins must not republish its predecessor.
-                    let stored = crate::builtins::module_table::module_lookup(&py, &name).unwrap();
+                    let stored = crate::builtins::module_table::module_lookup(py, &name).unwrap();
                     assert_eq!(stored, Some(second));
-                    dec_ref_bits(&py, stored.unwrap());
+                    dec_ref_bits(py, stored.unwrap());
                     let object =
                         molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(second);
                     assert_eq!(modules::PyState_FindModule(&raw mut def), object);
                 }
                 let _ = execute_prepared_extension(second, name_bits, false);
-                assert!(!crate::exception_pending(&py));
+                assert!(!crate::exception_pending(py));
                 assert_eq!(EXEC_CALLS.with(Cell::get), usize::from(multiphase));
                 assert_eq!(
-                    dict_get_in_place(&py, modules_ptr, name_bits).unwrap(),
+                    dict_get_in_place(py, modules_ptr, name_bits).unwrap(),
                     if multiphase { None } else { Some(second) }
                 );
                 if size == 0 && !multiphase {
@@ -1506,7 +1506,7 @@ mod tests {
                     // remove the previous successful create_module result.
                     REIMPORT_FAIL.with(|value| value.set(true));
                     let failed = run_extension_init(
-                        &py,
+                        py,
                         reimport_init,
                         name_bits,
                         MoltObject::none().bits(),
@@ -1518,20 +1518,20 @@ mod tests {
                         super::super::tests::pending_exception_type_for_assertion(),
                         "ValueError"
                     );
-                    crate::clear_exception(&py);
+                    crate::clear_exception(py);
                     assert_eq!(
-                        dict_get_in_place(&py, modules_ptr, name_bits).unwrap(),
+                        dict_get_in_place(py, modules_ptr, name_bits).unwrap(),
                         Some(second)
                     );
 
                     // Simulate public replacement after only some transaction
                     // owners were installed. Rollback must retire our transient
                     // owner without deleting this different public identity.
-                    let replacement_ptr = alloc_module_obj(&py, name_bits);
+                    let replacement_ptr = alloc_module_obj(py, name_bits);
                     assert!(!replacement_ptr.is_null());
                     let replacement = MoltObject::from_ptr(replacement_ptr).bits();
                     assert!(crate::dict_set_in_place(
-                        &py,
+                        py,
                         modules_ptr,
                         name_bits,
                         replacement
@@ -1548,13 +1548,13 @@ mod tests {
                         committed: false,
                     });
                     assert_eq!(
-                        dict_get_in_place(&py, modules_ptr, name_bits).unwrap(),
+                        dict_get_in_place(py, modules_ptr, name_bits).unwrap(),
                         Some(replacement)
                     );
-                    let stored = crate::builtins::module_table::module_lookup(&py, &name).unwrap();
+                    let stored = crate::builtins::module_table::module_lookup(py, &name).unwrap();
                     assert_eq!(stored, Some(replacement));
-                    dec_ref_bits(&py, stored.unwrap());
-                    dec_ref_bits(&py, replacement);
+                    dec_ref_bits(py, stored.unwrap());
+                    dec_ref_bits(py, replacement);
                 }
                 let def_address = (&raw mut def).addr();
                 for bits in [first, second] {
@@ -1571,10 +1571,10 @@ mod tests {
                 }
                 let _ =
                     crate::builtins::modules::molt_module_cache_del_attached_body(py, name_bits);
-                dec_ref_bits(&py, first);
-                dec_ref_bits(&py, second);
+                dec_ref_bits(py, first);
+                dec_ref_bits(py, second);
                 assert_eq!(
-                    crate::c_api::c_api_module_clear_state(&py, crate::runtime_state(&py)),
+                    crate::c_api::c_api_module_clear_state(py, crate::runtime_state(py)),
                     !multiphase,
                     "only single-phase import roots outlive these final module releases"
                 );
@@ -1582,11 +1582,11 @@ mod tests {
                     crate::c_api::molt_module_state_find_attached_body(py, def_address),
                     0
                 );
-                dec_ref_bits(&py, name_bits);
+                dec_ref_bits(py, name_bits);
                 let _ = molt_cpython_abi::api::memory::PyGC_Collect();
-                assert!(!crate::exception_pending(&py));
+                assert!(!crate::exception_pending(py));
             }
-            dec_ref_bits(&py, modules);
+            dec_ref_bits(py, modules);
         });
     }
 
@@ -1603,10 +1603,10 @@ mod tests {
             if MoltObject::from_bits(sys).is_none() {
                 sys = crate::builtins::modules::molt_module_new_attached_body(py, sys_name);
             }
-            crate::builtins::module_table::publish_interpreter_sys_for_test(&py, sys);
-            assert!(!crate::exception_pending(&py));
-            dec_ref_bits(&py, sys_name);
-            dec_ref_bits(&py, sys);
+            crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys);
+            assert!(!crate::exception_pending(py));
+            dec_ref_bits(py, sys_name);
+            dec_ref_bits(py, sys);
             for (label, size, multiphase) in [
                 ("legacy", -1, false),
                 ("single", 0, false),
@@ -1663,8 +1663,8 @@ mod tests {
                     super::super::tests::pending_exception_type_for_assertion(),
                     "ValueError"
                 );
-                crate::clear_exception(&py);
-                assert!(crate::c_api::module_extension_import(&py, &identity_key).is_none());
+                crate::clear_exception(py);
+                assert!(crate::c_api::module_extension_import(py, &identity_key).is_none());
                 assert!(
                     MoltObject::from_bits(
                         crate::builtins::modules::molt_module_cache_get_attached_body(
@@ -1684,7 +1684,7 @@ mod tests {
                     reimport_init as *const () as u64,
                     name_bits,
                 );
-                assert!(!crate::exception_pending(&py));
+                assert!(!crate::exception_pending(py));
                 assert_eq!(REIMPORT_CALLS.with(Cell::get), 2);
                 assert!(module_set_bits(
                     first,
@@ -1695,14 +1695,14 @@ mod tests {
                     // module_from_spec(find_spec(name)) calls create_module
                     // again while the old public module is still present.
                     let warm = run_extension_init(
-                        &py,
+                        py,
                         reimport_init,
                         name_bits,
                         MoltObject::none().bits(),
                         MoltObject::none().bits(),
                         true,
                     );
-                    assert!(!crate::exception_pending(&py));
+                    assert!(!crate::exception_pending(py));
                     assert_eq!(warm, first);
                     assert_eq!(REIMPORT_CALLS.with(Cell::get), 2);
                     assert_eq!(
@@ -1714,8 +1714,8 @@ mod tests {
                         crate::builtins::modules::molt_module_get_attr_attached_body(py, warm, key),
                         MoltObject::from_int(7).bits()
                     );
-                    dec_ref_bits(&py, key);
-                    dec_ref_bits(&py, warm);
+                    dec_ref_bits(py, key);
+                    dec_ref_bits(py, warm);
                     assert!(module_set_bits(
                         first,
                         b"value",
@@ -1728,27 +1728,26 @@ mod tests {
                     assert_eq!(modules::PyState_RemoveModule(&raw mut def), 0);
                 }
                 if size == -1 {
-                    let modules =
-                        crate::builtins::modules::sys_modules_dict_bits(&py, sys).unwrap();
+                    let modules = crate::builtins::modules::sys_modules_dict_bits(py, sys).unwrap();
                     let modules_ptr = MoltObject::from_bits(modules).as_ptr().unwrap();
-                    let replacement_ptr = alloc_module_obj(&py, name_bits);
+                    let replacement_ptr = alloc_module_obj(py, name_bits);
                     assert!(!replacement_ptr.is_null());
                     let replacement = MoltObject::from_ptr(replacement_ptr).bits();
                     assert!(crate::dict_set_in_place(
-                        &py,
+                        py,
                         modules_ptr,
                         name_bits,
                         replacement
                     ));
                     let reused = run_extension_init(
-                        &py,
+                        py,
                         reimport_init,
                         name_bits,
                         MoltObject::none().bits(),
                         MoltObject::none().bits(),
                         true,
                     );
-                    assert!(!crate::exception_pending(&py));
+                    assert!(!crate::exception_pending(py));
                     assert_eq!(
                         reused, replacement,
                         "public ModuleType replacement owns replay identity"
@@ -1757,28 +1756,28 @@ mod tests {
                         crate::c_api::molt_module_capi_get_def_attached_body(py, reused),
                         0
                     );
-                    dec_ref_bits(&py, reused);
+                    dec_ref_bits(py, reused);
                     assert!(
-                        crate::object::ops::dict_del_in_place(&py, modules_ptr, name_bits).unwrap()
+                        crate::object::ops::dict_del_in_place(py, modules_ptr, name_bits).unwrap()
                     );
                     assert_eq!(modules::PyState_RemoveModule(&raw mut def), 0);
-                    dec_ref_bits(&py, replacement);
+                    dec_ref_bits(py, replacement);
 
                     assert!(crate::dict_set_in_place(
-                        &py,
+                        py,
                         modules_ptr,
                         name_bits,
                         MoltObject::none().bits(),
                     ));
                     let replaced = run_extension_init(
-                        &py,
+                        py,
                         reimport_init,
                         name_bits,
                         MoltObject::none().bits(),
                         MoltObject::none().bits(),
                         true,
                     );
-                    assert!(!crate::exception_pending(&py));
+                    assert!(!crate::exception_pending(py));
                     assert!(!MoltObject::from_bits(replaced).is_none());
                     let cached = crate::builtins::modules::molt_module_cache_get_attached_body(
                         py, name_bits,
@@ -1787,19 +1786,19 @@ mod tests {
                         cached, replaced,
                         "create-only replay publishes before returning"
                     );
-                    dec_ref_bits(&py, cached);
+                    dec_ref_bits(py, cached);
                     assert!(
-                        crate::object::ops::dict_del_in_place(&py, modules_ptr, name_bits).unwrap()
+                        crate::object::ops::dict_del_in_place(py, modules_ptr, name_bits).unwrap()
                     );
                     assert_eq!(modules::PyState_RemoveModule(&raw mut def), 0);
-                    dec_ref_bits(&py, replaced);
-                    dec_ref_bits(&py, modules);
+                    dec_ref_bits(py, replaced);
+                    dec_ref_bits(py, modules);
 
                     let original =
                         molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(first);
                     // Drop the caller too: only the runtime-owned snapshot
                     // may keep the original module/method cycle reachable.
-                    dec_ref_bits(&py, first);
+                    dec_ref_bits(py, first);
                     let _ = molt_cpython_abi::api::memory::PyGC_Collect();
                     assert!(
                         molt_cpython_abi::bridge::GLOBAL_BRIDGE
@@ -1822,7 +1821,7 @@ mod tests {
                         super::super::tests::pending_exception_type_for_assertion(),
                         "ValueError"
                     );
-                    crate::clear_exception(&py);
+                    crate::clear_exception(py);
                     assert!(
                         MoltObject::from_bits(
                             crate::builtins::modules::molt_module_cache_get_attached_body(
@@ -1845,7 +1844,7 @@ mod tests {
                     reimport_init as *const () as u64,
                     name_bits,
                 );
-                assert!(!crate::exception_pending(&py));
+                assert!(!crate::exception_pending(py));
                 assert_ne!(first, second);
                 assert_eq!(
                     REIMPORT_CALLS.with(Cell::get),
@@ -1863,7 +1862,7 @@ mod tests {
                     MoltObject::from_int(7).bits(),
                     "post-init mutation leaked into reimport"
                 );
-                dec_ref_bits(&py, value_name);
+                dec_ref_bits(py, value_name);
                 let current =
                     molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(second);
                 let original =
@@ -1879,9 +1878,9 @@ mod tests {
                         0
                     );
                     let _ = execute_prepared_extension(second, name_bits, false);
-                    assert!(!crate::exception_pending(&py));
+                    assert!(!crate::exception_pending(py));
                 }
-                let imported = crate::c_api::module_extension_import(&py, &identity_key);
+                let imported = crate::c_api::module_extension_import(py, &identity_key);
                 assert_eq!(imported.is_some(), !multiphase);
                 let snapshot =
                     imported.and_then(|(def, snapshot)| snapshot.map(|bits| (def, bits)));
@@ -1889,14 +1888,14 @@ mod tests {
                 let _ =
                     crate::builtins::modules::molt_module_cache_del_attached_body(py, name_bits);
                 if size != -1 {
-                    dec_ref_bits(&py, first);
+                    dec_ref_bits(py, first);
                 }
-                dec_ref_bits(&py, second);
+                dec_ref_bits(py, second);
                 assert!(crate::c_api::c_api_module_clear_state(
-                    &py,
-                    crate::runtime_state(&py)
+                    py,
+                    crate::runtime_state(py)
                 ));
-                assert!(crate::c_api::module_extension_import(&py, &identity_key).is_none());
+                assert!(crate::c_api::module_extension_import(py, &identity_key).is_none());
                 if let Some((_, snapshot)) = snapshot {
                     let ptr = MoltObject::from_bits(snapshot).as_ptr().unwrap();
                     assert_eq!(
@@ -1904,11 +1903,11 @@ mod tests {
                         1,
                         "shutdown must release the runtime snapshot owner"
                     );
-                    dec_ref_bits(&py, snapshot);
+                    dec_ref_bits(py, snapshot);
                 }
-                dec_ref_bits(&py, name_bits);
+                dec_ref_bits(py, name_bits);
                 let _ = molt_cpython_abi::api::memory::PyGC_Collect();
-                assert!(!crate::exception_pending(&py));
+                assert!(!crate::exception_pending(py));
             }
         });
     }
@@ -1957,7 +1956,7 @@ mod tests {
                         super::super::tests::pending_exception_type_for_assertion(),
                         "SystemError"
                     );
-                    crate::clear_exception(&py);
+                    crate::clear_exception(py);
                     assert!(modules::PyState_FindModule(&raw mut defs[0]).is_null());
                 } else {
                     let module =
@@ -1965,7 +1964,7 @@ mod tests {
                     assert_native_module_name(module, "outer.physical");
                     assert_eq!(modules::PyState_FindModule(&raw mut defs[0]), module);
                     assert_eq!(modules::PyState_RemoveModule(&raw mut defs[0]), 0);
-                    dec_ref_bits(&py, bits);
+                    dec_ref_bits(py, bits);
                 }
                 assert_native_module_name(
                     molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(inner),
@@ -1974,7 +1973,7 @@ mod tests {
                 assert_native_module_name(extra, "physical");
                 assert_eq!(modules::PyState_RemoveModule(&raw mut defs[1]), 0);
                 refcount::Py_DECREF(extra);
-                dec_ref_bits(&py, inner);
+                dec_ref_bits(py, inner);
                 let _ = crate::builtins::modules::molt_module_cache_del_attached_body(py, name);
                 let _ =
                     crate::builtins::modules::molt_module_cache_del_attached_body(py, inner_name);
@@ -1982,10 +1981,10 @@ mod tests {
                 assert_native_module_name(unscoped, "physical");
                 refcount::Py_DECREF(unscoped);
                 let _ = molt_cpython_abi::api::memory::PyGC_Collect();
-                assert!(!crate::exception_pending(&py));
+                assert!(!crate::exception_pending(py));
             }
-            dec_ref_bits(&py, name);
-            dec_ref_bits(&py, inner_name);
+            dec_ref_bits(py, name);
+            dec_ref_bits(py, inner_name);
         });
     }
 
@@ -2015,7 +2014,7 @@ mod tests {
                 crate::object::layout::module_name_bits(ptr),
             );
             EXEC_SAW_CACHE.with(|seen| seen.set(cached == bits));
-            dec_ref_bits(&py, cached);
+            dec_ref_bits(py, cached);
         });
         0
     }
@@ -2031,7 +2030,7 @@ mod tests {
             with_gil(|py| unsafe {
                 let name = format!("pkg.physical_{custom_create}_{publish}");
                 let name_bits = hook_alloc_str(name.as_ptr(), name.len());
-                let spec = module_spec(&py, name_bits, MoltObject::none().bits()).unwrap();
+                let spec = module_spec(py, name_bits, MoltObject::none().bits()).unwrap();
                 if custom_create {
                     let locations = molt_cpython_abi::api::sequences::PyList_New(0);
                     assert!(!locations.is_null());
@@ -2098,7 +2097,7 @@ mod tests {
                     m_free: ptr::null_mut(),
                 };
                 let bits = initialize_result(
-                    &py,
+                    py,
                     (&raw mut def).cast(),
                     ExtensionInitialization {
                         name_bits,
@@ -2109,7 +2108,7 @@ mod tests {
                         reload: false,
                     },
                 );
-                assert!(!crate::exception_pending(&py));
+                assert!(!crate::exception_pending(py));
                 assert_eq!(
                     EXEC_CALLS.with(Cell::get),
                     0,
@@ -2155,7 +2154,7 @@ mod tests {
                 refcount::Py_DECREF(returned);
                 for _ in 0..2 {
                     let _ = execute_prepared_extension(bits, name_bits, publish);
-                    assert!(!crate::exception_pending(&py));
+                    assert!(!crate::exception_pending(py));
                 }
                 assert_eq!(
                     EXEC_CALLS.with(Cell::get),
@@ -2170,13 +2169,13 @@ mod tests {
                 } else {
                     assert!(MoltObject::from_bits(cached).is_none());
                 }
-                dec_ref_bits(&py, cached);
+                dec_ref_bits(py, cached);
                 let _ =
                     crate::builtins::modules::molt_module_cache_del_attached_body(py, name_bits);
                 refcount::Py_DECREF(method);
                 refcount::Py_DECREF(spec);
-                dec_ref_bits(&py, bits);
-                dec_ref_bits(&py, name_bits);
+                dec_ref_bits(py, bits);
+                dec_ref_bits(py, name_bits);
                 let _ = molt_cpython_abi::api::memory::PyGC_Collect();
                 assert!(
                     molt_cpython_abi::bridge::GLOBAL_BRIDGE

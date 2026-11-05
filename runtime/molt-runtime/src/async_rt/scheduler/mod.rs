@@ -1430,17 +1430,17 @@ mod context_queue_root_tests {
             unsafe {
                 let ptr = std::ptr::with_exposed_provenance_mut::<u8>(raw as usize);
                 let var = *ptr.add(crate::GEN_CONTROL_SIZE).cast::<u64>();
-                let value = context::get_variable(&py, var, None).flatten().unwrap_or(0);
+                let value = context::get_variable(py, var, None).flatten().unwrap_or(0);
                 OBSERVED.store(value, AtomicOrdering::SeqCst);
                 if value != 0 {
-                    dec_ref_bits(&py, value);
+                    dec_ref_bits(py, value);
                 }
                 if CANCEL_AFTER_OBSERVE.load(AtomicOrdering::SeqCst) {
                     crate::async_rt::cancellation::task_set_cancel_pending(ptr);
                 }
                 let first = POLLS.fetch_add(1, AtomicOrdering::SeqCst) == 0;
                 if first && DEFER_FIRST.load(AtomicOrdering::SeqCst) {
-                    runtime_state(&py).scheduler().defer_task_ptr(&py, ptr);
+                    runtime_state(py).scheduler().defer_task_ptr(py, ptr);
                     pending_bits_i64()
                 } else {
                     MoltObject::none().bits() as i64
@@ -1473,16 +1473,16 @@ mod context_queue_root_tests {
     fn real_spawn_and_deferred_poll_keep_task_context_alive_without_caller_owner() {
         crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
             with_gil(|py| {
-                install_deterministic_scheduler(&py);
-                let scheduler = runtime_state(&py).scheduler();
+                install_deterministic_scheduler(py);
+                let scheduler = runtime_state(py).scheduler();
                 for kind in [crate::TASK_KIND_GENERATOR, crate::TASK_KIND_FUTURE] {
                     for deferred in [false, true] {
                         POLLS.store(0, AtomicOrdering::SeqCst);
                         OBSERVED.store(0, AtomicOrdering::SeqCst);
                         DEFER_FIRST.store(deferred, AtomicOrdering::SeqCst);
-                        let value_var = var(&py, b"queued-value");
-                        let cycle_var = var(&py, b"queued-cycle");
-                        let selected = context::new_context(&py).unwrap();
+                        let value_var = var(py, b"queued-value");
+                        let cycle_var = var(py, b"queued-cycle");
+                        let selected = context::new_context(py).unwrap();
                         let task = crate::molt_task_new_attached_body(
                             py,
                             poll as *const () as usize as u64,
@@ -1492,63 +1492,63 @@ mod context_queue_root_tests {
                         let ptr = obj_from_bits(task).as_ptr().unwrap();
                         unsafe {
                             crate::object::payload_refs::store_borrowed(
-                                &py,
+                                py,
                                 ptr,
                                 crate::GEN_CONTROL_SIZE,
                                 value_var,
                             );
                         }
                         {
-                            let _entered = context::EnteredContext::enter(&py, selected).unwrap();
+                            let _entered = context::EnteredContext::enter(py, selected).unwrap();
                             for (key, value) in [
                                 (value_var, MoltObject::from_int(77).bits()),
                                 (cycle_var, task),
                             ] {
-                                let token = context::set_variable(&py, key, value).unwrap();
-                                dec_ref_bits(&py, token);
+                                let token = context::set_variable(py, key, value).unwrap();
+                                dec_ref_bits(py, token);
                             }
                         }
-                        register_task_execution(&py, ptr, 1, TaskContextBinding::Owned(selected));
-                        let task_watch = WeakBorrow::new(&py, task).unwrap();
-                        let context_watch = WeakBorrow::new(&py, selected).unwrap();
+                        register_task_execution(py, ptr, 1, TaskContextBinding::Owned(selected));
+                        let task_watch = WeakBorrow::new(py, task).unwrap();
+                        let context_watch = WeakBorrow::new(py, selected).unwrap();
                         let spawn_count = spawned_task_count();
                         unsafe {
                             molt_spawn_attached_body(py, task);
                         }
-                        dec_ref_bits(&py, task);
-                        dec_ref_bits(&py, selected);
+                        dec_ref_bits(py, task);
+                        dec_ref_bits(py, selected);
                         unsafe {
-                            crate::object::gc::collect_cycles(&py);
+                            crate::object::gc::collect_cycles(py);
                         }
                         assert_eq!(POLLS.load(AtomicOrdering::SeqCst), 0);
                         for watch in [&task_watch, &context_watch] {
                             let live = watch
                                 .upgrade_owned()
                                 .expect("queued task and Context survive GC");
-                            dec_ref_bits(&py, live);
+                            dec_ref_bits(py, live);
                         }
                         // Separate the suspended execution root from queue
                         // custody. The external spawn root alone must survive GC.
                         drop(scheduler.try_pop().expect("real queued work"));
                         unsafe {
-                            crate::object::gc::collect_cycles(&py);
+                            crate::object::gc::collect_cycles(py);
                         }
                         let live = task_watch
                             .upgrade_owned()
                             .expect("spawn is an external GC root");
                         task_clear_queue_flags(ptr);
-                        enqueue_task_ptr(&py, ptr);
-                        dec_ref_bits(&py, live);
+                        enqueue_task_ptr(py, ptr);
+                        dec_ref_bits(py, live);
                         scheduler.drain_ready();
                         if deferred {
                             assert_eq!(POLLS.load(AtomicOrdering::SeqCst), 1);
                             unsafe {
-                                crate::object::gc::collect_cycles(&py);
+                                crate::object::gc::collect_cycles(py);
                             }
                             let live = task_watch
                                 .upgrade_owned()
                                 .expect("deferred owner survives GC");
-                            dec_ref_bits(&py, live);
+                            dec_ref_bits(py, live);
                             scheduler.drain_ready();
                         }
                         assert_eq!(
@@ -1561,12 +1561,12 @@ mod context_queue_root_tests {
                         );
                         assert_eq!(spawned_task_count(), spawn_count);
                         unsafe {
-                            crate::object::gc::collect_cycles(&py);
+                            crate::object::gc::collect_cycles(py);
                         }
                         assert!(task_watch.upgrade_owned().is_none());
                         assert!(context_watch.upgrade_owned().is_none());
-                        dec_ref_bits(&py, value_var);
-                        dec_ref_bits(&py, cycle_var);
+                        dec_ref_bits(py, value_var);
+                        dec_ref_bits(py, cycle_var);
                     }
                 }
             });
@@ -1579,8 +1579,8 @@ mod context_queue_root_tests {
             with_gil(|py| {
                 POLLS.store(0, AtomicOrdering::SeqCst);
                 for kind in [crate::TASK_KIND_GENERATOR, crate::TASK_KIND_FUTURE] {
-                    let variable = var(&py, b"unspawned-cycle");
-                    let selected = context::new_context(&py).unwrap();
+                    let variable = var(py, b"unspawned-cycle");
+                    let selected = context::new_context(py).unwrap();
                     let task = crate::molt_task_new_attached_body(
                         py,
                         poll as *const () as usize as u64,
@@ -1589,21 +1589,21 @@ mod context_queue_root_tests {
                     );
                     let ptr = obj_from_bits(task).as_ptr().unwrap();
                     {
-                        let _entered = context::EnteredContext::enter(&py, selected).unwrap();
-                        let token = context::set_variable(&py, variable, task).unwrap();
-                        dec_ref_bits(&py, token);
+                        let _entered = context::EnteredContext::enter(py, selected).unwrap();
+                        let token = context::set_variable(py, variable, task).unwrap();
+                        dec_ref_bits(py, token);
                     }
-                    register_task_execution(&py, ptr, 1, TaskContextBinding::Owned(selected));
-                    let task_watch = WeakBorrow::new(&py, task).unwrap();
-                    let context_watch = WeakBorrow::new(&py, selected).unwrap();
-                    dec_ref_bits(&py, task);
-                    dec_ref_bits(&py, selected);
+                    register_task_execution(py, ptr, 1, TaskContextBinding::Owned(selected));
+                    let task_watch = WeakBorrow::new(py, task).unwrap();
+                    let context_watch = WeakBorrow::new(py, selected).unwrap();
+                    dec_ref_bits(py, task);
+                    dec_ref_bits(py, selected);
                     unsafe {
-                        crate::object::gc::collect_cycles(&py);
+                        crate::object::gc::collect_cycles(py);
                     }
                     assert!(task_watch.upgrade_owned().is_none());
                     assert!(context_watch.upgrade_owned().is_none());
-                    dec_ref_bits(&py, variable);
+                    dec_ref_bits(py, variable);
                 }
                 assert_eq!(POLLS.load(AtomicOrdering::SeqCst), 0);
             });
@@ -1614,7 +1614,7 @@ mod context_queue_root_tests {
         use crate::async_rt::{cancellation, event_loop};
         crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
             with_gil(|py| {
-                install_deterministic_scheduler(&py);
+                install_deterministic_scheduler(py);
                 DEFER_FIRST.store(false, AtomicOrdering::SeqCst);
                 for kind in [crate::TASK_KIND_GENERATOR, crate::TASK_KIND_FUTURE] {
                     // 0: complete, 1: cancellation during poll, 2: close with
@@ -1622,17 +1622,17 @@ mod context_queue_root_tests {
                     for terminal in 0..3 {
                         POLLS.store(0, AtomicOrdering::SeqCst);
                         CANCEL_AFTER_OBSERVE.store(terminal == 1, AtomicOrdering::SeqCst);
-                        let variable = var(&py, b"loop-value");
-                        let selected = context::new_context(&py).unwrap();
+                        let variable = var(py, b"loop-value");
+                        let selected = context::new_context(py).unwrap();
                         {
-                            let _entry = context::EnteredContext::enter(&py, selected).unwrap();
+                            let _entry = context::EnteredContext::enter(py, selected).unwrap();
                             let token = context::set_variable(
-                                &py,
+                                py,
                                 variable,
                                 MoltObject::from_int(77).bits(),
                             )
                             .unwrap();
-                            dec_ref_bits(&py, token);
+                            dec_ref_bits(py, token);
                         }
                         let task = crate::molt_task_new_attached_body(
                             py,
@@ -1643,7 +1643,7 @@ mod context_queue_root_tests {
                         let ptr = obj_from_bits(task).as_ptr().unwrap();
                         unsafe {
                             crate::object::payload_refs::store_borrowed(
-                                &py,
+                                py,
                                 ptr,
                                 crate::GEN_CONTROL_SIZE,
                                 variable,
@@ -1656,43 +1656,43 @@ mod context_queue_root_tests {
                             )
                         };
                         let id = obj_from_bits(execution).as_int().unwrap() as u64;
-                        register_task_execution(&py, ptr, id, TaskContextBinding::Owned(selected));
+                        register_task_execution(py, ptr, id, TaskContextBinding::Owned(selected));
                         unsafe {
                             cancellation::molt_cancel_token_drop_attached_body(py, execution);
                         }
-                        let task_watch = WeakBorrow::new(&py, task).unwrap();
-                        let context_watch = WeakBorrow::new(&py, selected).unwrap();
+                        let task_watch = WeakBorrow::new(py, task).unwrap();
+                        let context_watch = WeakBorrow::new(py, selected).unwrap();
                         let loop_handle = event_loop::molt_event_loop_new_attached_body(py);
                         let spawn_count = spawned_task_count();
                         event_loop::molt_event_loop_spawn_attached_body(py, loop_handle, task);
-                        assert!(!exception_pending(&py));
+                        assert!(!exception_pending(py));
                         if terminal == 2 {
                             register_task_sleep(
-                                &py,
+                                py,
                                 ptr,
                                 Instant::now() + std::time::Duration::from_secs(3600),
                             );
                         }
-                        dec_ref_bits(&py, task);
-                        dec_ref_bits(&py, selected);
+                        dec_ref_bits(py, task);
+                        dec_ref_bits(py, selected);
                         unsafe {
-                            crate::object::gc::collect_cycles(&py);
+                            crate::object::gc::collect_cycles(py);
                         }
                         let live = task_watch
                             .upgrade_owned()
                             .expect("loop queue owns live work");
-                        dec_ref_bits(&py, live);
+                        dec_ref_bits(py, live);
                         if terminal == 2 {
                             event_loop::molt_event_loop_close_attached_body(py, loop_handle);
                         } else {
                             event_loop::molt_event_loop_run_once_attached_body(py, loop_handle);
                             if terminal == 1 {
-                                assert!(exception_pending(&py));
+                                assert!(exception_pending(py));
                                 unsafe {
                                     molt_cpython_abi::api::errors::PyErr_Clear();
                                 }
                             } else {
-                                assert!(!exception_pending(&py));
+                                assert!(!exception_pending(py));
                             }
                         }
                         assert_eq!(
@@ -1701,12 +1701,12 @@ mod context_queue_root_tests {
                         );
                         assert_eq!(spawned_task_count(), spawn_count);
                         unsafe {
-                            crate::object::gc::collect_cycles(&py);
+                            crate::object::gc::collect_cycles(py);
                         }
                         assert!(task_watch.upgrade_owned().is_none());
                         assert!(context_watch.upgrade_owned().is_none());
                         event_loop::molt_event_loop_drop_attached_body(py, loop_handle);
-                        dec_ref_bits(&py, variable);
+                        dec_ref_bits(py, variable);
                     }
                 }
                 CANCEL_AFTER_OBSERVE.store(false, AtomicOrdering::SeqCst);

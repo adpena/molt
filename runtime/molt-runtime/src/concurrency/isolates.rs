@@ -512,8 +512,8 @@ fn run_isolate_thread(
         {
             let gil = GilGuard::new();
             let py = gil.token();
-            runtime_reset_for_init(&py, unsafe { &*state_ptr });
-            crate::builtins::exceptions::memory_error::initialize(&py);
+            runtime_reset_for_init(py, unsafe { &*state_ptr });
+            crate::builtins::exceptions::memory_error::initialize(py);
         }
         crate::with_gil_entry_nopanic!(_py, {
             if exception_pending(_py) {
@@ -545,7 +545,7 @@ fn run_isolate_thread(
     let teardown = std::panic::catch_unwind(|| {
         let gil = GilGuard::new();
         let py = gil.token();
-        runtime_teardown_isolate(&py, unsafe { &*state_ptr });
+        runtime_teardown_isolate(py, unsafe { &*state_ptr });
         gc_owner.retire();
     });
     if teardown.is_err() {
@@ -659,7 +659,7 @@ mod bootstrap_failure_tests {
                     } else {
                         let origin = {
                             let entry = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
-                            RuntimeThreadBorrow::try_acquire(&entry.token()).unwrap()
+                            RuntimeThreadBorrow::try_acquire(entry.token()).unwrap()
                         };
                         spawn_runtime_thread(move || {
                             entered_tx.send(()).unwrap();
@@ -705,7 +705,7 @@ mod bootstrap_failure_tests {
                     let origin = {
                         let entry =
                             crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
-                        RuntimeThreadBorrow::try_acquire(&entry.token()).unwrap()
+                        RuntimeThreadBorrow::try_acquire(entry.token()).unwrap()
                     };
                     let canceled: Box<dyn FnOnce() + Send> = Box::new(move || drop(origin));
                     assert_eq!(active_runtime_execution_lease_count(), 1);
@@ -722,10 +722,10 @@ mod bootstrap_failure_tests {
                         crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
                     let py = entry.token();
                     let baseline = active_runtime_execution_lease_count();
-                    let state = runtime_state(&py);
+                    let state = runtime_state(py);
                     if mode == "spawn-failure-shared" {
                         let callable = crate::builtins::functions::alloc_runtime_function_obj(
-                            &py,
+                            py,
                             crate::builtins::functions::runtime_fn_addr(
                                 "thread_lifetime_teardown_probe",
                                 thread_lifetime_teardown_probe as *const (),
@@ -752,9 +752,9 @@ mod bootstrap_failure_tests {
                             unsafe { (*crate::header_from_obj_ptr(callable)).ref_count_snapshot() },
                             refs
                         );
-                        dec_ref_bits(&py, MoltObject::from_ptr(callable).bits());
+                        dec_ref_bits(py, MoltObject::from_ptr(callable).bits());
                     } else {
-                        let payload = alloc_bytes(&py, b"not-executed-after-creation-failure");
+                        let payload = alloc_bytes(py, b"not-executed-after-creation-failure");
                         assert!(!payload.is_null());
                         NATIVE_THREAD_SPAWN_TEST_FAIL.with(|fail| fail.set(true));
                         unsafe {
@@ -764,9 +764,9 @@ mod bootstrap_failure_tests {
                             )
                         };
                         assert!(!NATIVE_THREAD_SPAWN_TEST_FAIL.with(|fail| fail.get()));
-                        dec_ref_bits(&py, MoltObject::from_ptr(payload).bits());
+                        dec_ref_bits(py, MoltObject::from_ptr(payload).bits());
                     }
-                    let (error, message) = pending_runtime_error(&py);
+                    let (error, message) = pending_runtime_error(py);
                     assert!(
                         error && message.contains("injected native thread creation failure"),
                         "{message}"
@@ -781,10 +781,10 @@ mod bootstrap_failure_tests {
                     let entry =
                         crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
                     let py = entry.token();
-                    let primary = runtime_state(&py).identity();
-                    thread_registry_set_main(&py, "primary-origin".into(), false);
+                    let primary = runtime_state(py).identity();
+                    thread_registry_set_main(py, "primary-origin".into(), false);
                     let callable = crate::builtins::functions::alloc_runtime_function_obj(
-                        &py,
+                        py,
                         crate::builtins::functions::runtime_fn_addr(
                             "thread_lifetime_teardown_probe",
                             thread_lifetime_teardown_probe as *const (),
@@ -797,13 +797,13 @@ mod bootstrap_failure_tests {
                         unsafe { (*crate::header_from_obj_ptr(callable)).ref_count_snapshot() };
                     let handle = Arc::new(MoltThreadHandle::new());
                     handle.publish_call(
-                        &py,
+                        py,
                         callable_bits,
                         MoltObject::none().bits(),
                         MoltObject::none().bits(),
                     );
-                    thread_registry_register(&py, &handle, "delayed-primary".into(), false);
-                    let origin = RuntimeThreadBorrow::try_acquire(&py).unwrap();
+                    thread_registry_register(py, &handle, "delayed-primary".into(), false);
+                    let origin = RuntimeThreadBorrow::try_acquire(py).unwrap();
                     let worker_handle = Arc::clone(&handle);
                     let (release_tx, release_rx) = std::sync::mpsc::channel();
                     let worker = spawn_runtime_thread(move || {
@@ -813,8 +813,8 @@ mod bootstrap_failure_tests {
                     .unwrap();
                     // Dropping display metadata and the parent Arc must neither
                     // consume nor cancel the delayed native worker's payload.
-                    thread_registry_forget(&py, &handle);
-                    assert_eq!(handle.call_args(&py).0, callable_bits);
+                    thread_registry_forget(py, &handle);
+                    assert_eq!(handle.call_args(py).0, callable_bits);
                     let weak = Arc::downgrade(&handle);
                     drop(handle);
                     assert!(weak.upgrade().is_some());
@@ -862,7 +862,7 @@ mod bootstrap_failure_tests {
                         isolate.join().unwrap();
                     }
                     assert_eq!(
-                        thread_registry(&py).lock().unwrap().main_name.as_deref(),
+                        thread_registry(py).lock().unwrap().main_name.as_deref(),
                         Some("primary-origin")
                     );
                     assert_eq!(
@@ -887,7 +887,7 @@ mod bootstrap_failure_tests {
                         unsafe { (*crate::header_from_obj_ptr(callable)).ref_count_snapshot() },
                         refs
                     );
-                    dec_ref_bits(&py, callable_bits);
+                    dec_ref_bits(py, callable_bits);
                     drop(entry);
                     assert_eq!(molt_runtime_shutdown(), 1);
                 }
@@ -1009,7 +1009,7 @@ mod bootstrap_failure_tests {
                     let origin = {
                         let entry =
                             crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
-                        RuntimeThreadBorrow::try_acquire(&entry.token()).unwrap()
+                        RuntimeThreadBorrow::try_acquire(entry.token()).unwrap()
                     };
                     let handle = Arc::new(MoltThreadHandle::new());
                     let worker_handle = Arc::clone(&handle);
@@ -1037,7 +1037,7 @@ mod bootstrap_failure_tests {
                     {
                         let entry =
                             crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
-                        register_thread_lifetime_probe(&entry.token());
+                        register_thread_lifetime_probe(entry.token());
                     }
                     crate::state::lifecycle::shutdown_tests::inflight_joined_service_finishes_under_retained_origin(true);
                     assert_eq!(
@@ -1049,7 +1049,7 @@ mod bootstrap_failure_tests {
                     {
                         let entry =
                             crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
-                        register_thread_lifetime_probe(&entry.token());
+                        register_thread_lifetime_probe(entry.token());
                     }
                     crate::state::lifecycle::shutdown_tests::joined_service_cannot_exit_own_runtime(
                     );
@@ -1068,9 +1068,9 @@ mod bootstrap_failure_tests {
                     let storage = {
                         let entry =
                             crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
-                        register_thread_lifetime_probe(&entry.token());
+                        register_thread_lifetime_probe(entry.token());
                         crate::state::lifecycle::tests::install_joined_service_control(
-                            &entry.token(),
+                            entry.token(),
                             mode == "joined-service-failed-join",
                             mode == "joined-service-partial-start",
                             mode == "joined-service-cleanup-panic",
@@ -1121,17 +1121,17 @@ mod bootstrap_failure_tests {
                     let entry =
                         crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
                     let py = entry.token();
-                    register_thread_lifetime_probe(&py);
-                    let queue = runtime_state(&py).sleep_queue();
+                    register_thread_lifetime_probe(py);
+                    let queue = runtime_state(py).sleep_queue();
                     let storage = Arc::downgrade(queue);
                     {
                         // Retire the service's Arc so Weak observes only the
                         // RuntimeState field before the terminal refusal.
                         let _release = crate::concurrency::gil::GilReleaseGuard::suspend();
-                        queue.shutdown(&py);
+                        queue.shutdown(py);
                     }
                     let fixture =
-                        crate::async_rt::process::install_process_service_timeout_fixture(&py);
+                        crate::async_rt::process::install_process_service_timeout_fixture(py);
                     drop(entry);
                     assert_eq!(molt_runtime_shutdown(), 0);
                     assert!(!crate::state::runtime_state::runtime_is_initialized());
@@ -1158,7 +1158,7 @@ mod bootstrap_failure_tests {
                     {
                         let entry =
                             crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
-                        register_thread_lifetime_probe(&entry.token());
+                        register_thread_lifetime_probe(entry.token());
                     }
                     let _pending = RuntimeLifetimeLease::try_acquire().unwrap();
                     assert!(
@@ -1837,7 +1837,7 @@ mod bootstrap_failure_tests {
                             // finish under the retained isolate, not primary TLS.
                             let gil = GilGuard::new();
                             let py = gil.token();
-                            let owner = runtime_state(&py).identity();
+                            let owner = runtime_state(py).identity();
                             molt_cpython_abi::api::object::attach_runtime_execution_thread(owner);
                             assert!(!unsafe { molt_cpython_abi::api::sys::PyThreadState_GetDict() }.is_null());
                             molt_cpython_abi::api::object::detach_runtime_execution_thread();
@@ -2506,7 +2506,7 @@ fn run_shared_thread(
         let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
         let payload_failed =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(payload)).is_err();
-        handle.release_call(&execution.token());
+        handle.release_call(execution.token());
         drop(execution);
         payload_failed
     }));
@@ -2564,7 +2564,6 @@ pub(crate) fn configured_thread_stack_size() -> Option<usize> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-
 /// # Safety
 /// `payload_bits` must reference a valid thread payload tuple allocated by this runtime.
 pub(crate) unsafe fn molt_thread_spawn_attached_body(
@@ -2631,7 +2630,6 @@ pub(crate) unsafe fn molt_thread_spawn_attached_body(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-
 /// # Safety
 /// `callable_bits`/`args_bits`/`kwargs_bits` must be valid Molt objects owned by
 /// the current runtime. The returned native handle is the sole call identity.
@@ -2684,7 +2682,6 @@ pub(crate) unsafe fn molt_thread_spawn_shared_attached_body(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-
 /// # Safety
 /// `handle_bits` must be a live thread handle created by `molt_thread_spawn` and `timeout_bits`
 /// must be either `None` or a numeric timeout object.
@@ -2714,7 +2711,6 @@ pub(crate) unsafe fn molt_thread_join_attached_body(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-
 /// # Safety
 /// `handle_bits` must be a live thread handle created by this runtime.
 pub(crate) unsafe fn molt_thread_is_alive_attached_body(
@@ -2731,7 +2727,6 @@ pub(crate) unsafe fn molt_thread_is_alive_attached_body(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-
 /// # Safety
 /// `handle_bits` must be a live thread handle created by this runtime.
 pub(crate) unsafe fn molt_thread_ident_attached_body(
@@ -2755,7 +2750,6 @@ pub(crate) unsafe fn molt_thread_ident_attached_body(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-
 /// # Safety
 /// `handle_bits` must be a live thread handle created by this runtime.
 pub(crate) unsafe fn molt_thread_native_id_attached_body(
@@ -2779,21 +2773,18 @@ pub(crate) unsafe fn molt_thread_native_id_attached_body(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-
 pub(crate) fn molt_thread_current_ident_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     let ident = current_thread_id();
     MoltObject::from_int(ident as i64).bits()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-
 pub(crate) fn molt_thread_current_native_id_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     let ident = current_thread_id();
     MoltObject::from_int(ident as i64).bits()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-
 /// # Safety
 /// This function must be called through the runtime FFI entrypoint while runtime state is valid.
 pub(crate) unsafe fn molt_thread_stack_size_get_attached_body(_py: &crate::PyToken<'_>) -> u64 {
@@ -2804,7 +2795,6 @@ pub(crate) unsafe fn molt_thread_stack_size_get_attached_body(_py: &crate::PyTok
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-
 /// # Safety
 /// `size_bits` must be an integer object representing the requested stack size.
 pub(crate) unsafe fn molt_thread_stack_size_set_attached_body(
@@ -2837,7 +2827,6 @@ pub(crate) unsafe fn molt_thread_stack_size_set_attached_body(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-
 /// # Safety
 /// `handle_bits` must be a live thread handle created by this runtime and not already dropped.
 pub(crate) unsafe fn molt_thread_drop_attached_body(
@@ -2853,7 +2842,6 @@ pub(crate) unsafe fn molt_thread_drop_attached_body(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-
 /// # Safety
 /// `name_bits` must be a string object and `daemon_bits` must be a truthy-capable object.
 pub(crate) unsafe fn molt_thread_registry_set_main_attached_body(
@@ -2872,7 +2860,6 @@ pub(crate) unsafe fn molt_thread_registry_set_main_attached_body(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-
 /// # Safety
 /// `handle_bits` must be a live thread handle owned by this runtime and
 /// `name_bits` a string object owned by this runtime.
@@ -2896,7 +2883,6 @@ pub(crate) unsafe fn molt_thread_registry_register_attached_body(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-
 /// # Safety
 /// `handle_bits` must be a live native thread handle owned by this runtime.
 /// Forgetting display metadata does not cancel an admitted worker or its call.
@@ -2914,7 +2900,6 @@ pub(crate) unsafe fn molt_thread_registry_forget_attached_body(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-
 /// # Safety
 /// This function must be called through the runtime FFI entrypoint while the thread registry is
 /// initialized for the current runtime.
@@ -2982,7 +2967,6 @@ pub(crate) unsafe fn molt_thread_registry_snapshot_attached_body(_py: &crate::Py
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-
 /// # Safety
 /// This function must be called through the runtime FFI entrypoint while the thread registry is
 /// initialized for the current runtime.
@@ -3055,7 +3039,6 @@ pub(crate) unsafe fn molt_thread_registry_current_attached_body(_py: &crate::PyT
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-
 /// # Safety
 /// This function must be called through the runtime FFI entrypoint while the thread registry is
 /// initialized for the current runtime.

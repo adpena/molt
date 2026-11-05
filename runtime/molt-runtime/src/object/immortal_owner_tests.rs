@@ -70,7 +70,7 @@ fn canonical_abi_views_preserve_runtime_immortality_on_both_crossings() {
         RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
             crate::with_gil(|py| unsafe {
                 let fresh = MoltObject::from_ptr(crate::alloc_string(
-                    &py,
+                    py,
                     b"canonical_abi_first_publication_fixture",
                 ))
                 .bits();
@@ -79,11 +79,11 @@ fn canonical_abi_views_preserve_runtime_immortality_on_both_crossings() {
                         .has_flag(HEADER_FLAG_HAS_ABI_VIEW)
                 );
                 let values = [
-                    MoltObject::from_ptr(crate::alloc_tuple(&py, &[])).bits(),
-                    MoltObject::from_ptr(crate::alloc_string(&py, b"")).bits(),
-                    MoltObject::from_ptr(crate::alloc_bytes(&py, b"")).bits(),
-                    MoltObject::from_ptr(crate::alloc_string(&py, b"x")).bits(),
-                    crate::missing_bits(&py),
+                    MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits(),
+                    MoltObject::from_ptr(crate::alloc_string(py, b"")).bits(),
+                    MoltObject::from_ptr(crate::alloc_bytes(py, b"")).bits(),
+                    MoltObject::from_ptr(crate::alloc_string(py, b"x")).bits(),
+                    crate::missing_bits(py),
                     fresh,
                 ];
                 for bits in values {
@@ -98,13 +98,13 @@ fn canonical_abi_views_preserve_runtime_immortality_on_both_crossings() {
                     assert!(molt_cpython_abi::abi_types::is_immortal_refcnt(refs));
                     Py_INCREF(view);
                     Py_DECREF(view);
-                    crate::dec_ref_bits(&py, bits);
+                    crate::dec_ref_bits(py, bits);
                     assert_eq!((*view).ob_refcnt, refs);
                     assert_canonical(bits);
                     assert_eq!(GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits), view);
                 }
                 assert_eq!(
-                    crate::object::gc::collect_cycles(&py).status,
+                    crate::object::gc::collect_cycles(py).status,
                     crate::object::gc::GcCollectStatus::Completed
                 );
             })

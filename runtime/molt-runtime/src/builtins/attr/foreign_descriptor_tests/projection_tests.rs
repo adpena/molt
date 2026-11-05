@@ -43,7 +43,7 @@ fn member_set_and_delete_publish_exception_base_and_typed_fields_immediately() {
     crate::with_gil(|py| unsafe {
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         let receiver = crate::builtins::exceptions::alloc_exception(
-            &py,
+            py,
             BuiltinExc::AttributeError,
             "native member return",
         );
@@ -65,7 +65,7 @@ fn member_set_and_delete_publish_exception_base_and_typed_fields_immediately() {
             ] {
                 assert_eq!(
                     descriptor_mutate(
-                        &py,
+                        py,
                         descriptor_bits,
                         receiver_bits,
                         DescriptorMutation::Set(value)
@@ -93,7 +93,7 @@ fn member_set_and_delete_publish_exception_base_and_typed_fields_immediately() {
                     observed
                 ));
                 let exposed = descriptor_bind(
-                    &py,
+                    py,
                     descriptor_bits,
                     Some(crate::object_class_bits(receiver)),
                     Some(receiver_bits),
@@ -101,12 +101,12 @@ fn member_set_and_delete_publish_exception_base_and_typed_fields_immediately() {
                 .expect("operation succeeds")
                 .expect("member descriptor returns its present value");
                 assert_eq!(exposed, value);
-                dec_ref_bits(&py, exposed);
-                assert!(!exception_pending(&py));
+                dec_ref_bits(py, exposed);
+                assert!(!exception_pending(py));
             }
             assert_eq!(
                 descriptor_mutate(
-                    &py,
+                    py,
                     descriptor_bits,
                     receiver_bits,
                     DescriptorMutation::Delete
@@ -128,7 +128,7 @@ fn member_set_and_delete_publish_exception_base_and_typed_fields_immediately() {
                 name.to_string_lossy(),
             );
             let exposed = descriptor_bind(
-                &py,
+                py,
                 descriptor_bits,
                 Some(crate::object_class_bits(receiver)),
                 Some(receiver_bits),
@@ -139,24 +139,24 @@ fn member_set_and_delete_publish_exception_base_and_typed_fields_immediately() {
             } else {
                 assert!(exposed.is_err());
             }
-            assert_eq!(exception_pending(&py), !typed);
+            assert_eq!(exception_pending(py), !typed);
             if !typed {
-                let error = crate::exception_last_bits_noinc(&py).unwrap();
+                let error = crate::exception_last_bits_noinc(py).unwrap();
                 assert!(crate::builtins::exceptions::exception_matches_kind(
-                    &py,
+                    py,
                     error,
                     crate::BuiltinExc::AttributeError,
                 ));
-                crate::clear_exception(&py);
+                crate::clear_exception(py);
             }
             if let Ok(exposed) = exposed {
-                dec_ref_bits(&py, exposed);
+                dec_ref_bits(py, exposed);
             }
-            dec_ref_bits(&py, descriptor_bits);
+            dec_ref_bits(py, descriptor_bits);
             refcount::Py_DECREF(descriptor);
         }
-        dec_ref_bits(&py, receiver_bits);
-        assert!(!exception_pending(&py));
+        dec_ref_bits(py, receiver_bits);
+        assert!(!exception_pending(py));
         assert!(errors::PyErr_Occurred().is_null());
     });
 }
@@ -167,7 +167,7 @@ fn explicit_bound_member_wrappers_share_the_descriptor_return_boundary() {
     crate::with_gil(|py| unsafe {
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         let receiver = crate::builtins::exceptions::alloc_exception(
-            &py,
+            py,
             BuiltinExc::AttributeError,
             "bound native member return",
         );
@@ -179,7 +179,7 @@ fn explicit_bound_member_wrappers_share_the_descriptor_return_boundary() {
         assert_eq!((*setter).ob_type, &raw mut abi_types::_PyMethodWrapper_Type);
         let setter_bits = GLOBAL_BRIDGE.molt_value_for_pyobj(setter).unwrap();
         for value in [MoltObject::from_int(947).bits(), MoltObject::none().bits()] {
-            let result = crate::call_callable2(&py, setter_bits, receiver_bits, value);
+            let result = crate::call_callable2(py, setter_bits, receiver_bits, value);
             assert_eq!(
                 crate::builtins::exceptions::exception_typed_field_raw_bits(
                     receiver,
@@ -188,11 +188,11 @@ fn explicit_bound_member_wrappers_share_the_descriptor_return_boundary() {
                 Some(value),
                 "a bound __set__ call must publish before returning to runtime",
             );
-            assert!(!exception_pending(&py));
+            assert!(!exception_pending(py));
             assert_eq!(result, MoltObject::none().bits());
-            dec_ref_bits(&py, result);
+            dec_ref_bits(py, result);
         }
-        dec_ref_bits(&py, setter_bits);
+        dec_ref_bits(py, setter_bits);
         refcount::Py_DECREF(setter);
 
         let deleter = object::PyObject_GetAttrString(descriptor, c"__delete__".as_ptr());
@@ -202,7 +202,7 @@ fn explicit_bound_member_wrappers_share_the_descriptor_return_boundary() {
             &raw mut abi_types::_PyMethodWrapper_Type
         );
         let deleter_bits = GLOBAL_BRIDGE.molt_value_for_pyobj(deleter).unwrap();
-        let result = crate::call_callable1(&py, deleter_bits, receiver_bits);
+        let result = crate::call_callable1(py, deleter_bits, receiver_bits);
         assert!(crate::builtins::exceptions::exception_field_is_missing(
             crate::builtins::exceptions::exception_typed_field_raw_bits(
                 receiver,
@@ -210,13 +210,13 @@ fn explicit_bound_member_wrappers_share_the_descriptor_return_boundary() {
             )
             .unwrap(),
         ));
-        assert!(!exception_pending(&py));
+        assert!(!exception_pending(py));
         assert_eq!(result, MoltObject::none().bits());
-        dec_ref_bits(&py, result);
-        dec_ref_bits(&py, deleter_bits);
+        dec_ref_bits(py, result);
+        dec_ref_bits(py, deleter_bits);
         refcount::Py_DECREF(deleter);
         refcount::Py_DECREF(descriptor);
-        dec_ref_bits(&py, receiver_bits);
+        dec_ref_bits(py, receiver_bits);
         assert!(errors::PyErr_Occurred().is_null());
     });
 }
@@ -282,12 +282,12 @@ fn getter_and_setter_partial_mutations_commit_without_replacing_callback_errors(
     crate::with_gil(|py| unsafe {
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         let receiver = crate::builtins::exceptions::alloc_exception(
-            &py,
+            py,
             BuiltinExc::AttributeError,
             "receiver",
         );
         let original = crate::builtins::exceptions::alloc_exception(
-            &py,
+            py,
             BuiltinExc::ValueError,
             "original callback error",
         );
@@ -324,7 +324,7 @@ fn getter_and_setter_partial_mutations_commit_without_replacing_callback_errors(
             descriptor.fail = fail;
             if setter {
                 let outcome = descriptor_mutate(
-                    &py,
+                    py,
                     descriptor_bits,
                     receiver_bits,
                     DescriptorMutation::Delete,
@@ -339,30 +339,30 @@ fn getter_and_setter_partial_mutations_commit_without_replacing_callback_errors(
                 );
             } else {
                 let result = descriptor_bind(
-                    &py,
+                    py,
                     descriptor_bits,
-                    Some(builtin_classes(&py).object),
+                    Some(builtin_classes(py).object),
                     Some(receiver_bits),
                 );
                 assert_eq!(result.is_err(), fail);
                 if let Ok(result) = result {
-                    dec_ref_bits(&py, result.expect("successful descriptor has a value"));
+                    dec_ref_bits(py, result.expect("successful descriptor has a value"));
                 }
             }
             assert_eq!(crate::exception_notes_bits(receiver), expected);
-            assert_eq!(exception_pending(&py), fail);
+            assert_eq!(exception_pending(py), fail);
             if fail {
-                assert_eq!(crate::exception_last_bits_noinc(&py), Some(original_bits));
-                crate::clear_exception(&py);
+                assert_eq!(crate::exception_last_bits_noinc(py), Some(original_bits));
+                crate::clear_exception(py);
             }
             refcount::Py_DECREF(descriptor.value);
             descriptor.value = ptr::null_mut();
         }
-        dec_ref_bits(&py, descriptor_bits);
+        dec_ref_bits(py, descriptor_bits);
         assert_eq!(descriptor.object.ob_refcnt, 1);
         refcount::Py_DECREF(original_view);
-        dec_ref_bits(&py, original_bits);
-        dec_ref_bits(&py, receiver_bits);
+        dec_ref_bits(py, original_bits);
+        dec_ref_bits(py, receiver_bits);
         assert!(errors::PyErr_Occurred().is_null());
     });
 }
@@ -373,12 +373,12 @@ fn synchronization_failure_rejects_result_and_preserves_an_original_callback_err
     crate::with_gil(|py| unsafe {
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         let receiver = crate::builtins::exceptions::alloc_exception(
-            &py,
+            py,
             BuiltinExc::AttributeError,
             "invalid mutation",
         );
         let original = crate::builtins::exceptions::alloc_exception(
-            &py,
+            py,
             BuiltinExc::ValueError,
             "callback precedence",
         );
@@ -417,9 +417,9 @@ fn synchronization_failure_rejects_result_and_preserves_an_original_callback_err
         for fail in [false, true] {
             descriptor.fail = fail;
             descriptor_bind(
-                &py,
+                py,
                 descriptor_bits,
-                Some(builtin_classes(&py).object),
+                Some(builtin_classes(py).object),
                 Some(receiver_bits),
             )
             .expect_err("failed synchronization rejects descriptor result");
@@ -432,27 +432,27 @@ fn synchronization_failure_rejects_result_and_preserves_an_original_callback_err
                 result.ob_refcnt, 1,
                 "synchronization failure releases an owned callback result"
             );
-            assert!(exception_pending(&py));
-            let error = crate::exception_last_bits_noinc(&py).unwrap();
+            assert!(exception_pending(py));
+            let error = crate::exception_last_bits_noinc(py).unwrap();
             if fail {
                 assert_eq!(error, original_bits);
             } else {
                 assert!(crate::builtins::exceptions::exception_matches_kind(
-                    &py,
+                    py,
                     error,
                     crate::BuiltinExc::SystemError
                 ));
             }
-            crate::clear_exception(&py);
+            crate::clear_exception(py);
             // Repair only the test-injected invalid physical scalar before the
             // next call; no observing conversion may publish the rejected notes.
             (*descriptor.last_receiver).suppress_context = 0;
         }
-        dec_ref_bits(&py, descriptor_bits);
+        dec_ref_bits(py, descriptor_bits);
         refcount::Py_DECREF(replacement);
         refcount::Py_DECREF(original_view);
-        dec_ref_bits(&py, original_bits);
-        dec_ref_bits(&py, receiver_bits);
+        dec_ref_bits(py, original_bits);
+        dec_ref_bits(py, receiver_bits);
         assert_eq!(descriptor.object.ob_refcnt, 1);
         assert!(errors::PyErr_Occurred().is_null());
     });
@@ -464,7 +464,7 @@ fn inherited_exception_init_wrapper_publishes_args_before_foreign_call_returns()
     crate::with_gil(|py| unsafe {
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         let receiver =
-            crate::builtins::exceptions::alloc_exception(&py, BuiltinExc::AttributeError, "old");
+            crate::builtins::exceptions::alloc_exception(py, BuiltinExc::AttributeError, "old");
         assert!(!receiver.is_null());
         let receiver_bits = MoltObject::from_ptr(receiver).bits();
         let receiver_view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(receiver_bits);
@@ -482,10 +482,10 @@ fn inherited_exception_init_wrapper_publishes_args_before_foreign_call_returns()
             .bits();
         assert_eq!(
             crate::object_class_bits(crate::obj_from_bits(inherited_bits).as_ptr().unwrap()),
-            builtin_classes(&py).wrapper_descriptor,
+            builtin_classes(py).wrapper_descriptor,
         );
         let managed_bound = descriptor_bind(
-            &py,
+            py,
             inherited_bits,
             Some(crate::object_class_bits(receiver)),
             Some(receiver_bits),
@@ -494,20 +494,20 @@ fn inherited_exception_init_wrapper_publishes_args_before_foreign_call_returns()
         .unwrap();
         assert_eq!(
             crate::object_class_bits(crate::obj_from_bits(managed_bound).as_ptr().unwrap()),
-            builtin_classes(&py).method_wrapper,
+            builtin_classes(py).method_wrapper,
         );
         let managed_value = MoltObject::from_int(1700).bits();
-        let result = crate::call_callable1(&py, managed_bound, managed_value);
+        let result = crate::call_callable1(py, managed_bound, managed_value);
         let managed_args = crate::builtins::exceptions::exception_args_bits(receiver);
         crate::object::seq_access::with_immutable_tuple_slice(
             crate::obj_from_bits(managed_args).as_ptr().unwrap(),
             |args| assert_eq!(args, &[managed_value]),
         )
         .expect("managed initializer publishes tuple arguments");
-        assert!(!exception_pending(&py));
+        assert!(!exception_pending(py));
         assert_eq!(result, MoltObject::none().bits());
-        dec_ref_bits(&py, result);
-        dec_ref_bits(&py, managed_bound);
+        dec_ref_bits(py, result);
+        dec_ref_bits(py, managed_bound);
 
         // Select the actual production Init adapter from the canonical slot
         // table, then test a real native wrapper's hidden-self publication.
@@ -526,7 +526,7 @@ fn inherited_exception_init_wrapper_publishes_args_before_foreign_call_returns()
         let bound = typeobj::PyWrapper_New(physical, receiver_view);
         assert!(!bound.is_null());
         assert_eq!((*bound).ob_type, &raw mut abi_types::_PyMethodWrapper_Type);
-        let args = crate::alloc_tuple(&py, &[MoltObject::from_int(1701).bits()]);
+        let args = crate::alloc_tuple(py, &[MoltObject::from_int(1701).bits()]);
         assert!(!args.is_null());
         let args_bits = MoltObject::from_ptr(args).bits();
         let result =
@@ -540,12 +540,12 @@ fn inherited_exception_init_wrapper_publishes_args_before_foreign_call_returns()
             panic!("inherited native initializer failed");
         };
         assert_eq!(value, MoltObject::none().bits());
-        dec_ref_bits(&py, value);
+        dec_ref_bits(py, value);
         refcount::Py_DECREF(bound);
         refcount::Py_DECREF(physical);
         refcount::Py_DECREF(receiver_view);
-        dec_ref_bits(&py, args_bits);
-        dec_ref_bits(&py, receiver_bits);
+        dec_ref_bits(py, args_bits);
+        dec_ref_bits(py, receiver_bits);
         assert!(errors::PyErr_Occurred().is_null());
     });
 }
@@ -710,7 +710,7 @@ fn native_call_returns_publish_direct_and_hidden_operands_with_original_errors()
             for (fail, invalid) in [(false, false), (true, false), (false, true), (true, true)] {
                 let targets = ["hidden receiver", "positional", "keyword"].map(|message| {
                     crate::builtins::exceptions::alloc_exception(
-                        &py,
+                        py,
                         BuiltinExc::AttributeError,
                         message,
                     )
@@ -721,7 +721,7 @@ fn native_call_returns_publish_direct_and_hidden_operands_with_original_errors()
                     target_bits.map(|bits| GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits));
                 assert!(views.iter().all(|view| !view.is_null()));
                 let original = crate::builtins::exceptions::alloc_exception(
-                    &py,
+                    py,
                     BuiltinExc::ValueError,
                     "exact native callback error",
                 );
@@ -904,9 +904,9 @@ fn native_call_returns_publish_direct_and_hidden_operands_with_original_errors()
                     refcount::Py_DECREF(view);
                 }
                 for bits in target_bits {
-                    dec_ref_bits(&py, bits);
+                    dec_ref_bits(py, bits);
                 }
-                dec_ref_bits(&py, original_bits);
+                dec_ref_bits(py, original_bits);
                 assert_eq!(native.object.ob_refcnt, 1);
                 assert!(errors::PyErr_Occurred().is_null());
             }

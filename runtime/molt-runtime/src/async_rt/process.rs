@@ -261,7 +261,6 @@ impl SpawnRequest {
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// Arguments must be runtime-encoded objects from this runtime.
-
 pub(crate) unsafe fn molt_process_spawn_attached_body(
     _py: &crate::PyToken<'_>,
     args: u64,
@@ -282,7 +281,6 @@ pub(crate) unsafe fn molt_process_spawn_attached_body(
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// Arguments must be runtime-encoded objects from this runtime.
-
 #[allow(
     clippy::too_many_arguments,
     reason = "the body takes the intrinsic ABI's parameters one for one"
@@ -592,7 +590,6 @@ unsafe fn spawn_native(request: SpawnRequest) -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-
 pub(crate) unsafe fn molt_process_wait_future_attached_body(
     _py: &crate::PyToken<'_>,
     proc_bits: u64,
@@ -649,7 +646,6 @@ pub(crate) unsafe fn molt_process_wait_future_attached_body(
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `obj_bits` must be a valid process wait future object from this runtime.
-
 pub(crate) unsafe fn molt_process_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -680,7 +676,6 @@ pub(crate) unsafe fn molt_process_poll_attached_body(
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-
 pub(crate) unsafe fn molt_process_pid_attached_body(
     _py: &crate::PyToken<'_>,
     proc_bits: u64,
@@ -700,7 +695,6 @@ pub(crate) unsafe fn molt_process_pid_attached_body(
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-
 pub(crate) unsafe fn molt_process_returncode_attached_body(
     _py: &crate::PyToken<'_>,
     proc_bits: u64,
@@ -725,7 +719,6 @@ pub(crate) unsafe fn molt_process_returncode_attached_body(
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-
 pub(crate) unsafe fn molt_process_kill_attached_body(
     _py: &crate::PyToken<'_>,
     proc_bits: u64,
@@ -751,7 +744,6 @@ pub(crate) unsafe fn molt_process_kill_attached_body(
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-
 pub(crate) unsafe fn molt_process_terminate_attached_body(
     _py: &crate::PyToken<'_>,
     proc_bits: u64,
@@ -777,7 +769,6 @@ pub(crate) unsafe fn molt_process_terminate_attached_body(
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-
 pub(crate) unsafe fn molt_process_stdin_attached_body(
     _py: &crate::PyToken<'_>,
     proc_bits: u64,
@@ -800,7 +791,6 @@ pub(crate) unsafe fn molt_process_stdin_attached_body(
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-
 pub(crate) unsafe fn molt_process_stdout_attached_body(
     _py: &crate::PyToken<'_>,
     proc_bits: u64,
@@ -823,7 +813,6 @@ pub(crate) unsafe fn molt_process_stdout_attached_body(
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-
 pub(crate) unsafe fn molt_process_stderr_attached_body(
     _py: &crate::PyToken<'_>,
     proc_bits: u64,
@@ -924,7 +913,6 @@ pub(crate) fn molt_process_ipc_child_attached_body(_py: &crate::PyToken<'_>) -> 
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-
 pub(crate) unsafe fn molt_process_drop_attached_body(
     _py: &crate::PyToken<'_>,
     proc_bits: u64,
@@ -1641,11 +1629,11 @@ impl ProcessState {
             let py = execution.token();
             if !self.teardown_draining.load(AtomicOrdering::Acquire) {
                 assert_eq!(
-                    (runtime_state(&py) as *const RuntimeState).expose_provenance(),
+                    (runtime_state(py) as *const RuntimeState).expose_provenance(),
                     self.origin_runtime,
                     "process callback resolved a different runtime"
                 );
-                wake(&py);
+                wake(py);
             }
             // WorkerEnd performs the canonical runtime/C TLS fixed point.
             // If cleanup panics, origin TLS remains and the retained join
@@ -2246,7 +2234,7 @@ mod process_registry_tests {
         let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
         let py = execution.token();
         let stdio = configure_native_stdio(
-            &py,
+            py,
             cmd,
             stdio::PROCESS_STDIO_DEVNULL,
             stdio::PROCESS_STDIO_DEVNULL,
@@ -2254,7 +2242,7 @@ mod process_registry_tests {
         )
         .unwrap();
         registry
-            .spawn(&py, cmd, stdio, owns_process_group)
+            .spawn(py, cmd, stdio, owns_process_group)
             .expect("spawn test child")
     }
 
@@ -2408,7 +2396,7 @@ mod process_worker_lifetime_tests {
         let registry = ProcessRegistry::new();
         let (reader, mut inherited_writer) = os_pipe::pipe().unwrap();
         let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
-        let state = reader_state(&execution.token(), &registry, reader);
+        let state = reader_state(execution.token(), &registry, reader);
         let stream_bits = state.stdout_stream;
         let stream_ptr = ptr_from_bits(stream_bits);
         // Observe real pipe I/O before retaining the write endpoint across the
@@ -2462,7 +2450,7 @@ mod process_worker_lifetime_tests {
         let child = inert_command().spawn().unwrap();
         let state = Arc::new(ProcessState {
             registry_id: 1,
-            origin_runtime: runtime_state(&py).identity(),
+            origin_runtime: runtime_state(py).identity(),
             pid: child.id(),
             child: Mutex::new(child),
             #[cfg(unix)]
@@ -2483,10 +2471,10 @@ mod process_worker_lifetime_tests {
         })) as *mut u8);
         let original = unsafe { molt_process_wait_future_attached_body(py, handle) };
         let original_ptr = resolve_obj_ptr(original).unwrap();
-        let original_task = process_task_state(&py, original_ptr).unwrap();
+        let original_task = process_task_state(py, original_ptr).unwrap();
         let observer = molt_future_new_attached_body(py, 0, 0);
         let observer_ptr = resolve_obj_ptr(observer).unwrap();
-        await_waiter_register(&py, observer_ptr, original_ptr);
+        await_waiter_register(py, observer_ptr, original_ptr);
         let (ready_tx, ready_rx) = mpsc::channel();
         let (proceed_tx, proceed_rx) = mpsc::channel();
         let worker_state = Arc::clone(&state);
@@ -2524,7 +2512,7 @@ mod process_worker_lifetime_tests {
         );
         assert_eq!(state.wait_future(), None);
         assert_eq!(
-            task_waiting_on_future(&py, observer_ptr),
+            task_waiting_on_future(py, observer_ptr),
             Some(original_ptr),
             "cancellation must leave the observer edge available to detect stale dispatch"
         );
@@ -2552,18 +2540,18 @@ mod process_worker_lifetime_tests {
                 .all(|worker| worker.panic.is_none())
         );
         assert_eq!(
-            task_waiting_on_future(&py, observer_ptr),
+            task_waiting_on_future(py, observer_ptr),
             Some(original_ptr),
             "cancelled process completion consumed the observer's await edge"
         );
         assert_eq!(state.wait_future(), None);
-        await_waiter_clear(&py, observer_ptr);
+        await_waiter_clear(py, observer_ptr);
         unsafe {
             assert_eq!((*header_from_obj_ptr(original_ptr)).ref_count_snapshot(), 1);
         }
-        dec_ref_bits(&py, original);
-        assert!(process_task_state(&py, original_ptr).is_none());
-        dec_ref_bits(&py, observer);
+        dec_ref_bits(py, original);
+        assert!(process_task_state(py, original_ptr).is_none());
+        dec_ref_bits(py, observer);
         unsafe {
             molt_process_drop_attached_body(py, handle);
         }
@@ -2580,7 +2568,7 @@ mod process_worker_lifetime_tests {
         // The self-image fixture prints a libtest prelude. Keep its unused
         // streams private; INHERIT would overwrite the builder's null defaults.
         let stdio = configure_native_stdio(
-            &execution.token(),
+            execution.token(),
             &mut command,
             stdio::PROCESS_STDIO_DEVNULL,
             stdio::PROCESS_STDIO_DEVNULL,
@@ -2588,7 +2576,7 @@ mod process_worker_lifetime_tests {
         )
         .unwrap();
         let state = registry
-            .spawn(&execution.token(), &mut command, stdio, false)
+            .spawn(execution.token(), &mut command, stdio, false)
             .unwrap();
         let (ready_tx, ready_rx) = mpsc::channel();
         let (proceed_tx, proceed_rx) = mpsc::channel();
@@ -2631,7 +2619,7 @@ mod process_worker_lifetime_tests {
         let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
         let mut command = native_process_fixture::command("pipes");
         let stdio = configure_native_stdio(
-            &execution.token(),
+            execution.token(),
             &mut command,
             stdio::PROCESS_STDIO_PIPE,
             stdio::PROCESS_STDIO_PIPE,
@@ -2639,7 +2627,7 @@ mod process_worker_lifetime_tests {
         )
         .unwrap();
         let state = registry
-            .spawn(&execution.token(), &mut command, stdio, false)
+            .spawn(execution.token(), &mut command, stdio, false)
             .unwrap();
         let stdout = native_process_fixture::collect_to_eof(state.stdout_stream);
         let stderr = native_process_fixture::collect_to_eof(state.stderr_stream);
@@ -2661,7 +2649,7 @@ mod process_worker_lifetime_tests {
         let _cleanup = native_process_fixture::CleanupOnFailure(&registry);
         let mut command = native_process_fixture::command("stdin-copy");
         let stdio = configure_native_stdio(
-            &execution.token(),
+            execution.token(),
             &mut command,
             stdio::PROCESS_STDIO_PIPE,
             stdio::PROCESS_STDIO_PIPE,
@@ -2678,7 +2666,7 @@ mod process_worker_lifetime_tests {
         // implementation which discards queued bytes on ordinary close.
         super::super::channels::stream_close_local(input);
         let state = registry
-            .spawn(&execution.token(), &mut command, stdio, false)
+            .spawn(execution.token(), &mut command, stdio, false)
             .unwrap();
         let actual = native_process_fixture::collect_to_eof(state.stdout_stream);
         native_process_fixture::assert_payload(&actual, true, expected);
@@ -2696,8 +2684,8 @@ mod process_worker_lifetime_tests {
         registry.drain_with_deadlines(Duration::ZERO, Duration::ZERO);
         let mut command =
             std::process::Command::new("molt-does-not-exist-process-admission-oracle");
-        let stdio = configure_native_stdio(&execution.token(), &mut command, 0, 0, 0).unwrap();
-        let error = match registry.spawn(&execution.token(), &mut command, stdio, false) {
+        let stdio = configure_native_stdio(execution.token(), &mut command, 0, 0, 0).unwrap();
+        let error = match registry.spawn(execution.token(), &mut command, stdio, false) {
             Ok(_) => panic!("closed registry spawned a child"),
             Err(error) => error,
         };
@@ -2713,7 +2701,7 @@ mod process_worker_lifetime_tests {
         let registry = ProcessRegistry::new();
         let mut command =
             std::process::Command::new("molt-does-not-exist-process-admission-oracle");
-        let mut stdio = configure_native_stdio(&execution.token(), &mut command, 1, 1, 1).unwrap();
+        let mut stdio = configure_native_stdio(execution.token(), &mut command, 1, 1, 1).unwrap();
         stdio.set_ipc(ipc::PreparedIpc::new(&mut command).unwrap(), 4096);
         let streams = [
             stdio.stdin_stream,
@@ -2724,7 +2712,7 @@ mod process_worker_lifetime_tests {
         ];
         assert!(
             registry
-                .spawn(&execution.token(), &mut command, stdio, false)
+                .spawn(execution.token(), &mut command, stdio, false)
                 .is_err()
         );
         assert_eq!(registry.live_count(), 0);
@@ -2743,7 +2731,7 @@ mod process_worker_lifetime_tests {
             let registry = ProcessRegistry::new();
             let mut command = inert_command();
             let stdio = configure_native_stdio(
-                &execution.token(),
+                execution.token(),
                 &mut command,
                 stdio::PROCESS_STDIO_PIPE,
                 stdio::PROCESS_STDIO_PIPE,
@@ -2753,7 +2741,7 @@ mod process_worker_lifetime_tests {
             let streams = [stdio.stdin_stream, stdio.stdout_stream, stdio.stderr_stream];
             PROCESS_WORKER_SPAWN_FAILURE_AFTER
                 .with(|remaining| remaining.set(Some(started_workers)));
-            let error = match registry.spawn(&execution.token(), &mut command, stdio, false) {
+            let error = match registry.spawn(execution.token(), &mut command, stdio, false) {
                 Ok(_) => panic!("injected worker-start failure was not reached"),
                 Err(error) => error,
             };
@@ -2787,7 +2775,7 @@ mod process_worker_lifetime_tests {
         // The self-image fixture prints a libtest prelude. Keep its unused
         // streams private; INHERIT would overwrite the builder's null defaults.
         let stdio = configure_native_stdio(
-            &execution.token(),
+            execution.token(),
             &mut command,
             stdio::PROCESS_STDIO_DEVNULL,
             stdio::PROCESS_STDIO_DEVNULL,
@@ -2795,7 +2783,7 @@ mod process_worker_lifetime_tests {
         )
         .unwrap();
         let state = registry
-            .spawn(&execution.token(), &mut command, stdio, false)
+            .spawn(execution.token(), &mut command, stdio, false)
             .unwrap();
         {
             let mut inner = registry.inner.lock().unwrap();
@@ -2959,7 +2947,7 @@ mod process_worker_lifetime_tests {
     fn process_callback_uses_captured_runtime_and_cleans_worker_attachment() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
-        assert_origin_wake(&execution.token());
+        assert_origin_wake(execution.token());
     }
 }
 

@@ -15,7 +15,7 @@ fn runtime_root_type_allocation_slots_remain_executable() {
             let object = allocate(root, 0);
             assert!(!object.is_null());
             assert_eq!((*object).ob_type, root);
-            assert!(!crate::exception_pending(&py));
+            assert!(!crate::exception_pending(py));
             molt_cpython_abi::api::refcount::Py_DECREF(object);
         }
     });
@@ -168,7 +168,7 @@ extern "C" fn inquiry_raise_original(__context: u64, receiver: u64) -> u64 {
         let py = __py;
         {
             let failure = crate::builtins::exceptions::ExceptionValue::adopt(
-                &py,
+                py,
                 inquiry_result(__context, receiver),
             );
             crate::molt_raise_attached_body(py, failure.bits())
@@ -197,7 +197,7 @@ extern "C" fn inquiry_self(__context: u64, receiver: u64) -> u64 {
 
     {
         let py = __py;
-        inc_ref_bits(&py, receiver)
+        inc_ref_bits(py, receiver)
     };
     receiver
 }
@@ -214,21 +214,16 @@ extern "C" fn inquiry_mutating_equal(__context: u64, receiver: u64, needle: u64)
         let py = __py;
         {
             let list = crate::builtins::exceptions::ExceptionValue::adopt(
-                &py,
+                py,
                 inquiry_result(__context, receiver),
             );
-            let class = crate::type_of_bits(&py, receiver);
-            let name = crate::dynamic_attr_name_bits(&py, b"inquiry_action").unwrap();
+            let class = crate::type_of_bits(py, receiver);
+            let name = crate::dynamic_attr_name_bits(py, b"inquiry_action").unwrap();
             let action = crate::molt_get_attr_name_attached_body(py, receiver, name);
-            dec_ref_bits(&py, name);
+            dec_ref_bits(py, name);
             let action_number = MoltObject::from_bits(action).as_int().unwrap();
-            dec_ref_bits(&py, action);
-            set_value(
-                &py,
-                class,
-                b"inquiry_action",
-                MoltObject::from_int(0).bits(),
-            );
+            dec_ref_bits(py, action);
+            set_value(py, class, b"inquiry_action", MoltObject::from_int(0).bits());
             match action_number {
                 1 | 2 | 4 => {
                     crate::molt_list_clear_attached_body(py, list.bits());
@@ -242,10 +237,10 @@ extern "C" fn inquiry_mutating_equal(__context: u64, receiver: u64, needle: u64)
                 _ => {}
             }
             if action_number == 4 {
-                let name = crate::dynamic_attr_name_bits(&py, b"inquiry_error").unwrap();
+                let name = crate::dynamic_attr_name_bits(py, b"inquiry_error").unwrap();
                 let failure = crate::molt_get_attr_name_attached_body(py, receiver, name);
-                dec_ref_bits(&py, name);
-                let failure = crate::builtins::exceptions::ExceptionValue::adopt(&py, failure);
+                dec_ref_bits(py, name);
+                let failure = crate::builtins::exceptions::ExceptionValue::adopt(py, failure);
                 return crate::molt_raise_attached_body(py, failure.bits());
             }
             MoltObject::from_bool(false).bits()
@@ -259,16 +254,16 @@ fn c_sequence_contains_shares_runtime_special_lookup_and_builtin_membership() {
     molt_cpython_abi_test_support::link();
     with_gil(|py| unsafe {
         let mut owners = Vec::new();
-        let classes = crate::builtin_classes(&py);
+        let classes = crate::builtin_classes(py);
         let empty = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(crate::alloc_tuple(&py, &[])).bits(),
+            MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits(),
         );
         let text = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(alloc_string(&py, b"abc")).bits(),
+            MoltObject::from_ptr(alloc_string(py, b"abc")).bits(),
         );
         let needle = mapping_view(MoltObject::from_int(99).bits());
         for probe in [
@@ -286,26 +281,26 @@ fn c_sequence_contains_shares_runtime_special_lookup_and_builtin_membership() {
                 classes.set,
                 classes.frozenset,
             ] {
-                let class = mapping_owned(&py, &mut owners, inquiry_class(&py, base, b"__len__"));
+                let class = mapping_owned(py, &mut owners, inquiry_class(py, base, b"__len__"));
                 inquiry_binary_method(
-                    &py,
+                    py,
                     class,
                     b"__contains__",
                     inquiry_binary_result as *const (),
                 );
                 let value = if base == classes.object {
                     crate::alloc_instance_for_class(
-                        &py,
+                        py,
                         MoltObject::from_bits(class).as_ptr().unwrap(),
                     )
                 } else {
-                    construct(&py, class, if base == classes.str { text } else { empty })
+                    construct(py, class, if base == classes.str { text } else { empty })
                 };
-                let value = mapping_owned(&py, &mut owners, value);
+                let value = mapping_owned(py, &mut owners, value);
                 let view = mapping_view(value);
                 for expected in [1, 0] {
                     set_value(
-                        &py,
+                        py,
                         class,
                         b"inquiry_result",
                         MoltObject::from_bool(expected != 0).bits(),
@@ -314,11 +309,11 @@ fn c_sequence_contains_shares_runtime_special_lookup_and_builtin_membership() {
                     assert!(errors::PyErr_Occurred().is_null());
                 }
             }
-            let set = mapping_owned(&py, &mut owners, construct(&py, classes.set, empty));
+            let set = mapping_owned(py, &mut owners, construct(py, classes.set, empty));
             let list = mapping_owned(
-                &py,
+                py,
                 &mut owners,
-                MoltObject::from_ptr(crate::alloc_list(&py, &[])).bits(),
+                MoltObject::from_ptr(crate::alloc_list(py, &[])).bits(),
             );
             let set_view = mapping_view(set);
             let list_view = mapping_view(list);
@@ -331,14 +326,14 @@ fn c_sequence_contains_shares_runtime_special_lookup_and_builtin_membership() {
             );
             errors::PyErr_Clear();
             let bytes = mapping_owned(
-                &py,
+                py,
                 &mut owners,
-                MoltObject::from_ptr(alloc_bytes(&py, b"ab")).bits(),
+                MoltObject::from_ptr(alloc_bytes(py, b"ab")).bits(),
             );
             let bytearray = mapping_owned(
-                &py,
+                py,
                 &mut owners,
-                MoltObject::from_ptr(crate::alloc_bytearray(&py, b"abc")).bits(),
+                MoltObject::from_ptr(crate::alloc_bytearray(py, b"abc")).bits(),
             );
             let bytes_view = mapping_view(bytes);
             let bytearray_view = mapping_view(bytearray);
@@ -346,17 +341,17 @@ fn c_sequence_contains_shares_runtime_special_lookup_and_builtin_membership() {
             // Large arbitrary-precision endpoints with a bounded 64-item
             // fallback cost; this checks arithmetic membership, not timing.
             let start = mapping_owned(
-                &py,
+                py,
                 &mut owners,
-                int_bits_from_bigint(&py, BigInt::from(1) << 100usize),
+                int_bits_from_bigint(py, BigInt::from(1) << 100usize),
             );
             let stop = mapping_owned(
-                &py,
+                py,
                 &mut owners,
-                int_bits_from_bigint(&py, (BigInt::from(1) << 100usize) + 128),
+                int_bits_from_bigint(py, (BigInt::from(1) << 100usize) + 128),
             );
             let range = mapping_owned(
-                &py,
+                py,
                 &mut owners,
                 crate::molt_range_new_attached_body(
                     py,
@@ -371,7 +366,7 @@ fn c_sequence_contains_shares_runtime_special_lookup_and_builtin_membership() {
             assert_eq!(probe(range_view.as_ptr(), negative.as_ptr(), 0), 0);
             assert_eq!(probe(range_view.as_ptr(), start_view.as_ptr(), 0), 1);
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -388,18 +383,18 @@ fn c_sequence_search_owns_live_elements_across_clear_shrink_and_growth() {
             for operation in 0..3 {
                 for action in 1..=3 {
                     let class = mapping_owned(
-                        &py,
+                        py,
                         &mut owners,
-                        inquiry_class(&py, crate::builtin_classes(&py).object, b"__len__"),
+                        inquiry_class(py, crate::builtin_classes(py).object, b"__len__"),
                     );
                     inquiry_binary_method(
-                        &py,
+                        py,
                         class,
                         b"__eq__",
                         inquiry_mutating_equal as *const (),
                     );
                     let element = crate::alloc_instance_for_class(
-                        &py,
+                        py,
                         MoltObject::from_bits(class).as_ptr().unwrap(),
                     );
                     let contents = if action == 3 {
@@ -408,14 +403,14 @@ fn c_sequence_search_owns_live_elements_across_clear_shrink_and_growth() {
                         vec![element, needle_bits, needle_bits]
                     };
                     let list = mapping_owned(
-                        &py,
+                        py,
                         &mut owners,
-                        MoltObject::from_ptr(crate::alloc_list(&py, &contents)).bits(),
+                        MoltObject::from_ptr(crate::alloc_list(py, &contents)).bits(),
                     );
-                    dec_ref_bits(&py, element); // list owns the only non-callback instance edge
-                    set_value(&py, class, b"inquiry_result", list);
+                    dec_ref_bits(py, element); // list owns the only non-callback instance edge
+                    set_value(py, class, b"inquiry_result", list);
                     set_value(
-                        &py,
+                        py,
                         class,
                         b"inquiry_action",
                         MoltObject::from_int(action).bits(),
@@ -443,9 +438,9 @@ fn c_sequence_search_owns_live_elements_across_clear_shrink_and_growth() {
                                 MoltObject::from_int(64).bits(),
                             ),
                         };
-                        if crate::exception_pending(&py) {
+                        if crate::exception_pending(py) {
                             assert!(!errors::PyErr_Occurred().is_null());
-                            dec_ref_bits(&py, bits);
+                            dec_ref_bits(py, bits);
                             -1
                         } else {
                             let value = MoltObject::from_bits(bits);
@@ -453,7 +448,7 @@ fn c_sequence_search_owns_live_elements_across_clear_shrink_and_growth() {
                                 .as_int()
                                 .or_else(|| value.as_bool().map(i64::from))
                                 .unwrap() as isize;
-                            dec_ref_bits(&py, bits);
+                            dec_ref_bits(py, bits);
                             result
                         }
                     };
@@ -479,33 +474,29 @@ fn c_sequence_search_owns_live_elements_across_clear_shrink_and_growth() {
                     } else {
                         assert!(errors::PyErr_Occurred().is_null());
                     }
-                    set_value(&py, class, b"inquiry_result", MoltObject::none().bits());
+                    set_value(py, class, b"inquiry_result", MoltObject::none().bits());
                 }
             }
         }
         // Preserve the old ABI-only fixture's equal-but-distinct heap-string
         // and absent-index coverage using actual runtime objects and owners.
         let left = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(crate::object::builders::alloc_string_nointern(
-                &py, b"dtype",
-            ))
-            .bits(),
+            MoltObject::from_ptr(crate::object::builders::alloc_string_nointern(py, b"dtype"))
+                .bits(),
         );
         let right = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(crate::object::builders::alloc_string_nointern(
-                &py, b"dtype",
-            ))
-            .bits(),
+            MoltObject::from_ptr(crate::object::builders::alloc_string_nointern(py, b"dtype"))
+                .bits(),
         );
         assert_ne!(left, right);
         let list = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(crate::alloc_list(&py, &[left])).bits(),
+            MoltObject::from_ptr(crate::alloc_list(py, &[left])).bits(),
         );
         let view = mapping_view(list);
         let right = mapping_view(right);
@@ -537,7 +528,7 @@ fn c_sequence_search_owns_live_elements_across_clear_shrink_and_growth() {
             assert_eq!(probe(view.as_ptr(), view.as_ptr(), 2), 1);
         }
         crate::molt_list_clear_attached_body(py, list);
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -547,9 +538,9 @@ fn c_sequence_search_preserves_original_iteration_equality_and_truth_errors() {
     molt_cpython_abi_test_support::link();
     with_gil(|py| unsafe {
         let mut owners = Vec::new();
-        crate::raise_exception::<()>(&py, BuiltinExc::LookupError, "original inquiry failure");
+        crate::raise_exception::<()>(py, BuiltinExc::LookupError, "original inquiry failure");
         let failure = mapping_owned(
-            &py,
+            py,
             &mut owners,
             crate::molt_exception_last_attached_body(py),
         );
@@ -562,69 +553,69 @@ fn c_sequence_search_preserves_original_iteration_equality_and_truth_errors() {
         ] {
             for stage in 0..5 {
                 let class = mapping_owned(
-                    &py,
+                    py,
                     &mut owners,
-                    inquiry_class(&py, crate::builtin_classes(&py).object, b"__iter__"),
+                    inquiry_class(py, crate::builtin_classes(py).object, b"__iter__"),
                 );
                 let instance = mapping_owned(
-                    &py,
+                    py,
                     &mut owners,
                     crate::alloc_instance_for_class(
-                        &py,
+                        py,
                         MoltObject::from_bits(class).as_ptr().unwrap(),
                     ),
                 );
-                set_value(&py, class, b"inquiry_result", failure);
+                set_value(py, class, b"inquiry_result", failure);
                 let container = match stage {
                     0 => {
-                        set_method(&py, class, b"__iter__", inquiry_raise_original as *const ());
+                        set_method(py, class, b"__iter__", inquiry_raise_original as *const ());
                         instance
                     }
                     1 => {
-                        set_method(&py, class, b"__iter__", inquiry_self as *const ());
-                        set_method(&py, class, b"__next__", inquiry_raise_original as *const ());
+                        set_method(py, class, b"__iter__", inquiry_self as *const ());
+                        set_method(py, class, b"__next__", inquiry_raise_original as *const ());
                         instance
                     }
                     2 => {
                         inquiry_binary_method(
-                            &py,
+                            py,
                             class,
                             b"__eq__",
                             inquiry_mutating_equal as *const (),
                         );
-                        set_value(&py, class, b"inquiry_error", failure);
+                        set_value(py, class, b"inquiry_error", failure);
                         mapping_owned(
-                            &py,
+                            py,
                             &mut owners,
-                            MoltObject::from_ptr(crate::alloc_list(&py, &[])).bits(),
+                            MoltObject::from_ptr(crate::alloc_list(py, &[])).bits(),
                         )
                     }
                     3 => {
-                        set_method(&py, class, b"__bool__", inquiry_raise_original as *const ());
+                        set_method(py, class, b"__bool__", inquiry_raise_original as *const ());
                         let holder = mapping_owned(
-                            &py,
+                            py,
                             &mut owners,
-                            inquiry_class(&py, crate::builtin_classes(&py).object, b"__len__"),
+                            inquiry_class(py, crate::builtin_classes(py).object, b"__len__"),
                         );
                         inquiry_binary_method(
-                            &py,
+                            py,
                             holder,
                             b"__contains__",
                             inquiry_binary_result as *const (),
                         );
-                        set_value(&py, holder, b"inquiry_result", instance);
+                        set_value(py, holder, b"inquiry_result", instance);
                         mapping_owned(
-                            &py,
+                            py,
                             &mut owners,
                             crate::alloc_instance_for_class(
-                                &py,
+                                py,
                                 MoltObject::from_bits(holder).as_ptr().unwrap(),
                             ),
                         )
                     }
                     _ => {
                         inquiry_binary_method(
-                            &py,
+                            py,
                             class,
                             b"__contains__",
                             inquiry_binary_raise_original as *const (),
@@ -636,13 +627,8 @@ fn c_sequence_search_preserves_original_iteration_equality_and_truth_errors() {
                 for operation in 0..if stage >= 3 { 1 } else { 3 } {
                     if stage == 2 {
                         crate::molt_list_append_attached_body(py, container, instance);
-                        set_value(&py, class, b"inquiry_result", container);
-                        set_value(
-                            &py,
-                            class,
-                            b"inquiry_action",
-                            MoltObject::from_int(4).bits(),
-                        );
+                        set_value(py, class, b"inquiry_result", container);
+                        set_value(py, class, b"inquiry_action", MoltObject::from_int(4).bits());
                     }
                     assert_eq!(probe(view.as_ptr(), needle.as_ptr(), operation), -1);
                     let observed =
@@ -652,10 +638,10 @@ fn c_sequence_search_preserves_original_iteration_equality_and_truth_errors() {
                         failure_view.as_ptr(),
                         "stage={stage} operation={operation}"
                     );
-                    assert!(!crate::exception_pending(&py));
+                    assert!(!crate::exception_pending(py));
                 }
                 if stage == 2 {
-                    set_value(&py, class, b"inquiry_result", MoltObject::none().bits());
+                    set_value(py, class, b"inquiry_result", MoltObject::none().bits());
                 }
             }
         }
@@ -674,7 +660,7 @@ extern "C" fn inquiry_memory_equal(__context: u64, receiver: u64, candidate: u64
         let py = __py;
         {
             let log = crate::builtins::exceptions::ExceptionValue::adopt(
-                &py,
+                py,
                 inquiry_result(__context, receiver),
             );
             crate::molt_list_append_attached_body(py, log.bits(), candidate);
@@ -695,7 +681,7 @@ extern "C" fn inquiry_memory_release_equal(__context: u64, receiver: u64, candid
         let py = __py;
         unsafe {
             let log = crate::builtins::exceptions::ExceptionValue::adopt(
-                &py,
+                py,
                 inquiry_result(__context, receiver),
             );
             let view = crate::object::seq_access::item(
@@ -717,22 +703,22 @@ fn c_sequence_memoryview_membership_uses_typed_elements_and_original_errors() {
     with_gil(|py| unsafe {
         let mut owners = Vec::new();
         let bytes = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(alloc_bytes(&py, b"abcd")).bits(),
+            MoltObject::from_ptr(alloc_bytes(py, b"abcd")).bits(),
         );
         let view = mapping_owned(
-            &py,
+            py,
             &mut owners,
             crate::molt_memoryview_new_attached_body(py, bytes),
         );
         let substring = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(alloc_bytes(&py, b"ab")).bits(),
+            MoltObject::from_ptr(alloc_bytes(py, b"ab")).bits(),
         );
         let step = mapping_owned(
-            &py,
+            py,
             &mut owners,
             crate::molt_slice_new_attached_body(
                 py,
@@ -742,28 +728,28 @@ fn c_sequence_memoryview_membership_uses_typed_elements_and_original_errors() {
             ),
         );
         let strided = mapping_owned(
-            &py,
+            py,
             &mut owners,
             crate::molt_index_attached_body(py, view, step),
         );
         let words = [300u16.to_ne_bytes(), 700u16.to_ne_bytes()].concat();
         let packed = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(alloc_bytes(&py, &words)).bits(),
+            MoltObject::from_ptr(alloc_bytes(py, &words)).bits(),
         );
         let packed_view = mapping_owned(
-            &py,
+            py,
             &mut owners,
             crate::molt_memoryview_new_attached_body(py, packed),
         );
         let format = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(alloc_string(&py, b"H")).bits(),
+            MoltObject::from_ptr(alloc_string(py, b"H")).bits(),
         );
         let typed = mapping_owned(
-            &py,
+            py,
             &mut owners,
             crate::molt_memoryview_cast_attached_body(
                 py,
@@ -773,7 +759,7 @@ fn c_sequence_memoryview_membership_uses_typed_elements_and_original_errors() {
                 MoltObject::from_bool(false).bits(),
             ),
         );
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
         for probe in [
             molt_linked_type_identity_probe_sequence_search,
             molt_public_type_identity_probe_sequence_search,
@@ -797,24 +783,21 @@ fn c_sequence_memoryview_membership_uses_typed_elements_and_original_errors() {
             assert_eq!(probe(typed_view.as_ptr(), last.as_ptr(), 1), 1);
             assert_eq!(probe(typed_view.as_ptr(), last.as_ptr(), 2), 1);
             let class = mapping_owned(
-                &py,
+                py,
                 &mut owners,
-                inquiry_class(&py, crate::builtin_classes(&py).object, b"__len__"),
+                inquiry_class(py, crate::builtin_classes(py).object, b"__len__"),
             );
-            inquiry_binary_method(&py, class, b"__eq__", inquiry_memory_equal as *const ());
+            inquiry_binary_method(py, class, b"__eq__", inquiry_memory_equal as *const ());
             let log = mapping_owned(
-                &py,
+                py,
                 &mut owners,
-                MoltObject::from_ptr(crate::alloc_list(&py, &[])).bits(),
+                MoltObject::from_ptr(crate::alloc_list(py, &[])).bits(),
             );
-            set_value(&py, class, b"inquiry_result", log);
+            set_value(py, class, b"inquiry_result", log);
             let needle = mapping_owned(
-                &py,
+                py,
                 &mut owners,
-                crate::alloc_instance_for_class(
-                    &py,
-                    MoltObject::from_bits(class).as_ptr().unwrap(),
-                ),
+                crate::alloc_instance_for_class(py, MoltObject::from_bits(class).as_ptr().unwrap()),
             );
             let needle_view = mapping_view(needle);
             let container = mapping_view(view);
@@ -830,19 +813,19 @@ fn c_sequence_memoryview_membership_uses_typed_elements_and_original_errors() {
                 Some(MoltObject::from_int(98).bits())
             );
             crate::raise_exception::<()>(
-                &py,
+                py,
                 BuiltinExc::LookupError,
                 "memoryview equality identity",
             );
             let failure = mapping_owned(
-                &py,
+                py,
                 &mut owners,
                 crate::molt_exception_last_attached_body(py),
             );
             crate::molt_exception_clear_attached_body(py);
-            set_value(&py, class, b"inquiry_result", failure);
+            set_value(py, class, b"inquiry_result", failure);
             inquiry_binary_method(
-                &py,
+                py,
                 class,
                 b"__eq__",
                 inquiry_binary_raise_original as *const (),
@@ -852,7 +835,7 @@ fn c_sequence_memoryview_membership_uses_typed_elements_and_original_errors() {
             let original = mapping_view(failure);
             assert_eq!(error.as_ptr(), original.as_ptr());
             let released = mapping_owned(
-                &py,
+                py,
                 &mut owners,
                 crate::molt_memoryview_new_attached_body(py, bytes),
             );
@@ -869,28 +852,28 @@ fn c_sequence_memoryview_membership_uses_typed_elements_and_original_errors() {
             // Releasing the view during equality fails only if another item
             // remains. At exhaustion no further element read is attempted.
             inquiry_binary_method(
-                &py,
+                py,
                 class,
                 b"__eq__",
                 inquiry_memory_release_equal as *const (),
             );
             for payload in [b"a".as_slice(), b"ab".as_slice()] {
                 let data = mapping_owned(
-                    &py,
+                    py,
                     &mut owners,
-                    MoltObject::from_ptr(alloc_bytes(&py, payload)).bits(),
+                    MoltObject::from_ptr(alloc_bytes(py, payload)).bits(),
                 );
                 let releasing = mapping_owned(
-                    &py,
+                    py,
                     &mut owners,
                     crate::molt_memoryview_new_attached_body(py, data),
                 );
                 let log = mapping_owned(
-                    &py,
+                    py,
                     &mut owners,
-                    MoltObject::from_ptr(crate::alloc_list(&py, &[releasing])).bits(),
+                    MoltObject::from_ptr(crate::alloc_list(py, &[releasing])).bits(),
                 );
-                set_value(&py, class, b"inquiry_result", log);
+                set_value(py, class, b"inquiry_result", log);
                 let releasing_view = mapping_view(releasing);
                 assert_eq!(
                     probe(releasing_view.as_ptr(), needle_view.as_ptr(), 0),
@@ -976,7 +959,7 @@ fn c_sequence_memoryview_membership_uses_typed_elements_and_original_errors() {
                 }
             }
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -987,46 +970,46 @@ fn c_sequence_bytes_membership_shares_index_and_simple_buffer_admission() {
     with_gil(|py| unsafe {
         let mut owners = Vec::new();
         let bytes = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(alloc_bytes(&py, b"\x01abc")).bits(),
+            MoltObject::from_ptr(alloc_bytes(py, b"\x01abc")).bits(),
         );
         let bytearray = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(crate::alloc_bytearray(&py, b"\x01abc")).bits(),
+            MoltObject::from_ptr(crate::alloc_bytearray(py, b"\x01abc")).bits(),
         );
         let pattern = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(alloc_bytes(&py, b"ab")).bits(),
+            MoltObject::from_ptr(alloc_bytes(py, b"ab")).bits(),
         );
         let buffer = mapping_owned(
-            &py,
+            py,
             &mut owners,
             crate::molt_memoryview_new_attached_body(py, pattern),
         );
         let index_class = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            inquiry_class(&py, crate::builtin_classes(&py).object, b"__index__"),
+            inquiry_class(py, crate::builtin_classes(py).object, b"__index__"),
         );
         set_value(
-            &py,
+            py,
             index_class,
             b"inquiry_result",
             MoltObject::from_int(98).bits(),
         );
         let index = mapping_owned(
-            &py,
+            py,
             &mut owners,
             crate::alloc_instance_for_class(
-                &py,
+                py,
                 MoltObject::from_bits(index_class).as_ptr().unwrap(),
             ),
         );
         let step = mapping_owned(
-            &py,
+            py,
             &mut owners,
             crate::molt_slice_new_attached_body(
                 py,
@@ -1036,12 +1019,12 @@ fn c_sequence_bytes_membership_shares_index_and_simple_buffer_admission() {
             ),
         );
         let base_view = mapping_owned(
-            &py,
+            py,
             &mut owners,
             crate::molt_memoryview_new_attached_body(py, bytes),
         );
         let noncontiguous = mapping_owned(
-            &py,
+            py,
             &mut owners,
             crate::molt_index_attached_body(py, base_view, step),
         );
@@ -1066,9 +1049,9 @@ fn c_sequence_bytes_membership_shares_index_and_simple_buffer_admission() {
                 );
                 errors::PyErr_Clear();
                 let huge = mapping_owned(
-                    &py,
+                    py,
                     &mut owners,
-                    int_bits_from_bigint(&py, BigInt::from(1) << 100usize),
+                    int_bits_from_bigint(py, BigInt::from(1) << 100usize),
                 );
                 let huge = mapping_view(huge);
                 assert_eq!(probe(container.as_ptr(), huge.as_ptr(), 0), -1);
@@ -1079,7 +1062,7 @@ fn c_sequence_bytes_membership_shares_index_and_simple_buffer_admission() {
                     1
                 );
                 errors::PyErr_Clear();
-                set_method(&py, index_class, b"__index__", inquiry_failure as *const ());
+                set_method(py, index_class, b"__index__", inquiry_failure as *const ());
                 let index = mapping_view(index);
                 assert_eq!(probe(container.as_ptr(), index.as_ptr(), 0), -1);
                 assert_eq!(
@@ -1089,10 +1072,10 @@ fn c_sequence_bytes_membership_shares_index_and_simple_buffer_admission() {
                     1
                 );
                 errors::PyErr_Clear();
-                set_method(&py, index_class, b"__index__", inquiry_result as *const ());
+                set_method(py, index_class, b"__index__", inquiry_result as *const ());
             }
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -1102,26 +1085,22 @@ fn c_sequence_set_membership_distinguishes_python_and_exact_key_policies() {
     molt_cpython_abi_test_support::link();
     with_gil(|py| unsafe {
         let mut owners = Vec::new();
-        let classes = crate::builtin_classes(&py);
+        let classes = crate::builtin_classes(py);
         let singleton = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(crate::alloc_tuple(&py, &[MoltObject::from_int(1).bits()])).bits(),
+            MoltObject::from_ptr(crate::alloc_tuple(py, &[MoltObject::from_int(1).bits()])).bits(),
         );
-        let frozen = mapping_owned(
-            &py,
-            &mut owners,
-            construct(&py, classes.frozenset, singleton),
-        );
+        let frozen = mapping_owned(py, &mut owners, construct(py, classes.frozenset, singleton));
         let items = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(crate::alloc_tuple(&py, &[frozen])).bits(),
+            MoltObject::from_ptr(crate::alloc_tuple(py, &[frozen])).bits(),
         );
-        let needle = mapping_owned(&py, &mut owners, construct(&py, classes.set, singleton));
+        let needle = mapping_owned(py, &mut owners, construct(py, classes.set, singleton));
         let needle_view = mapping_view(needle);
         for container_class in [classes.set, classes.frozenset] {
-            let container = mapping_owned(&py, &mut owners, construct(&py, container_class, items));
+            let container = mapping_owned(py, &mut owners, construct(py, container_class, items));
             let container_view = mapping_view(container);
             for probe in [
                 molt_linked_type_identity_probe_sequence_search,
@@ -1143,11 +1122,8 @@ fn c_sequence_set_membership_distinguishes_python_and_exact_key_policies() {
                     1
                 );
                 errors::PyErr_Clear();
-                let custom = mapping_owned(
-                    &py,
-                    &mut owners,
-                    inquiry_class(&py, classes.set, b"__hash__"),
-                );
+                let custom =
+                    mapping_owned(py, &mut owners, inquiry_class(py, classes.set, b"__hash__"));
                 if container_class == classes.set {
                     assert_eq!(probe(container_view.as_ptr(), needle_view.as_ptr(), 4), -1);
                     assert_eq!(
@@ -1160,29 +1136,24 @@ fn c_sequence_set_membership_distinguishes_python_and_exact_key_policies() {
                     assert_eq!(probe(container_view.as_ptr(), needle_view.as_ptr(), 0), 1);
                 }
                 let hash = mapping_owned(
-                    &py,
+                    py,
                     &mut owners,
                     crate::molt_hash_builtin_attached_body(py, frozen),
                 );
-                set_value(&py, custom, b"inquiry_result", hash);
-                let hashable = mapping_owned(&py, &mut owners, construct(&py, custom, singleton));
+                set_value(py, custom, b"inquiry_result", hash);
+                let hashable = mapping_owned(py, &mut owners, construct(py, custom, singleton));
                 let hashable_view = mapping_view(hashable);
                 assert_eq!(probe(container_view.as_ptr(), hashable_view.as_ptr(), 0), 1);
                 assert_eq!(probe(container_view.as_ptr(), hashable_view.as_ptr(), 3), 1);
-                crate::raise_exception::<()>(&py, BuiltinExc::LookupError, "set hash identity");
+                crate::raise_exception::<()>(py, BuiltinExc::LookupError, "set hash identity");
                 let failure = mapping_owned(
-                    &py,
+                    py,
                     &mut owners,
                     crate::molt_exception_last_attached_body(py),
                 );
                 crate::molt_exception_clear_attached_body(py);
-                set_value(&py, custom, b"inquiry_result", failure);
-                set_method(
-                    &py,
-                    custom,
-                    b"__hash__",
-                    inquiry_raise_original as *const (),
-                );
+                set_value(py, custom, b"inquiry_result", failure);
+                set_method(py, custom, b"__hash__", inquiry_raise_original as *const ());
                 let original = mapping_view(failure);
                 for operation in [0, 3] {
                     assert_eq!(
@@ -1195,7 +1166,7 @@ fn c_sequence_set_membership_distinguishes_python_and_exact_key_policies() {
                 }
             }
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -1222,7 +1193,7 @@ extern "C" fn inquiry_set_mutating_type_error(__context: u64, receiver: u64, nee
         let py = __py;
         unsafe {
             let state_owner = crate::builtins::exceptions::ExceptionValue::adopt(
-                &py,
+                py,
                 inquiry_result(__context, receiver),
             );
             let state = MoltObject::from_bits(state_owner.bits()).as_ptr().unwrap();
@@ -1244,38 +1215,31 @@ fn c_set_membership_reenters_after_mutating_equality_type_error_only_for_python(
     molt_cpython_abi_test_support::link();
     with_gil(|py| unsafe {
         let mut owners = Vec::new();
-        let classes = crate::builtin_classes(&py);
+        let classes = crate::builtin_classes(py);
         let singleton = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(crate::alloc_tuple(&py, &[MoltObject::from_int(1).bits()])).bits(),
+            MoltObject::from_ptr(crate::alloc_tuple(py, &[MoltObject::from_int(1).bits()])).bits(),
         );
         let empty = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(crate::alloc_tuple(&py, &[])).bits(),
+            MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits(),
         );
-        let frozen = mapping_owned(
-            &py,
-            &mut owners,
-            construct(&py, classes.frozenset, singleton),
-        );
-        let needle_class = mapping_owned(
-            &py,
-            &mut owners,
-            inquiry_class(&py, classes.set, b"__hash__"),
-        );
+        let frozen = mapping_owned(py, &mut owners, construct(py, classes.frozenset, singleton));
+        let needle_class =
+            mapping_owned(py, &mut owners, inquiry_class(py, classes.set, b"__hash__"));
         set_method(
-            &py,
+            py,
             needle_class,
             b"__hash__",
             inquiry_set_collision_hash as *const (),
         );
-        let needle = mapping_owned(&py, &mut owners, construct(&py, needle_class, singleton));
+        let needle = mapping_owned(py, &mut owners, construct(py, needle_class, singleton));
         let needle_view = mapping_view(needle);
-        crate::raise_exception::<()>(&py, BuiltinExc::TypeError, "set equality identity");
+        crate::raise_exception::<()>(py, BuiltinExc::TypeError, "set equality identity");
         let failure = mapping_owned(
-            &py,
+            py,
             &mut owners,
             crate::molt_exception_last_attached_body(py),
         );
@@ -1286,49 +1250,49 @@ fn c_set_membership_reenters_after_mutating_equality_type_error_only_for_python(
             molt_public_type_identity_probe_sequence_search,
         ] {
             for operation in [0, 3, 4] {
-                let container = mapping_owned(&py, &mut owners, construct(&py, classes.set, empty));
+                let container = mapping_owned(py, &mut owners, construct(py, classes.set, empty));
                 let log = mapping_owned(
-                    &py,
+                    py,
                     &mut owners,
-                    MoltObject::from_ptr(crate::alloc_list(&py, &[])).bits(),
+                    MoltObject::from_ptr(crate::alloc_list(py, &[])).bits(),
                 );
                 let state = mapping_owned(
-                    &py,
+                    py,
                     &mut owners,
                     MoltObject::from_ptr(crate::alloc_tuple(
-                        &py,
+                        py,
                         &[container, frozen, failure, log],
                     ))
                     .bits(),
                 );
                 let stored_class = mapping_owned(
-                    &py,
+                    py,
                     &mut owners,
-                    inquiry_class(&py, classes.object, b"__hash__"),
+                    inquiry_class(py, classes.object, b"__hash__"),
                 );
                 inquiry_binary_method(
-                    &py,
+                    py,
                     stored_class,
                     b"__eq__",
                     inquiry_set_mutating_type_error as *const (),
                 );
                 set_method(
-                    &py,
+                    py,
                     stored_class,
                     b"__hash__",
                     inquiry_set_collision_hash as *const (),
                 );
-                set_value(&py, stored_class, b"inquiry_result", state);
+                set_value(py, stored_class, b"inquiry_result", state);
                 let stored = mapping_owned(
-                    &py,
+                    py,
                     &mut owners,
                     crate::alloc_instance_for_class(
-                        &py,
+                        py,
                         MoltObject::from_bits(stored_class).as_ptr().unwrap(),
                     ),
                 );
                 crate::molt_set_add_attached_body(py, container, stored);
-                assert!(!crate::exception_pending(&py));
+                assert!(!crate::exception_pending(py));
                 let container_view = mapping_view(container);
                 assert_eq!(
                     probe(container_view.as_ptr(), needle_view.as_ptr(), operation),
@@ -1371,7 +1335,7 @@ extern "C" fn inquiry_mutating_bound(__context: u64, receiver: u64) -> u64 {
         let py = __py;
         unsafe {
             let state_owner = crate::builtins::exceptions::ExceptionValue::adopt(
-                &py,
+                py,
                 inquiry_result(__context, receiver),
             );
             let state = MoltObject::from_bits(state_owner.bits()).as_ptr().unwrap();
@@ -1381,7 +1345,7 @@ extern "C" fn inquiry_mutating_bound(__context: u64, receiver: u64) -> u64 {
             let result = crate::object::seq_access::item(state, 3).unwrap();
             crate::molt_list_append_attached_body(py, log, marker);
             crate::molt_list_append_attached_body(py, list, MoltObject::from_int(99).bits());
-            inc_ref_bits(&py, result);
+            inc_ref_bits(py, result);
             result
         }
     }
@@ -1394,24 +1358,24 @@ fn sequence_search_bounds_clip_at_target_width_and_stop_at_first_callback_error(
         let mut owners = Vec::new();
         let value = MoltObject::from_int(99).bits();
         let list = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(crate::alloc_list(&py, &[value])).bits(),
+            MoltObject::from_ptr(crate::alloc_list(py, &[value])).bits(),
         );
         let tuple = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(crate::alloc_tuple(&py, &[value])).bits(),
+            MoltObject::from_ptr(crate::alloc_tuple(py, &[value])).bits(),
         );
         let high = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            int_bits_from_bigint(&py, BigInt::from(1) << 100usize),
+            int_bits_from_bigint(py, BigInt::from(1) << 100usize),
         );
         let low = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            int_bits_from_bigint(&py, -(BigInt::from(1) << 100usize)),
+            int_bits_from_bigint(py, -(BigInt::from(1) << 100usize)),
         );
         for (container, search) in [
             (
@@ -1437,58 +1401,58 @@ fn sequence_search_bounds_clip_at_target_width_and_stop_at_first_callback_error(
                     .as_int(),
                     Some(0)
                 );
-                assert!(!crate::exception_pending(&py));
+                assert!(!crate::exception_pending(py));
             }
             let start_class = mapping_owned(
-                &py,
+                py,
                 &mut owners,
-                inquiry_class(&py, crate::builtin_classes(&py).object, b"__index__"),
+                inquiry_class(py, crate::builtin_classes(py).object, b"__index__"),
             );
             let stop_class = mapping_owned(
-                &py,
+                py,
                 &mut owners,
-                inquiry_class(&py, crate::builtin_classes(&py).object, b"__index__"),
+                inquiry_class(py, crate::builtin_classes(py).object, b"__index__"),
             );
-            crate::raise_exception::<()>(&py, BuiltinExc::LookupError, "first bound identity");
+            crate::raise_exception::<()>(py, BuiltinExc::LookupError, "first bound identity");
             let failure = mapping_owned(
-                &py,
+                py,
                 &mut owners,
                 crate::molt_exception_last_attached_body(py),
             );
             crate::molt_exception_clear_attached_body(py);
-            set_value(&py, start_class, b"inquiry_result", failure);
+            set_value(py, start_class, b"inquiry_result", failure);
             set_method(
-                &py,
+                py,
                 start_class,
                 b"__index__",
                 inquiry_raise_original as *const (),
             );
-            set_value(&py, stop_class, b"inquiry_result", high);
+            set_value(py, stop_class, b"inquiry_result", high);
             set_method(
-                &py,
+                py,
                 stop_class,
                 b"__index__",
                 mapping_method_result as *const (),
             );
             let start = mapping_owned(
-                &py,
+                py,
                 &mut owners,
                 crate::alloc_instance_for_class(
-                    &py,
+                    py,
                     MoltObject::from_bits(start_class).as_ptr().unwrap(),
                 ),
             );
             let stop = mapping_owned(
-                &py,
+                py,
                 &mut owners,
                 crate::alloc_instance_for_class(
-                    &py,
+                    py,
                     MoltObject::from_bits(stop_class).as_ptr().unwrap(),
                 ),
             );
             MAPPING_METHOD_CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
             let result = search(py.attached_context(), container, value, start, stop);
-            dec_ref_bits(&py, result);
+            dec_ref_bits(py, result);
             let error = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
             let original = mapping_view(failure);
             assert_eq!(error.as_ptr(), original.as_ptr());
@@ -1508,44 +1472,39 @@ fn sequence_search_bounds_clip_at_target_width_and_stop_at_first_callback_error(
             ),
         ] {
             let list = mapping_owned(
-                &py,
+                py,
                 &mut owners,
-                MoltObject::from_ptr(crate::alloc_list(&py, &[MoltObject::from_int(0).bits()]))
+                MoltObject::from_ptr(crate::alloc_list(py, &[MoltObject::from_int(0).bits()]))
                     .bits(),
             );
             let log = mapping_owned(
-                &py,
+                py,
                 &mut owners,
-                MoltObject::from_ptr(crate::alloc_list(&py, &[])).bits(),
+                MoltObject::from_ptr(crate::alloc_list(py, &[])).bits(),
             );
             let mut bounds = Vec::new();
             for (marker, result) in [(0, start_result), (1, stop_result)] {
                 let class = mapping_owned(
-                    &py,
+                    py,
                     &mut owners,
-                    inquiry_class(&py, crate::builtin_classes(&py).object, b"__index__"),
+                    inquiry_class(py, crate::builtin_classes(py).object, b"__index__"),
                 );
                 let state = mapping_owned(
-                    &py,
+                    py,
                     &mut owners,
                     MoltObject::from_ptr(crate::alloc_tuple(
-                        &py,
+                        py,
                         &[list, log, MoltObject::from_int(marker).bits(), result],
                     ))
                     .bits(),
                 );
-                set_value(&py, class, b"inquiry_result", state);
-                set_method(
-                    &py,
-                    class,
-                    b"__index__",
-                    inquiry_mutating_bound as *const (),
-                );
+                set_value(py, class, b"inquiry_result", state);
+                set_method(py, class, b"__index__", inquiry_mutating_bound as *const ());
                 bounds.push(mapping_owned(
-                    &py,
+                    py,
                     &mut owners,
                     crate::alloc_instance_for_class(
-                        &py,
+                        py,
                         MoltObject::from_bits(class).as_ptr().unwrap(),
                     ),
                 ));
@@ -1553,7 +1512,7 @@ fn sequence_search_bounds_clip_at_target_width_and_stop_at_first_callback_error(
             let result =
                 crate::molt_list_index_range_attached_body(py, list, value, bounds[0], bounds[1]);
             assert_eq!(MoltObject::from_bits(result).as_int(), Some(expected));
-            assert!(!crate::exception_pending(&py));
+            assert!(!crate::exception_pending(py));
             let log = MoltObject::from_bits(log).as_ptr().unwrap();
             assert_eq!(crate::object::seq_access::len(log), 2);
             assert_eq!(
@@ -1597,30 +1556,30 @@ fn c_set_discard_hashes_once_and_preserves_first_hash_failure() {
     molt_cpython_abi_test_support::link();
     with_gil(|py| unsafe {
         let mut owners = Vec::new();
-        let classes = crate::builtin_classes(&py);
+        let classes = crate::builtin_classes(py);
         let class = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            inquiry_class(&py, classes.object, b"__hash__"),
+            inquiry_class(py, classes.object, b"__hash__"),
         );
-        crate::raise_exception::<()>(&py, BuiltinExc::LookupError, "discard hash identity");
+        crate::raise_exception::<()>(py, BuiltinExc::LookupError, "discard hash identity");
         let failure = mapping_owned(
-            &py,
+            py,
             &mut owners,
             crate::molt_exception_last_attached_body(py),
         );
         crate::molt_exception_clear_attached_body(py);
-        set_value(&py, class, b"inquiry_result", failure);
-        set_method(&py, class, b"__hash__", inquiry_discard_hash as *const ());
+        set_value(py, class, b"inquiry_result", failure);
+        set_method(py, class, b"__hash__", inquiry_discard_hash as *const ());
         let key = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            crate::alloc_instance_for_class(&py, MoltObject::from_bits(class).as_ptr().unwrap()),
+            crate::alloc_instance_for_class(py, MoltObject::from_bits(class).as_ptr().unwrap()),
         );
         let items = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(crate::alloc_tuple(&py, &[key])).bits(),
+            MoltObject::from_ptr(crate::alloc_tuple(py, &[key])).bits(),
         );
         let key_view = mapping_view(key);
         let original = mapping_view(failure);
@@ -1630,8 +1589,8 @@ fn c_set_discard_hashes_once_and_preserves_first_hash_failure() {
         ] {
             SET_DISCARD_HASH_CALLS.store(0, Relaxed);
             SET_DISCARD_HASH_FAIL_AT.store(usize::MAX, Relaxed);
-            let container = mapping_owned(&py, &mut owners, construct(&py, classes.set, items));
-            assert!(!crate::exception_pending(&py));
+            let container = mapping_owned(py, &mut owners, construct(py, classes.set, items));
+            assert!(!crate::exception_pending(py));
             let ptr = MoltObject::from_bits(container).as_ptr().unwrap();
             let container_view = mapping_view(container);
             assert_eq!(crate::builtins::containers::set_len(ptr), 1);
@@ -1661,7 +1620,7 @@ fn c_set_discard_hashes_once_and_preserves_first_hash_failure() {
             assert_eq!(SET_DISCARD_HASH_CALLS.load(Relaxed), 1);
         }
         SET_DISCARD_HASH_FAIL_AT.store(usize::MAX, Relaxed);
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -1676,9 +1635,9 @@ extern "C" fn inquiry_result(__context: u64, receiver: u64) -> u64 {
     {
         let py = __py;
         {
-            let key = crate::dynamic_attr_name_bits(&py, b"inquiry_result").unwrap();
+            let key = crate::dynamic_attr_name_bits(py, b"inquiry_result").unwrap();
             let result = crate::molt_get_attr_name_attached_body(py, receiver, key);
-            dec_ref_bits(&py, key);
+            dec_ref_bits(py, key);
             result
         }
     }
@@ -1720,7 +1679,7 @@ extern "C" fn inquiry_failure(__context: u64, _receiver: u64) -> u64 {
 
     {
         let py = __py;
-        crate::raise_exception(&py, BuiltinExc::RuntimeError, "inquiry failed")
+        crate::raise_exception(py, BuiltinExc::RuntimeError, "inquiry failed")
     }
 }
 
@@ -1748,16 +1707,16 @@ fn c_mapping_queries_honor_overrides_and_preserve_exact_list_identity() {
         ) -> *mut molt_cpython_abi::abi_types::PyObject;
         let mut owners = Vec::new();
         let empty = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(crate::alloc_tuple(&py, &[])).bits(),
+            MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits(),
         );
         let outputs = [
-            crate::alloc_list(&py, &[MoltObject::from_int(17).bits()]),
-            crate::object::builders::alloc_list_int_from_raw_slice(&py, &[17]).unwrap(),
-            crate::object::builders::alloc_list_bool_from_raw_slice(&py, &[1]).unwrap(),
+            crate::alloc_list(py, &[MoltObject::from_int(17).bits()]),
+            crate::object::builders::alloc_list_int_from_raw_slice(py, &[17]).unwrap(),
+            crate::object::builders::alloc_list_bool_from_raw_slice(py, &[1]).unwrap(),
         ]
-        .map(|ptr| mapping_owned(&py, &mut owners, MoltObject::from_ptr(ptr).bits()));
+        .map(|ptr| mapping_owned(py, &mut owners, MoltObject::from_ptr(ptr).bits()));
         for output in outputs {
             let output_view = mapping_view(output);
             for (name, query, dict_query, direct_query) in [
@@ -1781,13 +1740,13 @@ fn c_mapping_queries_honor_overrides_and_preserve_exact_list_identity() {
                 ),
             ] {
                 let class = mapping_owned(
-                    &py,
+                    py,
                     &mut owners,
-                    inquiry_class(&py, crate::builtin_classes(&py).dict, name),
+                    inquiry_class(py, crate::builtin_classes(py).dict, name),
                 );
-                set_method(&py, class, name, mapping_method_result as *const ());
-                set_value(&py, class, b"inquiry_result", output);
-                let dict = mapping_owned(&py, &mut owners, construct(&py, class, empty));
+                set_method(py, class, name, mapping_method_result as *const ());
+                set_value(py, class, b"inquiry_result", output);
+                let dict = mapping_owned(py, &mut owners, construct(py, class, empty));
                 let view = mapping_view(dict);
                 MAPPING_METHOD_CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
                 let snapshot = refcount::OwnedPyObject::from_owned(dict_query(view.as_ptr()));
@@ -1804,9 +1763,9 @@ fn c_mapping_queries_honor_overrides_and_preserve_exact_list_identity() {
                     MAPPING_METHOD_CALLS.load(std::sync::atomic::Ordering::Relaxed),
                     1
                 );
-                let direct = mapping_owned(&py, &mut owners, direct_query(dict));
+                let direct = mapping_owned(py, &mut owners, direct_query(dict));
                 assert_eq!(direct, output);
-                set_method(&py, class, name, inquiry_failure as *const ());
+                set_method(py, class, name, inquiry_failure as *const ());
                 assert!(query(view.as_ptr()).is_null());
                 assert_eq!(
                     errors::PyErr_ExceptionMatches(
@@ -1817,7 +1776,7 @@ fn c_mapping_queries_honor_overrides_and_preserve_exact_list_identity() {
                 errors::PyErr_Clear();
             }
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -1865,7 +1824,7 @@ fn construct(py: &crate::PyToken<'_>, class: u64, input: u64) -> u64 {
 fn managed_c_inquiries_follow_native_subtype_overrides_and_live_mutation() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     with_gil(|py| unsafe {
-        let classes = crate::builtin_classes(&py);
+        let classes = crate::builtin_classes(py);
         for base in [
             classes.list,
             classes.tuple,
@@ -1875,14 +1834,14 @@ fn managed_c_inquiries_follow_native_subtype_overrides_and_live_mutation() {
             classes.set,
             classes.frozenset,
         ] {
-            let class = inquiry_class(&py, base, b"__len__");
+            let class = inquiry_class(py, base, b"__len__");
             let input = if base == classes.str {
-                MoltObject::from_ptr(alloc_string(&py, b"x")).bits()
+                MoltObject::from_ptr(alloc_string(py, b"x")).bits()
             } else {
-                MoltObject::from_ptr(crate::alloc_tuple(&py, &[MoltObject::from_int(7).bits()]))
+                MoltObject::from_ptr(crate::alloc_tuple(py, &[MoltObject::from_int(7).bits()]))
                     .bits()
             };
-            let bits = construct(&py, class, input);
+            let bits = construct(py, class, input);
             let view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits);
             assert!(!view.is_null());
             // One stored element, but the actual class says zero.
@@ -1891,20 +1850,15 @@ fn managed_c_inquiries_follow_native_subtype_overrides_and_live_mutation() {
             assert_eq!(object::PyObject_IsTrue(view), 0);
             assert_eq!(object::PyObject_Not(view), 1);
 
-            set_value(
-                &py,
-                class,
-                b"inquiry_result",
-                MoltObject::from_int(3).bits(),
-            );
+            set_value(py, class, b"inquiry_result", MoltObject::from_int(3).bits());
             assert_eq!(object::PyObject_Size(view), 3);
             assert_eq!(object::PyObject_IsTrue(view), 1);
             // A later __bool__ declaration wins over the nonzero __len__.
-            set_method(&py, class, b"__bool__", inquiry_false as *const ());
+            set_method(py, class, b"__bool__", inquiry_false as *const ());
             assert_eq!(object::PyObject_IsTrue(view), 0);
             assert_eq!(object::PyObject_Size(view), 3);
             // Replacing the method on an already-projected class is observed.
-            set_method(&py, class, b"__len__", inquiry_failure as *const ());
+            set_method(py, class, b"__len__", inquiry_failure as *const ());
             assert_eq!(object::PyObject_Size(view), -1);
             assert_eq!(
                 errors::PyErr_ExceptionMatches(
@@ -1913,23 +1867,22 @@ fn managed_c_inquiries_follow_native_subtype_overrides_and_live_mutation() {
                 1
             );
             errors::PyErr_Clear();
-            assert!(!crate::exception_pending(&py));
+            assert!(!crate::exception_pending(py));
             refcount::Py_DECREF(view);
             for value in [bits, input, class] {
-                dec_ref_bits(&py, value);
+                dec_ref_bits(py, value);
             }
         }
         // Exact strings count code points, including a surrogate, not WTF-8 bytes.
         let text =
-            MoltObject::from_ptr(alloc_string(&py, b"a\xc3\xa9\xf0\x9f\x98\x80\xed\xa0\x80"))
-                .bits();
+            MoltObject::from_ptr(alloc_string(py, b"a\xc3\xa9\xf0\x9f\x98\x80\xed\xa0\x80")).bits();
         let view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(text);
         assert_eq!(object::PyObject_Size(view), 4);
         assert_eq!(object::PyObject_IsTrue(view), 1);
         refcount::Py_DECREF(view);
-        dec_ref_bits(&py, text);
+        dec_ref_bits(py, text);
         assert!(errors::PyErr_Occurred().is_null());
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -1954,11 +1907,11 @@ unsafe fn expect_inquiry_error(
 fn managed_c_inquiries_observe_direct_list_writes_and_reject_failed_commits() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     with_gil(|py| unsafe {
-        let class = inquiry_class(&py, crate::builtin_classes(&py).list, b"__len__");
-        set_method(&py, class, b"__len__", inquiry_first_item as *const ());
+        let class = inquiry_class(py, crate::builtin_classes(py).list, b"__len__");
+        set_method(py, class, b"__len__", inquiry_first_item as *const ());
         let input =
-            MoltObject::from_ptr(crate::alloc_tuple(&py, &[MoltObject::from_int(1).bits()])).bits();
-        let bits = construct(&py, class, input);
+            MoltObject::from_ptr(crate::alloc_tuple(py, &[MoltObject::from_int(1).bits()])).bits();
+        let bits = construct(py, class, input);
         let view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits);
         assert!(!view.is_null());
         let physical = view.cast::<molt_cpython_abi::abi_types::PyListObject>();
@@ -1981,7 +1934,7 @@ fn managed_c_inquiries_observe_direct_list_writes_and_reject_failed_commits() {
         let saved = *(*physical).ob_item;
         *(*physical).ob_item = ptr::null_mut();
         expect_inquiry_error(
-            &py,
+            py,
             view,
             (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast(),
         );
@@ -2000,9 +1953,9 @@ fn managed_c_inquiries_observe_direct_list_writes_and_reject_failed_commits() {
         assert!(errors::PyErr_Occurred().is_null());
         refcount::Py_DECREF(view);
         for value in [bits, input, class] {
-            dec_ref_bits(&py, value);
+            dec_ref_bits(py, value);
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -2010,15 +1963,15 @@ fn managed_c_inquiries_observe_direct_list_writes_and_reject_failed_commits() {
 fn managed_c_inquiries_share_index_conversion_and_pending_error_transfer() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     with_gil(|py| unsafe {
-        let classes = crate::builtin_classes(&py);
-        let index_class = inquiry_class(&py, classes.object, b"__index__");
+        let classes = crate::builtin_classes(py);
+        let index_class = inquiry_class(py, classes.object, b"__index__");
         let index = crate::alloc_instance_for_class(
-            &py,
+            py,
             MoltObject::from_bits(index_class).as_ptr().unwrap(),
         );
         let input =
-            MoltObject::from_ptr(crate::alloc_tuple(&py, &[MoltObject::from_int(7).bits()])).bits();
-        let overflow = int_bits_from_bigint(&py, BigInt::from(isize::MAX) + BigInt::from(1));
+            MoltObject::from_ptr(crate::alloc_tuple(py, &[MoltObject::from_int(7).bits()])).bits();
+        let overflow = int_bits_from_bigint(py, BigInt::from(isize::MAX) + BigInt::from(1));
         let index_view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(index);
         assert_eq!(
             molt_cpython_abi::api::abstract_number::PyIndex_Check(index_view),
@@ -2026,7 +1979,7 @@ fn managed_c_inquiries_share_index_conversion_and_pending_error_transfer() {
         );
         for value in [0, 3] {
             set_value(
-                &py,
+                py,
                 index_class,
                 b"inquiry_result",
                 MoltObject::from_int(value).bits(),
@@ -2043,7 +1996,7 @@ fn managed_c_inquiries_share_index_conversion_and_pending_error_transfer() {
             );
             refcount::Py_DECREF(result);
         }
-        set_method(&py, index_class, b"__index__", inquiry_failure as *const ());
+        set_method(py, index_class, b"__index__", inquiry_failure as *const ());
         assert!(molt_cpython_abi::api::abstract_number::PyNumber_Index(index_view).is_null());
         assert_eq!(
             errors::PyErr_ExceptionMatches(
@@ -2052,16 +2005,16 @@ fn managed_c_inquiries_share_index_conversion_and_pending_error_transfer() {
             1
         );
         errors::PyErr_Clear();
-        set_method(&py, index_class, b"__index__", inquiry_result as *const ());
+        set_method(py, index_class, b"__index__", inquiry_result as *const ());
         refcount::Py_DECREF(index_view);
         for base in [classes.list, classes.tuple, classes.bytes] {
-            let class = inquiry_class(&py, base, b"__len__");
-            set_value(&py, class, b"inquiry_result", index);
-            let bits = construct(&py, class, input);
+            let class = inquiry_class(py, base, b"__len__");
+            set_value(py, class, b"inquiry_result", index);
+            let bits = construct(py, class, input);
             let view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits);
             for length in [0, 3] {
                 set_value(
-                    &py,
+                    py,
                     index_class,
                     b"inquiry_result",
                     MoltObject::from_int(length).bits(),
@@ -2070,48 +2023,43 @@ fn managed_c_inquiries_share_index_conversion_and_pending_error_transfer() {
                 assert_eq!(object::PyObject_IsTrue(view), c_int::from(length != 0));
             }
             set_value(
-                &py,
+                py,
                 index_class,
                 b"inquiry_result",
                 MoltObject::from_int(-1).bits(),
             );
             expect_inquiry_error(
-                &py,
+                py,
                 view,
                 (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast(),
             );
-            set_value(&py, index_class, b"inquiry_result", overflow);
+            set_value(py, index_class, b"inquiry_result", overflow);
             expect_inquiry_error(
-                &py,
+                py,
                 view,
                 (&raw mut molt_cpython_abi::abi_types::PyExc_OverflowError).cast(),
             );
             set_value(
-                &py,
+                py,
                 index_class,
                 b"inquiry_result",
                 MoltObject::from_float(1.5).bits(),
             );
             expect_inquiry_error(
-                &py,
+                py,
                 view,
                 (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast(),
             );
-            set_method(&py, index_class, b"__index__", inquiry_failure as *const ());
+            set_method(py, index_class, b"__index__", inquiry_failure as *const ());
             expect_inquiry_error(
-                &py,
+                py,
                 view,
                 (&raw mut molt_cpython_abi::abi_types::PyExc_RuntimeError).cast(),
             );
-            set_method(&py, index_class, b"__index__", inquiry_result as *const ());
+            set_method(py, index_class, b"__index__", inquiry_result as *const ());
             // A non-bool return and a raising __bool__ retain their own errors.
-            set_value(
-                &py,
-                class,
-                b"inquiry_result",
-                MoltObject::from_int(1).bits(),
-            );
-            set_method(&py, class, b"__bool__", inquiry_result as *const ());
+            set_value(py, class, b"inquiry_result", MoltObject::from_int(1).bits());
+            set_method(py, class, b"__bool__", inquiry_result as *const ());
             assert_eq!(object::PyObject_IsTrue(view), -1);
             assert_eq!(
                 errors::PyErr_ExceptionMatches(
@@ -2120,7 +2068,7 @@ fn managed_c_inquiries_share_index_conversion_and_pending_error_transfer() {
                 1
             );
             errors::PyErr_Clear();
-            set_method(&py, class, b"__bool__", inquiry_failure as *const ());
+            set_method(py, class, b"__bool__", inquiry_failure as *const ());
             assert_eq!(object::PyObject_Not(view), -1);
             assert_eq!(
                 errors::PyErr_ExceptionMatches(
@@ -2129,17 +2077,17 @@ fn managed_c_inquiries_share_index_conversion_and_pending_error_transfer() {
                 1
             );
             errors::PyErr_Clear();
-            assert!(!crate::exception_pending(&py));
+            assert!(!crate::exception_pending(py));
             refcount::Py_DECREF(view);
             for value in [bits, class] {
-                dec_ref_bits(&py, value);
+                dec_ref_bits(py, value);
             }
         }
         for value in [overflow, input, index, index_class] {
-            dec_ref_bits(&py, value);
+            dec_ref_bits(py, value);
         }
         assert!(errors::PyErr_Occurred().is_null());
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -2157,7 +2105,7 @@ fn different_integer_values_compare_unequal_through_the_runtime() {
         refcount::Py_DECREF(left);
         refcount::Py_DECREF(right);
         assert!(errors::PyErr_Occurred().is_null());
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -2182,7 +2130,7 @@ fn integer_ordering_returns_the_exact_boolean_singleton() {
         refcount::Py_DECREF(left);
         refcount::Py_DECREF(right);
         assert!(errors::PyErr_Occurred().is_null());
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -2238,7 +2186,7 @@ extern "C" fn mapping_output_iterator(__context: u64, receiver: u64) -> u64 {
         {
             let sequence = inquiry_result(__context, receiver);
             let iter = crate::molt_iter_attached_body(py, sequence);
-            dec_ref_bits(&py, sequence);
+            dec_ref_bits(py, sequence);
             iter
         }
     }
@@ -2283,50 +2231,50 @@ fn c_mapping_iterator_first_materialization_and_noniterable_diagnostics() {
         use molt_cpython_abi::api::{abstract_mapping, mapping};
         let mut owners = Vec::new();
         let values = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(crate::alloc_list(&py, &[MoltObject::from_int(7).bits()])).bits(),
+            MoltObject::from_ptr(crate::alloc_list(py, &[MoltObject::from_int(7).bits()])).bits(),
         );
         let output_class = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            inquiry_class(&py, crate::builtin_classes(&py).object, b"__iter__"),
+            inquiry_class(py, crate::builtin_classes(py).object, b"__iter__"),
         );
         set_method(
-            &py,
+            py,
             output_class,
             b"__iter__",
             mapping_output_iterator as *const (),
         );
         set_method(
-            &py,
+            py,
             output_class,
             b"__len__",
             mapping_poisoned_length as *const (),
         );
-        set_value(&py, output_class, b"inquiry_result", values);
+        set_value(py, output_class, b"inquiry_result", values);
         let output = mapping_owned(
-            &py,
+            py,
             &mut owners,
             crate::alloc_instance_for_class(
-                &py,
+                py,
                 MoltObject::from_bits(output_class).as_ptr().unwrap(),
             ),
         );
         let class = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            inquiry_class(&py, crate::builtin_classes(&py).object, b"keys"),
+            inquiry_class(py, crate::builtin_classes(py).object, b"keys"),
         );
         for name in [b"keys".as_slice(), b"values", b"items"] {
-            set_method(&py, class, name, inquiry_result as *const ());
+            set_method(py, class, name, inquiry_result as *const ());
         }
-        mapping_item_method(&py, class);
-        set_value(&py, class, b"inquiry_result", output);
+        mapping_item_method(py, class);
+        set_value(py, class, b"inquiry_result", output);
         let receiver = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            crate::alloc_instance_for_class(&py, MoltObject::from_bits(class).as_ptr().unwrap()),
+            crate::alloc_instance_for_class(py, MoltObject::from_bits(class).as_ptr().unwrap()),
         );
         let receiver_view = mapping_view(receiver);
         let values_view = mapping_view(values);
@@ -2346,14 +2294,14 @@ fn c_mapping_iterator_first_materialization_and_noniterable_diagnostics() {
                 crate::c_api::PyMapping_Values,
                 crate::c_api::PyMapping_Items,
             ][method as usize];
-            let result = mapping_owned(&py, &mut owners, query(receiver));
+            let result = mapping_owned(py, &mut owners, query(receiver));
             assert_ne!(result, 0);
             assert_eq!(crate::c_api::PyList_Size(result), 1);
         }
         let target = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(alloc_dict_with_pairs(&py, &[])).bits(),
+            MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits(),
         );
         let target_view = mapping_view(target);
         assert_eq!(
@@ -2370,12 +2318,7 @@ fn c_mapping_iterator_first_materialization_and_noniterable_diagnostics() {
             0
         );
         // A real int result is non-iterable; TypeError identifies the mapping method.
-        set_value(
-            &py,
-            class,
-            b"inquiry_result",
-            MoltObject::from_int(4).bits(),
-        );
+        set_value(py, class, b"inquiry_result", MoltObject::from_int(4).bits());
         for (query, name) in [
             (
                 abstract_mapping::PyMapping_Keys
@@ -2414,8 +2357,8 @@ fn c_mapping_iterator_first_materialization_and_noniterable_diagnostics() {
             );
         }
         // Arbitrary __iter__ failures retain their type and message.
-        set_value(&py, class, b"inquiry_result", output);
-        set_method(&py, output_class, b"__iter__", inquiry_failure as *const ());
+        set_value(py, class, b"inquiry_result", output);
+        set_method(py, output_class, b"__iter__", inquiry_failure as *const ());
         assert!(abstract_mapping::PyMapping_Keys(receiver_view.as_ptr()).is_null());
         assert_eq!(
             errors::PyErr_ExceptionMatches(
@@ -2428,23 +2371,23 @@ fn c_mapping_iterator_first_materialization_and_noniterable_diagnostics() {
         for list in [
             values,
             mapping_owned(
-                &py,
+                py,
                 &mut owners,
                 MoltObject::from_ptr(
-                    crate::object::builders::alloc_list_int_from_raw_slice(&py, &[7]).unwrap(),
+                    crate::object::builders::alloc_list_int_from_raw_slice(py, &[7]).unwrap(),
                 )
                 .bits(),
             ),
             mapping_owned(
-                &py,
+                py,
                 &mut owners,
                 MoltObject::from_ptr(
-                    crate::object::builders::alloc_list_bool_from_raw_slice(&py, &[1]).unwrap(),
+                    crate::object::builders::alloc_list_bool_from_raw_slice(py, &[1]).unwrap(),
                 )
                 .bits(),
             ),
         ] {
-            set_value(&py, class, b"inquiry_result", list);
+            set_value(py, class, b"inquiry_result", list);
             let view = mapping_view(list);
             for method in 0..3 {
                 for probe in [
@@ -2455,7 +2398,7 @@ fn c_mapping_iterator_first_materialization_and_noniterable_diagnostics() {
                 }
             }
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -2467,17 +2410,17 @@ fn c_dict_subclass_storage_and_merge_iterator_override_share_admission() {
         use molt_cpython_abi::api::mapping;
         let mut owners = Vec::new();
         let class = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            inquiry_class(&py, crate::builtin_classes(&py).dict, b"keys"),
+            inquiry_class(py, crate::builtin_classes(py).dict, b"keys"),
         );
-        set_method(&py, class, b"keys", mapping_method_result as *const ());
+        set_method(py, class, b"keys", mapping_method_result as *const ());
         let keys = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(crate::alloc_list(&py, &[MoltObject::from_int(7).bits()])).bits(),
+            MoltObject::from_ptr(crate::alloc_list(py, &[MoltObject::from_int(7).bits()])).bits(),
         );
-        set_value(&py, class, b"inquiry_result", keys);
+        set_value(py, class, b"inquiry_result", keys);
         let first = mapping_view(MoltObject::from_int(11).bits());
         let second = mapping_view(MoltObject::from_int(22).bits());
         for probe in [
@@ -2485,12 +2428,9 @@ fn c_dict_subclass_storage_and_merge_iterator_override_share_admission() {
             molt_public_dict_subclass_probe,
         ] {
             let dict = mapping_owned(
-                &py,
+                py,
                 &mut owners,
-                crate::alloc_instance_for_class(
-                    &py,
-                    MoltObject::from_bits(class).as_ptr().unwrap(),
-                ),
+                crate::alloc_instance_for_class(py, MoltObject::from_bits(class).as_ptr().unwrap()),
             );
             let view = mapping_view(dict);
             MAPPING_METHOD_CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
@@ -2515,23 +2455,18 @@ fn c_dict_subclass_storage_and_merge_iterator_override_share_admission() {
             assert_eq!(mapping::PyDict_Size(view.as_ptr()), 3);
         }
         // The same subtype now overrides __iter__: both merge paths must use keys/getitem.
-        set_method(
-            &py,
-            class,
-            b"__iter__",
-            mapping_output_iterator as *const (),
-        );
-        mapping_item_method(&py, class);
+        set_method(py, class, b"__iter__", mapping_output_iterator as *const ());
+        mapping_item_method(py, class);
         let source = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            crate::alloc_instance_for_class(&py, MoltObject::from_bits(class).as_ptr().unwrap()),
+            crate::alloc_instance_for_class(py, MoltObject::from_bits(class).as_ptr().unwrap()),
         );
         let source_view = mapping_view(source);
         let target = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(alloc_dict_with_pairs(&py, &[])).bits(),
+            MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits(),
         );
         let target_view = mapping_view(target);
         MAPPING_METHOD_CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
@@ -2548,7 +2483,7 @@ fn c_dict_subclass_storage_and_merge_iterator_override_share_admission() {
             crate::c_api::PyDict_GetItem(target, MoltObject::from_int(7).bits()),
             MoltObject::from_int(23).bits()
         );
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -2574,14 +2509,14 @@ fn c_dict_lazy_backing_failures_preserve_original_errors() {
         }
         let mut owners = Vec::new();
         let class = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            inquiry_class(&py, crate::builtin_classes(&py).dict, b"keys"),
+            inquiry_class(py, crate::builtin_classes(py).dict, b"keys"),
         );
         let receiver = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            crate::alloc_instance_for_class(&py, MoltObject::from_bits(class).as_ptr().unwrap()),
+            crate::alloc_instance_for_class(py, MoltObject::from_bits(class).as_ptr().unwrap()),
         );
         let slot = crate::object::layout::dict_subclass_storage_slot(
             MoltObject::from_bits(receiver).as_ptr().unwrap(),
@@ -2590,7 +2525,7 @@ fn c_dict_lazy_backing_failures_preserve_original_errors() {
         if *slot != 0 {
             let previous = *slot;
             *slot = 0;
-            dec_ref_bits(&py, previous);
+            dec_ref_bits(py, previous);
         }
         let view = mapping_view(receiver);
         let key_bits = MoltObject::from_int(7).bits();
@@ -2703,7 +2638,7 @@ fn c_dict_lazy_backing_failures_preserve_original_errors() {
         assert_eq!(crate::c_api::PyDict_GetItem(receiver, key_bits), 0);
         let observed = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
         assert_eq!(observed.as_ptr(), original.as_ptr());
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -2718,21 +2653,21 @@ fn c_dict_argument_errors_preserve_identity_and_optional_results() {
             refcount::OwnedPyObject::from_owned(strings::PyUnicode_FromString(c"key".as_ptr()));
         let mut owners = Vec::new();
         let value_bits = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(crate::alloc_list(&py, &[])).bits(),
+            MoltObject::from_ptr(crate::alloc_list(py, &[])).bits(),
         );
         let value = mapping_view(value_bits);
         assert!(!molt_cpython_abi::abi_types::is_immortal_refcnt(
             (*value.as_ptr()).ob_refcnt
         ));
-        crate::raise_exception::<()>(&py, BuiltinExc::RuntimeError, "dict caller sentinel");
+        crate::raise_exception::<()>(py, BuiltinExc::RuntimeError, "dict caller sentinel");
         let original_bits = mapping_owned(
-            &py,
+            py,
             &mut owners,
             crate::molt_exception_last_attached_body(py),
         );
-        crate::clear_exception(&py);
+        crate::clear_exception(py);
         let original = mapping_view(original_bits);
         assert!(!original.as_ptr().is_null());
         // Exercise both exception owners: guards must transfer a pending runtime
@@ -2744,7 +2679,7 @@ fn c_dict_argument_errors_preserve_identity_and_optional_results() {
                     errors::PyErr_SetRaisedException(original.as_ptr());
                 }
                 2 => crate::builtins::exceptions::record_exception(
-                    &py,
+                    py,
                     MoltObject::from_bits(original_bits).as_ptr().unwrap(),
                 ),
                 _ => {}
@@ -2812,7 +2747,7 @@ fn c_dict_argument_errors_preserve_identity_and_optional_results() {
                         "operation {operation}"
                     );
                 }
-                assert!(!crate::exception_pending(&py));
+                assert!(!crate::exception_pending(py));
             }
             // These APIs deliberately suppress lookup/argument errors, including
             // a null key. The caller's exact exception must nevertheless survive.
@@ -2829,7 +2764,7 @@ fn c_dict_argument_errors_preserve_identity_and_optional_results() {
                     original.as_ptr()
                 }
             );
-            assert!(!crate::exception_pending(&py));
+            assert!(!crate::exception_pending(py));
         }
         // Missing keys remain clean misses; optional result sinks do not acquire
         // a reference and are distinct from GetItem[ String ]Ref's required sink.
@@ -2868,7 +2803,7 @@ fn c_dict_argument_errors_preserve_identity_and_optional_results() {
             0
         );
         assert!(errors::PyErr_Occurred().is_null());
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -2893,7 +2828,7 @@ extern "C" fn known_hash_callback(__context: u64, _receiver: u64) -> u64 {
         {
             KNOWN_HASH_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if KNOWN_HASH_POISON.load(std::sync::atomic::Ordering::Relaxed) {
-                crate::raise_exception(&py, BuiltinExc::RuntimeError, "known hash was recomputed")
+                crate::raise_exception(py, BuiltinExc::RuntimeError, "known hash was recomputed")
             } else {
                 MoltObject::from_int(KNOWN_HASH).bits()
             }
@@ -2918,7 +2853,7 @@ extern "C" fn known_hash_equality(__context: u64, _receiver: u64, query: u64) ->
                 2 => {
                     let error = KNOWN_ERROR.load(Relaxed);
                     crate::builtins::exceptions::record_exception(
-                        &py,
+                        py,
                         MoltObject::from_bits(error).as_ptr().unwrap(),
                     );
                     MoltObject::none().bits()
@@ -2927,9 +2862,9 @@ extern "C" fn known_hash_equality(__context: u64, _receiver: u64, query: u64) ->
                     let dict = MoltObject::from_bits(KNOWN_DICT.load(Relaxed))
                         .as_ptr()
                         .unwrap();
-                    crate::object::ops::dict_clear_in_place(&py, dict);
+                    crate::object::ops::dict_clear_in_place(py, dict);
                     assert!(crate::object::ops::dict_set_with_hash_in_place(
-                        &py,
+                        py,
                         dict,
                         query,
                         KNOWN_REPLACEMENT.load(Relaxed),
@@ -2979,86 +2914,75 @@ fn c_dict_known_hash_preserves_hash_value_borrowed_identity_and_reentrant_errors
         let mut owners = Vec::new();
         let _reset = ResetKnownProbe;
         let key_class = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            inquiry_class(&py, crate::builtin_classes(&py).object, b"__hash__"),
+            inquiry_class(py, crate::builtin_classes(py).object, b"__hash__"),
         );
-        set_method(
-            &py,
-            key_class,
-            b"__hash__",
-            known_hash_callback as *const (),
-        );
+        set_method(py, key_class, b"__hash__", known_hash_callback as *const ());
         let equal = mapping_owned(
-            &py,
+            py,
             &mut owners,
             MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
-                &py,
+                py,
                 crate::provenance::abi::expose_function_address(known_hash_equality as *const ()),
                 2,
             ))
             .bits(),
         );
-        set_value(&py, key_class, b"__eq__", equal);
+        set_value(py, key_class, b"__eq__", equal);
         let stored = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            crate::alloc_instance_for_class(
-                &py,
-                MoltObject::from_bits(key_class).as_ptr().unwrap(),
-            ),
+            crate::alloc_instance_for_class(py, MoltObject::from_bits(key_class).as_ptr().unwrap()),
         );
         let query = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            crate::alloc_instance_for_class(
-                &py,
-                MoltObject::from_bits(key_class).as_ptr().unwrap(),
-            ),
+            crate::alloc_instance_for_class(py, MoltObject::from_bits(key_class).as_ptr().unwrap()),
         );
         let stored_view = mapping_view(stored);
         let query_view = mapping_view(query);
         let value = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(crate::alloc_list(&py, &[])).bits(),
+            MoltObject::from_ptr(crate::alloc_list(py, &[])).bits(),
         );
         let replacement = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(crate::alloc_list(&py, &[MoltObject::from_int(41).bits()])).bits(),
+            MoltObject::from_ptr(crate::alloc_list(py, &[MoltObject::from_int(41).bits()])).bits(),
         );
         let value_view = mapping_view(value);
         let replacement_view = mapping_view(replacement);
         crate::raise_exception::<()>(
-            &py,
+            py,
             BuiltinExc::RuntimeError,
             "exact known-hash equality error",
         );
         let error = mapping_owned(
-            &py,
+            py,
             &mut owners,
             crate::molt_exception_last_attached_body(py),
         );
-        crate::clear_exception(&py);
+        crate::clear_exception(py);
         let error_view = mapping_view(error);
         KNOWN_ERROR.store(error, Relaxed);
         KNOWN_REPLACEMENT.store(replacement, Relaxed);
         let subclass = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            inquiry_class(&py, crate::builtin_classes(&py).dict, b"keys"),
+            inquiry_class(py, crate::builtin_classes(py).dict, b"keys"),
         );
         for probe in [molt_linked_known_hash_probe, molt_public_known_hash_probe] {
-            for class in [crate::builtin_classes(&py).dict, subclass] {
+            for class in [crate::builtin_classes(py).dict, subclass] {
                 let dict = mapping_owned(
-                    &py,
+                    py,
                     &mut owners,
-                    if class == crate::builtin_classes(&py).dict {
-                        MoltObject::from_ptr(alloc_dict_with_pairs(&py, &[])).bits()
+                    if class == crate::builtin_classes(py).dict {
+                        MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits()
                     } else {
                         crate::alloc_instance_for_class(
-                            &py,
+                            py,
                             MoltObject::from_bits(class).as_ptr().unwrap(),
                         )
                     },
@@ -3141,7 +3065,7 @@ fn c_dict_known_hash_preserves_hash_value_borrowed_identity_and_reentrant_errors
                 assert_eq!(raised.as_ptr(), error_view.as_ptr());
                 // Existing epoch-aware lookup must restart after equality replaces all entries.
                 KNOWN_DICT.store(
-                    crate::object::ops::dict_backing_bits(&py, dict)
+                    crate::object::ops::dict_backing_bits(py, dict)
                         .unwrap()
                         .unwrap(),
                     Relaxed,
@@ -3177,7 +3101,7 @@ fn c_dict_known_hash_preserves_hash_value_borrowed_identity_and_reentrant_errors
                 errors::PyErr_Clear();
                 assert_eq!(KNOWN_HASH_CALLS.load(Relaxed), 2);
                 // A trusted hash also bypasses hashability admission after a class edit.
-                set_value(&py, key_class, b"__hash__", MoltObject::none().bits());
+                set_value(py, key_class, b"__hash__", MoltObject::none().bits());
                 assert_eq!(
                     probe(
                         view.as_ptr(),
@@ -3188,15 +3112,10 @@ fn c_dict_known_hash_preserves_hash_value_borrowed_identity_and_reentrant_errors
                     ),
                     0
                 );
-                set_method(
-                    &py,
-                    key_class,
-                    b"__hash__",
-                    known_hash_callback as *const (),
-                );
+                set_method(py, key_class, b"__hash__", known_hash_callback as *const ());
             }
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -3208,15 +3127,15 @@ fn c_dict_update_is_mapping_only_while_merge_from_seq2_accepts_pairs() {
         use molt_cpython_abi::api::{errors, mapping};
         let mut owners = Vec::new();
         let target = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(alloc_dict_with_pairs(&py, &[])).bits(),
+            MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits(),
         );
         let pair = mapping_owned(
-            &py,
+            py,
             &mut owners,
             MoltObject::from_ptr(crate::alloc_tuple(
-                &py,
+                py,
                 &[
                     MoltObject::from_int(7).bits(),
                     MoltObject::from_int(23).bits(),
@@ -3225,9 +3144,9 @@ fn c_dict_update_is_mapping_only_while_merge_from_seq2_accepts_pairs() {
             .bits(),
         );
         let pairs = mapping_owned(
-            &py,
+            py,
             &mut owners,
-            MoltObject::from_ptr(crate::alloc_list(&py, &[pair])).bits(),
+            MoltObject::from_ptr(crate::alloc_list(py, &[pair])).bits(),
         );
         let target_view = mapping_view(target);
         let pairs_view = mapping_view(pairs);
@@ -3247,6 +3166,6 @@ fn c_dict_update_is_mapping_only_while_merge_from_seq2_accepts_pairs() {
             crate::c_api::PyDict_GetItem(target, MoltObject::from_int(7).bits()),
             MoltObject::from_int(23).bits()
         );
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }

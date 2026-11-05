@@ -78,7 +78,7 @@ fn compiled_headers_follow_runtime_class_for_list_tuple_and_type_projections() {
     molt_cpython_abi_test_support::link();
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
-        let classes = builtin_classes(&py);
+        let classes = builtin_classes(py);
         for (base, family, physical, name) in [
             (
                 classes.list,
@@ -93,11 +93,11 @@ fn compiled_headers_follow_runtime_class_for_list_tuple_and_type_projections() {
                 b"HeaderTupleChild".as_slice(),
             ),
         ] {
-            let child = identity_subclass(&py, base, name);
+            let child = identity_subclass(py, base, name);
             for (constructor, exact) in [(base, 1), (child, 0)] {
-                let instance = crate::call_callable0(&py, constructor);
-                assert!(!exception_pending(&py));
-                assert_eq!(type_of_bits(&py, instance), constructor);
+                let instance = crate::call_callable0(py, constructor);
+                assert!(!exception_pending(py));
+                assert_eq!(type_of_bits(py, instance), constructor);
                 let view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(instance);
                 let expected = GLOBAL_BRIDGE
                     .handle_to_borrowed_pyobj(constructor)
@@ -113,21 +113,21 @@ fn compiled_headers_follow_runtime_class_for_list_tuple_and_type_projections() {
                 }
                 check_headers(view, expected, family, exact);
                 refcount::Py_DECREF(view);
-                dec_ref_bits(&py, instance);
+                dec_ref_bits(py, instance);
             }
-            dec_ref_bits(&py, child);
+            dec_ref_bits(py, child);
         }
 
         // A class object with a custom metaclass is physically PyType_Type.
         // Source code must still see that metaclass via Py_TYPE and TypeCheck.
-        let meta = identity_subclass(&py, classes.type_obj, b"HeaderMeta");
-        let name = dynamic_attr_name_bits(&py, b"HeaderClassWithMeta").unwrap();
-        let bases = MoltObject::from_ptr(alloc_tuple(&py, &[classes.object])).bits();
-        let namespace = MoltObject::from_ptr(alloc_dict_with_pairs(&py, &[])).bits();
-        let keywords = MoltObject::from_ptr(alloc_dict_with_pairs(&py, &[])).bits();
+        let meta = identity_subclass(py, classes.type_obj, b"HeaderMeta");
+        let name = dynamic_attr_name_bits(py, b"HeaderClassWithMeta").unwrap();
+        let bases = MoltObject::from_ptr(alloc_tuple(py, &[classes.object])).bits();
+        let namespace = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
+        let keywords = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
         let class = crate::molt_type_new_attached_body(py, meta, name, bases, namespace, keywords);
-        assert!(!exception_pending(&py));
-        assert_eq!(type_of_bits(&py, class), meta);
+        assert!(!exception_pending(py));
+        assert_eq!(type_of_bits(py, class), meta);
         let class_view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(class);
         let meta_view = GLOBAL_BRIDGE
             .handle_to_borrowed_pyobj(meta)
@@ -138,7 +138,7 @@ fn compiled_headers_follow_runtime_class_for_list_tuple_and_type_projections() {
         check_headers(class_view, meta_view, 0, 0);
         refcount::Py_DECREF(class_view);
         for bits in [class, keywords, namespace, bases, name, meta] {
-            dec_ref_bits(&py, bits);
+            dec_ref_bits(py, bits);
         }
 
         // Native C objects still expose their physical class. This is selected
@@ -152,7 +152,7 @@ fn compiled_headers_follow_runtime_class_for_list_tuple_and_type_projections() {
         };
         check_headers(&raw mut native, &raw mut native_type, 0, 0);
         check_headers(ptr::null_mut(), ptr::null_mut(), 0, 0);
-        assert!(!exception_pending(&py));
+        assert!(!exception_pending(py));
         assert!(errors::PyErr_Occurred().is_null());
     });
 }

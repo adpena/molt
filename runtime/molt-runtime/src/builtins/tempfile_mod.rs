@@ -150,7 +150,6 @@ pub(crate) fn molt_tempfile_mkdtemp_attached_body(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-
 pub(crate) fn molt_tempfile_mkstemp_attached_body(
     _py: &crate::PyToken<'_>,
     suffix: u64,

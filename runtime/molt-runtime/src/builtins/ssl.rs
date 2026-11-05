@@ -1480,10 +1480,10 @@ mod tests {
                 ];
                 for retire in retirements {
                     let (mut original, mut peer) = socket_pair();
-                    let (handle, _duplicate) = wrap_original(&py, &original);
+                    let (handle, _duplicate) = wrap_original(py, &original);
                     let result = unsafe { retire(py.attached_context(), handle) };
                     assert_eq!(result, MoltObject::none().bits());
-                    assert!(!crate::exception_pending(&py));
+                    assert!(!crate::exception_pending(py));
                     let id = to_i64(obj_from_bits(handle)).unwrap();
                     assert!(!SOCK_REGISTRY.lock().unwrap().contains_key(&id));
                     original.write_all(b"original transport survives").unwrap();
@@ -1499,7 +1499,7 @@ mod tests {
                         molt_ssl_socket_drop_attached_body(py, handle),
                         MoltObject::none().bits()
                     );
-                    assert!(!crate::exception_pending(&py));
+                    assert!(!crate::exception_pending(py));
                 }
             });
         });
@@ -1510,7 +1510,7 @@ mod tests {
         crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
             crate::concurrency::gil::with_gil(|py| {
                 let (original, _peer) = socket_pair();
-                let (handle, duplicate) = wrap_original(&py, &original);
+                let (handle, duplicate) = wrap_original(py, &original);
                 let id = to_i64(obj_from_bits(handle)).unwrap();
                 for (invalid, error) in [
                     (MoltObject::none().bits(), crate::BuiltinExc::TypeError),
@@ -1520,7 +1520,7 @@ mod tests {
                     ),
                 ] {
                     molt_ssl_socket_unwrap_attached_body(py, invalid);
-                    take_error(&py, error);
+                    take_error(py, error);
                     assert!(SOCK_REGISTRY.lock().unwrap().contains_key(&id));
                     assert_ne!(unsafe { libc::fcntl(duplicate, libc::F_GETFD) }, -1);
                 }
@@ -1528,9 +1528,9 @@ mod tests {
                     molt_ssl_socket_unwrap_attached_body(py, handle),
                     MoltObject::none().bits()
                 );
-                assert!(!crate::exception_pending(&py));
+                assert!(!crate::exception_pending(py));
                 molt_ssl_socket_unwrap_attached_body(py, handle);
-                take_error(&py, crate::BuiltinExc::ValueError);
+                take_error(py, crate::BuiltinExc::ValueError);
                 assert!(!SOCK_REGISTRY.lock().unwrap().contains_key(&id));
                 assert_ne!(
                     unsafe { libc::fcntl(original.as_raw_fd(), libc::F_GETFD) },

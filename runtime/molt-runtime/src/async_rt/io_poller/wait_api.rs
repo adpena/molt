@@ -23,7 +23,6 @@ pub(crate) unsafe fn publish_registered_wait(
 /// # Safety
 /// Caller must pass a valid io-wait awaitable object bits value and ensure the
 /// runtime is initialized. The function enters the GIL-guarded runtime state.
-
 pub(crate) unsafe fn molt_io_wait_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> i64 {
     unsafe {
         crate::with_attached_entry_nopanic!(_py, _py, {
@@ -143,7 +142,6 @@ pub(crate) unsafe fn molt_io_wait_attached_body(_py: &crate::PyToken<'_>, obj_bi
 }
 
 #[cfg(molt_has_net_io)]
-
 pub(crate) fn molt_io_wait_new_attached_body(
     _py: &crate::PyToken<'_>,
     socket_bits: u64,

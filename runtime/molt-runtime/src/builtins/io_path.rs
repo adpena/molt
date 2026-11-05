@@ -2203,7 +2203,6 @@ pub(crate) fn molt_os_stat_at_attached_body(
 
 /// `os.rename(src, src_dir_fd=..., dst, dst_dir_fd=...)` → None.
 #[cfg(not(target_arch = "wasm32"))]
-
 pub(crate) fn molt_os_rename_at_attached_body(
     _py: &crate::PyToken<'_>,
     src_bits: u64,
@@ -2281,7 +2280,6 @@ pub(crate) fn molt_os_rename_at_attached_body(
 /// the distinct symbol exists so the Python wrapper uses the semantically
 /// correct name for diagnostics.
 #[cfg(not(target_arch = "wasm32"))]
-
 pub(crate) fn molt_os_replace_at_attached_body(
     _py: &crate::PyToken<'_>,
     src_bits: u64,
@@ -2360,7 +2358,6 @@ pub(crate) fn molt_os_replace_at_attached_body(
 /// would need `AT_EMPTY_PATH` + `CAP_DAC_READ_SEARCH`; we do not pre-raise —
 /// the kernel's `EPERM`/`ENOENT` is propagated as the matching OSError subclass.
 #[cfg(not(target_arch = "wasm32"))]
-
 pub(crate) fn molt_os_link_at_attached_body(
     _py: &crate::PyToken<'_>,
     src_bits: u64,

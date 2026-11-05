@@ -28,7 +28,7 @@ extern "C" fn collision_hash(__context: u64, _: u64) -> u64 {
     let hash = COLLISION_HASH.with(Cell::get);
     {
         let py = __py;
-        inc_ref_bits(&py, hash)
+        inc_ref_bits(py, hash)
     };
     hash
 }
@@ -198,7 +198,7 @@ extern "C" fn binary_echo(__context: u64, _: u64, key: u64) -> u64 {
 
     {
         let py = __py;
-        inc_ref_bits(&py, key)
+        inc_ref_bits(py, key)
     };
     key
 }
@@ -694,7 +694,7 @@ extern "C" fn python_buffer(__context: u64, _: u64, _: u64) -> u64 {
     let bits = BUFFER_VIEW.with(Cell::get);
     {
         let py = __py;
-        inc_ref_bits(&py, bits)
+        inc_ref_bits(py, bits)
     };
     bits
 }
@@ -1050,7 +1050,7 @@ extern "C" fn optional_descriptor(__context: u64, receiver: u64, _: u64, _: u64)
 
     {
         let py = __py;
-        inc_ref_bits(&py, receiver)
+        inc_ref_bits(py, receiver)
     };
     receiver
 }
@@ -1305,7 +1305,7 @@ extern "C" fn power_protocol_left(__context: u64, _: u64, _: u64, modulus: u64) 
     POWER_PROTOCOL_EVENTS.with(|events| events.borrow_mut().push(("left", modulus)));
     {
         let py = __py;
-        crate::not_implemented_bits(&py)
+        crate::not_implemented_bits(py)
     }
 }
 extern "C" fn power_protocol_right(__context: u64, _: u64, _: u64, modulus: u64) -> u64 {
@@ -1334,7 +1334,7 @@ extern "C" fn power_protocol_inplace(__context: u64, _: u64, _: u64) -> u64 {
     });
     {
         let py = __py;
-        crate::not_implemented_bits(&py)
+        crate::not_implemented_bits(py)
     }
 }
 
@@ -1342,15 +1342,11 @@ extern "C" fn power_protocol_inplace(__context: u64, _: u64, _: u64) -> u64 {
 fn power_c_api_and_source_share_versioned_reflection_and_binary_python_ipow() {
     let transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
-        let name = crate::dynamic_attr_name_bits(&py, b"NumericPowerProtocol").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"NumericPowerProtocol").unwrap();
         let left_class = crate::molt_class_new_attached_body(py, name);
         let right_class = crate::molt_class_new_attached_body(py, name);
-        dec_ref_bits(&py, name);
-        crate::molt_class_set_base_attached_body(
-            py,
-            left_class,
-            crate::builtin_classes(&py).object,
-        );
+        dec_ref_bits(py, name);
+        crate::molt_class_set_base_attached_body(py, left_class, crate::builtin_classes(py).object);
         crate::molt_class_set_base_attached_body(py, right_class, left_class);
         for (class, name, target) in [
             (
@@ -1364,28 +1360,28 @@ fn power_c_api_and_source_share_versioned_reflection_and_binary_python_ipow() {
                 power_protocol_right as *const (),
             ),
         ] {
-            let callable = function(&py, target, 3);
+            let callable = function(py, target, 3);
             assert!(crate::builtins::methods::set_function_defaults(
-                &py,
+                py,
                 obj_from_bits(callable).as_ptr().unwrap(),
                 &[MoltObject::none().bits()]
             ));
-            member(&py, class, name, callable);
-            dec_ref_bits(&py, callable);
+            member(py, class, name, callable);
+            dec_ref_bits(py, callable);
         }
         method(
-            &py,
+            py,
             left_class,
             b"__ipow__",
             power_protocol_inplace as *const (),
             2,
         );
         for class in [left_class, right_class] {
-            crate::object::class_finish_definition(&py, obj_from_bits(class).as_ptr().unwrap())
+            crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap())
                 .unwrap();
         }
-        let left = crate::call_callable0(&py, left_class);
-        let right = crate::call_callable0(&py, right_class);
+        let left = crate::call_callable0(py, left_class);
+        let right = crate::call_callable0(py, right_class);
         let left_view = OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(left));
         let right_view =
             OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(right));
@@ -1393,9 +1389,9 @@ fn power_c_api_and_source_share_versioned_reflection_and_binary_python_ipow() {
         let modulus_view =
             OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(modulus));
         assert!(!left_view.as_ptr().is_null() && !right_view.as_ptr().is_null());
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
         for minor in [12, 13, 14] {
-            transaction.with_target_python_minor(&py, minor, || {
+            transaction.with_target_python_minor(py, minor, || {
                 for inplace in [false, true] {
                     for modulo in [MoltObject::none().bits(), modulus] {
                         let expected_tail = if modulo == modulus && minor < 14 {
@@ -1451,7 +1447,7 @@ fn power_c_api_and_source_share_versioned_reflection_and_binary_python_ipow() {
                                     left, right, modulo, inplace,
                                 );
                                 if expected_tail == "left" {
-                                    assert!(crate::exception_pending(&py));
+                                    assert!(crate::exception_pending(py));
                                     assert_eq!(
                                         errors::PyErr_ExceptionMatches(
                                             (&raw mut PyExc_TypeError).cast()
@@ -1462,7 +1458,7 @@ fn power_c_api_and_source_share_versioned_reflection_and_binary_python_ipow() {
                                 } else {
                                     assert_eq!(obj_from_bits(output).as_int(), Some(73));
                                 }
-                                dec_ref_bits(&py, output);
+                                dec_ref_bits(py, output);
                             }
                             assert_eq!(
                                 POWER_PROTOCOL_EVENTS.with(|events| events.borrow().clone()),
@@ -1476,14 +1472,14 @@ fn power_c_api_and_source_share_versioned_reflection_and_binary_python_ipow() {
                                 before
                             );
                             assert!(errors::PyErr_Occurred().is_null());
-                            assert!(!crate::exception_pending(&py));
+                            assert!(!crate::exception_pending(py));
                         }
                     }
                 }
             });
         }
         for value in [left, right, left_class, right_class] {
-            dec_ref_bits(&py, value);
+            dec_ref_bits(py, value);
         }
     });
 }
@@ -1498,7 +1494,7 @@ extern "C" fn numeric_normal_owned(__context: u64, _: u64, _: u64) -> u64 {
 
     {
         let py = __py;
-        MoltObject::from_ptr(crate::alloc_list(&py, &[MoltObject::from_int(23).bits()])).bits()
+        MoltObject::from_ptr(crate::alloc_list(py, &[MoltObject::from_int(23).bits()])).bits()
     }
 }
 extern "C" fn numeric_inplace_owned(__context: u64, _: u64, _: u64) -> u64 {
@@ -1511,7 +1507,7 @@ extern "C" fn numeric_inplace_owned(__context: u64, _: u64, _: u64) -> u64 {
 
     {
         let py = __py;
-        MoltObject::from_ptr(crate::alloc_list(&py, &[MoltObject::from_int(71).bits()])).bits()
+        MoltObject::from_ptr(crate::alloc_list(py, &[MoltObject::from_int(71).bits()])).bits()
     }
 }
 
@@ -1521,10 +1517,10 @@ fn complete_number_c_api_modes_invoke_real_methods_and_transfer_owned_results() 
     type Operation = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
     let transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
-        let name = crate::dynamic_attr_name_bits(&py, b"NumericModeOwner").unwrap();
+        let name = crate::dynamic_attr_name_bits(py, b"NumericModeOwner").unwrap();
         let class = crate::molt_class_new_attached_body(py, name);
-        dec_ref_bits(&py, name);
-        crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(&py).object);
+        dec_ref_bits(py, name);
+        crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).object);
         // Literal public API/name pairs, not an iteration of implementation enums.
         let operations: [(&[u8], &[u8], Operation, Operation); 12] = [
             (
@@ -1601,12 +1597,11 @@ fn complete_number_c_api_modes_invoke_real_methods_and_transfer_owned_results() 
             ),
         ];
         for (normal, inplace, _, _) in operations {
-            method(&py, class, normal, numeric_normal_owned as *const (), 2);
-            method(&py, class, inplace, numeric_inplace_owned as *const (), 2);
+            method(py, class, normal, numeric_normal_owned as *const (), 2);
+            method(py, class, inplace, numeric_inplace_owned as *const (), 2);
         }
-        crate::object::class_finish_definition(&py, obj_from_bits(class).as_ptr().unwrap())
-            .unwrap();
-        let instance = crate::call_callable0(&py, class);
+        crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap()).unwrap();
+        let instance = crate::call_callable0(py, class);
         let view = OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(instance));
         let rhs = OwnedPyObject::from_owned(numbers::PyLong_FromLong(3));
         assert!(!view.as_ptr().is_null() && !rhs.as_ptr().is_null());
@@ -1632,11 +1627,11 @@ fn complete_number_c_api_modes_invoke_real_methods_and_transfer_owned_results() 
                     before
                 );
                 assert!(errors::PyErr_Occurred().is_null());
-                assert!(!crate::exception_pending(&py));
+                assert!(!crate::exception_pending(py));
             }
         }
-        dec_ref_bits(&py, instance);
-        dec_ref_bits(&py, class);
+        dec_ref_bits(py, instance);
+        dec_ref_bits(py, class);
     });
     drop(transaction);
 }

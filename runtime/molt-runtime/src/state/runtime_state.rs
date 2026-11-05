@@ -2269,15 +2269,15 @@ mod tests {
             );
             let gil = GilGuard::new();
             let py = gil.token();
-            let state = runtime_state(&py);
-            assert!(!crate::is_trusted(&py));
+            let state = runtime_state(py);
+            assert!(!crate::is_trusted(py));
             assert!(crate::operation_allowed(
-                &py,
+                py,
                 crate::OperationId::IoOpenRead,
                 crate::audit::AuditArgs::None,
             ));
             assert!(!crate::operation_allowed(
-                &py,
+                py,
                 crate::OperationId::RandomEntropy,
                 crate::audit::AuditArgs::None,
             ));
@@ -2285,7 +2285,7 @@ mod tests {
             // independent CPython siphash13 seed=0 'abc' vector through the
             // runtime consumer, after late environment changes could reseed it.
             assert_eq!(
-                crate::object::ops_hash::hash_string_bytes(&py, b"abc"),
+                crate::object::ops_hash::hash_string_bytes(py, b"abc"),
                 if molt_cpython_abi::abi_types::Py_hash_t::BITS == 64 {
                     -4594863902769663758
                 } else {
@@ -2347,7 +2347,7 @@ mod tests {
                 std::env::set_var("MOLT_VFS_BUNDLE_UNSAFE_FOLLOW_HOST_LINKS", "1");
             }
             let gil = GilGuard::new();
-            let state = runtime_state(&gil.token());
+            let state = runtime_state(gil.token());
             let vfs = state.get_vfs().expect("startup bundle owns its route");
             let (_, backend, relative) = vfs.resolve("/bundle/data").expect("bundle route");
             assert!(matches!(
@@ -2396,7 +2396,7 @@ mod tests {
             assert_eq!(molt_runtime_init(), 1);
             std::env::set_current_dir(&replacement).unwrap();
             let gil = GilGuard::new();
-            let vfs = runtime_state(&gil.token()).get_vfs().unwrap();
+            let vfs = runtime_state(gil.token()).get_vfs().unwrap();
             let (_, backend, relative) = vfs.resolve("/bundle/data").unwrap();
             assert_eq!(backend.open_read(&relative).unwrap(), b"operator-source");
             drop(gil);
@@ -2453,11 +2453,11 @@ mod tests {
                 let gil = GilGuard::new();
                 let py = gil.token();
                 crate::object::ops_convert::maybe_emit_runtime_feedback_file(
-                    &py,
+                    py,
                     &serde_json::json!({"startup_sink_canary": 73}),
                 );
                 let exception = crate::alloc_exception(
-                    &py,
+                    py,
                     crate::BuiltinExc::RuntimeError,
                     "startup sink canary",
                 );
@@ -2465,7 +2465,7 @@ mod tests {
                 let bits = MoltObject::from_ptr(exception).bits();
                 crate::builtins::exceptions::molt_raise_attached_body(py, bits);
                 assert_eq!(unsafe { molt_main_exit_status() }, 1);
-                crate::dec_ref_bits(&py, bits);
+                crate::dec_ref_bits(py, bits);
                 let feedback_path = original.join(feedback.unwrap_or("molt_runtime_feedback.json"));
                 let payload: serde_json::Value =
                     serde_json::from_slice(&std::fs::read(feedback_path).unwrap()).unwrap();
@@ -2642,7 +2642,7 @@ mod tests {
                         let (owner, address, id, retained) = {
                             let gil = GilGuard::new();
                             let py = gil.token();
-                            let state = runtime_state(&py);
+                            let state = runtime_state(py);
                             let owner = state.identity();
                             assert!(!object::current_thread_has_retained_runtime_state());
                             assert!(object::retain_current_thread_state_after_runtime_failure(0));
@@ -3025,7 +3025,7 @@ mod tests {
             let (init_done_tx, init_done_rx) = std::sync::mpsc::channel();
             let init_entrant = std::thread::spawn(move || {
                 let gil = GilGuard::new();
-                let _ = runtime_state(&gil.token());
+                let _ = runtime_state(gil.token());
                 drop(gil);
                 init_prepared_tx.send(()).unwrap();
                 init_start_rx.recv().unwrap();

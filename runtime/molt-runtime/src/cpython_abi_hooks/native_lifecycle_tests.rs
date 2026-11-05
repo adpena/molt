@@ -28,7 +28,7 @@ unsafe extern "C" fn buffer_constructor_probe(
         } else {
             crate::object::ops_memoryview::molt_memoryview_new_attached_body(_py, bits)
         };
-        molt_cpython_abi::api::errors::with_preserved_error(|| crate::dec_ref_bits(&_py, bits));
+        molt_cpython_abi::api::errors::with_preserved_error(|| crate::dec_ref_bits(_py, bits));
         molt_cpython_abi::bridge::GLOBAL_BRIDGE
             .owned_result_to_pyobj(super::owned_result_from_pending(result))
     })
@@ -293,7 +293,7 @@ fn both_c_headers_share_physical_type_factories_and_mro_module_observers() {
             );
             assert_eq!(metaclass.ob_base.ob_base.ob_refcnt, meta_refs);
             assert!(errors::PyErr_Occurred().is_null());
-            assert!(!crate::exception_pending(&py));
+            assert!(!crate::exception_pending(py));
         }
     });
 }
@@ -361,7 +361,7 @@ fn spec_construction_and_repeated_abi_bootstrap_preserve_live_builtin_shells() {
             }
             assert_eq!(typeobj::molt_type_clear(class.as_ptr()), 0);
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -477,7 +477,7 @@ fn generic_object_and_spec_type_retire_through_their_real_allocation_owners() {
         );
         assert_eq!(metaclass.ob_base.ob_base.ob_refcnt, meta_refs);
         errors::PyErr_Clear();
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -708,7 +708,7 @@ fn spec_member_storage_bases_and_allocator_failures_share_one_transaction() {
         assert_eq!(NULL_ALLOCATOR_CALLS.load(Ordering::SeqCst), 1);
         assert_eq!(TYPE_FREES.load(Ordering::SeqCst), frees);
         assert_eq!(typeobj::molt_type_clear(base.as_ptr()), 0);
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -843,12 +843,12 @@ fn heap_subtype_owns_members_finalization_and_foreign_base_type_release() {
         );
         drop(instance);
         assert_eq!(
-            crate::object::gc::collect_cycles(&py).status,
+            crate::object::gc::collect_cycles(py).status,
             crate::object::gc::GcCollectStatus::Completed
         );
         assert!(!crate::object::gc::native_gc_is_enrolled(address));
         assert_eq!(typeobj::molt_type_clear(class.as_ptr()), 0);
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -929,7 +929,7 @@ fn terminal_type_change_retires_the_old_class_and_uses_the_new_free() {
         assert_eq!((*new.as_ptr()).ob_refcnt, count);
         REPLACEMENT_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
         assert_eq!(typeobj::molt_type_clear(new.as_ptr()), 0);
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -1006,7 +1006,7 @@ fn spec_offsets_are_checked_and_negative_dict_owners_are_collected() {
             assert!(!object::_PyObject_GetDictPtr(instance.as_ptr()).is_null());
             drop(instance);
             assert_eq!(
-                crate::object::gc::collect_cycles(&py).status,
+                crate::object::gc::collect_cycles(py).status,
                 crate::object::gc::GcCollectStatus::Completed
             );
             assert!(!crate::object::gc::native_gc_is_enrolled(address));
@@ -1034,7 +1034,7 @@ fn spec_offsets_are_checked_and_negative_dict_owners_are_collected() {
             errors::PyErr_Clear();
             assert_eq!(typeobj::molt_type_clear(class.as_ptr()), 0);
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -1105,7 +1105,7 @@ fn non_gc_resurrection_and_type_change_reread_the_terminal_storage_owner() {
         errors::PyErr_Clear();
         assert_eq!(typeobj::molt_type_clear(new_class.as_ptr()), 0);
         REPLACEMENT_TYPE.store(ptr::null_mut(), Ordering::SeqCst);
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -1160,7 +1160,7 @@ fn native_numeric_tuple_and_bytearray_subclasses_use_their_own_allocator() {
         }
         assert_eq!(OBJECT_FREES.load(Ordering::SeqCst), 5);
         assert_eq!(FINALIZER_CALLS.load(Ordering::SeqCst), 5);
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -1183,7 +1183,7 @@ fn native_list_subclass_resurrection_and_terminal_free_follow_target_python() {
         // 3.14 selects PyObject_GC_Del directly. The oracle is versioned source,
         // independent of the runtime callback's current target selection.
         for (minor, expected_custom_frees) in [(12, 1), (13, 1), (14, 0)] {
-            transaction.with_target_python_minor(&py, minor, || {
+            transaction.with_target_python_minor(py, minor, || {
                 OBJECT_FREES.store(0, Ordering::SeqCst);
                 FINALIZER_CALLS.store(0, Ordering::SeqCst);
                 RESURRECTED.store(ptr::null_mut(), Ordering::SeqCst);
@@ -1254,7 +1254,7 @@ fn native_list_subclass_resurrection_and_terminal_free_follow_target_python() {
                 assert_eq!(typeobj::molt_type_clear(class.as_ptr()), 0);
             });
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
         assert!(errors::PyErr_Occurred().is_null());
     });
 }
@@ -1300,12 +1300,12 @@ fn heap_metaclass_cycle_exposes_its_actual_class_owner_to_the_collector() {
         drop(class);
         drop(metaclass);
         assert_eq!(
-            crate::object::gc::collect_cycles(&py).status,
+            crate::object::gc::collect_cycles(py).status,
             crate::object::gc::GcCollectStatus::Completed
         );
         assert!(!crate::object::gc::native_gc_is_enrolled(meta_addr));
         assert!(!crate::object::gc::native_gc_is_enrolled(class_addr));
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -1345,7 +1345,7 @@ fn native_hash_readies_inherited_slots_and_limits_type_names_by_bytes() {
         );
         // Restore the static declaration while the dynamic name still lives.
         child.tp_name = c"HashUnreadyChild".as_ptr();
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
 
         // Runtime ingress shares the same classifier as the two C headers;
         // provenance cannot publish a foreign wrapper around non-PyObject data.
@@ -1555,7 +1555,7 @@ fn raw_custom_type_allocator_preserves_captured_member_extent_and_heap_ownership
         assert_eq!(TYPE_FREES.load(Ordering::SeqCst), 1);
         assert_eq!((*name_owner.as_ptr()).ob_refcnt, name_refs - 2);
         assert_eq!(metaclass.ob_base.ob_base.ob_refcnt, meta_refs);
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 

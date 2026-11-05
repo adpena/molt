@@ -439,7 +439,6 @@ pub(crate) fn molt_subprocess_run_attached_body(
 // Raises CalledProcessError on non-zero exit.
 
 #[cfg(not(target_arch = "wasm32"))]
-
 pub(crate) fn molt_subprocess_check_output_attached_body(
     _py: &crate::PyToken<'_>,
     args_bits: u64,
@@ -545,7 +544,6 @@ pub(crate) fn molt_subprocess_check_output_attached_body(
 // Returns 0 on success; raises CalledProcessError on non-zero exit.
 
 #[cfg(not(target_arch = "wasm32"))]
-
 pub(crate) fn molt_subprocess_check_call_attached_body(
     _py: &crate::PyToken<'_>,
     args_bits: u64,

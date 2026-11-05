@@ -322,8 +322,8 @@ fn prepare_callbacks(with_cycle: bool, with_native_cycles: bool) -> [usize; 2] {
     {
         let execution = RuntimeExecutionGuard::enter();
         let py = execution.token();
-        crate::runtime_state(&py).gc.set_enabled(false);
-        let callback = runtime_function(&py, atexit_callback as *const (), 0);
+        crate::runtime_state(py).gc.set_enabled(false);
+        let callback = runtime_function(py, atexit_callback as *const (), 0);
         // The registry owns its reference; the result carries none.
         assert!(
             obj_from_bits(crate::builtins::atexit::molt_atexit_register_attached_body(
@@ -334,48 +334,44 @@ fn prepare_callbacks(with_cycle: bool, with_native_cycles: bool) -> [usize; 2] {
             ))
             .is_none()
         );
-        dec_ref_bits(&py, callback);
+        dec_ref_bits(py, callback);
 
-        let stream = instance_with_method(
-            &py,
-            b"ShutdownStream",
-            b"flush",
-            flush_callback as *const (),
-        );
-        let sys_name = crate::dynamic_attr_name_bits(&py, b"sys").unwrap();
+        let stream =
+            instance_with_method(py, b"ShutdownStream", b"flush", flush_callback as *const ());
+        let sys_name = crate::dynamic_attr_name_bits(py, b"sys").unwrap();
         let sys = crate::builtins::modules::molt_module_new_attached_body(py, sys_name);
-        crate::builtins::module_table::publish_interpreter_sys_for_test(&py, sys);
-        let stdout = crate::dynamic_attr_name_bits(&py, b"stdout").unwrap();
+        crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys);
+        let stdout = crate::dynamic_attr_name_bits(py, b"stdout").unwrap();
         crate::builtins::modules::molt_module_set_attr_attached_body(py, sys, stdout, stream);
         // Keep the bootstrap file-handle sibling live: teardown must traverse
         // both direct molt_file_flush and custom flush lookup/call branches.
-        let stderr_name = crate::dynamic_attr_name_bits(&py, b"stderr").unwrap();
+        let stderr_name = crate::dynamic_attr_name_bits(py, b"stderr").unwrap();
         let stderr = crate::molt_get_attr_name_attached_body(py, sys, stderr_name);
         assert_eq!(
             unsafe { crate::object_type_id(obj_from_bits(stderr).as_ptr().unwrap()) },
             crate::TYPE_ID_FILE_HANDLE,
         );
-        dec_ref_bits(&py, stderr);
-        dec_ref_bits(&py, stderr_name);
+        dec_ref_bits(py, stderr);
+        dec_ref_bits(py, stderr_name);
         for bits in [stdout, stream, sys, sys_name] {
-            dec_ref_bits(&py, bits);
+            dec_ref_bits(py, bits);
         }
         if with_cycle {
             let cycle = instance_with_method(
-                &py,
+                py,
                 b"ShutdownCycle",
                 b"__del__",
                 cycle_callback as *const (),
             );
-            let edge = crate::dynamic_attr_name_bits(&py, b"edge").unwrap();
+            let edge = crate::dynamic_attr_name_bits(py, b"edge").unwrap();
             crate::molt_set_attr_name_attached_body(py, cycle, edge, cycle);
-            dec_ref_bits(&py, edge);
-            dec_ref_bits(&py, cycle);
+            dec_ref_bits(py, edge);
+            dec_ref_bits(py, cycle);
         }
         if with_native_cycles {
-            native_cycles = prepare_native_type_cycles(&py);
+            native_cycles = prepare_native_type_cycles(py);
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     }
     assert!(!current_thread_holds_runtime_execution_lease());
     assert_eq!(active_runtime_execution_lease_count(), 0);
@@ -560,7 +556,7 @@ pub(crate) fn admitted_joined_service_closes_without_dispatch() {
     };
     let gil = crate::GilGuard::new();
     let py = gil.token();
-    let state = crate::runtime_state(&py);
+    let state = crate::runtime_state(py);
     let origin = RuntimeWorkerOrigin::new(state);
     let queue = Arc::new(crate::async_rt::scheduler::SleepQueue::new());
     assert!(state.sleep_queue.set(Arc::clone(&queue)).is_ok());
@@ -631,7 +627,7 @@ pub(crate) fn inflight_joined_service_finishes_under_retained_origin(foreign_c: 
     let storage = {
         let entry = RuntimeExecutionGuard::enter_with_worker_cleanup();
         let py = entry.token();
-        let state = crate::runtime_state(&py);
+        let state = crate::runtime_state(py);
         let origin = RuntimeWorkerOrigin::new(state);
         let queue = Arc::new(crate::async_rt::scheduler::SleepQueue::new());
         assert!(state.sleep_queue.set(Arc::clone(&queue)).is_ok());
@@ -695,7 +691,7 @@ pub(crate) fn inflight_joined_service_finishes_under_retained_origin(foreign_c: 
                             > 0
                     );
                     assert_eq!(
-                        crate::runtime_state(&work.token()).identity(),
+                        crate::runtime_state(work.token()).identity(),
                         origin.identity()
                     );
                     assert_eq!(active_runtime_execution_lease_count(), count);
@@ -718,7 +714,7 @@ pub(crate) fn inflight_joined_service_finishes_under_retained_origin(foreign_c: 
                 }
                 assert!(!crate::state::runtime_state::runtime_is_ready());
                 assert_eq!(
-                    crate::runtime_state(&work.token()).identity(),
+                    crate::runtime_state(work.token()).identity(),
                     origin.identity()
                 );
                 assert!(current_thread_holds_runtime_execution_lease());
@@ -763,7 +759,7 @@ pub(crate) fn joined_service_cannot_exit_own_runtime() {
     use std::sync::Arc;
     let gil = crate::GilGuard::new();
     let py = gil.token();
-    let state = crate::runtime_state(&py);
+    let state = crate::runtime_state(py);
     let origin = RuntimeWorkerOrigin::new(state);
     let queue = Arc::new(crate::async_rt::scheduler::SleepQueue::new());
     assert!(state.sleep_queue.set(Arc::clone(&queue)).is_ok());

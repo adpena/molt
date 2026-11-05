@@ -210,7 +210,7 @@ extern "C" fn tls_stream_recv_native_hook(ctx: *mut u8) -> i64 {
             MoltObject::none().bits() as i64
         }
         Ok(n) => {
-            let ptr = alloc_bytes(&crate::GilGuard::new().token(), &buf[..n]);
+            let ptr = alloc_bytes(crate::GilGuard::new().token(), &buf[..n]);
             if ptr.is_null() {
                 MoltObject::none().bits() as i64
             } else {
