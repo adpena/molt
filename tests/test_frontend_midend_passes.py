@@ -5674,7 +5674,7 @@ def test_midend_policy_matrix_resolves_profile_and_tier() -> None:
     assert dev_policy.tier == "A"
     assert dev_policy.tier_base == "A"
     assert dev_policy.promoted is False
-    assert dev_policy.max_rounds == 4
+    assert dev_policy.budget_rounds == 4
 
     stdlib_gen = SimpleTIRGenerator(
         optimization_profile="release",
@@ -6006,8 +6006,8 @@ def test_midend_monolith_pressure_preserves_cold_function_coverage() -> None:
     assert pressured.monolith_pressure_level >= 1
     assert pressured.module_function_count >= 96
     assert pressured.module_total_ops >= 96 * 80
-    assert baseline.max_rounds == 3
-    assert pressured.max_rounds == baseline.max_rounds
+    assert baseline.budget_rounds == 3
+    assert pressured.budget_rounds == baseline.budget_rounds
     assert pressured.sccp_iter_cap is baseline.sccp_iter_cap is None
     assert pressured.cse_iter_cap == baseline.cse_iter_cap
     assert pressured.budget_ms == baseline.budget_ms
@@ -6046,7 +6046,7 @@ def test_midend_monolith_pressure_preserves_hot_function_aggressive_policy() -> 
     assert policy.monolith_pressure_level >= 1
     assert policy.tier == "A"
     assert policy.promoted is True
-    assert policy.max_rounds == 4
+    assert policy.budget_rounds == 4
 
 
 def test_midend_monolith_pressure_tracks_new_ops_incrementally() -> None:

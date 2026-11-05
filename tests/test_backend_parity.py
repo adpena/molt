@@ -262,13 +262,9 @@ class TestBackendOptimizationParity:
         for backend in BACKENDS:
             out_dir = tmp_path / f"opt_{backend}"
             out_dir.mkdir(exist_ok=True)
-            env_override = {
-                "MOLT_MIDEND_MAX_ROUNDS": "2",
-            }
             try:
                 env = os.environ.copy()
                 env["PYTHONPATH"] = str(SRC_DIR)
-                env.update(env_override)
                 env.setdefault("MOLT_BACKEND_DAEMON", "0")
                 if backend == "wasm":
                     env.setdefault("MOLT_WASM_LINKED", "0")

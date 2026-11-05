@@ -440,12 +440,8 @@ class MidendPolicyMixin(GeneratorMixinBase):
                     promotion_signal = hot_signal
         defaults: dict[tuple[MidendProfile, MidendTier], dict[str, Any]] = {
             ("dev", "A"): {
-                # Converged functions exit the fixed-point loop early, so
-                # extra headroom only costs work for functions that need
-                # it. numpy.lib._iotools.NameValidator.validate needs 3
-                # rounds; 2 hard-failed the whole build (fail-closed
-                # non-convergence).
-                "max_rounds": 4,
+                # Nominal rounds calibrate optional CSE work, not convergence.
+                "budget_rounds": 4,
                 "sccp_iter_cap": None,
                 "cse_iter_cap": 16,
                 "enable_deep_edge_thread": True,
@@ -453,7 +449,7 @@ class MidendPolicyMixin(GeneratorMixinBase):
                 "budget_base_ms": 60.0,
             },
             ("dev", "B"): {
-                "max_rounds": 1,
+                "budget_rounds": 1,
                 "sccp_iter_cap": None,
                 "cse_iter_cap": 8,
                 "enable_deep_edge_thread": True,
@@ -461,7 +457,7 @@ class MidendPolicyMixin(GeneratorMixinBase):
                 "budget_base_ms": 35.0,
             },
             ("dev", "C"): {
-                "max_rounds": 1,
+                "budget_rounds": 1,
                 "sccp_iter_cap": None,
                 "cse_iter_cap": 4,
                 "enable_deep_edge_thread": True,
@@ -469,7 +465,7 @@ class MidendPolicyMixin(GeneratorMixinBase):
                 "budget_base_ms": 20.0,
             },
             ("release", "A"): {
-                "max_rounds": 4,
+                "budget_rounds": 4,
                 "sccp_iter_cap": None,
                 "cse_iter_cap": 48,
                 "enable_deep_edge_thread": True,
@@ -477,7 +473,7 @@ class MidendPolicyMixin(GeneratorMixinBase):
                 "budget_base_ms": 180.0,
             },
             ("release", "B"): {
-                "max_rounds": 3,
+                "budget_rounds": 3,
                 "sccp_iter_cap": None,
                 "cse_iter_cap": 32,
                 "enable_deep_edge_thread": True,
@@ -485,7 +481,7 @@ class MidendPolicyMixin(GeneratorMixinBase):
                 "budget_base_ms": 110.0,
             },
             ("release", "C"): {
-                "max_rounds": 2,
+                "budget_rounds": 2,
                 "sccp_iter_cap": None,
                 "cse_iter_cap": 16,
                 "enable_deep_edge_thread": True,
@@ -517,7 +513,7 @@ class MidendPolicyMixin(GeneratorMixinBase):
         # function of the input, independent of wall-clock timing.
         #
         # Calibration: a non-pathological function executes the full
-        # `max_rounds` round loop, hitting ~`_MIDEND_DEGRADE_CHECKPOINTS`
+        # nominal budget-round loop, hitting ~`_MIDEND_DEGRADE_CHECKPOINTS`
         # work-charges per round, each ≈ the live op count.  The ceiling below
         # admits that nominal cost (plus generous per-round growth headroom and
         # the per-tier base) so normal functions never degrade, while a pass
@@ -529,7 +525,7 @@ class MidendPolicyMixin(GeneratorMixinBase):
             work_budget = work_budget_override
         else:
             base_ops = max(1, len(ops))
-            rounds = max(1, int(selected["max_rounds"]))
+            rounds = max(1, int(selected["budget_rounds"]))
             nominal_round_work = _MIDEND_DEGRADE_CHECKPOINTS * base_ops
             work_budget = (
                 float(selected["budget_base_ms"]) * _MIDEND_WORK_BASE_UNITS_PER_MS
@@ -544,7 +540,7 @@ class MidendPolicyMixin(GeneratorMixinBase):
             promoted=promoted,
             promotion_source=promotion_source,
             promotion_signal=promotion_signal,
-            max_rounds=max(2, int(selected["max_rounds"])),
+            budget_rounds=max(2, int(selected["budget_rounds"])),
             sccp_iter_cap=selected["sccp_iter_cap"],
             cse_iter_cap=int(selected["cse_iter_cap"]),
             enable_deep_edge_thread=bool(selected["enable_deep_edge_thread"]),

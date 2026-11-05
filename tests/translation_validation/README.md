@@ -94,7 +94,7 @@ The loop repeats until convergence (no changes) or the round cap is reached.
 | `MOLT_TV_BUILD_PROFILE` | dev | Build profile (dev or release) |
 | `MOLT_TV_JOBS` | 4 | Parallel validation jobs |
 | `MOLT_TV_PYTHON` | verified target command | Explicit CPython command override for baseline and Molt build frontend |
-| `MOLT_MIDEND_MAX_ROUNDS` | (varies; minimum 2) | Cap fixed-point iteration rounds |
+| `MOLT_MIDEND_MAX_ROUNDS` | unset; minimum 2 when explicit | Diagnostic outer-round cap; required passes converge by default |
 | `MOLT_EXT_ROOT` | checkout custody root (`<root>` for `<root>/molt-src`) | Build artifact root |
 | `MOLT_DIFF_TMPDIR` | /tmp | Temp directory root |
 

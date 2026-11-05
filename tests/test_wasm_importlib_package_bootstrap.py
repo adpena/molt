@@ -49,8 +49,6 @@ def _build_entry_wasm(
         "MOLT_SESSION_ID",
         f"test-wasm-importlib-package-bootstrap-{session_name}",
     )
-    env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "2")
-    env.setdefault("MOLT_CSE_MAX_ITERS", "6")
     # Runtime, cache and artifact state stay beside the test outputs, as the
     # linked runner keeps them, never in the checkout's wasm root.
     test_artifact_root = _linked_test_artifact_root(root, out_dir)

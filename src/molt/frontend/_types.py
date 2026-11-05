@@ -548,7 +548,7 @@ class MidendFunctionPolicy:
     promoted: bool
     promotion_source: str
     promotion_signal: str
-    max_rounds: int
+    budget_rounds: int
     sccp_iter_cap: int | None
     cse_iter_cap: int
     enable_deep_edge_thread: bool

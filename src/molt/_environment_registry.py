@@ -4713,7 +4713,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_MIDEND_MAX_ROUNDS",
       "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Overrides the number of mid-end optimization rounds per function with an integer of at least 2 (smaller or non-integer values fall back to 2); unset uses the tier and profile table, and the WASM benchmark and test runners set 3 when it is unset.",
+      "summary": "Explicit diagnostic limit for outer mid-end fixed-point rounds, at least 2 (invalid values use 2). Unset drains required passes to convergence; tier/profile round counts calibrate only the optional CSE work budget.",
       "values": []
     },
     {

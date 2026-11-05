@@ -290,15 +290,13 @@ class MidendPipelineMixin(GeneratorMixinBase):
         degraded = False
         enable_deep_edge_thread = policy.enable_deep_edge_thread
         enable_cse = policy.enable_cse
-        max_rounds = max(2, policy.max_rounds)
+        diagnostic_round_cap = self.midend_env.max_rounds_override
         sccp_iter_cap = policy.sccp_iter_cap
         cse_iter_cap = max(1, policy.cse_iter_cap)
 
         # Only optional cross-block CSE is subject to this work budget.
         per_func_work_budget = max(0.0, float(policy.work_budget))
 
-        if self.midend_env.max_rounds_override is not None:
-            max_rounds = max(2, self.midend_env.max_rounds_override)
         if self.midend_env.sccp_iter_cap_override is not None:
             sccp_iter_cap = self.midend_env.sccp_iter_cap_override
         if self.midend_env.cse_iter_cap_override is not None:
@@ -408,7 +406,12 @@ class MidendPipelineMixin(GeneratorMixinBase):
         round_index = 0
         round_snapshots: list[dict[str, Any]] = []
         cse_dce_closure_failed = False
-        while round_index < max_rounds:
+        # Required canonical rewrites drain to their fixed point: they remove
+        # operations/edges or replace a value by its canonical exact fact, never
+        # recreate the eliminated form. Optional CSE has its separate work and
+        # solver budgets. A tier's nominal work calibration is not an admission
+        # or convergence limit for required passes.
+        while diagnostic_round_cap is None or round_index < diagnostic_round_cap:
             round_index += 1
             maybe_apply_budget_degrade(
                 f"round_{round_index}_start",
@@ -797,10 +800,12 @@ class MidendPipelineMixin(GeneratorMixinBase):
         if not converged:
             self.midend_stats["fixed_point_fail_fast"] += 1
             add_degrade_event(
-                "fixed_point_round_cap",
+                "fixed_point_round_cap"
+                if diagnostic_round_cap is not None
+                else "cse_dce_fixed_point_cap",
                 "fixed_point_exit",
                 "fail_closed_non_convergence",
-                value=max_rounds,
+                value=diagnostic_round_cap,
             )
             degraded = True
             self._record_midend_policy_outcome(
@@ -811,9 +816,14 @@ class MidendPipelineMixin(GeneratorMixinBase):
                 degrade_events=degrade_events,
                 round_snapshots=round_snapshots,
             )
+            limit = (
+                f"{diagnostic_round_cap} diagnostic rounds"
+                if diagnostic_round_cap is not None
+                else "the CSE/DCE closure budget"
+            )
             raise RuntimeError(
                 "midend deterministic fixed-point failed to converge within "
-                f"{max_rounds} rounds for {self._active_midend_function_name}"
+                f"{limit} for {self._active_midend_function_name}"
             )
 
         if converged:

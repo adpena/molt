@@ -30,7 +30,10 @@ outcomes retain their function inventory as skipped with unknown input ops;
 op fractions are null until the denominator is complete. Empty denominators
 also have null fractions. Failed builds do not establish program coverage.
 
-SCCP's default worklists drain to a fixed point. An explicit diagnostic visit
+Required outer rewrites and SCCP's default worklists drain to a fixed point.
+Tier/profile round counts calibrate optional CSE's work budget, not required-pass
+admission. Backend benchmark and differential runners impose no hidden solver
+or outer-round diagnostic limits. An explicit diagnostic visit
 limit returns no value or branch facts and marks all CFG blocks and edges
 executable; its loss remains in coverage. Successive scalar outputs widen by
 the exact-literal lattice, and killed heap relations cannot resurrect around
