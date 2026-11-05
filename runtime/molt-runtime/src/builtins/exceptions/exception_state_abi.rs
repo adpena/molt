@@ -573,6 +573,13 @@ pub(crate) fn molt_raise_attached_body(_py: &crate::PyToken<'_>, exc_bits: u64) 
 
 include!("../../attached_exports_generated/builtins/exceptions/exception_state_abi.rs");
 
+/// A true detached host status boundary: preserves the non-initializing
+/// observation/repair contract while compiled predicates use explicit context.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_exception_pending_detached() -> u64 {
+    crate::with_raw_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
+}
+
 #[cfg(test)]
 mod diagnostic_tests {
     use super::*;
@@ -639,11 +646,4 @@ mod diagnostic_tests {
             }
         });
     }
-}
-
-/// A true detached host status boundary: preserves the non-initializing
-/// observation/repair contract while compiled predicates use explicit context.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_pending_detached() -> u64 {
-    crate::with_raw_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }

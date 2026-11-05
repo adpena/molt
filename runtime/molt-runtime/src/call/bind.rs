@@ -68,6 +68,8 @@ mod frame_binding;
 #[cfg(test)]
 mod test_support;
 
+#[cfg(test)]
+pub(crate) use arguments::molt_callargs_push_kw_attached_body;
 use arguments::{Admission, ArgumentCustody, callee_custody};
 pub(crate) use arguments::{
     CallArguments, CallForm, EntryArguments, ReceiverOrigin, callargs_detach_owned, callargs_ptr,
@@ -89,15 +91,9 @@ pub(crate) use frame_binding::{
     function_raw_positional_call_needs_binding, function_requires_binder_flag,
     refresh_function_requires_binder_flag,
 };
-pub use {
-    arguments::molt_callargs_expand_kwstar, arguments::molt_callargs_expand_star,
-    arguments::molt_callargs_new, arguments::molt_callargs_push_kw,
-    arguments::molt_callargs_push_pos,
-};
 pub(crate) use {
     arguments::molt_callargs_expand_kwstar_attached_body,
     arguments::molt_callargs_expand_star_attached_body, arguments::molt_callargs_new_attached_body,
-    arguments::molt_callargs_push_kw_attached_body,
     arguments::molt_callargs_push_pos_attached_body,
 };
 

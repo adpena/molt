@@ -459,14 +459,12 @@ fn megafn_call_family_codegen_snapshot() {
             );
         }
         if name == "call_func_inline_probe" {
-            for required in ["molt_function_direct_call_eligible"] {
-                assert!(
-                    symbols
-                        .undefined
-                        .contains(physical_runtime_symbol(required)),
-                    "inline calls must consume {required}"
-                );
-            }
+            assert!(
+                symbols.undefined.contains(physical_runtime_symbol(
+                    "molt_function_direct_call_eligible"
+                )),
+                "inline calls must consume molt_function_direct_call_eligible"
+            );
             assert!(!symbols.undefined.contains("molt_thread_record"));
             // The handoff is a store into the thread record, not a runtime call.
             for removed in ["molt_frame_invocation_enter", "molt_frame_invocation_exit"] {

@@ -21,12 +21,7 @@ pub(crate) fn prepend_execution_context<'ctx>(logical: FunctionType<'ctx>) -> Fu
     let mut params: Vec<BasicMetadataTypeEnum<'ctx>> =
         Vec::with_capacity(logical.count_param_types() as usize + 1);
     params.push(context.i64_type().into());
-    params.extend(
-        logical
-            .get_param_types()
-            .into_iter()
-            .map(BasicMetadataTypeEnum::from),
-    );
+    params.extend(logical.get_param_types());
     match logical.get_return_type() {
         Some(result) => result.fn_type(&params, logical.is_var_arg()),
         None => context.void_type().fn_type(&params, logical.is_var_arg()),

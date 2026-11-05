@@ -113,7 +113,6 @@ pub use {
 pub(crate) use {write::molt_file_flush_attached_body, write::molt_file_write_attached_body};
 #[path = "io/control.rs"]
 mod control;
-pub(crate) use control::molt_file_reconfigure_attached_body;
 pub(crate) use control::{io_base_check_closed, io_base_exit, io_base_finalize};
 #[cfg(test)]
 pub(crate) use control::{

@@ -35,7 +35,7 @@ fn declare_runtime_execution_function(
     module: &mut dyn Module,
     logical: &str,
     signature: &cranelift_codegen::ir::Signature,
-) -> Result<cranelift_module::FuncId, cranelift_module::ModuleError> {
+) -> Result<cranelift_module::FuncId, Box<cranelift_module::ModuleError>> {
     let abi = runtime_execution_abi(logical).unwrap_or_else(|| {
         panic!("runtime import `{logical}` has no execution ABI classification")
     });
@@ -43,7 +43,9 @@ fn declare_runtime_execution_function(
     if abi.context == RuntimeExecutionContext::Attached {
         physical.params.insert(0, AbiParam::new(types::I64));
     }
-    module.declare_function(abi.physical_symbol, Linkage::Import, &physical)
+    module
+        .declare_function(abi.physical_symbol, Linkage::Import, &physical)
+        .map_err(Box::new)
 }
 
 /// Python arity remains logical; only the native callable signature carries
@@ -53,7 +55,7 @@ fn declare_python_execution_function(
     logical: &str,
     linkage: Linkage,
     signature: &cranelift_codegen::ir::Signature,
-) -> Result<cranelift_module::FuncId, cranelift_module::ModuleError> {
+) -> Result<cranelift_module::FuncId, Box<cranelift_module::ModuleError>> {
     if runtime_execution_abi(logical).is_some() {
         return declare_runtime_execution_function(module, logical, signature);
     }
@@ -64,7 +66,9 @@ fn declare_python_execution_function(
     );
     let mut physical = signature.clone();
     physical.params.insert(0, AbiParam::new(types::I64));
-    module.declare_function(&compiled_execution_symbol(logical), linkage, &physical)
+    module
+        .declare_function(&compiled_execution_symbol(logical), linkage, &physical)
+        .map_err(Box::new)
 }
 
 fn compiled_context(builder: &FunctionBuilder<'_>) -> Value {

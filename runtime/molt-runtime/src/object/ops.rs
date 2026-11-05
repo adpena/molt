@@ -128,10 +128,7 @@ pub use {
 };
 pub(crate) use {
     super::ops_sys::molt_hash_builtin_attached_body, super::ops_sys::molt_id_attached_body,
-    super::ops_sys::molt_int_from_bytes_attached_body,
-    super::ops_sys::molt_int_to_bytes_attached_body, super::ops_sys::molt_len_attached_body,
-    super::ops_sys::molt_not_implemented_attached_body,
-    super::ops_sys::molt_object_hash_attached_body,
+    super::ops_sys::molt_len_attached_body, super::ops_sys::molt_not_implemented_attached_body,
     super::ops_sys::molt_sys_abiflags_attached_body,
     super::ops_sys::molt_sys_api_version_attached_body,
     super::ops_sys::molt_sys_hexversion_attached_body,
@@ -139,6 +136,9 @@ pub(crate) use {
     super::ops_sys::molt_sys_version_attached_body,
     super::ops_sys::molt_sys_version_info_attached_body,
 };
+
+#[cfg(any(test, feature = "stdlib_path"))]
+pub(crate) use super::ops_sys::molt_object_hash_attached_body;
 pub use {
     dict_set_tables::molt_string_split_sep_dict_inc, dict_set_tables::molt_string_split_ws_dict_inc,
 };

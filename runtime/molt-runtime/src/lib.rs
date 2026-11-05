@@ -632,11 +632,10 @@ pub(crate) use crate::builtins::exceptions::{
     format_exception_message, format_exception_with_traceback, generator_raise_active,
     molt_async_work_poll_and_exception_last_pending, molt_async_work_poll_and_exception_pending,
     molt_exception_active, molt_exception_clear, molt_exception_clear_attached_body,
-    molt_exception_kind, molt_exception_kind_attached_body, molt_exception_last,
-    molt_exception_last_attached_body, molt_exception_last_pending,
-    molt_exception_last_pending_attached_body, molt_exception_match_handler,
-    molt_exception_pending, molt_exception_set_last, molt_exception_set_last_attached_body,
-    molt_exception_trace_prepend_attached_body, molt_raise, molt_raise_attached_body,
+    molt_exception_kind_attached_body, molt_exception_last, molt_exception_last_attached_body,
+    molt_exception_last_pending, molt_exception_last_pending_attached_body,
+    molt_exception_match_handler, molt_exception_pending, molt_exception_set_last_attached_body,
+    molt_exception_trace_prepend_attached_body, molt_raise_attached_body,
     molt_unraisable_hook_args_is_exact, raise_exception, raise_key_error_with_key,
     raise_not_iterable, raise_unicode_decode_error, raise_unicode_encode_error, record_exception,
     record_memory_error_without_allocation, set_generator_raise, set_task_raise_active,
@@ -719,14 +718,13 @@ pub(crate) use crate::builtins::type_ops::{
 };
 pub use crate::builtins::types::*;
 pub use crate::builtins::warnings_ext::*;
+#[cfg(test)]
+pub(crate) use crate::call::bind::molt_callargs_push_kw_attached_body;
 pub(crate) use crate::call::bind::{
-    molt_call_bind, molt_call_bind_attached_body, molt_callargs_expand_kwstar,
-    molt_callargs_expand_kwstar_attached_body, molt_callargs_expand_star,
-    molt_callargs_expand_star_attached_body, molt_callargs_new, molt_callargs_new_attached_body,
-    molt_callargs_push_pos, molt_callargs_push_pos_attached_body,
+    molt_call_bind_attached_body, molt_callargs_expand_kwstar_attached_body,
+    molt_callargs_expand_star_attached_body, molt_callargs_new_attached_body,
+    molt_callargs_push_pos_attached_body,
 };
-#[allow(unused_imports)]
-pub(crate) use crate::call::bind::{molt_callargs_push_kw, molt_callargs_push_kw_attached_body};
 pub(crate) use crate::call::class_init::{
     alloc_instance_for_class, alloc_instance_for_default_object_new, call_builtin_type_if_needed,
     call_class_init_with_args, function_attr_bits, function_set_attr_bits, raise_not_callable,

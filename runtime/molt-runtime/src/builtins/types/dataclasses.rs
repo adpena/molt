@@ -9,7 +9,6 @@ mod initializer;
 mod initializer_spec_generated;
 mod projection;
 
-pub(crate) use initializer::molt_dataclasses_init_trampoline_attached_body;
 pub(crate) use initializer::{clone_code_init_plan, drop_code_init_plan};
 pub use {
     initializer::molt_dataclasses_init, initializer::molt_dataclasses_init_globals,

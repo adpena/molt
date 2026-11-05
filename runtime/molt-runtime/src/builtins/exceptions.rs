@@ -81,11 +81,6 @@ pub use {
     attributes::molt_exception_member_delete, attributes::molt_exception_member_get,
     attributes::molt_exception_member_set,
 };
-pub(crate) use {
-    attributes::molt_exception_member_delete_attached_body,
-    attributes::molt_exception_member_get_attached_body,
-    attributes::molt_exception_member_set_attached_body,
-};
 
 mod raise_protocol;
 mod rendering;
@@ -125,26 +120,32 @@ pub(crate) use raised_state::{
 };
 pub(crate) use unraisable::{
     clear_thread_unraisable_state, context_repr as unraisable_context_repr,
-    molt_unraisable_hook_args_is_exact, molt_unraisable_hook_args_is_exact_attached_body,
-    report_captured_unraisable, run_unraisable, run_unraisable_with_policy,
+    molt_unraisable_hook_args_is_exact, report_captured_unraisable, run_unraisable,
+    run_unraisable_with_policy,
 };
 
+#[cfg(test)]
+pub(crate) use unraisable::molt_unraisable_hook_args_is_exact_attached_body;
+
 mod exception_state_abi;
+#[cfg(test)]
+pub(crate) use exception_state_abi::{
+    molt_async_work_poll_and_exception_last_pending_attached_body,
+    molt_async_work_poll_and_exception_pending_attached_body, molt_exception_active_attached_body,
+    molt_exception_pending_attached_body,
+};
 mod main_exit;
+#[cfg(test)]
 pub use exception_state_abi::molt_exception_pending_detached;
 #[cfg(test)]
 pub(crate) use exception_state_abi::molt_exception_stack_clear_attached_body;
 #[cfg(test)]
 use exception_state_abi::{exception_last_pending_bits, exception_last_public_bits};
 pub(crate) use exception_state_abi::{
-    molt_async_work_poll_and_exception_last_pending,
-    molt_async_work_poll_and_exception_last_pending_attached_body,
-    molt_async_work_poll_and_exception_pending,
-    molt_async_work_poll_and_exception_pending_attached_body, molt_exception_active,
-    molt_exception_active_attached_body, molt_exception_clear, molt_exception_clear_attached_body,
+    molt_async_work_poll_and_exception_last_pending, molt_async_work_poll_and_exception_pending,
+    molt_exception_active, molt_exception_clear, molt_exception_clear_attached_body,
     molt_exception_last, molt_exception_last_attached_body, molt_exception_last_pending,
-    molt_exception_last_pending_attached_body, molt_exception_pending,
-    molt_exception_pending_attached_body, molt_raise, molt_raise_attached_body,
+    molt_exception_last_pending_attached_body, molt_exception_pending, molt_raise_attached_body,
     pending_exception_class, pending_exception_diagnostic, pending_exception_matches_type,
 };
 

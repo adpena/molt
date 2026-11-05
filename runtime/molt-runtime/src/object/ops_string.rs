@@ -1348,13 +1348,10 @@ pub(crate) fn molt_string_join_attached_body(
 
 #[path = "ops_string_format.rs"]
 pub(crate) mod ops_string_format;
+pub(crate) use ops_string_format::molt_string_format_attached_body;
 pub use {
     ops_string_format::molt_string_format, ops_string_format::molt_string_format_map,
     ops_string_format::molt_string_format_method,
-};
-pub(crate) use {
-    ops_string_format::molt_string_format_attached_body,
-    ops_string_format::molt_string_format_method_attached_body,
 };
 
 #[path = "ops_string_utf8.rs"]
@@ -1380,11 +1377,6 @@ pub use {
     ops_string_split::molt_string_split_field_ord_at_bounds,
     ops_string_split::molt_string_split_field_start, ops_string_split::molt_string_split_max,
     ops_string_split::molt_string_split_validate, ops_string_split::molt_string_splitlines,
-};
-pub(crate) use {
-    ops_string_split::molt_string_rsplit_max_attached_body,
-    ops_string_split::molt_string_split_max_attached_body,
-    ops_string_split::molt_string_splitlines_attached_body,
 };
 
 pub(crate) fn molt_string_replace_attached_body(

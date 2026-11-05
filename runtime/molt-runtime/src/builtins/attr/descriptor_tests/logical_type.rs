@@ -523,7 +523,7 @@ fn logical_type_coroutine_members_share_normal_explicit_and_c_generic_lookup() {
                     MoltObject::from_int(99).bits(),
                 ));
                 for reader in [crate::molt_get_attr_name, crate::molt_object_getattribute] {
-                    let result = unsafe { reader(py.attached_context(), coroutine, name) };
+                    let result = reader(py.attached_context(), coroutine, name);
                     assert_eq!(result, expected);
                     assert!(!exception_pending(py));
                     dec_ref_bits(py, result);
@@ -688,7 +688,7 @@ fn logical_coroutine_wrapper_keeps_capture_owner_out_of_instance_dictionary() {
             // resolving __class__ alone can return before reading a dictionary.
             let name = string_bits(py, b"__repr__");
             for reader in [crate::molt_get_attr_name, crate::molt_object_getattribute] {
-                let repr = unsafe { reader(py.attached_context(), wrapper, name) };
+                let repr = reader(py.attached_context(), wrapper, name);
                 assert!(!exception_pending(py));
                 assert!(crate::builtins::callable::is_callable_impl(py, repr));
                 dec_ref_bits(py, repr);

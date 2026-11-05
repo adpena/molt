@@ -1779,27 +1779,36 @@ mod float_conversion_tests {
         let class = crate::molt_class_new_attached_body(py, name);
         dec_ref_bits(py, name);
         crate::molt_class_set_base_attached_body(py, class, base);
-        let methods: [(&[u8], bool, unsafe extern "C" fn(u64, u64) -> u64, &str); 2] = [
-            (
-                b"__float__",
-                float,
-                float_conversion_callback,
-                "float_conversion_callback",
-            ),
-            (
-                b"__index__",
-                index,
-                index_conversion_callback,
-                "index_conversion_callback",
-            ),
+        struct ConversionMethod {
+            name: crate::NameId,
+            enabled: bool,
+            callback: unsafe extern "C" fn(u64, u64) -> u64,
+            symbol: &'static str,
+        }
+        let methods = [
+            ConversionMethod {
+                name: crate::NameId::DunderFloat,
+                enabled: float,
+                callback: float_conversion_callback,
+                symbol: "float_conversion_callback",
+            },
+            ConversionMethod {
+                name: crate::NameId::DunderIndex,
+                enabled: index,
+                callback: index_conversion_callback,
+                symbol: "index_conversion_callback",
+            },
         ];
-        for (name, enabled, method, symbol) in methods {
-            if !enabled {
+        for method in methods {
+            if !method.enabled {
                 continue;
             }
-            let name = dynamic_attr_name_bits(py, name).unwrap();
-            let function =
-                alloc_runtime_function_obj(py, runtime_fn_addr(symbol, method as *const ()), 1);
+            let name = method.name.owned_bits(py).unwrap();
+            let function = alloc_runtime_function_obj(
+                py,
+                runtime_fn_addr(method.symbol, method.callback as *const ()),
+                1,
+            );
             assert!(!function.is_null());
             let function = MoltObject::from_ptr(function).bits();
             crate::molt_set_attr_name_attached_body(py, class, name, function);

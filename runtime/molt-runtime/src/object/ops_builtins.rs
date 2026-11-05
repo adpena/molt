@@ -20,6 +20,7 @@ use super::ops::float_result_bits;
 use super::ops_sys::{decode_slice_bound, slice_error};
 
 mod builtin_collections;
+#[cfg(any(feature = "stdlib_math", feature = "stdlib_serial"))]
 pub(crate) use builtin_collections::molt_sorted_builtin_attached_body;
 pub use {
     builtin_collections::molt_max_builtin, builtin_collections::molt_min_builtin,

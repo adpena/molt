@@ -357,9 +357,9 @@ impl MoltRuntimeLifetime {
                 .memory
                 .context("attached execution context requires runtime memory")?;
             if address == 0
-                || address as usize
-                    % std::mem::align_of::<molt_codegen_abi::AttachedExecutionContextStorage>()
-                    != 0
+                || !(address as usize).is_multiple_of(std::mem::align_of::<
+                    molt_codegen_abi::AttachedExecutionContextStorage,
+                >())
                 || (address as usize)
                     .checked_add(std::mem::size_of::<
                         molt_codegen_abi::AttachedExecutionContextStorage,

@@ -63,6 +63,7 @@ pub use dynamic_class_attr::*;
 pub use keyword_metadata::*;
 pub(crate) use keyword_metadata::{HARD_KEYWORDS, keyword_contains};
 pub(crate) use module_spec::alloc_module_spec;
+pub(crate) use module_spec::molt_importlib_module_spec_type_attached_body;
 pub(crate) use module_spec::{
     commit_module_spec_suffix_namespace, module_spec_suffix_value,
     module_spec_suffix_value_from_namespace, stage_module_spec_suffix_namespace,
@@ -77,16 +78,6 @@ pub use {
     module_spec::molt_importlib_module_spec_init, module_spec::molt_importlib_module_spec_parent,
     module_spec::molt_importlib_module_spec_repr, module_spec::molt_importlib_module_spec_type,
     module_spec::molt_importlib_suffixes,
-};
-pub(crate) use {
-    module_spec::molt_importlib_module_spec_cached_get_attached_body,
-    module_spec::molt_importlib_module_spec_cached_set_attached_body,
-    module_spec::molt_importlib_module_spec_has_location_get_attached_body,
-    module_spec::molt_importlib_module_spec_has_location_set_attached_body,
-    module_spec::molt_importlib_module_spec_init_attached_body,
-    module_spec::molt_importlib_module_spec_parent_attached_body,
-    module_spec::molt_importlib_module_spec_repr_attached_body,
-    module_spec::molt_importlib_module_spec_type_attached_body,
 };
 
 macro_rules! define_types_runtime_state {

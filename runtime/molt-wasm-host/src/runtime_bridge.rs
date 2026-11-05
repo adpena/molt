@@ -405,7 +405,7 @@ fn make_call_indirect_func(
                 require_indirect_signature(&name, &func.ty(&caller), callee_type)
                     .with_context(|| format!("dispatch {name} at command table index {index}"))?;
                 let mut logical = Vec::with_capacity(params.len() - 1);
-                logical.push(params[0].clone());
+                logical.push(params[0]);
                 logical.extend_from_slice(&params[2..]);
                 func.call(&mut caller, &logical, results)
                     .with_context(|| format!("dispatch {name} at command table index {index}"))

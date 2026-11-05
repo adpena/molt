@@ -308,8 +308,3 @@ pub use {
     binary::molt_multiprocessing_codec_dumps, binary::molt_multiprocessing_codec_loads,
     binary::molt_pickle_dumps_core, binary::molt_pickle_loads_core,
 };
-pub(crate) use {
-    binary::molt_multiprocessing_codec_dumps_attached_body,
-    binary::molt_multiprocessing_codec_loads_attached_body,
-    binary::molt_pickle_dumps_core_attached_body, binary::molt_pickle_loads_core_attached_body,
-};

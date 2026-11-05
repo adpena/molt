@@ -80,7 +80,7 @@ fn main() {{
             trace_exit = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_trace_exit").unwrap().physical_symbol,
             pending_fast = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_exception_pending_fast").unwrap().physical_symbol,
             work_poll = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_async_work_poll_and_exception_pending").unwrap().physical_symbol,
-            init_sys = format!("molt_init_sys{}", molt_codegen_abi::ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX),
+            init_sys = molt_ir::runtime_callable_abi_generated::compiled_execution_symbol("molt_init_sys"),
             context_record_offset = molt_codegen_abi::ATTACHED_CONTEXT_THREAD_RECORD_OFFSET,
             exception_offset = molt_codegen_abi::THREAD_RECORD_EXCEPTION_PENDING_OFFSET,
             invocation_offset = molt_codegen_abi::THREAD_RECORD_PENDING_INVOCATION_OFFSET,

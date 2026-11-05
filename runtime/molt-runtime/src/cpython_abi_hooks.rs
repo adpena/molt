@@ -16,6 +16,7 @@ pub(crate) use extension_init::execute_prepared_extension;
 #[cfg(test)]
 use extension_init::molt_cpython_abi_pyinit_module_to_bits;
 pub use extension_init::molt_cpython_abi_run_static_extension_init;
+#[cfg(test)]
 pub(crate) use extension_init::molt_cpython_abi_run_static_extension_init_attached_body;
 use extension_init::{hook_alloc_extension_module, hook_initialize_extension};
 

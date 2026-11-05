@@ -20,6 +20,7 @@ mod stdio;
 mod wasm_host;
 
 pub use stdio::molt_asyncio_subprocess_stdio_normalize;
+#[cfg(test)]
 pub(crate) use stdio::molt_asyncio_subprocess_stdio_normalize_attached_body;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use wasm_host::{ProcessRegistry, ProcessState};

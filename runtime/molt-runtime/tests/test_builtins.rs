@@ -111,7 +111,24 @@ fn test_chr_a() {
 #[test]
 fn test_ord_basic() {
     let fixture_execution = init();
-    let py = unsafe { fixture_execution.__token_unchecked() }; /* would need a string object */
+    let py = unsafe { fixture_execution.__token_unchecked() };
+    for (text, expected) in [("A", 65), ("\u{1f40d}", 0x1f40d)] {
+        let mut string = 0;
+        assert_eq!(
+            unsafe {
+                molt_runtime::molt_string_from_bytes(
+                    py.attached_context(),
+                    text.as_ptr(),
+                    text.len() as u64,
+                    &mut string,
+                )
+            },
+            0
+        );
+        let result = unsafe { molt_runtime::molt_ord(py.attached_context(), string) };
+        molt_runtime_core::rt_dec_ref(py, string);
+        assert_eq!(as_int(result), expected);
+    }
 }
 
 // ── is_truthy on various types ──────────────────────────
