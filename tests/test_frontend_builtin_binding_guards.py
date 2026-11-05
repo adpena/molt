@@ -415,3 +415,29 @@ def test_module_scope_member_writer_keeps_the_live_call() -> None:
     ops = _premise_ops(source, "molt_main")
     assert "type_of" not in _kinds(ops)
     assert "type" in _global_reads(ops)
+
+
+CLASS_BODY = """
+class Body:
+    error = ValueError
+    kind = type
+    marker = NotImplemented
+    names = sorted(locals())
+    later = type(2)
+"""
+
+
+def test_class_body_reads_are_proved_until_a_call() -> None:
+    """HF-776: a class-body read that misses the plain class mapping is global.
+
+    The flow proves it until the first call, which may reflect the class
+    namespace; the later `type` read keeps the live lookup, as on main.
+    """
+    ops = _premise_ops(CLASS_BODY, "molt_main")
+    assert _global_reads(ops) == ["type"]
+    assert {"exception_class", "builtin_type", "const_not_implemented"} <= set(
+        _kinds(ops)
+    )
+    writer = _premise_ops(CLASS_BODY, "molt_main", _member_writer("ValueError"))
+    assert "ValueError" in _global_reads(writer)
+    assert "exception_class" not in _kinds(writer)

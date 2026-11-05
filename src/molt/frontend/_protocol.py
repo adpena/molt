@@ -63,6 +63,7 @@ from molt.frontend._types import (
     MidendTierClassification,
     MoltOp,
     MoltValue,
+    PythonIdentity,
     SCCPResult,
     ScratchCell,
     SimpleIROp,
@@ -90,9 +91,6 @@ if TYPE_CHECKING:
     from molt.frontend.lowering.builtin_guards import MoltBuiltinGuardTest
     from molt.frontend.lowering.exception_lowering import MoltSyntaxError
     from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
-    from molt.compiler_analysis.python_identity_catalog_generated import (
-        PythonIdentity,
-    )
     from molt.compiler_analysis.python_lexical_scope import PythonCellStoragePlan
     from molt.compiler_analysis.python_lexical_scope import PythonCodeNameLayout
     from molt.compiler_analysis.python_lexical_scope import PythonDependencyAuthority

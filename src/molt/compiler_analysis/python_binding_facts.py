@@ -421,10 +421,14 @@ class PythonExpressionFact:
         neither does a read that a source value can reach: a star import
         publishes its exports as source origins of later global reads, not
         as identity bits (``tests/differential/basic/builtin_binding_guards_star.py``).
+        A class body's read that misses the class mapping is a global read
+        too: the flow gives it a builtin identity only when the mapping cannot
+        run code (no ``__prepare__`` result or reflection can bind the name)
+        and the class-local binding is unbound (HF-776).
         """
         if (
             self.binding_invalidated
-            or self.name_lookup != "global"
+            or self.name_lookup not in {"global", "class_global"}
             or self.result.source_origins
         ):
             return None

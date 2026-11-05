@@ -207,7 +207,11 @@ class BuiltinGuardMixin(GeneratorMixinBase):
             return None
         index = self.python_binding_index
         fact = index.expression_fact(node) if index is not None else None
-        return fact.exact_builtin_name() if fact is not None else None
+        # A class body is not an activation; its proved reads keep the call
+        # fact's own elision proof, as module code does.
+        if fact is None or not fact.binding_global_lookup:
+            return None
+        return fact.exact_builtin_name()
 
     def _proven_shape_builtin_call(self, node: ast.Call) -> str | None:
         """The shape builtin a guard-replacing proof selects, if its shape is valid.
