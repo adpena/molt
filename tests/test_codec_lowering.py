@@ -203,7 +203,9 @@ def test_json_package_intrinsic_uses_its_own_runtime_parser():
 def test_const_bytes_lowering():
     src = "x = b'hi'"
     ir = compile_to_tir(src)
-    assert "const_bytes" in _op_kinds(ir)
+    assert any(
+        op["bytes"] == list(b"hi") for op in _ops_by_kind(ir, "const_bytes")
+    )
 
 
 def test_len_lowering():
@@ -212,7 +214,12 @@ def test_len_lowering():
     kinds = _op_kinds(ir)
     assert 5 in _const_values(ir)
     assert "len" not in kinds
-    assert "const_bytes" not in kinds
+    # The folded source literal must disappear. Code-owned location metadata
+    # remains bytes, identified by its constructor operand rather than a name.
+    location_tables = {op["args"][3] for op in _ops_by_kind(ir, "code_new")}
+    assert all(
+        op["out"] in location_tables for op in _ops_by_kind(ir, "const_bytes")
+    )
 
 
 @pytest.mark.parametrize(
