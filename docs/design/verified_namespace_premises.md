@@ -585,6 +585,14 @@ gives `isinstance` and `issubclass`; that changes discovery for every program
 and needs its own census. The lane reports this family to the integrator for
 its own ledger row.
 
+Main also fails to persist the frontend lowering record of a module that
+defines a dataclass: `local_classes` carries `dataclass_init_projection`, a
+tuple of `DataclassInitField` dataclasses, and `_write_persisted_module_lowering`
+raises `TypeError: Object of type DataclassInitField is not JSON serializable`
+(`cache_keys._json_ir_default`). Any cold build of the
+`dataclass_construction` primitive with the lowering cache enabled fails. This
+is outside this lane's mechanism; the lane reports it to the integrator.
+
 ### Acceptance and evidence rules
 
 The five-pair primitive A/B (`tools/perf_scoreboard.py primitives`, exact
@@ -652,8 +660,34 @@ sibling of this mechanism.
 
 ### Results of this lane
 
-Pending: the lane records the differential matrix, census, discovery and
-primitive A/B here with the implementation.
+Measured 2026-11-05 on macOS arm64 against origin/main f1d450c4f1, release
+builds with symbols kept, CPython 3.12.16 as oracle and denominator.
+
+- **Primitive A/B** (`tools/perf_scoreboard.py primitives`, five pairs per
+  leg, base and head legs run separately; frontend lowering cache disabled in
+  both legs because main fails to persist a dataclass record, see "Open
+  siblings"). `isinstance` per operation: 5,976.4 to 5,187.8 Molt
+  instructions (0.868x; ratio to CPython 7.516 to 6.524, noise bound 1.0%).
+  Every other axis stays within its ratchet noise bound. `reduce_ex` per
+  operation is bimodal in both legs (samples near 12.6 and 14.1 times
+  CPython); its median moved with the sample mix (bound 26.1%). The `loop`,
+  `dynamic_call` and `dataclass_construction` per-op slopes do not move
+  (1.0084x, 0.9989x, 1.0001x), as "Scope cut" predicts.
+- **Emitted code.** In the canonical `isinstance` primitive, `run` has one
+  loop instead of a guarded pair and no `molt_module_get_global` or
+  `molt_guard_builtin_bindings` call in it (machine code 3,932 to 1,613
+  instructions). Binaries shrink: hello 35,640,008 to 35,110,584 bytes, loop
+  35,724,712 to 35,161,432, `isinstance` 35,707,440 to 35,177,984,
+  `dataclass_construction` 38,782,584 to 38,170,328.
+- **Modules.** hello 29 to 29, loop 29 to 29, `isinstance` 29 to 29,
+  `dataclass_construction` 32 to 32.
+- **Differentials.** The three new programs and the five
+  `builtin_binding_guards*.py` programs pass on native, LLVM and WASM against
+  CPython 3.12.16 (24 cells). On main, `proven_builtin_values.py` fails to
+  build (`len()`) and `proven_builtin_builtins_mapping.py` prints
+  `after (True, 3)` where CPython prints `after ('custom', -1)`.
+- **Discovery.** `test_public_stdlib_deferred_demand_graph` passes all eight
+  programs, including the dataclass program.
 
 ## Tests
 
