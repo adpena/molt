@@ -2227,7 +2227,7 @@ def test_macos_first_exec_report_distinguishes_timing_from_permission(
                 returncode=0, stdout="Developer mode is currently enabled.\n", stderr=""
             )
         script = Path(command[0])
-        assert script.read_text() == "#!/bin/sh\nexit 0\n"
+        assert script.read_text(encoding="utf-8") == "#!/bin/sh\nexit 0\n"
         return SimpleNamespace(
             returncode=0, stdout="", stderr="", child_elapsed_s=next(durations)
         )

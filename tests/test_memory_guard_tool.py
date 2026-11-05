@@ -11842,7 +11842,7 @@ def test_python_timeout_retains_the_blocked_frame_before_termination(
     assert "blocked_child_frame" in result.stderr
     incidents = list((profile.parent / "incidents").glob("*.json"))
     assert len(incidents) == 1
-    incident = json.loads(incidents[0].read_text())
+    incident = json.loads(incidents[0].read_text(encoding="utf-8"))
     assert "blocked_child_frame" in incident["stderr_tail"]
     assert incident["timed_out"] is True
     assert any(

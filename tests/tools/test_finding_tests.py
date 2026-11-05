@@ -599,10 +599,12 @@ def test_flaky_collection_skips_presubmit_and_executes_postsubmit(
     project = tmp_path / "flaky-project"
     project.mkdir()
     (project / "pytest.ini").write_text(
-        "[pytest]\naddopts =\nmarkers = flaky(finding_id): known random flake\n"
+        "[pytest]\naddopts =\nmarkers = flaky(finding_id): known random flake\n",
+        encoding="utf-8",
     )
     (project / "conftest.py").write_text(
-        "from tests.conftest import pytest_addoption, pytest_collection_modifyitems\n"
+        "from tests.conftest import pytest_addoption, pytest_collection_modifyitems\n",
+        encoding="utf-8",
     )
     executed = project / "executed"
     (project / "test_flake.py").write_text(
@@ -610,7 +612,8 @@ def test_flaky_collection_skips_presubmit_and_executes_postsubmit(
         f"@flaky({OPEN_ID!r})\n"
         "def test_flake():\n"
         f"    Path({str(executed)!r}).touch()\n"
-        "    assert False, 'postsubmit executes the original defect'\n"
+        "    assert False, 'postsubmit executes the original defect'\n",
+        encoding="utf-8",
     )
     root = Path(__file__).resolve().parents[2]
     result = run_guarded_test_process(

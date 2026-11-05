@@ -12280,7 +12280,7 @@ def test_executor_shares_one_cpu_budget_across_simultaneous_pytest_sessions(
 
     receipt_path = tmp_path / "receipt.json"
     assert _execute_synthetic_policy_commands(plan, commands, receipt_path, run) == 0
-    receipt = json.loads(receipt_path.read_text())
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert peak == cpus
     assert receipt["execution"]["pytest_cpu_budget"] == cpus
     assert {
@@ -12319,7 +12319,7 @@ def test_executor_retries_only_proven_launch_infrastructure_once(
     receipt_path = tmp_path / "receipt.json"
     result = _execute_synthetic_policy_commands(plan, (command,), receipt_path, run)
     assert result == (0 if second_status == "success" else 6)
-    receipt = json.loads(receipt_path.read_text())
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert attempts == [1, 2]
     record = receipt["commands"][0]
     assert [row["status"] for row in record["attempts"]] == ["failure", second_status]
