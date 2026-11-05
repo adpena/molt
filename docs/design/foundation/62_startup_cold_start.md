@@ -1127,3 +1127,28 @@ framework, drop unreferenced runtime libraries, and execute an initializer-only
 explicit dylib while retaining an explicit framework. Zig's existing real
 cross-format strip test also accepts the complete policy flags. These checks
 do not claim Linux execution or a production runtime-image launch.
+
+### HF-750 measured prototype deferred
+
+The complete native declaration prototype moved all six fixed schemas to one
+NameId array, removed the Python schemas and used the existing sealed tuple
+factory. Its class identities lived in the shared runtime class inventory.
+The dev semantic gate passed 2,173 selected tests and the Python readers passed,
+but 21 interleaved startup samples rejected it as a speed improvement:
+
+| Workload | Instructions before → prototype | Peak RSS bytes before → prototype | Binary bytes before → prototype |
+|---|---:|---:|---:|
+| hello | 109,343,547 → 110,811,902 | 12,025,856 → 11,927,552 | 13,555,024 → 13,389,904 |
+| import tiny | 113,441,771 → 114,999,837 | 12,435,456 → 12,288,000 | 32,286,272 → 32,121,136 |
+
+The prototype remains in the lane's private recovery evidence, not production.
+Open ownership decision: should these immutable types be owned solely by the
+canonical interpreter sys namespace or by the shared class-root inventory?
+The latter introduces six additional canonical roots into the class-retirement
+transaction; merely clearing them early could violate finalizer visibility.
+A replacement must preserve once-only identity, initialization failure atomicity
+and teardown visibility, and beat the current startup cost. The parent owns
+that decision. No freeze or lifetime shortcut was introduced. The strengthened
+CPython differential for all six member orders and docs is retained. It matches
+on native and LLVM; the WASM build reached its required optimizer's 300-second
+timeout. This is an unverified WASM cell, not a semantic pass or failure.
