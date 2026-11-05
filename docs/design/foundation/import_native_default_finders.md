@@ -515,3 +515,60 @@ Round 1, 2026-11-04. Two fresh-context Goldfish reviewers read only this file
 Scope cut after round 1 (section 9): the `""`-with-deleted-cwd, refused-tier and
 machinery-stand-in-before-a-filesystem-hit differentials, and the 3.13/3.14
 targets. No second round: no finding was left open as a blocker.
+
+## 12. Discovery correction after native finder admission
+
+Removing the old machinery body also removes its `zipimport` dependency. That
+module's computed `sys.modules` mutation had accidentally hidden an imprecise
+source-value transfer: dataclass initialization acquired a module dictionary,
+and discovery treated acquisition as invocation of its entire namespace. The
+native finder changes exposed that latent defect. Restoring the old forwarding
+wrapper did not repair it; restoring the old machinery body merely masked it.
+
+A module's `__dict__` data descriptor returns a live mapping without invoking
+PEP 562. The source-demand worklist now represents that mapping separately from
+its owner. Merely reading, retaining or discarding it does not invoke exported
+functions. Selected lookup, mapping views and copies transport their actual
+value provenance. Opaque exposure persists on the namespace owner so later
+publications remain reachable. Destructive operations and owned-copy retirement
+release possible contained instances through the existing destructor demand.
+Unknown selectors remain conservative, and custom attribute protocols keep their
+actual descriptor demands.
+
+The intrinsic identity catalog declares the real native attribute-reader facet
+and dataclass initializer facet. The returned initializer retains its globals,
+builtins, defaults, annotations and closure as metadata, rather than executing
+them during construction. Its existing immutable specification selects factories,
+ordinary stores and post-init inputs. Invocation transports actual arguments,
+defaults and selected global/builtin values into post-init formals, including
+variadic formals. Member aliases and `__call__` preserve that invocation context;
+late publications replay the existing candidate-demand incidences. A factory
+binding is callable; an ordinary captured function default remains a value until
+an actual consumer invokes it. Descriptor stores retain their conservative
+callback boundary.
+
+One catalog generates the specification field indices for Python discovery and
+Rust runtime consumption. The numeric layout and runtime ABI are unchanged.
+Immutable tuple publication preserves positional edges while expiring mutable
+descendant contents; evaluated unbound `dict.get` uses the existing method-shape
+authority rather than falling back to whole-container exposure. Unknown or rebound
+callees retain the ordinary conservative analysis.
+
+This follows the closed-world points-to approach already researched in
+[findings prior art, family B](../findings_prior_art.md): availability and execution
+are separate demands on the same source provenance. It introduces no source-name
+exemption, import allowlist or alternative module graph. The source-record cache
+schema changes with these facts, including strict decoding of selectors and class
+namespace facts.
+
+Two independent diagnosis reviews considered the reductions before implementation.
+An implementation review then identified actual/default/variadic post-init
+transport, builtin fallback, member reactivation, `__call__`, late namespace
+publication, cleanup and factory-selection obligations. The correction addresses
+those at their producers and shared worklist consumers. Regression controls use
+CPython's mapping/data-descriptor and public dataclass behavior as independent
+oracles, alongside cold/warm source-record graph checks. Qualification requires
+the parent's 144-program census with no per-program admission additions over main,
+the existing dataclass exclusion test, static landing gates and the original
+hello/import-tiny instruction budget. The parent owns integration and the V1
+ledger; private receipts remain in the assigned lane artifact directory.
