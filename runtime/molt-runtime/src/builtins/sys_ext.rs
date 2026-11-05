@@ -1184,6 +1184,8 @@ pub(crate) fn molt_sys_path_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     })
 }
 
+include!("../attached_exports_generated/builtins/sys_ext.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1734,5 +1736,3 @@ mod tests {
         });
     }
 }
-
-include!("../attached_exports_generated/builtins/sys_ext.rs");

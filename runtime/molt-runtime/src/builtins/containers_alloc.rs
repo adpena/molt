@@ -141,6 +141,8 @@ pub(crate) fn molt_frozenset_new_attached_body(
     })
 }
 
+include!("../attached_exports_generated/builtins/containers_alloc.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,5 +309,3 @@ mod tests {
         });
     }
 }
-
-include!("../attached_exports_generated/builtins/containers_alloc.rs");

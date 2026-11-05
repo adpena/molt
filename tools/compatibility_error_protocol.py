@@ -424,6 +424,11 @@ __ARMS__
         outcome.exception(py)
     })
 }
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/attached_exports_generated/builtins/compatibility_error.rs"
+));
+
 #[cfg(test)]
 mod tests {
     use super::CompatibilityError;
@@ -532,10 +537,6 @@ mod tests {
     }
 }
 
-include!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/src/attached_exports_generated/builtins/compatibility_error.rs"
-));
 """.replace(
         "__RAW_IO_VERSIONS__",
         _version_pattern(OUTCOMES["RawIoBaseReadinto"].versions),

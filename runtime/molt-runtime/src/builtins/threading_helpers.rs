@@ -360,6 +360,8 @@ pub(crate) fn molt_threading_event_wait_attached_body(
     unsafe { crate::molt_event_wait_attached_body(_py, event_bits, MoltObject::none().bits()) }
 }
 
+include!("../attached_exports_generated/builtins/threading_helpers.rs");
+
 #[cfg(test)]
 mod timeout_tests {
     use super::*;
@@ -470,5 +472,3 @@ mod timeout_tests {
         });
     }
 }
-
-include!("../attached_exports_generated/builtins/threading_helpers.rs");

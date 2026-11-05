@@ -440,6 +440,8 @@ pub(crate) fn molt_context_closing_attached_body(
     crate::molt_contextlib_closing_attached_body(_py, payload_bits)
 }
 
+include!("../attached_exports_generated/builtins/context.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -543,5 +545,3 @@ mod tests {
         });
     }
 }
-
-include!("../attached_exports_generated/builtins/context.rs");

@@ -2589,6 +2589,8 @@ pub fn molt_gpu_kernel_launch_attached_body(
     })
 }
 
+include!("attached_exports_generated/lib.rs");
+
 #[cfg(test)]
 mod launch_context_tests {
     use super::{GpuLaunchContext, current_gpu_launch_context, with_gpu_launch_context};
@@ -2750,5 +2752,3 @@ mod metal_device_tests {
         assert_eq!(device.copy_from_buffer(&b, 4).unwrap(), 17i32.to_ne_bytes());
     }
 }
-
-include!("attached_exports_generated/lib.rs");

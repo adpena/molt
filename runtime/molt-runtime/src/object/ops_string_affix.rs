@@ -1062,6 +1062,8 @@ pub(crate) fn molt_string_maketrans_attached_body(
     })
 }
 
+include!("../attached_exports_generated/object/ops_string_affix.rs");
+
 #[cfg(test)]
 mod whitespace_contract_tests {
     use super::*;
@@ -1160,5 +1162,3 @@ mod whitespace_contract_tests {
         });
     }
 }
-
-include!("../attached_exports_generated/object/ops_string_affix.rs");

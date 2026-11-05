@@ -503,10 +503,7 @@ fn cext_all_conventions_use_runtime_binding_and_ordered_keyword_transport() {
             }
             OBSERVED.with(|slot| *slot.borrow_mut() = None);
             let result = bind(py, function, &[10, 20, 30][..count], keywords);
-            assert!(
-                !with_gil(|py| crate::exception_pending(py)),
-                "flags={flags:#x}"
-            );
+            assert!(!with_gil(crate::exception_pending), "flags={flags:#x}");
             assert_eq!(MoltObject::from_bits(result).as_int(), Some(197));
             let observed = OBSERVED
                 .with(|slot| slot.borrow_mut().take())
@@ -535,7 +532,7 @@ fn cext_all_conventions_use_runtime_binding_and_ordered_keyword_transport() {
         if !accepts_keywords {
             OBSERVED.with(|slot| *slot.borrow_mut() = None);
             let result = bind(py, function, &[10, 20, 30][..count], &[("unexpected", 2)]);
-            assert!(with_gil(|py| crate::exception_pending(py)));
+            assert!(with_gil(crate::exception_pending));
             assert!(OBSERVED.with(|slot| slot.borrow().is_none()));
             unsafe { hook_dec_ref(result) };
             let _ = crate::molt_exception_clear_attached_body(py);
@@ -544,7 +541,7 @@ fn cext_all_conventions_use_runtime_binding_and_ordered_keyword_transport() {
         if flags & (METH_NOARGS | METH_O) != 0 {
             OBSERVED.with(|slot| *slot.borrow_mut() = None);
             let result = bind(py, function, &[1, 2], &[]);
-            assert!(with_gil(|py| crate::exception_pending(py)));
+            assert!(with_gil(crate::exception_pending));
             assert!(OBSERVED.with(|slot| slot.borrow().is_none()));
             unsafe { hook_dec_ref(result) };
             let _ = crate::molt_exception_clear_attached_body(py);
@@ -552,7 +549,7 @@ fn cext_all_conventions_use_runtime_binding_and_ordered_keyword_transport() {
         }
         if accepts_keywords {
             let result = bind(py, function, &[1, 2, 3, 4, 5, 6, 7, 8, 9], &[("tail", 10)]);
-            assert!(!with_gil(|py| crate::exception_pending(py)));
+            assert!(!with_gil(crate::exception_pending));
             assert_eq!(MoltObject::from_bits(result).as_int(), Some(197));
             let observed = OBSERVED.with(|slot| slot.borrow_mut().take()).unwrap();
             assert_eq!(observed.positional, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
@@ -1058,7 +1055,7 @@ fn cext_method_accepts_and_preserves_physical_extension_defining_class() {
             crate::TYPE_ID_FOREIGN
         );
         let result = with_gil(|py| bind(py, function, &[1], &[("keyword", 2)]));
-        assert!(!with_gil(|py| crate::exception_pending(py)));
+        assert!(!with_gil(crate::exception_pending));
         assert_eq!(result, context.defining_class);
         hook_dec_ref(result);
         let raw_result = molt_cpython_abi::api::object::PyObject_Vectorcall(
@@ -1538,7 +1535,7 @@ fn vector_hook_validates_complete_spans_before_reading_and_accepts_empty_null_sp
                 hook_object_vectorcall(function, values, positional, names, keywords).decode(),
                 DecodedHandleResult::Error
             ));
-            assert!(with_gil(|py| crate::exception_pending(py)));
+            assert!(with_gil(crate::exception_pending));
             crate::molt_exception_clear_attached_body(py);
             molt_cpython_abi::api::errors::PyErr_Clear();
         }

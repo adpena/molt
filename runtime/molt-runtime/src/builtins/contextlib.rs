@@ -2093,6 +2093,8 @@ pub(crate) unsafe fn molt_contextlib_async_exitstack_exit_poll_attached_body(
     }
 }
 
+include!("../attached_exports_generated/builtins/contextlib.rs");
+
 #[cfg(test)]
 mod payload_publication_tests {
     use super::*;
@@ -2354,5 +2356,3 @@ mod payload_publication_tests {
         });
     }
 }
-
-include!("../attached_exports_generated/builtins/contextlib.rs");

@@ -1047,6 +1047,8 @@ pub fn molt_uu_codec_decode_attached_body(_py: &molt_runtime_core::PyToken, data
     })
 }
 
+include!("attached_exports_generated/binascii.rs");
+
 #[cfg(test)]
 mod tests {
     use super::uu_decode;
@@ -1066,5 +1068,3 @@ mod tests {
         assert_eq!(uu_decode(b"#8\x016)C"), Err("Illegal char"));
     }
 }
-
-include!("attached_exports_generated/binascii.rs");

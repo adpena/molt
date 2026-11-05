@@ -171,6 +171,8 @@ pub(crate) fn molt_call_arity_error_attached_body(
     })
 }
 
+include!("../attached_exports_generated/builtins/callable.rs");
+
 #[cfg(test)]
 mod execution_kind_tests {
     use super::*;
@@ -290,5 +292,3 @@ mod execution_kind_tests {
         });
     }
 }
-
-include!("../attached_exports_generated/builtins/callable.rs");

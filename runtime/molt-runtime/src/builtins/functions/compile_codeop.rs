@@ -1073,6 +1073,8 @@ pub(crate) fn molt_codeop_compile_command_attached_body(
     })
 }
 
+include!("../../attached_exports_generated/builtins/functions/compile_codeop.rs");
+
 #[cfg(test)]
 mod code_object_ownership_tests {
     use super::codeobj_from_filename_bits;
@@ -1320,5 +1322,3 @@ mod code_object_ownership_tests {
         })
     }
 }
-
-include!("../../attached_exports_generated/builtins/functions/compile_codeop.rs");

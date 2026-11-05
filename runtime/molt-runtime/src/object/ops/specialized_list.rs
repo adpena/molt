@@ -699,6 +699,8 @@ pub(crate) fn molt_list_fill_new_attached_body(
     })
 }
 
+include!("../../attached_exports_generated/object/ops/specialized_list.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -967,5 +969,3 @@ mod tests {
         });
     }
 }
-
-include!("../../attached_exports_generated/object/ops/specialized_list.rs");

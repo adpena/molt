@@ -1789,6 +1789,8 @@ pub(crate) fn maybe_emit_runtime_feedback_file(py: &PyToken<'_>, payload: &serde
     eprintln!("molt_runtime_feedback_file {}", path.display());
 }
 
+include!("../attached_exports_generated/object/ops_convert.rs");
+
 #[cfg(test)]
 mod int_literal_tests {
     use super::parse_int_from_str;
@@ -1966,5 +1968,3 @@ mod int_literal_tests {
         assert!(parse_int_from_str(&format!("0b1{}", "0".repeat(5000)), 0, 4300).is_ok());
     }
 }
-
-include!("../attached_exports_generated/object/ops_convert.rs");

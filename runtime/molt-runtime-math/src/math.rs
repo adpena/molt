@@ -2708,6 +2708,8 @@ const STATISTICS_NORMAL_DIST_INV_CDF_MODE_MARKER: &[u8] = b"__statistics_inv_cdf
 pub mod statistics_tail;
 pub use statistics_tail::*;
 
+include!("attached_exports_generated/math.rs");
+
 #[cfg(test)]
 mod statistics_reduction_tests {
     use super::*;
@@ -3063,5 +3065,3 @@ mod statistics_reduction_tests {
         }
     }
 }
-
-include!("attached_exports_generated/math.rs");

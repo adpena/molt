@@ -294,6 +294,8 @@ pub(crate) unsafe fn call_callable3(
     }
 }
 
+include!("../attached_exports_generated/call/dispatch.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -502,5 +504,3 @@ mod tests {
         });
     }
 }
-
-include!("../attached_exports_generated/call/dispatch.rs");

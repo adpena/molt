@@ -2136,6 +2136,8 @@ pub(crate) fn molt_functools_singledispatch_drop_attached_body(
     })
 }
 
+include!("../attached_exports_generated/builtins/functools.rs");
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -4627,5 +4629,3 @@ mod tests {
         });
     }
 }
-
-include!("../attached_exports_generated/builtins/functools.rs");

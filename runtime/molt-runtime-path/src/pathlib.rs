@@ -678,6 +678,8 @@ pub fn molt_pathlib_samefile_attached_body(
     })
 }
 
+include!("attached_exports_generated/pathlib.rs");
+
 #[cfg(test)]
 mod root_projection_tests {
     use super::ParsedRoot;
@@ -740,5 +742,3 @@ mod root_projection_tests {
         assert_eq!((posix.drive, posix.root), (0, 2));
     }
 }
-
-include!("attached_exports_generated/pathlib.rs");

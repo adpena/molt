@@ -871,7 +871,7 @@ unsafe extern "C" fn pending_callback_call(
         refcount::Py_XDECREF(old);
     }
     if call.raise {
-        with_gil(|py| crate::record_memory_error_without_allocation(py));
+        with_gil(crate::record_memory_error_without_allocation);
     }
     if call.succeed {
         unsafe { refcount::Py_INCREF(call.result) };
@@ -886,7 +886,7 @@ unsafe extern "C" fn pending_callback_set(
     _name: *mut PyObject,
     _value: *mut PyObject,
 ) -> c_int {
-    with_gil(|py| crate::record_memory_error_without_allocation(py));
+    with_gil(crate::record_memory_error_without_allocation);
     if unsafe { (*receiver.cast::<PendingCallback>()).succeed } {
         0
     } else {

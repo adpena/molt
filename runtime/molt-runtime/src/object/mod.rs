@@ -4719,6 +4719,8 @@ unsafe fn dec_ref_ptr_terminal_body(
     }
 }
 
+include!("../attached_exports_generated/object/mod.rs");
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -5590,5 +5592,3 @@ mod tests {
         assert_eq!(refcount.snapshot_acquire(), 1);
     }
 }
-
-include!("../attached_exports_generated/object/mod.rs");

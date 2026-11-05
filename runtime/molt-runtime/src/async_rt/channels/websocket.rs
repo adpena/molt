@@ -1593,6 +1593,8 @@ pub(crate) unsafe fn molt_ws_drop_attached_body(_py: &crate::PyToken<'_>, ws_bit
     })
 }
 
+include!("../../attached_exports_generated/async_rt/channels/websocket.rs");
+
 #[cfg(test)]
 mod host_send_result_tests {
     use super::{HostSendOutcome, classify_host_send_result};
@@ -1752,5 +1754,3 @@ mod host_send_result_tests {
         );
     }
 }
-
-include!("../../attached_exports_generated/async_rt/channels/websocket.rs");

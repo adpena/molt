@@ -324,6 +324,8 @@ pub(crate) fn molt_pwd_getpwall_attached_body(_py: &crate::PyToken<'_>, class: u
     })
 }
 
+include!("../attached_exports_generated/builtins/pwd.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,5 +397,3 @@ mod tests {
         });
     }
 }
-
-include!("../attached_exports_generated/builtins/pwd.rs");

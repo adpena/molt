@@ -351,6 +351,8 @@ pub(crate) fn publish_exception_fields(py: &PyToken<'_>, owner: u64) -> bool {
     }
 }
 
+include!("../../attached_exports_generated/builtins/exceptions/attributes.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -536,5 +538,3 @@ mod tests {
         });
     }
 }
-
-include!("../../attached_exports_generated/builtins/exceptions/attributes.rs");

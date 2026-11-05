@@ -505,6 +505,8 @@ pub(crate) fn alloc_itertools_class(
     class_bits
 }
 
+include!("attached_exports_generated/itertools_class.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1053,5 +1055,3 @@ mod tests {
         });
     }
 }
-
-include!("attached_exports_generated/itertools_class.rs");

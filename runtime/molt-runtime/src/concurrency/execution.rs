@@ -1258,6 +1258,8 @@ pub(crate) fn release_persistent_runtime_execution() -> bool {
     true
 }
 
+include!("../attached_exports_generated/concurrency/execution.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2143,5 +2145,3 @@ mod tests {
         assert!(!molt_cpython_abi::api::object::current_thread_has_retained_runtime_state());
     }
 }
-
-include!("../attached_exports_generated/concurrency/execution.rs");

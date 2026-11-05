@@ -1719,6 +1719,8 @@ pub(crate) fn molt_typing_get_args_attached_body(_py: &crate::PyToken<'_>, tp_bi
     })
 }
 
+include!("../attached_exports_generated/builtins/abc.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2124,5 +2126,3 @@ mod tests {
         );
     }
 }
-
-include!("../attached_exports_generated/builtins/abc.rs");

@@ -1711,6 +1711,8 @@ pub(crate) fn molt_bytearray_rindex_slice_attached_body(
     })
 }
 
+include!("../../attached_exports_generated/object/ops_bytes/sequence_methods.rs");
+
 #[cfg(test)]
 mod partition_contract_tests {
     use super::*;
@@ -1898,5 +1900,3 @@ mod partition_contract_tests {
         });
     }
 }
-
-include!("../../attached_exports_generated/object/ops_bytes/sequence_methods.rs");

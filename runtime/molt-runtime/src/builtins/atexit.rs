@@ -552,6 +552,8 @@ pub(crate) fn molt_atexit_ncallbacks_attached_body(_py: &crate::PyToken<'_>) -> 
     crate::with_attached_entry_nopanic!(_py, _py, { atexit_ncallbacks_impl(_py) })
 }
 
+include!("../attached_exports_generated/builtins/atexit.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -746,5 +748,3 @@ mod tests {
         assert!(unregister_compacts_for_target(14));
     }
 }
-
-include!("../attached_exports_generated/builtins/atexit.rs");

@@ -926,6 +926,8 @@ pub(crate) unsafe fn molt_asyncio_server_accept_loop_poll_attached_body(
     }
 }
 
+include!("../attached_exports_generated/async_rt/generators_async_io.rs");
+
 #[cfg(test)]
 mod exception_storage_tests {
     use super::*;
@@ -983,5 +985,3 @@ mod exception_storage_tests {
         });
     }
 }
-
-include!("../attached_exports_generated/async_rt/generators_async_io.rs");

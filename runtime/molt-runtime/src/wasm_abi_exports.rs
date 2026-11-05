@@ -344,6 +344,8 @@ pub extern "C" fn molt_scratch_free(ptr: u64, size: u64) {
     }
 }
 
+include!("attached_exports_generated/wasm_abi_exports.rs");
+
 #[cfg(test)]
 mod tests {
     use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
@@ -460,5 +462,3 @@ mod tests {
         );
     }
 }
-
-include!("attached_exports_generated/wasm_abi_exports.rs");

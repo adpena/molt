@@ -707,6 +707,8 @@ fn report_unraisable_exception(
     }
 }
 
+include!("../../attached_exports_generated/builtins/exceptions/unraisable.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1220,5 +1222,3 @@ mod tests {
         );
     }
 }
-
-include!("../../attached_exports_generated/builtins/exceptions/unraisable.rs");

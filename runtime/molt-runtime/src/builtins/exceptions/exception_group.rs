@@ -1000,6 +1000,8 @@ pub(crate) fn molt_exceptiongroup_combine_attached_body(
     })
 }
 
+include!("../../attached_exports_generated/builtins/exceptions/exception_group.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1521,5 +1523,3 @@ mod tests {
         });
     }
 }
-
-include!("../../attached_exports_generated/builtins/exceptions/exception_group.rs");

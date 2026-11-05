@@ -1601,6 +1601,8 @@ pub(crate) fn molt_has_attr_name_attached_body(
     })
 }
 
+include!("../attached_exports_generated/builtins/attributes.rs");
+
 #[cfg(test)]
 mod tests {
     use super::{attr_name_bits_for_site, attributes_clear_runtime_state};
@@ -3245,5 +3247,3 @@ mod tests {
         });
     }
 }
-
-include!("../attached_exports_generated/builtins/attributes.rs");

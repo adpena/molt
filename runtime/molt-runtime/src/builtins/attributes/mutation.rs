@@ -1877,6 +1877,8 @@ pub(crate) fn type_mutate_attr_name(object: u64, name: u64, value: Option<u64>) 
     })
 }
 
+include!("../../attached_exports_generated/builtins/attributes/mutation.rs");
+
 #[cfg(test)]
 mod function_metadata_tests {
     use super::*;
@@ -2204,5 +2206,3 @@ mod function_metadata_tests {
         });
     }
 }
-
-include!("../../attached_exports_generated/builtins/attributes/mutation.rs");

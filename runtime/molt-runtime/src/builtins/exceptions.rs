@@ -5046,6 +5046,8 @@ pub(crate) fn molt_exception_set_last_attached_body(
     })
 }
 
+include!("../attached_exports_generated/builtins/exceptions.rs");
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -7267,5 +7269,3 @@ mod tests {
         });
     }
 }
-
-include!("../attached_exports_generated/builtins/exceptions.rs");

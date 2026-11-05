@@ -1794,6 +1794,8 @@ pub fn molt_struct_iter_unpack_attached_body(
     })
 }
 
+include!("attached_exports_generated/structs.rs");
+
 #[cfg(test)]
 mod float_pack_tests {
     use super::*;
@@ -1810,5 +1812,3 @@ mod float_pack_tests {
         assert_eq!(f16_from_f64(1.0 + 3.0 * 2f64.powi(-11)), Ok(0x3c02));
     }
 }
-
-include!("attached_exports_generated/structs.rs");

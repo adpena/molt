@@ -3835,6 +3835,8 @@ pub fn molt_itertools_batched_new_312_attached_body(
     )
 }
 
+include!("attached_exports_generated/itertools.rs");
+
 #[cfg(test)]
 mod tests {
     use super::{islice_advance_idx, islice_advance_next_idx};
@@ -3871,5 +3873,3 @@ mod tests {
         assert_eq!(next_idx, i64::MAX);
     }
 }
-
-include!("attached_exports_generated/itertools.rs");

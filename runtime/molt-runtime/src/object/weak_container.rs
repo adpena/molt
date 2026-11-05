@@ -2182,6 +2182,8 @@ pub(crate) unsafe fn weakcontainer_drop_detached_state(ptr: *mut u8) {
     unsafe { std::ptr::drop_in_place(ptr.cast::<WeakContainerState>()) };
 }
 
+include!("../attached_exports_generated/object/weak_container.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2422,5 +2424,3 @@ mod tests {
         );
     }
 }
-
-include!("../attached_exports_generated/object/weak_container.rs");

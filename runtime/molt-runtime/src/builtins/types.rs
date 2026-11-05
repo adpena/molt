@@ -771,6 +771,8 @@ pub(crate) fn molt_types_bootstrap_attached_body(_py: &crate::PyToken<'_>) -> u6
         dict_bits
     })
 }
+include!("../attached_exports_generated/builtins/types.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1604,5 +1606,3 @@ mod tests {
         });
     }
 }
-
-include!("../attached_exports_generated/builtins/types.rs");

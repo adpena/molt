@@ -128,6 +128,11 @@ unsafe fn export_handles(
     exported
 }
 
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/attached_exports_generated/seq_snapshot_bridge.rs"
+));
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,8 +436,3 @@ mod tests {
         });
     }
 }
-
-include!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/src/attached_exports_generated/seq_snapshot_bridge.rs"
-));

@@ -6010,6 +6010,8 @@ mod slice_semantics_tests;
 #[cfg(test)]
 mod type_watcher_tests;
 
+include!("attached_exports_generated/cpython_abi_hooks.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -9124,7 +9126,7 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
         let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
-        with_gil(|_py| crate::clear_exception(_py));
+        with_gil(crate::clear_exception);
         RAW_GETATTRO_CALLS.store(0, AtomicOrdering::SeqCst);
 
         let mut raw_type: PyTypeObject = unsafe { std::mem::zeroed() };
@@ -9151,7 +9153,7 @@ mod tests {
         assert_eq!(result, &raw mut RAW_GETATTRO_RESULT);
         assert_eq!(RAW_GETATTRO_CALLS.load(AtomicOrdering::SeqCst), 1);
         assert!(
-            !with_gil(|_py| crate::exception_pending(_py)),
+            !with_gil(crate::exception_pending),
             "raw C identity handles must not be decoded as Molt floats before tp_getattro"
         );
         with_gil(|py| dec_ref_bits(py, wrapper));
@@ -10265,7 +10267,7 @@ mod tests {
             "PySys_GetObject(flags) must fail closed when sys is not linked"
         );
         assert!(
-            !with_gil(|_py| crate::exception_pending(_py)),
+            !with_gil(crate::exception_pending),
             "speculative sys import failure must not leak into the C-API caller"
         );
     }
@@ -10418,7 +10420,7 @@ mod tests {
             "PySys_GetObject must fail closed for an attribute absent from a cold sys dict"
         );
         assert!(
-            !with_gil(|_py| crate::exception_pending(_py)),
+            !with_gil(crate::exception_pending),
             "dictionary miss must not leak a pending exception"
         );
 
@@ -11116,7 +11118,7 @@ mod tests {
                 pending_exception_message_for_assertion()
                     .contains("did not return an extension module")
             );
-            with_gil(|py| crate::clear_exception(py));
+            with_gil(crate::clear_exception);
             assert!(
                 MoltObject::from_bits(
                     crate::builtins::modules::molt_module_cache_get_attached_body(
@@ -12085,7 +12087,7 @@ mod tests {
             "PySet_Discard of an absent key returns 0"
         );
         assert!(
-            !with_gil(|_py| crate::exception_pending(_py)),
+            !with_gil(crate::exception_pending),
             "PySet_Discard of an absent key must not raise: {}",
             pending_exception_message_for_assertion()
         );
@@ -12168,7 +12170,7 @@ mod tests {
             "PySet_Size on a non-set returns -1"
         );
         assert!(
-            with_gil(|_py| crate::exception_pending(_py)),
+            with_gil(crate::exception_pending),
             "PySet_Size on a non-set must set an exception"
         );
         let _ = crate::molt_exception_clear_attached_body(_py);
@@ -12178,7 +12180,7 @@ mod tests {
             -1,
             "PySet_Contains on a non-set returns -1"
         );
-        assert!(with_gil(|_py| crate::exception_pending(_py)));
+        assert!(with_gil(crate::exception_pending));
         let _ = crate::molt_exception_clear_attached_body(_py);
 
         assert_eq!(
@@ -12186,7 +12188,7 @@ mod tests {
             -1,
             "PySet_Add on a non-set returns -1"
         );
-        assert!(with_gil(|_py| crate::exception_pending(_py)));
+        assert!(with_gil(crate::exception_pending));
         let _ = crate::molt_exception_clear_attached_body(_py);
 
         assert_eq!(
@@ -12194,7 +12196,7 @@ mod tests {
             -1,
             "PySet_Discard on a non-set returns -1"
         );
-        assert!(with_gil(|_py| crate::exception_pending(_py)));
+        assert!(with_gil(crate::exception_pending));
         let _ = crate::molt_exception_clear_attached_body(_py);
 
         release_bridge_pyobj(key);
@@ -13171,5 +13173,3 @@ mod tests {
         });
     }
 }
-
-include!("attached_exports_generated/cpython_abi_hooks.rs");

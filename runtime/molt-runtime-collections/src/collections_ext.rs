@@ -2088,6 +2088,8 @@ pub fn molt_namedtuple_validate_fields_attached_body(
     })
 }
 
+include!("attached_exports_generated/collections_ext.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2119,5 +2121,3 @@ mod tests {
         assert_eq!(state.mutation_version, snapshot_version);
     }
 }
-
-include!("attached_exports_generated/collections_ext.rs");

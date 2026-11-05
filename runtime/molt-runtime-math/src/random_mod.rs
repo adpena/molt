@@ -1898,6 +1898,8 @@ pub fn molt_random_randbytes_attached_body(
     })
 }
 
+include!("attached_exports_generated/random_mod.rs");
+
 #[cfg(test)]
 mod seed_parity_tests {
     //! Mask-proof parity tests for `random.seed(str|bytes|bytearray)`.
@@ -1971,5 +1973,3 @@ mod seed_parity_tests {
         }
     }
 }
-
-include!("attached_exports_generated/random_mod.rs");

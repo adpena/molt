@@ -3122,6 +3122,8 @@ pub fn molt_os_makedirs_attached_body(
     })
 }
 
+include!("attached_exports_generated/os_ext.rs");
+
 #[cfg(test)]
 mod tests {
     use super::split_path_bytes;
@@ -3190,5 +3192,3 @@ mod tests {
         );
     }
 }
-
-include!("attached_exports_generated/os_ext.rs");

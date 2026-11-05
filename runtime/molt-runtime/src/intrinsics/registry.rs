@@ -1661,6 +1661,8 @@ pub(crate) fn molt_runtime_active_runtime_attached_body(_py: &crate::PyToken<'_>
     crate::with_attached_entry_nopanic!(_py, _py, { MoltObject::from_bool(true).bits() })
 }
 
+include!("../attached_exports_generated/intrinsics/registry.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3242,5 +3244,3 @@ mod tests {
         test_app_resolver_address().store(0, Ordering::SeqCst);
     }
 }
-
-include!("../attached_exports_generated/intrinsics/registry.rs");

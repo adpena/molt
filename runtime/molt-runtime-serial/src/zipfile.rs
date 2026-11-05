@@ -937,6 +937,8 @@ pub fn molt_imghdr_test_attached_body(
     })
 }
 
+include!("attached_exports_generated/zipfile.rs");
+
 #[cfg(test)]
 mod zipfile_path_lowering_tests {
     use super::{
@@ -1066,5 +1068,3 @@ mod zipfile_path_lowering_tests {
         );
     }
 }
-
-include!("attached_exports_generated/zipfile.rs");

@@ -1093,6 +1093,8 @@ pub(crate) fn molt_ast_iter_child_nodes_attached_body(
     })
 }
 
+include!("../attached_exports_generated/builtins/ast.rs");
+
 #[cfg(test)]
 mod snapshot_tests {
     use super::*;
@@ -1491,5 +1493,3 @@ mod snapshot_tests {
         });
     }
 }
-
-include!("../attached_exports_generated/builtins/ast.rs");

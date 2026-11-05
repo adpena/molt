@@ -278,6 +278,8 @@ const PREDICATES: &[Predicate] = &[
     ("isprintable", molt_string_isprintable, isprintable),
 ];
 
+include!("../attached_exports_generated/object/ops_string_predicates.rs");
+
 #[cfg(test)]
 mod predicate_contract_tests {
     use super::*;
@@ -536,5 +538,3 @@ mod predicate_contract_tests {
         });
     }
 }
-
-include!("../attached_exports_generated/object/ops_string_predicates.rs");

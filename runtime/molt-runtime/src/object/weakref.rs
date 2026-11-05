@@ -1163,6 +1163,8 @@ pub(crate) fn molt_weakref_peek_attached_body(_py: &crate::PyToken<'_>, weak_bit
     crate::with_attached_entry_nopanic!(_py, _py, { weakref_get_owned_or_none(_py, weak_bits) })
 }
 
+include!("../attached_exports_generated/object/weakref.rs");
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -2032,5 +2034,3 @@ mod tests {
         });
     }
 }
-
-include!("../attached_exports_generated/object/weakref.rs");

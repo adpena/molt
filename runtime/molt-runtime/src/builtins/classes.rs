@@ -1717,6 +1717,8 @@ pub(crate) fn molt_builtin_class_lookup_attached_body(
     })
 }
 
+include!("../attached_exports_generated/builtins/classes.rs");
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1961,5 +1963,3 @@ mod tests {
         });
     }
 }
-
-include!("../attached_exports_generated/builtins/classes.rs");

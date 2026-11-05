@@ -578,6 +578,8 @@ pub(crate) fn molt_buffer2d_matmul_attached_body(
     })
 }
 
+include!("../attached_exports_generated/object/buffer2d.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1010,5 +1012,3 @@ mod tests {
         });
     }
 }
-
-include!("../attached_exports_generated/object/buffer2d.rs");

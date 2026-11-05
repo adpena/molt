@@ -329,6 +329,8 @@ pub(crate) unsafe fn molt_io_wait_attached_body(_py: &crate::PyToken<'_>, obj_bi
     }
 }
 
+include!("../../attached_exports_generated/async_rt/io_poller/wait_api.rs");
+
 #[cfg(test)]
 mod deadline_publication_tests {
     use super::*;
@@ -513,5 +515,3 @@ mod deadline_publication_tests {
         });
     }
 }
-
-include!("../../attached_exports_generated/async_rt/io_poller/wait_api.rs");

@@ -1008,6 +1008,8 @@ pub(crate) unsafe fn molt_sleep_register_attached_body(
     }
 }
 
+include!("../attached_exports_generated/async_rt/generators_async_future.rs");
+
 #[cfg(test)]
 mod sleep_payload_tests {
     use super::*;
@@ -1412,5 +1414,3 @@ mod sleep_payload_tests {
         });
     }
 }
-
-include!("../attached_exports_generated/async_rt/generators_async_future.rs");

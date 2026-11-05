@@ -1324,6 +1324,8 @@ pub(crate) fn molt_warnings_filters_mutated_attached_body(_py: &crate::PyToken<'
     })
 }
 
+include!("../attached_exports_generated/builtins/warnings_ext.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2263,5 +2265,3 @@ mod tests {
         });
     }
 }
-
-include!("../attached_exports_generated/builtins/warnings_ext.rs");

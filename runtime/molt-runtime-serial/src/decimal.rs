@@ -3461,6 +3461,8 @@ pub fn molt_decimal_fma_attached_body(
     })
 }
 
+include!("attached_exports_generated/decimal.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3625,5 +3627,3 @@ mod tests {
         assert_eq!(c.etop(), 10 - 9 + 1); // 2
     }
 }
-
-include!("attached_exports_generated/decimal.rs");

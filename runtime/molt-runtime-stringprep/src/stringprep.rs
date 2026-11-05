@@ -328,6 +328,8 @@ pub fn molt_stringprep_map_table_b3_attached_body(
 // Tests
 // ---------------------------------------------------------------------------
 
+include!("attached_exports_generated/stringprep.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,5 +424,3 @@ mod tests {
         assert!(!in_table_d2(0x0621)); // Arabic (RandAL)
     }
 }
-
-include!("attached_exports_generated/stringprep.rs");

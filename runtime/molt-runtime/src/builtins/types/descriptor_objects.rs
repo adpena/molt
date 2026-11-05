@@ -464,6 +464,8 @@ pub(crate) fn molt_typing_type_param_attached_body(
     })
 }
 
+include!("../../attached_exports_generated/builtins/types/descriptor_objects.rs");
+
 #[cfg(test)]
 mod super_frame_tests {
     use super::*;
@@ -665,5 +667,3 @@ mod super_frame_tests {
         });
     }
 }
-
-include!("../../attached_exports_generated/builtins/types/descriptor_objects.rs");

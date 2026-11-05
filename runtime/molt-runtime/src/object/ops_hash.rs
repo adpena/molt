@@ -1219,6 +1219,8 @@ pub(crate) fn ensure_hashable(_py: &PyToken<'_>, key_bits: u64, ctx: HashContext
     true
 }
 
+include!("../attached_exports_generated/object/ops_hash.rs");
+
 #[cfg(test)]
 mod numeric_hash_tests {
     //! Pins the shared modular numeric hash against CPython 3.12 reference
@@ -1606,5 +1608,3 @@ mod numeric_hash_tests {
         }
     }
 }
-
-include!("../attached_exports_generated/object/ops_hash.rs");

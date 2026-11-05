@@ -608,6 +608,8 @@ pub(crate) fn molt_string_rsplit_max_attached_body(
     })
 }
 
+include!("../attached_exports_generated/object/ops_string_split.rs");
+
 #[cfg(test)]
 mod split_contract_tests {
     use super::*;
@@ -1484,5 +1486,3 @@ mod split_contract_tests {
         });
     }
 }
-
-include!("../attached_exports_generated/object/ops_string_split.rs");

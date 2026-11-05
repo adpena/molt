@@ -658,6 +658,8 @@ pub(crate) fn molt_importlib_compiled_loader_load_module_attached_body(
 #[path = "compiled_loader/catalog_tests.rs"]
 mod catalog_tests;
 
+include!("../../attached_exports_generated/builtins/types/compiled_loader.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1036,5 +1038,3 @@ mod tests {
         });
     }
 }
-
-include!("../../attached_exports_generated/builtins/types/compiled_loader.rs");

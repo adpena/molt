@@ -2896,6 +2896,8 @@ mod generic_tests;
 #[path = "ops_iter_string_tests.rs"]
 mod string_tests;
 
+include!("../attached_exports_generated/object/ops_iter.rs");
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -3985,5 +3987,3 @@ mod tests {
         });
     }
 }
-
-include!("../attached_exports_generated/object/ops_iter.rs");

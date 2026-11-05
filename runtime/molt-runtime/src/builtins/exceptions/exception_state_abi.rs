@@ -571,6 +571,8 @@ pub(crate) fn molt_raise_attached_body(_py: &crate::PyToken<'_>, exc_bits: u64) 
     })
 }
 
+include!("../../attached_exports_generated/builtins/exceptions/exception_state_abi.rs");
+
 #[cfg(test)]
 mod diagnostic_tests {
     use super::*;
@@ -645,5 +647,3 @@ mod diagnostic_tests {
 pub extern "C" fn molt_exception_pending_detached() -> u64 {
     crate::with_raw_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
-
-include!("../../attached_exports_generated/builtins/exceptions/exception_state_abi.rs");

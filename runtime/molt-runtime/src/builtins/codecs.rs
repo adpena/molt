@@ -244,6 +244,8 @@ pub(crate) fn molt_codecs_lookup_name_attached_body(
     })
 }
 
+include!("../attached_exports_generated/builtins/codecs.rs");
+
 #[cfg(test)]
 mod result_count_tests {
     use super::*;
@@ -368,5 +370,3 @@ mod result_count_tests {
         });
     }
 }
-
-include!("../attached_exports_generated/builtins/codecs.rs");

@@ -274,6 +274,8 @@ pub(crate) fn molt_tempfile_cleanup_attached_body(_py: &crate::PyToken<'_>, path
     })
 }
 
+include!("../attached_exports_generated/builtins/tempfile_mod.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,5 +394,3 @@ mod tests {
         });
     }
 }
-
-include!("../attached_exports_generated/builtins/tempfile_mod.rs");

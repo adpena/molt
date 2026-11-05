@@ -1074,6 +1074,8 @@ pub(crate) unsafe fn wrapper_copy_metadata(py: &PyToken<'_>, object: u64, target
     result
 }
 
+include!("../../attached_exports_generated/builtins/attributes/wrapper_attrs.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1975,5 +1977,3 @@ mod tests {
         });
     }
 }
-
-include!("../../attached_exports_generated/builtins/attributes/wrapper_attrs.rs");

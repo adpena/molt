@@ -749,6 +749,8 @@ pub(crate) unsafe fn molt_stream_drop_attached_body(
         MoltObject::none().bits()
     })
 }
+include!("../../attached_exports_generated/async_rt/channels/stream.rs");
+
 #[cfg(test)]
 mod stream_tests {
     use super::{
@@ -1217,5 +1219,3 @@ mod stream_tests {
         });
     }
 }
-
-include!("../../attached_exports_generated/async_rt/channels/stream.rs");

@@ -870,6 +870,8 @@ pub(crate) fn execute_prepared_extension(
     })
 }
 
+include!("../attached_exports_generated/cpython_abi_hooks/extension_init.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2187,5 +2189,3 @@ mod tests {
         }
     }
 }
-
-include!("../attached_exports_generated/cpython_abi_hooks/extension_init.rs");

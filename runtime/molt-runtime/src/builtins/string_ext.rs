@@ -586,6 +586,8 @@ pub(crate) fn molt_string_formatter_field_name_split_attached_body(
     })
 }
 
+include!("../attached_exports_generated/builtins/string_ext.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -654,5 +656,3 @@ mod tests {
         });
     }
 }
-
-include!("../attached_exports_generated/builtins/string_ext.rs");

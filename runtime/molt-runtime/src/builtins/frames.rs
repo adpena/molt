@@ -1665,6 +1665,8 @@ pub(crate) fn molt_globals_builtin_attached_body(_py: &crate::PyToken<'_>) -> u6
     })
 }
 
+include!("../attached_exports_generated/builtins/frames.rs");
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1901,5 +1903,3 @@ mod tests {
         });
     }
 }
-
-include!("../attached_exports_generated/builtins/frames.rs");

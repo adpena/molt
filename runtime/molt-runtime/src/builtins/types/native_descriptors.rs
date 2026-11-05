@@ -999,6 +999,8 @@ pub(crate) fn molt_native_descriptor_reduce_attached_body(
     })
 }
 
+include!("../../attached_exports_generated/builtins/types/native_descriptors.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1825,5 +1827,3 @@ mod tests {
         });
     }
 }
-
-include!("../../attached_exports_generated/builtins/types/native_descriptors.rs");

@@ -1385,6 +1385,8 @@ pub fn molt_scrypt_attached_body(
     })
 }
 
+include!("attached_exports_generated/hashlib.rs");
+
 #[cfg(test)]
 mod name_admission_tests {
     use super::{builtin_hmac_name, normalize_hash_name};
@@ -1438,5 +1440,3 @@ mod name_admission_tests {
         }
     }
 }
-
-include!("attached_exports_generated/hashlib.rs");

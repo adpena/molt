@@ -184,6 +184,11 @@ pub(crate) fn molt_compatibility_error_attached_body(
         outcome.exception(py)
     })
 }
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/attached_exports_generated/builtins/compatibility_error.rs"
+));
+
 #[cfg(test)]
 mod tests {
     use super::CompatibilityError;
@@ -307,8 +312,3 @@ mod tests {
         });
     }
 }
-
-include!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/src/attached_exports_generated/builtins/compatibility_error.rs"
-));

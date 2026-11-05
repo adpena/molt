@@ -1486,6 +1486,8 @@ pub fn molt_zlib_decompressobj_unused_data_attached_body(
     })
 }
 
+include!("attached_exports_generated/zlib.rs");
+
 #[cfg(test)]
 mod stream_tests {
     use super::*;
@@ -1777,5 +1779,3 @@ mod stream_tests {
         );
     }
 }
-
-include!("attached_exports_generated/zlib.rs");

@@ -972,6 +972,8 @@ pub fn molt_ipaddress_v4_network_drop_attached_body(
     })
 }
 
+include!("attached_exports_generated/ipaddress.rs");
+
 #[cfg(test)]
 mod tests {
     //! Classification / parsing parity against CPython 3.12 `ipaddress`.
@@ -1115,5 +1117,3 @@ mod tests {
         ));
     }
 }
-
-include!("attached_exports_generated/ipaddress.rs");

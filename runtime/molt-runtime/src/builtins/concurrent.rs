@@ -1537,6 +1537,8 @@ pub(crate) fn molt_concurrent_wait_attached_body(
     })
 }
 
+include!("../attached_exports_generated/builtins/concurrent.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3427,5 +3429,3 @@ mod tests {
         });
     }
 }
-
-include!("../attached_exports_generated/builtins/concurrent.rs");
