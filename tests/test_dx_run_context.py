@@ -3434,3 +3434,63 @@ def test_apple_identity_volume_root_uses_held_relative_dot(monkeypatch):
     captured = durable.file_identity(root, expected=metadata)
     assert int(captured.file_id, 16) == metadata.st_ino
     assert leaves and all(leaf == "." for leaf in leaves)
+
+
+def test_storage_admission_compares_windows_dos_and_verbatim_spellings(monkeypatch):
+    """bat00, 2026-11-04: Windows cleanup removes long paths in the verbatim
+    namespace (\\\\?\\C:\\...), and the claim that admits them is a DOS path;
+    comparing spellings refused about 680 farm tests."""
+    from molt import dx, path_custody
+
+    tree = dx.StorageWriteClaim("scratch", Path("C:\\Molt\\tmp"))
+    exact = dx.StorageWriteClaim("scratch", Path("C:\\Molt\\state.json"), exact=True)
+    check = dx._StorageWriteCheck([tree, exact], (), "", False, [])
+    spellings = {
+        "\\\\?\\C:\\Molt\\tmp\\gs\\v2\\payload\\.molt-scratch-target.json": True,
+        "c:\\molt\\TMP\\gs": True,  # Windows keys ignore case.
+        "\\\\?\\C:\\Molt\\tmp": True,
+        "\\\\?\\C:\\Molt\\state.json": True,
+        "\\\\?\\C:\\Molt\\state.json\\child": False,  # exact: no descendants
+        "\\\\?\\C:\\Molt\\tmpx\\file": False,  # a sibling sharing a prefix
+        "\\\\?\\D:\\Molt\\tmp\\file": False,
+    }
+    # Apply Windows' host key (path_custody owns it) only around these pure
+    # comparisons: the live storage audit guards this very test process.
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            dx,
+            "resolved_host_path_key",
+            lambda path: path_custody._windows_path_key(str(path)),
+        )
+        observed = {
+            spelling: dx._storage_write_admitted(check, Path(spelling))
+            for spelling in spellings
+        }
+    assert observed == spellings
+
+
+def test_declared_proof_fixture_roots_are_explicit_storage_outputs(tmp_path):
+    """bat00, 2026-11-04: the trunk worker declares proof fixture roots outside
+    the artifact root, and the test storage authority refused 45 writes there."""
+    from molt import dx
+    from tests.conftest import declared_proof_fixture_roots
+
+    metadata, cargo = tmp_path / "trunk-metadata", tmp_path / "trunk-cargo"
+    assert declared_proof_fixture_roots({}) == ()
+    assert declared_proof_fixture_roots({"MOLT_PROOF_TEST_METADATA_ROOT": ""}) == ()
+    claims = declared_proof_fixture_roots(
+        {
+            "MOLT_PROOF_TEST_METADATA_ROOT": str(metadata),
+            "MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT": str(cargo),
+            "UNRELATED": str(tmp_path / "other"),
+        }
+    )
+    check = dx._StorageWriteCheck(list(claims), (), "", False, [])
+    for path, admitted in (
+        (metadata / "v2" / "0123" / "receipts", True),
+        (cargo / "v2" / "0123" / "molt-proof-output", True),
+        (tmp_path / "other" / "file", False),
+        (tmp_path / "trunk-metadata-sibling", False),
+    ):
+        target = path.resolve(strict=False)
+        assert dx._storage_write_admitted(check, target) is admitted, path
