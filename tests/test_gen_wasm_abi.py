@@ -3591,7 +3591,12 @@ def test_wasm_abi_manifest_owns_link_export_policy() -> None:
         _physical_runtime_symbol(data, name)
         for name in policy["runtime_export_aliases"]
     }
-    storage_exports = {"memory", "molt_memory", "molt_table", "__indirect_function_table"}
+    storage_exports = {
+        "memory",
+        "molt_memory",
+        "molt_table",
+        "__indirect_function_table",
+    }
     assert wasm_link_format._ESSENTIAL_EXPORTS == {
         name if name in storage_exports else _physical_runtime_symbol(data, name)
         for name in policy["essential_exports"]
