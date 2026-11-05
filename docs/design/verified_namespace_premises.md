@@ -951,21 +951,32 @@ run time (see "Open siblings").
   target, each present in `dir(builtins)` of the running interpreter.
 - Differentials against CPython 3.12.16 on native, LLVM and WASM:
   - `named_builtin_replaced_repro.py`;
-  - one program per newly catalogued callable, type and constant
-    (`replaced_builtin_<name>.py`, 37 programs). Each replaces the builtin at
-    module level, through a `builtins.` attribute and through a
-    `__builtins__` mapping, and calls or reads it from module and function
-    scope;
+  - one program per dispatch family (`replaced_builtin_scalar_calls.py`,
+    `replaced_builtin_iterator_calls.py`, `replaced_builtin_fallback_calls.py`,
+    `replaced_builtin_constants.py`), plus `replaced_builtin_print.py` and
+    `replaced_builtin_super.py`, which need their own output channel and
+    class context. For each newly catalogued callable, type and constant in
+    turn, the program replaces it at module level and through a `builtins.`
+    attribute, reads or calls it from module and function scope, and
+    restores it; a final `__builtins__` mapping replaces all of them for the
+    functions defined after it. The lane first wrote one program per name
+    (37); on the shared host each build took about eight minutes, so the
+    family programs keep the per-name coverage in 6 programs;
   - `replaced_builtin_exceptions.py`: each of the 69 exception spellings is
     read and checked against `builtins.<name>` unreplaced, then replaced in
     the three forms. The spellings share one lowering, so one program covers
     them;
+  - `proven_builtin_exception_identity.py`: with no writer, every proved
+    exception read, in a function and at module scope, is the object
+    `builtins` publishes under its spelling, and the ten constructions build
+    that class;
   - `unproved_frame_builtins.py`: a writer that stores the same object
     (`builtins.locals = builtins.locals`) makes the reads unproved; `globals`,
     `locals`, `vars`, `dir` and `super` are then called at module scope, in a
     method, a comprehension, a generator, a coroutine and a closure;
-  - `proven_class_body_builtins.py`: proved builtin reads and calls in a class
-    body before its first call.
+  - `proven_class_body_builtins.py`: proved builtin reads and a proved
+    `locals()` call in a class body before its first call; the reads after
+    that call keep the live lookup.
 - Census of the 144 programs, binary sizes and module counts for hello and
   `loop`, the five-pair primitive A/B, and a count of named-lowering operations
   against dynamic calls in the emitted IR of hello and `loop` on base and head
@@ -1001,14 +1012,29 @@ source before it lands.
   calls keep the call fact's elision proof, as module code does.
 - **Frame-reading builtins.** The same run showed a pre-existing runtime gap: a
   dynamic call of `locals`, `vars` or zero-argument `dir` from a class body
-  reads the enclosing frame, not the class mapping (base gives the same wrong
-  result for an aliased call; repro
-  `logs/agents/lane-hf776-builtin-proofs/artifacts/evidence/class_body_dynamic_locals_gap.py`).
-  `_FRAME_REFLECTIVE_BUILTINS` never covered that case (base routes such a
-  call to the dynamic path before named dispatch), so deleting it changes no
-  class-body lowering. `unproved_frame_builtins.py` covers the scopes where
-  the dynamic call is correct, and `proven_class_body_builtins.py` covers the
-  proved class-body reads.
+  reads the enclosing frame, not the class mapping. Base gives the same wrong
+  result for an aliased call (`alias = locals` at module scope, `alias()` in
+  the body) and for a `locals()` call after the body's first call (measured:
+  base and head print the module's names for `kind = type(x)` followed by
+  `names = sorted(locals())`). `_FRAME_REFLECTIVE_BUILTINS` never covered that
+  case (base routes such a call to the dynamic path before named dispatch), so
+  deleting it changes no class-body lowering. `unproved_frame_builtins.py`
+  covers the scopes where the dynamic call is correct, and
+  `proven_class_body_builtins.py` covers the proved class-body reads.
+- **`__import__` provenance.** The IR count showed two `__import__(...)`
+  calls in the `loop` program (`_frozen_importlib.spec_from_loader`,
+  `typing._require_importlib_util_module`) that base lowered to `BUILTIN_FUNC`
+  and the head lowered to the dynamic call with no writer. The flow records a
+  read of a canonical import callable (`SOURCE_CALLABLE_IDENTITIES`) as its own
+  source origin, for import discovery, and `exact_builtin_name` refused every
+  read with a source origin, a rule meant for star imports. So no
+  `__import__` read could be proved. A star lookup now sets its own fact
+  (`PythonExpressionFact.star_export_lookup`), and `exact_builtin_name`
+  accepts a read whose only origin is its own import provenance. With no
+  writer, `__import__(...)` lowers to `BUILTIN_FUNC` as on base; a member
+  writer, a `__builtins__` writer or a star import keeps the live call.
+  `replaced_builtin_fallback_calls.py` replaces `__import__` in the three
+  forms.
 
 ### Open siblings
 
