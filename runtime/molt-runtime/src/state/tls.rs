@@ -10,7 +10,7 @@ use crate::state::runtime_state::RuntimeState;
 /// thread-local. Compiled code enters the runtime on every operation, and on
 /// macOS each `thread_local!` key costs its own `_tlv_get_addr` call; one key
 /// makes an entry, its drop and its runtime-state resolution one lookup.
-/// Every field is a plain `Cell` and the struct has no destructor, so access
+/// The record has no destructor, so access
 /// never fails, even while other thread-locals are destroyed.
 ///
 /// It is also the thread record compiled code holds, as CPython's code holds
@@ -53,6 +53,10 @@ pub(crate) struct ExecutionTls {
     /// Borrowed from the outermost terminal release until its queue drains.
     /// A pointer Cell has no TLS destructor, including during runtime teardown.
     pub(crate) terminal_release: Cell<*const crate::object::bounded_release::TerminalReleaseState>,
+    /// Explicit mutex and suspended-GIL ownership. Its initialized storage has
+    /// no automatic destructor; the GIL authority consumes every acquisition.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) native_gil: crate::concurrency::gil::GilMutexCustody,
 }
 
 const _: () = {
@@ -62,6 +66,7 @@ const _: () = {
     };
     use std::mem::{offset_of, size_of};
     assert!(size_of::<Cell<bool>>() == 1);
+    assert!(!std::mem::needs_drop::<ExecutionTls>());
     assert!(
         offset_of!(ExecutionTls, exception_pending) as i32
             == THREAD_RECORD_EXCEPTION_PENDING_OFFSET
@@ -91,6 +96,8 @@ thread_local! {
             bound_state: Cell::new(std::ptr::null()),
             tls_guard_touched: Cell::new(false),
             terminal_release: Cell::new(std::ptr::null()),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_gil: crate::concurrency::gil::GilMutexCustody::new(),
         }
     };
 }
@@ -121,12 +128,12 @@ pub extern "C" fn molt_thread_record() -> u64 {
 }
 
 thread_local! {
-    pub(crate) static PARSE_ARENA: RefCell<TempArena> = RefCell::new(TempArena::new(8 * 1024));
-    pub(crate) static CONTEXT_STACK: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
-    pub(crate) static FRAME_STACK: RefCell<Vec<FrameEntry>> = const { RefCell::new(Vec::new()) };
-    pub(crate) static TRACE_FRAME_PUSH_STACK: RefCell<Vec<bool>> = const { RefCell::new(Vec::new()) };
-    pub(crate) static REPR_STACK: RefCell<Vec<PtrSlot>> = const { RefCell::new(Vec::new()) };
-    pub(crate) static REPR_SET: RefCell<HashSet<PtrSlot>> = RefCell::new(HashSet::new());
+    pub(crate) static PARSE_ARENA: std::mem::ManuallyDrop<RefCell<TempArena>> = std::mem::ManuallyDrop::new(RefCell::new(TempArena::new(8 * 1024)));
+    pub(crate) static CONTEXT_STACK: std::mem::ManuallyDrop<RefCell<Vec<u64>>> = const { std::mem::ManuallyDrop::new(RefCell::new(Vec::new())) };
+    pub(crate) static FRAME_STACK: std::mem::ManuallyDrop<RefCell<Vec<FrameEntry>>> = const { std::mem::ManuallyDrop::new(RefCell::new(Vec::new())) };
+    pub(crate) static TRACE_FRAME_PUSH_STACK: std::mem::ManuallyDrop<RefCell<Vec<bool>>> = const { std::mem::ManuallyDrop::new(RefCell::new(Vec::new())) };
+    pub(crate) static REPR_STACK: std::mem::ManuallyDrop<RefCell<Vec<PtrSlot>>> = const { std::mem::ManuallyDrop::new(RefCell::new(Vec::new())) };
+    pub(crate) static REPR_SET: std::mem::ManuallyDrop<RefCell<HashSet<PtrSlot>>> = std::mem::ManuallyDrop::new(RefCell::new(HashSet::new()));
     pub(crate) static REPR_DEPTH: Cell<usize> = const { Cell::new(0) };
     pub(crate) static TRACEBACK_SUPPRESS: Cell<usize> = const { Cell::new(0) };
 }

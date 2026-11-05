@@ -57,6 +57,18 @@ pub(crate) static THREAD_LOCAL_DROP_TEST_TRACE: std::sync::Mutex<
 > = std::sync::Mutex::new(None);
 
 #[cfg(test)]
+pub(crate) struct ThreadStateDropTestGate {
+    pub(crate) owner: std::thread::ThreadId,
+    pub(crate) entered: std::sync::mpsc::Sender<()>,
+    pub(crate) release: std::sync::Arc<std::sync::Barrier>,
+    pub(crate) completion: std::sync::mpsc::Sender<()>,
+}
+
+#[cfg(test)]
+pub(crate) static THREAD_STATE_DROP_TEST_GATE: std::sync::Mutex<Option<ThreadStateDropTestGate>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
 fn trace_thread_local_drop(stage: &'static str) {
     let trace = { THREAD_LOCAL_DROP_TEST_TRACE.lock().unwrap().clone() };
     if let Some((owner, sender)) = trace
@@ -87,36 +99,13 @@ impl Drop for ThreadLocalGuard {
     fn drop(&mut self) {
         #[cfg(test)]
         trace_thread_local_drop("enter");
-        // After `molt_runtime_shutdown` the RuntimeState has been freed and
-        // both the ready-state publication and `TLS_RUNTIME_STATE` are null.
-        // Attempting GIL acquisition + cleanup here would either:
-        //   (a) dereference a dangling TLS pointer (use-after-free), or
-        //   (b) trigger `molt_runtime_init` to re-allocate a new RuntimeState
-        //       just to tear it down again.
-        // Both are incorrect.  The shutdown path already called
-        // `clear_thread_local_state`, so there is nothing left to clean up.
-        //
-        // HOWEVER: we must still release heap-backed TLS caches NOW, while the
-        // global allocator (mimalloc) is still alive. If we leave them for
-        // Rust's TLS destructor phase, deallocation can race with mimalloc's
-        // own thread-local cleanup (registered via pthread_key_create).
-        let gil = GilGuard::new();
+        // The C lifetime sentinel was armed last and has already drained both
+        // managed ownership domains under its exact origin. Never resurrect
+        // that record or substitute a Ready runtime during allocator cleanup.
+        // These buffers must retire before mimalloc's native TLS teardown.
+        drain_heap_tls();
         #[cfg(test)]
-        trace_thread_local_drop("gil_acquired");
-        if crate::state::runtime_state::runtime_state_for_gil().is_none() {
-            #[cfg(test)]
-            trace_thread_local_drop("runtime_absent");
-            drop(gil);
-            #[cfg(test)]
-            trace_thread_local_drop("gil_released");
-            drain_heap_tls();
-            #[cfg(test)]
-            trace_thread_local_drop("drained");
-            return;
-        }
-        clear_thread_local_state_without_ref_owning_ic(&gil.token());
-        #[cfg(test)]
-        trace_thread_local_drop("cleared");
+        trace_thread_local_drop("drained");
     }
 }
 
@@ -623,6 +612,24 @@ fn clear_thread_local_state(_py: &PyToken<'_>) -> bool {
 fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
     crate::gil_assert();
     let exception = take_thread_exception_for_teardown(_py);
+    #[cfg(test)]
+    let test_completion = {
+        let mut slot = THREAD_STATE_DROP_TEST_GATE.lock().unwrap();
+        let gate = if slot
+            .as_ref()
+            .is_some_and(|gate| gate.owner == std::thread::current().id() && exception.is_some())
+        {
+            slot.take()
+        } else {
+            None
+        };
+        drop(slot);
+        if let Some(gate) = &gate {
+            gate.entered.send(()).unwrap();
+            gate.release.wait();
+        }
+        gate.map(|gate| gate.completion)
+    };
     let mut changed =
         exception.is_some() | clear_thread_asyncgen_hooks(_py) | clear_thread_context(_py);
     crate::builtins::exceptions::exception_pending_flag().set(false);
@@ -640,10 +647,7 @@ fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
     let active = ACTIVE_EXCEPTION_STACK
         .try_with(|stack| std::mem::take(&mut *stack.borrow_mut()))
         .unwrap_or_default();
-    let _ = ACTIVE_EXCEPTION_FALLBACK.try_with(|stack| {
-        let mut stack = stack.borrow_mut();
-        let _ = std::mem::take(&mut *stack);
-    });
+    let fallback = ACTIVE_EXCEPTION_FALLBACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
     let _ = EXCEPTION_STACK.try_with(|stack| {
         let mut stack = stack.borrow_mut();
         let _ = std::mem::take(&mut *stack);
@@ -658,12 +662,22 @@ fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
     // Every TLS owner and execution marker is detached before Python can run.
     // In particular no RefCell borrow survives a decref that can repopulate the
     // same context/exception stack from a finalizer.
-    changed |= !contexts.is_empty() || !frames.is_empty() || !active.is_empty();
+    changed |=
+        !contexts.is_empty() || !frames.is_empty() || !active.is_empty() || !fallback.is_empty();
     if let Some(bits) = exception {
         dec_ref_bits(_py, bits);
     }
+    #[cfg(test)]
+    if let Some(completion) = test_completion {
+        completion.send(()).unwrap();
+    }
     for bits in contexts.into_iter().chain(active) {
         dec_ref_bits(_py, bits);
+    }
+    for entry in fallback {
+        if entry.owned {
+            dec_ref_bits(_py, entry.bits);
+        }
     }
     // Every abandoned entry exits as a return would, innermost first: a frame
     // object that shares its bindings takes them over, otherwise they are
@@ -672,10 +686,31 @@ fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
     for frame in frames.into_iter().rev() {
         frame.exit(_py);
     }
-    let _ = PARSE_ARENA.try_with(|arena| arena.borrow_mut().clear());
+    changed |= crate::builtins::exceptions::clear_thread_unraisable_state(_py);
+    crate::builtins::frames::clear_frame_home_tls_storage();
+    crate::async_rt::awaitable::clear_python_resume_tls_storage();
+    crate::builtins::modules::clear_module_execution_tls_storage();
+    PARSE_ARENA.with(|arena| arena.borrow_mut().drain());
+    crate::REPR_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        assert!(stack.is_empty(), "retiring an active repr stack");
+        *stack = Vec::new();
+    });
+    crate::REPR_SET.with(|set| {
+        let mut set = set.borrow_mut();
+        assert!(set.is_empty(), "retiring an active repr set");
+        *set = std::collections::HashSet::new();
+    });
     changed |= clear_attr_tls_caches(_py);
     changed |= clear_const_data_literal_caches(_py);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        changed |= crate::concurrency::locks::clear_thread_locals(_py);
+    }
     clear_utf8_count_tls();
+    if molt_cpython_abi::api::object::runtime_thread_state_lifetime_is_retired() {
+        crate::cpython_abi_hooks::clear_abi_gil_tls_storage();
+    }
     changed
 }
 

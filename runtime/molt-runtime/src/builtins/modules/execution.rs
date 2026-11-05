@@ -64,7 +64,15 @@ const LOADER_PATH_PENDING: u8 = 1 << 4;
 const LOADER_METADATA_PENDING: u8 = SCRIPT_METADATA_PENDING | LOADER_PATH_PENDING;
 
 thread_local! {
-    static EXECUTION_STACK: RefCell<Vec<ExecutionContext>> = const { RefCell::new(Vec::new()) };
+    static EXECUTION_STACK: std::mem::ManuallyDrop<RefCell<Vec<ExecutionContext>>> = const { std::mem::ManuallyDrop::new(RefCell::new(Vec::new())) };
+}
+
+pub(crate) fn clear_module_execution_tls_storage() {
+    EXECUTION_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        assert!(stack.is_empty(), "retiring an active module execution");
+        *stack = Vec::new();
+    });
 }
 
 struct Argv0Swap {

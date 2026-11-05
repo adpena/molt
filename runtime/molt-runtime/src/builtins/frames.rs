@@ -33,8 +33,8 @@ pub(crate) use activation::{molt_frame_cell_publish, molt_frame_locals_begin};
 #[cfg(test)]
 pub(crate) use bindings::molt_frame_homes;
 pub(crate) use bindings::{
-    FramePlan, FrameRelease, frame_argument_zero, frame_bindings_detach, frame_bindings_visit,
-    touch_frame_home_tls_lifetime,
+    FramePlan, FrameRelease, clear_frame_home_tls_storage, frame_argument_zero,
+    frame_bindings_detach, frame_bindings_visit, touch_frame_home_tls_lifetime,
 };
 pub(crate) use locals_proxy::{
     frame_locals_proxy_detach, frame_locals_proxy_visit, frame_object_detach, frame_object_visit,

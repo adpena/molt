@@ -74,26 +74,42 @@ use molt_cpython_abi::api::object::{PY_GIL_STATE_LOCKED, PY_GIL_STATE_UNLOCKED};
 
 // ─── Hook implementations ─────────────────────────────────────────────────
 
+#[cfg(test)]
+mod gil_scope_tests;
+
 pub(crate) fn abi_buffer_view_from_runtime(view: crate::MoltBufferView) -> AbiMoltBufferView {
     unsafe { std::mem::transmute::<crate::MoltBufferView, AbiMoltBufferView>(view) }
 }
 
 #[derive(Clone, Copy)]
 struct AbiGilEnsureState {
-    depth: usize,
-    first_state: c_int,
+    returned_state: c_int,
     encoded_lane: u64,
+    suspension_depth: usize,
 }
 
 thread_local! {
-    static ABI_GIL_ENSURE_STATE: std::cell::Cell<AbiGilEnsureState> = const {
-        std::cell::Cell::new(AbiGilEnsureState {
-            depth: 0,
-            first_state: 0,
-            encoded_lane: 0,
-        })
-    };
-    static ABI_GIL_RELEASE_STATE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    // These are ownership stacks, not cached execution facts. Explicit scopes
+    // consume every entry; storage stays usable throughout late TLS callbacks.
+    static ABI_GIL_ENSURE_STATE: std::mem::ManuallyDrop<std::cell::RefCell<Vec<AbiGilEnsureState>>> =
+        const { std::mem::ManuallyDrop::new(std::cell::RefCell::new(Vec::new())) };
+    static ABI_GIL_RELEASE_STATE: std::mem::ManuallyDrop<std::cell::RefCell<Vec<u64>>> =
+        const { std::mem::ManuallyDrop::new(std::cell::RefCell::new(Vec::new())) };
+}
+
+pub(crate) fn clear_abi_gil_tls_storage() {
+    ABI_GIL_ENSURE_STATE.with(|slot| {
+        let mut stack = slot.borrow_mut();
+        if stack.is_empty() {
+            *stack = Vec::new();
+        }
+    });
+    ABI_GIL_RELEASE_STATE.with(|slot| {
+        let mut stack = slot.borrow_mut();
+        if stack.is_empty() {
+            *stack = Vec::new();
+        }
+    });
 }
 
 #[inline]
@@ -117,93 +133,73 @@ fn owned_result_from_pending(bits: u64) -> OwnedHandleResult {
 }
 
 fn gil_ensure_unit() -> c_int {
-    let was_held = gil_owned_by_current_thread();
-    let gil_state = if was_held {
+    let returned_state = if gil_owned_by_current_thread() {
         PY_GIL_STATE_LOCKED
     } else {
         PY_GIL_STATE_UNLOCKED
     };
+    ABI_GIL_ENSURE_STATE.with(|slot| slot.borrow_mut().reserve(1));
+    let guard = RuntimeExecutionGuard::enter_foreign_callback();
+    let suspension_depth = ABI_GIL_RELEASE_STATE.with(|slot| slot.borrow().len());
+    let encoded_lane = guard.into_encoded_lane();
     ABI_GIL_ENSURE_STATE.with(|slot| {
-        let mut state = slot.get();
-        if state.depth == 0 {
-            state.first_state = gil_state;
-            // The outermost Ensure is an embedding lifetime boundary, not an
-            // ordinary call boundary. Its matching final Release must clear
-            // runtime worker TLS and any runtime-created CPython thread state;
-            // nested Ensure/Release pairs preserve the outer custody exactly.
-            state.encoded_lane =
-                RuntimeExecutionGuard::enter_with_boundary_created_cleanup().into_encoded_lane();
-        } else {
-            assert!(
-                gil_owned_by_current_thread(),
-                "nested PyGILState_Ensure lost outer execution custody"
-            );
-        }
-        state.depth = state
-            .depth
-            .checked_add(1)
-            .expect("PyGILState_Ensure nesting depth overflow");
-        slot.set(state);
+        slot.borrow_mut().push(AbiGilEnsureState {
+            returned_state,
+            encoded_lane,
+            suspension_depth,
+        })
     });
-    gil_state
+    returned_state
 }
 
 fn gil_leave_unit(release_state: c_int) {
-    let encoded_lane = ABI_GIL_ENSURE_STATE.with(|slot| {
-        let mut state = slot.get();
-        assert!(
-            state.depth > 0,
-            "PyGILState_Release without matching PyGILState_Ensure"
-        );
-        let expected = if state.depth == 1 {
-            state.first_state
-        } else {
-            PY_GIL_STATE_LOCKED
-        };
+    assert!(
+        gil_owned_by_current_thread(),
+        "PyGILState_Release requires live GIL custody"
+    );
+    let suspension_depth = ABI_GIL_RELEASE_STATE.with(|slot| slot.borrow().len());
+    let state = ABI_GIL_ENSURE_STATE.with(|slot| {
+        let mut stack = slot.borrow_mut();
+        let state = *stack
+            .last()
+            .expect("PyGILState_Release without matching Ensure");
         assert_eq!(
-            release_state, expected,
+            release_state, state.returned_state,
             "PyGILState_Release state does not match its Ensure"
         );
-        let encoded_lane = (state.depth == 1).then_some(state.encoded_lane);
-        state.depth -= 1;
-        if state.depth == 0 {
-            state.first_state = 0;
-            state.encoded_lane = 0;
-        }
-        slot.set(state);
-        encoded_lane
+        assert_eq!(
+            suspension_depth, state.suspension_depth,
+            "PyGILState_Release crossed an unclosed SaveThread scope"
+        );
+        stack.pop().unwrap()
     });
-    if let Some(encoded_lane) = encoded_lane {
-        // SAFETY: the scalar TLS state consumes the one unmatched outer
-        // execution guard created by `gil_ensure_unit` on this thread.
-        drop(unsafe { RuntimeExecutionGuard::from_encoded_lane(encoded_lane) });
-    }
+    // SAFETY: this exact same-thread scope transfers and consumes one guard.
+    drop(unsafe { RuntimeExecutionGuard::from_encoded_lane(state.encoded_lane) });
 }
 
 fn gil_save_thread() {
-    ABI_GIL_RELEASE_STATE.with(|slot| {
-        assert!(
-            slot.get().is_none(),
-            "nested PyEval_SaveThread is not a valid custody transition"
-        );
-    });
     assert!(
         gil_owned_by_current_thread(),
         "PyEval_SaveThread requires current-thread GIL custody"
     );
-    ABI_GIL_RELEASE_STATE.with(|slot| {
-        debug_assert!(slot.get().is_none());
-        slot.set(Some(GilReleaseGuard::suspend().into_encoded_state()));
-    });
+    ABI_GIL_RELEASE_STATE.with(|slot| slot.borrow_mut().reserve(1));
+    let encoded = GilReleaseGuard::suspend().into_encoded_state();
+    ABI_GIL_RELEASE_STATE.with(|slot| slot.borrow_mut().push(encoded));
 }
 
 fn gil_restore_thread() {
     let encoded = ABI_GIL_RELEASE_STATE.with(|slot| {
-        slot.take()
+        *slot
+            .borrow()
+            .last()
             .expect("PyEval_RestoreThread without matching PyEval_SaveThread")
     });
-    // SAFETY: the single-slot state consumes its unmatched same-thread token.
+    // Validate and restore before consuming bridge bookkeeping, so a refused
+    // restore cannot lose the dormant owner's matching suspension identity.
     drop(unsafe { GilReleaseGuard::from_encoded_state(encoded) });
+    ABI_GIL_RELEASE_STATE.with(|slot| {
+        assert_eq!(slot.borrow_mut().pop(), Some(encoded));
+    });
 }
 
 unsafe extern "C" fn hook_gil_ensure() -> c_int {
@@ -240,8 +236,14 @@ unsafe extern "C" fn hook_runtime_is_initialized() -> c_int {
     c_int::from(crate::state::runtime_state::runtime_is_initialized())
 }
 
-unsafe extern "C" fn hook_thread_state_drop_enter() -> u64 {
-    crate::concurrency::execution::enter_retained_thread_state_drop()
+unsafe extern "C" fn hook_thread_state_drop_enter(runtime_owner: u64) -> u64 {
+    crate::concurrency::execution::enter_retained_thread_state_drop(runtime_owner)
+}
+
+unsafe extern "C" fn hook_thread_state_drop_cleanup() -> c_int {
+    crate::with_gil_entry_nopanic!(py, {
+        c_int::from(crate::state::clear_worker_thread_state(py))
+    })
 }
 
 unsafe extern "C" fn hook_thread_state_drop_leave(token: u64) {
@@ -5573,6 +5575,7 @@ pub fn register_cpython_hooks() -> bool {
                 operation_leave: hook_operation_leave,
                 runtime_is_initialized: hook_runtime_is_initialized,
                 thread_state_drop_enter: hook_thread_state_drop_enter,
+                thread_state_drop_cleanup: hook_thread_state_drop_cleanup,
                 thread_state_drop_leave: hook_thread_state_drop_leave,
                 attached_runtime_context: hook_attached_runtime_context,
                 pending_call_error: hook_pending_call_error,

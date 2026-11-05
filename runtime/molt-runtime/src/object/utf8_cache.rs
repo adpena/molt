@@ -37,7 +37,7 @@ pub(crate) struct Utf8CacheStore {
 }
 
 thread_local! {
-    pub(crate) static UTF8_COUNT_TLS: RefCell<Option<Utf8CountCacheEntry>> = const { RefCell::new(None) };
+    pub(crate) static UTF8_COUNT_TLS: std::mem::ManuallyDrop<RefCell<Option<Utf8CountCacheEntry>>> = const { std::mem::ManuallyDrop::new(RefCell::new(None)) };
 }
 
 pub(crate) fn clear_utf8_count_tls() {

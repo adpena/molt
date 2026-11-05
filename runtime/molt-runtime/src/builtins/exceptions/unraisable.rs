@@ -28,7 +28,7 @@ thread_local! {
     /// synchronously: same-thread code holding a handled-stack `RefMut` across
     /// transaction completion. The next unraisable boundary restores this
     /// snapshot before it detaches any state of its own.
-    static DEFERRED_UNRAISABLE_HANDLED: std::cell::RefCell<Option<HandledSnapshot>> = const { std::cell::RefCell::new(None) };
+    static DEFERRED_UNRAISABLE_HANDLED: std::mem::ManuallyDrop<std::cell::RefCell<Option<HandledSnapshot>>> = const { std::mem::ManuallyDrop::new(std::cell::RefCell::new(None)) };
 }
 
 /// A transaction is required at every unraisable boundary. It preserves the
@@ -111,6 +111,18 @@ fn release_fallback_stack(_py: &PyToken<'_>, stack: Vec<ExceptionContextFallback
             dec_ref_bits(_py, entry.bits);
         }
     }
+}
+
+/// Retire an abandoned ownership escrow under the same attached drain as the
+/// raised and handled channels. Its storage remains usable by late callbacks.
+pub(crate) fn clear_thread_unraisable_state(py: &PyToken<'_>) -> bool {
+    let saved = DEFERRED_UNRAISABLE_HANDLED.with(|slot| slot.borrow_mut().take());
+    let Some(saved) = saved else {
+        return false;
+    };
+    release_stack(py, saved.active);
+    release_fallback_stack(py, saved.fallback);
+    true
 }
 
 /// Resolve the detached handled channels. `true` means they were restored;

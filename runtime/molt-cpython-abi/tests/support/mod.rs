@@ -76,8 +76,15 @@ pub(crate) unsafe extern "C" fn operation_leave(token: u64) {
     assert_eq!(token, 1);
 }
 
-unsafe extern "C" fn thread_state_drop_enter() -> u64 {
+unsafe extern "C" fn thread_state_drop_enter(runtime_owner: u64) -> u64 {
+    assert_ne!(runtime_owner, 0);
     1
+}
+
+pub(crate) unsafe extern "C" fn thread_state_drop_cleanup() -> std::os::raw::c_int {
+    // This standalone ABI host owns no Molt TLS domain. Its C managed edges
+    // are drained by the real object.rs fixed point, not simulated here.
+    0
 }
 
 unsafe extern "C" fn thread_state_drop_leave(_token: u64) {}
@@ -231,6 +238,7 @@ fn assert_installed_runtime_hooks(requested: RuntimeHooks) {
             operation_leave,
             runtime_is_initialized,
             thread_state_drop_enter,
+            thread_state_drop_cleanup,
             thread_state_drop_leave,
             attached_runtime_context,
             pending_call_error,
@@ -446,6 +454,7 @@ impl AbiTestThreadStateTransaction {
         hooks.gil_leave = gil_leave;
         hooks.gil_check = gil_check;
         hooks.thread_state_drop_enter = thread_state_drop_enter;
+        hooks.thread_state_drop_cleanup = thread_state_drop_cleanup;
         hooks.thread_state_drop_leave = thread_state_drop_leave;
         hooks.native_gc_allocate = Some(native_gc_allocate);
         hooks.native_gc_track = native_gc_track;

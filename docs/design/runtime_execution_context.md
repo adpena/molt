@@ -4,10 +4,10 @@ Status: B1/B2 implemented and measured; attached ABI selected 2026-11-04, with i
 and qualification pending. Section 11 supersedes the earlier deferral. The first draft proposed
 an attached ABI: runtime entries
 that take the execution context as an argument. Three reviews rejected it as written (section 6).
-Stage 2 is now three changes and a measurement gate: B1 makes the nested runtime entry nearly free
-and binds the runtime state once per attachment; B2 tests the pending-exception byte inline on LLVM
-and WASM; the gate measures both. The attached ABI stays a recorded, deferred option. Owner: lane
-`hf198-entry-context`; review and landing: integrator. Ledger: HF-198. Coordinates with HF-670
+The measured B1 change makes the nested runtime entry cheaper and binds the runtime state once
+per attachment; B2 tests the pending-exception byte inline on LLVM and WASM. Section 11 owns the
+selected attached ABI migration. Owner: lane `hf198-attached-context`; review and landing:
+integrator. Ledger: HF-198. Coordinates with HF-670
 (calling convention), HF-205 (inline refcount), HF-185 (frame records) and HF-657 (eval-breaker
 word).
 
@@ -418,6 +418,16 @@ context and lease only after both domains are quiescent and all callback/suspens
 closed. The later runtime TLS sentinel performs allocator-only cleanup. A late exception-release
 sentinel must either retain the published origin or have transferred its roots into that drain.
 `tls_guard_touched` prevents reinitializing an already armed or destroying sentinel.
+
+The C record, managed frame/context/exception stacks, attribute cache and thread-local dictionary
+inverse edges have permanent initialized storage with explicit cleanup. Native TLS destruction
+cannot silently discard their integer-carried strong edges or make a callback's storage
+inaccessible. The attached fixed point detaches ownership before decref, frees idle frame/resume/
+module buffers, and leaves usable empty storage for later foreign TLS callbacks. A late boundary
+owns any record it creates through retirement; it cannot re-arm a destroyed lifetime sentinel.
+`threading.local` dictionaries retain one owner in their local object's thread map; weak inverse
+edges let the exact exiting thread detach its dictionaries. Neither that map's mutex nor a TLS
+borrow survives a finalizer, and local-object destruction detaches the whole map before decref.
 
 ### 11.3 Suspension, public release and foreign return
 

@@ -9,9 +9,7 @@ use crate::object::foreign::{NativeObjectOwner, retire_native_reference};
 thread_local! {
     // Rust-owned names carry no GC roots. All linked header transports use
     // the same runtime-owned context and restore it across nested imports.
-    static PACKAGE_CONTEXT: std::cell::RefCell<Option<String>> = const {
-        std::cell::RefCell::new(None)
-    };
+    static PACKAGE_CONTEXT: std::mem::ManuallyDrop<std::cell::RefCell<Option<String>>> = const { std::mem::ManuallyDrop::new(std::cell::RefCell::new(None)) };
 }
 
 struct PackageContext(Option<String>);

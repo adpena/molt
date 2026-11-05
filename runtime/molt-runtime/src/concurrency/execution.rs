@@ -332,6 +332,7 @@ pub(crate) struct RuntimeExecutionCustody {
     established_cext_context: bool,
     destroy_thread_state: bool,
     established_attachment: bool,
+    resumed_attachment: bool,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -348,6 +349,7 @@ impl RuntimeExecutionCustody {
             established_cext_context: false,
             destroy_thread_state: false,
             established_attachment: false,
+            resumed_attachment: false,
         }
     }
 
@@ -368,14 +370,20 @@ impl RuntimeExecutionCustody {
                 "logical wasm GIL custody diverged from execution nesting"
             );
         }
-        let attached_before = molt_cpython_abi::api::object::runtime_execution_thread_is_attached();
-        if attached_before {
+        use molt_cpython_abi::api::object::BorrowedRuntimeThreadAttachment;
+        let attachment = crate::state::runtime_state::runtime_state_for_gil()
+            .map(|state| {
+                molt_cpython_abi::api::object::borrow_runtime_execution_thread(state.identity())
+            })
+            .unwrap_or(BorrowedRuntimeThreadAttachment::Absent);
+        if attachment != BorrowedRuntimeThreadAttachment::Absent {
             enter_c_extension_execution_context();
             return Self {
                 clear_worker_state: false,
                 established_cext_context: true,
                 destroy_thread_state: false,
                 established_attachment: false,
+                resumed_attachment: attachment == BorrowedRuntimeThreadAttachment::Resumed,
             };
         }
         if !crate::state::runtime_state::runtime_is_initialized() {
@@ -408,6 +416,7 @@ impl RuntimeExecutionCustody {
                     ExecutionCleanupPolicy::WorkerEnd => true,
                 },
             established_attachment,
+            resumed_attachment: false,
             established_cext_context: true,
         }
     }
@@ -430,6 +439,9 @@ impl RuntimeExecutionCustody {
                 }
             },
             || {
+                if self.resumed_attachment {
+                    molt_cpython_abi::api::object::suspend_resumed_runtime_execution_thread();
+                }
                 if self.established_attachment {
                     molt_cpython_abi::api::object::detach_runtime_execution_thread();
                     if self.destroy_thread_state {
@@ -477,11 +489,12 @@ impl RuntimeExecutionCustody {
             | (u64::from(self.established_attachment) << 1)
             | (u64::from(self.destroy_thread_state) << 2)
             | (u64::from(self.established_cext_context) << 3)
+            | (u64::from(self.resumed_attachment) << 4)
     }
 
     fn from_encoded_bits(bits: u64) -> Self {
         assert_eq!(
-            bits & !0b1111,
+            bits & !0b1_1111,
             0,
             "invalid encoded execution custody {bits}"
         );
@@ -490,6 +503,7 @@ impl RuntimeExecutionCustody {
             established_attachment: bits & 2 != 0,
             destroy_thread_state: bits & 4 != 0,
             established_cext_context: bits & 8 != 0,
+            resumed_attachment: bits & 16 != 0,
         }
     }
 }
@@ -576,7 +590,7 @@ struct OwnedExecution {
 /// The encoded lane of a nested entry that borrowed its caller's custody. It
 /// lies outside the GIL lane byte and the custody and lease bits, so no owned
 /// lane can equal it.
-const BORROWED_EXECUTION_LANE: u64 = 1 << 13;
+const BORROWED_EXECUTION_LANE: u64 = 1 << 14;
 
 impl RuntimeExecutionGuard {
     /// Enter a runtime call, lazily initializing only before acquiring the GIL.
@@ -596,9 +610,14 @@ impl RuntimeExecutionGuard {
         Self::enter_with_policy(true, ExecutionCleanupPolicy::WorkerEnd)
     }
 
-    #[inline(always)]
-    pub(crate) fn enter_with_boundary_created_cleanup() -> Self {
-        Self::enter_with_policy(true, ExecutionCleanupPolicy::BoundaryCreated)
+    /// A foreign callback owns a real scope even when it borrows an existing
+    /// attachment. SaveThread may have made that owner's C record dormant.
+    pub(crate) fn enter_foreign_callback() -> Self {
+        Self::enter_cold(
+            crate::state::execution_tls(),
+            true,
+            ExecutionCleanupPolicy::BoundaryCreated,
+        )
     }
 
     /// Compiled code enters here on every runtime operation, already holding
@@ -639,13 +658,23 @@ impl RuntimeExecutionGuard {
         initialize_runtime: bool,
         cleanup_policy: ExecutionCleanupPolicy,
     ) -> Self {
+        let cleanup_policy = if cleanup_policy == ExecutionCleanupPolicy::Preserve
+            && molt_cpython_abi::api::object::runtime_thread_state_lifetime_is_retired()
+        {
+            // The actual C lifetime key is gone. A late foreign boundary owns
+            // any record it creates through cleanup, not another TLS sentinel.
+            ExecutionCleanupPolicy::BoundaryCreated
+        } else {
+            cleanup_policy
+        };
         if tls.lease_depth.get() != 0 || tls.shutdown_drain_depth.get() != 0 {
-            // Custody whose GIL the inline test cannot borrow: the
-            // TLS-destruction GIL lane on native, a lease outside a logical
-            // WASM frame on wasm32. These keep the nested guard they always
-            // had, with no new custody.
+            // A forced foreign boundary owns its scope even if it borrows
+            // current lifetime admission. On WASM an admitted owner may also
+            // be outside a logical execution frame.
             if let Some(gil) = GilGuard::new_if_held_in(tls) {
-                return Self::owned(tls, gil, None, false);
+                let custody =
+                    RuntimeExecutionCustody::enter(!execution_is_nested(), cleanup_policy);
+                return Self::owned(tls, gil, Some(custody), false);
             }
             // Admission/retained shutdown custody survives GIL suspension.
             // Reentry must not wait for Ready: the finalization owner may be
@@ -764,7 +793,7 @@ impl RuntimeExecutionGuard {
         } = owned;
         let custody = custody.unwrap_or_else(RuntimeExecutionCustody::inherited);
         gil.into_encoded_lane()
-            | ((custody.encoded_bits() | (u64::from(active_lifecycle_lease) << 4)) << 8)
+            | ((custody.encoded_bits() | (u64::from(active_lifecycle_lease) << 5)) << 8)
     }
 
     /// Rebuild the exact guard returned by [`Self::into_encoded_lane`].
@@ -781,14 +810,14 @@ impl RuntimeExecutionGuard {
         let gil = unsafe { GilGuard::from_encoded_lane(token & 0xff) };
         let execution_bits = token >> 8;
         assert_eq!(
-            execution_bits & !0b1_1111,
+            execution_bits & !0b11_1111,
             0,
             "invalid encoded execution lane {execution_bits}"
         );
-        let custody_bits = execution_bits & 0b1111;
+        let custody_bits = execution_bits & 0b1_1111;
         let custody =
             (custody_bits != 0).then(|| RuntimeExecutionCustody::from_encoded_bits(custody_bits));
-        Self::owned(tls, gil, custody, execution_bits & 0b1_0000 != 0)
+        Self::owned(tls, gil, custody, execution_bits & 0b10_0000 != 0)
     }
 }
 
@@ -838,28 +867,49 @@ pub extern "C" fn molt_runtime_execution_leave(token: u64) {
     drop(unsafe { RuntimeExecutionGuard::from_encoded_lane(token) });
 }
 
-/// Enter the one non-attaching destruction lane used by CPython thread-state
-/// TLS. Unlike [`RuntimeExecutionGuard`], this acquires only lifecycle and GIL
-/// custody: creating or attaching thread state here would recurse into the TLS
-/// record currently being destroyed.
-pub(crate) fn enter_retained_thread_state_drop() -> u64 {
+/// Own normal execution custody for destruction of one exact retained C
+/// record. The C drain makes that existing record current; creating another
+/// record here would recurse into the ownership domain being destroyed.
+pub(crate) fn enter_retained_thread_state_drop(runtime_owner: u64) -> u64 {
+    assert_ne!(
+        runtime_owner, 0,
+        "thread-state destruction requires its exact origin"
+    );
     loop {
-        let Some(active_lifecycle_lease) =
-            crate::state::runtime_state::try_acquire_runtime_execution_lease(true)
-        else {
-            if !crate::state::runtime_state::runtime_is_initialized() {
-                return 0;
-            }
-            std::thread::yield_now();
-            continue;
-        };
+        let tls = crate::state::execution_tls();
+        let active_lifecycle_lease =
+            if tls.lease_depth.get() != 0 || tls.shutdown_drain_depth.get() != 0 {
+                // A suspended ordinary/drain owner retains this allocation.
+                // Independently reacquire its GIL below, never wait for Ready.
+                false
+            } else {
+                let Some(acquired) =
+                    crate::state::runtime_state::try_acquire_runtime_execution_lease(true)
+                else {
+                    if !crate::state::runtime_state::runtime_is_initialized() {
+                        return 0;
+                    }
+                    std::thread::yield_now();
+                    continue;
+                };
+                acquired
+            };
         let gil = GilGuard::new();
-        if crate::state::runtime_state::runtime_state_for_gil().is_some() {
+        let (resolved, matches_origin) = crate::state::runtime_state::runtime_state_for_gil()
+            .map_or((false, false), |state| {
+                (true, state.identity() as u64 == runtime_owner)
+            });
+        if matches_origin {
+            enter_c_extension_execution_context();
             return gil.into_encoded_lane() | (u64::from(active_lifecycle_lease) << 8);
         }
         drop(gil);
         if active_lifecycle_lease {
             crate::state::runtime_state::release_runtime_execution_lease();
+        }
+        if resolved {
+            // A different Ready runtime cannot license this record's payload.
+            return 0;
         }
         if !crate::state::runtime_state::runtime_is_initialized() {
             return 0;
@@ -877,6 +927,11 @@ pub(crate) unsafe fn leave_retained_thread_state_drop(token: u64) {
     assert_eq!(token & !0x1ff, 0, "invalid retained-state drop token");
     let active_lifecycle_lease = token & 0x100 != 0;
     let gil = unsafe { GilGuard::from_encoded_lane(token & 0xff) };
+    assert!(
+        gil_held(),
+        "thread-state finalizer returned without restoring the GIL"
+    );
+    leave_c_extension_execution_context();
     if active_lifecycle_lease {
         crate::state::runtime_state::release_runtime_execution_lease();
     }

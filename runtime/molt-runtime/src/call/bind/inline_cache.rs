@@ -355,14 +355,8 @@ impl RefOwningIcTls {
     }
 }
 
-impl Drop for RefOwningIcTls {
-    fn drop(&mut self) {
-        // Never touch another LocalKey here: Rust does not specify cross-key
-        // destructor order. Worker wrappers and runtime teardown explicitly
-        // drain owned refs under a live PyToken; at process death integer
-        // carriers may be abandoned with the dying address space.
-    }
-}
+// Fixed storage has no destructor. The exact-origin thread-state drain owns
+// every managed edge, including callbacks from later native TLS destructors.
 
 thread_local! {
     static REF_OWNING_IC_TLS: std::cell::RefCell<RefOwningIcTls> =

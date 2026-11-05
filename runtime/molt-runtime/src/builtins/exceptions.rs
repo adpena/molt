@@ -117,8 +117,9 @@ pub(crate) use raised_state::{
     RaisedSnapshot, resolve_raised, take_raised, with_saved_raised_exception,
 };
 pub(crate) use unraisable::{
-    context_repr as unraisable_context_repr, molt_unraisable_hook_args_is_exact,
-    report_captured_unraisable, run_unraisable, run_unraisable_with_policy,
+    clear_thread_unraisable_state, context_repr as unraisable_context_repr,
+    molt_unraisable_hook_args_is_exact, report_captured_unraisable, run_unraisable,
+    run_unraisable_with_policy,
 };
 
 mod exception_state_abi;
@@ -7053,9 +7054,9 @@ mod tests {
                 exit_rx.recv().unwrap();
             });
             let worker_id = thread_id_rx.recv().unwrap();
-            *super::state::THREAD_EXCEPTION_DROP_TEST_GATE
+            *crate::state::lifecycle::THREAD_STATE_DROP_TEST_GATE
                 .lock()
-                .unwrap() = Some(super::state::ThreadExceptionDropTestGate {
+                .unwrap() = Some(crate::state::lifecycle::ThreadStateDropTestGate {
                 owner: worker_id,
                 entered: entered_tx,
                 release: std::sync::Arc::clone(&release),
@@ -7164,20 +7165,14 @@ mod tests {
             );
             assert_eq!(
                 thread_exit,
-                vec![
-                    "enter",
-                    "gil_acquired",
-                    "runtime_absent",
-                    "gil_released",
-                    "drained"
-                ],
-                "after runtime retirement, thread-exit TLS must observe only the absent-runtime drain"
+                vec!["enter", "drained"],
+                "after runtime retirement, thread-exit TLS must only retire allocator buffers"
             );
             shutdown.join().unwrap();
             *crate::state::lifecycle::THREAD_LOCAL_DROP_TEST_TRACE
                 .lock()
                 .unwrap() = None;
-            *super::state::THREAD_EXCEPTION_DROP_TEST_GATE
+            *crate::state::lifecycle::THREAD_STATE_DROP_TEST_GATE
                 .lock()
                 .unwrap() = None;
         });

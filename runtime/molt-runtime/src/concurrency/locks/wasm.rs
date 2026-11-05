@@ -1306,10 +1306,10 @@ pub unsafe extern "C" fn molt_local_drop(handle_bits: u64) -> u64 {
             }
             release_ptr(ptr);
             let local = Rc::from_raw(ptr as *const MoltLocal);
-            for bits in local.storage.borrow().values().copied() {
+            let dictionaries = std::mem::take(&mut *local.storage.borrow_mut());
+            for bits in dictionaries.into_values() {
                 dec_ref_bits(_py, bits);
             }
-            local.storage.borrow_mut().clear();
             MoltObject::none().bits()
         })
     }

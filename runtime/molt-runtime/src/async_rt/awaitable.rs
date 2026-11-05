@@ -48,12 +48,20 @@ struct PythonResume {
 thread_local! {
     // Dynamic call context only. A nested user .send has its own frame and
     // cannot steal another invocation's values. Nothing persists after return.
-    static PYTHON_RESUMES: RefCell<Vec<PythonResume>> = const { RefCell::new(Vec::new()) };
+    static PYTHON_RESUMES: std::mem::ManuallyDrop<RefCell<Vec<PythonResume>>> = const { std::mem::ManuallyDrop::new(RefCell::new(Vec::new())) };
 }
 
 pub(crate) struct PythonResumeScope<'a, 'py> {
     py: &'a PyToken<'py>,
     depth: usize,
+}
+
+pub(crate) fn clear_python_resume_tls_storage() {
+    PYTHON_RESUMES.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        assert!(stack.is_empty(), "retiring an active Python resume");
+        *stack = Vec::new();
+    });
 }
 
 impl<'a, 'py> PythonResumeScope<'a, 'py> {

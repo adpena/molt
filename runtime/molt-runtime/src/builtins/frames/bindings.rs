@@ -371,16 +371,21 @@ impl HomeArena {
 }
 
 thread_local! {
-    static HOME_ARENA: RefCell<HomeArena> = RefCell::new(HomeArena::default());
+    static HOME_ARENA: std::mem::ManuallyDrop<RefCell<HomeArena>> = std::mem::ManuallyDrop::new(RefCell::new(HomeArena::default()));
 }
 
-/// Initialize the thread's home arena before the runtime's thread-local
-/// guard (`state::lifecycle::touch_tls_guard`). Thread-local storage is
-/// destroyed in reverse initialization order, so the guard's teardown, which
-/// exits every frame the thread still has, runs while the arena that holds
-/// their homes is alive.
+/// Initialize permanent storage; the attached thread-state drain retires its
+/// allocation after the final frame exits, including late native callbacks.
 pub(crate) fn touch_frame_home_tls_lifetime() {
     let _ = HOME_ARENA.try_with(|_| {});
+}
+
+pub(crate) fn clear_frame_home_tls_storage() {
+    HOME_ARENA.with(|arena| {
+        let mut arena = arena.borrow_mut();
+        assert_eq!(arena.used, 0, "retiring homes of a live compiled frame");
+        *arena = HomeArena::default();
+    });
 }
 
 /// One frame entry's binding homes and its observers' payload.

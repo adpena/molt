@@ -2493,8 +2493,8 @@ pub unsafe extern "C" fn molt_bytearray_as_ptr(
 
 /// Release the GIL and return an opaque token encoding the saved state.
 ///
-/// The token packs `depth` (shifted left 1) and `had_runtime_guard` (bit 0)
-/// into a single `u64` so that `molt_gil_reacquire_guard` can restore it.
+/// The opaque token identifies this thread's exact saved custody frame. Its
+/// matching restore consumes that frame once, in suspension order.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gil_release_guard() -> u64 {
     #[cfg(not(target_arch = "wasm32"))]

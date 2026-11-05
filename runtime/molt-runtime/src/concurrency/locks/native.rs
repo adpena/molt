@@ -7,7 +7,7 @@ use super::super::current_thread_id;
 #[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
@@ -168,6 +168,31 @@ struct BarrierState {
 #[cfg(not(target_arch = "wasm32"))]
 struct MoltLocal {
     state: Mutex<HashMap<u64, u64>>,
+}
+
+thread_local! {
+    // The C thread-state drain owns managed cleanup before native TLS retires.
+    // These inverse lifetime edges never own a dictionary or run Python.
+    static THREAD_LOCALS: std::mem::ManuallyDrop<std::cell::RefCell<Vec<Weak<MoltLocal>>>> =
+        const { std::mem::ManuallyDrop::new(std::cell::RefCell::new(Vec::new())) };
+}
+
+pub(crate) fn clear_thread_locals(py: &crate::PyToken<'_>) -> bool {
+    let locals = THREAD_LOCALS.with(|slot| std::mem::take(&mut *slot.borrow_mut()));
+    let tid = current_thread_id();
+    let dictionaries: Vec<u64> = locals
+        .iter()
+        .filter_map(Weak::upgrade)
+        .filter_map(|local| local.state.lock().unwrap().remove(&tid))
+        .collect();
+    drop(locals);
+    let changed = !dictionaries.is_empty();
+    // No registry borrow or local mutex survives a finalizer. A callback may
+    // recreate a dictionary; the two-domain fixed point drains that next.
+    for bits in dictionaries {
+        dec_ref_bits(py, bits);
+    }
+    changed
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1318,6 +1343,14 @@ pub unsafe extern "C" fn molt_local_get_dict(handle_bits: u64) -> u64 {
         let dict_bits = crate::molt_dict_new(0);
         inc_ref_bits(_py, dict_bits);
         guard.insert(tid, dict_bits);
+        drop(guard);
+        THREAD_LOCALS.with(|slot| {
+            let mut locals = slot.borrow_mut();
+            if locals.len() == locals.capacity() {
+                locals.retain(|local| local.strong_count() != 0);
+            }
+            locals.push(Arc::downgrade(&local));
+        });
         dict_bits
     })
 }
@@ -1333,11 +1366,10 @@ pub unsafe extern "C" fn molt_local_drop(handle_bits: u64) -> u64 {
             }
             release_ptr(ptr);
             let local = Arc::from_raw(ptr as *const MoltLocal);
-            let mut guard = local.state.lock().unwrap();
-            for bits in guard.values().copied() {
+            let dictionaries = std::mem::take(&mut *local.state.lock().unwrap());
+            for bits in dictionaries.into_values() {
                 dec_ref_bits(_py, bits);
             }
-            guard.clear();
             MoltObject::none().bits()
         })
     }

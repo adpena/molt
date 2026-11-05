@@ -292,7 +292,7 @@ impl FieldOffsetIC {
 }
 
 thread_local! {
-    static ATTR_NAME_TLS: RefCell<AttrNameCache> = const { RefCell::new(AttrNameCache::new()) };
+    static ATTR_NAME_TLS: std::mem::ManuallyDrop<RefCell<AttrNameCache>> = const { std::mem::ManuallyDrop::new(RefCell::new(AttrNameCache::new())) };
     static FIELD_OFFSET_IC_TLS: RefCell<FieldOffsetIC> = const { RefCell::new(FieldOffsetIC::new()) };
 }
 

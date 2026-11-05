@@ -4300,7 +4300,13 @@ struct ThreadStateDrainPhase;
 
 impl ThreadStateDropCustody {
     fn enter() -> Self {
-        let token = unsafe { (hooks_or_stubs().thread_state_drop_enter)() };
+        let runtime_owner = MOLT_THREAD_STATE.with(|slot| {
+            slot.borrow()
+                .as_deref()
+                .expect("thread-state destruction requires its published origin")
+                .runtime_owner
+        });
+        let token = unsafe { (hooks_or_stubs().thread_state_drop_enter)(runtime_owner as u64) };
         #[cfg(test)]
         if token == 0 {
             return Self(0);
@@ -4422,7 +4428,11 @@ impl Drop for ThreadStateRecord {
 }
 
 thread_local! {
-    static MOLT_THREAD_STATE: RefCell<Option<Box<ThreadStateRecord>>> = const { RefCell::new(None) };
+    // Explicit destruction belongs to RuntimeThreadStateLifetime (or a late
+    // boundary). The storage itself must remain available to foreign TLS
+    // destructors that run after that sentinel, just like ExecutionTls.
+    static MOLT_THREAD_STATE: std::mem::ManuallyDrop<RefCell<Option<Box<ThreadStateRecord>>>> =
+        const { std::mem::ManuallyDrop::new(RefCell::new(None)) };
     static GILSTATE_ATTACHMENT: Cell<(usize, bool)> = const { Cell::new((0, false)) };
     static RUNTIME_EXECUTION_ATTACHMENT: Cell<bool> = const { Cell::new(false) };
     static RUNTIME_THREAD_STATE_LIFETIME: RuntimeThreadStateLifetime = const { RuntimeThreadStateLifetime };
@@ -4436,6 +4446,9 @@ enum RuntimeThreadStatePreparation {
     Unprepared,
     SlotPrepared,
     LifetimeArmed,
+    /// A late foreign boundary must own a complete scoped record lifecycle;
+    /// the actual sentinel cannot be initialized again after TLS destruction.
+    LifetimeRetired,
 }
 
 #[derive(Clone, Copy)]
@@ -4457,6 +4470,9 @@ impl Drop for RuntimeThreadStateLifetime {
         if existing_current_thread_state().is_some() {
             clear_current_thread_state_for_runtime_thread_exit();
         }
+        RUNTIME_THREAD_STATE_PREPARATION.with(|state| {
+            state.set(RuntimeThreadStatePreparation::LifetimeRetired);
+        });
     }
 }
 
@@ -4474,6 +4490,9 @@ pub fn prepare_runtime_thread_state_lifetime() {
 }
 
 pub fn arm_runtime_thread_state_lifetime() {
+    if runtime_thread_state_lifetime_is_retired() {
+        return;
+    }
     RUNTIME_THREAD_STATE_PREPARATION.with(|state| {
         assert_ne!(
             state.get(),
@@ -4487,6 +4506,13 @@ pub fn arm_runtime_thread_state_lifetime() {
     // record. The lifetime is already armed in that case; trying to access its
     // TLS key with `with` would panic during destruction.
     let _ = RUNTIME_THREAD_STATE_LIFETIME.try_with(|_| {});
+}
+
+/// Late native TLS callbacks use a scoped runtime execution boundary, which
+/// must retire any record it creates instead of relying on a destroyed key.
+pub fn runtime_thread_state_lifetime_is_retired() -> bool {
+    RUNTIME_THREAD_STATE_PREPARATION
+        .with(|state| state.get() == RuntimeThreadStatePreparation::LifetimeRetired)
 }
 
 pub(crate) fn thread_state_dict_or_insert_with(
@@ -4614,14 +4640,8 @@ fn drain_current_thread_state_managed_edges(
     custody_mode: ThreadStateDropCustodyMode,
     cleanup_runtime_tls: &mut impl FnMut() -> bool,
 ) -> bool {
-    // Ordinary thread exit has no second ownership domain to drain. Preserve
-    // its empty-record fast path so late TLS destruction does not try to
-    // reacquire runtime custody after the runtime has already disappeared.
-    if matches!(custody_mode, ThreadStateDropCustodyMode::Acquire)
-        && !current_thread_state_has_managed_edges()
-    {
-        return existing_current_thread_state().is_some();
-    }
+    // A C record with no managed edges may still own the origin of runtime
+    // TLS roots. Acquire custody and drain both domains before retiring it.
     let _custody = match custody_mode {
         ThreadStateDropCustodyMode::Acquire => Some(ThreadStateDropCustody::enter()),
         ThreadStateDropCustodyMode::RuntimeOwner => {
@@ -4652,7 +4672,9 @@ fn drain_current_thread_state_managed_edges(
         // quiescence loop. C-edge destruction below may run a finalizer that
         // repopulates Molt TLS; a non-empty pass forces another cleanup before
         // the next C managed-edge pass.
-        let runtime_changed = cleanup_runtime_tls();
+        let runtime_changed = cleanup_runtime_tls()
+            | (matches!(custody_mode, ThreadStateDropCustodyMode::Acquire)
+                && unsafe { (hooks_or_stubs().thread_state_drop_cleanup)() } != 0);
         let owned = MOLT_THREAD_STATE.with(|slot| {
             let mut slot = slot.borrow_mut();
             let record = slot
@@ -4695,9 +4717,12 @@ fn drain_current_thread_state_managed_edges(
 
 fn create_prepared_current_thread_state(runtime_owner: usize) -> bool {
     RUNTIME_THREAD_STATE_PREPARATION.with(|state| {
-        assert_eq!(
-            state.get(),
-            RuntimeThreadStatePreparation::LifetimeArmed,
+        assert!(
+            matches!(
+                state.get(),
+                RuntimeThreadStatePreparation::LifetimeArmed
+                    | RuntimeThreadStatePreparation::LifetimeRetired
+            ),
             "PyThreadState creation requires an armed runtime TLS lifetime"
         );
     });
@@ -5143,6 +5168,41 @@ pub fn runtime_execution_attachment_count() -> usize {
 
 pub fn runtime_execution_thread_is_attached() -> bool {
     RUNTIME_EXECUTION_ATTACHMENT.with(|owned| owned.get())
+}
+
+/// The exact existing record a callback may borrow. Lifetime ownership stays
+/// with the dormant runtime boundary or the attached thread-state drain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BorrowedRuntimeThreadAttachment {
+    Absent,
+    Current,
+    Resumed,
+}
+
+pub fn borrow_runtime_execution_thread(runtime_owner: usize) -> BorrowedRuntimeThreadAttachment {
+    MOLT_THREAD_STATE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some(record) = slot.as_deref_mut() else {
+            return BorrowedRuntimeThreadAttachment::Absent;
+        };
+        assert_eq!(
+            record.runtime_owner, runtime_owner,
+            "callback crossed runtime ownership"
+        );
+        if record.attached {
+            BorrowedRuntimeThreadAttachment::Current
+        } else if record.tearing_down || runtime_execution_thread_is_attached() {
+            record.attached = true;
+            BorrowedRuntimeThreadAttachment::Resumed
+        } else {
+            BorrowedRuntimeThreadAttachment::Absent
+        }
+    })
+}
+
+pub fn suspend_resumed_runtime_execution_thread() {
+    assert!(current_thread_state_attached());
+    set_current_thread_state_attached(false);
 }
 
 /// Process-wide number of native threads retaining a CPython thread-state

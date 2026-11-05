@@ -607,12 +607,15 @@ pub struct RuntimeHooks {
     pub operation_enter: unsafe extern "C" fn() -> u64,
     pub operation_leave: unsafe extern "C" fn(token: u64),
     pub runtime_is_initialized: unsafe extern "C" fn() -> std::os::raw::c_int,
-    /// Acquire runtime-lifetime and default-GIL custody for destruction of a
-    /// retained CPython thread-state record. This lane must never attach or
-    /// create a PyThreadState because it is invoked from that TLS destructor.
+    /// Acquire lifetime and normal GIL custody for this exact retained record.
+    /// The drain phase attaches that existing record before releasing managed
+    /// edges; this hook must not create or substitute a thread-state record.
     /// Returns an opaque nonzero token consumed exactly once by
     /// `thread_state_drop_leave`.
-    pub thread_state_drop_enter: unsafe extern "C" fn() -> u64,
+    pub thread_state_drop_enter: unsafe extern "C" fn(runtime_owner: u64) -> u64,
+    /// Drain runtime TLS roots in the same fixed point as the retained C
+    /// record, before its origin identity can be retired.
+    pub thread_state_drop_cleanup: unsafe extern "C" fn() -> std::os::raw::c_int,
     pub thread_state_drop_leave: unsafe extern "C" fn(token: u64),
     /// Project the runtime's target-specific execution custody into one typed
     /// ABI-stable capability discriminant. Pending calls require a non-detached
@@ -1506,7 +1509,8 @@ pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
 // Version 74 joins interpreter dictionary/cache-only import hooks with Version 73's
 // struct-sequence factories and full-version target predicate.
 // Version 75 joins explicit C type invalidation to runtime type epochs.
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 75;
+// Version 76 binds exact-origin, two-domain native thread-exit destruction.
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 76;
 
 #[inline]
 fn runtime_hooks_layout_matches(abi_magic: u64, abi_version: u32, struct_size: u32) -> bool {
@@ -2545,7 +2549,7 @@ unsafe extern "C" fn stub_operation_leave(_token: u64) {}
 unsafe extern "C" fn stub_runtime_is_initialized() -> std::os::raw::c_int {
     0
 }
-unsafe extern "C" fn stub_thread_state_drop_enter() -> u64 {
+unsafe extern "C" fn stub_thread_state_drop_enter(_runtime_owner: u64) -> u64 {
     0
 }
 unsafe extern "C" fn stub_thread_state_drop_leave(_token: u64) {}
@@ -2785,6 +2789,7 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     operation_leave: stub_operation_leave,
     runtime_is_initialized: stub_runtime_is_initialized,
     thread_state_drop_enter: stub_thread_state_drop_enter,
+    thread_state_drop_cleanup: stub_runtime_is_initialized,
     thread_state_drop_leave: stub_thread_state_drop_leave,
     attached_runtime_context: stub_attached_runtime_context,
     pending_call_error: stub_pending_call_error,

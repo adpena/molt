@@ -43,7 +43,9 @@ pub(crate) use type_attributes::raise_module_attribute_miss;
 mod type_protocol;
 pub(crate) use type_protocol::publish_module_methods;
 
-pub(crate) use execution::{ExecutionMetadata, execute_compiled_module};
+pub(crate) use execution::{
+    ExecutionMetadata, clear_module_execution_tls_storage, execute_compiled_module,
+};
 use execution::{copy_dict_entries, execution_sys_path_entries, module_dict_ptr};
 pub use runpy::{molt_runpy_run_module, molt_runpy_run_path};
 pub use type_attributes::*;
