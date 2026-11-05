@@ -35,6 +35,18 @@ from tools.import_file import load_module_from_path
 from tools import molt_dev_storage as storage
 
 
+# The user-home keys molt.default_paths reads: POSIX HOME, Windows USERPROFILE or
+# HOMEDRIVE/HOMEPATH with USERNAME. A selected environment keeps the host's user
+# identity. POSIX falls back to the account database without HOME; Windows has
+# no such fallback (bat00, 2026-11-04: 11 refusals "no user home for tilde path").
+_USER_HOME_KEYS = ("HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "USERNAME")
+
+
+def _selected_environment(**selected: str) -> dict[str, str]:
+    host = {key: os.environ[key] for key in _USER_HOME_KEYS if key in os.environ}
+    return {**host, **selected}
+
+
 def _files(root: Path, *, exclude: Path | None = None) -> dict[Path, bytes]:
     return {
         path: path.read_bytes()
@@ -304,7 +316,9 @@ class DurableIdentityMachine(RuleBasedStateMachine):
             legacy.parent.mkdir(parents=True)
             legacy.write_bytes(b"older cache: never migrated")
             current.write_bytes(b"current schema must stay byte-for-byte")
-            environment = {"MOLT_EXT_ROOT": str(artifact), "MOLT_CACHE": str(cache)}
+            environment = _selected_environment(
+                MOLT_EXT_ROOT=str(artifact), MOLT_CACHE=str(cache)
+            )
             when = time.time() - (40 * 86400 if idle else 0)
             os.utime(legacy, (when, when))
             model = lifetime.NamespaceState.ACTIVE
@@ -587,10 +601,9 @@ def test_namespace_retention_preserves_current_versions(
     stale = time.time() - 40 * 86400
     for path in (source, *(source.rglob("*") if source.is_dir() else ())):
         os.utime(path, (stale, stale))
-    environment = {
-        "MOLT_EXT_ROOT": str(artifact),
-        "MOLT_CACHE": str(artifact / ".molt_cache"),
-    }
+    environment = _selected_environment(
+        MOLT_EXT_ROOT=str(artifact), MOLT_CACHE=str(artifact / ".molt_cache")
+    )
     rows = storage.migrate(repo, environment, apply=True, repository_only=True)
     row = next(row for row in rows if row["source"] == str(source))
     assert row["namespace_state"] == lifetime.NamespaceState.RETIRED.name
@@ -648,7 +661,10 @@ def test_namespace_retirement_refuses_a_named_recovery_journal(tmp_path, directo
     for path in (source, *(source.rglob("*") if directory else ())):
         os.utime(path, (stale, stale))
     rows = storage.migrate(
-        repo, {"MOLT_EXT_ROOT": str(artifact)}, apply=True, repository_only=True
+        repo,
+        _selected_environment(MOLT_EXT_ROOT=str(artifact)),
+        apply=True,
+        repository_only=True,
     )
     row = next(row for row in rows if row["source"] == str(source))
     assert row["status"] == "journal-recovery-required"
