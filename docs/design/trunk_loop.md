@@ -44,12 +44,41 @@ development-image publisher still owns proof environments and their admission.
 Provisioning requires CMake among its system prerequisites and runs
 `molt doctor --json --strict`: a JSON error report cannot count as a successful
 install merely because the report-only doctor mode exits zero.
-System packages stay an operator step, except on a WSL gate guest whose inventory
-record carries `install_system_packages = true`, the owner's per-host approval
-(molt-gate, 2026-11-04). There provision installs the missing packages of
-`trunk_loop.WSL_GUEST_PACKAGES` as root inside the guest (`wsl.exe --user root`)
-before the user-level install, and reports what it installed; a second run
-installs nothing.
+System packages stay an operator step, except on a host whose inventory record
+carries `install_system_packages = true`, the owner's per-host approval. Two kinds
+of host may carry it, and the inventory refuses it elsewhere:
+- A WSL gate guest (molt-gate, 2026-11-04). Provision installs the missing packages
+  of `trunk_loop.WSL_GUEST_PACKAGES` as root inside the guest
+  (`wsl.exe --user root`) before the user-level install, and reports what it
+  installed.
+- A macOS host (macmini, 2026-11-04: "You should be able to do that provisioning
+  on the Mac Mini yourself"). Provision runs Homebrew, which needs no `sudo`, for
+  each missing formula in `trunk_loop.MACOS_BREW_PACKAGES`, with
+  `HOMEBREW_NO_AUTO_UPDATE`, `HOMEBREW_NO_INSTALL_UPGRADE` and `NONINTERACTIVE`
+  set: it installs those formulae and nothing else. A host without Homebrew
+  stays an operator step. So do the Command Line Tools, whose installer needs the
+  owner's GUI consent. Their presence test is `xcode-select -p`, because
+  `/usr/bin/cc` and `/usr/bin/git` are shims that exist without them.
+
+Either way a second run installs nothing. On POSIX hosts, a prerequisite that is
+still missing is named with its own fix, and provision exits 2. It never prints a
+blanket command list that asks for an install the host already has (the macmini
+report once asked for `xcode-select --install` on a host that had the tools). The
+Windows branch still checks `git`, `cl.exe` and `link.exe` and names one Visual
+Studio Build Tools fix, which provides all three. Checking CMake there, and per-tool
+fixes, is a follow-up.
+
+Provision installs the pinned uv (`tool_releases` `uv.version`) whenever the
+installed uv differs, not only when uv is absent, on POSIX and Windows alike. The
+toolchain contract admits only the pinned version, and an older uv cannot install
+the pinned Python patch release: on 2026-11-04 the macmini's uv 0.10.9 failed
+with "No interpreter found for Python 3.12.15", and bat00's uv 0.13.1 failed the
+contract `^uv 0\.13\.6\b`. A newer uv is replaced too, as the contract requires.
+The installer runs with `UV_NO_MODIFY_PATH=1`, so it edits no shell profile, as
+rustup's `--no-modify-path` does. Provision then reads `uv --version` again and
+exits nonzero unless the pinned release is the first uv on `PATH`. Run provision
+only while no farm worker holds the host's `trunk-worker.lock`: Windows cannot
+replace a `uv.exe` that is running.
 
 `molt-gate` is Linux x86_64 behind bat00's Windows SSH endpoint. Scripts enter
 `wsl.exe -d molt-gate -- bash -s` through stdin, avoiding Windows re-quoting of
@@ -207,6 +236,28 @@ No `.wslconfig` key changes: `instanceIdleTimeout=-1` would keep every
 distribution alive with no worker, and the source shows that a held client is
 enough.
 
+### Worker standard streams
+
+A worker owns real standard streams before it loads repository authorities:
+stdin reads the null device, and stdout and stderr append to its stage
+`worker.log`. The POSIX and WSL launchers get this from
+`exec </dev/null >>worker.log 2>&1`. A Windows worker is created by CIM
+`Win32_Process.Create`, so it starts without valid standard handles, and
+`os.dup2` rebinds only the C runtime descriptors. A `subprocess` child started
+without explicit stdio still duplicates the invalid OS handles and fails with
+WinError 6. On 2026-11-04 the bat00 worker lost `sys.stderr` this way and vanished
+without a receipt. So `bind_standard_streams` also points the OS standard handles
+at the rebound descriptors (`SetStdHandle` with `msvcrt.get_osfhandle`) and
+rebuilds `sys.stdin`, `sys.stdout` and `sys.stderr`. This matches CPython's
+`subprocess`, which reads `GetStdHandle` for any stream the caller leaves unset.
+PowerShell redirection stays excluded because it re-encodes output as UTF-16.
+`bind_standard_streams` is the one authority for a detached Windows Python worker.
+A sibling such as `tools/calib_daemon.py`, which uses bare `dup2`, must call it
+before it can run under CIM. The log descriptor is inheritable, so a grandchild
+that outlives the worker (a build-cache daemon, for example) keeps `worker.log`
+open. Stage retention must tolerate that. `worker.log` is diagnostic bytes in each
+writer's own encoding, not decoded evidence.
+
 ### Worker liveness
 
 Every launcher acknowledges the worker's identity: pid, the start stamp that
@@ -285,7 +336,14 @@ second JUnit parser or uncorrected review-v2 behavior would duplicate authority.
 Provisioning tests use fake transports for each inventoried OS, reject settings
 drift and insufficient physical headroom before installation, and execute the
 POSIX script twice against fake tools to check that an existing installation
-does not reinstall prerequisites or clone another checkout.
+does not reinstall prerequisites or clone another checkout. Fake-tool runs cover
+the macOS approval with and without Homebrew, the unapproved host's per-tool
+report, and pinned-uv replacement with its convergence check. A child-process
+test proves the standard-stream contract on POSIX: the worker's and a
+default-stdio grandchild's output reach `worker.log`, and stdin reads EOF. The
+Windows `SetStdHandle` path is covered only for call order by an injected fake.
+The real proof is a live bat00 `portability.queue.windows` run whose CIM worker
+spawns default-stdio children and reaches a terminal receipt.
 
 Unit controls must reject corrupt, truncated or substituted archives without
 network access or publication; execute a real POSIX detached child across parent

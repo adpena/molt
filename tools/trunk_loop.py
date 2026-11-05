@@ -75,6 +75,9 @@ LINUX_SYSTEM_PACKAGES = (
     "valgrind",
 )
 # A WSL gate guest also runs systemd and udev for root UUID admission (HF-761).
+# Homebrew formulae a macOS farm host needs; the C toolchain comes from the
+# Command Line Tools, which only the host's owner can accept (GUI consent).
+MACOS_BREW_PACKAGES = ("cmake",)
 WSL_GUEST_PACKAGES = (*LINUX_SYSTEM_PACKAGES, "systemd", "systemd-sysv", "udev")
 
 
@@ -96,8 +99,11 @@ foreach ($tool in @('git','cl.exe','link.exe')) {{
   throw 'Missing system toolchain; run: winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"; then use its developer shell'
  }}
 }}
-if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {{
+# The pinned uv, not whichever one is installed (the toolchain contract pins it).
+if (-not (Get-Command uv -ErrorAction SilentlyContinue) -or ((& uv --version) -split ' ')[1] -ne {ps(uv_version)}) {{
+ $env:UV_NO_MODIFY_PATH='1'
  Invoke-RestMethod https://astral.sh/uv/{uv_version}/install.ps1 | Invoke-Expression
+ if (((& uv --version) -split ' ')[1] -ne {ps(uv_version)}) {{ throw {ps("uv: the pinned " + uv_version + " is not the first uv on PATH after install")} }}
 }}
 if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {{
  $installer=Join-Path $env:TEMP ('molt-rustup-'+[guid]::NewGuid().ToString('N')+'.exe')
@@ -126,24 +132,66 @@ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
 & uv run --locked molt doctor --json --strict
 if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
 """
-    system_command = (
-        "xcode-select --install; brew install cmake"
-        if host.os == authorities().HostOS.MACOS
-        else "sudo apt-get update && sudo apt-get install "
-        + " ".join(LINUX_SYSTEM_PACKAGES)
+    macos = host.os == authorities().HostOS.MACOS
+    # Each missing tool names its own fix, so the message never asks for an
+    # install the host already has.
+    fixes = (
+        {"cc": "xcode-select --install", "git": "xcode-select --install"}
+        | {tool: "brew install " + tool for tool in ("curl", *MACOS_BREW_PACKAGES)}
+        if macos
+        else {
+            tool: "sudo apt-get update && sudo apt-get install "
+            + " ".join(LINUX_SYSTEM_PACKAGES)
+            for tool in ("git", "curl", "cc", "cmake")
+        }
+    )
+    checks = "\n".join(
+        (
+            # /usr/bin/cc and /usr/bin/git are shims that exist without the
+            # Command Line Tools; xcode-select -p is the real presence test.
+            "xcode-select -p >/dev/null 2>&1 || missing_fix "
+            if macos and tool in ("cc", "git")
+            else f"command -v {tool} >/dev/null || missing_fix "
+        )
+        + shlex.quote(f"{tool}: run {fix}")
+        for tool, fix in fixes.items()
+    )
+    # The owner approves package installation per host (its inventory record).
+    # Install only the missing formulae: no Homebrew self-update, no upgrade of
+    # unrelated formulae, no prompts. A host without Homebrew falls through to
+    # the precise prerequisite report below.
+    brew = (
+        'brew=""\nfor candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do '
+        'test -x "$candidate" && { brew=$candidate; break; }; done\n'
+        "export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_UPGRADE=1 NONINTERACTIVE=1\n"
+        + "\n".join(
+            f'command -v {package} >/dev/null || {{ test -z "$brew" || "$brew" install {package} >&2; }}'
+            for package in MACOS_BREW_PACKAGES
+        )
+        + "\n"
+        if macos and host.install_system_packages
+        else ""
     )
     return f"""set -eu
 unset UV_PROJECT_ENVIRONMENT VIRTUAL_ENV MOLT_VENV
-export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-for tool in git curl cc cmake; do
- command -v "$tool" >/dev/null || {{ echo {shlex.quote("Missing system prerequisites; run: " + system_command)} >&2; exit 2; }}
-done
-if ! command -v uv >/dev/null; then
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+{brew}missing=""
+missing_fix() {{ missing="$missing
+ $1"; }}
+{checks}
+if test -n "$missing"; then
+ printf 'Missing system prerequisites:%s\n' "$missing" >&2
+ exit 2
+fi
+# The pinned uv, not whichever one is installed: an older uv cannot install
+# the pinned Python patch release ("No interpreter found").
+if ! command -v uv >/dev/null || test "$(uv --version | cut -d' ' -f2)" != {shlex.quote(uv_version)}; then
  installer=$(mktemp)
  trap 'rm -f "$installer"' EXIT
  curl -LsSf https://astral.sh/uv/{uv_version}/install.sh -o "$installer"
- sh "$installer"
+ UV_NO_MODIFY_PATH=1 sh "$installer"
  rm "$installer"
+ test "$(uv --version | cut -d' ' -f2)" = {shlex.quote(uv_version)} || {{ echo {shlex.quote("uv: the pinned " + uv_version + " is not the first uv on PATH after install")} >&2; exit 2; }}
 fi
 if ! command -v rustup >/dev/null; then
  installer=$(mktemp)
@@ -1415,6 +1463,8 @@ def bind_standard_streams(
     with log_path.open("ab", buffering=0) as log:
         os.dup2(log.fileno(), 1)
         os.dup2(log.fileno(), 2)
+    if (set_std_handle is None) != (get_osfhandle is None):
+        raise TypeError("pass both set_std_handle and get_osfhandle, or neither")
     if os.name == "nt" or set_std_handle is not None:
         if set_std_handle is None:
             import ctypes

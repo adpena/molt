@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import replace
 import io
 import json
-import re
 import os
 import subprocess
 import tarfile
@@ -577,15 +576,14 @@ def test_inventory_rejects_invalid_wsl_custody(tmp_path, field, value):
         cross_run.parse_inventory(inventory)
 
 
-def test_inventory_scopes_package_approval_to_a_wsl_guest(tmp_path):
+def test_inventory_scopes_package_approval_to_wsl_guests_and_macos(tmp_path):
     text = cross_run.DEFAULT_INVENTORY.read_text(encoding="utf-8")
-    tables = [m.start() for m in re.finditer(r"(?m)^\[\[host\]\]$", text)]
-    second = tables[1]
-    # The first host is not a WSL guest; the approval there is refused.
-    widened = text[:second] + "install_system_packages = true\n\n" + text[second:]
+    # bat00 is a Windows host, neither a WSL guest nor macOS: refused there.
+    start = text.index('name = "bat00"')
+    widened = text[:start] + "install_system_packages = true\n" + text[start:]
     inventory = tmp_path / "hosts.toml"
     inventory.write_text(widened, encoding="utf-8")
-    with pytest.raises(ValueError, match="WSL gate guest only"):
+    with pytest.raises(ValueError, match="WSL gate guest or a macOS host"):
         cross_run.parse_inventory(inventory)
     inventory.write_text(
         text.replace(
@@ -625,7 +623,12 @@ def test_existing_posix_install_does_no_bootstrap_work(tmp_path, name, doctor_er
         executable.write_text(
             "#!/bin/sh\n"
             '[ -z "${UV_PROJECT_ENVIRONMENT:-}${VIRTUAL_ENV:-}${MOLT_VENV:-}" ] || exit 93\n'
-            f'printf "%s\\n" "{command} $*" >> "$HOME/calls"\n'
+            + (
+                '[ "$*" = "--version" ] && { echo "uv 0.13.5 (test)"; exit 0; }\n'
+                if command == "uv"
+                else ""
+            )
+            + f'printf "%s\\n" "{command} $*" >> "$HOME/calls"\n'
             + (
                 'case "$*" in\n'
                 ' "run --locked molt doctor --json --strict") exit 7;;\n'
@@ -663,4 +666,83 @@ def test_existing_posix_install_does_no_bootstrap_work(tmp_path, name, doctor_er
             "uv run --locked molt doctor --json --strict",
         ]
         * 2
+    )
+
+
+@pytest.mark.parametrize(
+    ("approved", "has_brew"), [(True, True), (False, True), (True, False)]
+)
+@pytest.mark.skipif(os.name == "nt", reason="POSIX bootstrap script execution")
+def test_macos_provision_installs_missing_brew_package_and_pins_uv(
+    tmp_path, approved, has_brew
+):
+    """2026-11-04: the Mac mini lacked cmake and ran uv 0.10.9, which cannot
+    install the pinned Python; the owner approved provisioning it."""
+    from tests.process_guard_common import run_custody_subject_process
+
+    root = tmp_path / "host"
+    checkout = root / "molt-src"
+    checkout.mkdir(parents=True)
+    bin_dir = root / ".local/bin"
+    bin_dir.mkdir(parents=True)
+    log = root / "calls"
+    for command in ("uv", "rustup", "git", "curl", "cc", "sh", "xcode-select"):
+        executable = bin_dir / command
+        body = f'printf "%s\\n" "{command} $*" >> "$HOME/calls"\n'
+        if command == "uv":
+            body = (
+                '[ "$*" = "--version" ] && { echo "uv 0.10.9 (old)"; exit 0; }\n' + body
+            )
+        if command == "curl":
+            body += 'for a; do last=$a; done; : > "$last"\n'
+        if command == "sh":
+            # The installer replaces uv with the pinned release.
+            body += (
+                "printf '#!/bin/sh\\necho \"uv 0.13.6 (pinned)\"\\n' "
+                '> "$HOME/.local/bin/uv"\n'
+            )
+        executable.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+        executable.chmod(0o755)
+    brew = root / "brew"
+    brew.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "brew $*" >> "$HOME/calls"\n'
+        'printf "#!/bin/sh\\n" > "$HOME/.local/bin/cmake"; chmod +x "$HOME/.local/bin/cmake"\n',
+        encoding="utf-8",
+    )
+    brew.chmod(0o755)
+    host = replace(
+        host_named("macmini"),
+        custody_root=str(root),
+        checkout=str(checkout),
+        install_system_packages=approved,
+    )
+    script = trunk_loop.provision_script(
+        host, repository="https://example.test/repo.git", uv_version="0.13.6"
+    ).replace(
+        "/opt/homebrew/bin/brew /usr/local/bin/brew",
+        str(brew) if has_brew else str(root / "no-brew"),
+    )
+    # Hide this machine's own Homebrew tools from the script under test.
+    script = script.replace("/opt/homebrew/bin:/usr/local/bin:$PATH", "$PATH")
+    result = run_custody_subject_process(
+        ["/bin/sh"],
+        input=script,
+        text=True,
+        capture_output=True,
+        env=dict(os.environ, HOME=str(root), PATH=f"{bin_dir}:/usr/bin:/bin"),
+    )
+    calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    if not approved or not has_brew:
+        assert result.returncode == 2
+        # Only the missing tool is named, with its own fix.
+        assert "cmake: run brew install cmake" in result.stderr
+        assert "xcode-select" not in result.stderr
+        assert not any(call.startswith("brew") for call in calls)
+        return
+    assert result.returncode == 0, result.stderr
+    assert calls[0] == "brew install cmake"
+    # The installed uv is not the pinned one, so the pinned installer runs.
+    assert any(
+        call.startswith("curl ") and "astral.sh/uv/0.13.6/install.sh" in call
+        for call in calls
     )

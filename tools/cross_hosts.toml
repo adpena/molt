@@ -101,6 +101,8 @@ custody_root = "/Users/adpena/Molt"
 checkout = "/Users/adpena/Molt/molt-src"
 launcher = "posix-session"
 proof_cells = ["portability.cargo-custody.macos", "portability.queue.macos"]
+# Owner 2026-11-04: "You should be able to do that provisioning on the Mac Mini yourself."
+install_system_packages = true
 
 # Pi disabled until disk is freed (was 100% full at audit time).
 # Re-enable after pruning ~/PycharmProjects (9.4G) or installing a USB SSD.

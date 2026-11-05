@@ -438,11 +438,13 @@ def parse_inventory(path: Path) -> list[Host]:
                 "proof_build_gb must admit at least one 20 GiB proof build"
             )
         if type(host.install_system_packages) is not bool or (
-            host.install_system_packages and host.wsl_distribution is None
+            host.install_system_packages
+            and host.wsl_distribution is None
+            and host.os != HostOS.MACOS
         ):
             raise ValueError(
                 f"host {name!r}: install_system_packages is a boolean approval "
-                "for a WSL gate guest only"
+                "for a WSL gate guest or a macOS host (Homebrew) only"
             )
         if host.wsl_distribution is not None:
             if (
