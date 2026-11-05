@@ -6,7 +6,10 @@ import json
 import time
 from pathlib import Path
 
-from molt._wasm_abi_generated import WASM_NON_RUNTIME_CALLABLE_INTRINSICS
+from molt._wasm_abi_generated import (
+    RUNTIME_EXECUTION_ABIS,
+    WASM_NON_RUNTIME_CALLABLE_INTRINSICS,
+)
 from molt.file_publication import atomic_write_bytes
 from molt.cli import native_symbol_inspection
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
@@ -84,12 +87,22 @@ def _runtime_callable_symbols_file(
                 excluded_functions=WASM_NON_RUNTIME_CALLABLE_INTRINSICS,
             ),
         ) as (opened, identity, facts):
+            legacy = sorted(
+                name
+                for name, abi in RUNTIME_EXECUTION_ABIS.items()
+                if abi.context == "Attached" and name in facts.defined_functions
+            )
+            if legacy:
+                raise ValueError(
+                    "legacy runtime callable definitions: " + ", ".join(legacy[:8])
+                )
             symbols = tuple(
                 sorted(
                     name
-                    for name in facts.defined_functions
+                    for name, abi in RUNTIME_EXECUTION_ABIS.items()
                     if name.startswith("molt_")
                     and name not in WASM_NON_RUNTIME_CALLABLE_INTRINSICS
+                    and abi.physical_symbol in facts.defined_functions
                 )
             )
             if not symbols:
@@ -134,7 +147,7 @@ def _runtime_callable_projection_name(
 ) -> str:
     """Content-addressed name binding one projection to one archive generation."""
     return (
-        f"{runtime_lib_name}.callable_symbols.v3."
+        f"{runtime_lib_name}.callable_symbols.v4."
         f"{archive_sha256}.{projection_sha256}.txt"
     )
 
@@ -259,7 +272,7 @@ def _runtime_callable_symbols_digest(symbols: tuple[str, ...]) -> str:
         return ""
     payload = json.dumps(
         {
-            "schema": "runtime-callable-symbols-v2",
+            "schema": "runtime-callable-symbols-v3-logical-execution-abi",
             "non_runtime_callable_intrinsics": sorted(
                 WASM_NON_RUNTIME_CALLABLE_INTRINSICS
             ),

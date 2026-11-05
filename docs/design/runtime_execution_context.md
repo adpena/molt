@@ -515,6 +515,10 @@ object cannot qualify a stale object, including one selected from an archive und
 Shared-stdlib partition manifests retain logical IR function identities. Native archive admission
 projects those identities through the generated physical symbol formatter before checking member
 closure, rejects unsuffixed definitions, and versions its derived symbol-validation receipts.
+The runtime callable projection similarly admits generated physical exports from the selected
+archive and publishes their logical identities to IR reachability and resolver construction.
+It never derives identity by stripping a suffix; the generated ABI table owns the mapping.
+Unsuffixed attached exports are rejected, and the content-addressed projection is revision 4.
 Split-WASM admission compares the application's required schema with the runtime's offered schema
 before any application initializer executes. Preserve `pending_work_ptr` and its Arc lifetime;
 do not impose a RuntimeState prefix, duplicate that word or reinterpret a state address as it.

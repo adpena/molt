@@ -273,7 +273,7 @@ def test_callable_projection_reuses_one_owned_archive_admission_per_call(
     from molt.cli import runtime_callable_symbols
 
     artifact = tmp_path / "runtime.a"
-    artifact.write_bytes(_archive("molt_fixture"))
+    artifact.write_bytes(_archive(compiled_execution_symbol("molt_len")))
     identity = native_symbol_inspection._native_symbol_artifact_identity(artifact)
     monkeypatch.setattr(
         native_symbol_inspection, "_default_molt_cache", lambda: tmp_path / "cache"
@@ -302,8 +302,24 @@ def test_callable_projection_reuses_one_owned_archive_admission_per_call(
         )
         assert failure is None and projection is not None
         assert captured == [artifact]
-        assert projection.identity.path.read_bytes() == b"molt_fixture\n"
+        assert projection.identity.path.read_bytes() == b"molt_len\n"
     assert len(inspected) == 1
+
+
+def test_callable_projection_rejects_legacy_attached_runtime_export(tmp_path):
+    from molt.cli import runtime_callable_symbols
+
+    artifact = tmp_path / "runtime.a"
+    artifact.write_bytes(_archive("molt_len", compiled_execution_symbol("molt_len")))
+    projection, failure = runtime_callable_symbols._runtime_callable_symbols_file(
+        artifact,
+        identity=native_symbol_inspection._native_symbol_artifact_identity(artifact),
+    )
+    assert projection is None
+    assert (
+        failure is not None
+        and "legacy runtime callable definitions: molt_len" in failure
+    )
 
 
 @pytest.fixture(autouse=True)
