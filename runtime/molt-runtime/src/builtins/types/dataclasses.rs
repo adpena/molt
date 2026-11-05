@@ -6,6 +6,7 @@ mod field_runtime;
 #[cfg(test)]
 pub(crate) use field_runtime::molt_dataclasses_eq_attached_body;
 mod initializer;
+mod initializer_spec_generated;
 mod projection;
 
 pub(crate) use initializer::molt_dataclasses_init_trampoline_attached_body;

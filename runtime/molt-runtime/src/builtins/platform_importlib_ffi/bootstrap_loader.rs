@@ -123,39 +123,6 @@ pub(crate) fn molt_importlib_source_loader_payload_attached_body(
     })
 }
 
-/// Record the extension-admission role on the actual class declared by
-/// machinery. Names, facade rebinding and sys.modules removal cannot erase it.
-/// Declaring this role only adds admission checks; it never authorizes loading.
-
-pub(crate) fn molt_importlib_extension_loader_type_declare_attached_body(
-    _py: &crate::PyToken<'_>,
-    class_bits: u64,
-) -> u64 {
-    crate::with_attached_entry_nopanic!(_py, py, {
-        let Some(ptr) = obj_from_bits(class_bits).as_ptr() else {
-            return raise_exception::<_>(
-                py,
-                BuiltinExc::TypeError,
-                "extension loader declaration requires a type",
-            );
-        };
-        if unsafe { object_type_id(ptr) } != TYPE_ID_TYPE {
-            return raise_exception::<_>(
-                py,
-                BuiltinExc::TypeError,
-                "extension loader declaration requires a type",
-            );
-        }
-        unsafe {
-            crate::object::class_storage::class_declare(
-                ptr,
-                crate::object::class_storage::ClassDeclaration::ExtensionLoader,
-            );
-        }
-        MoltObject::none().bits()
-    })
-}
-
 pub(crate) fn molt_importlib_extension_loader_payload_attached_body(
     _py: &crate::PyToken<'_>,
     module_name_bits: u64,

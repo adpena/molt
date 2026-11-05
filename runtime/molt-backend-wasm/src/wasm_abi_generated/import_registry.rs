@@ -2363,20 +2363,8 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "importlib_decode_source",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ImportlibEnsureDefaultMetaPath,
-        name: "importlib_ensure_default_meta_path",
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibExtensionLoaderPayload,
         name: "importlib_extension_loader_payload",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::ImportlibAdmitSpec,
-        name: "importlib_admit_spec",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::ImportlibFilefinderFindSpec,
-        name: "importlib_filefinder_find_spec",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibFindInPathPackageContext,
@@ -6939,10 +6927,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "uuid_uuid5_bytes",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ImportlibExtensionLoaderTypeDeclare,
-        name: "importlib_extension_loader_type_declare",
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibSourcefileloaderExecModule,
         name: "importlib_sourcefileloader_exec_module",
     },
@@ -6989,6 +6973,18 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibCompiledLoaderTypes,
         name: "importlib_compiled_loader_types",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ImportlibPathFinderTypes,
+        name: "importlib_path_finder_types",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ImportlibFileLoaderTypesDeclare,
+        name: "importlib_file_loader_types_declare",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ImportlibNamespacePathEpoch,
+        name: "importlib_namespace_path_epoch",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibFindSpec,
@@ -12365,23 +12361,11 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_importlib_coerce_module_name" => Some(WasmRuntimeImport::ImportlibCoerceModuleName),
         "importlib_decode_source" => Some(WasmRuntimeImport::ImportlibDecodeSource),
         "molt_importlib_decode_source" => Some(WasmRuntimeImport::ImportlibDecodeSource),
-        "importlib_ensure_default_meta_path" => {
-            Some(WasmRuntimeImport::ImportlibEnsureDefaultMetaPath)
-        }
-        "molt_importlib_ensure_default_meta_path" => {
-            Some(WasmRuntimeImport::ImportlibEnsureDefaultMetaPath)
-        }
         "importlib_extension_loader_payload" => {
             Some(WasmRuntimeImport::ImportlibExtensionLoaderPayload)
         }
         "molt_importlib_extension_loader_payload" => {
             Some(WasmRuntimeImport::ImportlibExtensionLoaderPayload)
-        }
-        "importlib_admit_spec" => Some(WasmRuntimeImport::ImportlibAdmitSpec),
-        "molt_importlib_admit_spec" => Some(WasmRuntimeImport::ImportlibAdmitSpec),
-        "importlib_filefinder_find_spec" => Some(WasmRuntimeImport::ImportlibFilefinderFindSpec),
-        "molt_importlib_filefinder_find_spec" => {
-            Some(WasmRuntimeImport::ImportlibFilefinderFindSpec)
         }
         "importlib_find_in_path_package_context" => {
             Some(WasmRuntimeImport::ImportlibFindInPathPackageContext)
@@ -15149,12 +15133,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_uuid_uuid3_bytes" => Some(WasmRuntimeImport::UuidUuid3Bytes),
         "uuid_uuid5_bytes" => Some(WasmRuntimeImport::UuidUuid5Bytes),
         "molt_uuid_uuid5_bytes" => Some(WasmRuntimeImport::UuidUuid5Bytes),
-        "importlib_extension_loader_type_declare" => {
-            Some(WasmRuntimeImport::ImportlibExtensionLoaderTypeDeclare)
-        }
-        "molt_importlib_extension_loader_type_declare" => {
-            Some(WasmRuntimeImport::ImportlibExtensionLoaderTypeDeclare)
-        }
         "importlib_sourcefileloader_exec_module" => {
             Some(WasmRuntimeImport::ImportlibSourcefileloaderExecModule)
         }
@@ -15206,6 +15184,18 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "importlib_compiled_loader_types" => Some(WasmRuntimeImport::ImportlibCompiledLoaderTypes),
         "molt_importlib_compiled_loader_types" => {
             Some(WasmRuntimeImport::ImportlibCompiledLoaderTypes)
+        }
+        "importlib_path_finder_types" => Some(WasmRuntimeImport::ImportlibPathFinderTypes),
+        "molt_importlib_path_finder_types" => Some(WasmRuntimeImport::ImportlibPathFinderTypes),
+        "importlib_file_loader_types_declare" => {
+            Some(WasmRuntimeImport::ImportlibFileLoaderTypesDeclare)
+        }
+        "molt_importlib_file_loader_types_declare" => {
+            Some(WasmRuntimeImport::ImportlibFileLoaderTypesDeclare)
+        }
+        "importlib_namespace_path_epoch" => Some(WasmRuntimeImport::ImportlibNamespacePathEpoch),
+        "molt_importlib_namespace_path_epoch" => {
+            Some(WasmRuntimeImport::ImportlibNamespacePathEpoch)
         }
         "importlib_find_spec" => Some(WasmRuntimeImport::ImportlibFindSpec),
         "molt_importlib_find_spec" => Some(WasmRuntimeImport::ImportlibFindSpec),

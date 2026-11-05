@@ -500,6 +500,12 @@ Publication also invalidates callback-free release for object-bearing mutable
 containers, including through immutable tuple/frozenset owners: an alias may
 insert a finalizable object. Exact bytearray storage cannot contain Python
 objects, so its release safety survives publication independently of its shape.
+Immutable membership edges survive publication; they prove which objects are
+contained, never that those objects' contents or release are safe. Tuple positions
+remain selectable; frozenset membership does not establish an iteration order.
+Every callback boundary recursively expires mutable descendant contents, including
+cached iterator yields and earlier arguments retained while later arguments run.
+Binding publication alone cannot substitute for that expiry.
 Kind facts mean exact builtin types, not subclass compatibility: callbackful
 `str`/`bytes` conversions can return user subclasses and cannot publish an
 exact-kind or inert-release fact without stronger operand/protocol evidence.
@@ -1248,7 +1254,10 @@ the result's release facts can establish safety for unrooted values. Cached
 publication-release stability follows the shared result DAG without expanding
 repeated descendants, participates in semantic equality and joins, and survives
 idempotent publication after descendant shape is erased. Immutable owners retain
-their own truth and length even when mutable descendants lose content facts.
+their own membership, truth and length even when mutable descendants lose content
+facts. A reachable unrooted list, dict, set or unknown leaf prevents recursive
+publication-release stability, regardless of retained immutable edges. Selecting
+such a child cannot restore a pre-publication callback-free release proof.
 Unknown identity and unknown result remain conservatively callback-bearing.
 
 Retained operands cross callback boundaries in evaluation order; cleanup uses

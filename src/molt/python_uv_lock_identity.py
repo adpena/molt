@@ -8,7 +8,7 @@ import hashlib
 import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast, get_args
 
 from molt import python_environment_contract as _contract
 from molt.exact_json import canonical_json_sha256
@@ -35,6 +35,19 @@ PYTHON_MARKER_ENVIRONMENT_FIELDS = (
     "python_full_version",
     "python_version",
     "sys_platform",
+)
+# The file uv installs a locked package from (docs/design/python_lock_identity.md):
+# the best locked wheel for the target, else the locked sdist, which uv builds.
+LockedArtifactKind = Literal["wheel", "sdist"]
+LOCKED_ARTIFACT_KINDS: frozenset[str] = frozenset(get_args(LockedArtifactKind))
+_LOCKED_ARTIFACT_FIELDS = frozenset({"kind", "filename", "size", "sha256"})
+# uv settings that change which file uv installs from. The identity does not
+# model them, so it refuses a project that sets one.
+UV_BUILD_SELECTION_SETTINGS = (
+    "no-build",
+    "no-build-package",
+    "no-binary",
+    "no-binary-package",
 )
 _LOCK_CLOSURE_FIELDS = frozenset(
     {
@@ -187,76 +200,102 @@ def _extras(raw: object) -> set[str]:
     return set(cast(list[str], raw))
 
 
-def _locked_artifact(
-    row: Mapping[str, object], ordered_tags: Sequence[str]
-) -> dict[str, object]:
-    from packaging.utils import parse_wheel_filename
-    from packaging.version import InvalidVersion, Version
-
-    rank = {tag: index for index, tag in enumerate(ordered_tags)}
-    candidates: list[
-        tuple[int, tuple[()] | tuple[int, str], str, Mapping[str, object]]
-    ] = []
-    wheels = row.get("wheels")
-    if not isinstance(wheels, list):
-        raise PythonEnvironmentIdentityError(
-            f"locked package {row.get('name')!r} has no wheel closure"
-        )
-    for raw in wheels:
-        if not isinstance(raw, Mapping) or not isinstance(raw.get("url"), str):
-            continue
-        raw = cast(Mapping[str, object], raw)
-        filename = urllib.parse.unquote(
-            Path(urllib.parse.urlparse(str(raw["url"])).path).name
-        )
-        try:
-            parsed_name, parsed_version, build, tags = parse_wheel_filename(filename)
-        except ValueError:
-            continue
-        try:
-            locked_version = Version(str(row.get("version", "")))
-        except InvalidVersion as exc:
-            raise PythonEnvironmentIdentityError(
-                f"locked package {row.get('name')!r} has an invalid version"
-            ) from exc
-        if (
-            _canonicalize_name(parsed_name)
-            != _canonicalize_name(str(row.get("name", "")))
-            or parsed_version != locked_version
-        ):
-            continue
-        supported = [rank[str(tag)] for tag in tags if str(tag) in rank]
-        if supported:
-            candidates.append((min(supported), build, filename, raw))
-    if not candidates:
-        raise PythonEnvironmentIdentityError(
-            f"locked package {row.get('name')!r} has no wheel for the active OS/arch/ABI"
-        )
-    # Match uv's locked-install Package::find_best_wheel: tag priority, then
-    # greatest build tag, retaining the first lock entry on an exact tie.
-    # Compressed platform tags can give distinct wheels the same best tag;
-    # filename sorting would silently change the artifact uv actually installs.
-    # https://github.com/astral-sh/uv/blob/0.13.5/crates/uv-lock/src/lock/mod.rs
-    _rank, _build, filename, artifact = max(
-        candidates, key=lambda item: (-item[0], item[1])
-    )
-    raw_hash = artifact.get("hash")
-    size = artifact.get("size")
+def _locked_file(
+    row: Mapping[str, object], entry: Mapping[str, object], filename: str, label: str
+) -> tuple[int, str]:
+    raw_hash = entry.get("hash")
+    size = entry.get("size")
     if (
         not isinstance(raw_hash, str)
         or not raw_hash.startswith("sha256:")
         or not _valid_sha256(raw_hash.removeprefix("sha256:"))
         or type(size) is not int
         or size <= 0
+        or not filename
     ):
         raise PythonEnvironmentIdentityError(
-            f"locked package {row.get('name')!r} wheel identity is invalid"
+            f"locked package {row.get('name')!r} {label} identity is invalid"
         )
-    return {
-        "filename": filename,
-        "size": size,
-        "sha256": raw_hash.removeprefix("sha256:"),
-    }
+    return size, raw_hash.removeprefix("sha256:")
+
+
+def _url_filename(url: str) -> str:
+    return urllib.parse.unquote(Path(urllib.parse.urlparse(url).path).name)
+
+
+def _locked_artifact(
+    row: Mapping[str, object], ordered_tags: Sequence[str]
+) -> dict[str, object]:
+    """The file uv installs ``row`` from on a target with ``ordered_tags``.
+
+    Match uv's locked install (``Package::to_dist``): the best compatible wheel
+    by ``find_best_wheel``, else the locked sdist, which uv builds on the host.
+    https://github.com/astral-sh/uv/blob/0.13.5/crates/uv-lock/src/lock/mod.rs
+    """
+    from packaging.utils import parse_sdist_filename, parse_wheel_filename
+    from packaging.version import InvalidVersion, Version
+
+    try:
+        locked_version = Version(str(row.get("version", "")))
+    except InvalidVersion as exc:
+        raise PythonEnvironmentIdentityError(
+            f"locked package {row.get('name')!r} has an invalid version"
+        ) from exc
+    name = _canonicalize_name(str(row.get("name", "")))
+    rank = {tag: index for index, tag in enumerate(ordered_tags)}
+    candidates: list[
+        tuple[int, tuple[()] | tuple[int, str], str, Mapping[str, object]]
+    ] = []
+    # uv omits `wheels` from an sdist-only row.
+    wheels = row.get("wheels", [])
+    if not isinstance(wheels, list):
+        raise PythonEnvironmentIdentityError(
+            f"locked package {row.get('name')!r} has an invalid wheel closure"
+        )
+    for raw in wheels:
+        if not isinstance(raw, Mapping) or not isinstance(raw.get("url"), str):
+            continue
+        raw = cast(Mapping[str, object], raw)
+        filename = _url_filename(str(raw["url"]))
+        try:
+            parsed_name, parsed_version, build, tags = parse_wheel_filename(filename)
+        except ValueError:
+            continue
+        if _canonicalize_name(parsed_name) != name or parsed_version != locked_version:
+            continue
+        supported = [rank[str(tag)] for tag in tags if str(tag) in rank]
+        if supported:
+            candidates.append((min(supported), build, filename, raw))
+    if candidates:
+        # Match uv's Package::find_best_wheel: tag priority, then greatest build
+        # tag, retaining the first lock entry on an exact tie. Compressed
+        # platform tags can give distinct wheels the same best tag; filename
+        # sorting would silently change the artifact uv actually installs.
+        _rank, _build, filename, artifact = max(
+            candidates, key=lambda item: (-item[0], item[1])
+        )
+        size, sha256 = _locked_file(row, artifact, filename, "wheel")
+        return {"kind": "wheel", "filename": filename, "size": size, "sha256": sha256}
+    sdist = row.get("sdist")
+    if not isinstance(sdist, Mapping) or not isinstance(sdist.get("url"), str):
+        raise PythonEnvironmentIdentityError(
+            f"locked package {row.get('name')!r} has neither a wheel for the "
+            "active OS/arch/ABI nor an sdist"
+        )
+    sdist = cast(Mapping[str, object], sdist)
+    filename = _url_filename(str(sdist["url"]))
+    try:
+        parsed_name, parsed_version = parse_sdist_filename(filename)
+    except ValueError as exc:
+        raise PythonEnvironmentIdentityError(
+            f"locked package {row.get('name')!r} sdist identity is invalid"
+        ) from exc
+    if _canonicalize_name(parsed_name) != name or parsed_version != locked_version:
+        raise PythonEnvironmentIdentityError(
+            f"locked package {row.get('name')!r} sdist differs from its package row"
+        )
+    size, sha256 = _locked_file(row, sdist, filename, "sdist")
+    return {"kind": "sdist", "filename": filename, "size": size, "sha256": sha256}
 
 
 # uv.lock format revisions this reader understands. Revisions 4 and 5 (uv 0.12)
@@ -299,13 +338,26 @@ def selected_uv_lock_group_closure(
 
     try:
         document = tomllib.loads((repo_root / "uv.lock").read_text(encoding="utf-8"))
-        project = tomllib.loads(
+        pyproject = tomllib.loads(
             (repo_root / "pyproject.toml").read_text(encoding="utf-8")
-        )["project"]
+        )
+        project = pyproject["project"]
     except (OSError, UnicodeError, KeyError, tomllib.TOMLDecodeError) as exc:
         raise PythonEnvironmentIdentityError(
             f"cannot read uv project lock authority: {exc}"
         ) from exc
+    tool = pyproject.get("tool", {})
+    uv_settings = tool.get("uv", {}) if isinstance(tool, Mapping) else None
+    if not isinstance(uv_settings, Mapping):
+        raise PythonEnvironmentIdentityError("pyproject.toml [tool.uv] is invalid")
+    unmodeled = [key for key in UV_BUILD_SELECTION_SETTINGS if key in uv_settings]
+    if (repo_root / "uv.toml").exists():
+        unmodeled.append("uv.toml")
+    if unmodeled:
+        raise PythonEnvironmentIdentityError(
+            "uv build selection the lock identity does not model: "
+            + ", ".join(unmodeled)
+        )
     raw_environment = dict(
         default_environment() if marker_environment is None else marker_environment
     )
@@ -587,7 +639,7 @@ def validate_uv_lock_group_closure(payload: object) -> dict[str, object]:
         )
     from packaging.requirements import InvalidRequirement, Requirement
     from packaging.specifiers import InvalidSpecifier, SpecifierSet
-    from packaging.utils import parse_wheel_filename
+    from packaging.utils import parse_sdist_filename, parse_wheel_filename
     from packaging.version import InvalidVersion, Version
 
     marker_environment = {str(key): str(value) for key, value in marker_mapping.items()}
@@ -634,7 +686,9 @@ def validate_uv_lock_group_closure(payload: object) -> dict[str, object]:
             set(source) != {"registry"}
             or not isinstance(source.get("registry"), str)
             or not source.get("registry")
-            or set(artifact) != {"filename", "size", "sha256"}
+            or set(artifact) != _LOCKED_ARTIFACT_FIELDS
+            or not isinstance(artifact.get("kind"), str)
+            or artifact["kind"] not in LOCKED_ARTIFACT_KINDS
             or not isinstance(artifact.get("filename"), str)
             or not artifact.get("filename")
             or any(
@@ -645,20 +699,32 @@ def validate_uv_lock_group_closure(payload: object) -> dict[str, object]:
             or not _valid_sha256(artifact.get("sha256"))
         ):
             raise PythonEnvironmentIdentityError("uv.lock package closure is invalid")
+        # `kind` is checked above, before any filename is parsed: an sdist name
+        # never reaches the wheel parser. An sdist carries no tags; the wheel
+        # uv builds from it is checked against the target at match time.
+        sdist = artifact["kind"] == "sdist"
         try:
-            wheel_name, wheel_version, _build, _tags = parse_wheel_filename(
-                str(artifact["filename"])
-            )
+            if sdist:
+                file_name, file_version = parse_sdist_filename(
+                    str(artifact["filename"])
+                )
+                file_tags: frozenset[str] | None = None
+            else:
+                file_name, file_version, _build, _tags = parse_wheel_filename(
+                    str(artifact["filename"])
+                )
+                file_tags = frozenset(str(tag) for tag in _tags)
             locked_version = Version(str(package["version"]))
         except (InvalidVersion, ValueError) as exc:
             raise PythonEnvironmentIdentityError(
-                "uv.lock package wheel identity is invalid"
+                "uv.lock package artifact identity is invalid"
             ) from exc
         if (
-            _canonicalize_name(wheel_name) != name
-            or wheel_version != locked_version
-            or not {str(tag) for tag in _tags}.intersection(
-                cast(list[str], target["tags"])
+            _canonicalize_name(file_name) != name
+            or file_version != locked_version
+            or (
+                file_tags is not None
+                and not file_tags.intersection(cast(list[str], target["tags"]))
             )
         ):
             raise PythonEnvironmentIdentityError(
@@ -802,7 +868,22 @@ def environment_matches_lock_closure(
         wheel = by_name[package["name"]].get("wheel")
         if not isinstance(wheel, Mapping):
             return False
-        filename = package["artifact"]["filename"]
+        artifact = package["artifact"]
+        if artifact["kind"] == "sdist":
+            # uv built this wheel on the host: every tag must be a target tag
+            # (the target's set includes py3-none-any) and it has no build tag.
+            # Tags, not bytes: uv enforced the sdist's locked hash at download.
+            built_tags = wheel.get("tags")
+            if (
+                wheel.get("build") is not None
+                or not isinstance(built_tags, list)
+                or not built_tags
+                or not all(isinstance(tag, str) for tag in built_tags)
+                or not set(built_tags) <= set(target["tags"])
+            ):
+                return False
+            continue
+        filename = artifact["filename"]
         _name, _version, _build, tags = parse_wheel_filename(filename)
         installed_build = wheel.get("build")
         try:

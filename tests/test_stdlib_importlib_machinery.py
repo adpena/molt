@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import builtins
 import importlib.util
-import ntpath
 import sys
 import types
 from pathlib import Path
@@ -15,14 +14,13 @@ SCRIPT_PATH = REPO_ROOT / "src" / "molt" / "stdlib" / "importlib" / "machinery.p
 
 _MACHINERY_INTRINSICS = [
     "molt_importlib_read_file",
-    "molt_importlib_admit_spec",
-    "molt_importlib_ensure_default_meta_path",
-    "molt_importlib_filefinder_find_spec",
+    "molt_importlib_path_finder_types",
+    "molt_importlib_namespace_path_epoch",
+    "molt_importlib_file_loader_types_declare",
     "molt_importlib_sourcefileloader_exec_module",
     "molt_importlib_zip_source_loader_exec_module",
     "molt_importlib_extension_loader_exec_module",
     "molt_importlib_extension_loader_create_module",
-    "molt_importlib_extension_loader_type_declare",
     "molt_importlib_sourceless_loader_exec_module",
     "molt_importlib_resources_reader_resource_path_from_roots",
     "molt_importlib_resources_reader_open_resource_bytes_from_roots",
@@ -39,7 +37,6 @@ _MACHINERY_INTRINSICS = [
     "molt_importlib_suffixes",
     "molt_importlib_compiled_loader",
     "molt_importlib_compiled_loader_types",
-    "molt_path_splitroot",
 ]
 
 # Stands in for the runtime-owned class the facade must bind, not define.
@@ -53,30 +50,36 @@ _RUNTIME_LOADER_TYPES = (
     _RUNTIME_FROZEN_IMPORTER,
 )
 _RUNTIME_LOADER = _RUNTIME_BUILTIN_IMPORTER()
+_RUNTIME_PATH_FINDER = type("PathFinder", (), {})
+_RUNTIME_FILE_FINDER = type("FileFinder", (), {})
 _RUNTIME_SOURCE_SUFFIXES = [".py"]
 _RUNTIME_BYTECODE_SUFFIXES = [".pyc"]
 
 
-def _splitroot(path, posix, windows_utf16, pathlib):
-    assert (posix, windows_utf16, pathlib) == (False, True, False)
-    # Independent ordinary-root oracle. Native PathCch edge parity requires
-    # Windows execution, not this facade fixture.
-    return ntpath.splitroot(path)
+_DECLARED_FILE_LOADERS = (
+    "ExtensionFileLoader",
+    "SourceFileLoader",
+    "SourcelessFileLoader",
+    "_ZipSourceLoader",
+    "_NamespacePath",
+)
 
 
-def _complete_initial_finders(namespace):
-    assert namespace["ModuleSpec"] is _RUNTIME_MODULE_SPEC
-    assert isinstance(namespace["_default_path_hooks"], list)
-    assert namespace["PathFinder"].__module__ == namespace["__name__"]
+def _declare_file_loaders(namespace):
+    # The runtime reads these classes from the defining namespace only.
+    for name in _DECLARED_FILE_LOADERS:
+        assert isinstance(namespace[name], type), name
 
 
 def _bootstrap_intrinsics():
     # Identity sentinels only: behavior is tested against the real Rust owner.
     return {
-        "molt_importlib_admit_spec": lambda fullname, spec: None,
-        "molt_importlib_ensure_default_meta_path": _complete_initial_finders,
-        "molt_importlib_filefinder_find_spec": lambda fullname, path, machinery: None,
-        "molt_importlib_extension_loader_type_declare": lambda cls: None,
+        "molt_importlib_path_finder_types": lambda: (
+            _RUNTIME_PATH_FINDER,
+            _RUNTIME_FILE_FINDER,
+        ),
+        "molt_importlib_namespace_path_epoch": lambda: 0,
+        "molt_importlib_file_loader_types_declare": _declare_file_loaders,
         "molt_importlib_module_spec_type": lambda: _RUNTIME_MODULE_SPEC,
         "molt_importlib_suffixes": lambda: (
             _RUNTIME_SOURCE_SUFFIXES,
@@ -84,7 +87,6 @@ def _bootstrap_intrinsics():
         ),
         "molt_importlib_compiled_loader": lambda: _RUNTIME_LOADER,
         "molt_importlib_compiled_loader_types": lambda: _RUNTIME_LOADER_TYPES,
-        "molt_path_splitroot": _splitroot,
     }
 
 
@@ -159,6 +161,8 @@ def test_loader_classes_and_singleton_are_runtime_authorities() -> None:
     assert machinery.BuiltinImporter is _RUNTIME_BUILTIN_IMPORTER
     assert machinery.FrozenImporter is _RUNTIME_FROZEN_IMPORTER
     assert machinery._MOLT_LOADER is _RUNTIME_LOADER
+    assert machinery.PathFinder is _RUNTIME_PATH_FINDER
+    assert machinery.FileFinder is _RUNTIME_FILE_FINDER
 
 
 def test_platform_suffixes_resolve_when_sys_is_partially_initialized() -> None:
@@ -206,83 +210,16 @@ def test_ensure_intrinsics_does_not_publish_partial_registry() -> None:
         assert machinery._MOLT_EXCEPTION_LAST_PENDING is None  # noqa: SLF001
 
 
-def test_extension_loader_declares_the_actual_class(monkeypatch) -> None:
+def test_file_loaders_are_declared_from_the_defining_namespace(monkeypatch) -> None:
     declarations = []
     intrinsics = _bootstrap_intrinsics()
-    intrinsics["molt_importlib_extension_loader_type_declare"] = declarations.append
+    intrinsics["molt_importlib_file_loader_types_declare"] = declarations.append
     monkeypatch.setattr(
         sys.modules[__name__], "_bootstrap_intrinsics", lambda: intrinsics
     )
     machinery = _load_machinery_module()
-    assert declarations == [machinery.ExtensionFileLoader]
+    assert len(declarations) == 1
+    assert declarations[0] is vars(machinery)
+    for name in _DECLARED_FILE_LOADERS:
+        assert declarations[0][name] is getattr(machinery, name)
     assert machinery.ExtensionFileLoader.__bases__ == (machinery._FileLoader,)
-
-
-@pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
-def test_cache_invalidation_is_lexical_and_preserves_terminal_errors(
-    monkeypatch, platform
-) -> None:
-    intrinsics = _bootstrap_intrinsics()
-
-    intrinsics["molt_sys_platform"] = lambda: platform
-    monkeypatch.setattr(
-        sys.modules[__name__], "_bootstrap_intrinsics", lambda: intrinsics
-    )
-    machinery = _load_machinery_module()
-    prefix = "C:\\" if platform == "win32" else "/"
-    events = []
-
-    class Finder:
-        def __init__(self, name, fail=False):
-            self.name = name
-            self.fail = fail
-
-        def invalidate_caches(self):
-            events.append(self.name)
-            if self.fail:
-                raise LookupError("cache-stop")
-
-    cache = {}
-    original_import = builtins.__import__
-
-    def guarded_import(name, *args, **kwargs):
-        assert name not in {"os", "os.path"}, "lexical invalidation imported os"
-        return original_import(name, *args, **kwargs)
-
-    with monkeypatch.context() as context:
-        context.setattr(sys, "path_importer_cache", cache)
-        context.setattr(builtins, "__import__", guarded_import)
-        assert machinery.PathFinder.invalidate_caches() is None
-        if platform != "win32":
-            cache[b"/bytes-root"] = Finder("bytes")
-            with pytest.raises(TypeError):
-                machinery.PathFinder.invalidate_caches()
-            cache.clear()
-        cache[None] = None
-        cache["relative"] = Finder("relative")
-        if platform == "win32":
-            cache["\\current-drive"] = Finder("current-drive")
-            cache["/current-drive"] = Finder("current-drive")
-            cache["C:relative"] = Finder("drive-relative")
-            cache["\\\\server\\share\\root"] = Finder("UNC")
-            cache[b"\\relative"] = Finder("bytes-relative")
-            cache[b"C:\\bytes-root"] = Finder("bytes")
-        cache[prefix + "first"] = Finder("first")
-        cache[prefix + "stop"] = Finder("stop", True)
-        cache[prefix + "later"] = Finder("later")
-        with pytest.raises(LookupError, match="cache-stop"):
-            machinery.PathFinder.invalidate_caches()
-        assert events == (["UNC", "bytes"] if platform == "win32" else []) + [
-            "first",
-            "stop",
-        ]
-        assert set(cache) == {
-            prefix + "first",
-            prefix + "stop",
-            prefix + "later",
-            *(
-                ["\\\\server\\share\\root", b"C:\\bytes-root"]
-                if platform == "win32"
-                else []
-            ),
-        }

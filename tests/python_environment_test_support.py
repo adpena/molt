@@ -231,6 +231,7 @@ def lock_closure_manifest(
                 "extras": [],
                 "dependencies": [],
                 "artifact": {
+                    "kind": "wheel",
                     "filename": f"{name.replace('-', '_')}-{version}-py3-none-any.whl",
                     "size": 1,
                     "sha256": "a" * 64,
@@ -762,8 +763,10 @@ def materialize_development_environment(
         tree_nodes = {row["id"]: row for row in realized["tree"]["file_nodes"]}
         for distribution in realized["distributions"]:
             artifact = artifacts.get(distribution["name"])
-            if artifact is None:
-                continue  # The editable project is not a locked registry wheel.
+            if artifact is None or artifact["kind"] != "wheel":
+                # The editable project is not a locked registry file, and an
+                # sdist-built wheel carries the host's tags, not a filename's.
+                continue
             _name, _version, build, tags = parse_wheel_filename(artifact["filename"])
             wheel = distribution["wheel"]
             selected_tags = sorted(str(tag) for tag in tags)

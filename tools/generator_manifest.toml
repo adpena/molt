@@ -277,7 +277,10 @@ discovery_only = false
 
 [[generator]]
 tool = "tools/gen_python_identity_catalog.py"
-outputs = ["src/molt/compiler_analysis/python_identity_catalog_generated.py"]
+outputs = [
+  "src/molt/compiler_analysis/python_identity_catalog_generated.py",
+  "runtime/molt-runtime/src/builtins/types/dataclasses/initializer_spec_generated.rs",
+]
 source = "src/molt/compiler_analysis/python_identity_catalog.toml + runtime/molt-runtime/src/intrinsics/manifest.pyi + tools/intrinsic_manifest.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_python_identity_catalog.py --check"
@@ -507,6 +510,7 @@ outputs = [
   "runtime/molt-runtime/src/attached_exports_generated/builtins/platform_importlib_ffi/find_spec.rs",
   "runtime/molt-runtime/src/attached_exports_generated/builtins/platform_importlib_ffi/import_transaction.rs",
   "runtime/molt-runtime/src/attached_exports_generated/builtins/platform_importlib_ffi/metadata_spec.rs",
+  "runtime/molt-runtime/src/attached_exports_generated/builtins/platform_importlib_ffi/path_finder.rs",
   "runtime/molt-runtime/src/attached_exports_generated/builtins/platform_importlib_ffi/payloads.rs",
   "runtime/molt-runtime/src/attached_exports_generated/builtins/platform_importlib_ffi/reload_bootstrap.rs",
   "runtime/molt-runtime/src/attached_exports_generated/builtins/platform_importlib_resources/ffi.rs",

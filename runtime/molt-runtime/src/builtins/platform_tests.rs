@@ -2543,7 +2543,7 @@ fn loader_identity_failing_property(py: &PyToken<'_>) -> u64 {
 fn extension_loader_admission_uses_class_declaration_not_names_or_descriptors() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        use crate::object::class_storage::{ClassDeclaration, class_declares};
+        use crate::object::class_storage::{ClassDeclaration, class_declare, class_declares};
         let spec = extension_spec_bits_for_tests(py, "role_extension", "extension.payload");
         for name in ["ExtensionFileLoader", "CustomExtensionFileLoaderSuffix"] {
             let class = loader_identity_class(py, name, builtin_classes(py).object);
@@ -2574,8 +2574,7 @@ fn extension_loader_admission_uses_class_declaration_not_names_or_descriptors() 
         let base_ptr = obj_from_bits(base).as_ptr().unwrap();
         let before = unsafe { (*header_from_obj_ptr(base_ptr)).ref_count_snapshot() };
         for _ in 0..2 {
-            let declared = crate::builtins::platform::molt_importlib_extension_loader_type_declare_attached_body(py, base);
-            assert!(obj_from_bits(declared).is_none());
+            unsafe { class_declare(base_ptr, ClassDeclaration::ExtensionLoader) };
             assert!(!exception_pending(py));
         }
         assert_eq!(
@@ -2626,9 +2625,12 @@ fn extension_loader_declaration_preserves_nonstandard_artifact_manifest_admissio
         let path_text = path.to_string_lossy().into_owned();
         crate::with_gil_entry_nopanic!(py, {
             let class = loader_identity_class(py, "Unrelated", builtin_classes(py).object);
-            crate::builtins::platform::molt_importlib_extension_loader_type_declare_attached_body(
-                py, class,
-            );
+            unsafe {
+                crate::object::class_storage::class_declare(
+                    obj_from_bits(class).as_ptr().unwrap(),
+                    crate::object::class_storage::ClassDeclaration::ExtensionLoader,
+                )
+            };
             let loader = unsafe { call_callable0(py, class) };
             let spec = extension_spec_bits_for_tests(py, "role_extension", &path_text);
             loader_identity_setattr(py, spec, b"loader", loader);
@@ -2725,16 +2727,14 @@ fn extension_spec_origin_suffix_and_descriptor_errors_remain_independent_of_load
             crate::BuiltinExc::RuntimeError,
             &["loader identity descriptor called"],
         );
+        // Only the admitted importlib.machinery body may declare its loaders.
         let result =
-            crate::builtins::platform::molt_importlib_extension_loader_type_declare_attached_body(
-                py,
-                MoltObject::none().bits(),
-            );
+            molt_importlib_file_loader_types_declare_attached_body(py, MoltObject::none().bits());
         assert!(obj_from_bits(result).is_none());
         assert_pending_exception_contains(
             py,
-            crate::BuiltinExc::TypeError,
-            &["extension loader declaration requires a type"],
+            crate::BuiltinExc::RuntimeError,
+            &["importlib.machinery"],
         );
         for bits in [spec, class] {
             dec_ref_bits(py, bits);
@@ -3858,158 +3858,6 @@ fn spec_transaction_finalizes_original_and_selects_flag_body_and_completion_erro
 }
 
 #[test]
-fn initial_finder_generation_preserves_public_customization_and_retires_owners() {
-    use crate::builtins::exceptions::ExceptionValue;
-    for mode in [
-        "unchanged",
-        "replaced",
-        "none",
-        "mutated-restored",
-        "custom-hooks",
-        "mutated-hooks",
-    ] {
-        let _transaction = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(py, {
-            let name = ExceptionValue::adopt(py, alloc_test_string_bits(py, "sys"));
-            let sys =
-                ExceptionValue::adopt(py, crate::molt_module_new_attached_body(py, name.bits()));
-            crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys.bits());
-            let read = |key: crate::NameId| {
-                let key = key.bits(py);
-                ExceptionValue::adopt(
-                    py,
-                    crate::builtins::attributes::get_attr_name(py, sys.bits(), key).unwrap(),
-                )
-            };
-            let meta = read(crate::NameId::MetaPath);
-            let hooks = read(crate::NameId::PathHooks);
-            let initial = unsafe {
-                crate::object::seq_access::snapshot(
-                    py,
-                    ptr_from_bits(meta.bits()),
-                    "test initial finders",
-                )
-            }
-            .unwrap();
-            assert_eq!(initial.len(), 1, "one early runtime catalog finder");
-            let finder = initial[0];
-            let machinery =
-                ExceptionValue::adopt(py, crate::molt_module_new_attached_body(py, name.bits()));
-            let path_finder = MoltObject::from_int(731).bits();
-            loader_identity_setattr(py, machinery.bits(), b"PathFinder", path_finder);
-            let defaults = ExceptionValue::adopt(
-                py,
-                MoltObject::from_ptr(alloc_list(py, &[MoltObject::from_int(419).bits()])).bits(),
-            );
-            loader_identity_setattr(
-                py,
-                machinery.bits(),
-                b"_default_path_hooks",
-                defaults.bits(),
-            );
-            let refs =
-                |bits| unsafe { (*header_from_obj_ptr(ptr_from_bits(bits))).ref_count_snapshot() };
-            match mode {
-                "replaced" => {
-                    let other =
-                        ExceptionValue::adopt(py, MoltObject::from_ptr(alloc_list(py, &[])).bits());
-                    loader_identity_setattr(py, sys.bits(), b"meta_path", other.bits());
-                }
-                "none" => {
-                    loader_identity_setattr(py, sys.bits(), b"meta_path", MoltObject::none().bits())
-                }
-                "mutated-restored" => unsafe {
-                    assert!(crate::object::list_mutation::clear(
-                        py,
-                        ptr_from_bits(meta.bits())
-                    ));
-                    assert!(crate::object::list_mutation::append(
-                        py,
-                        ptr_from_bits(meta.bits()),
-                        finder
-                    ));
-                },
-                "custom-hooks" => {
-                    let custom = ExceptionValue::adopt(
-                        py,
-                        MoltObject::from_ptr(alloc_list(py, &[MoltObject::from_int(97).bits()]))
-                            .bits(),
-                    );
-                    loader_identity_setattr(py, sys.bits(), b"path_hooks", custom.bits());
-                }
-                "mutated-hooks" => unsafe {
-                    assert!(crate::object::list_mutation::append(
-                        py,
-                        ptr_from_bits(hooks.bits()),
-                        MoltObject::from_int(1).bits()
-                    ));
-                    assert!(crate::object::list_mutation::clear(
-                        py,
-                        ptr_from_bits(hooks.bits())
-                    ));
-                },
-                _ => (),
-            }
-            let before = (refs(meta.bits()), refs(hooks.bits()));
-            importlib_finish_initial_defaults(py, unsafe {
-                module_dict_bits(ptr_from_bits(machinery.bits()))
-            })
-            .expect("default generation disposition");
-            assert!(!exception_pending(py));
-            assert_eq!(
-                (refs(meta.bits()), refs(hooks.bits())),
-                (before.0 - 1, before.1 - 1),
-                "terminal phase retires both temporary list owners"
-            );
-            {
-                let current = read(crate::NameId::MetaPath);
-                if mode == "none" {
-                    assert!(obj_from_bits(current.bits()).is_none());
-                } else {
-                    let current = unsafe {
-                        crate::object::seq_access::snapshot(
-                            py,
-                            ptr_from_bits(current.bits()),
-                            "test final finders",
-                        )
-                    }
-                    .unwrap();
-                    let expected: &[u64] = match mode {
-                        "replaced" => &[],
-                        "mutated-restored" => &[finder],
-                        _ => &[finder, path_finder],
-                    };
-                    assert_eq!(&*current, expected);
-                }
-                let current = read(crate::NameId::PathHooks);
-                let current = unsafe {
-                    crate::object::seq_access::snapshot(
-                        py,
-                        ptr_from_bits(current.bits()),
-                        "test final hooks",
-                    )
-                }
-                .unwrap();
-                let expected: &[u64] = match mode {
-                    "custom-hooks" => &[MoltObject::from_int(97).bits()],
-                    "mutated-hooks" => &[],
-                    _ => &[MoltObject::from_int(419).bits()],
-                };
-                assert_eq!(&*current, expected);
-            }
-            importlib_finish_initial_defaults(py, unsafe {
-                module_dict_bits(ptr_from_bits(machinery.bits()))
-            })
-            .expect("default generation disposition");
-            assert_eq!(
-                (refs(meta.bits()), refs(hooks.bits())),
-                (before.0 - 1, before.1 - 1)
-            );
-        });
-    }
-}
-
-#[test]
 fn import_lock_reentry_failed_release_and_terminal_custody_share_one_owner() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
@@ -4041,7 +3889,7 @@ fn import_lock_reentry_failed_release_and_terminal_custody_share_one_owner() {
             crate::BuiltinExc::RuntimeError,
             &["not holding the import lock"],
         );
-        importlib_retire_default_generation(py, runtime_state(py));
+        importlib_retire_import_state(py);
         crate::builtins::platform::molt_imp_acquire_lock_attached_body(py);
         assert_pending_exception_contains(
             py,
@@ -4072,10 +3920,7 @@ extern "C" fn platform_retirement_finalizer(__context: u64, _self: u64) -> u64 {
         let platform = platform_state(py);
         let retired = platform.environment_mapping.load(Ordering::Acquire)
             == MoltObject::none().bits()
-            && matches!(
-                *platform.import_defaults.lock().unwrap(),
-                DefaultFinderGeneration::Retired
-            );
+            && platform.import_retired.load(Ordering::Acquire);
         PLATFORM_FINALIZER_DISPOSITION.store(if retired { 1 } else { 2 }, Ordering::Release);
         MoltObject::none().bits()
     }
@@ -4125,5 +3970,58 @@ fn platform_terminal_custody_precedes_environment_value_finalizers() {
         );
         assert!(!exception_pending(py));
         dec_ref_bits(py, class);
+    });
+}
+
+/// The import-root rule of `PathFinder.invalidate_caches`, for both flavors on
+/// any host. Cases are the former facade test's; `ntpath.splitroot` was its
+/// independent oracle for the Windows cases.
+#[test]
+fn import_root_rule_matches_posix_and_windows_cases() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let text = |value: &str| alloc_test_string_bits(py, value);
+        let bytes = |value: &[u8]| MoltObject::from_ptr(alloc_bytes(py, value)).bits();
+        let cases: [(u64, ImportRootFlavor, bool); 16] = [
+            (text("/root"), ImportRootFlavor::Posix, true),
+            (text("//root"), ImportRootFlavor::Posix, true),
+            (text("root"), ImportRootFlavor::Posix, false),
+            (text(""), ImportRootFlavor::Posix, false),
+            (text("C:\\root"), ImportRootFlavor::Windows, true),
+            (text("C:/root"), ImportRootFlavor::Windows, true),
+            (
+                text("\\\\server\\share\\root"),
+                ImportRootFlavor::Windows,
+                true,
+            ),
+            (text("//server/share/root"), ImportRootFlavor::Windows, true),
+            (text("\\root"), ImportRootFlavor::Windows, false),
+            (text("/root"), ImportRootFlavor::Windows, false),
+            (text("C:root"), ImportRootFlavor::Windows, false),
+            (text(""), ImportRootFlavor::Windows, false),
+            (bytes(b"C:\\bytes-root"), ImportRootFlavor::Windows, true),
+            (bytes(b"\\relative"), ImportRootFlavor::Windows, false),
+            (
+                bytes(b"\\\\server\\share\\root"),
+                ImportRootFlavor::Windows,
+                true,
+            ),
+            (bytes(b""), ImportRootFlavor::Windows, false),
+        ];
+        for (key, flavor, expected) in cases {
+            assert_eq!(
+                import_root_is_absolute(py, key, flavor),
+                Ok(expected),
+                "{flavor:?} {:?}",
+                crate::object::ops_format::string_obj_bytes(obj_from_bits(key))
+            );
+            assert!(!exception_pending(py));
+            dec_ref_bits(py, key);
+        }
+        // The POSIX rule calls the key's own startswith("/"), as the facade did.
+        let key = bytes(b"/bytes-root");
+        assert!(import_root_is_absolute(py, key, ImportRootFlavor::Posix).is_err());
+        assert_pending_exception_contains(py, crate::BuiltinExc::TypeError, &[]);
+        dec_ref_bits(py, key);
     });
 }

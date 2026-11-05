@@ -25,7 +25,11 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src/molt/compiler_analysis/python_identity_catalog.toml"
 INTRINSIC_MANIFEST = ROOT / "runtime/molt-runtime/src/intrinsics/manifest.pyi"
 OUT_PYTHON = ROOT / "src/molt/compiler_analysis/python_identity_catalog_generated.py"
-OUTPUTS = (OUT_PYTHON,)
+OUT_INIT_SPEC = (
+    ROOT
+    / "runtime/molt-runtime/src/builtins/types/dataclasses/initializer_spec_generated.rs"
+)
+OUTPUTS = (OUT_PYTHON, OUT_INIT_SPEC)
 
 
 class SchemaError(ValueError):
@@ -43,6 +47,8 @@ class IntrinsicCallable:
     argument_roles: tuple[str, ...] = ()
     acquisition: str | None = None
     compiler_from: tuple[str, ...] = ()
+    attribute_read: tuple[int, str] | None = None
+    native_initializer: str | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +75,7 @@ class Schema:
     import_argument_roles: tuple[tuple[str, str], ...]
     import_callables: tuple[ImportCallable, ...]
     builtin_return_captures: tuple[tuple[str, str, str, str], ...]
+    native_initializers: tuple[tuple[str, tuple[str, ...]], ...]
 
 
 def _bits(raw: object, label: str) -> tuple[tuple[str, int], ...]:
@@ -164,10 +171,31 @@ def load_schema(
         "import_behavior",
         "import_argument_role",
         "import_callable",
+        "native_initializer",
     }:
         raise SchemaError("unknown or missing identity-catalog top-level keys")
-    if type(data["schema_version"]) is not int or data["schema_version"] != 2:
-        raise SchemaError("schema_version must be integer 2")
+    if type(data["schema_version"]) is not int or data["schema_version"] != 3:
+        raise SchemaError("schema_version must be integer 3")
+    raw_initializers = data["native_initializer"]
+    if not isinstance(raw_initializers, dict) or not raw_initializers:
+        raise SchemaError("native_initializer must be a nonempty table")
+    native_initializers = []
+    for name, fields in raw_initializers.items():
+        if name != "DATACLASS":
+            raise SchemaError("native initializer has no implementation")
+        if (
+            re.fullmatch(r"[A-Z][A-Z0-9_]*", name) is None
+            or not isinstance(fields, list)
+            or not fields
+        ):
+            raise SchemaError("invalid native initializer layout")
+        if any(
+            not isinstance(field, str)
+            or re.fullmatch(r"[A-Z][A-Z0-9_]*", field) is None
+            for field in fields
+        ) or len(set(fields)) != len(fields):
+            raise SchemaError("native initializer fields must be unique closed names")
+        native_initializers.append((name, tuple(fields)))
     identities = _bits(data["identity_bits"], "identity")
     members = _bits(data["member_bits"], "member")
     identity_names, member_names = set(dict(identities)), set(dict(members))
@@ -392,6 +420,8 @@ def load_schema(
             {"name", "identity", "target_property"},
             {"name", "identity", "import_behavior", "argument_roles"},
             {"name", "identity", "acquisition"},
+            {"name", "identity", "attribute_read"},
+            {"name", "identity", "native_initializer"},
             {"name", "identity"},
         ):
             raise SchemaError("intrinsic callable requires one explicit semantic facet")
@@ -427,6 +457,29 @@ def load_schema(
         producer = producers.get(name)
         if producer is None:
             raise SchemaError(f"intrinsic callable {name!r} has no manifest producer")
+        attribute_read = row.get("attribute_read")
+        if attribute_read is not None:
+            if not isinstance(attribute_read, dict) or set(attribute_read) != {
+                "argument",
+                "member",
+            }:
+                raise SchemaError("attribute read requires an argument and member")
+            if producer.arity != 1:
+                raise SchemaError("attribute reader requires one manifest parameter")
+            argument = attribute_read["argument"]
+            if type(argument) is not int or not 0 <= argument < producer.arity:
+                raise SchemaError("attribute read argument has no manifest parameter")
+            attribute_read = (
+                argument,
+                _name(attribute_read["member"], "attribute member"),
+            )
+        native_initializer = row.get("native_initializer")
+        if native_initializer is not None:
+            _reference(native_initializer, set(raw_initializers), "native initializer")
+            if producer.arity != 3:
+                raise SchemaError(
+                    "native initializer requires class, schema and specification"
+                )
         if target_property is not None and producer.arity != 0:
             raise SchemaError(
                 f"target property intrinsic {name!r} must take no arguments"
@@ -490,6 +543,8 @@ def load_schema(
                 argument_roles,
                 acquisition,
                 compiler_from,
+                attribute_read,
+                native_initializer,
             )
         )
     if used_properties != set(properties):
@@ -500,6 +555,12 @@ def load_schema(
     used_roles = {role for row in import_callables for role in row.argument_roles}
     if used_behaviors != behavior_names or used_roles != role_names:
         raise SchemaError("orphan import behavior or argument role")
+    if {
+        row.native_initializer
+        for row in intrinsic_callables
+        if row.native_initializer is not None
+    } != set(raw_initializers):
+        raise SchemaError("native initializer has no intrinsic producer")
     return Schema(
         identities,
         members,
@@ -513,6 +574,7 @@ def load_schema(
         import_roles,
         tuple(import_callables),
         tuple(builtin_return_captures),
+        tuple(native_initializers),
     )
 
 
@@ -523,7 +585,7 @@ def render_python(schema: Schema) -> str:
         "# runtime/molt-runtime/src/intrinsics/manifest.pyi. DO NOT EDIT.\n",
         '"""Closed compiler-only identities, acquisitions and mutation guards."""\n\n',
         "from __future__ import annotations\n\n",
-        "from enum import Enum, IntFlag\nfrom types import MappingProxyType\n",
+        "from enum import Enum, IntEnum, IntFlag\nfrom types import MappingProxyType\n",
         "from typing import Final, Mapping, NamedTuple, TypeAlias\n\n\n",
     ]
     for name, rows in (
@@ -538,6 +600,15 @@ def render_python(schema: Schema) -> str:
         f"    {name} = {value!r}\n" for name, value in schema.target_properties
     )
     lines.append("\n\n")
+    lines.append("class PythonNativeInitializer(Enum):\n")
+    lines.extend(
+        f"    {name} = {name.lower()!r}\n" for name, _ in schema.native_initializers
+    )
+    lines.append("\n\n")
+    for name, fields in schema.native_initializers:
+        lines.append(f"class {name.title()}InitSpecField(IntEnum):\n")
+        lines.extend(f"    {field} = {index}\n" for index, field in enumerate(fields))
+        lines.append("\n\n")
     for name, rows in (
         ("PythonImportBehavior", schema.import_behaviors),
         ("PythonImportArgumentRole", schema.import_argument_roles),
@@ -660,6 +731,29 @@ def render_python(schema: Schema) -> str:
             )
             for row in schema.intrinsic_callables
             if row.target_property is not None
+        ],
+    )
+    mapping(
+        "INTRINSIC_ATTRIBUTE_READS",
+        "IdentityMask",
+        "tuple[int, str]",
+        [
+            (f"int(PythonIdentity.{row.identity})", repr(row.attribute_read))
+            for row in schema.intrinsic_callables
+            if row.attribute_read is not None
+        ],
+    )
+    mapping(
+        "INTRINSIC_NATIVE_INITIALIZERS",
+        "IdentityMask",
+        "PythonNativeInitializer",
+        [
+            (
+                f"int(PythonIdentity.{row.identity})",
+                f"PythonNativeInitializer.{row.native_initializer}",
+            )
+            for row in schema.intrinsic_callables
+            if row.native_initializer is not None
         ],
     )
     lines.append("INTRINSIC_RUNTIME_IMPORT_IDENTITIES: Final[IdentityMask] = (\n")
@@ -825,7 +919,20 @@ def render_python(schema: Schema) -> str:
 
 
 def render_all(schema: Schema) -> dict[Path, str]:
-    return {OUT_PYTHON: render_python(schema)}
+    outputs = {OUT_PYTHON: render_python(schema)}
+    for name, fields in schema.native_initializers:
+        lines = [
+            "// @generated by tools/gen_python_identity_catalog.py. DO NOT EDIT.\n",
+            "#[repr(usize)]\n#[derive(Clone, Copy)]\npub(super) enum InitSpecField {\n",
+        ]
+        lines.extend(
+            f"    {''.join(part.title() for part in field.split('_'))} = {index},\n"
+            for index, field in enumerate(fields)
+        )
+        lines.append("}\n")
+        lines.append(f"pub(super) const INIT_SPEC_FIELDS: usize = {len(fields)};\n")
+        outputs[OUT_INIT_SPEC] = "".join(lines)
+    return outputs
 
 
 def generated_outputs() -> dict[Path, str]:

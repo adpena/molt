@@ -3467,3 +3467,30 @@ def test_storage_admission_compares_windows_dos_and_verbatim_spellings(monkeypat
             for spelling in spellings
         }
     assert observed == spellings
+
+
+def test_declared_proof_fixture_roots_are_explicit_storage_outputs(tmp_path):
+    """bat00, 2026-11-04: the trunk worker declares proof fixture roots outside
+    the artifact root, and the test storage authority refused 45 writes there."""
+    from molt import dx
+    from tests.conftest import declared_proof_fixture_roots
+
+    metadata, cargo = tmp_path / "trunk-metadata", tmp_path / "trunk-cargo"
+    assert declared_proof_fixture_roots({}) == ()
+    assert declared_proof_fixture_roots({"MOLT_PROOF_TEST_METADATA_ROOT": ""}) == ()
+    claims = declared_proof_fixture_roots(
+        {
+            "MOLT_PROOF_TEST_METADATA_ROOT": str(metadata),
+            "MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT": str(cargo),
+            "UNRELATED": str(tmp_path / "other"),
+        }
+    )
+    check = dx._StorageWriteCheck(list(claims), (), "", False, [])
+    for path, admitted in (
+        (metadata / "v2" / "0123" / "receipts", True),
+        (cargo / "v2" / "0123" / "molt-proof-output", True),
+        (tmp_path / "other" / "file", False),
+        (tmp_path / "trunk-metadata-sibling", False),
+    ):
+        target = path.resolve(strict=False)
+        assert dx._storage_write_admitted(check, target) is admitted, path

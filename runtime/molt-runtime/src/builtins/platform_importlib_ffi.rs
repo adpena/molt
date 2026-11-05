@@ -3,7 +3,6 @@ use super::*;
 pub(crate) use bootstrap_loader::{
     molt_importlib_extension_loader_create_module_attached_body,
     molt_importlib_extension_loader_payload_attached_body,
-    molt_importlib_extension_loader_type_declare_attached_body,
 };
 #[cfg(test)]
 pub(crate) use import_transaction::{
@@ -25,6 +24,8 @@ mod find_spec;
 mod import_transaction;
 #[path = "platform_importlib_ffi/metadata_spec.rs"]
 mod metadata_spec;
+#[path = "platform_importlib_ffi/path_finder.rs"]
+mod path_finder;
 #[path = "platform_importlib_ffi/payloads.rs"]
 mod payloads;
 #[path = "platform_importlib_ffi/reload_bootstrap.rs"]
@@ -39,99 +40,79 @@ use import_transaction::*;
 #[allow(unused_imports)]
 use metadata_spec::*;
 #[allow(unused_imports)]
+use path_finder::*;
+#[allow(unused_imports)]
 use payloads::*;
 #[allow(unused_imports)]
 use reload_bootstrap::*;
 
+pub use bootstrap_loader::{
+    molt_importlib_cache_from_source, molt_importlib_coerce_module_name,
+    molt_importlib_decode_source, molt_importlib_extension_loader_create_module,
+    molt_importlib_extension_loader_exec_module, molt_importlib_extension_loader_payload,
+    molt_importlib_package_root_from_origin, molt_importlib_read_file,
+    molt_importlib_source_from_cache, molt_importlib_source_hash,
+    molt_importlib_source_loader_payload, molt_importlib_sourcefileloader_exec_module,
+    molt_importlib_sourceless_loader_exec_module, molt_importlib_zip_archive_path,
+    molt_importlib_zip_read_entry, molt_importlib_zip_source_exec_payload,
+    molt_importlib_zip_source_loader_exec_module, molt_linecache_loader_get_source,
+    molt_sys_bootstrap_include_cwd, molt_sys_bootstrap_module_roots, molt_sys_bootstrap_path,
+    molt_sys_bootstrap_pwd, molt_sys_bootstrap_pythonpath, molt_sys_bootstrap_stdlib_root,
+    molt_traceback_exception_suppress_context,
+};
+pub use find_spec::{molt_importlib_find_in_path_package_context, molt_importlib_find_spec};
 pub(crate) use import_transaction::{ImportlibImportMode, importlib_import_resolved_attempt};
 pub(super) use import_transaction::{
     ImportlibTransactionReturn, importlib_import_resolved_transaction,
 };
+pub use import_transaction::{
+    molt_importlib_export_attrs, molt_importlib_import_module, molt_importlib_import_optional,
+    molt_importlib_import_or_fallback, molt_importlib_import_required,
+    molt_importlib_import_transaction, molt_importlib_load_module_shim,
+    molt_importlib_prepare_fromlist, molt_importlib_resolve_name,
+};
 pub(super) use metadata_spec::{importlib_init_module_attrs_impl, importlib_module_from_spec_impl};
-pub use {
-    bootstrap_loader::molt_importlib_cache_from_source,
-    bootstrap_loader::molt_importlib_coerce_module_name,
-    bootstrap_loader::molt_importlib_decode_source,
-    bootstrap_loader::molt_importlib_extension_loader_create_module,
-    bootstrap_loader::molt_importlib_extension_loader_exec_module,
-    bootstrap_loader::molt_importlib_extension_loader_payload,
-    bootstrap_loader::molt_importlib_extension_loader_type_declare,
-    bootstrap_loader::molt_importlib_package_root_from_origin,
-    bootstrap_loader::molt_importlib_read_file, bootstrap_loader::molt_importlib_source_from_cache,
-    bootstrap_loader::molt_importlib_source_hash,
-    bootstrap_loader::molt_importlib_source_loader_payload,
-    bootstrap_loader::molt_importlib_sourcefileloader_exec_module,
-    bootstrap_loader::molt_importlib_sourceless_loader_exec_module,
-    bootstrap_loader::molt_importlib_zip_archive_path,
-    bootstrap_loader::molt_importlib_zip_read_entry,
-    bootstrap_loader::molt_importlib_zip_source_exec_payload,
-    bootstrap_loader::molt_importlib_zip_source_loader_exec_module,
-    bootstrap_loader::molt_linecache_loader_get_source,
-    bootstrap_loader::molt_sys_bootstrap_include_cwd,
-    bootstrap_loader::molt_sys_bootstrap_module_roots, bootstrap_loader::molt_sys_bootstrap_path,
-    bootstrap_loader::molt_sys_bootstrap_pwd, bootstrap_loader::molt_sys_bootstrap_pythonpath,
-    bootstrap_loader::molt_sys_bootstrap_stdlib_root,
-    bootstrap_loader::molt_traceback_exception_suppress_context,
+pub use metadata_spec::{
+    molt_importlib_metadata_dist_paths, molt_importlib_metadata_distributions_payload,
+    molt_importlib_metadata_entry_points_filter_payload,
+    molt_importlib_metadata_entry_points_payload, molt_importlib_metadata_normalize_name,
+    molt_importlib_metadata_packages_distributions_payload, molt_importlib_metadata_payload,
+    molt_importlib_metadata_record_payload, molt_importlib_module_from_spec,
+    molt_importlib_spec_from_file_location, molt_importlib_spec_from_file_location_payload,
+    molt_importlib_spec_from_loader,
 };
-pub(crate) use {
-    bootstrap_loader::molt_importlib_cache_from_source_attached_body,
-    bootstrap_loader::molt_importlib_coerce_module_name_attached_body,
+pub(crate) use path_finder::default_path_hooks;
+pub(super) use path_finder::{FileLoaderKind, file_loader_class, importlib_file_loader_types};
+#[cfg(test)]
+pub(super) use path_finder::{ImportRootFlavor, import_root_is_absolute};
+pub use path_finder::{
+    molt_importlib_file_finder_find_spec, molt_importlib_file_finder_init,
+    molt_importlib_file_finder_invalidate_caches, molt_importlib_file_finder_path_hook,
+    molt_importlib_file_finder_path_hook_call, molt_importlib_file_finder_repr,
+    molt_importlib_file_loader_types_declare, molt_importlib_namespace_path_epoch,
+    molt_importlib_path_finder_find_spec, molt_importlib_path_finder_get_spec,
+    molt_importlib_path_finder_invalidate_caches, molt_importlib_path_finder_types,
+    molt_importlib_zip_path_hook,
 };
-pub use {
-    find_spec::molt_importlib_admit_spec, find_spec::molt_importlib_filefinder_find_spec,
-    find_spec::molt_importlib_find_in_path_package_context, find_spec::molt_importlib_find_spec,
+pub use payloads::{
+    molt_importlib_frozen_external_commit, molt_importlib_frozen_external_payload,
+    molt_importlib_frozen_payload, molt_importlib_metadata_types_payload,
+    molt_typing_private_payload,
 };
-pub use {
-    import_transaction::molt_importlib_export_attrs,
-    import_transaction::molt_importlib_import_module,
-    import_transaction::molt_importlib_import_optional,
-    import_transaction::molt_importlib_import_or_fallback,
-    import_transaction::molt_importlib_import_required,
-    import_transaction::molt_importlib_import_transaction,
-    import_transaction::molt_importlib_load_module_shim,
-    import_transaction::molt_importlib_prepare_fromlist,
-    import_transaction::molt_importlib_resolve_name,
+pub use reload_bootstrap::{
+    molt_imp_acquire_lock, molt_imp_lock_held, molt_imp_release_lock,
+    molt_importlib_bootstrap_payload, molt_importlib_namespace_paths, molt_importlib_reload,
+    molt_importlib_search_paths,
 };
-pub use {
-    metadata_spec::molt_importlib_metadata_dist_paths,
-    metadata_spec::molt_importlib_metadata_distributions_payload,
-    metadata_spec::molt_importlib_metadata_entry_points_filter_payload,
-    metadata_spec::molt_importlib_metadata_entry_points_payload,
-    metadata_spec::molt_importlib_metadata_normalize_name,
-    metadata_spec::molt_importlib_metadata_packages_distributions_payload,
-    metadata_spec::molt_importlib_metadata_payload,
-    metadata_spec::molt_importlib_metadata_record_payload,
-    metadata_spec::molt_importlib_module_from_spec,
-    metadata_spec::molt_importlib_spec_from_file_location,
-    metadata_spec::molt_importlib_spec_from_file_location_payload,
-    metadata_spec::molt_importlib_spec_from_loader,
-};
-pub use {
-    payloads::molt_importlib_frozen_external_commit,
-    payloads::molt_importlib_frozen_external_payload, payloads::molt_importlib_frozen_payload,
-    payloads::molt_importlib_metadata_types_payload, payloads::molt_typing_private_payload,
-};
-pub use {
-    reload_bootstrap::molt_imp_acquire_lock, reload_bootstrap::molt_imp_lock_held,
-    reload_bootstrap::molt_imp_release_lock, reload_bootstrap::molt_importlib_bootstrap_payload,
-    reload_bootstrap::molt_importlib_ensure_default_meta_path,
-    reload_bootstrap::molt_importlib_namespace_paths, reload_bootstrap::molt_importlib_reload,
-    reload_bootstrap::molt_importlib_search_paths,
-};
-
-pub(crate) use reload_bootstrap::importlib_seed_default_generation;
 
 pub(super) use find_spec::importlib_find_spec_impl;
-pub(super) use reload_bootstrap::{
-    importlib_acquire_import_lock, importlib_complete_initial_defaults,
-    importlib_take_default_generation, release_default_owners,
+pub(super) use reload_bootstrap::importlib_acquire_import_lock;
+#[cfg(test)]
+pub(super) use reload_bootstrap::importlib_retire_import_state;
+
+pub(crate) use bootstrap_loader::{
+    molt_importlib_cache_from_source_attached_body, molt_importlib_coerce_module_name_attached_body,
 };
 
 #[cfg(test)]
-pub(super) use reload_bootstrap::importlib_retire_default_generation;
-
-#[cfg(test)]
-pub(super) use reload_bootstrap::pending_default_owners;
-
-#[cfg(test)]
-pub(super) use reload_bootstrap::importlib_finish_initial_defaults;
+pub(crate) use path_finder::molt_importlib_file_loader_types_declare_attached_body;

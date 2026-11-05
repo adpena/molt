@@ -9384,10 +9384,6 @@
       "context": "Attached",
       "physical_symbol": "molt_imp_release_lock__molt_context_a8c6010e2cbb56a1"
     },
-    "molt_importlib_admit_spec": {
-      "context": "Attached",
-      "physical_symbol": "molt_importlib_admit_spec__molt_context_a8c6010e2cbb56a1"
-    },
     "molt_importlib_bootstrap_payload": {
       "context": "Attached",
       "physical_symbol": "molt_importlib_bootstrap_payload__molt_context_a8c6010e2cbb56a1"
@@ -9428,10 +9424,6 @@
       "context": "Attached",
       "physical_symbol": "molt_importlib_decode_source__molt_context_a8c6010e2cbb56a1"
     },
-    "molt_importlib_ensure_default_meta_path": {
-      "context": "Attached",
-      "physical_symbol": "molt_importlib_ensure_default_meta_path__molt_context_a8c6010e2cbb56a1"
-    },
     "molt_importlib_export_attrs": {
       "context": "Attached",
       "physical_symbol": "molt_importlib_export_attrs__molt_context_a8c6010e2cbb56a1"
@@ -9448,13 +9440,33 @@
       "context": "Attached",
       "physical_symbol": "molt_importlib_extension_loader_payload__molt_context_a8c6010e2cbb56a1"
     },
-    "molt_importlib_extension_loader_type_declare": {
+    "molt_importlib_file_finder_find_spec": {
       "context": "Attached",
-      "physical_symbol": "molt_importlib_extension_loader_type_declare__molt_context_a8c6010e2cbb56a1"
+      "physical_symbol": "molt_importlib_file_finder_find_spec__molt_context_a8c6010e2cbb56a1"
     },
-    "molt_importlib_filefinder_find_spec": {
+    "molt_importlib_file_finder_init": {
       "context": "Attached",
-      "physical_symbol": "molt_importlib_filefinder_find_spec__molt_context_a8c6010e2cbb56a1"
+      "physical_symbol": "molt_importlib_file_finder_init__molt_context_a8c6010e2cbb56a1"
+    },
+    "molt_importlib_file_finder_invalidate_caches": {
+      "context": "Attached",
+      "physical_symbol": "molt_importlib_file_finder_invalidate_caches__molt_context_a8c6010e2cbb56a1"
+    },
+    "molt_importlib_file_finder_path_hook": {
+      "context": "Attached",
+      "physical_symbol": "molt_importlib_file_finder_path_hook__molt_context_a8c6010e2cbb56a1"
+    },
+    "molt_importlib_file_finder_path_hook_call": {
+      "context": "Attached",
+      "physical_symbol": "molt_importlib_file_finder_path_hook_call__molt_context_a8c6010e2cbb56a1"
+    },
+    "molt_importlib_file_finder_repr": {
+      "context": "Attached",
+      "physical_symbol": "molt_importlib_file_finder_repr__molt_context_a8c6010e2cbb56a1"
+    },
+    "molt_importlib_file_loader_types_declare": {
+      "context": "Attached",
+      "physical_symbol": "molt_importlib_file_loader_types_declare__molt_context_a8c6010e2cbb56a1"
     },
     "molt_importlib_find_in_path_package_context": {
       "context": "Attached",
@@ -9471,6 +9483,10 @@
     "molt_importlib_frozen_external_payload": {
       "context": "Attached",
       "physical_symbol": "molt_importlib_frozen_external_payload__molt_context_a8c6010e2cbb56a1"
+    },
+    "molt_importlib_frozen_importer_find_spec": {
+      "context": "Attached",
+      "physical_symbol": "molt_importlib_frozen_importer_find_spec__molt_context_a8c6010e2cbb56a1"
     },
     "molt_importlib_frozen_payload": {
       "context": "Attached",
@@ -9576,6 +9592,10 @@
       "context": "Attached",
       "physical_symbol": "molt_importlib_module_spec_type__molt_context_a8c6010e2cbb56a1"
     },
+    "molt_importlib_namespace_path_epoch": {
+      "context": "Attached",
+      "physical_symbol": "molt_importlib_namespace_path_epoch__molt_context_a8c6010e2cbb56a1"
+    },
     "molt_importlib_namespace_paths": {
       "context": "Attached",
       "physical_symbol": "molt_importlib_namespace_paths__molt_context_a8c6010e2cbb56a1"
@@ -9583,6 +9603,22 @@
     "molt_importlib_package_root_from_origin": {
       "context": "Attached",
       "physical_symbol": "molt_importlib_package_root_from_origin__molt_context_a8c6010e2cbb56a1"
+    },
+    "molt_importlib_path_finder_find_spec": {
+      "context": "Attached",
+      "physical_symbol": "molt_importlib_path_finder_find_spec__molt_context_a8c6010e2cbb56a1"
+    },
+    "molt_importlib_path_finder_get_spec": {
+      "context": "Attached",
+      "physical_symbol": "molt_importlib_path_finder_get_spec__molt_context_a8c6010e2cbb56a1"
+    },
+    "molt_importlib_path_finder_invalidate_caches": {
+      "context": "Attached",
+      "physical_symbol": "molt_importlib_path_finder_invalidate_caches__molt_context_a8c6010e2cbb56a1"
+    },
+    "molt_importlib_path_finder_types": {
+      "context": "Attached",
+      "physical_symbol": "molt_importlib_path_finder_types__molt_context_a8c6010e2cbb56a1"
     },
     "molt_importlib_prepare_fromlist": {
       "context": "Attached",
@@ -9787,6 +9823,10 @@
     "molt_importlib_zip_archive_path": {
       "context": "Attached",
       "physical_symbol": "molt_importlib_zip_archive_path__molt_context_a8c6010e2cbb56a1"
+    },
+    "molt_importlib_zip_path_hook": {
+      "context": "Attached",
+      "physical_symbol": "molt_importlib_zip_path_hook__molt_context_a8c6010e2cbb56a1"
     },
     "molt_importlib_zip_read_entry": {
       "context": "Attached",
@@ -19564,7 +19604,6 @@
     "imp_acquire_lock": "molt_imp_acquire_lock__molt_context_a8c6010e2cbb56a1",
     "imp_lock_held": "molt_imp_lock_held__molt_context_a8c6010e2cbb56a1",
     "imp_release_lock": "molt_imp_release_lock__molt_context_a8c6010e2cbb56a1",
-    "importlib_admit_spec": "molt_importlib_admit_spec__molt_context_a8c6010e2cbb56a1",
     "importlib_bootstrap_payload": "molt_importlib_bootstrap_payload__molt_context_a8c6010e2cbb56a1",
     "importlib_cache_from_source": "molt_importlib_cache_from_source__molt_context_a8c6010e2cbb56a1",
     "importlib_coerce_module_name": "molt_importlib_coerce_module_name__molt_context_a8c6010e2cbb56a1",
@@ -19575,12 +19614,10 @@
     "importlib_compiled_loader_load_module": "molt_importlib_compiled_loader_load_module__molt_context_a8c6010e2cbb56a1",
     "importlib_compiled_loader_types": "molt_importlib_compiled_loader_types__molt_context_a8c6010e2cbb56a1",
     "importlib_decode_source": "molt_importlib_decode_source__molt_context_a8c6010e2cbb56a1",
-    "importlib_ensure_default_meta_path": "molt_importlib_ensure_default_meta_path__molt_context_a8c6010e2cbb56a1",
     "importlib_extension_loader_create_module": "molt_importlib_extension_loader_create_module__molt_context_a8c6010e2cbb56a1",
     "importlib_extension_loader_exec_module": "molt_importlib_extension_loader_exec_module__molt_context_a8c6010e2cbb56a1",
     "importlib_extension_loader_payload": "molt_importlib_extension_loader_payload__molt_context_a8c6010e2cbb56a1",
-    "importlib_extension_loader_type_declare": "molt_importlib_extension_loader_type_declare__molt_context_a8c6010e2cbb56a1",
-    "importlib_filefinder_find_spec": "molt_importlib_filefinder_find_spec__molt_context_a8c6010e2cbb56a1",
+    "importlib_file_loader_types_declare": "molt_importlib_file_loader_types_declare__molt_context_a8c6010e2cbb56a1",
     "importlib_find_in_path_package_context": "molt_importlib_find_in_path_package_context__molt_context_a8c6010e2cbb56a1",
     "importlib_find_spec": "molt_importlib_find_spec__molt_context_a8c6010e2cbb56a1",
     "importlib_frozen_external_commit": "molt_importlib_frozen_external_commit__molt_context_a8c6010e2cbb56a1",
@@ -19610,7 +19647,9 @@
     "importlib_module_spec_parent": "molt_importlib_module_spec_parent__molt_context_a8c6010e2cbb56a1",
     "importlib_module_spec_repr": "molt_importlib_module_spec_repr__molt_context_a8c6010e2cbb56a1",
     "importlib_module_spec_type": "molt_importlib_module_spec_type__molt_context_a8c6010e2cbb56a1",
+    "importlib_namespace_path_epoch": "molt_importlib_namespace_path_epoch__molt_context_a8c6010e2cbb56a1",
     "importlib_package_root_from_origin": "molt_importlib_package_root_from_origin__molt_context_a8c6010e2cbb56a1",
+    "importlib_path_finder_types": "molt_importlib_path_finder_types__molt_context_a8c6010e2cbb56a1",
     "importlib_prepare_fromlist": "molt_importlib_prepare_fromlist__molt_context_a8c6010e2cbb56a1",
     "importlib_read_file": "molt_importlib_read_file__molt_context_a8c6010e2cbb56a1",
     "importlib_reload": "molt_importlib_reload__molt_context_a8c6010e2cbb56a1",
@@ -22444,7 +22483,6 @@
     "molt_imp_acquire_lock__molt_context_a8c6010e2cbb56a1": "molt_imp_acquire_lock__molt_context_a8c6010e2cbb56a1",
     "molt_imp_lock_held__molt_context_a8c6010e2cbb56a1": "molt_imp_lock_held__molt_context_a8c6010e2cbb56a1",
     "molt_imp_release_lock__molt_context_a8c6010e2cbb56a1": "molt_imp_release_lock__molt_context_a8c6010e2cbb56a1",
-    "molt_importlib_admit_spec__molt_context_a8c6010e2cbb56a1": "molt_importlib_admit_spec__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_bootstrap_payload__molt_context_a8c6010e2cbb56a1": "molt_importlib_bootstrap_payload__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_cache_from_source__molt_context_a8c6010e2cbb56a1": "molt_importlib_cache_from_source__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_coerce_module_name__molt_context_a8c6010e2cbb56a1": "molt_importlib_coerce_module_name__molt_context_a8c6010e2cbb56a1",
@@ -22455,17 +22493,22 @@
     "molt_importlib_compiled_loader_load_module__molt_context_a8c6010e2cbb56a1": "molt_importlib_compiled_loader_load_module__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_compiled_loader_types__molt_context_a8c6010e2cbb56a1": "molt_importlib_compiled_loader_types__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_decode_source__molt_context_a8c6010e2cbb56a1": "molt_importlib_decode_source__molt_context_a8c6010e2cbb56a1",
-    "molt_importlib_ensure_default_meta_path__molt_context_a8c6010e2cbb56a1": "molt_importlib_ensure_default_meta_path__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_export_attrs__molt_context_a8c6010e2cbb56a1": "molt_importlib_export_attrs__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_extension_loader_create_module__molt_context_a8c6010e2cbb56a1": "molt_importlib_extension_loader_create_module__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_extension_loader_exec_module__molt_context_a8c6010e2cbb56a1": "molt_importlib_extension_loader_exec_module__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_extension_loader_payload__molt_context_a8c6010e2cbb56a1": "molt_importlib_extension_loader_payload__molt_context_a8c6010e2cbb56a1",
-    "molt_importlib_extension_loader_type_declare__molt_context_a8c6010e2cbb56a1": "molt_importlib_extension_loader_type_declare__molt_context_a8c6010e2cbb56a1",
-    "molt_importlib_filefinder_find_spec__molt_context_a8c6010e2cbb56a1": "molt_importlib_filefinder_find_spec__molt_context_a8c6010e2cbb56a1",
+    "molt_importlib_file_finder_find_spec__molt_context_a8c6010e2cbb56a1": "molt_importlib_file_finder_find_spec__molt_context_a8c6010e2cbb56a1",
+    "molt_importlib_file_finder_init__molt_context_a8c6010e2cbb56a1": "molt_importlib_file_finder_init__molt_context_a8c6010e2cbb56a1",
+    "molt_importlib_file_finder_invalidate_caches__molt_context_a8c6010e2cbb56a1": "molt_importlib_file_finder_invalidate_caches__molt_context_a8c6010e2cbb56a1",
+    "molt_importlib_file_finder_path_hook__molt_context_a8c6010e2cbb56a1": "molt_importlib_file_finder_path_hook__molt_context_a8c6010e2cbb56a1",
+    "molt_importlib_file_finder_path_hook_call__molt_context_a8c6010e2cbb56a1": "molt_importlib_file_finder_path_hook_call__molt_context_a8c6010e2cbb56a1",
+    "molt_importlib_file_finder_repr__molt_context_a8c6010e2cbb56a1": "molt_importlib_file_finder_repr__molt_context_a8c6010e2cbb56a1",
+    "molt_importlib_file_loader_types_declare__molt_context_a8c6010e2cbb56a1": "molt_importlib_file_loader_types_declare__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_find_in_path_package_context__molt_context_a8c6010e2cbb56a1": "molt_importlib_find_in_path_package_context__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_find_spec__molt_context_a8c6010e2cbb56a1": "molt_importlib_find_spec__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_frozen_external_commit__molt_context_a8c6010e2cbb56a1": "molt_importlib_frozen_external_commit__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_frozen_external_payload__molt_context_a8c6010e2cbb56a1": "molt_importlib_frozen_external_payload__molt_context_a8c6010e2cbb56a1",
+    "molt_importlib_frozen_importer_find_spec__molt_context_a8c6010e2cbb56a1": "molt_importlib_frozen_importer_find_spec__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_frozen_payload__molt_context_a8c6010e2cbb56a1": "molt_importlib_frozen_payload__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_import_module__molt_context_a8c6010e2cbb56a1": "molt_importlib_import_module__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_import_optional__molt_context_a8c6010e2cbb56a1": "molt_importlib_import_optional__molt_context_a8c6010e2cbb56a1",
@@ -22492,8 +22535,13 @@
     "molt_importlib_module_spec_parent__molt_context_a8c6010e2cbb56a1": "molt_importlib_module_spec_parent__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_module_spec_repr__molt_context_a8c6010e2cbb56a1": "molt_importlib_module_spec_repr__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_module_spec_type__molt_context_a8c6010e2cbb56a1": "molt_importlib_module_spec_type__molt_context_a8c6010e2cbb56a1",
+    "molt_importlib_namespace_path_epoch__molt_context_a8c6010e2cbb56a1": "molt_importlib_namespace_path_epoch__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_namespace_paths__molt_context_a8c6010e2cbb56a1": "molt_importlib_namespace_paths__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_package_root_from_origin__molt_context_a8c6010e2cbb56a1": "molt_importlib_package_root_from_origin__molt_context_a8c6010e2cbb56a1",
+    "molt_importlib_path_finder_find_spec__molt_context_a8c6010e2cbb56a1": "molt_importlib_path_finder_find_spec__molt_context_a8c6010e2cbb56a1",
+    "molt_importlib_path_finder_get_spec__molt_context_a8c6010e2cbb56a1": "molt_importlib_path_finder_get_spec__molt_context_a8c6010e2cbb56a1",
+    "molt_importlib_path_finder_invalidate_caches__molt_context_a8c6010e2cbb56a1": "molt_importlib_path_finder_invalidate_caches__molt_context_a8c6010e2cbb56a1",
+    "molt_importlib_path_finder_types__molt_context_a8c6010e2cbb56a1": "molt_importlib_path_finder_types__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_prepare_fromlist__molt_context_a8c6010e2cbb56a1": "molt_importlib_prepare_fromlist__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_read_file__molt_context_a8c6010e2cbb56a1": "molt_importlib_read_file__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_reload__molt_context_a8c6010e2cbb56a1": "molt_importlib_reload__molt_context_a8c6010e2cbb56a1",
@@ -22545,6 +22593,7 @@
     "molt_importlib_suffixes__molt_context_a8c6010e2cbb56a1": "molt_importlib_suffixes__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_validate_resource_name__molt_context_a8c6010e2cbb56a1": "molt_importlib_validate_resource_name__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_zip_archive_path__molt_context_a8c6010e2cbb56a1": "molt_importlib_zip_archive_path__molt_context_a8c6010e2cbb56a1",
+    "molt_importlib_zip_path_hook__molt_context_a8c6010e2cbb56a1": "molt_importlib_zip_path_hook__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_zip_read_entry__molt_context_a8c6010e2cbb56a1": "molt_importlib_zip_read_entry__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_zip_source_exec_payload__molt_context_a8c6010e2cbb56a1": "molt_importlib_zip_source_exec_payload__molt_context_a8c6010e2cbb56a1",
     "molt_importlib_zip_source_loader_exec_module__molt_context_a8c6010e2cbb56a1": "molt_importlib_zip_source_loader_exec_module__molt_context_a8c6010e2cbb56a1",

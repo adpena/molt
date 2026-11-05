@@ -11,60 +11,6 @@ pub(crate) fn molt_importlib_find_in_path_package_context_attached_body(
     })
 }
 
-/// Apply native-extension metadata and capability admission without owning the
-/// Python finder protocol. Ordinary in-memory specs require no filesystem work.
-
-pub(crate) fn molt_importlib_admit_spec_attached_body(
-    _py: &crate::PyToken<'_>,
-    fullname_bits: u64,
-    spec_bits: u64,
-) -> u64 {
-    crate::with_attached_entry_nopanic!(_py, py, {
-        let fullname = match string_arg_from_bits(py, fullname_bits, "module name") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        match importlib_enforce_extension_spec_object_boundary(py, &fullname, spec_bits) {
-            Ok(()) => MoltObject::none().bits(),
-            Err(bits) => bits,
-        }
-    })
-}
-
-pub(crate) fn molt_importlib_filefinder_find_spec_attached_body(
-    _py: &crate::PyToken<'_>,
-    fullname_bits: u64,
-    path_bits: u64,
-    machinery_bits: u64,
-) -> u64 {
-    crate::with_attached_entry_nopanic!(_py, py, {
-        let fullname = match string_arg_from_bits(py, fullname_bits, "module name") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let path = match string_arg_from_bits(py, path_bits, "path") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        if let Err(error) = crate::require_operation::<u64>(
-            py,
-            crate::OperationId::ImportlibFilefinderFindSpec,
-            AuditArgs::None,
-        ) {
-            return error;
-        }
-        let resolution = match importlib_resolve_spec_in_paths(py, &fullname, &[path], true) {
-            Ok(Some(resolution)) => resolution,
-            Ok(None) => return MoltObject::none().bits(),
-            Err(bits) => return bits,
-        };
-        match importlib_find_spec_object_bits(py, &fullname, &resolution, machinery_bits) {
-            Ok(bits) => bits,
-            Err(bits) => bits,
-        }
-    })
-}
-
 /// The single ordered meta-path protocol, available before Python facades run.
 /// CPython v3.12.15 walks the live iterable; v3.13.16+ copies it first
 /// (gh-130094). Each finder lookup/call holds the interpreter import lock;
@@ -79,7 +25,6 @@ pub(in super::super) fn importlib_find_spec_impl(
     let _name_owner = ExceptionValue::pin(py, name);
     let _path_owner = ExceptionValue::pin(py, path);
     let _target_owner = ExceptionValue::pin(py, target);
-    importlib_complete_initial_defaults(py)?;
     let sys = importlib_system_module(py)?;
     let read = |object, key: crate::NameId| -> Result<ExceptionValue<'_, '_>, u64> {
         let key = key.bits(py);

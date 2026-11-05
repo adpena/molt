@@ -3,12 +3,6 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
-        "molt_importlib_extension_loader_type_declare" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_extension_loader_type_declare",
-                crate::molt_importlib_extension_loader_type_declare as *const (),
-            ))
-        }
         "molt_importlib_extension_loader_payload" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_importlib_extension_loader_payload",
@@ -231,17 +225,23 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
                 crate::molt_importlib_compiled_loader_types as *const (),
             ))
         }
-        "molt_importlib_admit_spec" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_importlib_admit_spec",
-            crate::molt_importlib_admit_spec as *const (),
+        "molt_importlib_path_finder_types" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_importlib_path_finder_types",
+            crate::molt_importlib_path_finder_types as *const (),
+        )),
+        "molt_importlib_file_loader_types_declare" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_file_loader_types_declare",
+                crate::molt_importlib_file_loader_types_declare as *const (),
+            ))
+        }
+        "molt_importlib_namespace_path_epoch" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_importlib_namespace_path_epoch",
+            crate::molt_importlib_namespace_path_epoch as *const (),
         )),
         "molt_importlib_find_spec" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_importlib_find_spec",
             crate::molt_importlib_find_spec as *const (),
-        )),
-        "molt_importlib_filefinder_find_spec" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_importlib_filefinder_find_spec",
-            crate::molt_importlib_filefinder_find_spec as *const (),
         )),
         "molt_importlib_reload" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_importlib_reload",
@@ -251,12 +251,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_importlib_bootstrap_payload",
             crate::molt_importlib_bootstrap_payload as *const (),
         )),
-        "molt_importlib_ensure_default_meta_path" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_ensure_default_meta_path",
-                crate::molt_importlib_ensure_default_meta_path as *const (),
-            ))
-        }
         "molt_importlib_resources_path_payload" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_importlib_resources_path_payload",

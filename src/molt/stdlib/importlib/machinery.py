@@ -14,9 +14,12 @@ _MoltLoader, BuiltinImporter, FrozenImporter = _require_intrinsic(
 
 _LoaderBasics = _MoltLoader
 _MOLT_LOADER = _require_intrinsic("molt_importlib_compiled_loader")()
-_MOLT_IMPORTLIB_ADMIT_SPEC = _require_intrinsic("molt_importlib_admit_spec")
-_MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC = _require_intrinsic(
-    "molt_importlib_filefinder_find_spec"
+
+# The runtime owns the default finders: sys.meta_path and sys.path_hooks hold
+# them from bootstrap, so this facade only re-exports their identities.
+PathFinder, FileFinder = _require_intrinsic("molt_importlib_path_finder_types")()
+_MOLT_IMPORTLIB_NAMESPACE_PATH_EPOCH = _require_intrinsic(
+    "molt_importlib_namespace_path_epoch"
 )
 
 
@@ -41,7 +44,6 @@ def _resolve_platform() -> str:
 _platform = _resolve_platform()
 
 if _platform == "win32":
-    _MOLT_PATH_SPLITROOT = _require_intrinsic("molt_path_splitroot")
     EXTENSION_SUFFIXES: list[str] = [".pyd", ".dll"]
 elif _platform == "darwin":
     EXTENSION_SUFFIXES: list[str] = [".so", ".dylib"]
@@ -227,11 +229,6 @@ class ExtensionFileLoader(_FileLoader):
         )
 
 
-# Admission follows this class identity through its current subclasses, even
-# after renaming or removal of the machinery facade from sys.modules.
-_require_intrinsic("molt_importlib_extension_loader_type_declare")(ExtensionFileLoader)
-
-
 class SourcelessFileLoader(_FileLoader):
     def __init__(self, fullname: str, path: str) -> None:
         self.name = fullname
@@ -403,14 +400,12 @@ class _NamespacePath:
     ``PathFinder.invalidate_caches`` ran.
     """
 
-    # PathFinder.invalidate_caches increments this epoch (bpo-45703).
-    _epoch = 0
-
     def __init__(self, name, path, path_finder):
         self._name = name
         self._path = path
         self._last_parent_path = tuple(self._get_parent_path())
-        self._last_epoch = self._epoch
+        # PathFinder.invalidate_caches advances the runtime epoch (bpo-45703).
+        self._last_epoch = _MOLT_IMPORTLIB_NAMESPACE_PATH_EPOCH()
         self._path_finder = path_finder
 
     def _find_parent_path_names(self):
@@ -426,14 +421,15 @@ class _NamespacePath:
 
     def _recalculate(self):
         parent_path = tuple(self._get_parent_path())
-        if parent_path != self._last_parent_path or self._epoch != self._last_epoch:
+        epoch = _MOLT_IMPORTLIB_NAMESPACE_PATH_EPOCH()
+        if parent_path != self._last_parent_path or epoch != self._last_epoch:
             spec = self._path_finder(self._name, parent_path)
             # A returned loader changes nothing, but the new parent path is kept.
             if spec is not None and spec.loader is None:
                 if spec.submodule_search_locations:
                     self._path = spec.submodule_search_locations
             self._last_parent_path = parent_path
-            self._last_epoch = self._epoch
+            self._last_epoch = epoch
         return self._path
 
     def __iter__(self):
@@ -458,156 +454,14 @@ class _NamespacePath:
         self._path.append(item)
 
 
-class PathFinder:
-    @classmethod
-    def _get_spec(cls, fullname, path, target=None):
-        """The loader's spec, else a loader-less spec of the namespace portions."""
-        namespace_path = []
-        for entry in path:
-            if not isinstance(entry, str):
-                continue
-            if entry == "":
-                import os
+# The runtime constructs file-hit specs from these classes and wraps namespace
+# portions in _NamespacePath. The declaration names this body's own classes, so
+# a replaced sys.modules entry cannot substitute them.
+_MOLT_IMPORTLIB_FILE_LOADER_TYPES_DECLARE = _require_intrinsic(
+    "molt_importlib_file_loader_types_declare"
+)
+_MOLT_IMPORTLIB_FILE_LOADER_TYPES_DECLARE(globals())
 
-                try:
-                    entry = os.getcwd()
-                except FileNotFoundError:
-                    continue
-            try:
-                finder = _sys.path_importer_cache[entry]
-            except KeyError:
-                finder = None
-                for hook in _sys.path_hooks:
-                    try:
-                        finder = hook(entry)
-                    except ImportError:
-                        continue
-                    break
-                _sys.path_importer_cache[entry] = finder
-            if finder is None:
-                continue
-            spec = finder.find_spec(fullname, target)
-            if spec is None:
-                continue
-            _MOLT_IMPORTLIB_ADMIT_SPEC(fullname, spec)
-            if spec.loader is not None:
-                return spec
-            portions = spec.submodule_search_locations
-            if portions is None:
-                raise ImportError("spec missing loader")
-            namespace_path.extend(portions)
-        spec = ModuleSpec(fullname, None)
-        spec.submodule_search_locations = namespace_path
-        return spec
-
-    @classmethod
-    def find_spec(cls, fullname, path=None, target=None):
-        if path is None:
-            path = _sys.path
-        spec = cls._get_spec(fullname, path, target)
-        if spec.loader is not None:
-            return spec
-        namespace_path = spec.submodule_search_locations
-        if not namespace_path:
-            return None
-        spec.origin = None
-        spec.submodule_search_locations = _NamespacePath(
-            fullname, namespace_path, cls._get_spec
-        )
-        return spec
-
-    @staticmethod
-    def invalidate_caches():
-        for path, finder in list(_sys.path_importer_cache.items()):
-            if finder is None:
-                del _sys.path_importer_cache[path]
-                continue
-            if _platform == "win32":
-                # Import roots differ from os.path.isabs: a single leading
-                # separator is relative to the current drive. Reuse the native
-                # root parser rather than importing the filesystem facade.
-                if path:
-                    drive, root, _tail = _MOLT_PATH_SPLITROOT(
-                        path, False, True, False
-                    )
-                    root = drive + root
-                    if isinstance(root, bytes):
-                        alternate = b"/"
-                        separator = b"\\"
-                        unc = b"\\\\"
-                    else:
-                        alternate = "/"
-                        separator = "\\"
-                        unc = "\\\\"
-                    root = root.replace(alternate, separator)
-                    absolute = len(root) > 1 and (
-                        root.startswith(unc) or root.endswith(separator)
-                    )
-                else:
-                    absolute = False
-            else:
-                absolute = path.startswith("/")
-            if not absolute:
-                del _sys.path_importer_cache[path]
-            elif hasattr(finder, "invalidate_caches"):
-                finder.invalidate_caches()
-        # Namespace paths recompute after this (bpo-45703).
-        _NamespacePath._epoch += 1
-
-
-class FileFinder:
-    def __init__(self, path: str, *loader_details) -> None:
-        self.path = str(path)
-        self._loader_details = tuple(loader_details)
-
-    def __repr__(self) -> str:
-        return f"<MoltFileFinder path={self.path!r}>"
-
-    @classmethod
-    def path_hook(cls, *loader_details):
-        def _path_hook(path: str):
-            import os
-
-            if not isinstance(path, str) or not os.path.isdir(path):
-                raise ImportError("only directories are supported", path=path)
-            return cls(path, *loader_details)
-
-        return _path_hook
-
-    def find_spec(self, fullname: str, target: object | None = None):
-        del target
-        # Functions retain their defining namespace even if the public module
-        # dictionary entry is replaced or removed.
-        return _MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC(fullname, self.path, globals())
-
-    def invalidate_caches(self) -> None:
-        # The native leaf has no directory-result cache. PathFinder owns the
-        # separate path-to-finder cache and never re-enters it from this leaf.
-        return None
-
-def _zip_path_hook(path):
-    # Import archive machinery only when this path can name an archive. The
-    # constructor verifies the file; a directory named *.zip still reaches the
-    # directory hook after the archive hook rejects it.
-    lower = path.lower().replace("\\", "/")
-    if not any(
-        lower.endswith(suffix) or suffix + "/" in lower
-        for suffix in (".zip", ".whl", ".egg")
-    ):
-        raise ImportError("not an archive path")
-    from zipimport import zipimporter
-
-    return zipimporter(path)
-
-
-_default_path_hooks = [
-    _zip_path_hook,
-    FileFinder.path_hook(
-        (ExtensionFileLoader, EXTENSION_SUFFIXES),
-        (SourceFileLoader, SOURCE_SUFFIXES),
-        (SourcelessFileLoader, BYTECODE_SUFFIXES),
-    ),
-]
 
 class NamespaceLoader:
     def __init__(self, name: str, path, path_finder) -> None:
@@ -794,11 +648,3 @@ __all__ = [
     "WindowsRegistryFinder",
     "all_suffixes",
 ]
-
-
-# Complete only the exact initial interpreter-owned finder/hook generations.
-# Public customization is policy; this call never repairs or replaces it.
-_MOLT_IMPORTLIB_ENSURE_DEFAULT_META_PATH = _require_intrinsic(
-    "molt_importlib_ensure_default_meta_path"
-)
-_MOLT_IMPORTLIB_ENSURE_DEFAULT_META_PATH(globals())

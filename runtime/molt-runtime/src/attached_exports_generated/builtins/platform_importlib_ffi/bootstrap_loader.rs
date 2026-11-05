@@ -70,16 +70,6 @@ pub unsafe extern "C" fn molt_importlib_source_loader_payload(
         spec_is_package_bits,
     )
 }
-#[unsafe(export_name = "molt_importlib_extension_loader_type_declare__molt_context_a8c6010e2cbb56a1")]
-#[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn molt_importlib_extension_loader_type_declare(
-    __context: u64,
-    class_bits: u64,
-) -> u64 {
-    let _py: &crate::PyToken<'_> =
-        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_importlib_extension_loader_type_declare_attached_body(_py, class_bits)
-}
 #[unsafe(export_name = "molt_importlib_extension_loader_payload__molt_context_a8c6010e2cbb56a1")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_importlib_extension_loader_payload(

@@ -7,9 +7,12 @@ from molt.compiler_analysis.python_binding_facts import (
     PythonSourceParameters,
     PythonSourceElement,
     PythonElementProtocol,
+    PythonNativeInitializerSource,
+    PythonSourceClass,
 )
 
 from collections import deque
+from enum import StrEnum
 from collections.abc import Callable
 from typing import Literal, NamedTuple, assert_never, cast
 
@@ -35,6 +38,11 @@ from molt.compiler_analysis.static_truth import (
 )
 
 
+class PythonNamespaceOwnership(StrEnum):
+    BORROWED = "borrowed"
+    OWNED = "owned"
+
+
 class SourceCandidate(NamedTuple):
     module: str
     source: PythonSourceKey | None
@@ -46,10 +54,23 @@ class SourceCandidate(NamedTuple):
         "static_descriptor",
         "bound_class_method",
         "bound_static_method",
+        "namespace",
+        "namespace_get",
+        "namespace_remove",
+        "namespace_popitem",
+        "namespace_clear",
+        "namespace_copy_method",
+        "namespace_values_method",
+        "namespace_items_method",
+        "namespace_values",
+        "namespace_items",
+        "native_initializer",
+        "bound_native_initializer",
     ] = "value"
     contained: bool = False
     identity: PythonIdentity | None = None
     receiver: tuple[str, PythonSourceKey | None] | None = None
+    namespace_ownership: PythonNamespaceOwnership | None = None
 
     @property
     def value(self) -> tuple[str, PythonSourceKey | None]:
@@ -153,6 +174,12 @@ class PythonSourceDemands:
         self.parameters: dict[SourceValue, PythonSourceParameters] = {}
         self.arguments: dict[SourceValue, set[SourceCandidate]] = {}
         self.functions: dict[SourceValue, PythonFunctionResult] = {}
+        self.native_initializers: dict[SourceValue, PythonNativeInitializerSource] = {}
+        self.native_initializers_by_receiver: dict[SourceValue, set[SourceValue]] = {}
+        self.native_calls: dict[
+            SourceValue, set[tuple[SourceValue, SourceCandidate]]
+        ] = {}
+        self.classes: dict[SourceValue, PythonSourceClass] = {}
         self.pending_modules: dict[str, set[SourceValue]] = {}
         self.star_aliases: dict[str, set[PythonSourceKey]] = {}
         self.escaped_modules: dict[str, set[SourceDemand]] = {}
@@ -255,14 +282,34 @@ class PythonSourceDemands:
                 old_origins = previous_exposure.union(*previous.values())
                 added = exposure.union(*namespace.values()) - old_origins
                 for incidence in tuple(self.value_phases.get(value, ())):
-                    if incidence.phase in {"escape", "expose", "descriptor"}:
+                    if incidence.phase in {
+                        "escape",
+                        "expose",
+                        "descriptor",
+                        "release_contents",
+                    }:
                         for source in added:
                             self.demand(
                                 (module_name, source),
-                                incidence.phase,
+                                "release"
+                                if incidence.phase == "release_contents"
+                                else incidence.phase,
                                 incidence.arguments,
                                 consumer=incidence.consumer,
                             )
+        for info in scan.source_values.classes:
+            value = (module_name, info.owner)
+            prior = self.classes.get(value)
+            if prior is not None:
+                info = info._replace(
+                    plain_metaclass=prior.plain_metaclass and info.plain_metaclass,
+                    plain_attributes=tuple(
+                        name
+                        for name in info.plain_attributes
+                        if name in prior.plain_attributes
+                    ),
+                )
+            self._publish(self.classes, value, info)
         for owner, bases in scan.source_values.bases:
             value = (module_name, owner)
             self._publish(self.bases, value, self.bases.get(value, frozenset()) | bases)
@@ -284,6 +331,8 @@ class PythonSourceDemands:
                 if previous.protocol != element.protocol:
                     raise ValueError("source element changed protocol")
                 element = element._replace(origins=previous.origins | element.origins)
+                if element.key != previous.key:
+                    element = element._replace(key=None)
             self._publish(self.elements, value, element)
         for transfer in scan.source_values.call_imports:
             value = (module_name, transfer.site.source)
@@ -310,8 +359,43 @@ class PythonSourceDemands:
                             call.arguments, previous.arguments, strict=True
                         )
                     ),
+                    argument_strings=tuple(
+                        name if name == prior else None
+                        for name, prior in zip(
+                            call.argument_strings,
+                            previous.argument_strings,
+                            strict=True,
+                        )
+                    ),
                 )
             self._publish(self.calls, value, call)
+        for initializer in scan.source_values.native_initializers:
+            value = (module_name, initializer.owner)
+            previous = self.native_initializers.get(value)
+            if previous is not None:
+                initializer = initializer._replace(
+                    receiver=initializer.receiver | previous.receiver,
+                    captures=initializer.captures | previous.captures,
+                    attributes=tuple(
+                        (name, origins | prior[1])
+                        for (name, origins), prior in zip(
+                            initializer.attributes, previous.attributes, strict=True
+                        )
+                    ),
+                    parameters=initializer.parameters
+                    if initializer.parameters == previous.parameters
+                    else None,
+                    capture_values=initializer.capture_values
+                    if initializer.capture_values == previous.capture_values
+                    else None,
+                    stores=initializer.stores
+                    if initializer.stores == previous.stores
+                    else None,
+                    post_inputs=initializer.post_inputs
+                    if initializer.post_inputs == previous.post_inputs
+                    else None,
+                )
+            self._publish(self.native_initializers, value, initializer)
         for source, origins in scan.source_values.completions:
             value = (module_name, source)
             self._publish(
@@ -463,6 +547,41 @@ class PythonSourceDemands:
             return set()
         owner_module, owner_source = owner.value
         result = set()
+        if owner.kind in {"native_initializer", "bound_native_initializer"}:
+            if name == "__call__":
+                return {owner}
+            plan = self.native_initializers.get(owner.value)
+            self.watch(owner.value, user)
+            if plan is not None:
+                for attribute, origins in plan.attributes:
+                    if attribute == name:
+                        for origin in origins:
+                            result.update(
+                                candidate._replace(
+                                    contained=attribute
+                                    not in {"__globals__", "__builtins__"}
+                                )
+                                for candidate in self.watch(
+                                    (owner_module, origin), user
+                                )
+                            )
+            return result
+        if owner.kind == "namespace":
+            if name in {"get", "__getitem__", "setdefault"}:
+                return {owner._replace(kind="namespace_get")}
+            if name == "pop":
+                return {owner._replace(kind="namespace_remove")}
+            if name == "popitem":
+                return {owner._replace(kind="namespace_popitem")}
+            if name in {"clear", "__delitem__"}:
+                return {owner._replace(kind="namespace_clear")}
+            if name == "copy":
+                return {owner._replace(kind="namespace_copy_method")}
+            if name == "values":
+                return {owner._replace(kind="namespace_values_method")}
+            if name == "items":
+                return {owner._replace(kind="namespace_items_method")}
+            return result
         binding_owner = owner if binding_owner is None else binding_owner
         if owner.kind in {
             "class_descriptor",
@@ -483,6 +602,29 @@ class PythonSourceDemands:
             return result
         if owner.contained or owner in member_visiting:
             return result
+        if owner_source is None and name == "__dict__":
+            # A module's data descriptor wins even while its body initializes.
+            # Keep the live mapping, rather than invoking PEP 562 or its values.
+            return {
+                owner._replace(
+                    kind="namespace",
+                    namespace_ownership=PythonNamespaceOwnership.BORROWED,
+                )
+            }
+        if (
+            owner_source is not None
+            and owner_source[-1] == "ClassDef"
+            and name == "__dict__"
+            and self.classes.get(
+                owner.value, PythonSourceClass(owner_source, False, ())
+            ).plain_metaclass
+        ):
+            return {
+                owner._replace(
+                    kind="namespace",
+                    namespace_ownership=PythonNamespaceOwnership.BORROWED,
+                )
+            }
         member_visiting = member_visiting | {owner}
         # An excluded star member still depends on the export policy. A later
         # writer can widen __all__ without changing the module candidate itself.
@@ -500,6 +642,26 @@ class PythonSourceDemands:
         ):
             return result
         namespace, _exposure = self.namespaces.get(owner.value, ({}, frozenset()))
+        if (
+            owner_source is not None
+            and owner_source[-1] == "ClassDef"
+            and name == "__init__"
+            and not namespace.get(name)
+        ):
+            for initializer in self.native_initializers_by_receiver.get(
+                owner.value, ()
+            ):
+                self.watch(initializer, user)
+                result.add(
+                    SourceCandidate(
+                        initializer[0],
+                        self.native_initializers[initializer].owner,
+                        "bound_native_initializer"
+                        if binding_owner.kind == "instance"
+                        else "native_initializer",
+                        receiver=binding_owner.value,
+                    )
+                )
         if owner_source is None:
             # Final namespace facts supply candidates, not initialization-order
             # proof. A cycle may read a later export while the hook is installed.
@@ -526,6 +688,8 @@ class PythonSourceDemands:
                         result.add(candidate._replace(kind="bound_static_method"))
                     else:
                         result.add(candidate)
+        elif result:
+            pass
         elif owner_source is None:
             child = f"{owner_module}.{name}"
             if from_import:
@@ -561,6 +725,59 @@ class PythonSourceDemands:
                                 candidate, name, user, from_star=True, visiting=visiting
                             )
                         )
+        return result
+
+    def _namespace_values(
+        self,
+        owner: SourceCandidate,
+        user: SourceValue,
+        key: str | None = None,
+        visiting=frozenset(),
+    ) -> set[SourceCandidate]:
+        if owner.value in visiting:
+            return set()
+        visiting = visiting | {owner.value}
+        self.watch(owner.value, user)
+        namespace, exposure = self.namespaces.get(owner.value, ({}, frozenset()))
+        sources = (
+            exposure.union(*namespace.values())
+            if key is None
+            else exposure | namespace.get(key, frozenset())
+        )
+        result = set()
+        for source in sources:
+            result.update(self.watch((owner.module, source), user))
+        if (
+            owner.source is not None
+            and owner.source[-1] == "ClassDef"
+            and (key is None or key == "__init__")
+            and not namespace.get("__init__")
+        ):
+            result.update(
+                self.select_member(owner._replace(kind="value"), "__init__", user)
+            )
+        if owner.source is None:
+            for alias in self.star_aliases.get(owner.module, ()):
+                for candidate in tuple(self.watch((owner.module, alias), user)):
+                    if key is not None:
+                        result.update(
+                            self.select_member(candidate, key, user, from_star=True)
+                        )
+                    else:
+                        exports = self.exports.get(candidate.module)
+                        if exports is not None and exports.status == "known":
+                            for name in exports.names:
+                                result.update(
+                                    self.select_member(
+                                        candidate, name, user, from_star=True
+                                    )
+                                )
+                        else:
+                            result.update(
+                                self._namespace_values(
+                                    candidate, user, visiting=visiting
+                                )
+                            )
         return result
 
     def activate(
@@ -610,6 +827,31 @@ class PythonSourceDemands:
         argument_count: int | None,
     ) -> None:
         module_name, owner = origin.value
+        if origin.kind.startswith("namespace"):
+            if phase in {"escape", "expose"}:
+                # Retained mappings remain live as their owners publish values.
+                self.demand(origin.value, phase)
+            elif phase == "call" and origin.kind in {
+                "namespace_clear",
+                "namespace_remove",
+                "namespace_popitem",
+            }:
+                self.demand(origin.value, "release_contents")
+            elif (
+                phase == "release"
+                and origin.namespace_ownership is PythonNamespaceOwnership.OWNED
+            ):
+                self.demand(origin.value, "release_contents")
+            return
+        if origin.kind in {"native_initializer", "bound_native_initializer"}:
+            if phase in {"call", "escape", "expose"}:
+                self._activate_native_initializer(origin)
+            return
+        if phase == "release_contents":
+            self.demand(origin.value, phase)
+            for candidate in self._namespace_values(origin, origin.value):
+                self.activate(candidate, "release")
+            return
         if phase == "mutate":
             # A member store may change a source callable's execution target
             # (__code__, defaults, __init__, ...). Resolve the actual receiver
@@ -915,6 +1157,39 @@ class PythonSourceDemands:
             candidates.update(self.arguments.get(value, ()))
         elif source is None or source[-1] == "Module":
             candidates.add(SourceCandidate(module_name, None))
+        elif value in self.native_initializers:
+            candidates.add(SourceCandidate(module_name, source, "native_initializer"))
+            plan = self.native_initializers[value]
+            for receiver_source in plan.receiver:
+                for receiver in tuple(
+                    self.watch((module_name, receiver_source), value)
+                ):
+                    if (
+                        receiver.source is not None
+                        and receiver.source[-1] == "ClassDef"
+                    ):
+                        entries = self.native_initializers_by_receiver.setdefault(
+                            receiver.value, set()
+                        )
+                        if value not in entries:
+                            entries.add(value)
+                            self._invalidate_value(receiver.value)
+            # Member aliases retain receiver and consumer contexts. A late
+            # publication replays the actual incidences, even if the alias's
+            # candidate set did not change.
+            for candidate, phase, args, count, consumer in tuple(self.activated):
+                if (
+                    candidate.value == value
+                    and candidate.kind
+                    in {"native_initializer", "bound_native_initializer"}
+                    and phase in {"call", "escape", "expose"}
+                ):
+                    previous_consumer = self._consumer
+                    self._consumer = consumer
+                    try:
+                        self._activate(candidate, phase, args, count)
+                    finally:
+                        self._consumer = previous_consumer
         elif source[-1] in {
             "FunctionDef",
             "AsyncFunctionDef",
@@ -955,7 +1230,13 @@ class PythonSourceDemands:
                     else:
                         match element.protocol:
                             case PythonElementProtocol.SUBSCRIPT:
-                                if candidate.kind == "instance":
+                                if candidate.kind == "namespace":
+                                    candidates.update(
+                                        self._namespace_values(
+                                            candidate, value, element.key
+                                        )
+                                    )
+                                elif candidate.kind == "instance":
                                     member = (
                                         candidate.module,
                                         SourceMember(candidate, "__getitem__"),
@@ -1000,6 +1281,9 @@ class PythonSourceDemands:
             for callee in call.callees:
                 for candidate in tuple(self.watch((module_name, callee), value)):
                     if candidate.contained:
+                        continue
+                    if candidate.kind.startswith("namespace"):
+                        candidates.update(self._returned_values(candidate, value))
                         continue
                     if candidate.identity is not None:
                         argument_count = (
@@ -1050,8 +1334,21 @@ class PythonSourceDemands:
                     if candidate.source is None:
                         continue
                     self._bind_call_arguments(call, candidate, value)
+                    if candidate.kind in {
+                        "native_initializer",
+                        "bound_native_initializer",
+                    }:
+                        self._bind_native_call(value, candidate)
                     if candidate.source[-1] == "ClassDef":
                         if candidate.kind == "value":
+                            for initializer in self.select_member(
+                                candidate._replace(kind="instance"), "__init__", value
+                            ):
+                                if initializer.kind in {
+                                    "native_initializer",
+                                    "bound_native_initializer",
+                                }:
+                                    self._bind_native_call(value, initializer)
                             candidates.add(
                                 SourceCandidate(*candidate.value, "instance")
                             )
@@ -1190,6 +1487,200 @@ class PythonSourceDemands:
                             known.add(argument)
                             self.queue_value(formal)
 
+    def _bind_native_call(self, site: SourceValue, callee: SourceCandidate) -> None:
+        uses = self.native_calls.setdefault(callee.value, set())
+        if (site, callee) not in uses:
+            uses.add((site, callee))
+            self.queue_value(callee.value)
+        # Actual values can arrive after the class or function alias did.
+        for _, direct, exposed in self.calls[site].arguments:
+            for source in direct | exposed:
+                self.watch((site[0], source), callee.value)
+
+    def _native_sources(self, module, direct, exposed, user):
+        values = set()
+        for source in direct | exposed:
+            values.update(
+                candidate._replace(
+                    contained=source not in direct or candidate.contained
+                )
+                for candidate in self.watch((module, source), user)
+            )
+        return values
+
+    def _native_metadata(self, origin, names, key=None):
+        plan = self.native_initializers[origin.value]
+        values = set()
+        for name, sources in plan.attributes:
+            if name in names:
+                for source in sources:
+                    for candidate in tuple(
+                        self.watch((origin.module, source), origin.value)
+                    ):
+                        if candidate.kind == "namespace":
+                            values.update(
+                                self._namespace_values(candidate, origin.value, key)
+                            )
+                        else:
+                            values.add(candidate._replace(contained=False))
+        return values
+
+    def _activate_native_initializer(self, origin: SourceCandidate) -> None:
+        plan = self.native_initializers.get(origin.value)
+        if plan is None:
+            return
+        captures = self._native_sources(
+            origin.module, frozenset(), plan.captures, origin.value
+        )
+        captures = {candidate._replace(contained=False) for candidate in captures}
+        defaults = self._native_metadata(origin, {"__defaults__", "__kwdefaults__"})
+        slots: dict[int, set[SourceCandidate]] = {}
+        actuals = set()
+        unknown_arguments = False
+        for site, callee in tuple(self.native_calls.get(origin.value, ())):
+            if callee.receiver != origin.receiver and origin.receiver is not None:
+                continue
+            for name, direct, exposed in self.calls[site].arguments:
+                values = self._native_sources(site[0], direct, exposed, origin.value)
+                if name is None:
+                    unknown_arguments = True
+                    values = {
+                        candidate._replace(contained=False) for candidate in values
+                    }
+                actuals.update(values)
+                if isinstance(name, int):
+                    slot = name + (callee.kind == "bound_native_initializer")
+                elif (
+                    isinstance(name, str)
+                    and plan.parameters is not None
+                    and name in plan.parameters
+                ):
+                    slot = plan.parameters.index(name)
+                else:
+                    continue
+                slots.setdefault(slot, set()).update(values)
+
+        def argument(slot):
+            if slot is None or unknown_arguments:
+                return actuals | defaults
+            return slots.get(slot, set()) | defaults
+
+        def capture(slot):
+            if slot is None or plan.capture_values is None:
+                return captures
+            if slot < 0 or slot >= len(plan.capture_values):
+                return set()
+            direct, exposed = plan.capture_values[slot]
+            return self._native_sources(origin.module, direct, exposed, origin.value)
+
+        # Only factory-tagged bindings are invoked. Ordinary captured defaults
+        # remain values until a store descriptor or a post-init consumer uses them.
+        stored = set()
+        rows = plan.stores
+        if rows is None:
+            factories = captures | actuals
+            stored.update(factories | defaults)
+        else:
+            factories = set()
+            for _, supplied, binding_arg, binding_capture, factory in rows:
+                binding = (
+                    argument(binding_arg)
+                    if binding_arg is None or binding_arg >= 0
+                    else set()
+                )
+                if binding_capture is None or binding_capture >= 0:
+                    binding |= capture(binding_capture)
+                if factory is not False:
+                    factories.update(binding)
+                if factory is not True:
+                    stored.update(
+                        argument(supplied)
+                        if supplied is None or supplied >= 0
+                        else binding
+                    )
+        for factory in factories:
+            self.activate(factory, "call", argument_count=0)
+            stored.update(self._returned_values(factory, origin.value))
+        receivers = (
+            self.watch(origin.receiver, origin.value)
+            if origin.receiver is not None
+            else set().union(
+                *(
+                    self.watch((origin.module, source), origin.value)
+                    for source in plan.receiver
+                )
+            )
+        )
+        for receiver in tuple(receivers):
+            info = self.classes.get(receiver.value)
+            namespace, exposure = self.namespaces.get(receiver.value, ({}, frozenset()))
+            store_names = None if rows is None else {row[0] for row in rows}
+            custom_store = (
+                info is None
+                or not info.plain_metaclass
+                or bool(self.bases.get(receiver.value))
+                or bool(exposure)
+                or bool(namespace.get("__setattr__"))
+                or store_names is None
+                or None in store_names
+                or any(
+                    name in namespace and name not in info.plain_attributes
+                    for name in store_names
+                )
+            )
+            self.activate(receiver._replace(kind="instance"), "descriptor")
+            if custom_store:
+                for value in stored:
+                    self.activate(value, "escape")
+            for method in self.select_member(receiver, "__post_init__", origin.value):
+                self._bind_receiver(method, receiver._replace(kind="instance"))
+                parameters = self.parameters.get(method.value)
+                post_rows = plan.post_inputs
+                inputs = (
+                    [
+                        argument(slot)
+                        if slot is None or slot >= 0
+                        else self._native_metadata(
+                            origin, {"__globals__", "__builtins__"}, name
+                        )
+                        for name, slot in post_rows
+                    ]
+                    if post_rows is not None
+                    else [
+                        actuals
+                        | defaults
+                        | captures
+                        | self._native_metadata(origin, {"__globals__", "__builtins__"})
+                    ]
+                )
+                if parameters is not None:
+                    for index, values in enumerate(inputs, 1):
+                        if post_rows is None:
+                            targets = [
+                                (target, False) for target in parameters.positional[1:]
+                            ]
+                            if parameters.vararg is not None:
+                                targets.append((parameters.vararg, True))
+                        elif index < len(parameters.positional):
+                            targets = [(parameters.positional[index], False)]
+                        elif parameters.vararg is not None:
+                            targets = [(parameters.vararg, True)]
+                        else:
+                            targets = []
+                        for target, contained in targets:
+                            formal = (method.module, target)
+                            arguments = self.arguments.setdefault(formal, set())
+                            selected = {
+                                candidate._replace(
+                                    contained=contained or candidate.contained
+                                )
+                                for candidate in values
+                            }
+                            if selected - arguments:
+                                arguments.update(selected)
+                                self.queue_value(formal)
+                self.activate(method, "call")
+
     def _function_kind(self, callee: SourceCandidate) -> FunctionKind:
         result = self.functions.get(callee.value)
         return FunctionKind.SYNC if result is None else result.kind
@@ -1197,6 +1688,38 @@ class PythonSourceDemands:
     def _returned_values(
         self, callee: SourceCandidate, user: SourceValue
     ) -> set[SourceCandidate]:
+        if callee.kind == "namespace_popitem":
+            # Removal returns (key, value), not the value returned by pop().
+            return {
+                candidate._replace(contained=True)
+                for candidate in self._namespace_values(callee, user)
+            }
+        if callee.kind in {"namespace_get", "namespace_remove"}:
+            call = self.calls.get(user)
+            key = (
+                call.argument_strings[0]
+                if call is not None and call.argument_strings
+                else None
+            )
+            result = self._namespace_values(callee, user, key)
+            if call is not None:
+                for name, origins, exposed in call.arguments[1:2]:
+                    for source in exposed:
+                        result.update(
+                            candidate._replace(contained=source not in origins)
+                            for candidate in self.watch((user[0], source), user)
+                        )
+            return result
+        if callee.kind == "namespace_values_method":
+            return {callee._replace(kind="namespace_values")}
+        if callee.kind == "namespace_copy_method":
+            return {
+                callee._replace(
+                    kind="namespace", namespace_ownership=PythonNamespaceOwnership.OWNED
+                )
+            }
+        if callee.kind == "namespace_items_method":
+            return {callee._replace(kind="namespace_items")}
         if callee.identity is not None or callee.kind in {
             "resumable",
             "class_descriptor",
@@ -1262,6 +1785,11 @@ class PythonSourceDemands:
     def _iterated_values(
         self, iterable: SourceCandidate, user: SourceValue, *, asynchronous: bool
     ) -> set[SourceCandidate]:
+        if iterable.kind in {"namespace_values", "namespace_items"}:
+            return {
+                candidate._replace(contained=iterable.kind == "namespace_items")
+                for candidate in self._namespace_values(iterable, user)
+            }
         expected = (
             FunctionKind.ASYNC_GENERATOR if asynchronous else FunctionKind.GENERATOR
         )

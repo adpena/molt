@@ -8,16 +8,67 @@ use super::*;
 use crate::BuiltinExc;
 use crate::builtins::functions::native_callable::NativeCallableKind;
 
-fn loader_class_module(py: &PyToken<'_>, dict_ptr: *mut u8, module: &[u8]) -> bool {
-    let ptr = alloc_string(py, module);
-    if ptr.is_null() {
+fn loader_class_module(py: &PyToken<'_>, dict_ptr: *mut u8, module: crate::NameId) -> bool {
+    let Some(bits) = module.owned_bits(py) else {
         return false;
-    }
-    let bits = MoltObject::from_ptr(ptr).bits();
+    };
     let published = set_class_method(py, dict_ptr, crate::NameId::DunderModule, bits);
     dec_ref_bits(py, bits);
     published
 }
+
+/// Publish `wrap(function)` under `name`, where `function` is a standalone
+/// native callable: CPython's `classmethod`/`staticmethod` members are real
+/// wrapper objects, not method descriptors.
+#[allow(clippy::too_many_arguments)]
+fn set_wrapped_function(
+    py: &PyToken<'_>,
+    class_bits: u64,
+    dict_ptr: *mut u8,
+    name: crate::NameId,
+    fn_ptr: u64,
+    signature: crate::intrinsics::public_objects_generated::PublicSignatureSpec,
+    defaults: &[u64],
+    wrap: extern "C" fn(u64) -> u64,
+) -> bool {
+    let function = crate::builtins::methods::alloc_builtin_function_with_signature(
+        py,
+        crate::builtins::functions::native_callable::NativeCallableSpec::declared(
+            NativeCallableKind::Function,
+            class_bits,
+            name,
+        ),
+        fn_ptr,
+        signature,
+        defaults,
+    );
+    if function == 0 || exception_pending(py) {
+        if function != 0 {
+            dec_ref_bits(py, function);
+        }
+        return false;
+    }
+    let wrapper = wrap(function);
+    dec_ref_bits(py, function);
+    if exception_pending(py) || obj_from_bits(wrapper).is_none() {
+        return false;
+    }
+    let published = set_class_method(py, dict_ptr, name, wrapper);
+    dec_ref_bits(py, wrapper);
+    published
+}
+
+const FIND_SPEC_SIGNATURE: crate::intrinsics::public_objects_generated::PublicSignatureSpec =
+    crate::intrinsics::public_objects_generated::PublicSignatureSpec {
+        arity: 4,
+        positional: &[b"cls", b"fullname", b"path", b"target"],
+        posonly: 0,
+        vararg: false,
+        varkw: false,
+        defaults: &[],
+        kwonly: &[],
+        kwdefaults: &[],
+    };
 
 pub(crate) fn compiled_loader_base_class(py: &PyToken<'_>) -> u64 {
     let state = types_state(py);
@@ -65,7 +116,7 @@ pub(crate) fn compiled_loader_base_class(py: &PyToken<'_>) -> u64 {
                     RuntimeMethodSignature::new(&[b"self", b"fullname"], false, false),
                 ),
             ];
-            loader_class_module(py, dict_ptr, b"importlib.machinery")
+            loader_class_module(py, dict_ptr, crate::NameId::ImportlibMachinery)
                 && configure_runtime_class_methods(py, class_bits, dict_ptr, &methods)
         },
     )
@@ -105,13 +156,27 @@ fn compiled_loader_derived_class(py: &PyToken<'_>, frozen: bool) -> u64 {
             {
                 return false;
             }
-            if !loader_class_module(py, dict_ptr, b"_frozen_importlib") {
+            if !loader_class_module(py, dict_ptr, crate::NameId::FrozenImportlib) {
                 return false;
             }
-            if frozen {
-                return true;
-            }
             let none = MoltObject::none().bits();
+            if frozen {
+                // Molt has no frozen bytecode: the catalog serves CPython's
+                // frozen names through BuiltinImporter.
+                return set_wrapped_function(
+                    py,
+                    class_bits,
+                    dict_ptr,
+                    crate::NameId::FindSpec,
+                    crate::builtins::functions::runtime_fn_addr(
+                        "molt_importlib_frozen_importer_find_spec",
+                        molt_importlib_frozen_importer_find_spec as *const (),
+                    ),
+                    FIND_SPEC_SIGNATURE,
+                    &[none, none],
+                    crate::molt_classmethod_new,
+                );
+            }
             let method = crate::builtins::methods::builtin_func_bits_with_signature(
                 py,
                 crate::builtins::functions::native_callable::NativeCallableSpec::declared(
@@ -141,6 +206,184 @@ pub(crate) fn compiled_loader_builtin_class(py: &PyToken<'_>) -> u64 {
 
 pub(crate) fn compiled_loader_frozen_class(py: &PyToken<'_>) -> u64 {
     compiled_loader_derived_class(py, true)
+}
+
+pub fn molt_importlib_frozen_importer_find_spec_attached_body(
+    _py: &crate::PyToken<'_>,
+    _class_bits: u64,
+    _fullname_bits: u64,
+    _path_bits: u64,
+    _target_bits: u64,
+) -> u64 {
+    MoltObject::none().bits()
+}
+
+fn finder_layout() -> crate::builtins::types::RuntimeClassLayout {
+    crate::builtins::types::RuntimeClassLayout {
+        semantics: ClassSemanticPolicy::heap(false, true),
+        native_module: None,
+        layout_size: 8,
+        instance_shape: None,
+        native_slots: None,
+    }
+}
+
+/// CPython's `_frozen_importlib_external.PathFinder`, seeded into
+/// `sys.meta_path` at bootstrap. The bodies live with the import helpers in
+/// `platform_importlib_ffi/path_finder.rs`.
+pub(crate) fn path_finder_class(py: &PyToken<'_>) -> u64 {
+    let state = types_state(py);
+    init_cached_runtime_class_configured(
+        py,
+        &state.path_finder_class,
+        crate::NameId::PathFinder.as_str(),
+        finder_layout(),
+        |class_bits, dict_ptr| {
+            let none = MoltObject::none().bits();
+            loader_class_module(py, dict_ptr, crate::NameId::FrozenImportlibExternal)
+                && set_wrapped_function(
+                    py,
+                    class_bits,
+                    dict_ptr,
+                    crate::NameId::FindSpec,
+                    crate::builtins::functions::runtime_fn_addr(
+                        "molt_importlib_path_finder_find_spec",
+                        crate::molt_importlib_path_finder_find_spec as *const (),
+                    ),
+                    FIND_SPEC_SIGNATURE,
+                    &[none, none],
+                    crate::molt_classmethod_new,
+                )
+                && set_wrapped_function(
+                    py,
+                    class_bits,
+                    dict_ptr,
+                    crate::NameId::PrivateGetSpec,
+                    crate::builtins::functions::runtime_fn_addr(
+                        "molt_importlib_path_finder_get_spec",
+                        crate::molt_importlib_path_finder_get_spec as *const (),
+                    ),
+                    FIND_SPEC_SIGNATURE,
+                    &[none],
+                    crate::molt_classmethod_new,
+                )
+                && set_wrapped_function(
+                    py,
+                    class_bits,
+                    dict_ptr,
+                    crate::NameId::InvalidateCaches,
+                    crate::builtins::functions::runtime_fn_addr(
+                        "molt_importlib_path_finder_invalidate_caches",
+                        crate::molt_importlib_path_finder_invalidate_caches as *const (),
+                    ),
+                    crate::intrinsics::public_objects_generated::PublicSignatureSpec {
+                        arity: 0,
+                        positional: &[],
+                        posonly: 0,
+                        vararg: false,
+                        varkw: false,
+                        defaults: &[],
+                        kwonly: &[],
+                        kwdefaults: &[],
+                    },
+                    &[],
+                    crate::molt_staticmethod_new,
+                )
+        },
+    )
+}
+
+/// CPython's `_frozen_importlib_external.FileFinder`; the default path hook
+/// creates its instances.
+pub(crate) fn file_finder_class(py: &PyToken<'_>) -> u64 {
+    let state = types_state(py);
+    init_cached_runtime_class_configured(
+        py,
+        &state.file_finder_class,
+        crate::NameId::FileFinder.as_str(),
+        finder_layout(),
+        |class_bits, dict_ptr| {
+            let none = MoltObject::none().bits();
+            let methods = [
+                RuntimeClassMethodSpec::with_signature(
+                    crate::NameId::DunderInit,
+                    NativeCallableKind::MethodDescriptor,
+                    crate::builtins::functions::runtime_fn_addr(
+                        "molt_importlib_file_finder_init",
+                        crate::molt_importlib_file_finder_init as *const (),
+                    ),
+                    3,
+                    RuntimeMethodSignature::new(&[b"self", b"path"], true, false),
+                ),
+                RuntimeClassMethodSpec::with_signature(
+                    crate::NameId::DunderRepr,
+                    NativeCallableKind::MethodDescriptor,
+                    crate::builtins::functions::runtime_fn_addr(
+                        "molt_importlib_file_finder_repr",
+                        crate::molt_importlib_file_finder_repr as *const (),
+                    ),
+                    1,
+                    RuntimeMethodSignature::new(&[b"self"], false, false),
+                ),
+                RuntimeClassMethodSpec::with_signature(
+                    crate::NameId::InvalidateCaches,
+                    NativeCallableKind::MethodDescriptor,
+                    crate::builtins::functions::runtime_fn_addr(
+                        "molt_importlib_file_finder_invalidate_caches",
+                        crate::molt_importlib_file_finder_invalidate_caches as *const (),
+                    ),
+                    1,
+                    RuntimeMethodSignature::new(&[b"self"], false, false),
+                ),
+            ];
+            if !(loader_class_module(py, dict_ptr, crate::NameId::FrozenImportlibExternal)
+                && configure_runtime_class_methods(py, class_bits, dict_ptr, &methods))
+            {
+                return false;
+            }
+            let find_spec = crate::builtins::methods::builtin_func_bits_with_signature(
+                py,
+                crate::builtins::functions::native_callable::NativeCallableSpec::declared(
+                    NativeCallableKind::MethodDescriptor,
+                    class_bits,
+                    crate::NameId::FindSpec,
+                ),
+                crate::builtins::functions::runtime_fn_addr(
+                    "molt_importlib_file_finder_find_spec",
+                    crate::molt_importlib_file_finder_find_spec as *const (),
+                ),
+                3,
+                &[none],
+                0,
+                &[b"self", b"fullname", b"target"],
+                false,
+                false,
+            );
+            set_class_method(py, dict_ptr, crate::NameId::FindSpec, find_spec)
+                && set_wrapped_function(
+                    py,
+                    class_bits,
+                    dict_ptr,
+                    crate::NameId::PathHook,
+                    crate::builtins::functions::runtime_fn_addr(
+                        "molt_importlib_file_finder_path_hook",
+                        crate::molt_importlib_file_finder_path_hook as *const (),
+                    ),
+                    crate::intrinsics::public_objects_generated::PublicSignatureSpec {
+                        arity: 2,
+                        positional: &[b"cls"],
+                        posonly: 0,
+                        vararg: true,
+                        varkw: false,
+                        defaults: &[],
+                        kwonly: &[],
+                        kwdefaults: &[],
+                    },
+                    &[],
+                    crate::molt_classmethod_new,
+                )
+        },
+    )
 }
 
 fn compiled_loader_singleton(py: &PyToken<'_>) -> u64 {

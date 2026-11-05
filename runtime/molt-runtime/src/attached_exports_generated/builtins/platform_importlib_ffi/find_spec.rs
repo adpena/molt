@@ -10,29 +10,6 @@ pub unsafe extern "C" fn molt_importlib_find_in_path_package_context(
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_importlib_find_in_path_package_context_attached_body(_py, fullname_bits, search_paths_bits)
 }
-#[unsafe(export_name = "molt_importlib_admit_spec__molt_context_a8c6010e2cbb56a1")]
-#[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn molt_importlib_admit_spec(
-    __context: u64,
-    fullname_bits: u64,
-    spec_bits: u64,
-) -> u64 {
-    let _py: &crate::PyToken<'_> =
-        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_importlib_admit_spec_attached_body(_py, fullname_bits, spec_bits)
-}
-#[unsafe(export_name = "molt_importlib_filefinder_find_spec__molt_context_a8c6010e2cbb56a1")]
-#[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn molt_importlib_filefinder_find_spec(
-    __context: u64,
-    fullname_bits: u64,
-    path_bits: u64,
-    machinery_bits: u64,
-) -> u64 {
-    let _py: &crate::PyToken<'_> =
-        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_importlib_filefinder_find_spec_attached_body(_py, fullname_bits, path_bits, machinery_bits)
-}
 #[unsafe(export_name = "molt_importlib_find_spec__molt_context_a8c6010e2cbb56a1")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_importlib_find_spec(

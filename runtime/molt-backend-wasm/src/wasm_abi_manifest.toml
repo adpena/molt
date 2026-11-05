@@ -3376,19 +3376,7 @@ runtime_name = "molt_importlib_decode_source"
 callable_arity = 1
 
 [[import]]
-name = "importlib_ensure_default_meta_path"
-type = 2
-
-[[import]]
 name = "importlib_extension_loader_payload"
-type = 4
-
-[[import]]
-name = "importlib_admit_spec"
-type = 3
-
-[[import]]
-name = "importlib_filefinder_find_spec"
 type = 4
 
 [[import]]

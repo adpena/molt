@@ -71,13 +71,3 @@ pub unsafe extern "C" fn molt_imp_lock_held(__context: u64) -> u64 {
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_imp_lock_held_attached_body(_py)
 }
-#[unsafe(export_name = "molt_importlib_ensure_default_meta_path__molt_context_a8c6010e2cbb56a1")]
-#[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn molt_importlib_ensure_default_meta_path(
-    __context: u64,
-    machinery: u64,
-) -> u64 {
-    let _py: &crate::PyToken<'_> =
-        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_importlib_ensure_default_meta_path_attached_body(_py, machinery)
-}

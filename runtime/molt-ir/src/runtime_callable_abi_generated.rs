@@ -5053,11 +5053,6 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
-        symbol: "molt_importlib_admit_spec",
-        arity: 2,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
         symbol: "molt_importlib_bootstrap_payload",
         arity: 2,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -5108,11 +5103,6 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
-        symbol: "molt_importlib_ensure_default_meta_path",
-        arity: 1,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
         symbol: "molt_importlib_extension_loader_create_module",
         arity: 3,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -5128,13 +5118,8 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
-        symbol: "molt_importlib_extension_loader_type_declare",
+        symbol: "molt_importlib_file_loader_types_declare",
         arity: 1,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
-        symbol: "molt_importlib_filefinder_find_spec",
-        arity: 3,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -5283,8 +5268,18 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
+        symbol: "molt_importlib_namespace_path_epoch",
+        arity: 0,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
         symbol: "molt_importlib_package_root_from_origin",
         arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_importlib_path_finder_types",
+        arity: 0,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -19847,10 +19842,6 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_imp_release_lock__molt_context_a8c6010e2cbb56a1",
         },
-        "molt_importlib_admit_spec" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_importlib_admit_spec__molt_context_a8c6010e2cbb56a1",
-        },
         "molt_importlib_bootstrap_payload" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_importlib_bootstrap_payload__molt_context_a8c6010e2cbb56a1",
@@ -19891,10 +19882,6 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_importlib_decode_source__molt_context_a8c6010e2cbb56a1",
         },
-        "molt_importlib_ensure_default_meta_path" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_importlib_ensure_default_meta_path__molt_context_a8c6010e2cbb56a1",
-        },
         "molt_importlib_export_attrs" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_importlib_export_attrs__molt_context_a8c6010e2cbb56a1",
@@ -19911,13 +19898,33 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_importlib_extension_loader_payload__molt_context_a8c6010e2cbb56a1",
         },
-        "molt_importlib_extension_loader_type_declare" => RuntimeExecutionAbi {
+        "molt_importlib_file_finder_find_spec" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_importlib_extension_loader_type_declare__molt_context_a8c6010e2cbb56a1",
+            physical_symbol: "molt_importlib_file_finder_find_spec__molt_context_a8c6010e2cbb56a1",
         },
-        "molt_importlib_filefinder_find_spec" => RuntimeExecutionAbi {
+        "molt_importlib_file_finder_init" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_importlib_filefinder_find_spec__molt_context_a8c6010e2cbb56a1",
+            physical_symbol: "molt_importlib_file_finder_init__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_importlib_file_finder_invalidate_caches" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_importlib_file_finder_invalidate_caches__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_importlib_file_finder_path_hook" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_importlib_file_finder_path_hook__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_importlib_file_finder_path_hook_call" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_importlib_file_finder_path_hook_call__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_importlib_file_finder_repr" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_importlib_file_finder_repr__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_importlib_file_loader_types_declare" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_importlib_file_loader_types_declare__molt_context_a8c6010e2cbb56a1",
         },
         "molt_importlib_find_in_path_package_context" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
@@ -19934,6 +19941,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_importlib_frozen_external_payload" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_importlib_frozen_external_payload__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_importlib_frozen_importer_find_spec" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_importlib_frozen_importer_find_spec__molt_context_a8c6010e2cbb56a1",
         },
         "molt_importlib_frozen_payload" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
@@ -20039,6 +20050,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_importlib_module_spec_type__molt_context_a8c6010e2cbb56a1",
         },
+        "molt_importlib_namespace_path_epoch" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_importlib_namespace_path_epoch__molt_context_a8c6010e2cbb56a1",
+        },
         "molt_importlib_namespace_paths" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_importlib_namespace_paths__molt_context_a8c6010e2cbb56a1",
@@ -20046,6 +20061,22 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_importlib_package_root_from_origin" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_importlib_package_root_from_origin__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_importlib_path_finder_find_spec" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_importlib_path_finder_find_spec__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_importlib_path_finder_get_spec" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_importlib_path_finder_get_spec__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_importlib_path_finder_invalidate_caches" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_importlib_path_finder_invalidate_caches__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_importlib_path_finder_types" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_importlib_path_finder_types__molt_context_a8c6010e2cbb56a1",
         },
         "molt_importlib_prepare_fromlist" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
@@ -20250,6 +20281,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_importlib_zip_archive_path" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_importlib_zip_archive_path__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_importlib_zip_path_hook" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_importlib_zip_path_hook__molt_context_a8c6010e2cbb56a1",
         },
         "molt_importlib_zip_read_entry" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
