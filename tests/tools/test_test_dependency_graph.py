@@ -1240,7 +1240,10 @@ def _covers(full, selector, target) -> bool:
 def test_the_graph_never_drops_what_a_rule_selects():
     # For one tracked path per rule glob, the full landing selection keeps
     # every gate and every pytest target (at the same or a wider scope) that
-    # the rules select on their own.
+    # the rules select on their own. A rule's structured pytest cohort may
+    # split in presubmit (its direct readers join the try run, HF-701), so
+    # cohorts are held to target coverage, and every other gate to its exact
+    # command.
     from dataclasses import replace
     from fnmatch import fnmatchcase
 
@@ -1274,7 +1277,10 @@ def test_the_graph_never_drops_what_a_rule_selects():
         after, _ = cfg.select([path])
         commands = {gate.command for gate in after}
         dropped.extend(
-            (path, gate.command) for gate in before if gate.command not in commands
+            (path, gate.command)
+            for gate in before
+            if not (gate.pytest and isinstance(gate.command, tuple))
+            and gate.command not in commands
         )
         full = _pytest_requests(after)
         dropped.extend(

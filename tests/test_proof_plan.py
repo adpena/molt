@@ -830,7 +830,9 @@ def test_explicit_unfiltered_pytest_cohort_keeps_full_scope_and_cargo_custody():
         for gate in gates
         if isinstance(gate.command, tuple) and target in gate.command
     ]
-    assert gate.pytest and not gate.precheck
+    # A changed test is its own direct reader: its rule cohort runs in the
+    # lane's try run (HF-701), with the rule's own unfiltered scope.
+    assert gate.pytest and gate.precheck
     assert gate.command[-1] == target
     assert "-k" not in gate.command and "-m" not in gate.command[3:]
     assert gate.toolchains == declared

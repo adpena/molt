@@ -4639,6 +4639,16 @@ def test_integrate_full_push_and_confirm(
     # origin/main now contains the tip (confirmed by the same ancestor check).
     git.fetch("origin", "main")
     assert git.is_ancestor(tip, "origin/main")
+    # Its receipt admits exactly the pushed commit on the main it replaced.
+    from tools import landing_receipt
+
+    receipt = landing_receipt.read_receipt(
+        drv._git_common_directory(work),
+        tree=git.rev_parse(f"{tip}^{{tree}}"),
+        base=upstream,
+    )
+    assert receipt is not None and receipt["mode"] == "queue"
+    assert receipt["commits"] == [tip] and receipt["waived"] == []
 
 
 @pytest.mark.parametrize("needs_rebase", [False, True])
@@ -6869,6 +6879,210 @@ def test_land_static_only_runs_static_gates_and_skips_the_try_run(
         drv.build_parser().parse_args(
             ["land", "--repo", str(lane), "--static-only", "--precheck-only"]
         )
+
+
+def _land_fast(drv, lane: Path, *extra: str) -> int:
+    args = drv.build_parser().parse_args(
+        ["land", "--repo", str(lane), "--candidate-controller", "--fast", *extra]
+    )
+    return args.func(args)
+
+
+def _remote_main(work: Path) -> str:
+    return _git(work, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
+
+
+def test_land_fast_merges_main_tests_the_merge_and_pushes_its_receipted_commit(
+    drv, origin_and_clone, tmp_path
+):
+    """The not-rocket-science rule: main advances to exactly the tested tree."""
+    from tools import landing_receipt
+
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    _publish_policy(
+        work,
+        _try_run_policy(counter, try_gate=f"echo try >> {shlex.quote(str(counter))}"),
+    )
+    lane = work.parent / "lane-fast"
+    _lane(work, "fast", {"a.py": "a = 1\n"})
+    late = _commit_file(work, "late.txt", "late\n", "main moves")
+    _git(work, "push", "-q", "origin", "HEAD:main")
+
+    assert _land_fast(drv, lane, "--subject", "Land the fast lane") == EXIT_OK
+
+    landed = _remote_main(work)
+    assert _git(lane, "rev-parse", "HEAD").stdout.strip() == landed
+    tested = _git(lane, "rev-parse", f"{landed}^").stdout.strip()
+    # The tested commit merges main into the lane; the landing commit is empty.
+    assert _git(lane, "rev-parse", f"{tested}^2").stdout.strip() == late
+    assert (
+        _git(lane, "rev-parse", f"{landed}^{{tree}}").stdout
+        == _git(lane, "rev-parse", f"{tested}^{{tree}}").stdout
+    )
+    # Static gate and the try run ran once each; the batch's gate is waived.
+    assert sorted(counter.read_text(encoding="utf-8").split()) == ["static", "try"]
+    receipt = landing_receipt.read_receipt(
+        drv._git_common_directory(lane),
+        tree=_git(lane, "rev-parse", f"{landed}^{{tree}}").stdout.strip(),
+        base=late,
+    )
+    assert receipt is not None
+    assert receipt["commits"] == [tested, landed]
+    assert [gate["phase"] for gate in receipt["gates"]] == ["static", "try-run"]
+    assert receipt["waived"] == [f"echo batch >> {shlex.quote(str(counter))}"]
+    message = _git(lane, "log", "-1", "--format=%B", landed).stdout
+    assert message.startswith("Land the fast lane\n\nLanded by molt_dev.py land --fast")
+    assert "Waived to the queue batch: echo batch >>" in message
+    assert message.rstrip().endswith(
+        f"Receipt: landing-receipts/{receipt['tree']}.{late}.json"
+    )
+
+
+def test_land_fast_receipt_reads_counts_and_the_crate_gate_summary(tmp_path):
+    """Counts come from each gate's log; unverified and narrowed cells from the
+    crate-test gate's typed summary line, never from its human text."""
+    from tools.molt_dev_land_fast import _receipt_for
+    from tools.molt_dev_policy import PRECHECK_BUDGET, SelectedGate
+    from tools.molt_dev_precheck import GateRun, PrecheckResult
+    from tools.check_changed_crate_tests import SCHEMA
+
+    static = SelectedGate("python -m ruff check .", ("python",))
+    crates = SelectedGate(
+        "python tools/check_changed_crate_tests.py --base x", ("python",)
+    )
+    readers = SelectedGate(
+        ("python", "-m", "pytest", "tests/a.py"), ("python",), pytest=True
+    )
+    batch = SelectedGate("cargo test -p a", ("cargo",))
+    (tmp_path / "s").mkdir()
+    (tmp_path / "t").mkdir()
+    (tmp_path / "s" / "gate-001.stdout.log").write_text(
+        "All checks passed!\n", encoding="utf-8"
+    )
+    summary = {
+        "schema": SCHEMA,
+        "status": "passed",
+        "cells": [
+            {"sources": ["rule:r"], "narrowed": ["b/f"], "argv": [], "counts": {}}
+        ],
+        "unverified": ["c: no lib target"],
+        "failures": [],
+    }
+    (tmp_path / "t" / "gate-001.stdout.log").write_text(
+        "changed-crate-tests: unverified: decoy text\n"
+        "test result: ok. 4 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; "
+        "finished in 0.01s\n" + json.dumps(summary, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "t" / "gate-002.stdout.log").write_text(
+        "3 passed in 0.10s\n", encoding="utf-8"
+    )
+    precheck = PrecheckResult(
+        (static, crates, readers),
+        None,
+        PRECHECK_BUDGET,
+        (
+            GateRun("static", tmp_path / "s", (static,)),
+            GateRun("try-run", tmp_path / "t", (crates, readers)),
+        ),
+        (("python -m ruff check .", 1.5),),
+        waived=(batch,),
+    )
+    receipt = _receipt_for(
+        precheck,
+        base="b" * 40,
+        tree="a" * 40,
+        head="c" * 40,
+        controller=None,
+        started_at="t",
+    )
+    assert [(g["phase"], g["counts"]) for g in receipt["gates"]] == [
+        ("static", None),
+        ("try-run", {"passed": 4, "failed": 0, "skipped": 1}),
+        ("try-run", {"passed": 3, "failed": 0, "skipped": 0}),
+    ]
+    assert receipt["gates"][0]["seconds"] == 1.5
+    assert receipt["unverified"] == ["c: no lib target"]
+    assert receipt["narrowed"] == ["[rule:r] b/f"]
+    assert receipt["waived"] == ["cargo test -p a"]
+
+
+def test_land_fast_failing_try_run_pushes_nothing_and_writes_no_receipt(
+    drv, origin_and_clone, tmp_path
+):
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    _publish_policy(work, _try_run_policy(counter, try_gate="test ! -e broken.txt"))
+    base = _remote_main(work)
+    lane = work.parent / "lane-fast-broken"
+    _lane(work, "fast-broken", {"broken.txt": "the try run refuses this\n"})
+
+    with pytest.raises(DriverError):
+        _land_fast(drv, lane, "--subject", "Land a broken lane")
+
+    assert _remote_main(work) == base
+    receipts = drv._git_common_directory(lane) / "molt" / "landing-receipts"
+    assert not receipts.exists() or not any(receipts.iterdir())
+
+
+def test_land_fast_retests_when_main_moves_before_publication(
+    drv, origin_and_clone, tmp_path
+):
+    """A main that moved during the tests is merged and tested again; the
+    stale tree never reaches main."""
+    origin, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    mover = work.parent / "mover"
+    _git(work.parent, "clone", "-q", str(origin), str(mover))
+    _git(mover, "config", "user.email", "mover@example.test")
+    _git(mover, "config", "user.name", "Mover")
+    marker = tmp_path / "moved-once"
+    # The first try run publishes another change to main, as a queue landing would.
+    move = (
+        f"if [ ! -e {shlex.quote(str(marker))} ]; then touch {shlex.quote(str(marker))}"
+        f" && git -C {shlex.quote(str(mover))} pull -q --no-rebase origin main"
+        f" && git -C {shlex.quote(str(mover))} commit -q --allow-empty --no-verify -m moved"
+        f" && git -C {shlex.quote(str(mover))} push -q origin HEAD:main; fi"
+        f" && echo try >> {shlex.quote(str(counter))}"
+    )
+    _publish_policy(work, _try_run_policy(counter, try_gate=move))
+    lane = work.parent / "lane-fast-moved"
+    _lane(work, "fast-moved", {"a.py": "a = 1\n"})
+
+    assert _land_fast(drv, lane, "--subject", "Land after main moved") == EXIT_OK
+
+    assert counter.read_text(encoding="utf-8").split().count("try") == 2
+    landed = _remote_main(work)
+    moved = _git(mover, "rev-parse", "HEAD").stdout.strip()
+    assert _git(lane, "merge-base", "--is-ancestor", moved, landed).returncode == 0
+
+
+def test_land_fast_no_push_then_push_reuses_the_receipt_for_the_same_tree_and_base(
+    drv, origin_and_clone, tmp_path
+):
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    _publish_policy(
+        work,
+        _try_run_policy(counter, try_gate=f"echo try >> {shlex.quote(str(counter))}"),
+    )
+    base = _remote_main(work)
+    lane = work.parent / "lane-fast-two-step"
+    _lane(work, "fast-two-step", {"a.py": "a = 1\n"})
+
+    assert _land_fast(drv, lane, "--no-push") == EXIT_OK
+    assert _remote_main(work) == base
+    assert _land_fast(drv, lane, "--subject", "Land in two steps") == EXIT_OK
+
+    assert sorted(counter.read_text(encoding="utf-8").split()) == ["static", "try"]
+    assert _remote_main(work) == _git(lane, "rev-parse", "HEAD").stdout.strip()
+    # --no-push and --subject belong to land --fast alone.
+    args = drv.build_parser().parse_args(
+        ["land", "--repo", str(lane), "--candidate-controller", "--no-push"]
+    )
+    with pytest.raises(DriverError, match="belong to land --fast"):
+        args.func(args)
 
 
 def test_land_try_run_failure_queues_nothing(

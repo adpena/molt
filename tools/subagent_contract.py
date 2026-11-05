@@ -29,6 +29,7 @@ __all__ = [
     "TRIALITY_WIRING",
     "VERIFY_CHANGED_CONTRACT",
     "WEB_AUTHORITY",
+    "WHOLE_CRATE_TESTS",
     "standard_contract",
 ]
 
@@ -117,7 +118,8 @@ HANDOFF_PRECHECK = (
     "HANDOFF PRECHECK: before reporting a commit ready, run `python -B tools/molt_dev.py land "
     "--repo <your checkout> --precheck-only` with the slot image. It applies the plan's "
     "repairs (committing any change), then runs the landing's static gates and its try run "
-    "(changed-crate Clippy, changed tests and their direct readers) within the precheck budget "
+    "(changed-crate Clippy and whole-crate lib tests, changed tests and their direct readers) "
+    "within the precheck budget "
     "through main's controller, and queues nothing; a budget refusal exits 1. Run it and your changed tests from the "
     "landing runner's plain environment (`env -u CARGO_TARGET_DIR -u UV_PROJECT_ENVIRONMENT "
     "TMPDIR=<data-volume dir>`), never under a sourced lane env.sh: its exported selectors hide "
@@ -177,6 +179,15 @@ DESIGN_REVIEW = (
     "report the outcome. A one-line fix may use one reviewer."
 )
 
+WHOLE_CRATE_TESTS = (
+    "WHOLE-CRATE TESTS: before reporting ready, run the whole library tests of every touched "
+    "Rust crate and its reverse dependencies, `--lib --no-fail-fast`, in each profile and "
+    "feature cell the proof plan declares for it: `python -B tools/check_changed_crate_tests.py "
+    "--base origin/main` computes and runs them, and the handoff precheck runs it too. A "
+    "focused test filter is not this proof, and a declared crate that runs 0 tests fails. When "
+    "a root Cargo input reaches the whole workspace, say so and leave the full run to the queue."
+)
+
 # --- Registry (consumed by the anti-rot gate + the tests) ----------------------------------
 
 CONTRACT_CONSTANT_NAMES: tuple[str, ...] = (
@@ -195,6 +206,7 @@ CONTRACT_CONSTANT_NAMES: tuple[str, ...] = (
     "PREMISE_VERIFICATION",
     "DESIGN_REVIEW",
     "HANDOFF_PRECHECK",
+    "WHOLE_CRATE_TESTS",
 )
 
 MECHANIZES: dict[str, str] = {
@@ -213,6 +225,7 @@ MECHANIZES: dict[str, str] = {
     "PREMISE_VERIFICATION": "M22/M24",
     "DESIGN_REVIEW": "M22/M24 (owner 2026-11-04: Elephant Goldfish review before implementation)",
     "HANDOFF_PRECHECK": "M05/M12",
+    "WHOLE_CRATE_TESTS": "M05 (HF-701: HF-205 and HF-764 regressions hid behind focused tests)",
 }
 
 KEY_PHRASES: dict[str, str] = {
@@ -231,6 +244,7 @@ KEY_PHRASES: dict[str, str] = {
     "PREMISE_VERIFICATION": "before your first Write",
     "DESIGN_REVIEW": "Elephant Goldfish",
     "HANDOFF_PRECHECK": "--precheck-only",
+    "WHOLE_CRATE_TESTS": "--lib --no-fail-fast",
 }
 
 
