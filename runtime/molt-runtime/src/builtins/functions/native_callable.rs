@@ -9,7 +9,6 @@ use crate::object::function_metadata::FunctionMetadataField as Field;
 
 /// CPython methodobject.c meth_reduce: module builtins reduce by public name;
 /// bound builtins reduce through getattr on their actual retained receiver.
-
 pub(crate) fn molt_native_callable_reduce_attached_body(
     _py: &crate::PyToken<'_>,
     function: u64,

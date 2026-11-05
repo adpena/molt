@@ -195,7 +195,6 @@ fn active_frame_admits(mask: u64) -> bool {
 /// `mask_bits` is an inline int of guard bits. Returns a bool object. It
 /// reads only the frame stack and namespace state words: it neither
 /// allocates nor raises, and an unknown mask never holds.
-
 pub(crate) fn molt_guard_builtin_bindings_attached_body(
     _py: &crate::PyToken<'_>,
     mask_bits: u64,

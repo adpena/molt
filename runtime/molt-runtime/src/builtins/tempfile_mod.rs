@@ -43,7 +43,6 @@ fn creation_paths(
 }
 
 /// Probe the Python-selected candidate order without caching or consulting host defaults.
-
 pub(crate) fn molt_tempfile_gettempdir_attached_body(
     _py: &crate::PyToken<'_>,
     candidates_bits: u64,
@@ -243,7 +242,6 @@ pub(crate) fn molt_tempfile_mkstemp_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_tempfile_mkstemp_attached_body(
     _py: &crate::PyToken<'_>,
     _suffix: u64,

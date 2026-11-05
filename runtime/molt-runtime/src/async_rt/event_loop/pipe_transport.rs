@@ -193,7 +193,6 @@ pub(crate) fn molt_pipe_transport_new_attached_body(
 /// Get the file descriptor from a pipe transport.
 ///
 /// Returns a NaN-boxed integer fd, or -1 if the handle is invalid.
-
 pub(crate) fn molt_pipe_transport_get_fd_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -210,7 +209,6 @@ pub(crate) fn molt_pipe_transport_get_fd_attached_body(
 /// Check if the pipe transport is closing.
 ///
 /// Returns a NaN-boxed bool.
-
 pub(crate) fn molt_pipe_transport_is_closing_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -291,7 +289,6 @@ pub(crate) fn molt_pipe_transport_close_attached_body(
 /// Pause reading on a read pipe transport.
 ///
 /// Returns None. Raises RuntimeError if the transport is a write pipe.
-
 pub(crate) fn molt_pipe_transport_pause_reading_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -324,7 +321,6 @@ pub(crate) fn molt_pipe_transport_pause_reading_attached_body(
 /// Resume reading on a read pipe transport.
 ///
 /// Returns None. Raises RuntimeError if the transport is a write pipe.
-
 pub(crate) fn molt_pipe_transport_resume_reading_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -442,7 +438,6 @@ pub(crate) fn molt_pipe_transport_write_attached_body(
 /// Get the write buffer size for a pipe transport.
 ///
 /// Returns a NaN-boxed integer (total bytes buffered).
-
 pub(crate) fn molt_pipe_transport_get_write_buffer_size_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -465,7 +460,6 @@ pub(crate) fn molt_pipe_transport_get_write_buffer_size_attached_body(
 /// Drop a pipe transport handle, removing it from the registry.
 /// If the transport is not yet closed, it is closed first (native only).
 /// On WASM, simply removes from the registry (no fd to close).
-
 pub(crate) fn molt_pipe_transport_drop_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,

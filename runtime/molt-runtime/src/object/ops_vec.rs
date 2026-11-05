@@ -480,7 +480,6 @@ fn vec_reduction_chunk(
 }
 
 /// One chunk of `for x in it: acc = acc + x` (or `x + acc`).
-
 pub(crate) fn molt_vec_sum_attached_body(
     _py: &crate::PyToken<'_>,
     iter_bits: u64,
@@ -493,7 +492,6 @@ pub(crate) fn molt_vec_sum_attached_body(
 }
 
 /// One chunk of `for x in it: acc = acc * x` (or `x * acc`).
-
 pub(crate) fn molt_vec_prod_attached_body(
     _py: &crate::PyToken<'_>,
     iter_bits: u64,
@@ -506,7 +504,6 @@ pub(crate) fn molt_vec_prod_attached_body(
 }
 
 /// One chunk of `for x in it: if x < acc: acc = x`.
-
 pub(crate) fn molt_vec_min_attached_body(
     _py: &crate::PyToken<'_>,
     iter_bits: u64,
@@ -519,7 +516,6 @@ pub(crate) fn molt_vec_min_attached_body(
 }
 
 /// One chunk of `for x in it: if acc < x: acc = x`.
-
 pub(crate) fn molt_vec_max_attached_body(
     _py: &crate::PyToken<'_>,
     iter_bits: u64,

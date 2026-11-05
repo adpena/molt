@@ -1157,7 +1157,6 @@ pub(crate) fn molt_call_bind_ic_attached_body(
 /// # Safety
 /// Caller must provide a call-site id in `site_bits` and a live CallArgs
 /// builder in `builder_bits`; this call consumes both references.
-
 pub(crate) fn molt_call_bind_ic_owned_attached_body(
     _py: &crate::PyToken<'_>,
     site_bits: u64,
@@ -1596,7 +1595,6 @@ fn publish_loaded_method(
 /// # Safety
 /// `name_ptr`/`name_len_bits` describe a valid UTF-8 name; `self_out_bits`
 /// encodes writable storage for one `u64`.
-
 pub(crate) fn molt_load_method_attached_body(
     _py: &crate::PyToken<'_>,
     site_bits: u64,
@@ -1621,7 +1619,6 @@ pub(crate) fn molt_load_method_attached_body(
 /// # Safety
 /// `name_ptr`/`name_len_bits` describe a valid UTF-8 name; `self_out_bits`
 /// encodes writable storage for one `u64`.
-
 pub(crate) fn molt_load_super_method_attached_body(
     _py: &crate::PyToken<'_>,
     site_bits: u64,
@@ -1678,7 +1675,6 @@ unsafe fn call_loaded_method(
 }
 
 /// C-ABI entry for a loaded method call with no positional arguments.
-
 pub(crate) fn molt_call_loaded_method0_attached_body(
     _py: &crate::PyToken<'_>,
     callable_bits: u64,
@@ -1690,7 +1686,6 @@ pub(crate) fn molt_call_loaded_method0_attached_body(
 }
 
 /// C-ABI entry for a loaded method call with one positional argument.
-
 pub(crate) fn molt_call_loaded_method1_attached_body(
     _py: &crate::PyToken<'_>,
     callable_bits: u64,
@@ -1703,7 +1698,6 @@ pub(crate) fn molt_call_loaded_method1_attached_body(
 }
 
 /// C-ABI entry for a loaded method call with two positional arguments.
-
 pub(crate) fn molt_call_loaded_method2_attached_body(
     _py: &crate::PyToken<'_>,
     callable_bits: u64,
@@ -1717,7 +1711,6 @@ pub(crate) fn molt_call_loaded_method2_attached_body(
 }
 
 /// C-ABI entry for a loaded method call with three positional arguments.
-
 pub(crate) fn molt_call_loaded_method3_attached_body(
     _py: &crate::PyToken<'_>,
     callable_bits: u64,
@@ -1732,7 +1725,6 @@ pub(crate) fn molt_call_loaded_method3_attached_body(
 }
 
 /// C-ABI entry for a loaded method call with four positional arguments.
-
 pub(crate) fn molt_call_loaded_method4_attached_body(
     _py: &crate::PyToken<'_>,
     callable_bits: u64,
@@ -1750,7 +1742,6 @@ pub(crate) fn molt_call_loaded_method4_attached_body(
 /// C-ABI entry for a loaded method call of any arity: the adopted positional
 /// arguments are spilled at `args_ptr_bits[..nargs]`. The entry copies them
 /// before any Python code can reuse the spill region.
-
 pub(crate) fn molt_call_loaded_method_spilled_attached_body(
     _py: &crate::PyToken<'_>,
     callable_bits: u64,

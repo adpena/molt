@@ -2107,7 +2107,6 @@ fn sys_modules_set_canonical_name<'a, 'py>(
 
 /// Publish a borrowed module without transferring either argument's ownership.
 /// Every successful path returns None; typed initializer admission owns once-only execution.
-
 pub(crate) fn molt_module_cache_set_attached_body(
     _py: &crate::PyToken<'_>,
     name_bits: u64,
@@ -2866,7 +2865,6 @@ pub(crate) fn prepare_from_import_child(
 ///
 /// A non-`AttributeError` raised by the lookup (e.g. a module `__getattr__`
 /// raising `ValueError`) propagates unchanged, exactly as CPython does.
-
 pub(crate) fn molt_module_import_from_attached_body(
     _py: &crate::PyToken<'_>,
     module_bits: u64,
@@ -2929,7 +2927,6 @@ pub(crate) fn molt_module_import_from_attached_body(
 
 /// LOAD_NAME/LOAD_CLASSDEREF mapping probe. Only KeyError means absence;
 /// __getitem__ callbacks and every other exception retain normal semantics.
-
 pub(crate) fn molt_namespace_get_attached_body(
     _py: &crate::PyToken<'_>,
     namespace_bits: u64,
@@ -2950,7 +2947,6 @@ pub(crate) fn molt_namespace_get_attached_body(
 
 /// DELETE_NAME translates any mapping-deletion failure into NameError. This
 /// intentionally differs from LOAD_NAME's KeyError-only fallback (CPython3.12+).
-
 pub(crate) fn molt_namespace_del_attached_body(
     _py: &crate::PyToken<'_>,
     namespace_bits: u64,
@@ -3161,7 +3157,6 @@ Use static modules or pre-generated code paths instead."
 /// lexical module operand differs from their activation namespace. With no
 /// Python frame, runtime callers select the explicit module dictionary.
 /// Attribute access and MODULE_GET_NAME remain module-only APIs.
-
 pub(crate) fn molt_module_get_global_attached_body(
     _py: &crate::PyToken<'_>,
     module_bits: u64,

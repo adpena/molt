@@ -2632,7 +2632,10 @@ pub fn molt_os_symlink_at_attached_body(
 /// `UTIME_NOW` for that timestamp (the "no times given" path sends `-1` for
 /// both).
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub fn molt_os_utime_at_attached_body(
     _py: &molt_runtime_core::PyToken,
     path_bits: u64,
@@ -2761,7 +2764,10 @@ fn at_timespec_pair(
 }
 
 #[cfg(target_arch = "wasm32")]
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub fn molt_os_utime_at_attached_body(
     _py: &molt_runtime_core::PyToken,
     _p: u64,

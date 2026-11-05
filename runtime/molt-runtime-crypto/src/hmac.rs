@@ -200,7 +200,10 @@ fn build_hmac_handle(
     })
 }
 
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub fn molt_hmac_new_attached_body(
     _py: &molt_runtime_core::PyToken,
     key_bits: u64,

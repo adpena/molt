@@ -1007,7 +1007,6 @@ pub(crate) fn molt_signal_raise_signal_attached_body(
 
 /// `_thread.interrupt_main(signum)`: CPython `PyErr_SetInterruptEx`. Simulates a
 /// delivery for the main thread's next safepoint; no OS signal is raised.
-
 pub(crate) fn molt_signal_set_interrupt_attached_body(
     _py: &crate::PyToken<'_>,
     signum_bits: u64,

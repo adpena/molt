@@ -179,7 +179,6 @@ pub(crate) use rss::process_memory_snapshot;
 
 /// Extern entry point: sample RSS and update peak. Can be called from
 /// compiled code or periodically from the runtime.
-
 pub(crate) fn molt_profile_snapshot_attached_body(_py: &crate::PyToken<'_>) {
     crate::with_attached_entry_nopanic!(_py, _py, {
         if profile_enabled(_py) {

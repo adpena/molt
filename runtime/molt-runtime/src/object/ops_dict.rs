@@ -146,7 +146,6 @@ pub(crate) fn molt_dict_update_missing_attached_body(
 }
 
 /// Specialized `in` for dict containers (hash lookup, no type dispatch).
-
 pub(crate) fn molt_dict_contains_attached_body(
     _py: &crate::PyToken<'_>,
     container_bits: u64,
@@ -376,7 +375,6 @@ pub(crate) fn molt_dict_get_attached_body(
 /// the statement provably runs no Python code (see
 /// `dict_increment_exact_statement`). `False` has done nothing observable and
 /// the caller runs the statement itself.
-
 pub(crate) fn molt_dict_str_int_inc_attached_body(
     _py: &crate::PyToken<'_>,
     dict_bits: u64,
@@ -399,7 +397,6 @@ pub(crate) fn molt_dict_str_int_inc_attached_body(
 /// dict.pop(key, default=MISSING) — method dispatch entry point.
 /// When default is MISSING, equivalent to pop(key) without a default
 /// (raises KeyError if key is absent).  Otherwise, pop(key, default).
-
 pub(crate) fn molt_dict_pop_method_attached_body(
     _py: &crate::PyToken<'_>,
     dict_bits: u64,
@@ -547,7 +544,6 @@ pub(crate) fn molt_dict_setdefault_empty_list_attached_body(
 
 /// Language ** expansion accepts mappings, including non-string keys, but
 /// never the iterable pairs accepted by dict.update and dict construction.
-
 pub(crate) fn molt_dict_unpack_attached_body(
     _py: &crate::PyToken<'_>,
     dict_bits: u64,
@@ -914,7 +910,6 @@ pub(crate) fn molt_dict_items_attached_body(_py: &crate::PyToken<'_>, dict_bits:
 /// The dict holds the value alive. Returns 0 if the key is not found (clears
 /// any KeyError). This mirrors CPython's `PyDict_GetItem()` borrowed-reference
 /// semantics.
-
 pub(crate) fn molt_dict_getitem_borrowed_attached_body(
     _py: &crate::PyToken<'_>,
     dict_bits: u64,
@@ -1002,7 +997,6 @@ fn count_elements_dict_storage(
 
 /// Stream counts into the canonical mapping. No Counter registry, mirrored
 /// key index, borrowed table or registry lock survives a Python callback.
-
 pub(crate) fn molt_dict_count_elements_attached_body(
     _py: &crate::PyToken<'_>,
     mapping: u64,

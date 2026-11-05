@@ -271,7 +271,6 @@ impl<'a> DeepCopy<'a, '_> {
 
 /// Traversal of exact list/tuple/dict objects with Python's actual memo. The
 /// callback handles non-builtin children under the same copy protocol.
-
 pub(crate) fn molt_copy_deepcopy_attached_body(
     _py: &crate::PyToken<'_>,
     obj: u64,

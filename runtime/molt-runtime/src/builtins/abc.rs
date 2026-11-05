@@ -1548,7 +1548,6 @@ fn protocol_collect_structural_members(
 ///
 /// Extract the set of attribute names that define the structural contract of
 /// a Protocol class.  Used by the typing shim to populate `__protocol_attrs__`.
-
 pub(crate) fn molt_protocol_get_structural_members_attached_body(
     _py: &crate::PyToken<'_>,
     proto_bits: u64,
@@ -1653,7 +1652,6 @@ fn protocol_check_impl(
 /// Combined nominal + structural isinstance/issubclass check for Protocol
 /// classes.  Nominal subclasses always pass; structural checks require
 /// `@runtime_checkable`.
-
 pub(crate) fn molt_protocol_check_attached_body(
     _py: &crate::PyToken<'_>,
     proto_bits: u64,
@@ -1672,7 +1670,6 @@ pub(crate) fn molt_protocol_check_attached_body(
 /// Register a class as a virtual subclass of a Protocol, analogous to
 /// `ABCMeta.register()`.  This bumps the ABC invalidation counter so cached
 /// negative checks are flushed.
-
 pub(crate) fn molt_protocol_register_attached_body(
     _py: &crate::PyToken<'_>,
     proto_bits: u64,
@@ -1694,7 +1691,6 @@ pub(crate) fn molt_protocol_register_attached_body(
 
 /// `typing.cast(typ, val)` → identity (returns val, ignores typ).
 /// Lowered so the compiler can recognise the no-op and elide the frame.
-
 pub(crate) fn molt_typing_cast_attached_body(
     _py: &crate::PyToken<'_>,
     _typ_bits: u64,
@@ -1704,7 +1700,6 @@ pub(crate) fn molt_typing_cast_attached_body(
 }
 
 /// `typing.get_origin(tp)` → `tp.__origin__` or None.
-
 pub(crate) fn molt_typing_get_origin_attached_body(_py: &crate::PyToken<'_>, tp_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         get_attr_default(
@@ -1717,7 +1712,6 @@ pub(crate) fn molt_typing_get_origin_attached_body(_py: &crate::PyToken<'_>, tp_
 }
 
 /// `typing.get_args(tp)` → `tp.__args__` or `()`.
-
 pub(crate) fn molt_typing_get_args_attached_body(_py: &crate::PyToken<'_>, tp_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let empty_tuple = new_empty_tuple_bits(_py);

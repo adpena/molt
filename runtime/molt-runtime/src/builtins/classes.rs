@@ -1401,12 +1401,12 @@ fn init_builtin_classes() -> &'static BuiltinClasses {
     let gil = GilGuard::new();
     let py = gil.token();
     let _guard = BUILTIN_CLASSES_INIT_LOCK.lock().unwrap();
-    let state = runtime_state(&py);
+    let state = runtime_state(py);
     let ptr = state.builtin_classes.load(AtomicOrdering::Acquire);
     if !ptr.is_null() {
         return unsafe { &*ptr };
     }
-    let builtins = build_builtin_classes(&py)
+    let builtins = build_builtin_classes(py)
         .expect("builtin class bootstrap failed after rolling back fresh class objects");
     let boxed = Box::new(builtins);
     let ptr = Box::into_raw(boxed);
@@ -1434,7 +1434,7 @@ fn init_builtin_classes() -> &'static BuiltinClasses {
         let class_ptr = obj_from_bits(bits)
             .as_ptr()
             .expect("published builtin class anchor is not a pointer");
-        unsafe { crate::object::class_finish_definition(&py, class_ptr) }
+        unsafe { crate::object::class_finish_definition(py, class_ptr) }
             .unwrap_or_else(|()| panic!("builtin class layout sealing failed"));
         assert_ne!(
             unsafe { crate::object::layout::class_field_offsets_bits(class_ptr) },
@@ -1443,45 +1443,45 @@ fn init_builtin_classes() -> &'static BuiltinClasses {
         );
     }
     assert!(
-        crate::builtins::io::io_publish_members(&py),
+        crate::builtins::io::io_publish_members(py),
         "builtin IO member descriptor publication failed"
     );
     assert!(
-        crate::builtins::attributes::wrapper_publish_members(&py),
+        crate::builtins::attributes::wrapper_publish_members(py),
         "builtin wrapper member descriptor publication failed"
     );
     assert!(
-        crate::builtins::attributes::numeric_publish_members(&py),
+        crate::builtins::attributes::numeric_publish_members(py),
         "builtin numeric descriptor publication failed"
     );
     assert!(
-        crate::builtins::attr::install_weakref_callback_descriptor(&py),
+        crate::builtins::attr::install_weakref_callback_descriptor(py),
         "builtin ReferenceType.__callback__ descriptor publication failed"
     );
     assert!(
-        unsafe { crate::builtins::attributes::type_metadata::publish(&py) },
+        unsafe { crate::builtins::attributes::type_metadata::publish(py) },
         "builtin object/type metadata publication failed"
     );
     assert!(
-        unsafe { crate::builtins::attributes::callable_metadata::publish(&py) },
+        unsafe { crate::builtins::attributes::callable_metadata::publish(py) },
         "builtin callable metadata publication failed"
     );
     // Finalizer discovery consults declarations without materializing methods.
     // Publish the one IOBase declaration before any stream can be retired.
     assert!(
-        crate::builtins::methods::publish_builtin_class_methods(&py, published.io_base),
+        crate::builtins::methods::publish_builtin_class_methods(py, published.io_base),
         "builtin IOBase namespace publication failed"
     );
     // Every class's MRO ends at `object`. While its namespace is unpublished, a
     // name absent from user classes stays "unknown" there, so no attribute
     // lookup through a plain class could ever be cached.
     assert!(
-        crate::builtins::methods::publish_builtin_class_methods(&py, published.object),
+        crate::builtins::methods::publish_builtin_class_methods(py, published.object),
         "builtin object namespace publication failed"
     );
     unsafe {
         crate::object::class_refresh_declared_finalizer_flag(
-            &py,
+            py,
             obj_from_bits(published.io_base).as_ptr().unwrap(),
         );
     }
@@ -1492,7 +1492,7 @@ fn init_builtin_classes() -> &'static BuiltinClasses {
         published.exception_group,
     ] {
         assert!(
-            crate::builtins::methods::publish_builtin_class_methods(&py, class),
+            crate::builtins::methods::publish_builtin_class_methods(py, class),
             "builtin exception namespace publication failed"
         );
     }

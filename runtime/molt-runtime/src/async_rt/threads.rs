@@ -356,7 +356,6 @@ pub(crate) unsafe fn molt_thread_submit_attached_body(
 #[cfg(target_arch = "wasm32")]
 /// # Safety
 /// `callable_bits`, `args_bits`, and `kwargs_bits` must be valid runtime objects.
-
 pub(crate) unsafe fn molt_thread_submit_attached_body(
     _py: &crate::PyToken<'_>,
     _callable_bits: u64,
@@ -417,7 +416,6 @@ pub(crate) unsafe fn molt_thread_poll_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 /// # Safety
 /// Caller must ensure `_obj_bits` is a valid thread object pointer or zero.
 pub(crate) unsafe fn molt_thread_poll_attached_body(
@@ -439,7 +437,6 @@ pub(crate) fn molt_threading_available_attached_body(_py: &crate::PyToken<'_>) -
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_threading_available_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     MoltObject::from_bool(false).bits()
 }
@@ -465,7 +462,6 @@ const WASM_THREAD_BLOCKED_MODULES: &[&str] = &[
 /// # Safety
 /// `name_bits` must be a valid NaN-boxed string object.
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_wasm_check_module_gate_attached_body(
     _py: &crate::PyToken<'_>,
     name_bits: u64,
@@ -508,7 +504,6 @@ pub(crate) unsafe fn molt_wasm_check_module_gate_attached_body(
 // ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_thread_start_attached_body(
     _py: &crate::PyToken<'_>,
     _callable_bits: u64,

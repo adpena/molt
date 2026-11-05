@@ -703,7 +703,6 @@ pub(crate) fn molt_max_builtin_attached_body(
 /// Builtin `sorted()`: CPython's `PySequence_List(iterable)` and that list's
 /// `sort()`, so the list constructor owns iteration and `list.sort` owns
 /// ordering.
-
 pub(crate) fn molt_sorted_builtin_attached_body(
     _py: &crate::PyToken<'_>,
     iter_bits: u64,

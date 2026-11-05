@@ -954,7 +954,6 @@ pub(crate) fn molt_memoryview_toreadonly_attached_body(_py: &crate::PyToken<'_>,
 
 /// # Safety
 /// Caller must ensure `out_ptr` is valid and writable.
-
 pub(crate) unsafe fn molt_buffer_export_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,

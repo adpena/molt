@@ -920,7 +920,6 @@ struct FrameField {
 
 /// Update the current line number on the top frame stack entry.
 /// Called by `line` ops in module chunk functions for accurate tracebacks.
-
 pub(crate) fn molt_frame_set_line_attached_body(_py: &crate::PyToken<'_>, line: i64) -> u64 {
     frame_stack_set_line(line);
     0
@@ -928,7 +927,6 @@ pub(crate) fn molt_frame_set_line_attached_body(_py: &crate::PyToken<'_>, line: 
 
 /// Update line and column offsets on the top frame stack entry.
 /// Called by `line` ops that carry column offset info for caret annotations.
-
 pub(crate) fn molt_frame_set_line_col_attached_body(
     _py: &crate::PyToken<'_>,
     line: i64,
@@ -941,7 +939,6 @@ pub(crate) fn molt_frame_set_line_col_attached_body(
 
 /// Update only column offsets on the top frame entry (line unchanged).
 /// Called before potentially-raising ops that carry expression-level col info.
-
 pub(crate) fn molt_frame_set_col_attached_body(
     _py: &crate::PyToken<'_>,
     col_offset: i64,
@@ -1614,7 +1611,6 @@ fn top_user_frame_entry() -> Option<FrameEntry> {
 /// synchronous or stateful, answers through its bindings payload: before
 /// PEP 667 the activation's one refreshed dict, afterwards an independent
 /// snapshot. A module body's locals are its namespace mapping.
-
 pub(crate) fn molt_locals_builtin_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         if let Some(index) = FRAME_STACK.with(|stack| stack.borrow().len().checked_sub(1)) {

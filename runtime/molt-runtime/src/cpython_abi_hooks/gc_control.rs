@@ -59,7 +59,7 @@ pub(super) unsafe extern "C" fn hook_managed_gc_traverse(
     crate::concurrency::gil::with_gil(|py| unsafe {
         let Some(ptr) = crate::obj_from_bits(bits).as_ptr() else {
             crate::raise_exception::<()>(
-                &py,
+                py,
                 BuiltinExc::SystemError,
                 "GC traversal requires a managed object",
             );
@@ -68,21 +68,21 @@ pub(super) unsafe extern "C" fn hook_managed_gc_traverse(
         if !crate::object::gc::public_gc_value_is_visible(bits) {
             return 0;
         }
-        crate::inc_ref_bits(&py, bits);
+        crate::inc_ref_bits(py, bits);
         let mut snapshot = PinnedGcSnapshot {
-            py: &py,
+            py: py,
             owner: bits,
             edges: Vec::new(),
         };
         let mut reserved = true;
-        let status = crate::object::heap_lifecycle::visit_owned_gc_edges(&py, ptr, &mut |edge| {
+        let status = crate::object::heap_lifecycle::visit_owned_gc_edges(py, ptr, &mut |edge| {
             if reserved && crate::object::gc::public_gc_edge_is_visible(edge) {
                 reserved = snapshot.push(edge);
             }
         });
         if !reserved {
             crate::raise_exception::<()>(
-                &py,
+                py,
                 BuiltinExc::MemoryError,
                 "cannot snapshot builtin GC edges",
             );
@@ -108,19 +108,19 @@ pub(super) unsafe extern "C" fn hook_managed_gc_clear(bits: u64) -> c_int {
     crate::concurrency::gil::with_gil(|py| unsafe {
         let Some(ptr) = crate::obj_from_bits(bits).as_ptr() else {
             crate::raise_exception::<()>(
-                &py,
+                py,
                 BuiltinExc::SystemError,
                 "GC clear requires a managed object",
             );
             return -1;
         };
-        crate::inc_ref_bits(&py, bits);
+        crate::inc_ref_bits(py, bits);
         let _pin = PinnedGcSnapshot {
-            py: &py,
+            py: py,
             owner: bits,
             edges: Vec::new(),
         };
-        crate::object::heap_lifecycle::try_clear_cycle_edges(&py, ptr)
+        crate::object::heap_lifecycle::try_clear_cycle_edges(py, ptr)
     })
 }
 
@@ -140,7 +140,7 @@ pub(super) unsafe extern "C" fn hook_managed_gc_control(
         unsafe {
             match action {
                 ManagedGcAction::Track => {
-                    if crate::object::gc::gc_track_existing(&py, ptr) {
+                    if crate::object::gc::gc_track_existing(py, ptr) {
                         0
                     } else {
                         -1
@@ -148,7 +148,7 @@ pub(super) unsafe extern "C" fn hook_managed_gc_control(
                 }
                 ManagedGcAction::Untrack => {
                     crate::object::gc::gc_untrack(
-                        &py,
+                        py,
                         ptr,
                         crate::object::object_type_id(ptr),
                         crate::object::gc::GcUntrackReason::ExplicitControl,

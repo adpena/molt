@@ -35,7 +35,6 @@ use molt_runtime_core::OwnedRuntimeValue;
 
 /// Module construction declares array's physical buffer producer once. Public
 /// eligibility follows the resulting semantic slots, never an instance field.
-
 pub(crate) fn molt_array_declare_buffer_attached_body(_py: &crate::PyToken<'_>, class: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
         unsafe {

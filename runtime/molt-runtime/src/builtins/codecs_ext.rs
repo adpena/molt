@@ -51,7 +51,6 @@ fn next_stream_rdr_handle() -> i64 {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Register a custom error handler. Returns None.
-
 pub(crate) fn molt_codecs_register_error_attached_body(
     _py: &crate::PyToken<'_>,
     name_bits: u64,
@@ -81,7 +80,6 @@ pub(crate) fn molt_codecs_register_error_attached_body(
 }
 
 /// Lookup an error handler by name. Raises LookupError if unknown.
-
 pub(crate) fn molt_codecs_lookup_error_attached_body(
     _py: &crate::PyToken<'_>,
     name_bits: u64,
@@ -284,7 +282,6 @@ fn inc_enc_id_from_bits(_py: &PyToken<'_>, handle_bits: u64) -> Option<i64> {
 }
 
 /// Create a new IncrementalEncoder. Returns integer handle.
-
 pub(crate) fn molt_codecs_incremental_encoder_new_attached_body(
     _py: &crate::PyToken<'_>,
     encoding_bits: u64,
@@ -319,7 +316,6 @@ pub(crate) fn molt_codecs_incremental_encoder_new_attached_body(
 
 /// Encode `input_bits` (str) and return bytes.  When `final_bits` is truthy,
 /// flush any pending state.
-
 pub(crate) fn molt_codecs_incremental_encoder_encode_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -372,7 +368,6 @@ pub(crate) fn molt_codecs_incremental_encoder_encode_attached_body(
 }
 
 /// Reset incremental encoder state. Returns None.
-
 pub(crate) fn molt_codecs_incremental_encoder_reset_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -391,7 +386,6 @@ pub(crate) fn molt_codecs_incremental_encoder_reset_attached_body(
 }
 
 /// Drop incremental encoder handle. Returns None.
-
 pub(crate) fn molt_codecs_incremental_encoder_drop_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -433,7 +427,6 @@ fn inc_dec_id_from_bits(_py: &PyToken<'_>, handle_bits: u64) -> Option<i64> {
 }
 
 /// Create a new IncrementalDecoder. Returns integer handle.
-
 pub(crate) fn molt_codecs_incremental_decoder_new_attached_body(
     _py: &crate::PyToken<'_>,
     encoding_bits: u64,
@@ -477,7 +470,6 @@ pub(crate) fn molt_codecs_incremental_decoder_new_attached_body(
 
 /// Decode `input_bits` (bytes) and return str.  Buffers incomplete byte
 /// sequences when `final_bits` is falsy.
-
 pub(crate) fn molt_codecs_incremental_decoder_decode_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -585,7 +577,6 @@ pub(crate) fn molt_codecs_incremental_decoder_decode_attached_body(
 }
 
 /// Reset incremental decoder buffer. Returns None.
-
 pub(crate) fn molt_codecs_incremental_decoder_reset_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -604,7 +595,6 @@ pub(crate) fn molt_codecs_incremental_decoder_reset_attached_body(
 }
 
 /// Drop incremental decoder handle. Returns None.
-
 pub(crate) fn molt_codecs_incremental_decoder_drop_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -654,7 +644,6 @@ fn stream_rdr_id(_py: &PyToken<'_>, bits: u64) -> Option<i64> {
 
 /// Create a StreamReader wrapping `stream_bits` (a file-like object handle).
 /// Returns integer handle.
-
 pub(crate) fn molt_codecs_stream_reader_new_attached_body(
     _py: &crate::PyToken<'_>,
     stream_bits: u64,
@@ -690,7 +679,6 @@ pub(crate) fn molt_codecs_stream_reader_new_attached_body(
 /// This intrinsic reads raw bytes from the stream object, decodes them, and
 /// returns the resulting string.  `size_bits` is a character count hint; the
 /// intrinsic reads bytes at a ~4x character ratio to handle multi-byte encodings.
-
 pub(crate) fn molt_codecs_stream_reader_read_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -784,7 +772,6 @@ pub(crate) fn molt_codecs_stream_reader_read_attached_body(
 }
 
 /// Read one line from the stream. Returns str.
-
 pub(crate) fn molt_codecs_stream_reader_readline_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -855,7 +842,6 @@ pub(crate) fn molt_codecs_stream_reader_readline_attached_body(
 }
 
 /// Drop stream reader handle. Returns None.
-
 pub(crate) fn molt_codecs_stream_reader_drop_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -874,7 +860,6 @@ pub(crate) fn molt_codecs_stream_reader_drop_attached_body(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Return b'\xef\xbb\xbf' (UTF-8 BOM).
-
 pub(crate) fn molt_codecs_bom_utf8_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let ptr = alloc_bytes(_py, &[0xEF, 0xBB, 0xBF]);
@@ -886,7 +871,6 @@ pub(crate) fn molt_codecs_bom_utf8_attached_body(_py: &crate::PyToken<'_>) -> u6
 }
 
 /// Return b'\xff\xfe' (UTF-16-LE BOM).
-
 pub(crate) fn molt_codecs_bom_utf16_le_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let ptr = alloc_bytes(_py, &[0xFF, 0xFE]);
@@ -898,7 +882,6 @@ pub(crate) fn molt_codecs_bom_utf16_le_attached_body(_py: &crate::PyToken<'_>) -
 }
 
 /// Return b'\xfe\xff' (UTF-16-BE BOM).
-
 pub(crate) fn molt_codecs_bom_utf16_be_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let ptr = alloc_bytes(_py, &[0xFE, 0xFF]);
@@ -910,7 +893,6 @@ pub(crate) fn molt_codecs_bom_utf16_be_attached_body(_py: &crate::PyToken<'_>) -
 }
 
 /// Return b'\xff\xfe\x00\x00' (UTF-32-LE BOM).
-
 pub(crate) fn molt_codecs_bom_utf32_le_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let ptr = alloc_bytes(_py, &[0xFF, 0xFE, 0x00, 0x00]);
@@ -922,7 +904,6 @@ pub(crate) fn molt_codecs_bom_utf32_le_attached_body(_py: &crate::PyToken<'_>) -
 }
 
 /// Return b'\x00\x00\xfe\xff' (UTF-32-BE BOM).
-
 pub(crate) fn molt_codecs_bom_utf32_be_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let ptr = alloc_bytes(_py, &[0x00, 0x00, 0xFE, 0xFF]);
@@ -940,7 +921,6 @@ pub(crate) fn molt_codecs_bom_utf32_be_attached_body(_py: &crate::PyToken<'_>) -
 /// Build an encoding map from a decoding table string.
 /// Maps each character in the decoding table to its index (skipping U+FFFE).
 /// Returns a dict (int ordinal → int index).
-
 pub(crate) fn molt_codecs_charmap_build_attached_body(
     _py: &crate::PyToken<'_>,
     table_bits: u64,
@@ -1452,7 +1432,6 @@ pub(crate) fn molt_codecs_charmap_encode_attached_body(
 
 /// Build an identity dict mapping each integer in `range_bits` to itself.
 /// Returns a dict.
-
 pub(crate) fn molt_codecs_make_identity_dict_attached_body(
     _py: &crate::PyToken<'_>,
     range_bits: u64,
@@ -1489,7 +1468,6 @@ pub(crate) fn molt_codecs_make_identity_dict_attached_body(
 
 /// Normalize an encoding name to its canonical form.
 /// Raises LookupError for unknown encodings.  Returns str.
-
 pub(crate) fn molt_codecs_normalize_encoding_attached_body(
     _py: &crate::PyToken<'_>,
     name_bits: u64,

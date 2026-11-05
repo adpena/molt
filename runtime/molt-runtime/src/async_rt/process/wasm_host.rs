@@ -170,8 +170,10 @@ fn encode_env_entries(entries: &[(String, String)], overlay: bool) -> Vec<u8> {
 /// # Safety
 /// All arguments must be valid runtime-encoded objects.
 /// WASM target ignores start_new_session and process_group (no Unix process model).
-
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub(crate) unsafe fn molt_process_spawn_ex_attached_body(
     _py: &crate::PyToken<'_>,
     args_bits: u64,
@@ -236,7 +238,6 @@ extern "C" fn process_stdin_close_host_hook(ctx: *mut u8) {
 /// # Safety
 /// `args_bits`, `env_bits`, and `cwd_bits` must be valid runtime-encoded objects.
 /// The runtime must be initialized and the call must be allowed to enter the GIL.
-
 pub(crate) unsafe fn molt_process_spawn_attached_body(
     _py: &crate::PyToken<'_>,
     args_bits: u64,
@@ -429,7 +430,6 @@ pub(crate) unsafe fn molt_process_spawn_attached_body(
 
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-
 pub(crate) unsafe fn molt_process_wait_future_attached_body(
     _py: &crate::PyToken<'_>,
     proc_bits: u64,
@@ -485,7 +485,6 @@ pub(crate) unsafe fn molt_process_wait_future_attached_body(
 
 /// # Safety
 /// `obj_bits` must be a valid process wait future object from this runtime.
-
 pub(crate) unsafe fn molt_process_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -538,7 +537,6 @@ pub(crate) unsafe fn molt_process_poll_attached_body(
 
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-
 pub(crate) unsafe fn molt_process_pid_attached_body(
     _py: &crate::PyToken<'_>,
     proc_bits: u64,
@@ -557,7 +555,6 @@ pub(crate) unsafe fn molt_process_pid_attached_body(
 
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-
 pub(crate) unsafe fn molt_process_returncode_attached_body(
     _py: &crate::PyToken<'_>,
     proc_bits: u64,
@@ -581,7 +578,6 @@ pub(crate) unsafe fn molt_process_returncode_attached_body(
 
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-
 pub(crate) unsafe fn molt_process_kill_attached_body(
     _py: &crate::PyToken<'_>,
     proc_bits: u64,
@@ -607,7 +603,6 @@ pub(crate) unsafe fn molt_process_kill_attached_body(
 
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-
 pub(crate) unsafe fn molt_process_terminate_attached_body(
     _py: &crate::PyToken<'_>,
     proc_bits: u64,
@@ -633,7 +628,6 @@ pub(crate) unsafe fn molt_process_terminate_attached_body(
 
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-
 pub(crate) unsafe fn molt_process_stdin_attached_body(
     _py: &crate::PyToken<'_>,
     proc_bits: u64,
@@ -655,7 +649,6 @@ pub(crate) unsafe fn molt_process_stdin_attached_body(
 
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-
 pub(crate) unsafe fn molt_process_stdout_attached_body(
     _py: &crate::PyToken<'_>,
     proc_bits: u64,
@@ -677,7 +670,6 @@ pub(crate) unsafe fn molt_process_stdout_attached_body(
 
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-
 pub(crate) unsafe fn molt_process_stderr_attached_body(
     _py: &crate::PyToken<'_>,
     proc_bits: u64,
@@ -699,7 +691,6 @@ pub(crate) unsafe fn molt_process_stderr_attached_body(
 
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-
 pub(crate) unsafe fn molt_process_drop_attached_body(
     _py: &crate::PyToken<'_>,
     proc_bits: u64,
@@ -723,7 +714,6 @@ pub(crate) unsafe fn molt_process_drop_attached_body(
 
 /// # Safety
 /// `handle` must be a valid wasm process handle owned by this runtime.
-
 pub(crate) unsafe fn molt_process_host_notify_attached_body(
     _py: &crate::PyToken<'_>,
     handle: i64,

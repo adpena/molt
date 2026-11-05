@@ -80,7 +80,6 @@ pub(crate) fn molt_fcntl_o_nonblock_attached_body(_py: &crate::PyToken<'_>) -> u
 /// On native: delegates to libc::fcntl.
 /// On WASM: F_GETFL returns 0, F_SETFL/F_SETFD return 0 (success),
 ///           F_GETFD returns FD_CLOEXEC (pretend all fds have CLOEXEC).
-
 pub(crate) fn molt_fcntl_attached_body(
     _py: &crate::PyToken<'_>,
     fd_bits: u64,

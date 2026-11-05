@@ -342,7 +342,6 @@ pub(crate) unsafe fn molt_socketpair_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socketpair_attached_body(
     _py: &crate::PyToken<'_>,
     _family_bits: u64,
@@ -587,7 +586,6 @@ pub(crate) unsafe fn molt_socket_getaddrinfo_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_getaddrinfo_attached_body(
     _py: &crate::PyToken<'_>,
     _host_bits: u64,
@@ -950,7 +948,6 @@ pub(crate) unsafe fn molt_socket_getnameinfo_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_getnameinfo_attached_body(
     _py: &crate::PyToken<'_>,
     _addr_bits: u64,
@@ -1039,7 +1036,6 @@ pub(crate) unsafe fn molt_socket_gethostname_attached_body(_py: &crate::PyToken<
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_gethostname_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let mut buf = vec![0u8; 256];
@@ -1841,7 +1837,6 @@ pub(crate) unsafe fn molt_socket_getservbyname_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_getservbyname_attached_body(
     _py: &crate::PyToken<'_>,
     _name_bits: u64,
@@ -1936,7 +1931,6 @@ pub(crate) unsafe fn molt_socket_getservbyport_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_getservbyport_attached_body(
     _py: &crate::PyToken<'_>,
     _port_bits: u64,
@@ -2036,7 +2030,6 @@ pub(crate) unsafe fn molt_socket_getprotobyname_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_getprotobyname_attached_body(
     _py: &crate::PyToken<'_>,
     name_bits: u64,
@@ -2087,7 +2080,6 @@ pub(crate) fn molt_socket_has_ipv6_attached_body(_py: &crate::PyToken<'_>) -> u6
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_has_ipv6_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let supported = unsafe { crate::molt_socket_has_ipv6_host() };
@@ -2146,7 +2138,6 @@ pub(crate) fn molt_socket_if_nameindex_attached_body(_py: &crate::PyToken<'_>) -
 }
 
 #[cfg(not(unix))]
-
 pub(crate) fn molt_socket_if_nameindex_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let list_ptr = alloc_list(_py, &[]);
@@ -2199,7 +2190,6 @@ pub(crate) fn molt_socket_if_nametoindex_attached_body(
 }
 
 #[cfg(not(unix))]
-
 pub(crate) fn molt_socket_if_nametoindex_attached_body(
     _py: &crate::PyToken<'_>,
     _name_bits: u64,
@@ -2251,7 +2241,6 @@ pub(crate) fn molt_socket_if_indextoname_attached_body(
 }
 
 #[cfg(not(unix))]
-
 pub(crate) fn molt_socket_if_indextoname_attached_body(
     _py: &crate::PyToken<'_>,
     _index_bits: u64,
@@ -2283,7 +2272,6 @@ pub(crate) fn molt_socket_has_dualstack_ipv6_attached_body(_py: &crate::PyToken<
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_has_dualstack_ipv6_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, { MoltObject::from_bool(false).bits() })
 }
@@ -2359,7 +2347,6 @@ pub(crate) unsafe fn molt_socket_send_fds_attached_body(
 #[cfg(not(unix))]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_send_fds_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -2528,7 +2515,6 @@ pub(crate) unsafe fn molt_socket_recv_fds_attached_body(
 #[cfg(not(unix))]
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
-
 pub(crate) unsafe fn molt_socket_recv_fds_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -2828,7 +2814,6 @@ pub(crate) unsafe fn molt_socket_sendfile_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_sendfile_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -2880,7 +2865,6 @@ pub(crate) unsafe fn molt_socket_sethostname_attached_body(
 }
 
 #[cfg(not(unix))]
-
 pub(crate) fn molt_socket_sethostname_attached_body(
     _py: &crate::PyToken<'_>,
     _name_bits: u64,
@@ -3033,7 +3017,6 @@ pub(crate) unsafe fn molt_socket_sendmsg_afalg_attached_body(
 }
 
 #[cfg(not(target_os = "linux"))]
-
 pub(crate) fn molt_socket_sendmsg_afalg_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,

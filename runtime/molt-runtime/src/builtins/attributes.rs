@@ -1149,7 +1149,6 @@ unsafe fn attr_lookup_ptr_default_inner(
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-
 pub(crate) unsafe fn molt_get_attr_generic_attached_body(
     _py: &crate::PyToken<'_>,
     obj_ptr: *mut u8,
@@ -1226,7 +1225,6 @@ pub(crate) unsafe fn raise_attribute_miss(
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-
 pub(crate) unsafe fn molt_get_attr_ptr_attached_body(
     _py: &crate::PyToken<'_>,
     obj_ptr: *mut u8,
@@ -1242,7 +1240,6 @@ pub(crate) unsafe fn molt_get_attr_ptr_attached_body(
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-
 pub(crate) unsafe fn molt_get_attr_object_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -1286,7 +1283,6 @@ pub(crate) unsafe fn molt_get_attr_object_attached_body(
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-
 pub(crate) unsafe fn molt_get_attr_object_ic_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -1373,7 +1369,6 @@ pub(crate) unsafe fn get_attr_object_ic_with_mode(
 /// # Safety
 /// Dereferences `attr_name_ptr`. Caller must ensure it points to valid UTF-8
 /// of length `attr_name_len_bits`.
-
 pub(crate) unsafe fn molt_get_attr_special_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -1457,7 +1452,6 @@ unsafe fn native_callable_attr(
 }
 
 /// Descriptor binding shares receiver admission with implicit attribute access.
-
 pub(crate) fn molt_function_descriptor_get_attached_body(
     _py: &crate::PyToken<'_>,
     self_bits: u64,

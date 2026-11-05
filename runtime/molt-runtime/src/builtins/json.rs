@@ -10,7 +10,6 @@ use std::io::Cursor;
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure ptr is valid UTF-8 of at least len bytes.
-
 pub(crate) unsafe fn molt_json_parse_int_attached_body(
     _py: &crate::PyToken<'_>,
     ptr: *const u8,
@@ -930,7 +929,6 @@ unsafe fn parse_json_scalar(
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure ptr is valid UTF-8 of at least len bytes.
-
 pub(crate) unsafe fn molt_json_parse_scalar_attached_body(
     _py: &crate::PyToken<'_>,
     ptr: *const u8,
@@ -964,7 +962,6 @@ pub(crate) unsafe fn molt_json_parse_scalar_attached_body(
 /// # Safety
 /// Caller must ensure ptr is valid for len bytes.
 #[cfg(feature = "stdlib_serialization")]
-
 pub(crate) unsafe fn molt_msgpack_parse_scalar_attached_body(
     _py: &crate::PyToken<'_>,
     ptr: *const u8,
@@ -1004,7 +1001,6 @@ pub(crate) unsafe fn molt_msgpack_parse_scalar_attached_body(
 /// # Safety
 /// Caller must ensure ptr is valid for len bytes.
 #[cfg(feature = "stdlib_serialization")]
-
 pub(crate) unsafe fn molt_cbor_parse_scalar_attached_body(
     _py: &crate::PyToken<'_>,
     ptr: *const u8,
@@ -1071,7 +1067,6 @@ pub(crate) fn molt_json_parse_scalar_obj_attached_body(
 }
 
 #[cfg(feature = "stdlib_serialization")]
-
 pub(crate) fn molt_msgpack_parse_scalar_obj_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -1118,7 +1113,6 @@ pub(crate) fn molt_msgpack_parse_scalar_obj_attached_body(
 }
 
 #[cfg(feature = "stdlib_serialization")]
-
 pub(crate) fn molt_cbor_parse_scalar_obj_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -2124,7 +2118,6 @@ fn raise_json_parse_error(_py: &PyToken<'_>, text: &[u8], err: JsonParseError) -
 ///   indent_bits       — None for compact, int for number of spaces
 ///   sort_keys_bits    — boolean
 ///   ensure_ascii_bits — boolean
-
 pub(crate) fn molt_json_dumps_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -2182,7 +2175,10 @@ pub(crate) fn molt_json_dumps_attached_body(
     })
 }
 
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub(crate) fn molt_json_dumps_ex_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -2252,7 +2248,10 @@ pub(crate) fn molt_json_dumps_ex_attached_body(
     })
 }
 
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub(crate) fn molt_json_loads_ex_attached_body(
     _py: &crate::PyToken<'_>,
     text_bits: u64,
@@ -2304,7 +2303,10 @@ pub(crate) fn molt_json_loads_ex_attached_body(
     })
 }
 
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub(crate) fn molt_json_raw_decode_ex_attached_body(
     _py: &crate::PyToken<'_>,
     text_bits: u64,
@@ -2363,7 +2365,6 @@ pub(crate) fn molt_json_raw_decode_ex_attached_body(
 
 /// Compute (lineno, colno) for a given position in a JSON document string.
 /// Returns a 2-tuple (lineno, colno).
-
 pub(crate) fn molt_json_calc_lineno_col_attached_body(
     _py: &crate::PyToken<'_>,
     doc_bits: u64,
@@ -2396,7 +2397,6 @@ pub(crate) fn molt_json_calc_lineno_col_attached_body(
 /// If the input is already a string, returns it directly.
 /// If bytes/bytearray, detects encoding and decodes.
 /// Raises TypeError for other types.
-
 pub(crate) fn molt_json_coerce_text_attached_body(
     _py: &crate::PyToken<'_>,
     payload_bits: u64,
@@ -2434,7 +2434,6 @@ pub(crate) fn molt_json_coerce_text_attached_body(
 
 /// Return default separators based on indent value.
 /// If indent is None -> (", ", ": "), otherwise -> (",", ": ").
-
 pub(crate) fn molt_json_default_separators_attached_body(
     _py: &crate::PyToken<'_>,
     indent_bits: u64,
@@ -2460,7 +2459,6 @@ pub(crate) fn molt_json_default_separators_attached_body(
 }
 
 /// Format a JSONDecodeError message string: "{msg}: line {lineno} column {colno} (char {pos})"
-
 pub(crate) fn molt_json_format_decode_error_attached_body(
     _py: &crate::PyToken<'_>,
     msg_bits: u64,
@@ -2490,7 +2488,6 @@ pub(crate) fn molt_json_format_decode_error_attached_body(
 
 /// Parse a ValueError message to extract (msg, pos) for JSONDecodeError construction.
 /// Returns (msg, pos) tuple if the message matches the pattern, or None if not.
-
 pub(crate) fn molt_json_parse_error_msg_attached_body(
     _py: &crate::PyToken<'_>,
     exc_msg_bits: u64,

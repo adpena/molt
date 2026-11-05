@@ -186,7 +186,6 @@ fn release_owned_bits(_py: &PyToken<'_>, bits: u64) {
 
 /// `sys.maxsize`: `PY_SSIZE_T_MAX` of the target C data model, the same
 /// `Py_ssize_t` the C-API layer and builtin `sum()` use.
-
 pub(crate) fn molt_sys_maxsize_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         int_bits_from_i64(_py, molt_cpython_abi::Py_ssize_t::MAX as i64)
@@ -194,13 +193,11 @@ pub(crate) fn molt_sys_maxsize_attached_body(_py: &crate::PyToken<'_>) -> u64 {
 }
 
 /// `sys.maxunicode` -> 0x10FFFF (Unicode max code point)
-
 pub(crate) fn molt_sys_maxunicode_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     MoltObject::from_int(0x10FFFF).bits()
 }
 
 /// `sys.byteorder` -> "little" or "big"
-
 pub(crate) fn molt_sys_byteorder_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let order = if cfg!(target_endian = "little") {
@@ -217,7 +214,6 @@ pub(crate) fn molt_sys_byteorder_attached_body(_py: &crate::PyToken<'_>) -> u64 
 // ---------------------------------------------------------------------------
 
 /// `sys.prefix` -> installation prefix path
-
 pub(crate) fn molt_sys_prefix_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         // Molt compiled binaries are self-contained; prefix is the binary's parent directory
@@ -230,19 +226,16 @@ pub(crate) fn molt_sys_prefix_attached_body(_py: &crate::PyToken<'_>) -> u64 {
 }
 
 /// `sys.exec_prefix` -> same as prefix for Molt
-
 pub(crate) fn molt_sys_exec_prefix_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     molt_sys_prefix_attached_body(_py)
 }
 
 /// `sys.base_prefix` -> same as prefix for Molt
-
 pub(crate) fn molt_sys_base_prefix_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     molt_sys_prefix_attached_body(_py)
 }
 
 /// `sys.base_exec_prefix` -> same as prefix for Molt
-
 pub(crate) fn molt_sys_base_exec_prefix_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     molt_sys_prefix_attached_body(_py)
 }
@@ -260,7 +253,6 @@ fn platlibdir_name() -> &'static str {
 }
 
 /// `sys.platlibdir` -> platform library directory name
-
 pub(crate) fn molt_sys_platlibdir_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, { str_bits(_py, platlibdir_name()) })
 }
@@ -271,7 +263,6 @@ pub(crate) fn molt_sys_platlibdir_attached_body(_py: &crate::PyToken<'_>) -> u64
 
 /// `sys.float_info` -> 11-element tuple of f64 system constants
 /// Fields: max, max_exp, max_10_exp, min, min_exp, min_10_exp, dig, mant_dig, epsilon, radix, rounds
-
 pub(crate) fn molt_sys_float_info_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let values: [u64; 11] = [
@@ -293,7 +284,6 @@ pub(crate) fn molt_sys_float_info_attached_body(_py: &crate::PyToken<'_>) -> u64
 
 /// `sys.int_info` -> 4-element tuple
 /// Fields: bits_per_digit, sizeof_digit, default_max_str_digits, str_digits_check_threshold
-
 pub(crate) fn molt_sys_int_info_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         // Molt uses NaN-boxed 47-bit inline ints; for API compat report CPython-compatible values
@@ -309,7 +299,6 @@ pub(crate) fn molt_sys_int_info_attached_body(_py: &crate::PyToken<'_>) -> u64 {
 
 /// `sys.hash_info` -> 9-element tuple
 /// Fields: width, modulus, inf, nan, imag, algorithm, hash_bits, seed_bits, cutoff
-
 pub(crate) fn molt_sys_hash_info_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let alg_bits = str_bits(_py, PY_HASH_ALGORITHM);
@@ -332,7 +321,6 @@ pub(crate) fn molt_sys_hash_info_attached_body(_py: &crate::PyToken<'_>) -> u64 
 }
 
 /// `sys.thread_info` -> 3-element tuple (name, lock, version)
-
 pub(crate) fn molt_sys_thread_info_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let name_str = if cfg!(target_os = "windows") {
@@ -362,7 +350,6 @@ pub(crate) fn molt_sys_thread_info_attached_body(_py: &crate::PyToken<'_>) -> u6
 // ---------------------------------------------------------------------------
 
 /// `sys.is_finalizing()`: True once the atexit phase has run.
-
 pub(crate) fn molt_sys_is_finalizing_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let finalizing = runtime_state(_py)
@@ -373,7 +360,6 @@ pub(crate) fn molt_sys_is_finalizing_attached_body(_py: &crate::PyToken<'_>) -> 
 }
 
 /// `sys.getrefcount(obj)` -> best-effort runtime refcount, including call arg ref.
-
 pub(crate) fn molt_sys_getrefcount_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(obj_bits);
@@ -389,7 +375,6 @@ pub(crate) fn molt_sys_getrefcount_attached_body(_py: &crate::PyToken<'_>, obj_b
 }
 
 /// `sys.settrace(tracefunc)` -> store process-level trace hook (or None).
-
 pub(crate) fn molt_sys_settrace_attached_body(
     _py: &crate::PyToken<'_>,
     tracefunc_bits: u64,
@@ -411,7 +396,6 @@ pub(crate) fn molt_sys_settrace_attached_body(
 }
 
 /// `sys.gettrace()` -> current process-level trace hook.
-
 pub(crate) fn molt_sys_gettrace_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let trace_profile = sys_state(_py)
@@ -423,7 +407,6 @@ pub(crate) fn molt_sys_gettrace_attached_body(_py: &crate::PyToken<'_>) -> u64 {
 }
 
 /// `sys.setprofile(profilefunc)` -> store process-level profile hook (or None).
-
 pub(crate) fn molt_sys_setprofile_attached_body(
     _py: &crate::PyToken<'_>,
     profilefunc_bits: u64,
@@ -445,7 +428,6 @@ pub(crate) fn molt_sys_setprofile_attached_body(
 }
 
 /// `sys.getprofile()` -> current process-level profile hook.
-
 pub(crate) fn molt_sys_getprofile_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let trace_profile = sys_state(_py)
@@ -457,7 +439,6 @@ pub(crate) fn molt_sys_getprofile_attached_body(_py: &crate::PyToken<'_>) -> u64
 }
 
 /// `sys.intern(string)` -> interned string
-
 pub(crate) fn molt_sys_intern_attached_body(_py: &crate::PyToken<'_>, s_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let s = match string_obj_to_owned(obj_from_bits(s_bits)) {
@@ -486,7 +467,6 @@ pub(crate) fn molt_sys_intern_attached_body(_py: &crate::PyToken<'_>, s_bits: u6
 /// raise a TypeError (CPython semantics); Molt's NaN-boxed model never
 /// raises here, so `default` is effectively unused but accepted for API
 /// compatibility.
-
 pub(crate) fn molt_sys_getsizeof_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -565,7 +545,6 @@ pub(crate) fn molt_sys_getsizeof_attached_body(
 
 /// `sys.stdlib_module_names` -> tuple of stdlib module names
 /// Python wrapper converts to frozenset.
-
 pub(crate) fn molt_sys_stdlib_module_names_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let names: &[&str] = &[
@@ -759,7 +738,6 @@ pub(crate) fn molt_sys_stdlib_module_names_attached_body(_py: &crate::PyToken<'_
 }
 
 /// `sys.builtin_module_names` -> tuple of built-in module names
-
 pub(crate) fn molt_sys_builtin_module_names_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let names: &[&str] = &[
@@ -809,7 +787,6 @@ pub(crate) fn molt_sys_builtin_module_names_attached_body(_py: &crate::PyToken<'
 // ---------------------------------------------------------------------------
 
 /// `sys.orig_argv` -> original argv from process start
-
 pub(crate) fn molt_sys_orig_argv_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let args: Vec<String> = std::env::args().collect();
@@ -838,7 +815,6 @@ pub(crate) fn molt_sys_orig_argv_attached_body(_py: &crate::PyToken<'_>) -> u64 
 }
 
 /// `sys.copyright` -> Molt copyright string
-
 pub(crate) fn molt_sys_copyright_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let text = "Copyright (c) Molt contributors.\nAll Rights Reserved.\n\nCopyright (c) 2001-2024 Python Software Foundation.\nAll Rights Reserved.";
@@ -851,13 +827,11 @@ pub(crate) fn molt_sys_copyright_attached_body(_py: &crate::PyToken<'_>) -> u64 
 // ---------------------------------------------------------------------------
 
 /// `sys.getdefaultencoding()` -> "utf-8"
-
 pub(crate) fn molt_sys_getdefaultencoding_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, { str_bits(_py, "utf-8") })
 }
 
 /// The immutable filesystem encoding chosen at runtime startup.
-
 pub(crate) fn molt_sys_getfilesystemencoding_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         str_bits(
@@ -872,7 +846,6 @@ pub(crate) fn molt_sys_getfilesystemencoding_attached_body(_py: &crate::PyToken<
 const DEFAULT_SWITCH_INTERVAL_BITS: u64 = 0.005f64.to_bits();
 
 /// `sys.getswitchinterval()` -> float seconds
-
 pub(crate) fn molt_sys_getswitchinterval_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let bits = sys_state(_py)
@@ -883,7 +856,6 @@ pub(crate) fn molt_sys_getswitchinterval_attached_body(_py: &crate::PyToken<'_>)
 }
 
 /// `sys.setswitchinterval(interval)` -> None
-
 pub(crate) fn molt_sys_setswitchinterval_attached_body(
     _py: &crate::PyToken<'_>,
     interval_bits: u64,
@@ -923,7 +895,6 @@ pub(crate) fn current_int_max_str_digits(_py: &PyToken<'_>) -> usize {
 }
 
 /// `sys.get_int_max_str_digits()` -> int
-
 pub(crate) fn molt_sys_get_int_max_str_digits_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let val = sys_state(_py)
@@ -934,7 +905,6 @@ pub(crate) fn molt_sys_get_int_max_str_digits_attached_body(_py: &crate::PyToken
 }
 
 /// `sys.set_int_max_str_digits(maxdigits)` -> None
-
 pub(crate) fn molt_sys_set_int_max_str_digits_attached_body(
     _py: &crate::PyToken<'_>,
     maxdigits_bits: u64,
@@ -963,7 +933,6 @@ pub(crate) fn molt_sys_set_int_max_str_digits_attached_body(
 /// `sys.call_tracing(func, args)` — validate types in Rust.
 /// Returns 0 for "valid, proceed" or raises TypeError.  The actual call
 /// is done on the Python side (since the result must be a Python object).
-
 pub(crate) fn molt_sys_call_tracing_validate_attached_body(
     _py: &crate::PyToken<'_>,
     func_bits: u64,
@@ -998,7 +967,6 @@ pub(crate) fn molt_sys_call_tracing_validate_attached_body(
 // --- Audit hooks ---
 
 /// `sys.addaudithook(hook)` -> None
-
 pub(crate) fn molt_sys_addaudithook_attached_body(_py: &crate::PyToken<'_>, hook_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         if !audit_event_noargs(_py, "sys.addaudithook") {
@@ -1111,7 +1079,6 @@ pub(crate) fn audit_event(py: &PyToken<'_>, event: &str, args: &[u64]) -> bool {
 }
 
 /// `sys.audit(event, *args)` shares runtime dispatch with intrinsic events.
-
 pub(crate) fn molt_sys_audit_attached_body(
     _py: &crate::PyToken<'_>,
     event_bits: u64,
@@ -1190,7 +1157,6 @@ pub(crate) fn molt_sys_audit_attached_body(
 ///
 /// Returns the initial module search path derived from explicit Molt module
 /// roots and the executable location. The Python wrapper may mutate this list.
-
 pub(crate) fn molt_sys_path_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let entries = crate::builtins::platform::startup_sys_path(_py);

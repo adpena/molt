@@ -21,7 +21,6 @@ use super::wait::{errno_from_rc, socket_wait_ready, would_block_errno};
 use super::{SendData, require_net_capability, send_data_from_bits, socket_handle_from_bits};
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_clone_attached_body(_py: &crate::PyToken<'_>, _sock_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = match socket_handle_from_bits(_py, _sock_bits) {
@@ -41,7 +40,6 @@ pub(crate) fn molt_socket_clone_attached_body(_py: &crate::PyToken<'_>, _sock_bi
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_new_attached_body(
     _py: &crate::PyToken<'_>,
     _family_bits: u64,
@@ -106,7 +104,6 @@ pub(crate) fn molt_socket_new_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_close_attached_body(_py: &crate::PyToken<'_>, _sock_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = match socket_handle_from_bits(_py, _sock_bits) {
@@ -123,7 +120,6 @@ pub(crate) fn molt_socket_close_attached_body(_py: &crate::PyToken<'_>, _sock_bi
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_drop_attached_body(_py: &crate::PyToken<'_>, _sock_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = match socket_handle_from_bits(_py, _sock_bits) {
@@ -137,7 +133,6 @@ pub(crate) fn molt_socket_drop_attached_body(_py: &crate::PyToken<'_>, _sock_bit
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_fileno_attached_body(_py: &crate::PyToken<'_>, _sock_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = match socket_handle_from_bits(_py, _sock_bits) {
@@ -149,7 +144,6 @@ pub(crate) fn molt_socket_fileno_attached_body(_py: &crate::PyToken<'_>, _sock_b
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_gettimeout_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -167,7 +161,6 @@ pub(crate) fn molt_socket_gettimeout_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_settimeout_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -210,7 +203,6 @@ pub(crate) fn molt_socket_settimeout_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_getblocking_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -231,7 +223,6 @@ pub(crate) fn molt_socket_getblocking_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_bind_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -264,7 +255,6 @@ pub(crate) fn molt_socket_bind_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_listen_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -288,7 +278,6 @@ pub(crate) fn molt_socket_listen_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_accept_attached_body(_py: &crate::PyToken<'_>, _sock_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         if require_net_capability::<u64>(_py, crate::OperationId::NetListen).is_err() {
@@ -361,7 +350,6 @@ pub(crate) fn molt_socket_accept_attached_body(_py: &crate::PyToken<'_>, _sock_b
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_connect_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -421,7 +409,6 @@ pub(crate) fn molt_socket_connect_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_connect_ex_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -484,7 +471,6 @@ pub(crate) fn molt_socket_connect_ex_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_recv_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -550,7 +536,6 @@ pub(crate) fn molt_socket_recv_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_recv_into_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -613,7 +598,6 @@ pub(crate) fn molt_socket_recv_into_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_send_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -676,7 +660,6 @@ pub(crate) fn molt_socket_send_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_sendall_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -744,7 +727,6 @@ pub(crate) fn molt_socket_sendall_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_sendto_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -823,7 +805,6 @@ pub(crate) fn molt_socket_sendto_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_recvfrom_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -916,7 +897,6 @@ pub(crate) fn molt_socket_recvfrom_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_recvfrom_into_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -999,7 +979,6 @@ pub(crate) fn molt_socket_recvfrom_into_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_sendmsg_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -1098,7 +1077,6 @@ pub(crate) fn molt_socket_sendmsg_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_recvmsg_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -1223,7 +1201,6 @@ pub(crate) fn molt_socket_recvmsg_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_recvmsg_into_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -1354,7 +1331,6 @@ pub(crate) fn molt_socket_recvmsg_into_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_shutdown_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -1375,7 +1351,6 @@ pub(crate) fn molt_socket_shutdown_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_getsockname_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -1406,7 +1381,6 @@ pub(crate) fn molt_socket_getsockname_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_getpeername_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -1437,7 +1411,6 @@ pub(crate) fn molt_socket_getpeername_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_setsockopt_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -1484,7 +1457,6 @@ pub(crate) fn molt_socket_setsockopt_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_getsockopt_attached_body(
     _py: &crate::PyToken<'_>,
     _sock_bits: u64,
@@ -1553,7 +1525,6 @@ pub(crate) fn molt_socket_getsockopt_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_socket_detach_attached_body(_py: &crate::PyToken<'_>, _sock_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = match socket_handle_from_bits(_py, _sock_bits) {

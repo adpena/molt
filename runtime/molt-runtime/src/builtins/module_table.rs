@@ -1704,7 +1704,6 @@ pub(crate) fn set_spec_initializing(py: &PyToken<'_>, spec: u64, initializing: b
 /// The compiler explicitly supplies the actual spec SSA value. Ordinary
 /// setattr cannot acquire this transaction role. Metadata assignment and its
 /// existing explicit-loader overrides remain owned by module_set_attr.
-
 pub(crate) fn molt_module_initialization_spec_attached_body(
     _py: &crate::PyToken<'_>,
     module: u64,
@@ -2060,7 +2059,6 @@ pub(crate) fn module_execution_owns_initializing_globals(
 /// arguments are boxed values, the same convention as every other `call`
 /// op); the constant is boxed at the emit site.  Returns an owned module
 /// reference, or none-bits with the pending exception set.
-
 pub(crate) fn molt_module_ensure_attached_body(_py: &crate::PyToken<'_>, id_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(id) = crate::to_i64(obj_from_bits(id_bits)) else {

@@ -524,7 +524,6 @@ pub(crate) fn molt_class_layout_version_attached_body(
 /// program bound to the statement's definition symbol. Layout guards compare
 /// this identity, never a class binding, so rebinding a name cannot redirect
 /// them. A class takes one identity, from the statement that created it.
-
 pub(crate) fn molt_class_set_definition_attached_body(
     _py: &crate::PyToken<'_>,
     class_bits: u64,

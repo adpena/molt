@@ -898,7 +898,6 @@ pub(crate) fn molt_exceptiongroup_split_attached_body(
 
 /// CPython `BaseExceptionGroup_derive` (CPy:877-893):
 /// `BaseExceptionGroup(self.message, excs)` through the canonical constructor.
-
 pub(crate) fn molt_exceptiongroup_derive_attached_body(
     _py: &crate::PyToken<'_>,
     self_bits: u64,
@@ -919,7 +918,6 @@ pub(crate) fn molt_exceptiongroup_derive_attached_body(
 /// `except*` matching. A group is partitioned by the shared split authority
 /// (calling `derive` for each non-empty part); a matching naked exception is
 /// wrapped with `_PyExc_CreateExceptionGroup("", (exc,))`.
-
 pub(crate) fn molt_exceptiongroup_match_attached_body(
     _py: &crate::PyToken<'_>,
     exc_bits: u64,
@@ -989,7 +987,6 @@ pub(crate) fn molt_exceptiongroup_match_attached_body(
 
 /// `except*` reraise combination: `_PyExc_CreateExceptionGroup("", raised)`
 /// (CPy:810-824) through the canonical constructor.
-
 pub(crate) fn molt_exceptiongroup_combine_attached_body(
     _py: &crate::PyToken<'_>,
     list_bits: u64,

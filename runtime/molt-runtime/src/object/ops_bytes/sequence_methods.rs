@@ -239,6 +239,9 @@ pub(crate) fn molt_bytes_find_attached_body(
 macro_rules! bytes_slice_method_wrapper {
     ($name:ident, $symbol:tt, $delegate:ident) => {
         #[unsafe(export_name = molt_codegen_abi::attached_symbol!($symbol))]
+        /// # Safety
+        ///
+        /// `__context` must be the attached runtime context that the compiled caller received.
         pub unsafe extern "C" fn $name(
             __context: u64,
             hay_bits: u64,

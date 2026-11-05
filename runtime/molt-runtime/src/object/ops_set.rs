@@ -96,7 +96,6 @@ pub(crate) fn set_contains(
 }
 
 /// Specialized Python `in` shares the builtin descriptor's key policy.
-
 pub(crate) fn molt_set_contains_attached_body(
     _py: &crate::PyToken<'_>,
     container_bits: u64,
@@ -133,7 +132,6 @@ pub(crate) fn molt_set_add_attached_body(
 
 /// Compiler construction entry for a probe-context temporary set. Runtime
 /// intersection/subset methods use streaming probes directly.
-
 pub(crate) fn molt_set_add_probe_attached_body(
     _py: &crate::PyToken<'_>,
     set_bits: u64,

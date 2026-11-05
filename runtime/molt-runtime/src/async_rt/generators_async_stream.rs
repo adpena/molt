@@ -46,7 +46,6 @@ pub(crate) fn molt_asyncio_stream_reader_read_new_attached_body(
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a stream-reader read wrapper future.
-
 pub(crate) unsafe fn molt_asyncio_stream_reader_read_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -87,7 +86,6 @@ pub(crate) unsafe fn molt_asyncio_stream_reader_read_poll_attached_body(
 
 /// # Safety
 /// - `reader_bits` must be a valid stream-reader handle.
-
 pub(crate) fn molt_asyncio_stream_reader_readline_new_attached_body(
     _py: &crate::PyToken<'_>,
     reader_bits: u64,
@@ -116,7 +114,6 @@ pub(crate) fn molt_asyncio_stream_reader_readline_new_attached_body(
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a stream-reader readline wrapper future.
-
 pub(crate) unsafe fn molt_asyncio_stream_reader_readline_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -156,7 +153,6 @@ pub(crate) unsafe fn molt_asyncio_stream_reader_readline_poll_attached_body(
 
 /// # Safety
 /// - `stream_bits` must be a valid stream handle.
-
 pub(crate) fn molt_asyncio_stream_send_all_new_attached_body(
     _py: &crate::PyToken<'_>,
     stream_bits: u64,
@@ -188,7 +184,6 @@ pub(crate) fn molt_asyncio_stream_send_all_new_attached_body(
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a stream-send wrapper future.
-
 pub(crate) unsafe fn molt_asyncio_stream_send_all_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,

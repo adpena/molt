@@ -257,7 +257,6 @@ pub(super) fn list_int_getitem_impl(
 /// Takes a raw i64 index (NOT NaN-boxed) and returns a raw i64 value (NOT NaN-boxed).
 /// Eliminates NaN-box/unbox round-trips when both index and result stay in raw_int_shadow.
 /// Uses the same bounds and physical-layout contract as the checked ABI.
-
 pub(crate) fn molt_list_int_getitem_raw_attached_body(
     _py: &crate::PyToken<'_>,
     list_bits: u64,
@@ -271,7 +270,6 @@ pub(crate) fn molt_list_int_getitem_raw_attached_body(
 /// Takes a raw i64 index and returns the raw i64 element. On out-of-bounds it
 /// raises the same IndexError as the boxed getitem path and returns 0 only as
 /// an exception-continuation sentinel.
-
 pub(crate) fn molt_list_int_getitem_raw_checked_attached_body(
     _py: &crate::PyToken<'_>,
     list_bits: u64,
@@ -298,7 +296,6 @@ pub(crate) fn molt_list_int_getitem_raw_checked_attached_body(
 
 /// Set element in a specialized list[int].
 /// Expects a NaN-boxed int value — extracts raw i64 and stores directly.
-
 pub(crate) fn molt_list_int_setitem_attached_body(
     _py: &crate::PyToken<'_>,
     list_bits: u64,
@@ -351,7 +348,6 @@ pub(crate) fn molt_list_int_setitem_attached_body(
 /// Get element from a specialized list[bool].
 /// Returns a NaN-boxed bool (True or False).
 /// No refcounting needed -- bools are inline NaN-boxed values.
-
 pub(crate) fn molt_list_bool_getitem_attached_body(
     _py: &crate::PyToken<'_>,
     list_bits: u64,
@@ -418,7 +414,6 @@ pub(super) fn list_bool_getitem_impl(
 /// Set element in a specialized list[bool].
 /// Accepts exact bools; every other owner promotes into canonical boxed storage.
 /// No refcounting needed -- bools are inline NaN-boxed values.
-
 pub(crate) fn molt_list_bool_setitem_attached_body(
     _py: &crate::PyToken<'_>,
     list_bits: u64,
@@ -470,7 +465,6 @@ pub(crate) fn molt_list_bool_setitem_attached_body(
 
 /// Borrow the flat inline-integer data pointer until mutation or escape.
 /// The caller must hold a current physical storage proof, not a semantic type.
-
 pub(crate) fn molt_list_int_data_attached_body(_py: &crate::PyToken<'_>, list_bits: u64) -> u64 {
     let Some(ptr) = flat_list_int_ptr(list_bits) else {
         return 0;
@@ -479,7 +473,6 @@ pub(crate) fn molt_list_int_data_attached_body(_py: &crate::PyToken<'_>, list_bi
 }
 
 /// Return the length of an admitted flat inline-integer list as a raw u64.
-
 pub(crate) fn molt_list_int_len_raw_attached_body(_py: &crate::PyToken<'_>, list_bits: u64) -> u64 {
     let Some(ptr) = flat_list_int_ptr(list_bits) else {
         return 0;
@@ -488,14 +481,12 @@ pub(crate) fn molt_list_int_len_raw_attached_body(_py: &crate::PyToken<'_>, list
 }
 
 /// Get length of a specialized list[int].
-
 pub(crate) fn molt_list_int_len_attached_body(_py: &crate::PyToken<'_>, list_bits: u64) -> u64 {
     molt_len_attached_body(_py, list_bits)
 }
 
 /// Check if value is truthy in a specialized list[int] element context.
 /// Raw i64: 0 is falsy, everything else is truthy.
-
 pub(crate) fn molt_list_int_getitem_truthy_attached_body(
     _py: &crate::PyToken<'_>,
     list_bits: u64,
@@ -524,7 +515,6 @@ pub(crate) fn molt_list_int_getitem_truthy_attached_body(
 ///   - The list is not mutated concurrently (GIL must be held by the caller).
 ///
 /// Violating any of these preconditions causes undefined behaviour.
-
 pub(crate) fn molt_list_getitem_unchecked_attached_body(
     _py: &crate::PyToken<'_>,
     list_bits: u64,
@@ -557,7 +547,6 @@ pub(crate) fn molt_list_getitem_unchecked_attached_body(
 ///
 /// Returns the element bits on success, or `u64::MAX` as a sentinel to
 /// signal the caller to fall back to `molt_index`.
-
 pub(crate) fn molt_list_getitem_int_fast_attached_body(
     _py: &crate::PyToken<'_>,
     list_bits: u64,

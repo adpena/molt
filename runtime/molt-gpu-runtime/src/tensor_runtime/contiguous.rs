@@ -24,7 +24,10 @@ pub fn molt_gpu_interop__load_safetensors_attached_body(
     })
 }
 
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub fn molt_gpu_tensor_from_parts_attached_body(
     _py: &molt_runtime_core::PyToken,
     tensor_class_bits: u64,
@@ -332,7 +335,10 @@ pub fn molt_gpu_buffer_to_list_attached_body(
     })
 }
 
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub fn molt_gpu_linear_contiguous_attached_body(
     _py: &molt_runtime_core::PyToken,
     x_data_bits: u64,
@@ -559,7 +565,10 @@ pub fn molt_gpu_linear_contiguous_attached_body(
     })
 }
 
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub fn molt_gpu_linear_split_last_dim_contiguous_attached_body(
     _py: &molt_runtime_core::PyToken,
     x_data_bits: u64,
@@ -822,7 +831,10 @@ pub fn molt_gpu_linear_split_last_dim_contiguous_attached_body(
     })
 }
 
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub fn molt_gpu_linear_squared_relu_gate_interleaved_contiguous_attached_body(
     _py: &molt_runtime_core::PyToken,
     x_data_bits: u64,
@@ -1049,7 +1061,10 @@ pub fn molt_gpu_linear_squared_relu_gate_interleaved_contiguous_attached_body(
     })
 }
 
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub fn molt_gpu_broadcast_binary_contiguous_attached_body(
     _py: &molt_runtime_core::PyToken,
     a_data_bits: u64,
@@ -1171,7 +1186,10 @@ pub fn molt_gpu_broadcast_binary_contiguous_attached_body(
     })
 }
 
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub fn molt_gpu_matmul_contiguous_attached_body(
     _py: &molt_runtime_core::PyToken,
     a_data_bits: u64,
@@ -1368,7 +1386,10 @@ pub fn molt_gpu_matmul_contiguous_attached_body(
     })
 }
 
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub fn molt_gpu_rope_apply_contiguous_attached_body(
     _py: &molt_runtime_core::PyToken,
     x_data_bits: u64,

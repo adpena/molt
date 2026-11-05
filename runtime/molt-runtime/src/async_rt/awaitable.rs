@@ -241,7 +241,6 @@ fn iterator_poll_adapter(py: &PyToken<'_>, iterator: u64) -> u64 {
 }
 
 /// Acquire one owned native poll representation of a validated Python awaitable.
-
 pub(crate) fn molt_get_awaitable_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
         if is_native_coroutine_bits(bits) || is_direct_await_future_bits(bits) {
@@ -304,7 +303,6 @@ pub(crate) fn molt_get_awaitable_attached_body(_py: &crate::PyToken<'_>, bits: u
 }
 
 /// Native coroutine __await__ creates a real Python iterator identity.
-
 pub(crate) fn molt_awaitable_await_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
         if !is_native_coroutine_bits(bits) {
@@ -564,7 +562,6 @@ fn asyncgen_awaitable_resume(py: &PyToken<'_>, receiver: u64, request: ResumeReq
 }
 
 /// `__await__` and `__iter__` of the async-generator operation awaitables.
-
 pub(crate) fn molt_asyncgen_awaitable_self_attached_body(
     _py: &crate::PyToken<'_>,
     receiver: u64,
@@ -612,7 +609,6 @@ pub(crate) fn molt_asyncgen_awaitable_throw_attached_body(
 
 /// Targets before minor version 13 close only the awaitable. Later targets
 /// throw GeneratorExit through it, so the generator runs its cleanup.
-
 pub(crate) fn molt_asyncgen_awaitable_close_attached_body(
     _py: &crate::PyToken<'_>,
     receiver: u64,
@@ -774,7 +770,6 @@ pub(crate) fn molt_coroutine_wrapper_next_attached_body(
 }
 
 /// Native scheduler delegation does not introduce a Python frame.
-
 pub(crate) unsafe fn molt_coroutine_wrapper_poll_attached_body(
     _py: &crate::PyToken<'_>,
     raw: u64,
@@ -1883,7 +1878,6 @@ mod tests {
 
 /// Shared PEP380 throw delegation. The compiler's yield-from carrier is the
 /// same owned (value, done) pair as ordinary generator iteration.
-
 pub(crate) fn molt_iterator_throw_attached_body(
     _py: &crate::PyToken<'_>,
     iterator: u64,

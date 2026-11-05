@@ -1943,7 +1943,6 @@ fn singledispatch_resolve_for_type(
 
 /// Create a new singledispatch handle, storing the default function.
 /// Returns an integer handle (NaN-boxed).
-
 pub(crate) fn molt_functools_singledispatch_new_attached_body(
     _py: &crate::PyToken<'_>,
     default_func_bits: u64,
@@ -1968,7 +1967,6 @@ pub(crate) fn molt_functools_singledispatch_new_attached_body(
 
 /// Register a function for a given type. Adds (type_bits, func_bits) to the
 /// registry, incrementing refcounts for both.  Returns None.
-
 pub(crate) fn molt_functools_singledispatch_register_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -2006,7 +2004,6 @@ pub(crate) fn molt_functools_singledispatch_register_attached_body(
 /// Checks for an exact type match first, then walks registered classes with
 /// subclass checks. Returns the function bits
 /// (registered function or default).
-
 pub(crate) fn molt_functools_singledispatch_dispatch_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -2031,7 +2028,6 @@ pub(crate) fn molt_functools_singledispatch_dispatch_attached_body(
 /// Call the singledispatch wrapper: extract first positional arg, get its
 /// type, dispatch, and return the matched function bits.  The Python shim
 /// performs the actual function call.
-
 pub(crate) fn molt_functools_singledispatch_call_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -2091,7 +2087,6 @@ pub(crate) fn molt_functools_singledispatch_call_attached_body(
 
 /// Return a dict mapping {type: func} for all registered implementations,
 /// including the `object` -> default mapping.
-
 pub(crate) fn molt_functools_singledispatch_registry_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -2125,7 +2120,6 @@ pub(crate) fn molt_functools_singledispatch_registry_attached_body(
 }
 
 /// Drop a singledispatch handle, dec-refing all stored bits.
-
 pub(crate) fn molt_functools_singledispatch_drop_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,

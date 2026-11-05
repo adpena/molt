@@ -416,7 +416,6 @@ fn compiled_loader_singleton(py: &PyToken<'_>) -> u64 {
 /// The descriptor binds subclasses normally, but the spec keeps the existing
 /// runtime loader singleton: its create/exec methods are instance descriptors.
 /// Discovery must not instantiate a user subclass or invoke its initializer.
-
 pub(crate) fn molt_importlib_compiled_loader_find_spec_attached_body(
     _py: &crate::PyToken<'_>,
     _class_bits: u64,

@@ -1354,7 +1354,10 @@ pub(crate) fn molt_file_open_attached_body(
     })
 }
 
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub(crate) fn molt_file_open_ex_attached_body(
     _py: &crate::PyToken<'_>,
     file_bits: u64,
@@ -1458,7 +1461,10 @@ pub(crate) fn molt_file_io_init_attached_body(
     crate::with_attached_entry_nopanic!(_py, _py, { MoltObject::none().bits() })
 }
 
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub(crate) fn molt_open_builtin_attached_body(
     _py: &crate::PyToken<'_>,
     file_bits: u64,

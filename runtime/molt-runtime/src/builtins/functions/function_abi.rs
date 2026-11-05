@@ -1234,7 +1234,6 @@ pub(crate) fn molt_function_set_builtin_attached_body(
 /// Explicit METH_NOARGS/METH_O module-function promotion. The positional count
 /// declares the public convention; it is checked against the executable before
 /// any callable state is published.
-
 pub(crate) fn molt_function_set_fixed_builtin_attached_body(
     _py: &crate::PyToken<'_>,
     func_bits: u64,
@@ -1546,7 +1545,10 @@ fn initialize_function_metadata(
     MoltObject::none().bits()
 }
 
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub(crate) fn molt_function_init_metadata_attached_body(
     _py: &crate::PyToken<'_>,
     func_bits: u64,
@@ -1739,7 +1741,6 @@ pub(crate) fn molt_function_set_defaults_attached_body(
 /// vs `!= 0` (a runtime defaults, signature, bind-kind, or `__code__` mutation
 /// occurred, so the call must consult live authorities). A non-function or
 /// null argument yields 0; such call sites never bake a function default.
-
 pub(crate) fn molt_function_defaults_version_attached_body(
     _py: &crate::PyToken<'_>,
     func_bits: u64,
@@ -1973,7 +1974,10 @@ pub(crate) fn molt_code_replace_attached_body(
     })
 }
 
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub(crate) fn molt_code_new_attached_body(
     _py: &crate::PyToken<'_>,
     filename_bits: u64,
@@ -2255,7 +2259,6 @@ fn allocate_bound_method(
 /// # Safety
 /// `self_ptr_bits` must encode a valid closure storage pointer and `offset`
 /// must be within the allocated payload.
-
 pub(crate) unsafe fn molt_closure_load_attached_body(
     _py: &crate::PyToken<'_>,
     self_ptr_bits: u64,
@@ -2283,7 +2286,6 @@ pub(crate) unsafe fn molt_closure_load_attached_body(
 /// # Safety
 /// `self_ptr_bits` must encode the base of a live Molt object's closure payload
 /// (not an interior pointer or standalone word), and `offset` must be within it.
-
 pub(crate) unsafe fn molt_closure_store_attached_body(
     _py: &crate::PyToken<'_>,
     self_ptr_bits: u64,

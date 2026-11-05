@@ -519,7 +519,6 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
 
 /// # Safety
 /// - `future_bits` must be a valid pointer to a Molt future.
-
 pub(crate) unsafe fn molt_future_cancel_attached_body(
     _py: &crate::PyToken<'_>,
     future_bits: u64,
@@ -535,7 +534,6 @@ pub(crate) unsafe fn molt_future_cancel_attached_body(
 
 /// # Safety
 /// - `future_bits` must be a valid pointer to a Molt future.
-
 pub(crate) unsafe fn molt_future_cancel_msg_attached_body(
     _py: &crate::PyToken<'_>,
     future_bits: u64,
@@ -552,7 +550,6 @@ pub(crate) unsafe fn molt_future_cancel_msg_attached_body(
 
 /// # Safety
 /// - `future_bits` must be a valid pointer to a Molt future.
-
 pub(crate) unsafe fn molt_future_cancel_clear_attached_body(
     _py: &crate::PyToken<'_>,
     future_bits: u64,
@@ -569,7 +566,6 @@ pub(crate) unsafe fn molt_future_cancel_clear_attached_body(
 
 /// # Safety
 /// - `future_bits` must be a valid pointer to a Molt future.
-
 pub(crate) unsafe fn molt_asyncio_task_cancel_apply_attached_body(
     _py: &crate::PyToken<'_>,
     future_bits: u64,
@@ -590,7 +586,6 @@ pub(crate) unsafe fn molt_asyncio_task_cancel_apply_attached_body(
 
 /// # Safety
 /// - `tasks_bits` must be iterable and contain awaitables with `done()`/`cancel()`.
-
 pub(crate) unsafe fn molt_asyncio_cancel_pending_attached_body(
     _py: &crate::PyToken<'_>,
     tasks_bits: u64,
@@ -688,7 +683,6 @@ pub(crate) fn molt_promise_new_attached_body(_py: &crate::PyToken<'_>) -> u64 {
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a Molt promise future.
-
 pub(crate) unsafe fn molt_promise_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -731,7 +725,6 @@ pub(crate) unsafe fn molt_promise_poll_attached_body(
 
 /// # Safety
 /// - `future_bits` must be a valid pointer to a Molt promise future.
-
 pub(crate) unsafe fn molt_promise_set_result_attached_body(
     _py: &crate::PyToken<'_>,
     future_bits: u64,
@@ -819,7 +812,6 @@ pub(crate) fn molt_async_sleep_attached_body(
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer if the runtime associates a future with it.
-
 pub(crate) unsafe fn molt_async_sleep_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -928,7 +920,6 @@ pub(crate) unsafe fn molt_async_sleep_poll_attached_body(
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a Molt future allocated with payload slots.
-
 pub(crate) unsafe fn molt_anext_default_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -990,7 +981,6 @@ pub(crate) unsafe fn molt_anext_default_poll_attached_body(
 /// # Safety
 /// - `task_ptr` must be a valid Molt task pointer.
 /// - `future_ptr` must be a valid Molt future pointer.
-
 pub(crate) unsafe fn molt_sleep_register_attached_body(
     _py: &crate::PyToken<'_>,
     task_ptr: *mut u8,

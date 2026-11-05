@@ -8,10 +8,10 @@ pub(super) unsafe extern "C" fn hook_slice_new(
     step: u64,
 ) -> OwnedHandleResult {
     with_gil(|py| {
-        if crate::exception_pending(&py) {
+        if crate::exception_pending(py) {
             return OwnedHandleResult::error();
         }
-        let pointer = crate::alloc_slice_obj(&py, start, stop, step);
+        let pointer = crate::alloc_slice_obj(py, start, stop, step);
         if pointer.is_null() {
             return OwnedHandleResult::error();
         }
@@ -26,7 +26,7 @@ pub(super) unsafe extern "C" fn hook_slice_item(bits: u64, field: usize) -> Borr
             .filter(|pointer| object_type_id(*pointer) == crate::TYPE_ID_SLICE);
         let Some(pointer) = pointer else {
             crate::raise_exception::<()>(
-                &py,
+                py,
                 BuiltinExc::SystemError,
                 "slice field requires an exact slice",
             );
@@ -37,7 +37,7 @@ pub(super) unsafe extern "C" fn hook_slice_item(bits: u64, field: usize) -> Borr
             1 => crate::slice_stop_bits(pointer),
             2 => crate::slice_step_bits(pointer),
             _ => {
-                crate::raise_exception::<()>(&py, BuiltinExc::SystemError, "invalid slice field");
+                crate::raise_exception::<()>(py, BuiltinExc::SystemError, "invalid slice field");
                 return BorrowedHandleResult::error();
             }
         };

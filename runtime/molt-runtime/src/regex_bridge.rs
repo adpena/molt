@@ -60,7 +60,6 @@ fn immutable_regex_subject(py: &PyToken<'_>, bits: u64) -> bool {
 /// Admit a regex subject once at the Python buffer boundary. Text and exact
 /// immutable bytes retain their existing object; mutable and arbitrary
 /// exporters become an immutable byte snapshot for the matching operation.
-
 pub(crate) fn molt_re_subject_snapshot_attached_body(_py: &PyToken<'_>, subject_bits: u64) -> u64 {
     {
         let _py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
@@ -109,7 +108,6 @@ pub(crate) fn molt_re_subject_snapshot_attached_body(_py: &PyToken<'_>, subject_
 /// Retain immutable subjects directly; otherwise acquire exactly one SIMPLE
 /// export and transfer it to the ordinary traced memoryview storage owner.
 /// The Python scanner owns this view until exhaustion, never a GREEN handle.
-
 pub(crate) fn molt_re_subject_view_attached_body(_py: &PyToken<'_>, subject_bits: u64) -> u64 {
     {
         let _py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };

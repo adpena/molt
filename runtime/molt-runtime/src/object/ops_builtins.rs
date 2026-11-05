@@ -365,7 +365,6 @@ pub(crate) fn molt_guarded_call_attached_body(
 ///
 /// `args_ptr` must reference `nargs` contiguous `u64` argument values for the
 /// duration of this call.
-
 pub(crate) unsafe fn molt_guarded_call_obj_attached_body(
     _py: &crate::PyToken<'_>,
     fn_ptr: u64,
@@ -1248,7 +1247,6 @@ unsafe fn direct_call_function(
 /// describes the call site: bit 0 is set when the entry takes an execution
 /// closure first, and bit 1 when the call instruction adopted its arguments.
 /// No other bit occurs; a malformed shape is never eligible.
-
 pub(crate) fn molt_function_direct_call_eligible_attached_body(
     _py: &crate::PyToken<'_>,
     func_bits: u64,
@@ -1569,7 +1567,6 @@ mod direct_call_tests {
 }
 
 /// Fast 0-argument function call. No args — minimal dispatch.
-
 pub(crate) fn molt_call_func_fast0_attached_body(_py: &crate::PyToken<'_>, func_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let _baseline = crate::call::ExceptionBaselineGuard::new();
@@ -1588,7 +1585,6 @@ pub(crate) fn molt_call_func_fast0_attached_body(_py: &crate::PyToken<'_>, func_
 }
 
 /// Fast 1-argument function call. Args passed in registers — no stack spill.
-
 pub(crate) fn molt_call_func_fast1_attached_body(
     _py: &crate::PyToken<'_>,
     func_bits: u64,
@@ -1610,7 +1606,6 @@ pub(crate) fn molt_call_func_fast1_attached_body(
 }
 
 /// Fast 2-argument function call. Args passed in registers — no stack spill.
-
 pub(crate) fn molt_call_func_fast2_attached_body(
     _py: &crate::PyToken<'_>,
     func_bits: u64,
@@ -1633,7 +1628,6 @@ pub(crate) fn molt_call_func_fast2_attached_body(
 }
 
 /// Fast 3-argument function call. Args passed in registers — no stack spill.
-
 pub(crate) fn molt_call_func_fast3_attached_body(
     _py: &crate::PyToken<'_>,
     func_bits: u64,
@@ -1997,7 +1991,6 @@ pub(crate) fn molt_getattr_builtin_attached_body(
 }
 
 /// Python `setattr(obj, name, value)` builtin.
-
 pub(crate) fn molt_setattr_builtin_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -2011,7 +2004,6 @@ pub(crate) fn molt_setattr_builtin_attached_body(
 }
 
 /// Python `delattr(obj, name)` builtin.
-
 pub(crate) fn molt_delattr_builtin_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -2507,7 +2499,6 @@ pub(crate) fn molt_type_call_attached_body(_py: &crate::PyToken<'_>, cls_bits: u
 
 /// Explicit Python object.__setattr__: admit every receiver before the raw
 /// generic primitive. Internal normal stores use molt_set_attr_name instead.
-
 pub(crate) fn molt_object_setattr_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -2524,7 +2515,6 @@ pub(crate) fn molt_object_setattr_attached_body(
 }
 
 /// Explicit Python object.__delattr__, with the same admission as its setter.
-
 pub(crate) fn molt_object_delattr_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,

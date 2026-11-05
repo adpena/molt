@@ -2236,7 +2236,6 @@ pub(crate) fn object_state_fetch_or(data_ptr: *mut u8, bits: i64) -> i64 {
 
 /// Read the generator/coroutine state for the object at `data_ptr`.
 /// Returns the state value (0 if the selected aux representation has no state lane).
-
 pub(crate) fn molt_obj_get_state_attached_body(
     _py: &crate::PyToken<'_>,
     data_ptr_bits: u64,
@@ -2258,7 +2257,6 @@ pub(crate) fn molt_obj_get_state_attached_body(
 }
 
 /// Write the generator/coroutine state for the object at `data_ptr`.
-
 pub(crate) fn molt_obj_set_state_attached_body(
     _py: &crate::PyToken<'_>,
     data_ptr_bits: u64,
@@ -2295,7 +2293,6 @@ pub(crate) fn molt_obj_set_state_attached_body(
 /// valid until every owner, including cyclic/internal owners, has been released
 /// and terminal cleanup has completed. Neither returning a boxed reference nor
 /// dropping only the caller's initial reference establishes that condition.
-
 pub(crate) unsafe fn molt_object_init_stack_attached_body(
     _py: &crate::PyToken<'_>,
     header_ptr: *mut u8,
@@ -3414,7 +3411,6 @@ pub(crate) fn bits_from_ptr(ptr: *mut u8) -> u64 {
 
 /// # Safety
 /// Dereferences raw pointer to increment ref count.
-
 pub(crate) unsafe fn molt_inc_ref_attached_body(_py: &crate::PyToken<'_>, ptr: *mut u8) {
     unsafe {
         crate::with_attached_entry_nopanic!(_py, _py, {
@@ -3425,7 +3421,6 @@ pub(crate) unsafe fn molt_inc_ref_attached_body(_py: &crate::PyToken<'_>, ptr: *
 
 /// # Safety
 /// Dereferences raw pointer to decrement ref count. Frees memory if count reaches 0.
-
 pub(crate) unsafe fn molt_dec_ref_attached_body(_py: &crate::PyToken<'_>, ptr: *mut u8) {
     unsafe {
         crate::with_attached_entry_nopanic!(_py, _py, {

@@ -283,7 +283,10 @@ pub(crate) unsafe fn molt_process_spawn_attached_body(
 /// # Safety
 /// Arguments must be runtime-encoded objects from this runtime.
 
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub(crate) unsafe fn molt_process_spawn_ex_attached_body(
     _py: &crate::PyToken<'_>,
     args: u64,
@@ -316,7 +319,6 @@ pub(crate) unsafe fn molt_process_spawn_ex_attached_body(
 
 /// # Safety
 /// Arguments must be runtime-encoded objects from this runtime.
-
 pub(crate) unsafe fn molt_process_ipc_spawn_attached_body(
     _py: &crate::PyToken<'_>,
     args: u64,
@@ -843,7 +845,6 @@ pub(crate) unsafe fn molt_process_stderr_attached_body(
 
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-
 pub(crate) unsafe fn molt_process_ipc_streams_attached_body(
     _py: &crate::PyToken<'_>,
     proc_bits: u64,
@@ -886,7 +887,6 @@ pub(crate) unsafe fn molt_process_ipc_streams_attached_body(
 }
 
 /// Claim the dedicated bootstrap pipes, closing partial initialization on error.
-
 pub(crate) fn molt_process_ipc_child_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     #[cfg(not(target_arch = "wasm32"))]
     {

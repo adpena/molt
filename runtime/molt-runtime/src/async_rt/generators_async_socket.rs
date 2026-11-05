@@ -51,7 +51,6 @@ const ASYNCIO_SOCK_SENDTO_SLOT_WAIT: usize = 4;
 
 /// # Safety
 /// - `reader_bits` must be a valid socket-reader handle.
-
 pub(crate) fn molt_asyncio_socket_reader_read_new_attached_body(
     _py: &crate::PyToken<'_>,
     reader_bits: u64,
@@ -86,7 +85,6 @@ pub(crate) fn molt_asyncio_socket_reader_read_new_attached_body(
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a socket-reader read wrapper future.
-
 pub(crate) unsafe fn molt_asyncio_socket_reader_read_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -128,7 +126,6 @@ pub(crate) unsafe fn molt_asyncio_socket_reader_read_poll_attached_body(
 
 /// # Safety
 /// - `reader_bits` must be a valid socket-reader handle.
-
 pub(crate) fn molt_asyncio_socket_reader_readline_new_attached_body(
     _py: &crate::PyToken<'_>,
     reader_bits: u64,
@@ -160,7 +157,6 @@ pub(crate) fn molt_asyncio_socket_reader_readline_new_attached_body(
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a socket-reader readline wrapper future.
-
 pub(crate) unsafe fn molt_asyncio_socket_reader_readline_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -201,7 +197,6 @@ pub(crate) unsafe fn molt_asyncio_socket_reader_readline_poll_attached_body(
 
 /// # Safety
 /// - `sock_bits` must be a valid socket object.
-
 pub(crate) fn molt_asyncio_sock_recv_new_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -236,7 +231,6 @@ pub(crate) fn molt_asyncio_sock_recv_new_attached_body(
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a socket recv wrapper future.
-
 pub(crate) unsafe fn molt_asyncio_sock_recv_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -288,7 +282,6 @@ pub(crate) unsafe fn molt_asyncio_sock_recv_poll_attached_body(
 
 /// # Safety
 /// - `sock_bits` must be a valid socket object.
-
 pub(crate) fn molt_asyncio_sock_recv_into_new_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -326,7 +319,6 @@ pub(crate) fn molt_asyncio_sock_recv_into_new_attached_body(
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a socket recv_into wrapper future.
-
 pub(crate) unsafe fn molt_asyncio_sock_recv_into_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -385,7 +377,6 @@ pub(crate) unsafe fn molt_asyncio_sock_recv_into_poll_attached_body(
 
 /// # Safety
 /// - `sock_bits` must be a valid socket object.
-
 pub(crate) fn molt_asyncio_sock_sendall_new_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -443,7 +434,6 @@ pub(crate) fn molt_asyncio_sock_sendall_new_attached_body(
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a socket sendall wrapper future.
-
 pub(crate) unsafe fn molt_asyncio_sock_sendall_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -566,7 +556,6 @@ pub(crate) unsafe fn molt_asyncio_sock_sendall_poll_attached_body(
 
 /// # Safety
 /// - `sock_bits` must be a valid socket object.
-
 pub(crate) fn molt_asyncio_sock_recvfrom_new_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -601,7 +590,6 @@ pub(crate) fn molt_asyncio_sock_recvfrom_new_attached_body(
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a socket recvfrom wrapper future.
-
 pub(crate) unsafe fn molt_asyncio_sock_recvfrom_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -658,7 +646,6 @@ pub(crate) unsafe fn molt_asyncio_sock_recvfrom_poll_attached_body(
 
 /// # Safety
 /// - `sock_bits` must be a valid socket object.
-
 pub(crate) fn molt_asyncio_sock_recvfrom_into_new_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -696,7 +683,6 @@ pub(crate) fn molt_asyncio_sock_recvfrom_into_new_attached_body(
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a socket recvfrom_into wrapper future.
-
 pub(crate) unsafe fn molt_asyncio_sock_recvfrom_into_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -755,7 +741,6 @@ pub(crate) unsafe fn molt_asyncio_sock_recvfrom_into_poll_attached_body(
 
 /// # Safety
 /// - `sock_bits` must be a valid socket object.
-
 pub(crate) fn molt_asyncio_sock_sendto_new_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -793,7 +778,6 @@ pub(crate) fn molt_asyncio_sock_sendto_new_attached_body(
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a socket sendto wrapper future.
-
 pub(crate) unsafe fn molt_asyncio_sock_sendto_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -864,7 +848,6 @@ pub(crate) unsafe fn molt_asyncio_sock_sendto_poll_attached_body(
 
 /// # Safety
 /// - `sock_bits` must be a valid socket object.
-
 pub(crate) fn molt_asyncio_sock_connect_new_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -899,7 +882,6 @@ pub(crate) fn molt_asyncio_sock_connect_new_attached_body(
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a socket connect wrapper future.
-
 pub(crate) unsafe fn molt_asyncio_sock_connect_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -1028,7 +1010,6 @@ pub(crate) unsafe fn molt_asyncio_sock_connect_poll_attached_body(
 
 /// # Safety
 /// - `sock_bits` must be a valid socket object.
-
 pub(crate) fn molt_asyncio_sock_accept_new_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -1060,7 +1041,6 @@ pub(crate) fn molt_asyncio_sock_accept_new_attached_body(
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a socket accept wrapper future.
-
 pub(crate) unsafe fn molt_asyncio_sock_accept_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,

@@ -1699,7 +1699,7 @@ fn runtime_exit(code_bits: u64) -> u64 {
                 bind_execution_state(crate::state::execution_tls());
             }
             let py = gil.token();
-            runtime_teardown_for_process_exit(&py, state);
+            runtime_teardown_for_process_exit(py, state);
             // Post-teardown TRUE-LEAK gauge (ownership_lattice_phase0.md
             //    §2.4). Teardown above has reclaimed every reachable acyclic
             //    graph and the collector has reclaimed unreachable cycles, so the
@@ -1709,7 +1709,7 @@ fn runtime_exit(code_bits: u64) -> u64 {
             // The shared teardown transaction has already quiesced runtime/C
             // TLS and retired exact static bindings before class destruction.
             // Do not reenter the runtime in this callback-free process-exit tail.
-            crate::object::ops::assert_no_true_leak_post_teardown(&py);
+            crate::object::ops::assert_no_true_leak_post_teardown(py);
             let mut phase = lifecycle.phase.lock().unwrap();
             assert_eq!(
                 *phase,
@@ -1746,15 +1746,15 @@ fn initialize_runtime_state(
     // Bootstrap constructs builtin classes and hashes their dictionary keys.
     // Hash-secret selection admits RandomEntropy, so the target and grants must
     // already be frozen before bootstrap enters any Python object operation.
-    crate::async_rt::channels::freeze_capabilities(&gil.token());
+    crate::async_rt::channels::freeze_capabilities(gil.token());
     trace_runtime_init("capabilities");
-    runtime_reset_for_init(&gil.token(), state);
+    runtime_reset_for_init(gil.token(), state);
     trace_runtime_init("runtime_reset_for_init");
 
     // Register synthetic _intrinsics module so stdlib .py files can import it.
     {
         let nested = GilGuard::new();
-        crate::intrinsics::registry::register_intrinsics_module(&nested.token());
+        crate::intrinsics::registry::register_intrinsics_module(nested.token());
     }
     trace_runtime_init("intrinsics_registered");
 
@@ -1790,7 +1790,7 @@ fn initialize_runtime_state(
     crate::object::ops_sys::molt_runtime_init_io_mode_attached_body(gil.token());
     trace_runtime_init("io_mode");
 
-    crate::builtins::exceptions::memory_error::initialize(&gil.token());
+    crate::builtins::exceptions::memory_error::initialize(gil.token());
 
     // Publish the one CPython ABI hook table as part of the runtime
     // initialization transaction. Lifecycle queries such as
@@ -1806,7 +1806,7 @@ fn initialize_runtime_state(
         "primary runtime C-API bootstrap was rejected"
     );
     assert!(
-        crate::builtins::exceptions::memory_error::prepare_c_views(&gil.token()),
+        crate::builtins::exceptions::memory_error::prepare_c_views(gil.token()),
         "MemoryError C transport bootstrap failed"
     );
     drop(cpython_bootstrap_state);
@@ -2032,7 +2032,7 @@ fn runtime_shutdown() -> u64 {
 
     let state = unsafe { &*ptr };
     let py = gil.token();
-    runtime_teardown(&py, state);
+    runtime_teardown(py, state);
     {
         // Callback-capable teardown belongs before static-class retirement,
         // never here after their builtin graph and singleton pools are gone.

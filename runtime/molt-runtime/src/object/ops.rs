@@ -498,7 +498,6 @@ pub(super) fn alloc_range_from_bigints(
 ///
 /// # Safety
 /// Caller must hold the GIL.
-
 pub(crate) fn molt_alloc_heap_float_attached_body(_py: &crate::PyToken<'_>, value: f64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, { alloc_heap_float(_py, value) })
 }
@@ -940,7 +939,6 @@ fn runtime_profile_epoch_delta_payload(
 
 /// Reset the process-wide measurement epoch to a fresh baseline without
 /// mutating the monotonic lifetime counters used by leak diagnostics.
-
 pub(crate) fn molt_profile_epoch_reset_attached_body(
     _py: &crate::PyToken<'_>,
     label_bits: u64,
@@ -992,7 +990,6 @@ pub(crate) fn molt_profile_epoch_reset_attached_body(
 /// End and consume the active measurement epoch, emitting a delta schema on
 /// the diagnostics channel. Snapshotting precedes JSON construction, so the
 /// reporting path cannot contaminate the measured Molt allocation counters.
-
 pub(crate) fn molt_profile_epoch_dump_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         if !profile_enabled(_py) {
@@ -1461,7 +1458,6 @@ pub(crate) fn molt_dec_ref_obj_attached_body(_py: &crate::PyToken<'_>, bits: u64
 
 /// Batched `inc_ref`: apply one checked typed transition for `count` retained
 /// references. Returns the input bits unchanged (convenience for chaining).
-
 pub(crate) fn molt_inc_ref_n_attached_body(_py: &crate::PyToken<'_>, bits: u64, count: u32) -> u64 {
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return bits;
@@ -1477,7 +1473,6 @@ pub(crate) fn molt_inc_ref_n_attached_body(_py: &crate::PyToken<'_>, bits: u64, 
 
 /// Batched `dec_ref`: apply the typed release transition `count` times. Each
 /// release is separate because any one of them may cross the terminal edge.
-
 pub(crate) fn molt_dec_ref_n_attached_body(_py: &crate::PyToken<'_>, bits: u64, count: u32) {
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return;
@@ -1533,7 +1528,6 @@ fn unpack_non_iterable_message(_py: &PyToken<'_>, seq_bits: u64) -> String {
 /// `expected_count` `u64` elements. A null pointer with a nonzero count is the
 /// allocation-failure signal used by pointer-width backends and raises
 /// `MemoryError` before any source iteration.
-
 pub(crate) unsafe fn molt_unpack_sequence_attached_body(
     _py: &crate::PyToken<'_>,
     seq_bits: u64,
@@ -2185,8 +2179,10 @@ unsafe fn install_guarded_class_namespace(
 ///
 /// `bases_ptr_bits` must encode `nbases` entries when `nbases > 0`, and
 /// `attrs_ptr_bits` must encode `nattrs * 2` entries when `nattrs > 0`.
-
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub(crate) unsafe fn molt_guarded_class_def_attached_body(
     _py: &crate::PyToken<'_>,
     name_bits: u64,
@@ -2561,7 +2557,6 @@ pub(crate) fn molt_fstring_build_attached_body(
 /// Returns a list element WITHOUT incrementing the refcount.
 /// The list holds the element alive. This mirrors CPython's
 /// `PyList_GetItem()` borrowed-reference semantics.
-
 pub(crate) fn molt_list_getitem_borrowed_attached_body(
     _py: &crate::PyToken<'_>,
     list_bits: u64,
@@ -2597,7 +2592,6 @@ pub(crate) fn molt_list_getitem_borrowed_attached_body(
 /// Returns a tuple element WITHOUT incrementing the refcount.
 /// The tuple holds the element alive. This mirrors CPython's
 /// `PyTuple_GetItem()` borrowed-reference semantics.
-
 pub(crate) fn molt_tuple_getitem_borrowed_attached_body(
     _py: &crate::PyToken<'_>,
     tuple_bits: u64,

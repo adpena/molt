@@ -29,7 +29,6 @@ fn flag_bits_from_obj(obj_bits: u64) -> Option<i64> {
 // ─── Public intrinsics: Flag / IntFlag ───────────────────────────────────────
 
 /// Flag.__or__: a | b → combined bitmask.
-
 pub(crate) fn molt_enum_flag_or_attached_body(
     _py: &crate::PyToken<'_>,
     a_bits: u64,
@@ -48,7 +47,6 @@ pub(crate) fn molt_enum_flag_or_attached_body(
 }
 
 /// Flag.__and__: a & b → intersection bitmask.
-
 pub(crate) fn molt_enum_flag_and_attached_body(
     _py: &crate::PyToken<'_>,
     a_bits: u64,
@@ -67,7 +65,6 @@ pub(crate) fn molt_enum_flag_and_attached_body(
 }
 
 /// Flag.__xor__: a ^ b → XOR bitmask.
-
 pub(crate) fn molt_enum_flag_xor_attached_body(
     _py: &crate::PyToken<'_>,
     a_bits: u64,
@@ -89,7 +86,6 @@ pub(crate) fn molt_enum_flag_xor_attached_body(
 /// complement.  CPython's Flag uses the boundary of the "pseudo-member" set to
 /// invert, but for the low-level intrinsic we return ~a (all bits flipped as i64)
 /// and let the Python wrapper mask to the valid member bits.
-
 pub(crate) fn molt_enum_flag_invert_attached_body(_py: &crate::PyToken<'_>, a_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(a) = flag_bits_from_obj(a_bits) else {
@@ -105,7 +101,6 @@ pub(crate) fn molt_enum_flag_invert_attached_body(_py: &crate::PyToken<'_>, a_bi
 
 /// Flag.__contains__: check whether all bits of `b` are set in `a`.
 /// Returns True if (a & b) == b (i.e. b is a submask of a).
-
 pub(crate) fn molt_enum_flag_contains_attached_body(
     _py: &crate::PyToken<'_>,
     a_bits: u64,
@@ -130,7 +125,6 @@ pub(crate) fn molt_enum_flag_contains_attached_body(
 ///
 /// Returns an empty list for value 0.
 /// Negative values (sign bit set) are treated as their unsigned u64 bit pattern.
-
 pub(crate) fn molt_enum_flag_decompose_attached_body(
     _py: &crate::PyToken<'_>,
     value_bits: u64,
@@ -179,7 +173,6 @@ pub(crate) fn molt_enum_flag_decompose_attached_body(
 /// layer can use as the seed.
 ///
 /// Returns: `count + 1` as a NaN-boxed int.
-
 pub(crate) fn molt_enum_auto_value_attached_body(_py: &crate::PyToken<'_>, count_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(count) = to_i64(obj_from_bits(count_bits)) else {
@@ -216,7 +209,6 @@ pub(crate) fn molt_enum_auto_value_attached_body(_py: &crate::PyToken<'_>, count
 /// or Molt property attributes fget/fset/fdel).
 ///
 /// Returns True/False as NaN-boxed bool.
-
 pub(crate) fn molt_enum_is_descriptor_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -265,7 +257,6 @@ pub(crate) fn molt_enum_is_descriptor_attached_body(
 /// Check whether an object is an auto() sentinel (has _molt_auto == True).
 ///
 /// Returns True/False as NaN-boxed bool.
-
 pub(crate) fn molt_enum_is_auto_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let owner_bits = type_of_bits(_py, obj_bits);
@@ -296,7 +287,6 @@ pub(crate) fn molt_enum_is_auto_attached_body(_py: &crate::PyToken<'_>, obj_bits
 /// `name_bits` must be a str object.  Returns str.
 ///
 /// CPython's StrEnum._generate_next_value_ returns `name.lower()`.
-
 pub(crate) fn molt_enum_str_value_attached_body(_py: &crate::PyToken<'_>, name_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(name_bits);
@@ -327,7 +317,6 @@ pub(crate) fn molt_enum_str_value_attached_body(_py: &crate::PyToken<'_>, name_b
 /// `name_bits`:    str — the enum class name
 /// `members_bits`: list of (str, value) 2-tuples
 /// `bases_bits`:   tuple of base classes or None
-
 pub(crate) fn molt_enum_create_attached_body(
     _py: &crate::PyToken<'_>,
     name_bits: u64,
@@ -453,7 +442,6 @@ pub(crate) fn molt_enum_create_attached_body(
 ///
 /// `cls_bits`:   the enum class (type object)
 /// `value_bits`: the value to look up
-
 pub(crate) fn molt_enum_member_attached_body(
     _py: &crate::PyToken<'_>,
     cls_bits: u64,

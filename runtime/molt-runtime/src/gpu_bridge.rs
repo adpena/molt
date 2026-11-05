@@ -6,7 +6,6 @@
 use crate::{BuiltinExc, PyToken};
 /// Translate the Python launch tuple into the executor's owned call builder.
 /// The executor borrows this builder; each per-thread clone is consumed by bind.
-
 pub(crate) fn molt_gpu_kernel_launch_python_attached_body(
     _py: &PyToken<'_>,
     callable_bits: u64,
@@ -447,7 +446,6 @@ pub extern "C" fn __molt_gpu_lookup_attribute(
 /// Python attributes cannot publish certificates. As with compiler-generated
 /// code itself, arbitrary native/foreign ABI callers are trusted, not a sandbox.
 /// Generic function attributes are never consulted.
-
 pub(crate) fn molt_gpu_kernel_descriptor_set_attached_body(
     _py: &PyToken<'_>,
     callable: u64,

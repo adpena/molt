@@ -1278,7 +1278,6 @@ fn importlib_prepare_package_fromlist(
 
 /// Complete the fromlist stage of a compiler-owned bootstrap import. The raw
 /// module load already happened; public __import__ is not entered recursively.
-
 pub(crate) fn molt_importlib_prepare_fromlist_attached_body(
     _py: &crate::PyToken<'_>,
     name_bits: u64,

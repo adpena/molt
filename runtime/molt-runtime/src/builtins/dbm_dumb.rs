@@ -188,7 +188,6 @@ fn sync_state(state: &mut DumbState) -> Result<(), String> {
 
 /// Open a dbm.dumb database.
 /// flag: 'r' (read), 'w' (write), 'c' (create), 'n' (new/truncate)
-
 pub(crate) fn molt_dbm_dumb_open_attached_body(
     _py: &crate::PyToken<'_>,
     path_bits: u64,
@@ -297,7 +296,6 @@ pub(crate) fn molt_dbm_dumb_open_attached_body(
 }
 
 /// Get a value by key. Returns bytes.
-
 pub(crate) fn molt_dbm_dumb_getitem_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -335,7 +333,6 @@ pub(crate) fn molt_dbm_dumb_getitem_attached_body(
 }
 
 /// Set a key-value pair.
-
 pub(crate) fn molt_dbm_dumb_setitem_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -384,7 +381,6 @@ pub(crate) fn molt_dbm_dumb_setitem_attached_body(
 }
 
 /// Delete a key.
-
 pub(crate) fn molt_dbm_dumb_delitem_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -426,7 +422,6 @@ pub(crate) fn molt_dbm_dumb_delitem_attached_body(
 }
 
 /// Check if a key exists.
-
 pub(crate) fn molt_dbm_dumb_contains_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -459,7 +454,6 @@ pub(crate) fn molt_dbm_dumb_contains_attached_body(
 }
 
 /// Return a list of all keys (as bytes).
-
 pub(crate) fn molt_dbm_dumb_keys_attached_body(_py: &crate::PyToken<'_>, handle_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
@@ -493,7 +487,6 @@ pub(crate) fn molt_dbm_dumb_keys_attached_body(_py: &crate::PyToken<'_>, handle_
 }
 
 /// Sync the database to disk.
-
 pub(crate) fn molt_dbm_dumb_sync_attached_body(_py: &crate::PyToken<'_>, handle_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
@@ -521,7 +514,6 @@ pub(crate) fn molt_dbm_dumb_sync_attached_body(_py: &crate::PyToken<'_>, handle_
 }
 
 /// Close the database (sync + release handle).
-
 pub(crate) fn molt_dbm_dumb_close_attached_body(_py: &crate::PyToken<'_>, handle_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {

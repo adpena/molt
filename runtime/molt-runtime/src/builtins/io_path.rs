@@ -1456,7 +1456,6 @@ pub(crate) fn glob_parse_args(
 /// Eager: materializes the full match list. Defined as `list(iglob(...))` —
 /// it drains the same lazy streaming iterator the `iglob` path returns, so the
 /// two are guaranteed to agree (one source of truth: `glob_iter_new_state`).
-
 pub(crate) fn molt_glob_attached_body(
     _py: &crate::PyToken<'_>,
     pathname_bits: u64,
@@ -1506,7 +1505,6 @@ pub(crate) fn molt_glob_attached_body(
 /// `glob.iglob(...)` — returns a lazy `TYPE_ID_GLOB_ITER` that streams matching
 /// paths one per `__next__` at bounded RSS (CPython-faithful generator chain
 /// reified as a native work-stack; see `GlobIterState`).
-
 pub(crate) fn molt_glob_iter_attached_body(
     _py: &crate::PyToken<'_>,
     pathname_bits: u64,
@@ -2186,7 +2184,6 @@ pub(crate) fn molt_os_replace_attached_body(
 // ---------------------------------------------------------------------------
 
 /// Directory-relative stat shares the path route and descriptor custody of lstat.
-
 pub(crate) fn molt_os_stat_at_attached_body(
     _py: &crate::PyToken<'_>,
     path_bits: u64,
@@ -2266,7 +2263,6 @@ pub(crate) fn molt_os_rename_at_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_os_rename_at_attached_body(
     _py: &crate::PyToken<'_>,
     _s: u64,
@@ -2345,7 +2341,6 @@ pub(crate) fn molt_os_replace_at_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_os_replace_at_attached_body(
     _py: &crate::PyToken<'_>,
     _s: u64,
@@ -2441,7 +2436,6 @@ pub(crate) fn molt_os_link_at_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_os_link_at_attached_body(
     _py: &crate::PyToken<'_>,
     _s: u64,

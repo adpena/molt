@@ -271,31 +271,26 @@ pub(crate) fn molt_gpu_prim_realize_attached_body(_py: &crate::PyToken<'_>, hand
 }
 
 #[cfg(feature = "molt_gpu_primitives")]
-
 pub(crate) fn molt_gpu_prim_dtype_attached_body(_py: &crate::PyToken<'_>, handle: u64) -> u64 {
     molt_gpu::primitives_ffi::molt_gpu_prim_dtype(handle)
 }
 
 #[cfg(feature = "molt_gpu_primitives")]
-
 pub(crate) fn molt_gpu_prim_nbytes_attached_body(_py: &crate::PyToken<'_>, handle: u64) -> u64 {
     molt_gpu::primitives_ffi::molt_gpu_prim_nbytes(handle)
 }
 
 #[cfg(feature = "molt_gpu_primitives")]
-
 pub(crate) fn molt_gpu_prim_free_attached_body(_py: &crate::PyToken<'_>, handle: u64) -> u64 {
     molt_gpu::primitives_ffi::molt_gpu_prim_free(handle)
 }
 
 #[cfg(feature = "molt_gpu_primitives")]
-
 pub(crate) fn molt_gpu_prim_contiguous_attached_body(_py: &crate::PyToken<'_>, handle: u64) -> u64 {
     molt_gpu::primitives_ffi::molt_gpu_prim_contiguous(handle)
 }
 
 #[cfg(feature = "molt_gpu_primitives")]
-
 pub(crate) fn molt_gpu_prim_numel_attached_body(_py: &crate::PyToken<'_>, handle: u64) -> u64 {
     molt_gpu::primitives_ffi::molt_gpu_prim_numel(handle)
 }

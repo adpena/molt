@@ -222,7 +222,6 @@ pub(crate) unsafe fn molt_chan_try_recv_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 /// # Safety
 /// Caller must ensure `chan_handle` is a valid channel pointer.
 pub(crate) unsafe fn molt_chan_recv_blocking_attached_body(

@@ -8,7 +8,6 @@ use super::*;
 /// If either operand is not a NaN-boxed int the call falls through to the
 /// appropriate generic comparison function.  Both booleans and int subclasses
 /// are handled by the slow path.
-
 pub(crate) fn molt_compare_int_fast_attached_body(
     _py: &crate::PyToken<'_>,
     a: u64,
@@ -86,7 +85,6 @@ fn string_eq_fast(a: u64, b: u64) -> Option<bool> {
 ///
 /// Uses `string_eq_fast` for the pointer/length checks, then delegates to
 /// `molt_string_eq` for byte comparison when needed.
-
 pub(crate) fn molt_string_eq_fast_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
     match string_eq_fast(a, b) {
         Some(result) => MoltObject::from_bool(result).bits(),

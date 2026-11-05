@@ -156,7 +156,6 @@ impl ScopeArena {
 
 /// Create a new scope arena. Returns a heap-allocated pointer.
 /// The caller must pair this with `molt_arena_free`.
-
 pub(crate) fn molt_arena_new_attached_body(_py: &crate::PyToken<'_>) -> *mut ScopeArena {
     let Some(arena) = ScopeArena::new() else {
         return std::ptr::null_mut();
@@ -166,7 +165,6 @@ pub(crate) fn molt_arena_new_attached_body(_py: &crate::PyToken<'_>) -> *mut Sco
 
 /// Bump-allocate `size` bytes from the arena.
 /// Returns a null pointer if `size` is zero or `arena` is null.
-
 pub(crate) fn molt_arena_alloc_attached_body(
     _py: &crate::PyToken<'_>,
     arena: *mut ScopeArena,
@@ -201,7 +199,6 @@ pub(crate) fn molt_arena_alloc_attached_body(
 ///
 /// On null `arena` or arena OOM, returns `MoltObject::none().bits()`, again
 /// matching `molt_alloc`'s failure semantics.
-
 pub(crate) fn molt_arena_alloc_object_attached_body(
     _py: &crate::PyToken<'_>,
     arena: *mut ScopeArena,
@@ -223,7 +220,6 @@ pub(crate) fn molt_arena_alloc_object_attached_body(
 
 /// Reclaim all bump storage after releasing its object owners and metadata.
 /// This costs O(chunks); the arena remains valid for reuse.
-
 pub(crate) fn molt_arena_reset_attached_body(_py: &crate::PyToken<'_>, arena: *mut ScopeArena) {
     if arena.is_null() {
         return;
@@ -236,7 +232,6 @@ pub(crate) fn molt_arena_reset_attached_body(_py: &crate::PyToken<'_>, arena: *m
 
 /// Free the arena and its backing storage after releasing every object owner.
 /// After this call, `arena` is dangling and must not be used.
-
 pub(crate) fn molt_arena_free_attached_body(_py: &crate::PyToken<'_>, arena: *mut ScopeArena) {
     if !arena.is_null() {
         // SAFETY: caller guarantees this was returned by `molt_arena_new`

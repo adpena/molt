@@ -30,7 +30,6 @@ fn make_string_bits(py: &PyToken<'_>, s: &str) -> u64 {
 }
 
 /// Returns the next thread name as a NaN-boxed string: "Thread-N".
-
 pub(crate) fn molt_threading_next_name_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
         let n = THREAD_NAME_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
@@ -40,7 +39,6 @@ pub(crate) fn molt_threading_next_name_attached_body(_py: &crate::PyToken<'_>) -
 }
 
 /// Returns the next thread token as a NaN-boxed integer.
-
 pub(crate) fn molt_threading_next_token_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
         let n = THREAD_TOKEN_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
@@ -200,7 +198,6 @@ pub(crate) fn parse_thread_timeout(
 /// Invokes trace and profile hooks stored as NaN-boxed callables.
 /// `trace_bits`: the trace hook callable bits (or None).
 /// `profile_bits`: the profile hook callable bits (or None).
-
 pub(crate) unsafe fn molt_threading_invoke_hooks_attached_body(
     _py: &crate::PyToken<'_>,
     trace_bits: u64,
@@ -238,7 +235,6 @@ pub(crate) unsafe fn molt_threading_invoke_hooks_attached_body(
 /// Parses a thread registry record tuple into a validated tuple.
 /// Returns the record as-is if valid (the Python side extracts fields).
 /// Raises RuntimeError if the record is malformed.
-
 pub(crate) unsafe fn molt_threading_parse_registry_record_attached_body(
     _py: &crate::PyToken<'_>,
     record_bits: u64,
@@ -259,7 +255,6 @@ pub(crate) unsafe fn molt_threading_parse_registry_record_attached_body(
 
 /// Bootstraps the main thread registry entry.
 /// Delegates to molt_thread_registry_set_main.
-
 pub(crate) unsafe fn molt_threading_bootstrap_main_attached_body(
     _py: &crate::PyToken<'_>,
     name_bits: u64,
@@ -275,7 +270,6 @@ pub(crate) unsafe fn molt_threading_bootstrap_main_attached_body(
 /// `name_bits`, `daemon_bits`, `ident_bits`, `native_id_bits`, `alive_bits` -
 /// individual field bits already extracted from the record.
 /// Returns a 5-tuple for the Python side.
-
 pub(crate) unsafe fn molt_threading_registry_record_tuple_attached_body(
     _py: &crate::PyToken<'_>,
     name_bits: u64,
@@ -308,13 +302,11 @@ pub(crate) unsafe fn molt_threading_registry_record_tuple_attached_body(
 // `molt_lock_*` intrinsics in `concurrency/locks.rs`.
 
 /// Create a new Lock. Returns a NaN-boxed handle.
-
 pub(crate) fn molt_threading_lock_new_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     unsafe { crate::molt_lock_new_attached_body(_py) }
 }
 
 /// Acquire the lock. Always succeeds (single-threaded). Returns True.
-
 pub(crate) fn molt_threading_lock_acquire_attached_body(
     _py: &crate::PyToken<'_>,
     lock_bits: u64,
@@ -330,7 +322,6 @@ pub(crate) fn molt_threading_lock_acquire_attached_body(
 }
 
 /// Release the lock. Returns None.
-
 pub(crate) fn molt_threading_lock_release_attached_body(
     _py: &crate::PyToken<'_>,
     lock_bits: u64,
@@ -341,13 +332,11 @@ pub(crate) fn molt_threading_lock_release_attached_body(
 // ── Threading Event wrappers ─────────────────────────────────────────────
 
 /// Create a new Event. Returns a NaN-boxed handle.
-
 pub(crate) fn molt_threading_event_new_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     unsafe { crate::molt_event_new_attached_body(_py) }
 }
 
 /// Set the event flag.
-
 pub(crate) fn molt_threading_event_set_attached_body(
     _py: &crate::PyToken<'_>,
     event_bits: u64,
@@ -356,7 +345,6 @@ pub(crate) fn molt_threading_event_set_attached_body(
 }
 
 /// Check if the event is set. Returns NaN-boxed bool.
-
 pub(crate) fn molt_threading_event_is_set_attached_body(
     _py: &crate::PyToken<'_>,
     event_bits: u64,
@@ -365,7 +353,6 @@ pub(crate) fn molt_threading_event_is_set_attached_body(
 }
 
 /// Wait for the event (no-op in single-threaded mode: returns immediately).
-
 pub(crate) fn molt_threading_event_wait_attached_body(
     _py: &crate::PyToken<'_>,
     event_bits: u64,

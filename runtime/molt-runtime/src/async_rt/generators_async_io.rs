@@ -270,7 +270,6 @@ unsafe fn asyncio_drop_payload_slots<const N: usize>(_py: &PyToken<'_>, payload_
 
 /// # Safety
 /// - All arguments must be valid runtime objects.
-
 pub(crate) fn molt_asyncio_fd_watcher_new_attached_body(
     _py: &crate::PyToken<'_>,
     registry_bits: u64,
@@ -347,7 +346,6 @@ unsafe fn asyncio_fd_watcher_retract(
 
 /// # Safety
 /// - All arguments must be valid runtime objects.
-
 pub(crate) unsafe fn molt_asyncio_fd_watcher_register_attached_body(
     _py: &crate::PyToken<'_>,
     loop_bits: u64,
@@ -471,7 +469,6 @@ pub(crate) unsafe fn molt_asyncio_fd_watcher_register_attached_body(
 
 /// # Safety
 /// - All arguments must be valid runtime objects.
-
 pub(crate) unsafe fn molt_asyncio_fd_watcher_unregister_attached_body(
     _py: &crate::PyToken<'_>,
     registry_bits: u64,
@@ -516,7 +513,6 @@ pub(crate) unsafe fn molt_asyncio_fd_watcher_unregister_attached_body(
 
 /// # Safety
 /// - `obj_bits` must be a valid fd watcher wrapper future pointer.
-
 pub(crate) unsafe fn molt_asyncio_fd_watcher_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -683,7 +679,6 @@ pub(crate) unsafe fn molt_asyncio_fd_watcher_poll_attached_body(
 
 /// # Safety
 /// - All arguments must be valid runtime objects.
-
 pub(crate) fn molt_asyncio_server_accept_loop_new_attached_body(
     _py: &crate::PyToken<'_>,
     sock_bits: u64,
@@ -738,7 +733,6 @@ pub(crate) fn molt_asyncio_server_accept_loop_new_attached_body(
 
 /// # Safety
 /// - `obj_bits` must be a valid server-accept-loop wrapper future pointer.
-
 pub(crate) unsafe fn molt_asyncio_server_accept_loop_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,

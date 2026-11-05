@@ -15,7 +15,6 @@ pub(crate) fn molt_super_builtin_attached_body(
 // emit direct calls to `molt_<type>_builtin` for Python's builtin types.
 
 /// `int(x=0, base=10)` — wraps `molt_int_from_obj`.
-
 pub(crate) fn molt_int_builtin_attached_body(
     _py: &crate::PyToken<'_>,
     val_bits: u64,
@@ -39,7 +38,6 @@ pub(crate) fn molt_int_builtin_attached_body(
 }
 
 /// `float(x=0.0)` — wraps `molt_float_from_obj`.
-
 pub(crate) fn molt_float_builtin_attached_body(_py: &crate::PyToken<'_>, val_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let missing = missing_bits(_py);
@@ -51,7 +49,6 @@ pub(crate) fn molt_float_builtin_attached_body(_py: &crate::PyToken<'_>, val_bit
 }
 
 /// `bool(x=False)` — wraps `is_truthy`.
-
 pub(crate) fn molt_bool_builtin_attached_body(_py: &crate::PyToken<'_>, val_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let missing = missing_bits(_py);
@@ -67,7 +64,6 @@ pub(crate) fn molt_bool_builtin_attached_body(_py: &crate::PyToken<'_>, val_bits
 }
 
 /// `str(object='')` — wraps `molt_str_from_obj`.
-
 pub(crate) fn molt_str_builtin_attached_body(_py: &crate::PyToken<'_>, val_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let missing = missing_bits(_py);
@@ -83,7 +79,6 @@ pub(crate) fn molt_str_builtin_attached_body(_py: &crate::PyToken<'_>, val_bits:
 }
 
 /// `bytes(source=b'')` — wraps `molt_bytes_from_obj`.
-
 pub(crate) fn molt_bytes_builtin_attached_body(_py: &crate::PyToken<'_>, val_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let missing = missing_bits(_py);
@@ -99,7 +94,6 @@ pub(crate) fn molt_bytes_builtin_attached_body(_py: &crate::PyToken<'_>, val_bit
 }
 
 /// `bytearray(source=bytearray())` — wraps `molt_bytearray_from_obj`.
-
 pub(crate) fn molt_bytearray_builtin_attached_body(_py: &crate::PyToken<'_>, val_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let missing = missing_bits(_py);
@@ -115,7 +109,6 @@ pub(crate) fn molt_bytearray_builtin_attached_body(_py: &crate::PyToken<'_>, val
 }
 
 /// `list(iterable=())` — constructs a list from an iterable.
-
 pub(crate) fn molt_list_builtin_attached_body(_py: &crate::PyToken<'_>, val_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let missing = missing_bits(_py);
@@ -136,7 +129,6 @@ pub(crate) fn molt_list_builtin_attached_body(_py: &crate::PyToken<'_>, val_bits
 }
 
 /// `tuple(iterable=())` — constructs a tuple from an iterable.
-
 pub(crate) fn molt_tuple_builtin_attached_body(_py: &crate::PyToken<'_>, val_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let missing = missing_bits(_py);
@@ -157,7 +149,6 @@ pub(crate) fn molt_tuple_builtin_attached_body(_py: &crate::PyToken<'_>, val_bit
 }
 
 /// `dict(mapping_or_iterable=None)` — wraps `molt_dict_from_obj`.
-
 pub(crate) fn molt_dict_builtin_attached_body(_py: &crate::PyToken<'_>, val_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let missing = missing_bits(_py);
@@ -169,7 +160,6 @@ pub(crate) fn molt_dict_builtin_attached_body(_py: &crate::PyToken<'_>, val_bits
 }
 
 /// `set(iterable=())` — constructs a set from an iterable.
-
 pub(crate) fn molt_set_builtin_attached_body(_py: &crate::PyToken<'_>, val_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let missing = missing_bits(_py);
@@ -190,7 +180,6 @@ pub(crate) fn molt_set_builtin_attached_body(_py: &crate::PyToken<'_>, val_bits:
 }
 
 /// `frozenset(iterable=())` — constructs a frozenset from an iterable.
-
 pub(crate) fn molt_frozenset_builtin_attached_body(_py: &crate::PyToken<'_>, val_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let missing = missing_bits(_py);
@@ -207,7 +196,6 @@ pub(crate) fn molt_frozenset_builtin_attached_body(_py: &crate::PyToken<'_>, val
 }
 
 /// `range(stop)` / `range(start, stop[, step])` — wraps `molt_range_new`.
-
 pub(crate) fn molt_range_builtin_attached_body(
     _py: &crate::PyToken<'_>,
     start_bits: u64,
@@ -239,7 +227,6 @@ pub(crate) fn molt_range_builtin_attached_body(
 }
 
 /// `slice(stop)` / `slice(start, stop[, step])` — wraps `molt_slice_new`.
-
 pub(crate) fn molt_slice_builtin_attached_body(
     _py: &crate::PyToken<'_>,
     start_bits: u64,
@@ -270,19 +257,16 @@ pub(crate) fn molt_slice_builtin_attached_body(
 }
 
 /// `object()` — wraps `molt_object_new`.
-
 pub(crate) fn molt_object_builtin_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     molt_object_new_attached_body(_py)
 }
 
 /// `type(object)` — wraps `molt_builtin_type`.
-
 pub(crate) fn molt_type_builtin_attached_body(_py: &crate::PyToken<'_>, val_bits: u64) -> u64 {
     molt_builtin_type_attached_body(_py, val_bits)
 }
 
 /// `complex(real=0, imag=0)` — wraps `molt_complex_from_obj`.
-
 pub(crate) fn molt_complex_builtin_attached_body(
     _py: &crate::PyToken<'_>,
     real_bits: u64,
@@ -307,7 +291,6 @@ pub(crate) fn molt_complex_builtin_attached_body(
 }
 
 /// `classmethod(func)` — wraps `molt_classmethod_new`.
-
 pub(crate) fn molt_classmethod_builtin_attached_body(
     _py: &crate::PyToken<'_>,
     func_bits: u64,
@@ -316,7 +299,6 @@ pub(crate) fn molt_classmethod_builtin_attached_body(
 }
 
 /// `staticmethod(func)` — wraps `molt_staticmethod_new`.
-
 pub(crate) fn molt_staticmethod_builtin_attached_body(
     _py: &crate::PyToken<'_>,
     func_bits: u64,
@@ -325,7 +307,6 @@ pub(crate) fn molt_staticmethod_builtin_attached_body(
 }
 
 /// `property(fget=None, fset=None, fdel=None)` — wraps `molt_property_new`.
-
 pub(crate) fn molt_property_builtin_attached_body(
     _py: &crate::PyToken<'_>,
     get_bits: u64,
@@ -343,7 +324,6 @@ pub(crate) fn molt_property_builtin_attached_body(
 }
 
 /// `isinstance(obj, classinfo)` — wraps `molt_isinstance`.
-
 pub(crate) fn molt_isinstance_builtin_attached_body(
     _py: &crate::PyToken<'_>,
     val_bits: u64,
@@ -353,7 +333,6 @@ pub(crate) fn molt_isinstance_builtin_attached_body(
 }
 
 /// `issubclass(sub, classinfo)` — wraps `molt_issubclass`.
-
 pub(crate) fn molt_issubclass_builtin_attached_body(
     _py: &crate::PyToken<'_>,
     sub_bits: u64,
@@ -363,7 +342,6 @@ pub(crate) fn molt_issubclass_builtin_attached_body(
 }
 
 /// `hasattr(obj, name)` — wraps `molt_has_attr_name`.
-
 pub(crate) fn molt_hasattr_builtin_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -373,14 +351,12 @@ pub(crate) fn molt_hasattr_builtin_attached_body(
 }
 
 /// `aiter(async_iterable)` — wraps `molt_aiter`.
-
 pub(crate) fn molt_aiter_builtin_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> u64 {
     molt_aiter_attached_body(_py, obj_bits)
 }
 
 /// Public `iter(object[, sentinel])`; omission is distinct from Python None.
 /// Both overloads reuse the canonical protocol constructors.
-
 pub(crate) fn molt_iter_builtin_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,

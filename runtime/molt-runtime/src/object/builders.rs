@@ -674,7 +674,6 @@ unsafe fn sequence_from_values(
 /// Construct a tuple by copying and retaining a borrowed word range.
 /// # Safety
 /// The address must encode `len` initialized, live NaN-boxed words, or null for zero length.
-
 pub(crate) unsafe fn molt_tuple_from_values_attached_body(
     _py: &crate::PyToken<'_>,
     address: u64,
@@ -688,7 +687,6 @@ pub(crate) unsafe fn molt_tuple_from_values_attached_body(
 /// Construct a fresh mutable list by copying and retaining a borrowed word range.
 /// # Safety
 /// The address must encode `len` initialized, live NaN-boxed words, or null for zero length.
-
 pub(crate) unsafe fn molt_list_from_values_attached_body(
     _py: &crate::PyToken<'_>,
     address: u64,

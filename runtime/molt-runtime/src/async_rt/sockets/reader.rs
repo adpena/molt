@@ -160,7 +160,6 @@ fn socket_reader_take(_py: &PyToken<'_>, reader: &mut MoltSocketReader, count: u
 }
 
 #[cfg(molt_net)]
-
 /// # Safety
 /// Caller must pass a valid socket handle from `molt_socket_new`/`molt_socket_clone`.
 pub(crate) unsafe fn molt_socket_reader_new_attached_body(
@@ -184,7 +183,6 @@ pub(crate) unsafe fn molt_socket_reader_new_attached_body(
 }
 
 #[cfg(molt_net)]
-
 /// # Safety
 /// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
 pub(crate) unsafe fn molt_socket_reader_drop_attached_body(
@@ -205,7 +203,6 @@ pub(crate) unsafe fn molt_socket_reader_drop_attached_body(
 }
 
 #[cfg(molt_net)]
-
 /// # Safety
 /// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
 pub(crate) unsafe fn molt_socket_reader_at_eof_attached_body(
@@ -225,7 +222,6 @@ pub(crate) unsafe fn molt_socket_reader_at_eof_attached_body(
 }
 
 #[cfg(molt_net)]
-
 /// # Safety
 /// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
 pub(crate) unsafe fn molt_socket_reader_read_attached_body(
@@ -294,7 +290,6 @@ pub(crate) unsafe fn molt_socket_reader_read_attached_body(
 }
 
 #[cfg(molt_net)]
-
 /// # Safety
 /// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
 pub(crate) unsafe fn molt_socket_reader_readline_attached_body(
@@ -325,7 +320,6 @@ pub(crate) unsafe fn molt_socket_reader_readline_attached_body(
 }
 
 #[cfg(molt_net)]
-
 /// # Safety
 /// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
 pub(crate) unsafe fn molt_socket_reader_readline_limit_attached_body(

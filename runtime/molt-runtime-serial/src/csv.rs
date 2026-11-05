@@ -1089,7 +1089,10 @@ pub fn molt_csv_field_size_limit_attached_body(
     })
 }
 
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub fn molt_csv_register_dialect_attached_body(
     _py: &molt_runtime_core::PyToken,
     name_bits: u64,
@@ -1290,7 +1293,10 @@ pub fn molt_csv_get_dialect_attached_body(
 ///   strict_bits         – bool
 ///
 /// Returns the handle ID as an int.
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub fn molt_csv_reader_new_attached_body(
     _py: &molt_runtime_core::PyToken,
     delimiter_bits: u64,
@@ -1992,7 +1998,10 @@ fn dialect_char(
 /// tuple uses the same field order as the registry's get_dialect projection.
 /// Python supplies its existing target version and whether quoting was absent;
 /// an explicit None remains a value and is never treated as a missing setting.
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub fn molt_csv_validate_dialect_attached_body(
     _py: &molt_runtime_core::PyToken,
     delimiter_bits: u64,

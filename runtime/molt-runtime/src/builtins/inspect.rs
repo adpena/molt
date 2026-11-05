@@ -1348,7 +1348,6 @@ pub(crate) fn molt_inspect_isgeneratorfunction_attached_body(
 
 /// The native portion of inspect.isawaitable. The stdlib owns the live
 /// collections.abc.Awaitable check, including registered virtual subclasses.
-
 pub(crate) fn molt_inspect_isnativeawaitable_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,

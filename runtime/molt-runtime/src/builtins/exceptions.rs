@@ -355,7 +355,6 @@ crate::builtins::methods::native_method_table!(exception_group_method_bits, publ
 /// Shared satellite diagnostic transport: satellites pass the `ExcKind` code.
 /// Empty diagnostics have no arguments; explicit Python exception arguments
 /// remain owned by their constructors.
-
 pub(crate) fn molt_bridge_raise_exception_attached_body(
     _py: &crate::PyToken<'_>,
     kind_code: u16,
@@ -384,7 +383,6 @@ pub(crate) fn raise_exception_code_bytes(py: &PyToken<'_>, kind_code: u16, messa
 /// The owned class of an `ExcKind` code for satellites that construct a
 /// module exception with their own arguments. An unknown code or an
 /// unavailable module row leaves SystemError pending and returns None.
-
 pub(crate) fn molt_bridge_exception_class_attached_body(
     _py: &crate::PyToken<'_>,
     kind_code: u16,
@@ -2886,7 +2884,6 @@ pub(crate) fn task_last_exception_contains_valid(_py: &PyToken<'_>, ptr: *mut u8
 
 /// Add this explicit raise/throw site ahead of an existing traceback. Transport,
 /// bare re-raise and exception restoration do not call this entrypoint.
-
 pub(crate) fn molt_exception_trace_prepend_attached_body(
     _py: &crate::PyToken<'_>,
     exc_bits: u64,

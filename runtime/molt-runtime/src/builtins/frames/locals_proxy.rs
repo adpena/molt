@@ -184,7 +184,6 @@ fn frame_object_source_slot(
 /// `frame.f_locals`, read now. An optimized frame (synchronous or stateful)
 /// reports its activation's one refreshed dict before PEP 667 and a proxy from
 /// 3.13; a module body reports its namespace mapping.
-
 pub(crate) fn molt_frame_f_locals_get_attached_body(
     _py: &crate::PyToken<'_>,
     _descriptor_bits: u64,
@@ -217,7 +216,6 @@ pub(crate) fn molt_frame_f_locals_get_attached_body(
 /// frame object owns in the explicit-clear order; a finished module body's
 /// frame drops its namespace. Returns None; a failure leaves its exception
 /// pending.
-
 pub(crate) fn molt_frame_clear_attached_body(_py: &crate::PyToken<'_>, frame_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
         let Ok(slot) = frame_object_source_slot(py, frame_bits, "clear") else {
@@ -529,7 +527,6 @@ fn proxy_lookup(py: &PyToken<'_>, self_bits: u64, key: u64) -> Result<Option<u64
 }
 
 /// Returns `None`; a failed write leaves its exception pending.
-
 pub(crate) fn molt_frame_locals_proxy_setitem_attached_body(
     _py: &crate::PyToken<'_>,
     self_bits: u64,
@@ -543,7 +540,6 @@ pub(crate) fn molt_frame_locals_proxy_setitem_attached_body(
 }
 
 /// Returns `None`; a failed deletion leaves its exception pending.
-
 pub(crate) fn molt_frame_locals_proxy_delitem_attached_body(
     _py: &crate::PyToken<'_>,
     self_bits: u64,
@@ -556,7 +552,6 @@ pub(crate) fn molt_frame_locals_proxy_delitem_attached_body(
 }
 
 /// `setdefault` of a bound name is a read; of an unbound one, a write.
-
 pub(crate) fn molt_frame_locals_proxy_setdefault_attached_body(
     _py: &crate::PyToken<'_>,
     self_bits: u64,
@@ -586,7 +581,6 @@ pub(crate) fn molt_frame_locals_proxy_setdefault_attached_body(
 }
 
 /// Removes an extra local; a code slot's binding cannot be removed.
-
 pub(crate) fn molt_frame_locals_proxy_pop_attached_body(
     _py: &crate::PyToken<'_>,
     self_bits: u64,
@@ -618,7 +612,6 @@ pub(crate) fn molt_frame_locals_proxy_pop_attached_body(
 }
 
 /// Writes every item of a dict or of another frame's proxy.
-
 pub(crate) fn molt_frame_locals_proxy_update_attached_body(
     _py: &crate::PyToken<'_>,
     self_bits: u64,

@@ -682,7 +682,6 @@ pub(crate) fn molt_importlib_module_spec_init_attached_body(
 }
 
 /// Getter of the `ModuleSpec.parent` property.
-
 pub(crate) fn molt_importlib_module_spec_parent_attached_body(
     _py: &crate::PyToken<'_>,
     self_bits: u64,
@@ -803,7 +802,6 @@ fn append_spec_formatted_value(
 }
 
 /// The canonical class for the `importlib.machinery` facade (owned).
-
 pub(crate) fn molt_importlib_module_spec_type_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
         crate::state::cache::retain_cached_result(py, module_spec_class(py))

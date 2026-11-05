@@ -562,7 +562,6 @@ pub(crate) fn molt_is_native_awaitable_attached_body(
 /// # Safety
 /// - `task_bits` must be a valid pointer to a Molt task with a valid header.
 /// - `token_bits` must be an integer cancel token id.
-
 pub(crate) unsafe fn molt_task_register_execution_attached_body(
     _py: &crate::PyToken<'_>,
     task_bits: u64,
@@ -803,7 +802,6 @@ unsafe fn generator_resume_step(py: &PyToken<'_>, ptr: *mut u8) -> GeneratorResu
 }
 
 /// The compiled `gen_send` operation: the `(value, done)` pair projection.
-
 pub(crate) fn molt_generator_send_attached_body(
     _py: &crate::PyToken<'_>,
     gen_bits: u64,
@@ -818,7 +816,6 @@ pub(crate) fn molt_generator_send_attached_body(
 }
 
 /// The compiled `gen_throw` operation: the `(value, done)` pair projection.
-
 pub(crate) fn molt_generator_throw_attached_body(
     _py: &crate::PyToken<'_>,
     gen_bits: u64,
@@ -833,7 +830,6 @@ pub(crate) fn molt_generator_throw_attached_body(
 }
 
 /// `close()` (CPython's `gen_close`).
-
 pub(crate) fn molt_generator_close_attached_body(_py: &crate::PyToken<'_>, gen_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
         let Some(ptr) = generator_receiver(py, gen_bits) else {
@@ -1553,7 +1549,6 @@ pub(crate) fn molt_asyncgen_hooks_set_attached_body(
 
 /// `inspect.getasyncgenlocals`: the async generator's activation is its inner
 /// generator task, projected through the shared layout authority.
-
 pub(crate) fn molt_asyncgen_locals_attached_body(
     _py: &crate::PyToken<'_>,
     asyncgen_bits: u64,
@@ -1584,7 +1579,6 @@ pub(crate) fn molt_asyncgen_locals_attached_body(
 }
 
 /// `inspect.getgeneratorlocals`, projected through the shared layout authority.
-
 pub(crate) fn molt_gen_locals_attached_body(_py: &crate::PyToken<'_>, gen_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(gen_ptr) = maybe_ptr_from_bits(gen_bits) else {
@@ -1755,7 +1749,6 @@ pub(crate) fn molt_asyncgen_aclose_attached_body(
 /// Caller must pass a valid async-generator awaitable object bits value.
 /// The runtime must be initialized and the thread must be allowed to enter
 /// the GIL-guarded runtime state.
-
 pub(crate) unsafe fn molt_asyncgen_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,

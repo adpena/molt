@@ -137,7 +137,7 @@ impl CurrentTaskScope {
 impl Drop for CurrentTaskScope {
     fn drop(&mut self) {
         with_gil(|py| {
-            replace_current_task(&py, self.previous);
+            replace_current_task(py, self.previous);
         });
     }
 }
@@ -485,7 +485,7 @@ impl MoltScheduler {
         {
             let gil = GilGuard::new();
             let py = gil.token();
-            runtime_state(&py).io_poller().poll_host(&py);
+            runtime_state(py).io_poller().poll_host(py);
         }
         while let Some(task) = self.try_pop() {
             Self::execute_task(task, &self.injector);
@@ -550,7 +550,7 @@ impl MoltScheduler {
                     done
                 };
                 if done {
-                    clear_task_token(&py, task_ptr);
+                    clear_task_token(py, task_ptr);
                     return;
                 }
                 if poll_fn_addr != 0 {
@@ -648,8 +648,8 @@ impl MoltScheduler {
                     }
                 }
                 if poll_fn_addr == 0 {
-                    task_mark_done(&py, task_ptr);
-                    clear_task_token(&py, task_ptr);
+                    task_mark_done(py, task_ptr);
+                    clear_task_token(py, task_ptr);
                     if async_trace_enabled() {
                         eprintln!(
                             "molt async trace: poll_skip task=0x{:x} poll=0x0",
@@ -953,7 +953,6 @@ pub(crate) fn cancel_task_sleep(py: &PyToken<'_>, task: *mut u8) {
 
 /// # Safety
 /// - `task_bits` must be a valid pointer to a Molt task with a valid header.
-
 pub(crate) unsafe fn molt_spawn_attached_body(_py: &crate::PyToken<'_>, task_bits: u64) -> u64 {
     unsafe {
         crate::with_attached_entry_nopanic!(_py, _py, {
@@ -992,7 +991,6 @@ pub(crate) unsafe fn molt_spawn_attached_body(_py: &crate::PyToken<'_>, task_bit
 
 /// # Safety
 /// - `task_bits` must be a valid pointer to a Molt task with a valid header.
-
 pub(crate) unsafe fn molt_block_on_attached_body(_py: &crate::PyToken<'_>, task_bits: u64) -> i64 {
     unsafe {
         let (task_ptr, poll_fn_addr, task_scope, prev_task, prev_token, exceptions, prev_raise) = {
@@ -1192,14 +1190,14 @@ pub(crate) unsafe fn molt_block_on_attached_body(_py: &crate::PyToken<'_>, task_
                     let _gil = GilGuard::new();
                     let _py = _gil.token();
                     {
-                        let due = runtime_state(&_py)
+                        let due = runtime_state(_py)
                             .sleep_queue()
-                            .take_due_scheduler_tasks(&_py);
+                            .take_due_scheduler_tasks(_py);
                         for due_task in due {
-                            enqueue_task_ptr(&_py, due_task);
+                            enqueue_task_ptr(_py, due_task);
                         }
                     }
-                    runtime_state(&_py).scheduler().drain_ready();
+                    runtime_state(_py).scheduler().drain_ready();
                 }
                 let wake_pending = {
                     let _gil = GilGuard::new();
@@ -1243,7 +1241,7 @@ pub(crate) unsafe fn molt_block_on_attached_body(_py: &crate::PyToken<'_>, task_
                     let _gil = GilGuard::new();
                     let _py = _gil.token();
                     let scheduler_deadline =
-                        runtime_state(&_py).sleep_queue().next_scheduler_deadline();
+                        runtime_state(_py).sleep_queue().next_scheduler_deadline();
                     match (deadline, scheduler_deadline) {
                         (Some(a), Some(b)) => Some(a.min(b)),
                         (Some(a), None) => Some(a),

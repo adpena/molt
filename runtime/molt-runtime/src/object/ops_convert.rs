@@ -417,7 +417,6 @@ fn parse_simple_ascii_decimal_i64(text: &str) -> Option<i64> {
 ///   big-endian bytes. This internal materializer is not a public byte parser.
 ///
 /// Invalid extent or failed materialization returns None with a pending exception.
-
 pub(crate) unsafe fn molt_bigint_from_bytes_attached_body(
     _py: &crate::PyToken<'_>,
     ptr: *const u8,
@@ -819,7 +818,6 @@ pub(crate) fn molt_float_fromhex_attached_body(
 /// target's byte order varies. Argument Clinic admits a str (subclasses too),
 /// exports it as strict UTF-8 and rejects an embedded NUL before it compares
 /// the name. The class receiver does not change the answer.
-
 pub(crate) fn molt_float_getformat_attached_body(
     _py: &crate::PyToken<'_>,
     _cls_bits: u64,
@@ -1540,7 +1538,6 @@ pub(crate) fn molt_int_from_obj_attached_body(
 /// invalid literal — where `<field>` is the field text, exactly as CPython
 /// reports. An out-of-range field index raises the same
 /// `IndexError("list index out of range")` the materializing path would.
-
 pub(crate) fn molt_string_split_field_to_int_attached_body(
     _py: &crate::PyToken<'_>,
     hay_bits: u64,
@@ -1691,7 +1688,6 @@ pub(crate) fn molt_is_truthy_attached_body(_py: &crate::PyToken<'_>, val: u64) -
 
 /// Fast truthy check for known-int values. Zero is falsy, everything else is truthy.
 /// Skips the 24-type dispatch chain in molt_is_truthy.
-
 pub(crate) fn molt_is_truthy_int_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> i64 {
     let obj = obj_from_bits(bits);
     if let Some(i) = crate::to_i64(obj) {
@@ -1706,7 +1702,6 @@ pub(crate) fn molt_is_truthy_int_attached_body(_py: &crate::PyToken<'_>, bits: u
 
 /// Fast truthy check for known-bool values. False is falsy, True is truthy.
 /// Skips the 24-type dispatch chain in molt_is_truthy.
-
 pub(crate) fn molt_is_truthy_bool_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> i64 {
     let obj = obj_from_bits(bits);
     if obj.is_bool() {
@@ -1727,7 +1722,6 @@ pub(crate) fn molt_is_truthy_bool_attached_body(_py: &crate::PyToken<'_>, bits: 
 /// Fallback: if the NaN-boxed value is neither int nor bool, delegates to
 /// `molt_is_truthy_int` which itself falls back to the full GIL-wrapped
 /// `molt_is_truthy`.
-
 pub(crate) fn molt_is_truthy_int_nogil_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> i64 {
     // Delegate to the existing GIL-free implementation.
     // This is not a wrapper for code-size reasons — the compiler can inline
@@ -1739,7 +1733,6 @@ pub(crate) fn molt_is_truthy_int_nogil_attached_body(_py: &crate::PyToken<'_>, b
 ///
 /// Same contract as `molt_is_truthy_int_nogil`: no GIL, no catch_unwind,
 /// no signal checks.
-
 pub(crate) fn molt_is_truthy_bool_nogil_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> i64 {
     molt_is_truthy_bool_attached_body(_py, bits)
 }

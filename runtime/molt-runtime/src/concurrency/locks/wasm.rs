@@ -618,7 +618,6 @@ where
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_lock_new_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let lock = Rc::new(MoltLock::new());
@@ -628,7 +627,6 @@ pub(crate) unsafe fn molt_lock_new_attached_body(_py: &crate::PyToken<'_>) -> u6
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_lock_acquire_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -657,7 +655,6 @@ pub(crate) unsafe fn molt_lock_acquire_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_lock_release_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -674,7 +671,6 @@ pub(crate) unsafe fn molt_lock_release_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_lock_locked_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -688,7 +684,6 @@ pub(crate) unsafe fn molt_lock_locked_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_lock_drop_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -707,7 +702,6 @@ pub(crate) unsafe fn molt_lock_drop_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_rlock_new_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let lock = Rc::new(MoltRLock::new());
@@ -717,7 +711,6 @@ pub(crate) unsafe fn molt_rlock_new_attached_body(_py: &crate::PyToken<'_>) -> u
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_rlock_acquire_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -746,7 +739,6 @@ pub(crate) unsafe fn molt_rlock_acquire_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_rlock_release_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -767,7 +759,6 @@ pub(crate) unsafe fn molt_rlock_release_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_rlock_locked_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -781,7 +772,6 @@ pub(crate) unsafe fn molt_rlock_locked_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_rlock_is_owned_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -795,7 +785,6 @@ pub(crate) unsafe fn molt_rlock_is_owned_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_rlock_release_save_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -816,7 +805,6 @@ pub(crate) unsafe fn molt_rlock_release_save_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_rlock_acquire_restore_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -838,7 +826,6 @@ pub(crate) unsafe fn molt_rlock_acquire_restore_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_rlock_drop_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -857,7 +844,6 @@ pub(crate) unsafe fn molt_rlock_drop_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_condition_new_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let condition = Rc::new(MoltCondition::new());
@@ -867,7 +853,6 @@ pub(crate) unsafe fn molt_condition_new_attached_body(_py: &crate::PyToken<'_>) 
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_condition_wait_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -899,7 +884,6 @@ pub(crate) unsafe fn molt_condition_wait_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_condition_notify_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -924,7 +908,6 @@ pub(crate) unsafe fn molt_condition_notify_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_condition_drop_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -943,7 +926,6 @@ pub(crate) unsafe fn molt_condition_drop_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_event_new_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let event = Rc::new(MoltEvent::new());
@@ -953,7 +935,6 @@ pub(crate) unsafe fn molt_event_new_attached_body(_py: &crate::PyToken<'_>) -> u
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_event_set_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -968,7 +949,6 @@ pub(crate) unsafe fn molt_event_set_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_event_clear_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -983,7 +963,6 @@ pub(crate) unsafe fn molt_event_clear_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_event_is_set_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -997,7 +976,6 @@ pub(crate) unsafe fn molt_event_is_set_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_event_wait_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1031,7 +1009,6 @@ pub(crate) unsafe fn molt_event_wait_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_event_drop_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1050,7 +1027,6 @@ pub(crate) unsafe fn molt_event_drop_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_semaphore_new_attached_body(
     _py: &crate::PyToken<'_>,
     value_bits: u64,
@@ -1079,7 +1055,6 @@ pub(crate) unsafe fn molt_semaphore_new_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_semaphore_acquire_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1125,7 +1100,6 @@ pub(crate) unsafe fn molt_semaphore_acquire_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_semaphore_release_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1157,7 +1131,6 @@ pub(crate) unsafe fn molt_semaphore_release_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_semaphore_drop_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1176,7 +1149,6 @@ pub(crate) unsafe fn molt_semaphore_drop_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_barrier_new_attached_body(
     _py: &crate::PyToken<'_>,
     parties_bits: u64,
@@ -1209,7 +1181,6 @@ pub(crate) unsafe fn molt_barrier_new_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_barrier_wait_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1261,7 +1232,6 @@ pub(crate) unsafe fn molt_barrier_wait_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_barrier_abort_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1280,7 +1250,6 @@ pub(crate) unsafe fn molt_barrier_abort_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_barrier_reset_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1301,7 +1270,6 @@ pub(crate) unsafe fn molt_barrier_reset_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_barrier_parties_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1315,7 +1283,6 @@ pub(crate) unsafe fn molt_barrier_parties_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_barrier_n_waiting_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1329,7 +1296,6 @@ pub(crate) unsafe fn molt_barrier_n_waiting_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_barrier_broken_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1343,7 +1309,6 @@ pub(crate) unsafe fn molt_barrier_broken_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_barrier_drop_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1362,7 +1327,6 @@ pub(crate) unsafe fn molt_barrier_drop_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_local_new_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let local = Rc::new(MoltLocal::new());
@@ -1372,7 +1336,6 @@ pub(crate) unsafe fn molt_local_new_attached_body(_py: &crate::PyToken<'_>) -> u
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_local_get_dict_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1394,7 +1357,6 @@ pub(crate) unsafe fn molt_local_get_dict_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_local_drop_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1417,7 +1379,6 @@ pub(crate) unsafe fn molt_local_drop_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_queue_new_attached_body(
     _py: &crate::PyToken<'_>,
     maxsize_bits: u64,
@@ -1433,7 +1394,6 @@ pub(crate) unsafe fn molt_queue_new_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_queue_lifo_new_attached_body(
     _py: &crate::PyToken<'_>,
     maxsize_bits: u64,
@@ -1449,7 +1409,6 @@ pub(crate) unsafe fn molt_queue_lifo_new_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_queue_priority_new_attached_body(
     _py: &crate::PyToken<'_>,
     maxsize_bits: u64,
@@ -1465,7 +1424,6 @@ pub(crate) unsafe fn molt_queue_priority_new_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_queue_qsize_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1479,7 +1437,6 @@ pub(crate) unsafe fn molt_queue_qsize_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_queue_empty_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1493,7 +1450,6 @@ pub(crate) unsafe fn molt_queue_empty_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_queue_full_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1507,7 +1463,6 @@ pub(crate) unsafe fn molt_queue_full_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_queue_put_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1540,7 +1495,6 @@ pub(crate) unsafe fn molt_queue_put_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_queue_get_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1568,7 +1522,6 @@ pub(crate) unsafe fn molt_queue_get_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_queue_shutdown_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1585,7 +1538,6 @@ pub(crate) unsafe fn molt_queue_shutdown_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_queue_is_shutdown_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1599,7 +1551,6 @@ pub(crate) unsafe fn molt_queue_is_shutdown_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_queue_task_done_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1613,7 +1564,6 @@ pub(crate) unsafe fn molt_queue_task_done_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_queue_join_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,
@@ -1628,7 +1578,6 @@ pub(crate) unsafe fn molt_queue_join_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) unsafe fn molt_queue_drop_attached_body(
     _py: &crate::PyToken<'_>,
     handle_bits: u64,

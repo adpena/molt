@@ -46,7 +46,6 @@ pub(super) fn normalize_raise_operand(py: &PyToken<'_>, bits: u64, cause: bool) 
 
 /// Both source expressions have already been evaluated, exception first and
 /// cause second. MISSING means no `from` clause; None is an explicit cause.
-
 pub(crate) fn molt_exception_prepare_raise_attached_body(
     _py: &crate::PyToken<'_>,
     exc_bits: u64,

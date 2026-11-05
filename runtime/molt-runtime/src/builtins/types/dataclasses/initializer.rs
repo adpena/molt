@@ -218,7 +218,6 @@ fn text<'guard>(py: &'guard PyToken<'guard>, bytes: &[u8]) -> Result<DcValue<'gu
 
 /// Capture the function's actual environment before field/descriptor callbacks.
 /// This only reads __dict__; it grants no writer access to arbitrary names.
-
 pub(crate) fn molt_dataclasses_init_globals_attached_body(
     _py: &crate::PyToken<'_>,
     module: u64,

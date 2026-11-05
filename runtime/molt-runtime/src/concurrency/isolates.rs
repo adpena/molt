@@ -3088,7 +3088,6 @@ pub(crate) unsafe fn molt_thread_registry_active_count_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_thread_registry_set_main_attached_body(
     _py: &crate::PyToken<'_>,
     _name_bits: u64,
@@ -3098,7 +3097,6 @@ pub(crate) fn molt_thread_registry_set_main_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_thread_registry_register_attached_body(
     _py: &crate::PyToken<'_>,
     _handle_bits: u64,
@@ -3109,7 +3107,6 @@ pub(crate) fn molt_thread_registry_register_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_thread_registry_forget_attached_body(
     _py: &crate::PyToken<'_>,
     _handle_bits: u64,
@@ -3118,7 +3115,6 @@ pub(crate) fn molt_thread_registry_forget_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_thread_registry_snapshot_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let list_ptr = alloc_list(_py, &[]);
@@ -3131,7 +3127,6 @@ pub(crate) fn molt_thread_registry_snapshot_attached_body(_py: &crate::PyToken<'
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_thread_registry_current_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     MoltObject::none().bits()
 }
@@ -3140,13 +3135,11 @@ pub(crate) fn molt_thread_registry_current_attached_body(_py: &crate::PyToken<'_
 const WASM_MAIN_THREAD_IDENT: i64 = 1;
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_thread_registry_active_count_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     MoltObject::from_int(WASM_MAIN_THREAD_IDENT).bits()
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_thread_spawn_attached_body(_py: &crate::PyToken<'_>, _payload_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         raise_exception::<_>(
@@ -3158,7 +3151,6 @@ pub(crate) fn molt_thread_spawn_attached_body(_py: &crate::PyToken<'_>, _payload
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_thread_spawn_shared_attached_body(
     _py: &crate::PyToken<'_>,
     _callable_bits: u64,
@@ -3175,7 +3167,6 @@ pub(crate) fn molt_thread_spawn_shared_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_thread_join_attached_body(
     _py: &crate::PyToken<'_>,
     _handle_bits: u64,
@@ -3185,7 +3176,6 @@ pub(crate) fn molt_thread_join_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_thread_is_alive_attached_body(
     _py: &crate::PyToken<'_>,
     _handle_bits: u64,
@@ -3194,13 +3184,11 @@ pub(crate) fn molt_thread_is_alive_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_thread_ident_attached_body(_py: &crate::PyToken<'_>, _handle_bits: u64) -> u64 {
     MoltObject::none().bits()
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_thread_native_id_attached_body(
     _py: &crate::PyToken<'_>,
     _handle_bits: u64,
@@ -3209,13 +3197,11 @@ pub(crate) fn molt_thread_native_id_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_thread_current_ident_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     MoltObject::from_int(WASM_MAIN_THREAD_IDENT).bits()
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_thread_current_native_id_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     // WASM has no OS TID, but CPython's API contract is a stable non-zero int.
     // Use the same single-thread identity authority as get_ident().
@@ -3223,13 +3209,11 @@ pub(crate) fn molt_thread_current_native_id_attached_body(_py: &crate::PyToken<'
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_thread_stack_size_get_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     MoltObject::from_int(0).bits()
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_thread_stack_size_set_attached_body(
     _py: &crate::PyToken<'_>,
     _size_bits: u64,
@@ -3238,7 +3222,6 @@ pub(crate) fn molt_thread_stack_size_set_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_thread_drop_attached_body(_py: &crate::PyToken<'_>, _handle_bits: u64) -> u64 {
     MoltObject::none().bits()
 }

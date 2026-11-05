@@ -81,7 +81,6 @@ struct WsPollStream {
 
 /// # Safety
 /// `out_left` and `out_right` must be valid, writable pointers to `u64` slots.
-
 pub(crate) unsafe fn molt_ws_pair_attached_body(
     _py: &crate::PyToken<'_>,
     capacity_bits: u64,
@@ -279,7 +278,7 @@ extern "C" fn ws_send_host_hook(ctx: *mut u8, data_ptr: *const u8, len: usize) -
         HostSendOutcome::Error(errno) => {
             let guard = crate::GilGuard::new();
             raise_exception::<i64>(
-                &guard.token(),
+                guard.token(),
                 BuiltinExc::OSError,
                 &format!("websocket host send failed with errno {}", -errno),
             )
@@ -315,7 +314,7 @@ extern "C" fn ws_recv_host_hook(ctx: *mut u8) -> i64 {
                 buf.resize(cap, 0);
                 continue;
             }
-            let ptr = alloc_bytes(&crate::GilGuard::new().token(), &buf[..len]);
+            let ptr = alloc_bytes(crate::GilGuard::new().token(), &buf[..len]);
             if ptr.is_null() {
                 return MoltObject::none().bits() as i64;
             }
@@ -720,7 +719,6 @@ pub(crate) unsafe fn molt_asyncio_tls_client_connect_new_attached_body(
 }
 
 #[cfg(molt_wasm_net)]
-
 pub(crate) fn molt_asyncio_tls_client_connect_new_attached_body(
     _py: &crate::PyToken<'_>,
     _host_bits: u64,
@@ -787,7 +785,6 @@ pub(crate) unsafe fn molt_asyncio_tls_client_from_fd_new_attached_body(
 }
 
 #[cfg(molt_wasm_net)]
-
 pub(crate) fn molt_asyncio_tls_client_from_fd_new_attached_body(
     _py: &crate::PyToken<'_>,
     _fd_bits: u64,
@@ -869,7 +866,6 @@ pub(crate) fn molt_asyncio_tls_server_payload_attached_body(
 }
 
 #[cfg(molt_wasm_net)]
-
 pub(crate) fn molt_asyncio_tls_server_payload_attached_body(
     _py: &crate::PyToken<'_>,
     _ssl_bits: u64,
@@ -928,7 +924,6 @@ pub(crate) unsafe fn molt_asyncio_tls_server_from_fd_new_attached_body(
 }
 
 #[cfg(molt_wasm_net)]
-
 pub(crate) fn molt_asyncio_tls_server_from_fd_new_attached_body(
     _py: &crate::PyToken<'_>,
     _fd_bits: u64,
@@ -999,7 +994,6 @@ pub(crate) unsafe fn molt_ws_connect_attached_body(
 }
 
 #[cfg(molt_net)]
-
 pub(crate) fn molt_ws_connect_obj_attached_body(_py: &crate::PyToken<'_>, url_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let url = match string_obj_to_owned(obj_from_bits(url_bits)) {
@@ -1069,7 +1063,6 @@ fn ws_connect_error(_py: &PyToken<'_>, code: i32) -> u64 {
 }
 
 #[cfg(molt_wasm_net)]
-
 /// # Safety
 /// Caller must ensure `url_ptr` is valid for `url_len` bytes and `out` is writable.
 pub(crate) unsafe fn molt_ws_connect_attached_body(
@@ -1177,7 +1170,6 @@ pub(crate) fn molt_ws_wait_new_attached_body(
 }
 
 #[cfg(molt_wasm_net)]
-
 pub(crate) fn molt_ws_wait_new_attached_body(
     _py: &crate::PyToken<'_>,
     ws_bits: u64,
@@ -1351,7 +1343,6 @@ pub(crate) unsafe fn molt_ws_wait_attached_body(_py: &crate::PyToken<'_>, obj_bi
 }
 
 #[cfg(molt_wasm_net)]
-
 /// # Safety
 /// Caller must ensure `obj_bits` is a valid WebSocket object pointer.
 pub(crate) unsafe fn molt_ws_wait_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> i64 {

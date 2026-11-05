@@ -7,18 +7,18 @@ pub(super) unsafe extern "C" fn hook_unicode_new(len: usize, maxchar: u32) -> Ow
     with_gil(|py| {
         if maxchar > 0x10ffff || len > isize::MAX as usize {
             crate::raise_exception::<()>(
-                &py,
+                py,
                 BuiltinExc::ValueError,
                 "invalid Unicode construction size or maximum character",
             );
             return OwnedHandleResult::error();
         }
         let Some(capacity) = len.checked_mul(4) else {
-            crate::builtins::exceptions::record_memory_error_without_allocation(&py);
+            crate::builtins::exceptions::record_memory_error_without_allocation(py);
             return OwnedHandleResult::error();
         };
         let ptr = crate::object::builders::alloc_inline_bytes_with_len(
-            &py,
+            py,
             capacity,
             crate::object::builders::InlineBytesKind::String,
         );
@@ -45,7 +45,7 @@ pub(super) unsafe extern "C" fn hook_unicode_commit(
             .filter(|ptr| unsafe { crate::object_type_id(*ptr) == crate::TYPE_ID_STRING })
         else {
             crate::raise_exception::<()>(
-                &py,
+                py,
                 BuiltinExc::SystemError,
                 "Unicode construction requires string storage",
             );
@@ -56,7 +56,7 @@ pub(super) unsafe extern "C" fn hook_unicode_commit(
         });
         if len > capacity || (len != 0 && data.is_null()) {
             crate::raise_exception::<()>(
-                &py,
+                py,
                 BuiltinExc::SystemError,
                 "Unicode construction exceeded reserved storage",
             );
@@ -73,7 +73,7 @@ pub(super) unsafe extern "C" fn hook_unicode_commit(
             crate::object::layout::InlineBytesStorage::set_len(ptr, len);
         }
         crate::object::object_set_state(ptr, 0);
-        crate::object::ops_string::utf8_cache_remove(&py, ptr as usize);
+        crate::object::ops_string::utf8_cache_remove(py, ptr as usize);
         0
     })
 }

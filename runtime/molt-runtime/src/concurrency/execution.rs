@@ -188,7 +188,6 @@ pub(crate) fn current_thread_has_c_extension_execution_context() -> bool {
 /// Generator suspension returns to the invoker and a resume obtains a fresh
 /// snapshot. A GIL-only caller, detached caller or diagnostic run uses the
 /// existing checked runtime transitions instead of touching header cells.
-
 pub(crate) fn molt_refcount_admission_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     refcount_admission_in(_py.execution_tls())
 }
@@ -848,7 +847,7 @@ impl RuntimeExecutionGuard {
             .custody
             .take()
             .expect("execution custody finished twice");
-        finish_execution(custody, &owned.gil.token(), owned.active_lifecycle_lease);
+        finish_execution(custody, owned.gil.token(), owned.active_lifecycle_lease);
         owned.active_lifecycle_lease = false;
     }
 }
@@ -1245,7 +1244,7 @@ pub(crate) fn release_persistent_runtime_execution() -> bool {
         || {
             finish_execution(
                 execution.custody,
-                &gil.token(),
+                gil.token(),
                 execution.active_lifecycle_lease,
             );
             drop(gil);

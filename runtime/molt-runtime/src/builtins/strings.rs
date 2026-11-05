@@ -1731,7 +1731,6 @@ unsafe fn write_bits_out(out: *mut u64, bits: u64) {
 /// points to eight writable bytes (alignment is not required).
 /// A valid out is initialized to None before failure; nonzero status records
 /// a pending exception (1: invalid input, 2: output/allocation failure).
-
 pub(crate) unsafe fn molt_string_from_bytes_attached_body(
     _py: &crate::PyToken<'_>,
     ptr: *const u8,
@@ -1850,7 +1849,6 @@ pub(crate) unsafe fn molt_string_from_bytes_attached_body(
 /// points to eight writable bytes (alignment is not required).
 /// A valid out is initialized to None before failure; nonzero status records
 /// a pending exception (1: invalid input, 2: output/allocation failure).
-
 pub(crate) unsafe fn molt_bytes_from_bytes_attached_body(
     _py: &crate::PyToken<'_>,
     ptr: *const u8,

@@ -123,25 +123,25 @@ pub(crate) fn molt_cpython_abi_run_static_extension_init_attached_body(
 ) -> u64 {
     with_gil(|py| {
         if !register_cpython_hooks() {
-            if crate::exception_pending(&py) {
+            if crate::exception_pending(py) {
                 return MoltObject::none().bits();
             }
             return crate::raise_exception::<u64>(
-                &py,
+                py,
                 BuiltinExc::SystemError,
                 "C extension runtime hook registration failed",
             );
         }
         let Ok(address) = usize::try_from(init_address) else {
             return crate::raise_exception::<u64>(
-                &py,
+                py,
                 BuiltinExc::SystemError,
                 "extension initializer address is out of range",
             );
         };
         if address == 0 {
             return crate::raise_exception::<u64>(
-                &py,
+                py,
                 BuiltinExc::SystemError,
                 "extension initializer is NULL",
             );
@@ -151,7 +151,7 @@ pub(crate) fn molt_cpython_abi_run_static_extension_init_attached_body(
         };
         unsafe {
             run_extension_init(
-                &py,
+                py,
                 init,
                 name_bits,
                 MoltObject::none().bits(),
@@ -795,7 +795,7 @@ pub(super) unsafe extern "C" fn hook_initialize_extension(
     create_only: bool,
 ) -> OwnedHandleResult {
     let bits = with_gil(|py| unsafe {
-        run_extension_init(&py, init, name_bits, origin_bits, spec_bits, create_only)
+        run_extension_init(py, init, name_bits, origin_bits, spec_bits, create_only)
     });
     owned_result_from_pending(bits)
 }

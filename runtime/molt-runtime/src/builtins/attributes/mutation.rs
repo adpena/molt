@@ -529,7 +529,6 @@ unsafe fn mutate_class_physical_dictionary(
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-
 pub(crate) unsafe fn molt_set_attr_generic_attached_body(
     _py: &crate::PyToken<'_>,
     obj_ptr: *mut u8,
@@ -1417,7 +1416,6 @@ pub(crate) unsafe fn object_delattr_raw(
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-
 pub(crate) unsafe fn molt_set_attr_ptr_attached_body(
     _py: &crate::PyToken<'_>,
     obj_ptr: *mut u8,
@@ -1440,7 +1438,6 @@ pub(crate) unsafe fn molt_set_attr_ptr_attached_body(
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-
 pub(crate) unsafe fn molt_del_attr_generic_attached_body(
     _py: &crate::PyToken<'_>,
     obj_ptr: *mut u8,
@@ -1469,7 +1466,6 @@ pub(crate) unsafe fn molt_del_attr_generic_attached_body(
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-
 pub(crate) unsafe fn molt_del_attr_ptr_attached_body(
     _py: &crate::PyToken<'_>,
     obj_ptr: *mut u8,
@@ -1485,7 +1481,6 @@ pub(crate) unsafe fn molt_del_attr_ptr_attached_body(
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-
 pub(crate) unsafe fn molt_set_attr_object_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -1512,7 +1507,6 @@ pub(crate) unsafe fn molt_set_attr_object_attached_body(
 ///
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-
 pub(crate) unsafe fn molt_set_attr_object_ic_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -1567,7 +1561,6 @@ pub(crate) unsafe fn molt_set_attr_object_ic_attached_body(
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-
 pub(crate) unsafe fn molt_del_attr_object_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,

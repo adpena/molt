@@ -187,7 +187,6 @@ pub(crate) fn molt_io_wait_new_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_io_wait_new_attached_body(
     _py: &crate::PyToken<'_>,
     socket_bits: u64,
@@ -233,7 +232,6 @@ pub(crate) fn molt_io_wait_new_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 /// # Safety
 /// Caller must ensure `obj_bits` is a valid I/O object pointer.
 pub(crate) unsafe fn molt_io_wait_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> i64 {

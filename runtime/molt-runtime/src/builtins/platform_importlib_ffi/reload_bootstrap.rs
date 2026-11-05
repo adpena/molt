@@ -2,7 +2,6 @@ use super::*;
 use crate::BuiltinExc;
 
 /// The Python facade owns reload discovery/reentry; this is only _exec.
-
 pub(crate) fn molt_importlib_reload_attached_body(
     _py: &crate::PyToken<'_>,
     module_bits: u64,

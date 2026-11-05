@@ -14,7 +14,6 @@ pub(crate) fn molt_io_default_buffer_size_attached_body(_py: &crate::PyToken<'_>
 /// startup flags and warning engine are the ones `open` and `TextIOWrapper`
 /// use. The `_io` wrapper that carries the CPython signature is one Python
 /// frame, so a CPython level of 0 or 1 (the caller) is level 2 here.
-
 pub(crate) fn molt_io_text_encoding_attached_body(
     _py: &crate::PyToken<'_>,
     encoding_bits: u64,
@@ -318,7 +317,10 @@ pub(crate) fn molt_buffered_init_attached_body(
     })
 }
 
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub(crate) fn molt_text_io_wrapper_new_attached_body(
     _py: &crate::PyToken<'_>,
     cls_bits: u64,
@@ -443,7 +445,10 @@ pub(crate) fn molt_text_io_wrapper_new_attached_body(
     })
 }
 
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub(crate) fn molt_text_io_wrapper_init_attached_body(
     _py: &crate::PyToken<'_>,
     _self_bits: u64,

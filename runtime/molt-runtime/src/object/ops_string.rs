@@ -248,7 +248,6 @@ pub(crate) fn molt_string_rindex_attached_body(
 // tuples; the backends continue to call the _slice variants directly.
 
 /// str.find(sub, start=None, end=None) — method dispatch entry point.
-
 pub(crate) fn molt_string_find_method_attached_body(
     _py: &crate::PyToken<'_>,
     hay_bits: u64,
@@ -280,7 +279,6 @@ pub(crate) fn molt_string_find_method_attached_body(
 }
 
 /// str.rfind(sub, start=None, end=None)
-
 pub(crate) fn molt_string_rfind_method_attached_body(
     _py: &crate::PyToken<'_>,
     hay_bits: u64,
@@ -312,7 +310,6 @@ pub(crate) fn molt_string_rfind_method_attached_body(
 }
 
 /// str.index(sub, start=None, end=None)
-
 pub(crate) fn molt_string_index_method_attached_body(
     _py: &crate::PyToken<'_>,
     hay_bits: u64,
@@ -344,7 +341,6 @@ pub(crate) fn molt_string_index_method_attached_body(
 }
 
 /// str.rindex(sub, start=None, end=None)
-
 pub(crate) fn molt_string_rindex_method_attached_body(
     _py: &crate::PyToken<'_>,
     hay_bits: u64,
@@ -376,7 +372,6 @@ pub(crate) fn molt_string_rindex_method_attached_body(
 }
 
 /// str.count(sub, start=None, end=None)
-
 pub(crate) fn molt_string_count_method_attached_body(
     _py: &crate::PyToken<'_>,
     hay_bits: u64,
@@ -408,7 +403,6 @@ pub(crate) fn molt_string_count_method_attached_body(
 }
 
 /// str.startswith(prefix, start=None, end=None)
-
 pub(crate) fn molt_string_startswith_method_attached_body(
     _py: &crate::PyToken<'_>,
     hay_bits: u64,
@@ -440,7 +434,6 @@ pub(crate) fn molt_string_startswith_method_attached_body(
 }
 
 /// str.endswith(suffix, start=None, end=None)
-
 pub(crate) fn molt_string_endswith_method_attached_body(
     _py: &crate::PyToken<'_>,
     hay_bits: u64,

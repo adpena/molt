@@ -464,7 +464,6 @@ pub(super) fn loop_task_sleep_scheduled(
 
 /// Bind scheduling ownership before the Task's first spawn. The existing token
 /// holds the immutable loop identity, so every subsequent wake uses the same FIFO.
-
 pub(crate) fn molt_event_loop_spawn_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -503,7 +502,6 @@ pub(crate) fn molt_event_loop_spawn_attached_body(
 // --- Intrinsics ---
 
 /// Create a new event loop. Returns a handle (u64).
-
 pub(crate) fn molt_event_loop_new_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         match event_loop_registry(_py).alloc_loop() {
@@ -517,7 +515,6 @@ pub(crate) fn molt_event_loop_new_attached_body(_py: &crate::PyToken<'_>) -> u64
 /// This is the fast path — no lock acquire/release Python method calls,
 /// just a direct VecDeque push. Any thread may publish: a parked loop is
 /// signalled, which is what makes `call_soon_threadsafe` wake the loop.
-
 pub(crate) fn molt_event_loop_call_soon_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -560,7 +557,6 @@ fn timer_registration_result(py: &crate::PyToken<'_>, timer: TimerRegistrationRe
 
 /// Schedule a callback after `delay_secs` seconds.
 /// Returns a timer ID that can be used for cancellation.
-
 pub(crate) fn molt_event_loop_call_later_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -594,7 +590,6 @@ pub(crate) fn molt_event_loop_call_later_attached_body(
 }
 
 /// Schedule a callback at absolute time `when_secs` (monotonic clock).
-
 pub(crate) fn molt_event_loop_call_at_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -633,7 +628,6 @@ pub(crate) fn molt_event_loop_call_at_attached_body(
 /// timers never leave retained handles or heap tombstones until their deadline.
 /// A parked loop is not signalled: it wakes once at the old deadline, finds
 /// nothing due, and parks toward the next one.
-
 pub(crate) fn molt_event_loop_cancel_timer_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -658,7 +652,6 @@ pub(crate) fn molt_event_loop_cancel_timer_attached_body(
 }
 
 /// Register a file descriptor for read readiness notification.
-
 pub(crate) fn molt_event_loop_add_reader_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -690,7 +683,6 @@ pub(crate) fn molt_event_loop_add_reader_attached_body(
 }
 
 /// Remove a file descriptor's read readiness callback.
-
 pub(crate) fn molt_event_loop_remove_reader_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -711,7 +703,6 @@ pub(crate) fn molt_event_loop_remove_reader_attached_body(
 }
 
 /// Register a file descriptor for write readiness notification.
-
 pub(crate) fn molt_event_loop_add_writer_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -743,7 +734,6 @@ pub(crate) fn molt_event_loop_add_writer_attached_body(
 }
 
 /// Remove a file descriptor's write readiness callback.
-
 pub(crate) fn molt_event_loop_remove_writer_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -766,7 +756,6 @@ pub(crate) fn molt_event_loop_remove_writer_attached_body(
 /// Execute one turn of the loop's sole callback queue. Tasks may enqueue Handles;
 /// due timers join those Handles before the batch is captured. Anything scheduled
 /// by a callback belongs to the next turn, regardless of the active loop driver.
-
 pub(crate) fn molt_event_loop_run_once_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -834,7 +823,6 @@ unsafe fn run_event_loop_handle(_py: &crate::PyToken<'_>, handle_bits: u64) {
 }
 
 /// Get the current monotonic time of the event loop (seconds, float).
-
 pub(crate) fn molt_event_loop_time_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -854,7 +842,6 @@ pub(crate) fn molt_event_loop_time_attached_body(
 /// Python signal handlers never run here: a delivery ends the wait, and the
 /// generated eval-breaker safepoint after this call returns dispatches them
 /// (`signal_ext::signal_safepoint`), as CPython does after `select` returns.
-
 pub(crate) fn molt_event_loop_wait_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -896,7 +883,6 @@ pub(crate) fn molt_event_loop_wait_attached_body(
 /// Wake the loop for state kept outside its queues (a `stop()` request). The
 /// request is consumed by the next idle observation, so a racing park cannot
 /// lose it. `stop()` never raises in CPython: a retired handle is a no-op.
-
 pub(crate) fn molt_event_loop_wake_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -913,7 +899,6 @@ pub(crate) fn molt_event_loop_wake_attached_body(
 }
 
 /// Start the event loop (set state to running).
-
 pub(crate) fn molt_event_loop_start_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -931,7 +916,6 @@ pub(crate) fn molt_event_loop_start_attached_body(
 }
 
 /// Stop the event loop (set state to idle).
-
 pub(crate) fn molt_event_loop_stop_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -950,7 +934,6 @@ pub(crate) fn molt_event_loop_stop_attached_body(
 }
 
 /// Check if the event loop is currently running.
-
 pub(crate) fn molt_event_loop_is_running_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -964,7 +947,6 @@ pub(crate) fn molt_event_loop_is_running_attached_body(
 }
 
 /// Check if the event loop is closed.
-
 pub(crate) fn molt_event_loop_is_closed_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -980,7 +962,6 @@ pub(crate) fn molt_event_loop_is_closed_attached_body(
 /// Close the event loop. Cleans up all pending callbacks and I/O registrations,
 /// releases the wake parker, and wakes a thread still parked on the loop so it
 /// observes the close instead of sleeping on a released pipe.
-
 pub(crate) fn molt_event_loop_close_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -1017,7 +998,6 @@ pub(crate) fn molt_event_loop_close_attached_body(
 }
 
 /// Drop the event loop handle. Closes if not already closed, then removes from registry.
-
 pub(crate) fn molt_event_loop_drop_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -1038,7 +1018,6 @@ pub(crate) fn molt_event_loop_drop_attached_body(
 }
 
 /// Set the event loop's debug mode.
-
 pub(crate) fn molt_event_loop_set_debug_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -1056,7 +1035,6 @@ pub(crate) fn molt_event_loop_set_debug_attached_body(
 }
 
 /// Get the event loop's debug mode.
-
 pub(crate) fn molt_event_loop_get_debug_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -1070,7 +1048,6 @@ pub(crate) fn molt_event_loop_get_debug_attached_body(
 }
 
 /// Set the event loop's exception handler callback.
-
 pub(crate) fn molt_event_loop_set_exception_handler_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -1091,7 +1068,6 @@ pub(crate) fn molt_event_loop_set_exception_handler_attached_body(
 }
 
 /// Get the event loop's exception handler callback.
-
 pub(crate) fn molt_event_loop_get_exception_handler_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -1108,7 +1084,6 @@ pub(crate) fn molt_event_loop_get_exception_handler_attached_body(
 }
 
 /// Set the event loop's task factory callback.
-
 pub(crate) fn molt_event_loop_set_task_factory_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -1129,7 +1104,6 @@ pub(crate) fn molt_event_loop_set_task_factory_attached_body(
 }
 
 /// Get the event loop's task factory callback.
-
 pub(crate) fn molt_event_loop_get_task_factory_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -1148,7 +1122,6 @@ pub(crate) fn molt_event_loop_get_task_factory_attached_body(
 /// Notify the event loop that a file descriptor is ready for reading.
 /// Called by the IoPoller when I/O readiness is detected.
 /// Moves the reader's callback to the ready queue for execution.
-
 pub(crate) fn molt_event_loop_notify_reader_ready_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
@@ -1169,7 +1142,6 @@ pub(crate) fn molt_event_loop_notify_reader_ready_attached_body(
 }
 
 /// Notify the event loop that a file descriptor is ready for writing.
-
 pub(crate) fn molt_event_loop_notify_writer_ready_attached_body(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,

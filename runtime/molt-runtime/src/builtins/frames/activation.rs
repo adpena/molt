@@ -180,7 +180,6 @@ fn parse_layout(
 }
 
 /// Publish the compiler's immutable locals layout for one exact poll target.
-
 pub(crate) fn molt_stateful_locals_register_attached_body(
     _py: &crate::PyToken<'_>,
     fn_ptr: u64,
@@ -970,7 +969,6 @@ fn active_locals_layout<'a, 'py>(
 /// reenter Python. Constructor arguments and captured free cells remain intact.
 /// A prefix a frame proxy initialized before the body started (writing a body
 /// local of the created activation) is adopted as it stands.
-
 pub(crate) fn molt_frame_locals_begin_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
         let Some((owner, layout)) = active_locals_layout(py) else {
@@ -998,7 +996,6 @@ pub(crate) fn molt_frame_locals_begin_attached_body(_py: &crate::PyToken<'_>) ->
 
 /// Atomically publish one prologue cell and its interpretation before releasing
 /// a displaced argument. The immutable ordinal validates publication order.
-
 pub(crate) fn molt_frame_cell_publish_attached_body(
     _py: &crate::PyToken<'_>,
     offset_bits: u64,

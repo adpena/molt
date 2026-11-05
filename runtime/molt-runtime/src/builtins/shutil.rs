@@ -231,7 +231,6 @@ fn rmtree_recursive(path: &Path) -> std::io::Result<()> {
 
 /// `shutil.copy(src, dst)` → str
 /// Copies file data and permissions but not metadata timestamps.
-
 pub(crate) fn molt_shutil_copy_attached_body(
     _py: &crate::PyToken<'_>,
     src_bits: u64,
@@ -272,7 +271,6 @@ pub(crate) fn molt_shutil_copy_attached_body(
 
 /// `shutil.copy2(src, dst)` → str
 /// Copies file data, permissions, and timestamps.
-
 pub(crate) fn molt_shutil_copy2_attached_body(
     _py: &crate::PyToken<'_>,
     src_bits: u64,
@@ -308,7 +306,6 @@ pub(crate) fn molt_shutil_copy2_attached_body(
 }
 
 /// `shutil.copymode(src, dst, follow_symlinks=True)` → None
-
 pub(crate) fn molt_shutil_copymode_attached_body(
     _py: &crate::PyToken<'_>,
     src_bits: u64,
@@ -340,7 +337,6 @@ pub(crate) fn molt_shutil_copymode_attached_body(
 }
 
 /// `shutil.copystat(src, dst, follow_symlinks=True)` → None
-
 pub(crate) fn molt_shutil_copystat_attached_body(
     _py: &crate::PyToken<'_>,
     src_bits: u64,
@@ -372,7 +368,6 @@ pub(crate) fn molt_shutil_copystat_attached_body(
 }
 
 /// `shutil.copytree(src, dst, dirs_exist_ok=False)` → str
-
 pub(crate) fn molt_shutil_copytree_attached_body(
     _py: &crate::PyToken<'_>,
     src_bits: u64,
@@ -404,7 +399,6 @@ pub(crate) fn molt_shutil_copytree_attached_body(
 }
 
 /// `shutil.rmtree(path)` → None
-
 pub(crate) fn molt_shutil_rmtree_attached_body(_py: &crate::PyToken<'_>, path_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = has_capability(_py, "fs.write");
@@ -434,7 +428,6 @@ pub(crate) fn molt_shutil_rmtree_attached_body(_py: &crate::PyToken<'_>, path_bi
 
 /// `shutil.move(src, dst)` → str
 /// Attempts rename first; falls back to copy+delete for cross-device moves.
-
 pub(crate) fn molt_shutil_move_attached_body(
     _py: &crate::PyToken<'_>,
     src_bits: u64,
@@ -599,7 +592,6 @@ pub(crate) fn molt_shutil_disk_usage_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_shutil_disk_usage_attached_body(
     _py: &crate::PyToken<'_>,
     _path_bits: u64,
@@ -704,7 +696,6 @@ pub(crate) fn molt_shutil_get_terminal_size_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_shutil_get_terminal_size_attached_body(
     _py: &crate::PyToken<'_>,
     fallback_bits: u64,
@@ -883,7 +874,6 @@ fn zip_add_directory<W: std::io::Write + std::io::Seek>(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_shutil_make_archive_attached_body(
     _py: &crate::PyToken<'_>,
     _base_name_bits: u64,
@@ -989,7 +979,6 @@ fn unpack_zip(archive: &Path, dest: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_shutil_unpack_archive_attached_body(
     _py: &crate::PyToken<'_>,
     _filename_bits: u64,
@@ -1165,7 +1154,6 @@ fn lookup_gid(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_shutil_chown_attached_body(
     _py: &crate::PyToken<'_>,
     _path_bits: u64,

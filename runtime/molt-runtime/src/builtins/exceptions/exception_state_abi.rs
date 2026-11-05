@@ -382,7 +382,6 @@ pub(crate) fn molt_exception_pending_fast_attached_body(_py: &crate::PyToken<'_>
 
 /// Explicit eval-breaker observer used only by generated call-return and loop-
 /// backedge polls. Pure exception predicates above remain non-reentrant.
-
 pub(crate) fn molt_async_work_poll_and_exception_pending_attached_body(
     _py: &crate::PyToken<'_>,
 ) -> u64 {
@@ -392,7 +391,6 @@ pub(crate) fn molt_async_work_poll_and_exception_pending_attached_body(
 /// Fused eval-breaker and pending-exception capture for generated `finally`
 /// arbitration. The caller must continue through the existing replacement and
 /// `__context__` logic instead of branching directly to the outer handler.
-
 pub(crate) fn molt_async_work_poll_and_exception_last_pending_attached_body(
     _py: &crate::PyToken<'_>,
 ) -> u64 {

@@ -12,7 +12,6 @@ use crate::*;
 // ---------------------------------------------------------------------------
 
 /// Return the type-id tag for the object at `ptr`.
-
 pub(crate) fn molt_rt_object_type_id_attached_body(_py: &PyToken<'_>, ptr: *mut u8) -> u32 {
     if ptr.is_null() {
         return 0;

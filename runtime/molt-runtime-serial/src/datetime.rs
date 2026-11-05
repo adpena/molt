@@ -402,7 +402,10 @@ pub fn molt_datetime_isocalendar_attached_body(
 
 /// Normalize 7 timedelta components to canonical (days, seconds, microseconds).
 /// All inputs are i64 Molt integers.
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub fn molt_datetime_td_normalize_attached_body(
     _py: &molt_runtime_core::PyToken,
     days_bits: u64,
@@ -1228,7 +1231,10 @@ fn format_isotime_impl(
 
 /// Format a full ISO datetime string.
 /// Parameters: y, m, d, h, min, s, us, sep (str), timespec (str), tz_str (str)
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub fn molt_datetime_format_isodatetime_attached_body(
     _py: &molt_runtime_core::PyToken,
     y_bits: u64,
@@ -1594,7 +1600,10 @@ fn strftime_impl(args: &StrftimeArgs<'_>) -> Result<String, String> {
 }
 
 /// `strftime(y, m, d, h, min, s, us, utcoff, fmt)` — 9 parameters.
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub fn molt_datetime_strftime_attached_body(
     _py: &molt_runtime_core::PyToken,
     y_bits: u64,
@@ -1955,7 +1964,10 @@ pub fn molt_datetime_fromtimestamp_local_attached_body(
 
 /// Convert (y, m, d, h, min, s, us, utcoff_secs_or_none) → UNIX timestamp float.
 /// `utcoff_bits` is int (seconds east) or None (treat as local time).
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub fn molt_datetime_to_timestamp_attached_body(
     _py: &molt_runtime_core::PyToken,
     y_bits: u64,
@@ -2166,7 +2178,10 @@ pub fn molt_datetime_hash_time_attached_body(
     })
 }
 
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub fn molt_datetime_hash_datetime_attached_body(
     _py: &molt_runtime_core::PyToken,
     y_bits: u64,
@@ -2367,7 +2382,10 @@ pub fn molt_datetime_validate_time_attached_body(
 
 /// combine(year, month, day, hour, minute, second, microsecond, fold)
 /// Returns validated 8-tuple for Python wrapper to unpack.
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub fn molt_datetime_combine_attached_body(
     _py: &molt_runtime_core::PyToken,
     y_bits: u64,
@@ -3074,7 +3092,10 @@ pub fn molt_datetime_time_repr_attached_body(
 }
 
 /// datetime.timetuple() -> 9-tuple of ints
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub fn molt_datetime_timetuple_attached_body(
     _py: &molt_runtime_core::PyToken,
     y_bits: u64,

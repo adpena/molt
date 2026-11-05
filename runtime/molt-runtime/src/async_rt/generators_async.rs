@@ -44,7 +44,6 @@ pub(crate) use generators_async_io::*;
 
 /// # Safety
 /// - `waiters_bits` must be a deque/list-like object supporting pop-front semantics.
-
 pub(crate) unsafe fn molt_asyncio_waiters_notify_attached_body(
     _py: &crate::PyToken<'_>,
     waiters_bits: u64,
@@ -126,7 +125,6 @@ pub(crate) unsafe fn molt_asyncio_waiters_notify_attached_body(
 
 /// # Safety
 /// - `waiters_bits` must be a deque/list-like object supporting pop-front semantics.
-
 pub(crate) unsafe fn molt_asyncio_waiters_notify_exception_attached_body(
     _py: &crate::PyToken<'_>,
     waiters_bits: u64,
@@ -208,7 +206,6 @@ pub(crate) unsafe fn molt_asyncio_waiters_notify_exception_attached_body(
 
 /// # Safety
 /// - `waiters_bits` must support `remove(waiter)` semantics.
-
 pub(crate) unsafe fn molt_asyncio_waiters_remove_attached_body(
     _py: &crate::PyToken<'_>,
     waiters_bits: u64,
@@ -233,7 +230,6 @@ pub(crate) unsafe fn molt_asyncio_waiters_remove_attached_body(
 /// # Safety
 /// - `condition_bits` must be an asyncio.Condition-like object.
 /// - `predicate_bits` must be callable.
-
 pub(crate) unsafe fn molt_asyncio_condition_wait_for_step_attached_body(
     _py: &crate::PyToken<'_>,
     condition_bits: u64,
@@ -298,7 +294,6 @@ pub(crate) unsafe fn molt_asyncio_condition_wait_for_step_attached_body(
 
 /// # Safety
 /// - `waiters_bits` must be iterable and contain asyncio Future-compatible waiters.
-
 pub(crate) unsafe fn molt_asyncio_barrier_release_attached_body(
     _py: &crate::PyToken<'_>,
     waiters_bits: u64,
@@ -385,7 +380,6 @@ unsafe fn asyncio_transfer_set_target_exception(
 
 /// # Safety
 /// - `source_bits`/`target_bits` must be Future-compatible objects.
-
 pub(crate) unsafe fn molt_asyncio_future_transfer_attached_body(
     _py: &crate::PyToken<'_>,
     source_bits: u64,
@@ -481,7 +475,6 @@ pub(crate) unsafe fn molt_asyncio_future_transfer_attached_body(
 
 /// # Safety
 /// - `waiters_bits` must be iterable and contain Event waiter futures.
-
 pub(crate) unsafe fn molt_asyncio_event_waiters_cleanup_attached_body(
     _py: &crate::PyToken<'_>,
     waiters_bits: u64,
@@ -574,7 +567,6 @@ pub(crate) unsafe fn molt_asyncio_event_waiters_cleanup_attached_body(
 /// # Safety
 /// - `tasks_bits` must be iterable and contain Future-like objects.
 /// - `callback_bits` must be callable.
-
 pub(crate) unsafe fn molt_asyncio_tasks_add_done_callback_attached_body(
     _py: &crate::PyToken<'_>,
     tasks_bits: u64,
@@ -641,7 +633,6 @@ pub(crate) unsafe fn molt_asyncio_tasks_add_done_callback_attached_body(
 
 /// # Safety
 /// - `future_bits` must be a valid pointer to a Molt future.
-
 pub(crate) unsafe fn molt_asyncio_task_uncancel_apply_attached_body(
     _py: &crate::PyToken<'_>,
     future_bits: u64,
@@ -658,7 +649,6 @@ pub(crate) unsafe fn molt_asyncio_task_uncancel_apply_attached_body(
 
 /// # Safety
 /// - `waiters_bits` must be iterable of Event waiters.
-
 pub(crate) unsafe fn molt_asyncio_event_set_waiters_attached_body(
     _py: &crate::PyToken<'_>,
     waiters_bits: u64,
@@ -743,7 +733,6 @@ pub(crate) unsafe fn molt_asyncio_event_set_waiters_attached_body(
 
 /// # Safety
 /// - `buffer_bits` must be bytes-like.
-
 pub(crate) fn molt_asyncio_stream_buffer_snapshot_attached_body(
     _py: &crate::PyToken<'_>,
     buffer_bits: u64,
@@ -759,7 +748,6 @@ pub(crate) fn molt_asyncio_stream_buffer_snapshot_attached_body(
 
 /// # Safety
 /// - `buffer_bits` must be a mutable bytearray-like object.
-
 pub(crate) unsafe fn molt_asyncio_stream_buffer_consume_attached_body(
     _py: &crate::PyToken<'_>,
     buffer_bits: u64,

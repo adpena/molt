@@ -908,7 +908,6 @@ fn split_dict_increment(
 }
 
 /// `for word in line.split(): d[word] = d.get(word, 0) + delta`.
-
 pub(crate) fn molt_string_split_ws_dict_inc_attached_body(
     _py: &crate::PyToken<'_>,
     line_bits: u64,
@@ -922,7 +921,6 @@ pub(crate) fn molt_string_split_ws_dict_inc_attached_body(
 }
 
 /// `for word in line.split(sep): d[word] = d.get(word, 0) + delta`.
-
 pub(crate) fn molt_string_split_sep_dict_inc_attached_body(
     _py: &crate::PyToken<'_>,
     line_bits: u64,

@@ -453,7 +453,6 @@ pub(crate) unsafe fn object_field_delete_ptr_raw(
 
 /// # Safety
 /// `obj_ptr_bits` must encode a valid object with enough payload for `offset_bits`.
-
 pub(crate) unsafe fn molt_object_field_get_ptr_attached_body(
     _py: &crate::PyToken<'_>,
     obj_ptr_bits: u64,
@@ -473,7 +472,6 @@ pub(crate) unsafe fn molt_object_field_get_ptr_attached_body(
 
 /// # Safety
 /// `obj_ptr_bits` must encode a valid object with enough payload for `offset_bits`.
-
 pub(crate) unsafe fn molt_object_field_set_ptr_attached_body(
     _py: &crate::PyToken<'_>,
     obj_ptr_bits: u64,
@@ -497,7 +495,6 @@ pub(crate) unsafe fn molt_object_field_set_ptr_attached_body(
 /// # Safety
 /// `obj_ptr_bits` must encode a valid object with enough payload for `offset_bits`.
 /// The slot must not own a heap value or belong to an already observed object.
-
 pub(crate) unsafe fn molt_object_field_init_ptr_attached_body(
     _py: &crate::PyToken<'_>,
     obj_ptr_bits: u64,
@@ -588,7 +585,6 @@ unsafe fn guard_layout_match(
 /// # Safety
 /// `obj_bits` is a tagged runtime value; `definition_slot` is a raw program
 /// slot. A non-object receiver is a safe guard miss.
-
 pub(crate) unsafe fn molt_guard_layout_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -614,7 +610,6 @@ pub(crate) unsafe fn molt_guard_layout_attached_body(
 /// # Safety
 /// `obj_bits` is a tagged runtime value. `attr_name_ptr_bits` must encode valid
 /// UTF-8 bytes. A matching object must have enough payload for `offset_bits`.
-
 pub(crate) unsafe fn molt_guarded_field_get_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -675,8 +670,10 @@ pub(crate) unsafe fn molt_guarded_field_get_attached_body(
 /// # Safety
 /// `obj_bits` is a tagged runtime value. `attr_name_ptr_bits` must encode valid
 /// UTF-8 bytes. A matching object must have enough payload for `offset_bits`.
-
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub(crate) unsafe fn molt_guarded_field_set_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -715,7 +712,6 @@ pub(crate) unsafe fn molt_guarded_field_set_attached_body(
 
 /// # Safety
 /// `obj_bits` must reference a valid object with enough payload for `offset_bits`.
-
 pub(crate) unsafe fn molt_object_field_get_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -740,7 +736,6 @@ pub(crate) unsafe fn molt_object_field_get_attached_body(
 
 /// # Safety
 /// `obj_bits` must reference a valid object with enough payload for `offset_bits`.
-
 pub(crate) unsafe fn molt_object_field_set_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -769,7 +764,6 @@ pub(crate) unsafe fn molt_object_field_set_attached_body(
 /// # Safety
 /// `obj_bits` must reference a valid object with enough payload for `offset_bits`.
 /// The slot must not own a heap value or belong to an already observed object.
-
 pub(crate) unsafe fn molt_object_field_init_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -797,7 +791,6 @@ pub(crate) unsafe fn molt_object_field_init_attached_body(
 
 /// Runtime helper for field load — called from Cranelift codegen.
 /// Reads a NaN-boxed value at `obj_ptr + offset` and inc-refs it.
-
 pub(crate) unsafe fn molt_object_field_load_attached_body(
     _py: &crate::PyToken<'_>,
     obj_ptr: *mut u8,

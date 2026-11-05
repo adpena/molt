@@ -644,7 +644,6 @@ fn format_int_underscored(i: i64) -> String {
 // ─── public intrinsics ──────────────────────────────────────────────────────
 
 /// Generate a safe repr with depth and width limits. Returns a string.
-
 pub(crate) fn molt_pprint_safe_repr_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -661,7 +660,6 @@ pub(crate) fn molt_pprint_safe_repr_attached_body(
 }
 
 /// Format an object for pretty-printing. Returns a formatted string.
-
 pub(crate) fn molt_pprint_format_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -692,7 +690,6 @@ pub(crate) fn molt_pprint_format_attached_body(
 }
 
 /// Check if repr of an object is readable (can be eval'd back). Returns a boolean.
-
 pub(crate) fn molt_pprint_isreadable_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let mut seen = HashSet::new();
@@ -703,7 +700,6 @@ pub(crate) fn molt_pprint_isreadable_attached_body(_py: &crate::PyToken<'_>, obj
 }
 
 /// Check if an object contains recursive references. Returns a boolean.
-
 pub(crate) fn molt_pprint_isrecursive_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -716,8 +712,10 @@ pub(crate) fn molt_pprint_isrecursive_attached_body(
 }
 
 /// Full pformat with all options. Returns a formatted string.
-
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub(crate) fn molt_pprint_pformat_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,

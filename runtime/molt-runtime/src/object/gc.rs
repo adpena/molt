@@ -2384,7 +2384,7 @@ impl std::ops::DerefMut for GcScratchLease {
 impl Drop for GcScratchLease {
     fn drop(&mut self) {
         if self.candidate_pins != CandidatePins::None {
-            crate::concurrency::gil::with_gil(|py| self.release_candidate_pins(&py));
+            crate::concurrency::gil::with_gil(|py| self.release_candidate_pins(py));
         }
         let mut scratch = self.scratch.take().expect("live GC workspace lease");
         scratch.clear_for_reuse();

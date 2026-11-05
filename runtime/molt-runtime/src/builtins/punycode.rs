@@ -8,7 +8,6 @@ use crate::*;
 use molt_stdlib_text::punycode::{punycode_decode_impl, punycode_encode_impl};
 
 /// `molt_punycode_encode(text) -> bytes`
-
 pub(crate) fn molt_punycode_encode_attached_body(_py: &crate::PyToken<'_>, text_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
@@ -28,7 +27,6 @@ pub(crate) fn molt_punycode_encode_attached_body(_py: &crate::PyToken<'_>, text_
 }
 
 /// `molt_punycode_decode(data, errors) -> str`
-
 pub(crate) fn molt_punycode_decode_attached_body(
     _py: &crate::PyToken<'_>,
     data_bits: u64,

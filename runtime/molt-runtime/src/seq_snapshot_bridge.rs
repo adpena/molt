@@ -24,7 +24,6 @@ pub extern "C" fn molt_seq_read_item_gil_borrowed(
 
 /// Return one owned handle. A successful result must be released with
 /// `molt_dec_ref_obj` by the caller.
-
 pub(crate) fn molt_seq_read_item_owned_attached_body(
     _py: &PyToken<'_>,
     ptr: *mut u8,
@@ -38,7 +37,6 @@ pub(crate) fn molt_seq_read_item_owned_attached_body(
 /// crate. This symbol is intentionally feature-independent: Tk, itertools,
 /// and future consumers must not acquire link custody from one another's
 /// optional feature bridge.
-
 pub(crate) fn molt_seq_snapshot_attached_body(
     _py: &PyToken<'_>,
     ptr: *mut u8,
@@ -72,7 +70,6 @@ pub(crate) unsafe fn export(
 
 /// Export pinned dictionary key/value pairs in insertion order. An empty
 /// dictionary succeeds; allocation failure leaves a pending exception.
-
 pub(crate) fn molt_dict_snapshot_attached_body(
     _py: &PyToken<'_>,
     ptr: *mut u8,

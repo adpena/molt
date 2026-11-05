@@ -44,7 +44,6 @@ const SUBPROCESS_DEVNULL: i32 = -3;
 // ---------------------------------------------------------------------------
 
 /// `subprocess.PIPE` → int (-1)
-
 pub(crate) fn molt_subprocess_pipe_const_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         MoltObject::from_int(SUBPROCESS_PIPE as i64).bits()
@@ -52,7 +51,6 @@ pub(crate) fn molt_subprocess_pipe_const_attached_body(_py: &crate::PyToken<'_>)
 }
 
 /// `subprocess.STDOUT` → int (-2)
-
 pub(crate) fn molt_subprocess_stdout_const_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         MoltObject::from_int(SUBPROCESS_STDOUT as i64).bits()
@@ -60,7 +58,6 @@ pub(crate) fn molt_subprocess_stdout_const_attached_body(_py: &crate::PyToken<'_
 }
 
 /// `subprocess.DEVNULL` → int (-3)
-
 pub(crate) fn molt_subprocess_devnull_const_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         MoltObject::from_int(SUBPROCESS_DEVNULL as i64).bits()
@@ -522,7 +519,6 @@ pub(crate) fn molt_subprocess_check_output_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_subprocess_check_output_attached_body(
     _py: &crate::PyToken<'_>,
     _args_bits: u64,
@@ -601,7 +597,6 @@ pub(crate) fn molt_subprocess_check_call_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub(crate) fn molt_subprocess_check_call_attached_body(
     _py: &crate::PyToken<'_>,
     _args_bits: u64,

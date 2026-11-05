@@ -535,7 +535,6 @@ pub(crate) fn token_is_cancelled(_py: &PyToken<'_>, id: u64) -> bool {
 
 /// # Safety
 /// `parent_bits` must be either `None` or an integer token id.
-
 pub(crate) unsafe fn molt_cancel_token_new_attached_body(
     _py: &crate::PyToken<'_>,
     parent_bits: u64,
@@ -586,7 +585,6 @@ pub(crate) unsafe fn molt_cancel_token_new_attached_body(
 
 /// # Safety
 /// `token_bits` must be an integer token id.
-
 pub(crate) unsafe fn molt_cancel_token_clone_attached_body(
     _py: &crate::PyToken<'_>,
     token_bits: u64,
@@ -609,7 +607,6 @@ pub(crate) unsafe fn molt_cancel_token_clone_attached_body(
 
 /// # Safety
 /// `token_bits` must be an integer token id.
-
 pub(crate) unsafe fn molt_cancel_token_drop_attached_body(
     _py: &crate::PyToken<'_>,
     token_bits: u64,
@@ -632,7 +629,6 @@ pub(crate) unsafe fn molt_cancel_token_drop_attached_body(
 
 /// # Safety
 /// `token_bits` must be an integer token id.
-
 pub(crate) unsafe fn molt_cancel_token_cancel_attached_body(
     _py: &crate::PyToken<'_>,
     token_bits: u64,
@@ -660,7 +656,6 @@ pub(crate) unsafe fn molt_cancel_token_cancel_attached_body(
 
 /// # Safety
 /// `token_bits` must be an integer token id.
-
 pub(crate) unsafe fn molt_cancel_token_is_cancelled_attached_body(
     _py: &crate::PyToken<'_>,
     token_bits: u64,
@@ -682,7 +677,6 @@ pub(crate) unsafe fn molt_cancel_token_is_cancelled_attached_body(
 
 /// # Safety
 /// `token_bits` must be an integer token id or `None`.
-
 pub(crate) unsafe fn molt_cancel_token_set_current_attached_body(
     _py: &crate::PyToken<'_>,
     token_bits: u64,
@@ -706,7 +700,6 @@ pub(crate) unsafe fn molt_cancel_token_set_current_attached_body(
 
 /// # Safety
 /// Requires the cancel token tables to be initialized by the runtime.
-
 pub(crate) unsafe fn molt_cancel_token_get_current_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         cancel_tokens(_py);

@@ -888,7 +888,6 @@ pub(crate) fn molt_ast_get_docstring_attached_body(
 
 /// Return a list of (field_name, value) tuples for an AST node.
 /// Reads the `_fields` class attribute and extracts each named attribute.
-
 pub(crate) fn molt_ast_iter_fields_attached_body(_py: &crate::PyToken<'_>, node_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         if obj_from_bits(node_bits).is_none() {
@@ -995,7 +994,6 @@ fn has_fields_attr(_py: &crate::PyToken<'_>, obj_bits: u64) -> bool {
 /// Return a list of direct AST child nodes for an AST node.
 /// Inspects `_fields`, collects values that are AST instances or
 /// lists containing AST instances.
-
 pub(crate) fn molt_ast_iter_child_nodes_attached_body(
     _py: &crate::PyToken<'_>,
     node_bits: u64,

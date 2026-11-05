@@ -70,7 +70,6 @@ fn token_payload(py: &crate::PyToken<'_>, table: &TokenTable) -> Option<u64> {
 }
 
 /// Project the selected target's constants and public maps without runtime JSON.
-
 pub(crate) fn molt_token_payload_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
         if crate::exception_pending(py) {
@@ -83,7 +82,6 @@ pub(crate) fn molt_token_payload_attached_body(_py: &crate::PyToken<'_>) -> u64 
 }
 
 /// Tokenize source; scanner identities are projected through the same target table.
-
 pub(crate) fn molt_tokenize_scan_attached_body(_py: &crate::PyToken<'_>, source_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
         if crate::exception_pending(py) {
@@ -176,7 +174,6 @@ fn make_token_tuple(
 }
 
 /// Detect source encoding using the first two byte lines.
-
 pub(crate) fn molt_linecache_detect_encoding_attached_body(
     _py: &crate::PyToken<'_>,
     first_bits: u64,

@@ -496,7 +496,6 @@ fn unraisable_args_is_exact(_py: &PyToken<'_>, bits: u64) -> bool {
 ///
 /// The hidden struct-sequence type is runtime-owned and intentionally absent
 /// from `sys`; name/module/shape checks would let user classes spoof it.
-
 pub(crate) fn molt_unraisable_hook_args_is_exact_attached_body(
     _py: &crate::PyToken<'_>,
     bits: u64,

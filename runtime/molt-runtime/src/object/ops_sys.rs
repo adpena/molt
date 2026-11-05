@@ -458,7 +458,6 @@ pub(crate) fn runtime_target_at_least(_py: &PyToken<'_>, major: i64, minor: i64)
 /// # Safety
 /// Pure read of the per-runtime target-version cache behind the GIL; no pointer
 /// arguments. The `unsafe` marker exists only because the C ABI demands it.
-
 pub(crate) fn molt_runtime_target_at_least_attached_body(
     _py: &crate::PyToken<'_>,
     major: i64,
@@ -804,7 +803,6 @@ mod runtime_resource_env_tests {
 ///
 /// Reads: MOLT_AUDIT_ENABLED, MOLT_AUDIT_SINK, MOLT_AUDIT_OUTPUT, and
 /// MOLT_CAPABILITY_POLICY_DIGEST.
-
 pub(crate) fn molt_runtime_init_audit_attached_body(_py: &crate::PyToken<'_>) {
     use crate::audit::{
         AuditSink, JsonLinesSink, NullSink, StderrSink, set_capability_policy_digest,
@@ -879,7 +877,6 @@ pub(crate) fn molt_runtime_init_audit_attached_body(_py: &crate::PyToken<'_>) {
 /// Initialize IO mode from environment variable.
 ///
 /// Reads: MOLT_IO_MODE (real | virtual | callback)
-
 pub(crate) fn molt_runtime_init_io_mode_attached_body(_py: &crate::PyToken<'_>) {
     use crate::vfs::caps::{IoMode, set_io_mode};
 
@@ -1168,7 +1165,6 @@ fn len_impl(val: u64, builtin_only: bool) -> u64 {
 }
 
 /// Fast len for known-list values. Single type check, no 18-type dispatch.
-
 pub(crate) fn molt_len_list_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(bits);
@@ -1187,7 +1183,6 @@ pub(crate) fn molt_len_list_attached_body(_py: &crate::PyToken<'_>, bits: u64) -
 }
 
 /// Fast len for known-str values. Single type check, no 18-type dispatch.
-
 pub(crate) fn molt_len_str_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(bits);
@@ -1207,7 +1202,6 @@ pub(crate) fn molt_len_str_attached_body(_py: &crate::PyToken<'_>, bits: u64) ->
 }
 
 /// Fast len for known-dict values. Single type check, no 18-type dispatch.
-
 pub(crate) fn molt_len_dict_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(bits);
@@ -1231,7 +1225,6 @@ pub(crate) fn molt_len_dict_attached_body(_py: &crate::PyToken<'_>, bits: u64) -
 }
 
 /// Fast len for known-tuple values. Single type check, no 18-type dispatch.
-
 pub(crate) fn molt_len_tuple_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(bits);
@@ -1249,7 +1242,6 @@ pub(crate) fn molt_len_tuple_attached_body(_py: &crate::PyToken<'_>, bits: u64) 
 }
 
 /// Fast len for known-set values. Single type check, no 18-type dispatch.
-
 pub(crate) fn molt_len_set_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(bits);
@@ -2815,7 +2807,6 @@ pub(crate) fn molt_time_get_clock_info_attached_body(
 }
 
 #[allow(clippy::too_many_arguments)]
-
 pub(crate) fn molt_traceback_payload_attached_body(
     _py: &crate::PyToken<'_>,
     source_bits: u64,
@@ -2910,7 +2901,6 @@ pub(crate) fn molt_traceback_format_exception_attached_body(
 /// `traceback.format_exc(limit=None)` — format the current exception as a single
 /// string.  Equivalent to `"".join(traceback.format_exception(*sys.exc_info()))`.
 /// Returns the formatted string, or `"NoneType: None\n"` if no exception is active.
-
 pub(crate) fn molt_traceback_format_exc_attached_body(
     _py: &crate::PyToken<'_>,
     limit_bits: u64,
@@ -3029,13 +3019,11 @@ pub(crate) fn molt_traceback_extract_tb_attached_body(
 /// depth and limit every runtime call guard charges, taken without entering
 /// the object runtime. Returns 1 on success, 0 when the limit refuses the
 /// call; the caller then raises through `molt_raise_recursion_error`.
-
 pub(crate) fn molt_recursion_enter_fast_attached_body(_py: &crate::PyToken<'_>) -> i64 {
     if recursion_guard_enter(_py) { 1 } else { 0 }
 }
 
 /// Releases the calling thread's charge without entering the object runtime.
-
 pub(crate) fn molt_recursion_exit_fast_attached_body(_py: &crate::PyToken<'_>) {
     recursion_guard_exit(_py);
 }

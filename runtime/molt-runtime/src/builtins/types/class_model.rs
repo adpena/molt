@@ -1075,7 +1075,6 @@ pub(crate) unsafe fn object_set_class(
 /// # Safety
 /// `obj_ptr_bits` must encode a valid Molt object header that can be mutated,
 /// and `class_bits` must encode a valid Molt type object.
-
 pub(crate) unsafe fn molt_object_set_class_attached_body(
     _py: &crate::PyToken<'_>,
     obj_ptr_bits: u64,

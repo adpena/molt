@@ -735,7 +735,6 @@ fn bind_names<'a, 'py>(
 ///
 /// Called from Python-side `_intrinsics.py` as a fallback when a dict
 /// lookup on the registry misses.
-
 pub(crate) fn molt_intrinsic_resolve_attached_body(
     _py: &crate::PyToken<'_>,
     name_bits: u64,
@@ -1525,7 +1524,6 @@ pub(crate) fn test_app_resolver_address() -> &'static AtomicUsize {
 ///
 /// The optional namespace is accepted for API compatibility with
 /// `src/molt/stdlib/_intrinsics.py`; resolution is runtime-global today.
-
 pub(crate) fn molt_require_intrinsic_runtime_attached_body(
     _py: &crate::PyToken<'_>,
     name_bits: u64,

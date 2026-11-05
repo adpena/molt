@@ -123,7 +123,6 @@ fn complex_binary(
 /// Skips the 8-branch type dispatch in `molt_add`.
 /// Falls back to `molt_add` if either operand is not actually a string
 /// (defensive: the frontend may have mis-inferred the type hint).
-
 pub(crate) fn molt_str_concat_attached_body(
     _py: &crate::PyToken<'_>,
     lhs_bits: u64,

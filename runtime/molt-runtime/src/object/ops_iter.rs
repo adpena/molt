@@ -2689,7 +2689,6 @@ unsafe fn pair_from_step(py: &PyToken<'_>, iter_bits: u64, step: IterationResult
 
 /// The `(value, done)` pair ABI: every kind, generators included, projects
 /// the one iteration step.
-
 pub(crate) fn molt_iter_next_attached_body(_py: &crate::PyToken<'_>, iter_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe {
@@ -2739,7 +2738,6 @@ fn advance(py: &PyToken<'_>, iter_bits: u64, exhaustion: IterationExhaustion) ->
 /// # Safety
 ///
 /// `value_out_bits` must encode writable storage for one `u64`.
-
 pub(crate) unsafe fn molt_iter_next_unboxed_attached_body(
     _py: &crate::PyToken<'_>,
     iter_bits: u64,
@@ -2803,7 +2801,6 @@ fn iter_next_unboxed_step(py: &PyToken<'_>, iter_bits: u64) -> (u64, u64) {
 /// # Safety
 ///
 /// `key_out` and `value_out` must point to writable storage for one `u64` each.
-
 pub(crate) unsafe fn molt_iter_next_dict_items_attached_body(
     _py: &crate::PyToken<'_>,
     iter_bits: u64,

@@ -336,7 +336,6 @@ pub(crate) fn molt_string_split_field_eq_attached_body(
 /// no raw-carrier / representation plumbing. An out-of-range field index raises
 /// `IndexError("list index out of range")` — byte-identical to the materializing
 /// `molt_string_split_field` path's `split_field_index_error`.
-
 pub(crate) fn molt_string_split_field_start_attached_body(
     _py: &crate::PyToken<'_>,
     hay_bits: u64,
@@ -354,7 +353,6 @@ pub(crate) fn molt_string_split_field_start_attached_body(
 }
 
 /// Field byte END offset — see [`molt_string_split_field_start`].
-
 pub(crate) fn molt_string_split_field_end_attached_body(
     _py: &crate::PyToken<'_>,
     hay_bits: u64,
@@ -374,7 +372,6 @@ pub(crate) fn molt_string_split_field_end_attached_body(
 /// Field ASCII flag (1 iff every byte of the field is < 0x80, so codepoint index
 /// == byte index — the O(1) `ord`/`len` read fast path). See
 /// [`molt_string_split_field_start`].
-
 pub(crate) fn molt_string_split_field_is_ascii_attached_body(
     _py: &crate::PyToken<'_>,
     hay_bits: u64,
@@ -435,7 +432,6 @@ unsafe fn split_field_bounds_bytes<'a>(
 /// `end - start` IS the codepoint count (O(1)). Non-ASCII: count codepoints over
 /// `hay[start..end]` (no split re-scan), byte-identical to `len()` on the
 /// materialized field. `start`/`end`/`is_ascii` arrive as boxed Python ints.
-
 pub(crate) fn molt_string_split_field_len_from_bounds_attached_body(
     _py: &crate::PyToken<'_>,
     hay_bits: u64,
@@ -471,7 +467,6 @@ pub(crate) fn molt_string_split_field_len_from_bounds_attached_body(
 /// field — same negative-index handling and same
 /// `IndexError("string index out of range")`. `start`/`end`/`is_ascii`/`idx`
 /// arrive as boxed Python ints.
-
 pub(crate) fn molt_string_split_field_ord_at_bounds_attached_body(
     _py: &crate::PyToken<'_>,
     hay_bits: u64,

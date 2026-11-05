@@ -57,7 +57,6 @@ fn validate_make_dataclass_field_name(_py: &PyToken<'_>, name_bits: u64) -> Opti
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub(crate) fn molt_dataclasses_make_dataclass_attached_body(
     _py: &crate::PyToken<'_>,
     cls_name_bits: u64,
@@ -387,7 +386,6 @@ pub(crate) fn molt_dataclasses_make_dataclass_attached_body(
 /// Sets the `metadata` attribute on a Field object, wrapping the given dict
 /// in a `types.MappingProxyType` if it isn't already one.  If `metadata_dict`
 /// is None or empty, sets an empty MappingProxy.
-
 pub(crate) fn molt_dataclasses_set_field_metadata_attached_body(
     _py: &crate::PyToken<'_>,
     field_bits: u64,

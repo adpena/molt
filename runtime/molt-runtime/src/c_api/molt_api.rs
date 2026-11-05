@@ -1583,6 +1583,10 @@ pub(crate) fn molt_capi_method_dispatch_attached_body(
     })
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub(crate) unsafe fn molt_cfunction_create_bytes_attached_body(
     _py: &crate::PyToken<'_>,
     self_bits: MoltHandle,
@@ -1634,6 +1638,10 @@ pub(crate) unsafe fn molt_cfunction_create_bytes_attached_body(
     })
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub(crate) unsafe fn molt_cfunction_create_keywords_bytes_attached_body(
     _py: &crate::PyToken<'_>,
     self_bits: MoltHandle,
@@ -1685,6 +1693,10 @@ pub(crate) unsafe fn molt_cfunction_create_keywords_bytes_attached_body(
     })
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub(crate) unsafe fn molt_module_add_cfunction_bytes_attached_body(
     _py: &crate::PyToken<'_>,
     module_bits: MoltHandle,
@@ -1773,6 +1785,10 @@ pub(crate) unsafe fn molt_module_add_cfunction_bytes_attached_body(
     })
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub(crate) unsafe fn molt_module_add_cfunction_keywords_bytes_attached_body(
     _py: &crate::PyToken<'_>,
     module_bits: MoltHandle,

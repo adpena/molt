@@ -1601,7 +1601,6 @@ pub(crate) fn molt_contextlib_async_exitstack_exit_attached_body(
 
 /// # Safety
 /// - `obj_bits` must reference a valid contextlib asyncgen-enter future object.
-
 pub(crate) unsafe fn molt_contextlib_asyncgen_enter_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -1676,7 +1675,6 @@ pub(crate) unsafe fn molt_contextlib_asyncgen_enter_poll_attached_body(
 
 /// # Safety
 /// - `obj_bits` must reference a valid contextlib asyncgen-exit future object.
-
 pub(crate) unsafe fn molt_contextlib_asyncgen_exit_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -1829,7 +1827,6 @@ pub(crate) unsafe fn molt_contextlib_asyncgen_exit_poll_attached_body(
 
 /// # Safety
 /// - `obj_bits` must reference a valid contextlib async enter-context future object.
-
 pub(crate) unsafe fn molt_contextlib_async_exitstack_enter_context_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -1944,7 +1941,6 @@ pub(crate) unsafe fn molt_contextlib_async_exitstack_enter_context_poll_attached
 
 /// # Safety
 /// - `obj_bits` must reference a valid contextlib async exitstack-exit future object.
-
 pub(crate) unsafe fn molt_contextlib_async_exitstack_exit_poll_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,

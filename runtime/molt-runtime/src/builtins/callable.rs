@@ -116,7 +116,6 @@ unsafe fn is_callable_for_ptr(_py: &crate::PyToken<'_>, ptr: *mut u8) -> bool {
 /// Cross-crate consumers should prefer [`molt_is_callable_bool`] to avoid
 /// re-implementing the bool decode (the bug class that made tkinter `bind`
 /// reject genuine callables: `as_int()` rejects a `TAG_BOOL` value).
-
 pub(crate) fn molt_is_callable_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         MoltObject::from_bool(is_callable_impl(_py, obj_bits)).bits()
@@ -129,7 +128,6 @@ pub(crate) fn molt_is_callable_attached_body(_py: &crate::PyToken<'_>, obj_bits:
 /// (e.g. `molt-runtime-tk`) so they never have to interpret the NaN-boxed
 /// `bool` object themselves. Backed by the same [`is_callable_impl`] that
 /// powers Python `callable()`.
-
 pub(crate) fn molt_is_callable_bool_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> i32 {
     crate::with_attached_entry_nopanic!(_py, _py, { i32::from(is_callable_impl(_py, obj_bits)) })
 }

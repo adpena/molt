@@ -224,7 +224,6 @@ fn template_token_tuple<'guard>(
 /// an original without either denotes an escaped delimiter. Only literal
 /// tokens have neither name, original nor invalid offset. The Python owner
 /// chooses strict/safe behavior and performs every lookup/str callback.
-
 pub(crate) fn molt_string_template_scan_attached_body(
     _py: &crate::PyToken<'_>,
     template_bits: u64,
@@ -529,7 +528,6 @@ extern "C" fn formatter_field_name_next(__context: u64, state_bits: u64) -> u64 
 
 /// Return a lazy iterator of (literal, field_name, format_spec, conversion).
 /// Trailing syntax errors surface only when the consumer reaches that token.
-
 pub(crate) fn molt_string_formatter_parse_attached_body(
     _py: &crate::PyToken<'_>,
     format_string_bits: u64,
@@ -550,7 +548,6 @@ pub(crate) fn molt_string_formatter_parse_attached_body(
 
 /// Split the first component immediately, then lazily project attribute/item
 /// steps. Each preceding lookup may run before a later invalid suffix raises.
-
 pub(crate) fn molt_string_formatter_field_name_split_attached_body(
     _py: &crate::PyToken<'_>,
     field_name_bits: u64,

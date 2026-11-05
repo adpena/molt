@@ -1128,7 +1128,6 @@ pub(crate) fn emit_warning_object(
 
 /// `_warnings.warn`: validate the category, attribute the warning
 /// `stacklevel` frames above the shim's caller, then emit it.
-
 pub(crate) fn molt_warnings_warn_attached_body(
     _py: &crate::PyToken<'_>,
     message_bits: u64,
@@ -1158,8 +1157,10 @@ pub(crate) fn molt_warnings_warn_attached_body(
 /// omitted `module` after `filename`; an explicit `None` ignores the warning.
 /// `module_globals` must be a dictionary or `None`; sources are read by file
 /// name, so its loader is not consulted.
-
-#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
 pub(crate) fn molt_warnings_warn_explicit_attached_body(
     _py: &crate::PyToken<'_>,
     message_bits: u64,
@@ -1213,7 +1214,6 @@ pub(crate) fn molt_warnings_warn_explicit_attached_body(
 
 /// `warnings._formatwarnmsg_impl`: the CPython warning text, with the source
 /// line read from `filename` when `line` is `None`.
-
 pub(crate) fn molt_warnings_formatwarning_attached_body(
     _py: &crate::PyToken<'_>,
     message_bits: u64,
@@ -1240,7 +1240,6 @@ pub(crate) fn molt_warnings_formatwarning_attached_body(
 
 /// `warnings.simplefilter` after its checks: CPython's
 /// `_add_filter(action, None, category, None, lineno, append=append)`.
-
 pub(crate) fn molt_warnings_simplefilter_attached_body(
     _py: &crate::PyToken<'_>,
     action_bits: u64,
@@ -1263,7 +1262,6 @@ pub(crate) fn molt_warnings_simplefilter_attached_body(
 /// `_add_filter(action, message, category, module, lineno, append=append)`.
 /// `message` and `module` are compiled patterns or `None`; a plain `str`
 /// matches exactly, as CPython's internal default filters do.
-
 pub(crate) fn molt_warnings_filterwarnings_attached_body(
     _py: &crate::PyToken<'_>,
     action_bits: u64,
@@ -1290,7 +1288,6 @@ pub(crate) fn molt_warnings_filterwarnings_attached_body(
 }
 
 /// `warnings.resetwarnings`: empty the filter list and age every registry.
-
 pub(crate) fn molt_warnings_resetwarnings_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         if let Some(filters) = get_filters(_py) {
@@ -1305,7 +1302,6 @@ pub(crate) fn molt_warnings_resetwarnings_attached_body(_py: &crate::PyToken<'_>
 
 /// `_warnings.filters`: the filter list the engine reads, which
 /// `warnings.filters` aliases.
-
 pub(crate) fn molt_warnings_filters_get_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         get_filters(_py).map_or_else(|| MoltObject::none().bits(), ExceptionValue::into_bits)
@@ -1314,7 +1310,6 @@ pub(crate) fn molt_warnings_filters_get_attached_body(_py: &crate::PyToken<'_>) 
 
 /// `_warnings._onceregistry`: the registry of the "once" action for warnings
 /// emitted without a registry, which `warnings.onceregistry` aliases.
-
 pub(crate) fn molt_warnings_onceregistry_get_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         get_once_registry(_py).map_or_else(|| MoltObject::none().bits(), ExceptionValue::into_bits)
@@ -1322,7 +1317,6 @@ pub(crate) fn molt_warnings_onceregistry_get_attached_body(_py: &crate::PyToken<
 }
 
 /// `_warnings._filters_mutated`: age every registry after the filters change.
-
 pub(crate) fn molt_warnings_filters_mutated_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         filters_mutated(_py);

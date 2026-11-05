@@ -1164,7 +1164,6 @@ pub(crate) fn molt_ord_at_attached_body(
 /// Statement operation: successful builtin mutations return the borrowed
 /// container without retaining it. Callers must inspect exception state, not
 /// treat the ABI return as a newly owned value (StoreIndex has zero IR results).
-
 pub(crate) fn molt_store_index_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -2064,7 +2063,6 @@ pub(crate) fn molt_getitem_method_attached_body(
 /// delegates to `molt_index` which already has type-dispatch fast paths;
 /// a future refinement can skip the bounds-check branch entirely for
 /// list types once the hot-path is profiled.
-
 pub(crate) fn molt_getitem_unchecked_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -2396,7 +2394,6 @@ fn contains_impl(container_bits: u64, item_bits: u64, builtin_only: bool) -> u64
 }
 
 /// Specialized `in` for list containers (linear scan, no type dispatch).
-
 pub(crate) fn molt_list_contains_attached_body(
     _py: &crate::PyToken<'_>,
     container_bits: u64,
@@ -2419,7 +2416,6 @@ pub(crate) fn molt_list_contains_attached_body(
 }
 
 /// Specialized `in` for str containers (substring search, no type dispatch).
-
 pub(crate) fn molt_str_contains_attached_body(
     _py: &crate::PyToken<'_>,
     container_bits: u64,

@@ -1148,7 +1148,6 @@ pub(crate) unsafe fn callargs_detach_owned(args_ptr: *mut CallArgs, mut detach: 
 }
 
 /// The builder of a CALL call site: value-stack arguments.
-
 pub(crate) fn molt_callargs_new_attached_body(
     _py: &crate::PyToken<'_>,
     pos_capacity_bits: u64,
@@ -1161,7 +1160,6 @@ pub(crate) fn molt_callargs_new_attached_body(
 
 /// The builder of a CALL_FUNCTION_EX call site: its storage is that call's
 /// positional tuple and keyword mapping.
-
 pub(crate) fn molt_callargs_new_expanded_attached_body(
     _py: &crate::PyToken<'_>,
     pos_capacity_bits: u64,
@@ -1265,7 +1263,6 @@ fn callargs_new_with_form(
 /// # Safety
 /// `builder_bits` must be a valid pointer returned by `molt_callargs_new` and
 /// remain owned by the caller for the duration of this call.
-
 pub(crate) unsafe fn molt_callargs_push_pos_attached_body(
     _py: &crate::PyToken<'_>,
     builder_bits: u64,
@@ -1375,7 +1372,6 @@ unsafe fn callargs_push_kw(
 /// # Safety
 /// `builder_bits` must be a valid pointer returned by `molt_callargs_new`.
 /// `name_bits` must reference a Molt string object.
-
 pub(crate) unsafe fn molt_callargs_push_kw_attached_body(
     _py: &crate::PyToken<'_>,
     builder_bits: u64,
@@ -1398,7 +1394,6 @@ pub(crate) unsafe fn molt_callargs_push_kw_attached_body(
 
 /// # Safety
 /// `builder_bits` must be a valid pointer returned by `molt_callargs_new`.
-
 pub(crate) unsafe fn molt_callargs_expand_star_attached_body(
     _py: &crate::PyToken<'_>,
     builder_bits: u64,
@@ -1477,7 +1472,6 @@ pub(crate) unsafe fn molt_callargs_expand_star_attached_body(
 
 /// # Safety
 /// `builder_bits` must be a valid pointer returned by `molt_callargs_new`.
-
 pub(crate) unsafe fn molt_callargs_expand_kwstar_attached_body(
     _py: &crate::PyToken<'_>,
     builder_bits: u64,
