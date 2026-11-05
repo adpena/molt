@@ -128,6 +128,8 @@ class PythonIdentity(IntFlag):
     BUILTIN_SUPER = 1 << 114
     BUILTIN_TYPE = 1 << 115
     BUILTIN_ZIP = 1 << 116
+    BUILTIN_ELLIPSIS = 1 << 117
+    BUILTIN_NOTIMPLEMENTED = 1 << 118
 
 
 class PythonMember(IntFlag):
@@ -217,6 +219,8 @@ class PythonMember(IntFlag):
     BUILTINS_SUPER = 1 << 83
     BUILTINS_TYPE = 1 << 84
     BUILTINS_ZIP = 1 << 85
+    BUILTINS_ELLIPSIS = 1 << 86
+    BUILTINS_NOTIMPLEMENTED = 1 << 87
 
 
 class PythonTargetProperty(Enum):
@@ -273,7 +277,7 @@ UNBOUND_IDENTITY: Final[IdentityMask] = int(PythonIdentity.UNBOUND)
 UNKNOWN_IDENTITY: Final[IdentityMask] = OTHER_IDENTITY | UNBOUND_IDENTITY
 SENTINEL_IDENTITIES: Final[IdentityMask] = UNKNOWN_IDENTITY
 NO_INVALID_MEMBERS: Final[MemberMask] = 0
-ALL_INVALID_MEMBERS: Final[MemberMask] = 77371252455336267181195263
+ALL_INVALID_MEMBERS: Final[MemberMask] = 309485009821345068724781055
 
 class PythonImportCallable(NamedTuple):
     behavior: PythonImportBehavior
@@ -524,6 +528,8 @@ BUILTIN_IDENTITIES: Final[Mapping[str, tuple[PythonIdentity, PythonMember]]] = M
         'super': (PythonIdentity.BUILTIN_SUPER, PythonMember.BUILTINS_SUPER),
         'type': (PythonIdentity.BUILTIN_TYPE, PythonMember.BUILTINS_TYPE),
         'zip': (PythonIdentity.BUILTIN_ZIP, PythonMember.BUILTINS_ZIP),
+        'Ellipsis': (PythonIdentity.BUILTIN_ELLIPSIS, PythonMember.BUILTINS_ELLIPSIS),
+        'NotImplemented': (PythonIdentity.BUILTIN_NOTIMPLEMENTED, PythonMember.BUILTINS_NOTIMPLEMENTED),
     }
 )
 
@@ -594,6 +600,8 @@ BUILTIN_NAMES_BY_IDENTITY: Final[Mapping[IdentityMask, str]] = MappingProxyType(
         int(PythonIdentity.BUILTIN_SUPER): 'super',
         int(PythonIdentity.BUILTIN_TYPE): 'type',
         int(PythonIdentity.BUILTIN_ZIP): 'zip',
+        int(PythonIdentity.BUILTIN_ELLIPSIS): 'Ellipsis',
+        int(PythonIdentity.BUILTIN_NOTIMPLEMENTED): 'NotImplemented',
     }
 )
 
@@ -747,6 +755,8 @@ CANONICAL_FROM_IMPORT_IDENTITIES: Final[Mapping[tuple[str, str], tuple[PythonIde
         ('builtins', 'super'): (PythonIdentity.BUILTIN_SUPER, PythonMember.BUILTINS_SUPER),
         ('builtins', 'type'): (PythonIdentity.BUILTIN_TYPE, PythonMember.BUILTINS_TYPE),
         ('builtins', 'zip'): (PythonIdentity.BUILTIN_ZIP, PythonMember.BUILTINS_ZIP),
+        ('builtins', 'Ellipsis'): (PythonIdentity.BUILTIN_ELLIPSIS, PythonMember.BUILTINS_ELLIPSIS),
+        ('builtins', 'NotImplemented'): (PythonIdentity.BUILTIN_NOTIMPLEMENTED, PythonMember.BUILTINS_NOTIMPLEMENTED),
     }
 )
 
@@ -837,6 +847,8 @@ CANONICAL_MEMBER_IDENTITIES: Final[Mapping[str, tuple[tuple[PythonIdentity, Pyth
         'super': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_SUPER, PythonMember.BUILTINS_SUPER),),
         'type': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_TYPE, PythonMember.BUILTINS_TYPE),),
         'zip': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ZIP, PythonMember.BUILTINS_ZIP),),
+        'Ellipsis': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ELLIPSIS, PythonMember.BUILTINS_ELLIPSIS),),
+        'NotImplemented': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_NOTIMPLEMENTED, PythonMember.BUILTINS_NOTIMPLEMENTED),),
     }
 )
 
@@ -927,6 +939,8 @@ CANONICAL_MEMBER_WRITES: Final[Mapping[str, tuple[tuple[PythonIdentity, MemberMa
         'super': ((PythonIdentity.BUILTINS_MODULE, 9671406556917033397649408),),
         'type': ((PythonIdentity.BUILTINS_MODULE, 19342813113834066795298816),),
         'zip': ((PythonIdentity.BUILTINS_MODULE, 38685626227668133590597632),),
+        'Ellipsis': ((PythonIdentity.BUILTINS_MODULE, 77371252455336267181195264),),
+        'NotImplemented': ((PythonIdentity.BUILTINS_MODULE, 154742504910672534362390528),),
         'meta_path': ((PythonIdentity.SYS_MODULE, 128),),
         'path_hooks': ((PythonIdentity.SYS_MODULE, 128),),
         'path_importer_cache': ((PythonIdentity.SYS_MODULE, 128),),

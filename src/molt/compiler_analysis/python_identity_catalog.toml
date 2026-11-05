@@ -120,6 +120,8 @@ BUILTIN_SUM = 113
 BUILTIN_SUPER = 114
 BUILTIN_TYPE = 115
 BUILTIN_ZIP = 116
+BUILTIN_ELLIPSIS = 117
+BUILTIN_NOTIMPLEMENTED = 118
 
 [native_initializer]
 DATACLASS = ["PARAMETERS", "POSITIONAL", "DEFAULTS", "KWDEFAULTS", "CAPTURE_NAMES", "CAPTURES", "STORES", "POST_INIT_INPUTS", "FACTORY_MARKER", "FROZEN_OBJECT", "ANNOTATIONS", "GLOBALS", "MODULE", "BUILTINS"]
@@ -331,6 +333,8 @@ BUILTINS_SUM = 82
 BUILTINS_SUPER = 83
 BUILTINS_TYPE = 84
 BUILTINS_ZIP = 85
+BUILTINS_ELLIPSIS = 86
+BUILTINS_NOTIMPLEMENTED = 87
 
 [[builtin]]
 name = "__import__"
@@ -939,4 +943,16 @@ shape = false
 name = "zip"
 identity = "BUILTIN_ZIP"
 guard = "BUILTINS_ZIP"
+shape = false
+
+[[builtin]]
+name = "Ellipsis"
+identity = "BUILTIN_ELLIPSIS"
+guard = "BUILTINS_ELLIPSIS"
+shape = false
+
+[[builtin]]
+name = "NotImplemented"
+identity = "BUILTIN_NOTIMPLEMENTED"
+guard = "BUILTINS_NOTIMPLEMENTED"
 shape = false
