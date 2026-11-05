@@ -35,8 +35,12 @@ the integrator reconciles and retires them after landing.
 
 ## Provision before testing
 
-`tools/trunk_loop.py provision --host NAME` automates the
-[documented local install](../getting-started.md#local-repo-workflow).
+`tools/trunk_loop.py provision --host NAME --commit COMMIT` automates the
+[documented local install](../getting-started.md#local-repo-workflow) at
+`COMMIT`, a commit published on origin. Provision checks the checkout out at that
+commit before `uv sync` and doctor. A fetch alone leaves the checkout at whatever
+commit it held: on 2026-11-04 the macmini's doctor judged pre-fix code and
+reported an error that main had already removed.
 uv owns bootstrap Python and dependencies; the inventory cannot select a
 hand-made interpreter. Host-side Python entry points use
 `uv run --locked python -B` in the selected checkout. The existing immutable
@@ -83,17 +87,27 @@ so no developer shell and no `cl.exe` on `PATH` is needed. Windows farm hosts ar
 x86_64 only: the query names the x64 component, and an ARM64 host would need the
 ARM64 component in `config/llvm_toolchain_arches.toml`, so provision refuses it.
 
-Provision installs the pinned uv (`tool_releases` `uv.version`) whenever the
-installed uv differs, not only when uv is absent, on POSIX and Windows alike. The
-toolchain contract admits only the pinned version, and an older uv cannot install
-the pinned Python patch release: on 2026-11-04 the macmini's uv 0.10.9 failed
-with "No interpreter found for Python 3.12.15", and bat00's uv 0.13.1 failed the
-contract `^uv 0\.13\.6\b`. A newer uv is replaced too, as the contract requires.
-The installer runs with `UV_NO_MODIFY_PATH=1`, so it edits no shell profile, as
-rustup's `--no-modify-path` does. Provision then reads `uv --version` again and
-exits nonzero unless the pinned release is the first uv on `PATH`. Run provision
-only while no farm worker holds the host's `trunk-worker.lock`: Windows cannot
-replace a `uv.exe` that is running.
+Provision installs the pinned uv (`tool_releases` `uv.version`) into its own
+directory, `<custody_root>/bootstrap/uv/<version>/`, through the official
+installer with `UV_UNMANAGED_INSTALL` set to that directory. That mode writes only
+the directory: it edits no `PATH` or shell profile and installs no self-updater.
+It installs whenever that directory's uv is absent or differs from the pin, on
+POSIX and Windows alike. The toolchain contract admits only the pinned version,
+and an older uv cannot install the pinned Python patch release: on 2026-11-04 the
+macmini's uv 0.10.9 failed with "No interpreter found for Python 3.12.15".
+
+The farm never uses the user's own uv (`~/.local/bin`). Other projects on a farm
+host run that binary, and Windows cannot replace a running `uv.exe`: on
+2026-11-04 bat00's long-running `fleet` agent held uv 0.13.1 open, the installer
+failed, and the worker then failed the contract `^uv 0\.13\.6\b`. Replacing that
+binary would also change another project's tool. A new pin installs beside the
+old one, so provisioning never replaces a running uv. `tools/trunk_loop.py::bootstrap_uv`
+is the one authority for the path. Every farm command names it: provision, remote
+commands, the POSIX, CIM and WSL worker launches, and the worker's own children. A
+CIM-created Windows process inherits the user's registry `PATH`, not the SSH
+session's, so a bare `uv` there would select the user's binary. Every farm shell
+and the worker put the pinned directory first on `PATH`, then `~/.cargo/bin`,
+because proof commands run `uv` by name.
 
 `molt-gate` is Linux x86_64 behind bat00's Windows SSH endpoint. Scripts enter
 `wsl.exe -d molt-gate -- bash -s` through stdin, avoiding Windows re-quoting of
@@ -353,8 +367,13 @@ drift and insufficient physical headroom before installation, and execute the
 POSIX script twice against fake tools to check that an existing installation
 does not reinstall prerequisites or clone another checkout. Fake-tool runs cover
 the macOS host with and without the Command Line Tools (no package manager, no
-CMake), the per-tool report, and pinned-uv replacement with its convergence
-check. A doctor test proves missing CMake and Ninja are warnings, not errors. A child-process
+CMake), the per-tool report, and the pinned uv's installation into its own
+directory with its convergence check. Each fake host also holds a user uv first
+on the shell's `PATH`; the tests fail if provisioning runs or rewrites it. They
+also require the checkout of the provisioned commit before `uv sync` and doctor.
+The provision script, remote commands and the WSL launch must put the pinned
+directory first on `PATH`, never `~/.local/bin`. A doctor test proves missing
+CMake and Ninja are warnings, not errors. A child-process
 test proves the standard-stream contract on POSIX: the worker's and a
 default-stdio grandchild's output reach `worker.log`, and stdin reads EOF. The
 Windows `SetStdHandle` path is covered only for call order by an injected fake.

@@ -211,7 +211,12 @@ def test_trunk_posix_child_outlives_launcher_and_owns_new_session(tmp_path):
         transport="ssh",
         os=cross_run.HostOS.MACOS,
         launcher=cross_run.DetachedLauncher.POSIX_SESSION,
+        custody_root=str(tmp_path / "host"),
     )
+    # The host's pinned uv, where provisioning places it.
+    pinned = Path(trunk_loop.host_uv(host))
+    pinned.parent.mkdir(parents=True)
+    pinned.symlink_to(shutil.which("uv"))
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname="detached-probe"\nversion="0.0.0"\nrequires-python=">=3.12"\n',
         encoding="utf-8",
@@ -245,7 +250,9 @@ if g.exists():publish(c,'completed after launcher exit')
 """
     script = trunk_loop.detached_script(
         host,
-        trunk_loop.uv_python("-c", child, str(ready), str(release), str(complete)),
+        trunk_loop.uv_python(
+            str(pinned), "-c", child, str(ready), str(release), str(complete)
+        ),
         str(tmp_path),
         str(tmp_path),
     )
@@ -453,7 +460,9 @@ def test_wsl_launcher_holds_one_wsl_client_for_the_worker_lifetime():
 
     host = _wsl_gate()
     stage = "/home/adpena/Molt/scratch/trunk-loop/molt-cross-" + "a" * 32
-    argv = trunk_loop.uv_python("/w/tools/trunk_loop.py", "_worker", "--record", "r")
+    argv = trunk_loop.uv_python(
+        trunk_loop.host_uv(host), "/w/tools/trunk_loop.py", "_worker", "--record", "r"
+    )
     script = trunk_loop.detached_script(host, argv, "/w", stage)
     # CIM creates the client outside the SSH job; --exec runs no Windows-quoted
     # shell, and the launch script itself crosses only as a stage file.
@@ -462,7 +471,7 @@ def test_wsl_launcher_holds_one_wsl_client_for_the_worker_lifetime():
         + stage
         + "/launch.sh'}"
     ) in script
-    assert "uv run" not in script and "_worker" not in script
+    assert " run --locked" not in script and "_worker" not in script
     # The client is observed before the identity: no identity after its exit
     # means none will come, so the launcher never waits on a dead client.
     loop = script[script.index("do {") :]
@@ -473,7 +482,10 @@ def test_wsl_launcher_holds_one_wsl_client_for_the_worker_lifetime():
     launch = trunk_loop.wsl_launch_script(host, argv, "/w", stage)
     assert launch.startswith("set -eu\nexec </dev/null >>")
     assert launch.rstrip().endswith("exec " + shlex.join(argv))
-    assert launch.index("molt_probe $$") < launch.index("exec uv run")
+    assert launch.index("molt_probe $$") < launch.index("exec " + argv[0])
+    # The worker resolves the host's pinned uv first, never the user's own.
+    assert ".local" not in launch
+    assert "export PATH=" + str(Path(argv[0]).parent) + ':"$HOME/.cargo/bin' in launch
     for unsafe in ("/home/a b", "/home/a'b"):
         with pytest.raises(ValueError, match="need no quoting"):
             trunk_loop.detached_script(host, argv, "/w", unsafe)
