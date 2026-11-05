@@ -356,7 +356,7 @@ unsafe fn hook_attached_execution_context() -> u32 {
 }
 
 unsafe extern "C" fn hook_check_signals() -> c_int {
-    with_gil(|py| crate::builtins::signal_ext::signal_check_signals(py))
+    with_gil(crate::builtins::signal_ext::signal_check_signals)
 }
 
 unsafe extern "C" fn hook_set_interrupt(signum: c_int) -> c_int {
@@ -375,7 +375,7 @@ unsafe extern "C" fn hook_notify_pending_calls() {
 unsafe extern "C" fn hook_pending_call_error(reason: u32) {
     use molt_cpython_abi::hooks::PendingCallErrorKind;
 
-    if with_gil(|_py| crate::exception_pending(_py)) {
+    if with_gil(crate::exception_pending) {
         drop(molt_cpython_abi::api::errors::take_current_error());
         return;
     }
@@ -710,7 +710,7 @@ unsafe extern "C" fn hook_int_num_bits(bits: u64, out: *mut usize) -> c_int {
 }
 
 unsafe extern "C" fn hook_int_max_str_digits() -> usize {
-    with_gil(|_py| crate::builtins::sys_ext::current_int_max_str_digits(_py))
+    with_gil(crate::builtins::sys_ext::current_int_max_str_digits)
 }
 
 unsafe extern "C" fn hook_alloc_list() -> u64 {
@@ -3033,12 +3033,12 @@ unsafe extern "C" fn hook_take_pending_exception(
 }
 
 unsafe extern "C" fn hook_memory_error() {
-    with_gil(|py| crate::record_memory_error_without_allocation(py));
+    with_gil(crate::record_memory_error_without_allocation);
 }
 
 unsafe extern "C" fn hook_pending_exception_class() -> molt_cpython_abi::hooks::PendingExceptionClass
 {
-    with_gil(|py| crate::builtins::exceptions::pending_exception_class(py))
+    with_gil(crate::builtins::exceptions::pending_exception_class)
 }
 
 unsafe extern "C" fn hook_clear_pending_exception() {
@@ -3284,7 +3284,7 @@ unsafe extern "C" fn hook_dict_op(op: u32, dict_bits: u64) -> u64 {
             x if x == DictOp::Items as u32 => crate::c_api::PyDict_Items(dict_bits),
             x if x == DictOp::Clear as u32 => {
                 let result = crate::molt_dict_clear_attached_body(__entry_py, dict_bits);
-                if with_gil(|_py| crate::exception_pending(_py)) {
+                if with_gil(crate::exception_pending) {
                     0
                 } else {
                     result
@@ -4405,12 +4405,12 @@ pub(crate) fn transfer_pending_cpython_exception() -> bool {
         true
     });
     crate::object::foreign::retire_native_reference(|| drop(error));
-    transferred || with_gil(|py| crate::exception_pending(py))
+    transferred || with_gil(crate::exception_pending)
 }
 
 fn cpython_error_is_pending() -> bool {
     !unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null()
-        || with_gil(|_py| crate::exception_pending(_py))
+        || with_gil(crate::exception_pending)
 }
 
 struct NativePendingSnapshot {

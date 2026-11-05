@@ -70,7 +70,7 @@ pub(super) unsafe extern "C" fn hook_managed_gc_traverse(
         }
         crate::inc_ref_bits(py, bits);
         let mut snapshot = PinnedGcSnapshot {
-            py: py,
+            py,
             owner: bits,
             edges: Vec::new(),
         };
@@ -116,7 +116,7 @@ pub(super) unsafe extern "C" fn hook_managed_gc_clear(bits: u64) -> c_int {
         };
         crate::inc_ref_bits(py, bits);
         let _pin = PinnedGcSnapshot {
-            py: py,
+            py,
             owner: bits,
             edges: Vec::new(),
         };
