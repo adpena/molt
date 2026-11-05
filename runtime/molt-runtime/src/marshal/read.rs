@@ -89,18 +89,18 @@ impl<'input> Source<'input> {
     }
 
     fn byte(&mut self, py: &PyToken<'_>, object: bool) -> Result<u8> {
-        if let Self::Memory { input, position } = self {
-            if *position == input.len() {
-                return fail(
-                    py,
-                    BuiltinExc::EOFError,
-                    if object {
-                        "EOF read where object expected"
-                    } else {
-                        "EOF read where not expected"
-                    },
-                );
-            }
+        if let Self::Memory { input, position } = self
+            && *position == input.len()
+        {
+            return fail(
+                py,
+                BuiltinExc::EOFError,
+                if object {
+                    "EOF read where object expected"
+                } else {
+                    "EOF read where not expected"
+                },
+            );
         }
         match self.take(py, 1) {
             Ok(bytes) => Ok(bytes[0]),
@@ -672,10 +672,10 @@ impl<'a, 'py, 'input> Reader<'a, 'py, 'input> {
             }
             _ => frame.owner.take().unwrap(),
         };
-        if let Some(RefId(index)) = frame.reference {
-            if matches!(self.references[index], Reference::Reserved) {
-                self.references[index] = Reference::Ready(retained(py, result.bits()));
-            }
+        if let Some(RefId(index)) = frame.reference
+            && matches!(self.references[index], Reference::Reserved)
+        {
+            self.references[index] = Reference::Ready(retained(py, result.bits()));
         }
         Ok(Some(Record::Value(result)))
     }
