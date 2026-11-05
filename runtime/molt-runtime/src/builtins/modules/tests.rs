@@ -1371,6 +1371,32 @@ fn sys_module_cache_set_populates_bootstrap_metadata() {
                 dec_ref_bits(_py, key_bits);
             }
 
+            // CPython's default finders and hooks exist from bootstrap, in
+            // CPython order; nothing completes them later.
+            let read_list = |name: crate::NameId| {
+                let key = name.owned_bits(_py).unwrap();
+                let value = dict_get_in_place(_py, dict_ptr, key)
+                    .expect("dictionary lookup succeeds")
+                    .expect("bootstrap list");
+                dec_ref_bits(_py, key);
+                crate::object::seq_access::snapshot(
+                    _py,
+                    obj_from_bits(value).as_ptr().unwrap(),
+                    "bootstrap list snapshot",
+                )
+                .unwrap()
+                .to_vec()
+            };
+            assert_eq!(
+                read_list(crate::NameId::MetaPath),
+                [
+                    crate::builtins::types::compiled_loader_builtin_class(_py),
+                    crate::builtins::types::compiled_loader_frozen_class(_py),
+                    crate::builtins::types::path_finder_class(_py),
+                ]
+            );
+            assert_eq!(read_list(crate::NameId::PathHooks).len(), 2);
+
             let platform_key_ptr = alloc_string(_py, b"platform");
             assert!(!platform_key_ptr.is_null());
             let platform_key_bits = MoltObject::from_ptr(platform_key_ptr).bits();

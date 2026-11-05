@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from enum import Enum, IntFlag
+from enum import Enum, IntEnum, IntFlag
 from types import MappingProxyType
 from typing import Final, Mapping, NamedTuple, TypeAlias
 
@@ -89,6 +89,10 @@ class PythonIdentity(IntFlag):
     BUILTIN_GETATTR = 1 << 75
     BUILTIN_HASATTR = 1 << 76
     BUILTIN_DELATTR = 1 << 77
+    INTRINSIC_DATACLASSES_INIT_GLOBALS = 1 << 78
+    INTRINSIC_DATACLASSES_INIT = 1 << 79
+    BUILTIN_ISINSTANCE = 1 << 80
+    BUILTIN_ISSUBCLASS = 1 << 81
 
 
 class PythonMember(IntFlag):
@@ -141,12 +145,35 @@ class PythonMember(IntFlag):
     BUILTINS_GETATTR = 1 << 46
     BUILTINS_HASATTR = 1 << 47
     BUILTINS_DELATTR = 1 << 48
+    BUILTINS_ISINSTANCE = 1 << 49
+    BUILTINS_ISSUBCLASS = 1 << 50
 
 
 class PythonTargetProperty(Enum):
     SYS_PLATFORM = 'sys_platform'
     OS_NAME = 'os_name'
     SYS_VERSION_INFO = 'sys_version_info'
+
+
+class PythonNativeInitializer(Enum):
+    DATACLASS = 'dataclass'
+
+
+class DataclassInitSpecField(IntEnum):
+    PARAMETERS = 0
+    POSITIONAL = 1
+    DEFAULTS = 2
+    KWDEFAULTS = 3
+    CAPTURE_NAMES = 4
+    CAPTURES = 5
+    STORES = 6
+    POST_INIT_INPUTS = 7
+    FACTORY_MARKER = 8
+    FROZEN_OBJECT = 9
+    ANNOTATIONS = 10
+    GLOBALS = 11
+    MODULE = 12
+    BUILTINS = 13
 
 
 class PythonImportBehavior(Enum):
@@ -176,7 +203,7 @@ UNBOUND_IDENTITY: Final[IdentityMask] = int(PythonIdentity.UNBOUND)
 UNKNOWN_IDENTITY: Final[IdentityMask] = OTHER_IDENTITY | UNBOUND_IDENTITY
 SENTINEL_IDENTITIES: Final[IdentityMask] = UNKNOWN_IDENTITY
 NO_INVALID_MEMBERS: Final[MemberMask] = 0
-ALL_INVALID_MEMBERS: Final[MemberMask] = 562949953421311
+ALL_INVALID_MEMBERS: Final[MemberMask] = 2251799813685247
 
 class PythonImportCallable(NamedTuple):
     behavior: PythonImportBehavior
@@ -219,6 +246,8 @@ PUBLIC_RUNTIME_IMPORT_IDENTITIES: Final[IdentityMask] = (
 INTRINSIC_CALLABLE_IDENTITIES: Final[Mapping[str, PythonIdentity]] = MappingProxyType(
     {
         'molt_sys_platform': PythonIdentity.INTRINSIC_SYS_PLATFORM,
+        'molt_dataclasses_init_globals': PythonIdentity.INTRINSIC_DATACLASSES_INIT_GLOBALS,
+        'molt_dataclasses_init': PythonIdentity.INTRINSIC_DATACLASSES_INIT,
         'molt_os_name': PythonIdentity.INTRINSIC_OS_NAME,
         'molt_module_import': PythonIdentity.INTRINSIC_MODULE_IMPORT,
         'molt_importlib_import_module': PythonIdentity.INTRINSIC_IMPORTLIB_IMPORT_MODULE,
@@ -256,6 +285,18 @@ INTRINSIC_TARGET_PROPERTIES: Final[Mapping[IdentityMask, PythonTargetProperty]] 
         int(PythonIdentity.INTRINSIC_SYS_PLATFORM): PythonTargetProperty.SYS_PLATFORM,
         int(PythonIdentity.INTRINSIC_OS_NAME): PythonTargetProperty.OS_NAME,
         int(PythonIdentity.INTRINSIC_SYS_VERSION_INFO): PythonTargetProperty.SYS_VERSION_INFO,
+    }
+)
+
+INTRINSIC_ATTRIBUTE_READS: Final[Mapping[IdentityMask, tuple[int, str]]] = MappingProxyType(
+    {
+        int(PythonIdentity.INTRINSIC_DATACLASSES_INIT_GLOBALS): (0, '__dict__'),
+    }
+)
+
+INTRINSIC_NATIVE_INITIALIZERS: Final[Mapping[IdentityMask, PythonNativeInitializer]] = MappingProxyType(
+    {
+        int(PythonIdentity.INTRINSIC_DATACLASSES_INIT): PythonNativeInitializer.DATACLASS,
     }
 )
 
@@ -318,6 +359,8 @@ INTRINSIC_RUNTIME_IMPORT_MIN_ARGUMENT_MASKS: Final[tuple[IdentityMask, ...]] = (
 
 ALL_INTRINSIC_CALLABLE_IDENTITIES: Final[IdentityMask] = (
     int(PythonIdentity.INTRINSIC_SYS_PLATFORM) |
+    int(PythonIdentity.INTRINSIC_DATACLASSES_INIT_GLOBALS) |
+    int(PythonIdentity.INTRINSIC_DATACLASSES_INIT) |
     int(PythonIdentity.INTRINSIC_OS_NAME) |
     int(PythonIdentity.INTRINSIC_MODULE_IMPORT) |
     int(PythonIdentity.INTRINSIC_IMPORTLIB_IMPORT_MODULE) |
@@ -374,6 +417,43 @@ BUILTIN_IDENTITIES: Final[Mapping[str, tuple[PythonIdentity, PythonMember]]] = M
         'classmethod': (PythonIdentity.BUILTIN_CLASSMETHOD, PythonMember.BUILTINS_CLASSMETHOD),
         'staticmethod': (PythonIdentity.BUILTIN_STATICMETHOD, PythonMember.BUILTINS_STATICMETHOD),
         'property': (PythonIdentity.BUILTIN_PROPERTY, PythonMember.BUILTINS_PROPERTY),
+        'isinstance': (PythonIdentity.BUILTIN_ISINSTANCE, PythonMember.BUILTINS_ISINSTANCE),
+        'issubclass': (PythonIdentity.BUILTIN_ISSUBCLASS, PythonMember.BUILTINS_ISSUBCLASS),
+    }
+)
+
+BUILTIN_NAMES_BY_IDENTITY: Final[Mapping[IdentityMask, str]] = MappingProxyType(
+    {
+        int(PythonIdentity.BUILTINS_IMPORT): '__import__',
+        int(PythonIdentity.BUILTIN_GLOBALS): 'globals',
+        int(PythonIdentity.BUILTIN_LOCALS): 'locals',
+        int(PythonIdentity.BUILTIN_VARS): 'vars',
+        int(PythonIdentity.BUILTIN_SETATTR): 'setattr',
+        int(PythonIdentity.BUILTIN_GETATTR): 'getattr',
+        int(PythonIdentity.BUILTIN_HASATTR): 'hasattr',
+        int(PythonIdentity.BUILTIN_DELATTR): 'delattr',
+        int(PythonIdentity.BUILTIN_EVAL): 'eval',
+        int(PythonIdentity.BUILTIN_EXEC): 'exec',
+        int(PythonIdentity.BUILTIN_BOOL): 'bool',
+        int(PythonIdentity.BUILTIN_BYTEARRAY): 'bytearray',
+        int(PythonIdentity.BUILTIN_BYTES): 'bytes',
+        int(PythonIdentity.BUILTIN_COMPLEX): 'complex',
+        int(PythonIdentity.BUILTIN_DICT): 'dict',
+        int(PythonIdentity.BUILTIN_FLOAT): 'float',
+        int(PythonIdentity.BUILTIN_FROZENSET): 'frozenset',
+        int(PythonIdentity.BUILTIN_INT): 'int',
+        int(PythonIdentity.BUILTIN_LEN): 'len',
+        int(PythonIdentity.BUILTIN_LIST): 'list',
+        int(PythonIdentity.BUILTIN_OPEN): 'open',
+        int(PythonIdentity.BUILTIN_RANGE): 'range',
+        int(PythonIdentity.BUILTIN_SET): 'set',
+        int(PythonIdentity.BUILTIN_STR): 'str',
+        int(PythonIdentity.BUILTIN_TUPLE): 'tuple',
+        int(PythonIdentity.BUILTIN_CLASSMETHOD): 'classmethod',
+        int(PythonIdentity.BUILTIN_STATICMETHOD): 'staticmethod',
+        int(PythonIdentity.BUILTIN_PROPERTY): 'property',
+        int(PythonIdentity.BUILTIN_ISINSTANCE): 'isinstance',
+        int(PythonIdentity.BUILTIN_ISSUBCLASS): 'issubclass',
     }
 )
 
@@ -490,6 +570,8 @@ CANONICAL_FROM_IMPORT_IDENTITIES: Final[Mapping[tuple[str, str], tuple[PythonIde
         ('builtins', 'classmethod'): (PythonIdentity.BUILTIN_CLASSMETHOD, PythonMember.BUILTINS_CLASSMETHOD),
         ('builtins', 'staticmethod'): (PythonIdentity.BUILTIN_STATICMETHOD, PythonMember.BUILTINS_STATICMETHOD),
         ('builtins', 'property'): (PythonIdentity.BUILTIN_PROPERTY, PythonMember.BUILTINS_PROPERTY),
+        ('builtins', 'isinstance'): (PythonIdentity.BUILTIN_ISINSTANCE, PythonMember.BUILTINS_ISINSTANCE),
+        ('builtins', 'issubclass'): (PythonIdentity.BUILTIN_ISSUBCLASS, PythonMember.BUILTINS_ISSUBCLASS),
     }
 )
 
@@ -543,6 +625,8 @@ CANONICAL_MEMBER_IDENTITIES: Final[Mapping[str, tuple[tuple[PythonIdentity, Pyth
         'classmethod': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_CLASSMETHOD, PythonMember.BUILTINS_CLASSMETHOD),),
         'staticmethod': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_STATICMETHOD, PythonMember.BUILTINS_STATICMETHOD),),
         'property': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_PROPERTY, PythonMember.BUILTINS_PROPERTY),),
+        'isinstance': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ISINSTANCE, PythonMember.BUILTINS_ISINSTANCE),),
+        'issubclass': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ISSUBCLASS, PythonMember.BUILTINS_ISSUBCLASS),),
     }
 )
 
@@ -596,6 +680,8 @@ CANONICAL_MEMBER_WRITES: Final[Mapping[str, tuple[tuple[PythonIdentity, MemberMa
         'classmethod': ((PythonIdentity.BUILTINS_MODULE, 34359738368),),
         'staticmethod': ((PythonIdentity.BUILTINS_MODULE, 68719476736),),
         'property': ((PythonIdentity.BUILTINS_MODULE, 2199023255552),),
+        'isinstance': ((PythonIdentity.BUILTINS_MODULE, 562949953421312),),
+        'issubclass': ((PythonIdentity.BUILTINS_MODULE, 1125899906842624),),
         'meta_path': ((PythonIdentity.SYS_MODULE, 128),),
         'path_hooks': ((PythonIdentity.SYS_MODULE, 128),),
         'path_importer_cache': ((PythonIdentity.SYS_MODULE, 128),),

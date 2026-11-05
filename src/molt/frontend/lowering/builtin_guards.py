@@ -1,12 +1,19 @@
-"""BuiltinGuardMixin: guarded builtin specialization inside functions (HF-79).
+"""BuiltinGuardMixin: proved and guarded builtin specialization (HF-79, HF-226).
 
 Inside a Python function, a read of a builtin name is a live lookup. The
-active globals may bind the name, and any code may rebind or delete
-``builtins.len`` before or while the function runs, so the binding analysis
-proves no identity there. CPython 3.12 still specializes such reads behind a
-runtime guard (``LOAD_GLOBAL_BUILTIN``). Molt does the same.
+active globals may bind the name, and code may rebind or delete
+``builtins.len`` before or while the function runs.
 
-The binding analysis gives each builtin read in an activation scope whose
+The binding flow first proves exact builtin values from the closed program's
+writer premise (spec 0216): when no code in the graph can bind the name in
+this namespace, bind ``__builtins__`` or replace the builtins member, the read
+selects the builtin on every execution. Such a read needs no guard and no
+namespace load; it lowers to the builtin value, and its call lowers exactly as
+a guard's fast arm does.
+
+Without that proof, CPython 3.12 still specializes such reads behind a
+runtime guard (``LOAD_GLOBAL_BUILTIN``). Molt does the same. The binding
+analysis gives each unproved builtin read in an activation scope whose
 module never binds the name a bit of the guard mask
 (``runtime/builtin_binding_guards.toml``). At the source point where Python
 loads the name, the lowering emits one ``molt_guard_builtin_bindings(mask)``
@@ -31,6 +38,11 @@ import ast
 from typing import Any, Literal
 
 from molt.compiler_analysis.python_binding_facts import PythonNodeKey
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    BUILTIN_IDENTITIES,
+    BUILTIN_SHAPE_IDENTITIES,
+    PythonIdentity,
+)
 from molt.compiler_analysis.python_effects_generated import (
     NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS,
     REFLECTS_NAMESPACE,
@@ -39,7 +51,7 @@ from molt.compiler_analysis.python_effects_generated import (
     WRITES_GLOBAL_NAMESPACE,
 )
 from molt.frontend._mixin_base import GeneratorMixinBase
-from molt.frontend._types import MoltValue
+from molt.frontend._types import BUILTIN_TYPE_TAGS, MoltValue
 from molt.frontend.visitors.call_dispatch_common import CALL_NOT_HANDLED
 
 GUARD_RUNTIME_SYMBOL = "molt_guard_builtin_bindings"
@@ -79,6 +91,20 @@ _UNDUPLICABLE_NODES = (
 _MAX_DUPLICATED_NODES = 600
 
 GuardArmKind = Literal["fast", "slow"]
+
+# These builtins read or execute in the caller's frame namespace. Their named
+# lowerings keep their existing frame-aware path; a proof of identity alone
+# does not select a caller-independent runtime callable for them.
+_FRAME_REFLECTIVE_BUILTINS = frozenset(
+    {
+        PythonIdentity.BUILTINS_IMPORT,
+        PythonIdentity.BUILTIN_GLOBALS,
+        PythonIdentity.BUILTIN_LOCALS,
+        PythonIdentity.BUILTIN_VARS,
+        PythonIdentity.BUILTIN_EVAL,
+        PythonIdentity.BUILTIN_EXEC,
+    }
+)
 
 
 class MoltBuiltinGuardTest(ast.expr):
@@ -138,23 +164,107 @@ class BuiltinGuardMixin(GeneratorMixinBase):
         fact = self.python_binding_index.expression_fact(node)
         return 0 if fact is None else fact.builtin_guard_bit
 
-    def _builtin_guard_covers(self, node: ast.AST) -> bool:
-        """The enclosing fast arm's guard proves this read is the builtin."""
+    def _proven_builtin_name(self, node: ast.AST) -> str | None:
+        """The builtin this read selects on every execution, or None.
+
+        The closed-world binding proof and an enclosing guard's fast arm are
+        the two authorities; both mean that no code can have rebound the name
+        between the namespace state they establish and this read.
+        """
+        if not isinstance(node, ast.Name) or not isinstance(node.ctx, ast.Load):
+            return None
+        index = self.python_binding_index
+        fact = index.expression_fact(node) if index is not None else None
+        if fact is not None and (name := fact.exact_builtin_name()) is not None:
+            return name
         arm = self._builtin_guard_arm
-        return (
+        if (
             arm is not None
             and arm[0] == "fast"
-            and isinstance(node, ast.Name)
             and PythonNodeKey.from_node(node) in arm[1]
+        ):
+            return node.id
+        return None
+
+    def _builtin_binding_proven(self, node: ast.AST) -> bool:
+        return self._proven_builtin_name(node) is not None
+
+    def _builtin_read_replaces_guard(self, node: ast.AST) -> str | None:
+        """A proof with a guard's fast-arm authority, or None.
+
+        The guard model applies to Python function activations; its fast arm
+        lowers a covered callee without retaining the live callable across
+        argument evaluation, because a builtin's lifetime is unobservable. An
+        exact read in an activation replaces that guard and keeps the same
+        policy. Module code keeps the call fact's own elision proof.
+        """
+        if not isinstance(node, ast.Name) or not isinstance(node.ctx, ast.Load):
+            return None
+        arm = self._builtin_guard_arm
+        if (
+            arm is not None
+            and arm[0] == "fast"
+            and PythonNodeKey.from_node(node) in arm[1]
+        ):
+            return node.id
+        if not self._function_needs_frame_trace():
+            return None
+        index = self.python_binding_index
+        fact = index.expression_fact(node) if index is not None else None
+        return fact.exact_builtin_name() if fact is not None else None
+
+    def _proven_shape_builtin_call(self, node: ast.Call) -> str | None:
+        """The shape builtin a guard-replacing proof selects, if its shape is valid.
+
+        The binding proof selects the callee. The flow's call fact separately
+        proves that the specialized lowering accepts these arguments; any other
+        shape calls the builtin, which raises its own error.
+        """
+        name = self._builtin_read_replaces_guard(node.func)
+        identity = BUILTIN_SHAPE_IDENTITIES.get(name) if name is not None else None
+        if identity is None:
+            return None
+        index = self.python_binding_index
+        fact = index.call_fact(node) if index is not None else None
+        return name if fact is not None and fact.builtin_shape_valid(identity) else None
+
+    def _named_builtin_unproved(self, node: ast.Call, func_id: str) -> bool:
+        """A catalogued builtin's named lowering lacks its binding proof.
+
+        Named lowerings (an operation such as ``ISINSTANCE`` or the canonical
+        runtime callable) replace the live read. A builtin with a typed
+        identity has an authority that can prove that replacement; without
+        the proof, a module, member or ``__builtins__`` writer can select
+        another object, so the call keeps the live read. Frame-reflective
+        builtins keep their frame-aware lowering.
+        """
+        declaration = BUILTIN_IDENTITIES.get(func_id)
+        return (
+            declaration is not None
+            and declaration[0] not in _FRAME_REFLECTIVE_BUILTINS
+            and not self._builtin_binding_proven(node.func)
         )
+
+    def _emit_proven_builtin_value(self, node: ast.Name) -> MoltValue | None:
+        """Materialize a proved builtin type read without a namespace load.
+
+        ``BUILTIN_TYPE`` yields the runtime's canonical type object by its tag,
+        the object ``builtins`` publishes. A builtin function value has no such
+        constant (``BUILTIN_FUNC`` resolves the published name again), so its
+        read stays the live load. None keeps the live read.
+        """
+        name = self._proven_builtin_name(node)
+        if name is None or name not in BUILTIN_TYPE_TAGS:
+            return None
+        return self._emit_builtin_type_value(name)
 
     def _builtin_guard_may_open(self, callee: ast.AST) -> bool:
         arm = self._builtin_guard_arm
         if arm is not None and arm[0] == "slow":
             return False
-        return bool(self._builtin_guard_bit(callee)) and not self._builtin_guard_covers(
-            callee
-        )
+        return bool(
+            self._builtin_guard_bit(callee)
+        ) and not self._builtin_binding_proven(callee)
 
     def _expression_runs_no_python(self, node: ast.expr) -> bool:
         if self.python_binding_index is None:
@@ -228,7 +338,7 @@ class BuiltinGuardMixin(GeneratorMixinBase):
         receiver = self._zero_argument_super_receiver(node)
         if receiver is None:
             return CALL_NOT_HANDLED
-        if self._builtin_guard_covers(receiver.func):
+        if self._builtin_binding_proven(receiver.func):
             return self._emit_super_method_call(node)
         if not self._builtin_guard_may_open(
             receiver.func

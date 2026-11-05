@@ -679,7 +679,6 @@ pub(crate) fn publish_interpreter_sys_for_test(py: &PyToken<'_>, bits: u64) -> u
 /// fails to find `sys.modules` (HF-540).
 #[cfg(test)]
 pub(crate) struct InterpreterSysTestSnapshot {
-    defaults: crate::builtins::platform::ImportDefaultsTestSnapshot,
     namespace: u64,
     builtins: u64,
     table: Option<(u8, u64, u64)>,
@@ -692,7 +691,6 @@ pub(crate) struct InterpreterSysTestSnapshot {
 impl InterpreterSysTestSnapshot {
     pub(crate) fn detach(py: &PyToken<'_>) -> Self {
         let state = runtime_state(py);
-        let defaults = crate::builtins::platform::ImportDefaultsTestSnapshot::detach(py);
         let namespace = state.interpreter_sys.0.swap(0, Ordering::AcqRel);
         let builtins = state.interpreter_builtins.0.swap(0, Ordering::AcqRel);
         let table = state.module_table.get().and_then(|table| {
@@ -717,7 +715,6 @@ impl InterpreterSysTestSnapshot {
             })
         });
         Self {
-            defaults,
             namespace,
             builtins,
             table,
@@ -759,8 +756,7 @@ impl InterpreterSysTestSnapshot {
         });
         dec_ref_bits(py, key);
         // Restore the entire interpreter role before retiring any fresh owner:
-        // list/module finalizers must see matching sys and bootstrap custody.
-        self.defaults.restore(py);
+        // list/module finalizers must see matching sys custody.
         drop(current_public);
         for bits in [
             self.public,

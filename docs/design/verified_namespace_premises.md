@@ -399,6 +399,300 @@ Standalone source scans without a closed graph remain conservative; they cannot 
 foreign-writer premise. Their type-checking and reentrant-import controls continue to test that
 boundary. User discovery now supplies the actual graph premise instead of changing that default.
 
+## Frontend premise adoption: exact builtin certificates (HF-226, HF-79)
+
+Status: implemented on lane `lane/family-b-premises` (base origin/main
+f1d450c4f1529fd00d11780c748a2af8ca403dfa), 2026-11-05; acceptance results
+are under "Results of this lane". This section closes the builtin part of HF-226's
+frontend premise adoption and of HF-79's proven bindings. Source callable,
+class and import certificates remain open (see "Scope cut").
+
+### Problem (baseline, main f1d450c4f1)
+
+The frontend already analyzes each module under the graph's actual premise
+(`statement_scope.py` passes `namespace_premise` to `analyze_python_bindings`).
+Under that closed premise the flow proves `str` and `range` exact in a function
+body: for the canonical `isinstance` primitive the read facts are
+`identities == BUILTIN_STR` and `BUILTIN_RANGE`, not invalidated. The frontend
+ignored that proof. It treated every builtin read in a function as a live
+lookup (`expressions.py` sent `BUILTIN_TYPE_TAGS` names to `MODULE_GET_GLOBAL`)
+and opened a runtime guard for every read with a guard bit
+(`_project_builtin_guard_bits` gave a bit to every read the module never binds).
+
+The baseline release IR of the canonical `isinstance` primitive
+(`molt build --build-profile release --emit-ir`, macOS arm64, 29 admitted
+modules, binary 35,707,440 bytes with symbols kept) shows, per loop iteration:
+
+- `molt_guard_builtin_bindings(isinstance)`, a runtime call, opens a fast and a
+  slow arm around `isinstance(objs[i & 63], str)`;
+- `module_get_global('str')` runs in both arms: the subscript ends the guard's
+  coverage walk, so the fast arm does not cover `str`. It misses the module
+  dictionary and then hits the builtins dictionary.
+
+The `for i in range(n)` guard also duplicates every loop body into a fast arm
+(counted loop) and a slow arm (iterator loop), in all four measured primitives.
+`isinstance` and `issubclass` had no catalog identity, so the flow read them as
+`OTHER | UNBOUND` and could never prove them.
+
+The baseline has two related defects, found by mechanism:
+
+- The guard's fast arm trusts the binding as a proof of call shape:
+  `def f(): return len()` crashes the frontend (`IndexError` in
+  `_emit_proven_shape_builtin_call`).
+- Named builtin lowerings replace the live read without a proof. A guard's slow
+  arm still emits the `ISINSTANCE` operation, so a `builtins.isinstance` or
+  `__builtins__` writer cannot replace it, as CPython allows.
+
+### Prior art
+
+- CPython 3.12 specializes `LOAD_GLOBAL` into `LOAD_GLOBAL_BUILTIN` behind dict
+  keys-version guards on the globals and builtins dictionaries
+  ([`Python/specialize.c`](https://github.com/python/cpython/blob/v3.12.0/Python/specialize.c),
+  `specialize_load_global`; PEP 659). Molt's existing HF-F177 guard is that design.
+- Ahead-of-time compilers that close the program drop the guard. mypyc treats
+  builtins as fixed and documents monkeypatching them as unsupported
+  ([mypyc differences from Python](https://mypyc.readthedocs.io/en/latest/differences_from_python.html)).
+  Nuitka lowers an unshadowed builtin name to a builtin reference node
+  (`nuitka/nodes/BuiltinRefNodes.py`). GraalVM Native Image folds values its
+  closed-world points-to analysis proves constant
+  ([Native Image basics](https://www.graalvm.org/latest/reference-manual/native-image/basics/)).
+- Molt's spec 0216 closes the program, and this document's premise bounds every
+  writer. The flow's exact identity is therefore a proof, not a speculation,
+  and needs no guard. Unproved reads keep CPython's guard model.
+
+### Reconciliation with the retired HF-79 bundle (e407112cc01b0bf5ea1a9f5d5f73a9dc60f57446)
+
+| Bundle element | Decision | Reason |
+|---|---|---|
+| `PythonExpressionFact.exact_builtin_name`, `BUILTIN_NAMES_BY_IDENTITY` projection | Reuse, rewritten | Same typed query; the projection moves into the generator with the other identity tables, and the query requires a global lookup. |
+| `_builtin_binding_name`/`_builtin_binding_proven` replacing `_builtin_guard_covers` | Reuse, rewritten | One authority for "this read selects the builtin": the flow's proof or the guard's fast arm. |
+| Exact reads get no guard bit | Reuse | A proved read needs no guard. |
+| Proved value read lowers to `BUILTIN_TYPE`/`BUILTIN_FUNC` | Reuse, narrowed | Types only. `BUILTIN_FUNC` resolves the published name again (`molt_func_new_builtin_named`, `lookup_builtin_name`), so a function value gains nothing and keeps the live read. |
+| `__builtins__` writer excludes proofs | Reuse, moved | The bundle checked it only in its callable projection. Here it sits in the builtin fallback of `_resolve_name` (`_builtins_mapping_rebindable`), the one place that produces builtin identity. |
+| `builtin_specializations` call-shape mask | Reuse | A value proof does not prove invocation shape; see the `len()` defect above. The flow's `builtin_call_shape` is the shape authority. |
+| `isinstance`/`issubclass` identities | Reuse, narrowed | Only these two are needed to remove the guard from the `isinstance` loop. The bundle added 29 builtins at once. A catalog identity turns an `OTHER` read into an exact one, which changes call effects, operand escape and source demand wherever the builtin appears, so every new identity needs its own census. |
+| Exact `isinstance` call: protocol-only operands | Drop | Ordinary unknown-callee operand escape stays, so discovery does not change. Precision belongs to HF-181. |
+| Source callable/class/import certificates, direct-call ABI, class slots, receiver custody (03ffde220d54dcc906d763cbfb06f0157a7ce54e, d8a34f545a4356d306e37b891bce4cfe88c8bcb3) | Drop from this lane | See "Scope cut". |
+| Uncertain-read `escape` removal, `vars()` projection, dict literal-key selection, `source_value_receivers` | Drop | Discovery precision changes (HF-181), with their own failing census and dataclass discovery. This mechanism does not need them. |
+
+### Mechanism (this lane)
+
+1. **Catalog.** `python_identity_catalog.toml` gains the `BUILTIN_ISINSTANCE`
+   and `BUILTIN_ISSUBCLASS` identities and their `BUILTINS_*` member guards. The
+   generator projects `BUILTIN_NAMES_BY_IDENTITY` for every catalog builtin.
+2. **Builtins mapping custody.** CPython takes a frame's builtins from
+   `globals["__builtins__"]` when the function is created
+   (`_PyEval_BuiltinsFromGlobals`); Molt's runtime does the same
+   (`frames.rs`: `frame_effective_builtins_bits`,
+   `frame_stack_active_builtins_bits`). `_resolve_name` adds `OTHER` to the
+   builtin fallback when `_builtins_mapping_rebindable()`: this module binds
+   `__builtins__` anywhere, or the premise lists it as a foreign write. The
+   check is module-wide, so a read before the write is not proved either. Its
+   soundness rests on the closed premise's foreign-writer list being complete,
+   as every other premise fact does. An open premise is unchanged: its
+   callbacks already invalidate reads.
+3. **Guard bits.** `_project_builtin_guard_bits` gives no bit to a read whose
+   fact is exact for the same name (its docstring states the rule).
+4. **One frontend authority.** `_proven_builtin_name(node)` returns the builtin
+   when the fact is exact (`exact_builtin_name`: not invalidated, global
+   lookup, identity is exactly one catalog builtin) or when the enclosing
+   guard's fast arm covers the read. `_builtin_read_replaces_guard(node)` is
+   the subset with the fast arm's specialization policy: a covered read, or an
+   exact read in a Python function activation, where the guard model applies.
+   Only that subset lowers a shape call without retaining the live callable
+   across argument evaluation; module code keeps the call fact's own elision
+   proof (`callee_elision_safe`), as on main. The runtime guard admits only when the
+   frame's builtins dictionary is the sealed builtins namespace
+   (`binding_guards.rs`, `active_frame_admits`), so a fast arm also excludes a
+   replaced `__builtins__` mapping. Every former `_builtin_guard_covers`
+   consumer (shape calls, `_specializable_builtin_name`, `range` loops, the
+   invalidation query, `super`) uses it.
+5. **Call shape.** A proved shape call also requires the call fact's
+   `builtin_specializations` bit, which the flow computes from
+   `builtin_call_shape(...).specialization_valid` for each possible shape
+   builtin. An invalid shape calls the builtin, which raises its own error.
+6. **Named lowerings need the proof.** `_named_builtin_unproved` sends a
+   catalogued, non-reflective builtin whose read is not proved to the live
+   read and a dynamic call, before any named lowering. Names without a catalog
+   identity keep today's lowering (see "Open siblings").
+7. **Value lowering.** `_load_name_expression` calls
+   `_emit_proven_builtin_value`, which emits `BUILTIN_TYPE(tag)` for a proved
+   type: the runtime's canonical type object, which is the object `builtins`
+   publishes. A proved function value keeps the live read.
+
+Module-scope reads use the same facts: before any callback, and under a closed
+premise after callbacks, an exact module-scope read lowers the same way. In a
+loop that mixes proved and unproved reads, the proved reads lower to their
+values in both arms of the guard that the unproved reads still open.
+
+There is no new op, runtime entry, cache or registry. Native, LLVM, WASM, Luau
+and Rust backends already lower `BUILTIN_TYPE`, `BUILTIN_FUNC` (with the
+manifest ABIs `molt_isinstance`, `molt_issubclass`), `ISINSTANCE` and the
+counted loop; the frontend already emitted these operations before this change.
+
+### Invariants
+
+- An exact read implies, over the closed graph: no writer of the module slot
+  (own, `global`, literal reflection or named foreign write), no write of the
+  `builtins` member, no writer of `__builtins__`, and a stable activation
+  namespace. A source body whose code reaches another `FunctionType`
+  activation is in `opaque_activation_sources`, and its reads are `OTHER`.
+  Any one writer keeps the guard.
+- An open or unknown premise proves no read in a function after a callback;
+  standalone compilation therefore keeps today's guards.
+- A slow arm honors exact facts but never opens or trusts a guard.
+- A named lowering of a catalogued builtin implies a proof at its callee read.
+  This invariant covers catalogued builtins only; see "Open siblings".
+
+### Costs
+
+Compile time: one fact lookup per name read and one `builtin_call_shape` query
+per call whose callee may be a shape builtin, both inside existing passes.
+Emitted code: per proved type read, one `BUILTIN_TYPE` call replaces up to two
+dictionary lookups, and a proved callee needs no guard call; a proved `range` loop is emitted once instead
+of twice. No runtime state, allocation or synchronization is added. An
+unproved catalogued call in a guard's slow arm becomes a dynamic call; it runs
+only after its guard fails.
+
+### Scope cut, with evidence
+
+- **Source callable/class/import certificates.** Removing the lookup of a module
+  function or class needs a value source other than the namespace: either a
+  value-free direct-call entry (the bundle's 03ffde220d: native/LLVM/WASM call
+  ABI, recursion admission, invocation publication) or a static module slot (a
+  new IR op in every backend). The findings ledger's HF-79 row records that
+  version at `dynamic_call` 0.9977x of base and primitive binaries 22.8 to
+  30.9 MB, with a failed census. Today's guarded
+  call (`call_guarded`) needs the callee object for invocation publication
+  (`emit_invocation_publish`), so removing admission alone cannot drop the
+  lookup. A typed pure read of a proved binding, which LICM and GVN may hoist,
+  is the smallest next design. It is a separate decision.
+- **Acceptance axes without binding work.** The per-iteration IR of `loop`
+  (`inplace_add`, counted index) and `dynamic_call` (`call_func` of a local)
+  contains no namespace operation on main. Premise adoption cannot change their
+  per-op slope; their costs are the counted-loop and call protocols. The
+  `dataclass_construction` loop has one `module_get_global('Point')` per
+  iteration, which needs the class certificate above.
+
+### Open siblings
+
+Named lowerings of builtins without a catalog identity (`type`, `id`, `ord`,
+`chr`, `print`, `object` and others in `call_dispatch_builtin_*.py`) still
+replace the live read without a proof. A program that assigns `builtins.type`
+or replaces `__builtins__` therefore still calls the canonical `type` where
+CPython calls the replacement. Each needs a catalog identity, as this lane
+gives `isinstance` and `issubclass`; that changes discovery for every program
+and needs its own census. The lane reports this family to the integrator for
+its own ledger row.
+
+Main also fails to persist the frontend lowering record of a module that
+defines a dataclass: `local_classes` carries `dataclass_init_projection`, a
+tuple of `DataclassInitField` dataclasses, and `_write_persisted_module_lowering`
+raises `TypeError: Object of type DataclassInitField is not JSON serializable`
+(`cache_keys._json_ir_default`). Any cold build of the
+`dataclass_construction` primitive with the lowering cache enabled fails. This
+is outside this lane's mechanism; the lane reports it to the integrator.
+
+### Acceptance and evidence rules
+
+The five-pair primitive A/B (`tools/perf_scoreboard.py primitives`, exact
+CPython 3.12.16) passes when no axis ratio rises beyond its ratchet noise bound
+and the `isinstance` per-op ratio falls beyond its bound. The prototype
+evidence before review was deterministic: the `isinstance` loop has no guard
+and no lookup (182 to 82 IR ops in `run`), 29 admitted modules, and a binary of
+35,161,472 bytes against 35,707,440. One unpaired instruction sample
+(5,952 to 5,165 per operation) is anecdotal; the paired A/B is the claim.
+The census passes when no program of the 144 admits a module that main does
+not.
+
+### Test plan
+
+- Modify `tests/test_frontend_builtin_binding_guards.py`: under a closed
+  premise an exact read has no guard bit, no `module_get_global` and one loop;
+  a `global`, `__builtins__`, foreign or member writer keeps the live read;
+  standalone compilation keeps both guards; `len()` in a function (proved and
+  guarded) and at module scope calls the builtin; `globals` keeps its lowering;
+  a guard's slow arm calls the live `isinstance`.
+- `tests/test_gen_python_identity_catalog.py` and the generator check cover the
+  catalog projection.
+- Create, under `tests/differential/basic/`, run against CPython 3.12.16 on
+  native, LLVM and WASM: `proven_builtin_values.py` (identity
+  `is builtins.str`, metaclass `__instancecheck__`/`__subclasscheck__`, tuples,
+  aliases, call-shape errors, zero-trip loops, comprehensions, module scope),
+  `proven_builtin_builtins_mapping.py` (`__builtins__` replaced between two
+  `def`s) and `proven_builtin_function_rebind.py` (`types.FunctionType` with
+  custom builtins). The existing `builtin_binding_guards*.py` programs keep
+  covering member, `global` and `globals()` writers.
+- Census of the 144 programs, public stdlib dataclass discovery, the primitive
+  A/B, and module counts and binary sizes for hello and the loop program.
+
+### Review record
+
+Raw reviews are in the lane's evidence directory
+(`logs/agents/lane-family-b-premises/artifacts/reviews/`).
+
+Round 1 (egm-design and egm-codebase-details, Sonnet, design file only): ten
+and seven findings, no blockers. Fixed: status and tense, file markers and
+paths, the `len()` regression test, `FunctionType` and module-scope coverage,
+evidence and acceptance rules, code names, the slow-arm invariant, and scope
+naming. The reviewers' `FunctionType` finding led to a differential; the
+`__builtins__` mapping differential then exposed the named-lowering defect,
+which item 6 repairs for catalogued builtins.
+
+Round 2 (egm-implementation-readiness and egm-zoom-out, Sonnet, design file
+only), covering items 2 and 6: eight findings each, no blockers. Fixed: full
+hashes and a tracked citation for the bundle figures, guard coverage of a
+replaced `__builtins__` mapping (the runtime guard requires the sealed
+builtins namespace), the premise dependency of `__builtins__` custody, mixed
+loops, the catalogued-only invariant, the user-visible consequence of the open
+siblings, and results recorded below. Not adopted: removing helper names and
+prior art (round 1 asked for exact code names; the prior art carries the
+design decision).
+
+Implementation changes after review, both narrowing: function values keep the
+live read (`BUILTIN_FUNC` is itself a name lookup), and the fast arm's forced
+callee elision applies only to activation reads. The existing module-scope
+tests (`tests/test_frontend_builtin_shape_authority.py`) showed that module code
+relies on the call fact's elision proof: a proved `str(source)` there would
+otherwise lower to `STR_FROM_OBJ` typed exact `str`, although `__str__` may
+return a subclass. The guard's fast arm has that typing on main; it is an open
+sibling of this mechanism.
+
+### Results of this lane
+
+Measured 2026-11-05 on macOS arm64 against origin/main f1d450c4f1, release
+builds with symbols kept, CPython 3.12.16 as oracle and denominator.
+
+- **Primitive A/B** (`tools/perf_scoreboard.py primitives`, five pairs per
+  leg, base and head legs run separately; frontend lowering cache disabled in
+  both legs because main fails to persist a dataclass record, see "Open
+  siblings"). `isinstance` per operation: 5,976.4 to 5,187.8 Molt
+  instructions (0.868x; ratio to CPython 7.516 to 6.524, noise bound 1.0%).
+  Every other axis stays within its ratchet noise bound. `reduce_ex` per
+  operation is bimodal in both legs (samples near 12.6 and 14.1 times
+  CPython); its median moved with the sample mix (bound 26.1%). The `loop`,
+  `dynamic_call` and `dataclass_construction` per-op slopes do not move
+  (1.0084x, 0.9989x, 1.0001x), as "Scope cut" predicts.
+- **Emitted code.** In the canonical `isinstance` primitive, `run` has one
+  loop instead of a guarded pair and no `molt_module_get_global` or
+  `molt_guard_builtin_bindings` call in it (machine code 3,932 to 1,613
+  instructions). Binaries shrink: hello 35,640,008 to 35,110,584 bytes, loop
+  35,724,712 to 35,161,432, `isinstance` 35,707,440 to 35,177,984,
+  `dataclass_construction` 38,782,584 to 38,170,328.
+- **Modules.** hello 29 to 29, loop 29 to 29, `isinstance` 29 to 29,
+  `dataclass_construction` 32 to 32.
+- **Differentials.** The three new programs and the five
+  `builtin_binding_guards*.py` programs pass on native, LLVM and WASM against
+  CPython 3.12.16 (24 cells). On main, `proven_builtin_values.py` fails to
+  build (`len()`) and `proven_builtin_builtins_mapping.py` prints
+  `after (True, 3)` where CPython prints `after ('custom', -1)`.
+- **Discovery.** `test_public_stdlib_deferred_demand_graph` passes all eight
+  programs, including the dataclass program.
+- **Census.** Module-graph discovery of the 144 census programs (CLBG
+  kernels, bench programs and a differential sample) admits the same modules
+  on main and on this lane: 2,226 admissions each, no program gains or loses
+  a module, no refusals.
+
 ## Tests
 
 - `tests/test_python_namespace_writes.py`: every recognized construct, reads that are not writes, and

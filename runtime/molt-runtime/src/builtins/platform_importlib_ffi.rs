@@ -8,6 +8,8 @@ mod find_spec;
 mod import_transaction;
 #[path = "platform_importlib_ffi/metadata_spec.rs"]
 mod metadata_spec;
+#[path = "platform_importlib_ffi/path_finder.rs"]
+mod path_finder;
 #[path = "platform_importlib_ffi/payloads.rs"]
 mod payloads;
 #[path = "platform_importlib_ffi/reload_bootstrap.rs"]
@@ -22,6 +24,8 @@ use import_transaction::*;
 #[allow(unused_imports)]
 use metadata_spec::*;
 #[allow(unused_imports)]
+use path_finder::*;
+#[allow(unused_imports)]
 use payloads::*;
 #[allow(unused_imports)]
 use reload_bootstrap::*;
@@ -30,8 +34,8 @@ pub use bootstrap_loader::{
     molt_importlib_cache_from_source, molt_importlib_coerce_module_name,
     molt_importlib_decode_source, molt_importlib_extension_loader_create_module,
     molt_importlib_extension_loader_exec_module, molt_importlib_extension_loader_payload,
-    molt_importlib_extension_loader_type_declare, molt_importlib_package_root_from_origin,
-    molt_importlib_read_file, molt_importlib_source_from_cache, molt_importlib_source_hash,
+    molt_importlib_package_root_from_origin, molt_importlib_read_file,
+    molt_importlib_source_from_cache, molt_importlib_source_hash,
     molt_importlib_source_loader_payload, molt_importlib_sourcefileloader_exec_module,
     molt_importlib_sourceless_loader_exec_module, molt_importlib_zip_archive_path,
     molt_importlib_zip_read_entry, molt_importlib_zip_source_exec_payload,
@@ -40,10 +44,7 @@ pub use bootstrap_loader::{
     molt_sys_bootstrap_pwd, molt_sys_bootstrap_pythonpath, molt_sys_bootstrap_stdlib_root,
     molt_traceback_exception_suppress_context,
 };
-pub use find_spec::{
-    molt_importlib_admit_spec, molt_importlib_filefinder_find_spec,
-    molt_importlib_find_in_path_package_context, molt_importlib_find_spec,
-};
+pub use find_spec::{molt_importlib_find_in_path_package_context, molt_importlib_find_spec};
 pub(crate) use import_transaction::{ImportlibImportMode, importlib_import_resolved_attempt};
 pub(super) use import_transaction::{
     ImportlibTransactionReturn, importlib_import_resolved_transaction,
@@ -64,6 +65,19 @@ pub use metadata_spec::{
     molt_importlib_spec_from_file_location, molt_importlib_spec_from_file_location_payload,
     molt_importlib_spec_from_loader,
 };
+pub(crate) use path_finder::default_path_hooks;
+pub(super) use path_finder::{FileLoaderKind, file_loader_class, importlib_file_loader_types};
+#[cfg(test)]
+pub(super) use path_finder::{ImportRootFlavor, import_root_is_absolute};
+pub use path_finder::{
+    molt_importlib_file_finder_find_spec, molt_importlib_file_finder_init,
+    molt_importlib_file_finder_invalidate_caches, molt_importlib_file_finder_path_hook,
+    molt_importlib_file_finder_path_hook_call, molt_importlib_file_finder_repr,
+    molt_importlib_file_loader_types_declare, molt_importlib_namespace_path_epoch,
+    molt_importlib_path_finder_find_spec, molt_importlib_path_finder_get_spec,
+    molt_importlib_path_finder_invalidate_caches, molt_importlib_path_finder_types,
+    molt_importlib_zip_path_hook,
+};
 pub use payloads::{
     molt_importlib_frozen_external_commit, molt_importlib_frozen_external_payload,
     molt_importlib_frozen_payload, molt_importlib_metadata_types_payload,
@@ -71,23 +85,11 @@ pub use payloads::{
 };
 pub use reload_bootstrap::{
     molt_imp_acquire_lock, molt_imp_lock_held, molt_imp_release_lock,
-    molt_importlib_bootstrap_payload, molt_importlib_ensure_default_meta_path,
-    molt_importlib_namespace_paths, molt_importlib_reload, molt_importlib_search_paths,
+    molt_importlib_bootstrap_payload, molt_importlib_namespace_paths, molt_importlib_reload,
+    molt_importlib_search_paths,
 };
-
-pub(crate) use reload_bootstrap::importlib_seed_default_generation;
 
 pub(super) use find_spec::importlib_find_spec_impl;
-pub(super) use reload_bootstrap::{
-    importlib_acquire_import_lock, importlib_complete_initial_defaults,
-    importlib_take_default_generation, release_default_owners,
-};
-
+pub(super) use reload_bootstrap::importlib_acquire_import_lock;
 #[cfg(test)]
-pub(super) use reload_bootstrap::importlib_retire_default_generation;
-
-#[cfg(test)]
-pub(super) use reload_bootstrap::pending_default_owners;
-
-#[cfg(test)]
-pub(super) use reload_bootstrap::importlib_finish_initial_defaults;
+pub(super) use reload_bootstrap::importlib_retire_import_state;

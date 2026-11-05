@@ -4,6 +4,7 @@ use crate::object::seq_access::snapshot;
 
 mod field_runtime;
 mod initializer;
+mod initializer_spec_generated;
 mod projection;
 
 pub(crate) use initializer::{clone_code_init_plan, drop_code_init_plan};

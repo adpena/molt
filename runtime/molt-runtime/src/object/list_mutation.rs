@@ -1009,34 +1009,6 @@ pub(crate) unsafe fn reserve_additional(py: &PyToken<'_>, ptr: *mut u8, addition
     admitted
 }
 
-/// Append only to the exact admitted backing generation. A clean mismatch
-/// leaves public policy untouched; allocation/projection failures stay pending.
-/// Preparation owns all values; comparison and publication share one backing lock.
-pub(crate) unsafe fn extend_if_epoch(
-    py: &PyToken<'_>,
-    ptr: *mut u8,
-    expected: u64,
-    items: &[u64],
-) -> Result<Option<u64>, ()> {
-    let Some(mut txn) = (unsafe { ListMutationTxn::begin_storage(py, ptr, false) }) else {
-        return Err(());
-    };
-    if txn.base_epoch != expected {
-        return Ok(None);
-    }
-    let len = txn.next().len();
-    if !txn.replace_range(len, len, items) {
-        return Err(());
-    }
-    if unsafe { txn.commit_with_projection(None, false) } {
-        Ok(Some(expected.wrapping_add(1)))
-    } else if exception_pending(py) {
-        Err(())
-    } else {
-        Ok(None)
-    }
-}
-
 pub(crate) unsafe fn extend_from_slice(py: &PyToken<'_>, ptr: *mut u8, items: &[u64]) -> bool {
     if items.is_empty() {
         return true;

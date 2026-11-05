@@ -1050,7 +1050,6 @@ pub(crate) struct EmptyImportResolver {
     previous_meta_path: Option<u64>,
     /// Escrows the interpreter role, the `sys` row and public membership.
     sys_snapshot: Option<crate::builtins::module_table::InterpreterSysTestSnapshot>,
-    defaults_snapshot: Option<crate::builtins::platform::ImportDefaultsTestSnapshot>,
 }
 
 impl EmptyImportResolver {
@@ -1075,9 +1074,6 @@ impl EmptyImportResolver {
             assert!(!crate::exception_pending(py));
             sys
         };
-        let defaults_snapshot = sys_snapshot
-            .is_none()
-            .then(|| crate::builtins::platform::ImportDefaultsTestSnapshot::detach(py));
         let meta_key = crate::dynamic_attr_name_bits(py, b"meta_path").unwrap();
         let dictionary = unsafe { crate::module_dict_bits(crate::ptr_from_bits(sys)) };
         let previous_meta_path = unsafe {
@@ -1113,7 +1109,6 @@ impl EmptyImportResolver {
             sys,
             previous_meta_path,
             sys_snapshot,
-            defaults_snapshot,
         }
     }
 }
@@ -1135,9 +1130,6 @@ impl Drop for EmptyImportResolver {
                 }
             }
             crate::dec_ref_bits(py, key);
-            if let Some(snapshot) = self.defaults_snapshot.take() {
-                snapshot.restore(py);
-            }
             if let Some(snapshot) = self.sys_snapshot.take() {
                 snapshot.restore(py);
             }

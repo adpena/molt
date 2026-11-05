@@ -272,6 +272,8 @@ fn cached_types_enforce_native_and_python_namespace_policies() {
             compiled_loader::compiled_loader_base_class(py),
             compiled_loader::compiled_loader_builtin_class(py),
             compiled_loader::compiled_loader_frozen_class(py),
+            compiled_loader::path_finder_class(py),
+            compiled_loader::file_finder_class(py),
             module_spec,
         ];
         for class in mutable {
