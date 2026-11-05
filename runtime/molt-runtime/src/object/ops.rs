@@ -2186,6 +2186,7 @@ unsafe fn install_guarded_class_namespace(
 /// `bases_ptr_bits` must encode `nbases` entries when `nbases > 0`, and
 /// `attrs_ptr_bits` must encode `nattrs * 2` entries when `nattrs > 0`.
 
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub(crate) unsafe fn molt_guarded_class_def_attached_body(
     _py: &crate::PyToken<'_>,
     name_bits: u64,

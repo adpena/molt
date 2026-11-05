@@ -717,6 +717,7 @@ pub(crate) fn molt_pprint_isrecursive_attached_body(
 
 /// Full pformat with all options. Returns a formatted string.
 
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub(crate) fn molt_pprint_pformat_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,

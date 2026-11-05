@@ -2182,6 +2182,7 @@ pub(crate) fn molt_json_dumps_attached_body(
     })
 }
 
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub(crate) fn molt_json_dumps_ex_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,
@@ -2251,6 +2252,7 @@ pub(crate) fn molt_json_dumps_ex_attached_body(
     })
 }
 
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub(crate) fn molt_json_loads_ex_attached_body(
     _py: &crate::PyToken<'_>,
     text_bits: u64,
@@ -2302,6 +2304,7 @@ pub(crate) fn molt_json_loads_ex_attached_body(
     })
 }
 
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub(crate) fn molt_json_raw_decode_ex_attached_body(
     _py: &crate::PyToken<'_>,
     text_bits: u64,

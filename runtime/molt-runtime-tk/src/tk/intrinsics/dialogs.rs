@@ -27,6 +27,7 @@ use super::super::tcl::TclObj;
 use crate::bridge::{decode_value_list, to_i64};
 use molt_runtime_core::prelude::{MoltObject, obj_from_bits};
 
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub fn molt_tk_dialog_show_attached_body(
     _py: &molt_runtime_core::PyToken,
     app_bits: u64,
@@ -262,6 +263,7 @@ pub fn molt_tk_filedialog_show_attached_body(
     })
 }
 
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub fn molt_tk_simpledialog_query_attached_body(
     _py: &molt_runtime_core::PyToken,
     app_bits: u64,

@@ -3287,6 +3287,7 @@ pub unsafe extern "C" fn attached_molt_guarded_class_def(_context: u64, _arg0: u
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
     unsafe { molt_guarded_class_def(_arg0, _arg1, _arg2, _arg3, _arg4, _arg5, _arg6, _arg7) }
 }
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub unsafe fn molt_guarded_class_def(name:u64,bases:u64,nbases:u64,attrs:u64,nattrs:u64,size:u64,version:u64,flags:u64) ->u64 {
     assert_eq!(name,NONE); assert_eq!([nbases,nattrs,size,version,flags],[1,1,16,7,3]);
     let words=unsafe { [*(bases as *const u64), *(attrs as *const u64), *((attrs as *const u64).add(1))] };

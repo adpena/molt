@@ -832,6 +832,7 @@ extern "C" fn replace(__context: u64, args: u64, kwargs: u64) -> u64 {
 /// Declaration-only boundary used by sys's one shared factory. Names/docs are
 /// exact immutable tuples; public providers cannot alter the sealed spec later.
 
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub(crate) fn molt_structseq_type_attached_body(
     _py: &crate::PyToken<'_>,
     name: u64,

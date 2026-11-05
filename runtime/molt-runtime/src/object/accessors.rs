@@ -676,6 +676,7 @@ pub(crate) unsafe fn molt_guarded_field_get_attached_body(
 /// `obj_bits` is a tagged runtime value. `attr_name_ptr_bits` must encode valid
 /// UTF-8 bytes. A matching object must have enough payload for `offset_bits`.
 
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub(crate) unsafe fn molt_guarded_field_set_attached_body(
     _py: &crate::PyToken<'_>,
     obj_bits: u64,

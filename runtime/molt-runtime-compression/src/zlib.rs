@@ -654,6 +654,7 @@ fn compressor_from_bits(
 /// Options are converted in Clinic order before backend validation. Supplied
 /// dictionary bytes are borrowed only through deflateSetDictionary, never saved
 /// as an untraced Python edge in the native owner.
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub fn molt_zlib_compressobj_new_attached_body(
     _py: &molt_runtime_core::PyToken,
     error_class: u64,

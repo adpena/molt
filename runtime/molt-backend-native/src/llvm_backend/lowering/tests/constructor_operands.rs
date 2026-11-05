@@ -547,6 +547,7 @@ unsafe fn molt_list_from_values(address: u64, len: u64) -> u64 {
 fn molt_slice_new(start: u64, stop: u64, step: u64) -> u64 {
     construct(&[start, stop, step])
 }
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 unsafe fn molt_guarded_class_def(
     name: u64,
     bases: u64,
@@ -1186,6 +1187,7 @@ fn molt_call_inputs_release(callable: u64, pointer: u64, count: u64)  {
     molt_dec_ref_obj(callable);
     PENDING_ERROR.store(first_error, SeqCst);
 }
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 fn fam_owned_target(
     borrowed: u64, first: u64, again: u64, second: u64,
     existing: u64, existing_again: u64, other: u64, raw: i64, borrowed_second: u64,

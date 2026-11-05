@@ -307,6 +307,7 @@ pub(super) fn process_stdio_mode(_py: &PyToken<'_>, bits: u64, name: &str) -> i3
 /// # Safety
 /// - All arguments must be valid runtime objects.
 
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub(crate) fn molt_asyncio_subprocess_stdio_normalize_attached_body(
     _py: &crate::PyToken<'_>,
     value_bits: u64,

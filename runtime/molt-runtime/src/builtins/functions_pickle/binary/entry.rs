@@ -91,6 +91,7 @@ pub(crate) fn molt_pickle_dumps_core_attached_body(
     })
 }
 
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub(crate) fn molt_pickle_loads_core_attached_body(
     _py: &crate::PyToken<'_>,
     data_bits: u64,

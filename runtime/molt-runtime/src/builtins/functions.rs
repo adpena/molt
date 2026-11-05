@@ -548,6 +548,7 @@ pub(crate) fn molt_shlex_quote_attached_body(_py: &crate::PyToken<'_>, text_bits
     })
 }
 
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub(crate) fn molt_shlex_split_ex_attached_body(
     _py: &crate::PyToken<'_>,
     text_bits: u64,

@@ -441,7 +441,6 @@ pub fn molt_pathlib_touch_attached_body(
 
 /// `path.hardlink_to(target)` -> None
 #[cfg(not(target_arch = "wasm32"))]
-
 pub fn molt_pathlib_hardlink_to_attached_body(
     _py: &molt_runtime_core::PyToken,
     path_bits: u64,
@@ -468,7 +467,6 @@ pub fn molt_pathlib_hardlink_to_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub fn molt_pathlib_hardlink_to_attached_body(
     _py: &molt_runtime_core::PyToken,
     _path_bits: u64,

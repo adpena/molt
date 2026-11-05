@@ -283,6 +283,7 @@ pub(crate) unsafe fn molt_process_spawn_attached_body(
 /// # Safety
 /// Arguments must be runtime-encoded objects from this runtime.
 
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub(crate) unsafe fn molt_process_spawn_ex_attached_body(
     _py: &crate::PyToken<'_>,
     args: u64,

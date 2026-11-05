@@ -171,6 +171,7 @@ fn encode_env_entries(entries: &[(String, String)], overlay: bool) -> Vec<u8> {
 /// All arguments must be valid runtime-encoded objects.
 /// WASM target ignores start_new_session and process_group (no Unix process model).
 
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub(crate) unsafe fn molt_process_spawn_ex_attached_body(
     _py: &crate::PyToken<'_>,
     args_bits: u64,

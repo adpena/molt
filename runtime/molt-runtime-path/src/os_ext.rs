@@ -539,7 +539,6 @@ pub fn molt_os_chmod_attached_body(
 
 /// `os.link(src, dst)` → None  (hard link)
 #[cfg(not(target_arch = "wasm32"))]
-
 pub fn molt_os_link_attached_body(
     _py: &molt_runtime_core::PyToken,
     src_bits: u64,
@@ -565,7 +564,6 @@ pub fn molt_os_link_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub fn molt_os_link_attached_body(
     _py: &molt_runtime_core::PyToken,
     _src_bits: u64,
@@ -579,7 +577,6 @@ pub fn molt_os_link_attached_body(
 /// `os.symlink(src, dst)` → None
 /// Thin delegation to the existing molt_path_symlink behaviour.
 #[cfg(not(target_arch = "wasm32"))]
-
 pub fn molt_os_symlink_attached_body(
     _py: &molt_runtime_core::PyToken,
     src_bits: u64,
@@ -627,7 +624,6 @@ pub fn molt_os_symlink_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub fn molt_os_symlink_attached_body(
     _py: &molt_runtime_core::PyToken,
     _src_bits: u64,
@@ -640,7 +636,6 @@ pub fn molt_os_symlink_attached_body(
 
 /// `os.truncate(path, length)` → None
 #[cfg(not(target_arch = "wasm32"))]
-
 pub fn molt_os_truncate_attached_body(
     _py: &molt_runtime_core::PyToken,
     path_bits: u64,
@@ -673,7 +668,6 @@ pub fn molt_os_truncate_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub fn molt_os_truncate_attached_body(
     _py: &molt_runtime_core::PyToken,
     _path_bits: u64,
@@ -714,7 +708,6 @@ pub fn molt_os_getpid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 
 /// `os.getppid()` → int
 #[cfg(not(target_arch = "wasm32"))]
-
 pub fn molt_os_getppid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.getppid", AuditArg::None) {
@@ -733,7 +726,6 @@ pub fn molt_os_getppid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub fn molt_os_getppid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_exception::<u64>(
@@ -746,7 +738,6 @@ pub fn molt_os_getppid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 
 /// `os.getuid()` → int  (Unix only)
 #[cfg(not(target_arch = "wasm32"))]
-
 pub fn molt_os_getuid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.getuid", AuditArg::None) {
@@ -764,7 +755,6 @@ pub fn molt_os_getuid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub fn molt_os_getuid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "getuid")
@@ -773,7 +763,6 @@ pub fn molt_os_getuid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 
 /// `os.getgid()` → int  (Unix only)
 #[cfg(not(target_arch = "wasm32"))]
-
 pub fn molt_os_getgid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.getgid", AuditArg::None) {
@@ -791,7 +780,6 @@ pub fn molt_os_getgid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub fn molt_os_getgid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "getgid")
@@ -800,7 +788,6 @@ pub fn molt_os_getgid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 
 /// `os.geteuid()` → int  (Unix only)
 #[cfg(not(target_arch = "wasm32"))]
-
 pub fn molt_os_geteuid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.geteuid", AuditArg::None) {
@@ -818,7 +805,6 @@ pub fn molt_os_geteuid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub fn molt_os_geteuid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "geteuid")
@@ -827,7 +813,6 @@ pub fn molt_os_geteuid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 
 /// `os.getegid()` → int  (Unix only)
 #[cfg(not(target_arch = "wasm32"))]
-
 pub fn molt_os_getegid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.getegid", AuditArg::None) {
@@ -845,7 +830,6 @@ pub fn molt_os_getegid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub fn molt_os_getegid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "getegid")
@@ -854,7 +838,6 @@ pub fn molt_os_getegid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 
 /// `os.getlogin()` → str
 #[cfg(not(target_arch = "wasm32"))]
-
 pub fn molt_os_getlogin_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.getlogin", AuditArg::None) {
@@ -899,7 +882,6 @@ pub fn molt_os_getlogin_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub fn molt_os_getlogin_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "getlogin")
@@ -919,7 +901,6 @@ pub fn molt_os_cpu_count_attached_body(_py: &molt_runtime_core::PyToken) -> u64 
 
 /// `os.get_terminal_size(fd=1)` → tuple[int, int]  (columns, lines)
 #[cfg(not(target_arch = "wasm32"))]
-
 pub fn molt_os_get_terminal_size_attached_body(
     _py: &molt_runtime_core::PyToken,
     fd_bits: u64,
@@ -959,7 +940,6 @@ pub fn molt_os_get_terminal_size_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub fn molt_os_get_terminal_size_attached_body(
     _py: &molt_runtime_core::PyToken,
     _fd_bits: u64,
@@ -971,7 +951,6 @@ pub fn molt_os_get_terminal_size_attached_body(
 
 /// `os.getloadavg()` → tuple[float, float, float]  (Unix only)
 #[cfg(not(target_arch = "wasm32"))]
-
 pub fn molt_os_getloadavg_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.getloadavg", AuditArg::None) {
@@ -1003,7 +982,6 @@ pub fn molt_os_getloadavg_attached_body(_py: &molt_runtime_core::PyToken) -> u64
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub fn molt_os_getloadavg_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "getloadavg")
@@ -1013,7 +991,6 @@ pub fn molt_os_getloadavg_attached_body(_py: &molt_runtime_core::PyToken) -> u64
 /// `os.uname()` → tuple[str, str, str, str, str]
 /// (sysname, nodename, release, version, machine)
 #[cfg(not(target_arch = "wasm32"))]
-
 pub fn molt_os_uname_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.uname", AuditArg::None) {
@@ -1069,7 +1046,6 @@ pub fn molt_os_uname_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub fn molt_os_uname_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "uname")
@@ -1078,7 +1054,6 @@ pub fn molt_os_uname_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 
 /// `os.umask(mask)` → int (old mask)
 #[cfg(not(target_arch = "wasm32"))]
-
 pub fn molt_os_umask_attached_body(_py: &molt_runtime_core::PyToken, mask_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.umask", AuditArg::None) {
@@ -1102,7 +1077,6 @@ pub fn molt_os_umask_attached_body(_py: &molt_runtime_core::PyToken, mask_bits: 
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub fn molt_os_umask_attached_body(_py: &molt_runtime_core::PyToken, _mask_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "umask")
@@ -2591,7 +2565,6 @@ pub fn molt_os_readlink_at_attached_body(
 /// its SECOND argument; `dir_fd` here qualifies the LINK (`dst`), matching
 /// CPython.
 #[cfg(not(target_arch = "wasm32"))]
-
 pub fn molt_os_symlink_at_attached_body(
     _py: &molt_runtime_core::PyToken,
     src_bits: u64,
@@ -2639,7 +2612,6 @@ pub fn molt_os_symlink_at_attached_body(
 }
 
 #[cfg(target_arch = "wasm32")]
-
 pub fn molt_os_symlink_at_attached_body(
     _py: &molt_runtime_core::PyToken,
     _s: u64,
@@ -2660,7 +2632,7 @@ pub fn molt_os_symlink_at_attached_body(
 /// `UTIME_NOW` for that timestamp (the "no times given" path sends `-1` for
 /// both).
 #[cfg(not(target_arch = "wasm32"))]
-
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub fn molt_os_utime_at_attached_body(
     _py: &molt_runtime_core::PyToken,
     path_bits: u64,
@@ -2789,7 +2761,7 @@ fn at_timespec_pair(
 }
 
 #[cfg(target_arch = "wasm32")]
-
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub fn molt_os_utime_at_attached_body(
     _py: &molt_runtime_core::PyToken,
     _p: u64,

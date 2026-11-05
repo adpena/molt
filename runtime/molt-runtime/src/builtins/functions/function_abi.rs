@@ -1546,6 +1546,7 @@ fn initialize_function_metadata(
     MoltObject::none().bits()
 }
 
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub(crate) fn molt_function_init_metadata_attached_body(
     _py: &crate::PyToken<'_>,
     func_bits: u64,
@@ -1972,6 +1973,7 @@ pub(crate) fn molt_code_replace_attached_body(
     })
 }
 
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub(crate) fn molt_code_new_attached_body(
     _py: &crate::PyToken<'_>,
     filename_bits: u64,

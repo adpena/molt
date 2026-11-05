@@ -250,7 +250,6 @@ fn alloc_str(_py: &CoreGilToken, s: &str) -> u64 {
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "stdlib_unicode_names")]
-
 pub fn molt_unicodedata_name_attached_body(
     _py: &molt_runtime_core::PyToken,
     ch_bits: u64,
@@ -284,7 +283,6 @@ pub fn molt_unicodedata_name_attached_body(
 }
 
 #[cfg(feature = "stdlib_unicode_names")]
-
 pub fn molt_unicodedata_lookup_attached_body(
     _py: &molt_runtime_core::PyToken,
     name_bits: u64,

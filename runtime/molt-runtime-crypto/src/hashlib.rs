@@ -1212,6 +1212,7 @@ fn scrypt_legacy_unsigned(py: &PyToken, bits: u64, name: &str) -> Result<u64, u6
     })
 }
 
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub fn molt_scrypt_attached_body(
     _py: &molt_runtime_core::PyToken,
     password_bits: u64,

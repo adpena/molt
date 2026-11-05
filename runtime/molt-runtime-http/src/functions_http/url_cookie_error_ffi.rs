@@ -497,6 +497,7 @@ pub fn molt_http_cookies_parse_attached_body(
     })
 }
 
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub fn molt_http_cookies_render_morsel_attached_body(
     _py: &molt_runtime_core::PyToken,
     name_bits: u64,

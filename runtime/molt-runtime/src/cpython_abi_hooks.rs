@@ -4226,6 +4226,7 @@ unsafe fn cext_add_py_cfunction_to_module(
 /// valid C callable whose calling convention matches `method_flags`, and
 /// `self_bits` must be a valid Molt object handle (or 0).
 
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub(crate) unsafe fn molt_py_cfunction_create_bytes_attached_body(
     _py: &crate::PyToken<'_>,
     self_bits: u64,
@@ -4274,6 +4275,7 @@ pub(crate) unsafe fn molt_py_cfunction_create_bytes_attached_body(
 /// valid C callable whose calling convention matches `method_flags`, and
 /// `module_bits` must be a valid Molt module handle.
 
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub(crate) unsafe fn molt_module_add_py_cfunction_bytes_attached_body(
     _py: &crate::PyToken<'_>,
     module_bits: u64,

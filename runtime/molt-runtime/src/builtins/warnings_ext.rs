@@ -1159,6 +1159,7 @@ pub(crate) fn molt_warnings_warn_attached_body(
 /// `module_globals` must be a dictionary or `None`; sources are read by file
 /// name, so its loader is not consulted.
 
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub(crate) fn molt_warnings_warn_explicit_attached_body(
     _py: &crate::PyToken<'_>,
     message_bits: u64,

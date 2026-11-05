@@ -728,6 +728,7 @@ pub extern "C" fn attached_custody_target(_context: u64, _arg0: u64, _arg1: u64,
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
     custody_target(_arg0, _arg1, _arg2, _arg3, _arg4, _arg5, _arg6, _arg7)
 }
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub fn custody_target(borrow:u64,a:u64,b:u64,c:u64,existing:u64,again:u64,other:u64,later:u64) ->u64 {
  assert_eq!((borrow,a,b,c,later),(0x7ffc000000000101,0x7ffc000000000101,0x7ffc000000000101,0x7ffc000000000102,0x7ffc000000000102));assert_eq!((existing,again,other),(0x7ffc000000000501,0x7ffc000000000501,0x7ffc000000000502));enter(3,2);
  release(&[a,b,c,existing,again,other]);assert_eq!(FIRST.load(SeqCst),1);assert_eq!(SECOND.load(SeqCst),1);result()

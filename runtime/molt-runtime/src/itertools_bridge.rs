@@ -128,6 +128,7 @@ pub(crate) fn molt_itertools_tuple_from_iter_attached_body(
     }
 }
 
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
 pub(crate) fn molt_itertools_alloc_class_attached_body(
     _py: &PyToken<'_>,
     name_ptr: *const u8,
