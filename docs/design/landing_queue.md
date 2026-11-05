@@ -708,6 +708,12 @@ Steps:
    (direct-reader pytest cohorts and `precheck = true` rule gates, which now
    include `rust-test-changed`, 4.2). Every other selected gate is **waived**
    to the queue batch and named in the receipt and the commit message.
+   The try run used to drop a direct reader that a matched rule's pytest list
+   also ran, leaving it to the batch: a lane that changed `tools/molt_dev.py`
+   never ran `tests/test_molt_dev.py` before the queue. In presubmit a rule
+   cohort (`pytest` or `pytest_select`) now splits: the graph's direct
+   readers form a try-run cohort with the rule's own envelope and selector,
+   and the rest stays with the batch, which runs both.
 7. **Run** through `precheck_landing(..., budget=FAST_LANDING_BUDGET,
    refusal_fails=True)`: static gates first, then the try run under a 90 min
    ceiling (`FAST_LANDING_BUDGET` in `molt_dev_policy`, beside

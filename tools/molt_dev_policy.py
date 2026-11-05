@@ -825,6 +825,26 @@ class GateConfig:
                 if () in scopes or envelope.select in scopes:
                     continue
                 graph_runs.append((target, envelope))
+        # A direct reader the graph selects that a matched rule already runs
+        # is still a direct reader: in presubmit its rule cohort splits, and
+        # the readers' part runs in the lane's try run while the rest stays
+        # with the batch, which runs both (HF-701: a lane's own tests were
+        # left to the batch when a rule curated them).
+        readers = (
+            {
+                target.partition("::")[0]
+                for envelope in selection.run.values()
+                for target in envelope.targets
+            }
+            if selection is not None and mode is LandingMode.PRESUBMIT
+            else set()
+        )
+
+        def split(targets) -> list[tuple[list[str], bool]]:
+            direct = [t for t in targets if t.partition("::")[0] in readers]
+            rest = [t for t in targets if t.partition("::")[0] not in readers]
+            return [(part, part is direct) for part in (direct, rest) if part]
+
         if touched:
             for index, command in enumerate(self.always):
                 add(
@@ -860,26 +880,28 @@ class GateConfig:
                         )
                     )
             for index, cohort in enumerate(rule.pytest_select):
-                command = local_pytest_argv(
-                    cohort.targets,
-                    cohort.select,
-                    memory_units=self.pytest_memory_units,
-                )
-                pytest_commands.add(command_key(command))
-                add(
-                    command,
-                    tools(f"{owner}.pytest-select-{index}"),
-                    cargo_target_access=access(f"{owner}.pytest-select-{index}"),
-                    pytest=True,
-                    collection_command=(
-                        local_pytest_collection_argv(command)
-                        if any("::" in target for target in cohort.targets)
-                        else None
-                    ),
-                    pinned_assets=self.prerequisites[
-                        f"{owner}.pytest-select-{index}"
-                    ].pinned_assets,
-                )
+                for part, reads_change in split(cohort.targets):
+                    command = local_pytest_argv(
+                        part,
+                        cohort.select,
+                        memory_units=self.pytest_memory_units,
+                    )
+                    pytest_commands.add(command_key(command))
+                    add(
+                        command,
+                        tools(f"{owner}.pytest-select-{index}"),
+                        cargo_target_access=access(f"{owner}.pytest-select-{index}"),
+                        pytest=True,
+                        collection_command=(
+                            local_pytest_collection_argv(command)
+                            if any("::" in target for target in part)
+                            else None
+                        ),
+                        pinned_assets=self.prerequisites[
+                            f"{owner}.pytest-select-{index}"
+                        ].pinned_assets,
+                        try_run=reads_change,
+                    )
             for target in rule.pytest:
                 if target not in seen_pytest:
                     seen_pytest.add(target)
@@ -1001,27 +1023,11 @@ class GateConfig:
             ] = {}
             for target in pytest_targets:
                 cohorts.setdefault(assignments[target], []).append(target)
-            # A direct reader the graph selects that a matched rule already
-            # runs is still a direct reader: in presubmit it forms its own
-            # try-run cohort, and the rest of the rule cohort stays with the
-            # batch, which runs both (HF-701: the lane's own tests were
-            # waived when a rule curated them).
-            readers = (
-                {
-                    target.partition("::")[0]
-                    for envelope in selection.run.values()
-                    for target in envelope.targets
-                }
-                if selection is not None and mode is LandingMode.PRESUBMIT
-                else set()
-            )
-            parts: list[tuple[tuple, list[str], bool]] = []
-            for key, targets in cohorts.items():
-                direct = [t for t in targets if t.partition("::")[0] in readers]
-                rest = [t for t in targets if t.partition("::")[0] not in readers]
-                parts.extend(
-                    (key, part, part is direct) for part in (direct, rest) if part
-                )
+            parts = [
+                (key, part, reads_change)
+                for key, targets in cohorts.items()
+                for part, reads_change in split(targets)
+            ]
             # Keep add()'s command indices valid until every deduplication and
             # prerequisite union is complete. Only newly appended cohorts move.
             before_cohorts = len(selected)
