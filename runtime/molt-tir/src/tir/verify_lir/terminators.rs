@@ -245,7 +245,7 @@ fn verify_branch_args(
                     ),
                 ));
             }
-            if actual.value.repr != expected.repr {
+            if !expected.repr.accepts(actual.value.repr) {
                 errors.push(LirVerifyError::block(
                     source,
                     format!(

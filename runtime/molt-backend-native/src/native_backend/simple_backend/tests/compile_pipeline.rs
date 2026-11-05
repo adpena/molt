@@ -1,7 +1,5 @@
 use super::*;
-use crate::runtime_import_abi::{
-    MOLT_DEC_REF, MOLT_DEC_REF_OBJ, MOLT_TASK_NEW, NATIVE_RUNTIME_HELPER_IMPORTS,
-};
+use crate::runtime_import_abi::{MOLT_DEC_REF_OBJ, MOLT_TASK_NEW, NATIVE_RUNTIME_HELPER_IMPORTS};
 use cranelift_codegen::flowgraph::ControlFlowGraph;
 use cranelift_codegen::ir::InstructionData;
 use molt_ir::OpKind;
@@ -23,6 +21,59 @@ fn cfg_reaches(
         pending.extend(cfg.pred_iter(block).map(|predecessor| predecessor.block));
     }
     false
+}
+
+#[test]
+fn closed_refcount_cfg_emits_identical_object_bytes() {
+    let operand = |kind, name: &str| OpIR {
+        args: Some(vec![name.into()]),
+        ..OpIR::new(kind)
+    };
+    let function = FunctionIR {
+        name: "closed_refcount_cfg".into(),
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        params: vec!["value".into(), "condition".into()],
+        ops: vec![
+            OpIR {
+                out: Some("alias".into()),
+                ..operand(OpKind::BindingAlias, "value")
+            },
+            operand(OpKind::If, "condition"),
+            operand(OpKind::IncRef, "alias"),
+            operand(OpKind::DecRef, "alias"),
+            OpIR::new(OpKind::Else),
+            OpIR {
+                out: Some("singleton".into()),
+                ..OpIR::new(OpKind::ConstNone)
+            },
+            operand(OpKind::IncRef, "singleton"),
+            operand(OpKind::DecRef, "singleton"),
+            OpIR::new(OpKind::EndIf),
+            operand(OpKind::Ret, "alias"),
+        ],
+        ..FunctionIR::default()
+    };
+    let mut first = None;
+    for attempt in 0..8 {
+        let mut backend = SimpleBackend::new();
+        // Reusable stdlib workers consume an already-owned body through this
+        // path. Fresh backend/fact maps must not change its object identity.
+        backend.skip_ir_passes = true;
+        let bytes = backend
+            .compile(SimpleIR {
+                functions: vec![function.clone()],
+                profile: None,
+            })
+            .bytes;
+        if let Some(previous) = &first {
+            assert_eq!(
+                previous, &bytes,
+                "closed RC object differs on attempt {attempt}"
+            );
+        } else {
+            first = Some(bytes);
+        }
+    }
 }
 
 #[test]
@@ -660,6 +711,7 @@ fn ordinary_task_initialization_is_guarded_before_payload_or_cancellation() {
         );
         let function = &compiled.function;
         let (_, success, _) = assert_task_allocation_admission(&compiled);
+        let admission = assert_refcount_word_access_is_admitted(&compiled);
         let cfg = ControlFlowGraph::with_function(function);
         let dominators =
             cranelift_codegen::dominator_tree::DominatorTree::with_function(function, &cfg);
@@ -669,8 +721,17 @@ fn ordinary_task_initialization_is_guarded_before_payload_or_cancellation() {
         for block in function.layout.blocks() {
             for inst in function.layout.block_insts(block) {
                 let opcode = function.dfg.insts[inst].opcode();
-                stores += usize::from(opcode.can_store());
+                // Payload words remain I64; the shared inline transition
+                // stores only its I32 header count.
+                stores += usize::from(
+                    opcode.can_store()
+                        && function.dfg.inst_args(inst).first().is_some_and(|&v| {
+                            function.dfg.value_type(v) == cranelift_codegen::ir::types::I64
+                        }),
+                );
+                let is_invocation_admission = admission.iter().any(|(_, call)| *call == inst);
                 if inst != allocator
+                    && !is_invocation_admission
                     && (opcode.can_load() || opcode.can_store() || opcode.is_call())
                 {
                     assert!(
@@ -827,22 +888,10 @@ fn task_guard_carries_non_entry_owned_cleanup_to_its_merge() {
         );
         let release_block = releases[0].0;
         let cfg = ControlFlowGraph::with_function(function);
-        let predecessors: Vec<_> = cfg.pred_iter(release_block).collect();
-        assert_eq!(
-            predecessors.len(),
-            2,
-            "{guarded_kind} cleanup must execute in the merge reached by allocation failure and initialized success:\n{}",
-            function.display()
-        );
+        let (_, success, failure) = assert_task_allocation_admission_for(&compiled, task_calls[1]);
         assert!(
-            predecessors
-                .iter()
-                .any(|edge| matches!(function.dfg.insts[edge.inst], InstructionData::Brif { .. }))
-                && predecessors.iter().any(|edge| matches!(
-                    function.dfg.insts[edge.inst],
-                    InstructionData::Jump { .. }
-                )),
-            "{guarded_kind} cleanup merge must join the direct failure branch and initialized-success jump:\n{}",
+            cfg_reaches(&cfg, success, release_block) && cfg_reaches(&cfg, failure, release_block),
+            "{guarded_kind} both allocation outcomes must reach the prior owner's checked release: {}",
             function.display()
         );
     }
@@ -871,6 +920,14 @@ fn dynamic_br_if_releases_non_entry_owner_on_both_successors() {
                         s_value: Some("dynamic_br_if_cleanup_poll".into()),
                         task_kind: Some("generator".into()),
                         ..OpIR::new(OpKind::AllocTask)
+                    },
+                    OpIR {
+                        args: Some(vec!["condition".into()]),
+                        ..OpIR::new(OpKind::IncRef)
+                    },
+                    OpIR {
+                        args: Some(vec!["condition".into()]),
+                        ..OpIR::new(OpKind::DecRef)
                     },
                     OpIR {
                         args: Some(vec!["condition".into()]),
@@ -938,10 +995,23 @@ fn dynamic_br_if_releases_non_entry_owner_on_both_successors() {
             let InstructionData::Brif { blocks, .. } = &function.dfg.insts[inst] else {
                 return false;
             };
-            BTreeSet::from([
+            let cfg = ControlFlowGraph::with_function(function);
+            let successors = [
                 blocks[0].block(&function.dfg.value_lists),
                 blocks[1].block(&function.dfg.value_lists),
-            ]) == release_blocks
+            ];
+            let releases: Vec<_> = release_blocks.iter().copied().collect();
+            // The semantic successors each own one checked release. Neither
+            // successor may reach its sibling's cold transition.
+            releases.iter().any(|&left| {
+                releases.iter().any(|&right| {
+                    left != right
+                        && cfg_reaches(&cfg, successors[0], left)
+                        && !cfg_reaches(&cfg, successors[0], right)
+                        && cfg_reaches(&cfg, successors[1], right)
+                        && !cfg_reaches(&cfg, successors[1], left)
+                })
+            })
         })
     });
     assert!(
@@ -1117,21 +1187,25 @@ fn leading_frame_exception_edge_precedes_heap_literal_materialization() {
 
         let exit_calls = call_sites_for_import(function, compiled.import_ids["molt_trace_exit"]);
         assert_eq!(exit_calls.len(), 1, "{}", function.display());
-        let exit_predecessors = cfg
-            .pred_iter(exit_calls[0].0)
-            .map(|predecessor| predecessor.block)
-            .collect::<Vec<_>>();
-        assert_eq!(exit_predecessors.len(), 1, "{}", function.display());
-        let master_return = exit_predecessors[0];
-        assert!(cfg_reaches(&cfg, success, master_return));
-        assert!(cfg_reaches(&cfg, failure, master_return));
-        let anchor_releases = call_sites_for_import(
-            function,
-            compiled.import_ids[crate::runtime_import_abi::MOLT_DEC_REF_OBJ.name],
-        )
-        .into_iter()
-        .filter(|(block, _)| *block == master_return)
-        .count();
+        let anchor_releases =
+            call_sites_for_import(function, compiled.import_ids[MOLT_DEC_REF_OBJ.name])
+                .into_iter()
+                .filter(|(block, inst)| {
+                    let operand = function.dfg.inst_args(*inst)[0];
+                    let from_anchor =
+                        function
+                            .dfg
+                            .value_def(operand)
+                            .inst()
+                            .is_some_and(|definition| {
+                                crate::test_support::is_stack_load(function, definition)
+                            });
+                    from_anchor
+                        && cfg_reaches(&cfg, success, *block)
+                        && cfg_reaches(&cfg, failure, *block)
+                        && cfg_reaches(&cfg, *block, exit_calls[0].0)
+                })
+                .count();
         assert_eq!(
             anchor_releases,
             3,
@@ -1522,12 +1596,12 @@ fn native_backend_import_ids_are_cached_by_symbol() {
     let first = SimpleBackend::import_runtime_func_id_split(
         &mut backend.module,
         &mut backend.import_ids,
-        MOLT_DEC_REF,
+        MOLT_DEC_REF_OBJ,
     );
     let second = SimpleBackend::import_runtime_func_id_split(
         &mut backend.module,
         &mut backend.import_ids,
-        MOLT_DEC_REF,
+        MOLT_DEC_REF_OBJ,
     );
 
     assert_eq!(first, second);
@@ -2455,5 +2529,62 @@ fn program_slot_objects_import_stable_symbols_and_bind_program_owned_dense_value
                 assert_eq!(decoded, slot);
             }
         }
+    }
+}
+
+#[test]
+fn proven_none_aliases_and_explicit_rc_need_no_transition_or_admission() {
+    let compiled = compile_function_to_clif_with_imports(
+        vec![FunctionIR {
+            name: "proven_immortal_rc".into(),
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            ops: vec![
+                OpIR {
+                    out: Some("immortal".into()),
+                    ..OpIR::new(OpKind::ConstNone)
+                },
+                OpIR {
+                    out: Some("alias".into()),
+                    args: Some(vec!["immortal".into()]),
+                    ..OpIR::new(OpKind::BindingAlias)
+                },
+                OpIR {
+                    out: Some("borrowed".into()),
+                    args: Some(vec!["alias".into()]),
+                    ..OpIR::new(OpKind::Borrow)
+                },
+                OpIR {
+                    out: Some("boxed".into()),
+                    args: Some(vec!["borrowed".into()]),
+                    ..OpIR::new(OpKind::Box)
+                },
+                OpIR {
+                    args: Some(vec!["boxed".into()]),
+                    ..OpIR::new(OpKind::DecRef)
+                },
+                OpIR {
+                    args: Some(vec!["boxed".into()]),
+                    ..OpIR::new(OpKind::Ret)
+                },
+            ],
+            ..Default::default()
+        }],
+        "proven_immortal_rc",
+    );
+    for name in [
+        "molt_inc_ref_obj",
+        "molt_dec_ref_obj",
+        "molt_refcount_admission",
+    ] {
+        let count = compiled
+            .import_ids
+            .get(name)
+            .map_or(0, |&id| call_sites_for_import(&compiled.function, id).len());
+        assert_eq!(
+            count,
+            0,
+            "proven None has no reference-count work, including invocation admission: {}",
+            compiled.function.display()
+        );
     }
 }

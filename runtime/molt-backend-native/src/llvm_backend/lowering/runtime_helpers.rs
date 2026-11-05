@@ -146,11 +146,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             self.values.insert(result_id, result);
             self.value_types.insert(result_id, TirType::DynBox);
         } else {
-            let release = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
-            self.backend
-                .builder
-                .build_call(release, &[result.into()], "")
-                .unwrap();
+            let release = self.ensure_refcount_site(
+                molt_codegen_abi::inline_refcount::RefcountOperation::Release,
+            );
+            release.emit(&self.backend.builder, result);
         }
     }
 

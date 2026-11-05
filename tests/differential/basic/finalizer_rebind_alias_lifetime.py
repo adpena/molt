@@ -45,3 +45,47 @@ else:
 
     run()
     run_scope_exit()
+
+    # One SSA variable alternates between an immediate and a heap owner. Observe
+    # each last-owner release directly, without a collector masking leaks.
+    def run_mixed_representation():
+        seen.clear()
+        value = Item(10)
+        for index in range(4):
+            alias = value
+            value = index if index % 2 == 0 else Item(20 + index)
+            print("mixed_held", index, seen)
+            del alias
+            print("mixed_released", index, seen)
+        del value
+        print("mixed_finished", seen)
+
+    def annotated_none_identity(value: None):
+        alias = value
+        return alias
+
+    def run_annotation_and_suspension():
+        seen.clear()
+        value = Item(30)
+        alias = annotated_none_identity(value)
+        del value
+        print("annotation_held", seen)
+        del alias
+        print("annotation_released", seen)
+
+        def suspended():
+            value = Item(40)
+            yield value
+            value = None
+            yield value
+
+        generator = suspended()
+        value = next(generator)
+        del value
+        print("suspension_held", seen)
+        print("suspension_resumed", next(generator), seen)
+        generator.close()
+        print("suspension_closed", seen)
+
+    run_mixed_representation()
+    run_annotation_and_suspension()

@@ -28,12 +28,7 @@ impl NativeCleanupRoots {
         let mut roots = BTreeMap::new();
         let mut borrowed_params = BTreeSet::new();
         let mut explicit_credits = BTreeMap::new();
-        let boxed = |name: &str| {
-            name != "none"
-                && !representation.is_raw_int_carrier_name(name)
-                && !representation.is_float_unboxed(name)
-                && !representation.is_bool_unboxed(name)
-        };
+        let boxed = |name: &str| name != "none" && !representation.carrier_refcount_is_noop(name);
         if authority.native_value_tracking_enabled() {
             borrowed_params.extend(function.params.iter().filter(|name| boxed(name)).cloned());
             // Actual defining operations, not the var registry, determine which
@@ -62,6 +57,7 @@ impl NativeCleanupRoots {
                 if matches!(op.kind, OpKind::IncRef | OpKind::Borrow)
                     && op.out.as_deref().is_none_or(|name| name == "none")
                     && let Some(source) = op.args.as_ref().and_then(|args| args.first())
+                    && boxed(source)
                 {
                     let root = alias_root_name(aliases, source);
                     explicit_credits
@@ -164,7 +160,7 @@ impl NativeCleanupRoots {
     pub(super) fn acquire(
         &self,
         builder: &mut FunctionBuilder,
-        callee: FuncRef,
+        callee: NativeRefcountSite,
         name: &str,
         value: Value,
     ) {
@@ -191,7 +187,7 @@ impl NativeCleanupRoots {
     pub(super) fn return_owned(
         &self,
         builder: &mut FunctionBuilder,
-        callee: FuncRef,
+        callee: NativeRefcountSite,
         name: &str,
         value: Value,
     ) {
@@ -211,13 +207,13 @@ impl NativeCleanupRoots {
                 box_none(),
             );
             let retain = builder.ins().select(borrowed, value, none);
-            emit_inc_ref_obj(builder, retain, callee);
+            emit_refcount(builder, retain, callee);
             builder.def_var(token, none);
         } else if self
             .borrowed_params
             .contains(alias_root_name(&self.aliases, name))
         {
-            emit_inc_ref_obj(builder, value, callee);
+            emit_refcount(builder, value, callee);
         }
     }
 
@@ -229,7 +225,12 @@ impl NativeCleanupRoots {
         }
     }
 
-    pub(super) fn release(&self, builder: &mut FunctionBuilder, callee: FuncRef, name: &str) {
+    pub(super) fn release(
+        &self,
+        builder: &mut FunctionBuilder,
+        callee: NativeRefcountSite,
+        name: &str,
+    ) {
         let Some(token) = self.token(name) else {
             return;
         };
@@ -238,7 +239,12 @@ impl NativeCleanupRoots {
         self.release_value(builder, callee, value);
     }
 
-    fn release_value(&self, builder: &mut FunctionBuilder, callee: FuncRef, value: Value) {
+    fn release_value(
+        &self,
+        builder: &mut FunctionBuilder,
+        callee: NativeRefcountSite,
+        value: Value,
+    ) {
         // Avoid emitting calls for statically empty tokens. Mixed-path tokens
         // remain ordinary boxed SSA values; dec_ref_obj(None) is a no-op.
         let value = builder.func.dfg.resolve_aliases(value);
@@ -257,11 +263,11 @@ impl NativeCleanupRoots {
                     .checked_add(1)
                     .expect("native release emission generation overflow"),
             );
-            builder.ins().call(callee, &[value]);
+            emit_refcount(builder, value, callee);
         }
     }
 
-    pub(super) fn release_all(&self, builder: &mut FunctionBuilder, callee: FuncRef) {
+    pub(super) fn release_all(&self, builder: &mut FunctionBuilder, callee: NativeRefcountSite) {
         for name in self.roots.keys() {
             self.release(builder, callee, name);
         }

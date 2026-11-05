@@ -28,10 +28,12 @@ pub(super) fn emit_class_def(
     for arg_name in args {
         let arg = locals[arg_name];
         func.instruction(&Instruction::LocalGet(arg));
-        emit_call(
+        crate::wasm::refcount::emit_refcount(
             func,
             reloc_enabled,
-            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
+            import_ids,
+            locals.refcount(),
+            molt_codegen_abi::inline_refcount::RefcountOperation::Retain,
         );
     }
 
@@ -96,10 +98,12 @@ pub(super) fn emit_class_def(
     for arg_name in args.iter().rev() {
         let arg = locals[arg_name];
         func.instruction(&Instruction::LocalGet(arg));
-        emit_call(
+        crate::wasm::refcount::emit_refcount(
             func,
             reloc_enabled,
-            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DecRefObj],
+            import_ids,
+            locals.refcount(),
+            molt_codegen_abi::inline_refcount::RefcountOperation::Release,
         );
     }
 }

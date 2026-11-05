@@ -138,16 +138,21 @@ NATIVE_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
     ),
     SemanticAssertion(
         scope="native",
-        description="inc_ref/borrow call local_inc_ref_obj",
+        description="inc_ref/borrow use the generated retain site",
         pattern=(
-            r"OpKind::IncRef\s*\|\s*OpKind::Borrow\s*=>[\s\S]*?emit_inc_ref_obj\(.*local_inc_ref_obj"
+            r"OpKind::IncRef\s*\|\s*OpKind::Borrow\s*=>"
+            r"(?:(?!OpKind::)[\s\S])*?carrier_refcount_is_noop"
+            r"(?:(?!OpKind::)[\s\S])*?emit_refcount\([^;]*local_inc_ref_obj\s*\)"
         ),
     ),
     SemanticAssertion(
         scope="native",
-        description="dec_ref/release call local_dec_ref_obj and write None on out",
+        description="dec_ref/release use the generated release site and write None on out",
         pattern=(
-            r"OpKind::DecRef\s*\|\s*OpKind::Release\s*=>[\s\S]*?local_dec_ref_obj[\s\S]*?box_none\(\)"
+            r"OpKind::DecRef\s*\|\s*OpKind::Release\s*=>"
+            r"(?:(?!OpKind::)[\s\S])*?carrier_refcount_is_noop"
+            r"(?:(?!OpKind::)[\s\S])*?emit_refcount\([^;]*local_dec_ref_obj\s*\)"
+            r"(?:(?!OpKind::)[\s\S])*?box_none\(\)"
         ),
     ),
     SemanticAssertion(
@@ -191,16 +196,27 @@ WASM_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
     ),
     SemanticAssertion(
         scope="wasm",
-        description="inc_ref/borrow call inc_ref_obj import",
+        description="inc_ref/borrow use generated retain",
         pattern=(
-            r"molt_ir::OpKind::IncRef\s*\|\s*molt_ir::OpKind::Borrow\s*=>[\s\S]*?emit_inc_ref_like[\s\S]*?WasmRuntimeImport::IncRefObj"
+            r"\A(?=[\s\S]*molt_ir::OpKind::IncRef\s*\|\s*molt_ir::OpKind::Borrow"
+            r"\s*=>\s*\{\s*emit_inc_ref_like\()"
+            r"[\s\S]*?\bfn\s+emit_inc_ref_like\b"
+            r"(?:(?!\bfn\s)[\s\S])*?boxed_refcount_is_noop"
+            r"(?:(?!\bfn\s)[\s\S])*?crate::wasm::refcount::emit_refcount"
+            r"\([^;]*RefcountOperation::Retain"
         ),
     ),
     SemanticAssertion(
         scope="wasm",
-        description="dec_ref/release/del_boundary call dec_ref_obj import and write None on out",
+        description="dec_ref/release/del_boundary use generated release and write None on out",
         pattern=(
-            r"molt_ir::OpKind::DecRef\s*\|\s*molt_ir::OpKind::Release\s*\|\s*molt_ir::OpKind::DelBoundary\s*=>[\s\S]*?emit_dec_ref_like[\s\S]*?WasmRuntimeImport::DecRefObj[\s\S]*?emit_none"
+            r"\A(?=[\s\S]*molt_ir::OpKind::DecRef\s*\|\s*molt_ir::OpKind::Release"
+            r"\s*\|\s*molt_ir::OpKind::DelBoundary\s*=>\s*\{\s*emit_dec_ref_like\()"
+            r"[\s\S]*?\bfn\s+emit_dec_ref_like\b"
+            r"(?:(?!\bfn\s)[\s\S])*?boxed_refcount_is_noop"
+            r"(?:(?!\bfn\s)[\s\S])*?crate::wasm::refcount::emit_refcount"
+            r"\([^;]*RefcountOperation::Release"
+            r"(?:(?!\bfn\s)[\s\S])*?emit_none"
         ),
     ),
     SemanticAssertion(

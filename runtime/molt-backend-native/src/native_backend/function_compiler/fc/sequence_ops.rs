@@ -31,7 +31,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     scalarized_tuples: &mut BTreeMap<String, Vec<Value>>,
@@ -46,7 +46,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
         (cranelift_module::FuncId, ImportSignatureShape),
     >,
                                        builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
@@ -469,7 +469,15 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 0,
             );
             if value_name.is_none() {
-                bind_owned_runtime_result_name(None, value, module, import_ids, builder, vars);
+                bind_owned_runtime_result_name(
+                    None,
+                    value,
+                    module,
+                    import_ids,
+                    builder,
+                    import_refs,
+                    vars,
+                );
             }
             for (name, bits) in [(value_name, value), (done_name, done)] {
                 if let Some(name) = name {
@@ -512,7 +520,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
             );
             let call = builder.ins().call(callee, &[*iter]);
             let pair = builder.inst_results(call)[0];
-            bind_owned_runtime_result(op, pair, module, import_ids, builder, vars);
+            bind_owned_runtime_result(op, pair, module, import_ids, builder, import_refs, vars);
         }
         _ => unreachable!("non-sequence op routed to handle_sequence_op"),
     }

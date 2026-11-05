@@ -35,7 +35,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -53,7 +53,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     cleanup_roots: &mut NativeCleanupRoots,
-    local_dec_ref_obj: FuncRef,
+    local_dec_ref_obj: NativeRefcountSite,
     thread_record_slot: Option<cranelift_codegen::ir::StackSlot>,
     nbc: &crate::NanBoxConsts,
 ) {
@@ -303,7 +303,7 @@ fn release_adopted_call_inputs(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
 ) {
     if !call_adopts_arguments(op) {
         return;
@@ -345,7 +345,7 @@ fn release_adopted_callable(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
 ) {
     if !operand_adopted(op, 0) {
         return;
@@ -359,7 +359,14 @@ fn release_adopted_callable(
         &[types::I64],
         &[],
     );
-    builder.ins().call(release, &[callable]);
+    emit_refcount(
+        builder,
+        callable,
+        import_refs.refcount_site(
+            release,
+            molt_codegen_abi::inline_refcount::RefcountOperation::Release,
+        ),
+    );
 }
 
 /// `molt_call_func_owned(callable, args, nargs, code_id)`: the runtime's
@@ -429,7 +436,7 @@ fn handle_call_direct_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     param_name_set: &BTreeSet<&str>,
@@ -445,7 +452,7 @@ fn handle_call_direct_op(
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     cleanup_roots: &mut NativeCleanupRoots,
-    local_dec_ref_obj: FuncRef,
+    local_dec_ref_obj: NativeRefcountSite,
 ) {
     let target_name = require_static_target_symbol(op);
     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -700,6 +707,7 @@ fn handle_call_direct_op(
             module,
             import_ids,
             builder,
+            import_refs,
             vars,
         );
     }
@@ -741,7 +749,7 @@ fn handle_call_direct_op(
     if runtime_result.is_none() {
         // Imported results were already consumed before operand cleanup.
         if owns_result {
-            bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
+            bind_owned_runtime_result(op, res, module, import_ids, builder, import_refs, vars);
         } else if let Some(out__) = bound_result {
             def_var_named(&mut *builder, vars, out__, res);
         }
@@ -756,7 +764,7 @@ fn handle_call_internal_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     closure_functions: &BTreeSet<String>,
@@ -833,7 +841,7 @@ fn handle_call_internal_op(
     let call = builder.ins().call(local_callee, &args);
     if target_returns {
         let res = builder.inst_results(call)[0];
-        bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
+        bind_owned_runtime_result(op, res, module, import_ids, builder, import_refs, vars);
     } else {
         // Target doesn't return -- assign None if output var requested.
         if let Some(out__) = op.out.as_ref() {
@@ -854,7 +862,7 @@ fn emit_positional_call_bind(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     callee_bits: Value,
     args: &[Value],
     func_name: &str,
@@ -961,7 +969,7 @@ fn handle_call_guarded_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     closure_functions: &BTreeSet<String>,
@@ -1005,7 +1013,7 @@ fn handle_call_guarded_op(
                 op_idx,
             )
         };
-        bind_owned_runtime_result(op, result, module, import_ids, builder, vars);
+        bind_owned_runtime_result(op, result, module, import_ids, builder, import_refs, vars);
         return;
     }
     let target_returns = function_has_ret.get(target_name).copied().unwrap_or(true);
@@ -1208,7 +1216,7 @@ fn handle_call_guarded_op(
     switch_to_block_materialized(&mut *builder, merge_block);
     seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
     let res = builder.block_params(merge_block)[0];
-    bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
+    bind_owned_runtime_result(op, res, module, import_ids, builder, import_refs, vars);
 }
 
 #[cfg(feature = "native-backend")]
@@ -1220,7 +1228,7 @@ fn handle_call_func_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -1469,7 +1477,7 @@ fn handle_call_func_op(
             res,
         );
     } else {
-        bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
+        bind_owned_runtime_result(op, res, module, import_ids, builder, import_refs, vars);
     }
 }
 
@@ -1527,7 +1535,7 @@ fn emit_native_forward_f32_call(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     symbol: &str,
     signature: &molt_ir::native_callable_abi::NativeCallableMachineSignature,
@@ -1660,7 +1668,7 @@ fn handle_invoke_ffi_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -1781,7 +1789,15 @@ fn handle_invoke_ffi_op(
                     result,
                 );
             } else {
-                bind_owned_runtime_result(op, result, module, import_ids, builder, vars);
+                bind_owned_runtime_result(
+                    op,
+                    result,
+                    module,
+                    import_ids,
+                    builder,
+                    import_refs,
+                    vars,
+                );
             }
             return;
         }
@@ -1901,7 +1917,7 @@ fn handle_invoke_ffi_op(
             res,
         );
     } else {
-        bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
+        bind_owned_runtime_result(op, res, module, import_ids, builder, import_refs, vars);
     }
 }
 
@@ -1915,7 +1931,7 @@ fn handle_call_bind_indirect_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     cleanup_roots: &mut NativeCleanupRoots,
@@ -1991,7 +2007,7 @@ fn handle_call_bind_indirect_op(
             res,
         );
     } else {
-        bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
+        bind_owned_runtime_result(op, res, module, import_ids, builder, import_refs, vars);
     }
 
     // `molt_call_bind*` consumes the CallArgs builder pointer and decrefs it
@@ -2030,7 +2046,7 @@ fn handle_call_loaded_method_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
@@ -2085,7 +2101,7 @@ fn handle_call_loaded_method_op(
             res,
         );
     } else {
-        bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
+        bind_owned_runtime_result(op, res, module, import_ids, builder, import_refs, vars);
     }
 }
 
@@ -2099,7 +2115,7 @@ fn handle_call_method_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
@@ -2302,7 +2318,7 @@ fn handle_call_method_op(
             res,
         );
     } else {
-        bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
+        bind_owned_runtime_result(op, res, module, import_ids, builder, import_refs, vars);
     }
 }
 

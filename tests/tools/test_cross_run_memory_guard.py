@@ -6,6 +6,7 @@ import shutil
 from tests.process_guard_common import install_module_view, run_custody_subject_process
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -2192,3 +2193,62 @@ def test_pinned_archive_seed_closes_source_fence_before_publication(
     assert mutated
     assert destination.read_bytes() == b"previous generation"
     assert not any(child.is_dir() for child in cache.iterdir())
+
+
+def _run_stdio_child(code: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    # The raw interpreter's standard streams are the test subject.
+    return run_custody_subject_process(
+        [sys.executable, "-B", "-c", code],
+        timeout=60,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_worker_standard_streams_reach_the_log_and_inherit_to_children(tmp_path):
+    """The bat00 worker lost sys.stderr: its children inherited invalid handles."""
+    log = tmp_path / "worker.log"
+    repo = Path(__file__).resolve().parents[2]
+    code = (
+        "import subprocess, sys\n"
+        f"sys.path.insert(0, {str(repo)!r})\n"
+        "from pathlib import Path\n"
+        "from tools.trunk_loop import bind_standard_streams\n"
+        f"bind_standard_streams(Path({str(log)!r}))\n"
+        "print('worker-out')\n"
+        "print('worker-err', file=sys.stderr)\n"
+        "print('stdin=' + repr(sys.stdin.read()))\n"
+        "subprocess.run([sys.executable, '-c', \"import sys; print('child-out'); "
+        "print('child-err', file=sys.stderr)\"], check=True)\n"
+    )
+    result = _run_stdio_child(code, tmp_path)
+    assert result.returncode == 0, result.stderr
+    # Nothing escapes to the launcher's pipes; everything lands in the log.
+    assert result.stdout == "" and result.stderr == ""
+    text = log.read_text(encoding="utf-8")
+    for line in ("worker-out", "worker-err", "stdin=''", "child-out", "child-err"):
+        assert line in text
+
+
+def test_windows_standard_handles_point_at_the_rebound_descriptors(tmp_path):
+    """On Windows the OS std handles must follow fds 0, 1 and 2 (WinError 6)."""
+    log = tmp_path / "worker.log"
+    repo = Path(__file__).resolve().parents[2]
+    code = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(repo)!r})\n"
+        "from pathlib import Path\n"
+        "from tools.trunk_loop import bind_standard_streams\n"
+        "calls = []\n"
+        "bind_standard_streams(Path(%r), set_std_handle=lambda w, h: calls.append((w, h)),"
+        " get_osfhandle=lambda fd: 1000 + fd)\n"
+        "sys.__stdout__.flush()\n"
+        "open(%r, 'w').write(repr(calls))\n"
+    ) % (str(log), str(tmp_path / "calls.txt"))
+    result = _run_stdio_child(code, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "calls.txt").read_text(
+        encoding="utf-8"
+    ) == "[(-10, 1000), (-11, 1001), (-12, 1002)]"

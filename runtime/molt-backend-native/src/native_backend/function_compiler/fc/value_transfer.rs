@@ -41,7 +41,7 @@ pub(in crate::native_backend::function_compiler) fn def_unboxed_lane_from(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -55,7 +55,7 @@ pub(in crate::native_backend::function_compiler) fn def_unboxed_lane_from(
         (cranelift_module::FuncId, ImportSignatureShape),
     >,
                         builder: &mut FunctionBuilder<'_>,
-                        import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                        import_refs: &mut NativeFunctionImports,
                         sealed_blocks: &mut BTreeSet<Block>| {
         *var_get_boxed_overflow_safe_fn(
             module,
@@ -114,13 +114,13 @@ pub(in crate::native_backend::function_compiler) fn define_alias_result(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     alias_roots: &BTreeMap<String, String>,
     rc_authority: NativeRcAuthority,
-    local_inc_ref_obj: FuncRef,
+    local_inc_ref_obj: NativeRefcountSite,
     nbc: &crate::NanBoxConsts,
 ) {
     if def_unboxed_lane_from(
@@ -160,8 +160,10 @@ pub(in crate::native_backend::function_compiler) fn define_alias_result(
                     || native_alias_mints_owner(alias_roots, src_name, out_name)));
     let boxed_source = merge_rebind_storage_for_name(src_name, representation_plan)
         == MergeRebindStorageKind::BoxedI64;
-    if (retained_binding && boxed_source) || (borrowed_boxed_source.is_some() && !boxed_source) {
-        emit_inc_ref_obj(builder, src, local_inc_ref_obj);
+    if ((retained_binding && boxed_source) || (borrowed_boxed_source.is_some() && !boxed_source))
+        && !representation_plan.boxed_refcount_is_noop(src_name)
+    {
+        emit_refcount(builder, src, local_inc_ref_obj);
     }
     def_var_named(builder, vars, out_name, src);
 }
@@ -178,7 +180,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -186,8 +188,8 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
     cleanup_roots: &mut NativeCleanupRoots,
     rc_skip_inc: &std::collections::HashSet<usize>,
     rc_authority: NativeRcAuthority,
-    local_inc_ref_obj: FuncRef,
-    local_dec_ref_obj: FuncRef,
+    local_inc_ref_obj: NativeRefcountSite,
+    local_dec_ref_obj: NativeRefcountSite,
     nbc: &crate::NanBoxConsts,
 ) {
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
@@ -196,7 +198,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
         (cranelift_module::FuncId, ImportSignatureShape),
     >,
                                        builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
@@ -222,6 +224,36 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                 let src_name = args_names
                     .first()
                     .expect("inc_ref/borrow requires one source arg");
+                if representation_plan.carrier_refcount_is_noop(src_name) {
+                    if let Some(out_name) = simple_ir_out_result(op)
+                        && !def_unboxed_lane_from(
+                            module,
+                            import_ids,
+                            builder,
+                            import_refs,
+                            sealed_blocks,
+                            vars,
+                            representation_plan,
+                            nbc,
+                            src_name,
+                            out_name,
+                        )
+                    {
+                        let source = *var_get_boxed_overflow_safe(
+                            module,
+                            import_ids,
+                            builder,
+                            import_refs,
+                            sealed_blocks,
+                            vars,
+                            src_name,
+                            representation_plan,
+                        )
+                        .expect("immediate retain source");
+                        def_var_named(builder, vars, out_name, source);
+                    }
+                    return;
+                }
                 let src = *var_get_boxed_overflow_safe(
                     &mut *module,
                     &mut *import_ids,
@@ -233,7 +265,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                     representation_plan,
                 )
                 .expect("inc_ref/borrow source not found");
-                emit_inc_ref_obj(&mut *builder, src, local_inc_ref_obj);
+                emit_refcount(&mut *builder, src, local_inc_ref_obj);
                 if simple_ir_out_result(op).is_none() {
                     cleanup_roots.retain_explicit(builder, src_name);
                 }
@@ -264,7 +296,9 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
             let src_name = args_names
                 .first()
                 .expect("dec_ref/release requires one source arg");
-            if rc_skip_inc.contains(&op_idx) {
+            if rc_skip_inc.contains(&op_idx)
+                || representation_plan.carrier_refcount_is_noop(src_name)
+            {
                 // No runtime call needed.  Still define the output
                 // variable so downstream SSA reads succeed.
                 if let Some(out_name) = simple_ir_out_result(op) {
@@ -284,7 +318,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                 )
                 .expect("dec_ref/release source not found");
                 cleanup_roots.consume_explicit(builder, src_name);
-                builder.ins().call(local_dec_ref_obj, &[src]);
+                emit_refcount(builder, src, local_dec_ref_obj);
                 if let Some(out_name) = simple_ir_out_result(op) {
                     let none_bits = builder.ins().iconst(types::I64, box_none());
                     def_var_named(&mut *builder, vars, out_name, none_bits);
@@ -360,7 +394,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                     MergeRebindStorageKind::BoxedI64,
                 );
                 assert!(incoming.take_boxed_owner());
-                builder.ins().call(local_dec_ref_obj, &[boxed]);
+                emit_refcount(builder, boxed, local_dec_ref_obj);
             }
         }
         _ => unreachable!("non-value-transfer op routed to handle_value_transfer_op"),

@@ -56,6 +56,7 @@ pub(super) fn emit_unpack_sequence(
             ctx.import_ids,
             ctx.reloc_enabled,
             WasmRuntimeImport::UnpackSequence,
+            ctx.locals.refcount(),
         );
         return;
     }
@@ -95,6 +96,7 @@ pub(super) fn emit_unpack_sequence(
         ctx.import_ids,
         ctx.reloc_enabled,
         WasmRuntimeImport::UnpackSequence,
+        ctx.locals.refcount(),
     );
 
     let mut index = 0;
@@ -107,6 +109,7 @@ pub(super) fn emit_unpack_sequence(
             ctx.locals.bound_result_slot(Some(out_name)),
             ctx.import_ids,
             ctx.reloc_enabled,
+            ctx.locals.refcount(),
         );
         index += 1;
     });

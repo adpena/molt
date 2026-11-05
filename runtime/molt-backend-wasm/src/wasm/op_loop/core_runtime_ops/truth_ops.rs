@@ -87,5 +87,6 @@ fn emit_selected_operand(
         locals.bound_op_result_slot(op),
         import_ids,
         reloc_enabled,
+        locals.refcount(),
     );
 }

@@ -38,6 +38,8 @@ function instantiate(path) {
     __indirect_function_table: new WebAssembly.Table({initial: config.table_entries, element: 'anyfunc'}),
   }};
   const hooks = {
+  refcount_admission: () => 0n, // isolated image: no runtime execution custody
+
     thread_record() {
       const record=256, work=288;
       const view=new DataView(imports.env.memory.buffer);
@@ -58,7 +60,7 @@ function instantiate(path) {
       for (let slot=state.boxes; slot<2; slot++)
         ensure(view.getBigInt64(state.mixedAnchorPtr+8*slot,true)===boxedNone,
                'initialize all literal anchor holes before constructors');
-      const object = 1000n + BigInt(++state.boxes);
+      const object = 0x7ffc0000000003e8n + BigInt(++state.boxes);
       state.homeOwners.set(object, 1);
       return object;
     },
@@ -97,8 +99,8 @@ function instantiate(path) {
           ensure(view.getBigInt64(state.mixedAnchorPtr+8*slot,true)===boxedNone,
                  'clear every literal anchor before freeing its region');
         ensure(state.mixedAnchorReleases===2
-               && state.homeOwners.get(1001n)===(state.chooseView ? 2 : 1)
-               && state.homeOwners.get(1002n)===(state.chooseView ? 0 : 1),
+               && state.homeOwners.get(0x7ffc0000000003e9n)===(state.chooseView ? 2 : 1)
+               && state.homeOwners.get(0x7ffc0000000003ean)===(state.chooseView ? 0 : 1),
                'anchor cleanup preserves precisely the home and selected return owners');
         state.mixedAnchorLive=false;state.mixedAnchorFrees++;
         new Uint8Array(imports.env.memory.buffer,state.mixedAnchorPtr,16).fill(0xdd);
@@ -123,7 +125,7 @@ function instantiate(path) {
                        Buffer.from(config.anchor_payload,'utf8'));
       state.anchorConstructed++;view.setBigInt64(out,boxedNone,true);
       if (state.anchorFailure==='constructor') {state.pending=true;return 2;}
-      state.anchorOwners.set(909n,1);view.setBigInt64(out,909n,true);return 0;
+      state.anchorOwners.set(0x7ffc00000000038dn,1);view.setBigInt64(out,0x7ffc00000000038dn,true);return 0;
     },
     frame_homes(count) {
       ensure(state.homeCase && count === 2n, 'wrong home layout request');
@@ -142,7 +144,7 @@ function instantiate(path) {
         }
         return BigInt(state.homeBase);
       }
-      for (const [slot, bits] of [[0,888n],[1,777n]]) {
+      for (const [slot, bits] of [[0,0x7ffc000000000378n],[1,0x7ffc000000000309n]]) {
         view.setBigInt64(state.homeBase + 16*slot,1n,true);
         view.setBigInt64(state.homeBase + 16*slot + 8,bits,true);
         state.homeOwners.set(bits,1);
@@ -207,7 +209,7 @@ function instantiate(path) {
         const view = new DataView(imports.env.memory.buffer);
         ensure(view.getBigInt64(state.homeBase+16,true) === 1n, 'binding must be boxed in its home');
         const object = view.getBigInt64(state.homeBase+24,true);
-        ensure(object === 1001n, 'home must retain the original full-width allocation');
+        ensure(object === 0x7ffc0000000003e9n, 'home must retain the original full-width allocation');
         state.published = object;
         ensure(state.homeOwners.get(object) === (state.chooseView ? 2 : 1), 'wrong home/join ownership');
         state.homeOwners.set(object,state.homeOwners.get(object)-1);
@@ -218,11 +220,11 @@ function instantiate(path) {
         // The runtime owns the homes. Exit unlinks the frame before releasing
         // bindings; compiled borrowed views must not release those bindings.
         const view = new DataView(imports.env.memory.buffer);
-        for (const [slot, bits] of [[0,888n],[1,777n]]) {
+        for (const [slot, bits] of [[0,0x7ffc000000000378n],[1,0x7ffc000000000309n]]) {
           ensure(view.getBigInt64(state.homeBase+16*slot,true) === 1n
                  && view.getBigInt64(state.homeBase+16*slot+8,true) === bits,
                  'borrowed load changed its home');
-          const expected = bits === 777n ? 1 + state.homeRetains : 1;
+          const expected = bits === 0x7ffc000000000309n ? 1 + state.homeRetains : 1;
           ensure(state.homeOwners.get(bits) === expected, 'home lost or gained an owner');
           state.homeOwners.set(bits,expected-1);
           state.homeReleases++;
@@ -243,7 +245,7 @@ function instantiate(path) {
                'each full-width constructor gets one pre-entry failure observation');
         const slot=state.mixedAnchorChecks++;
         ensure(new DataView(imports.env.memory.buffer).getBigInt64(state.mixedAnchorPtr+8*slot,true)
-               ===1001n+BigInt(slot), 'publish constructed integer in its anchor');
+               ===0x7ffc0000000003e9n+BigInt(slot), 'publish constructed integer in its anchor');
         return 0n;
       }
       if (state.anchorCase && state.enters===0) {
@@ -269,7 +271,7 @@ function instantiate(path) {
         return;
       }
       if (state.anchorCase && state.anchorOwners.has(value)) {
-        ensure(value===909n && state.anchorLive && state.anchorRetains===0
+        ensure(value===0x7ffc00000000038dn && state.anchorLive && state.anchorRetains===0
                && state.anchorOwners.get(value)===1,
                'literal use must retain its selected live anchor');
         ensure(new DataView(imports.env.memory.buffer).getBigInt64(state.anchorPtr,true)===value,
@@ -277,7 +279,7 @@ function instantiate(path) {
         state.anchorRetains++;state.anchorOwners.set(value,2);return;
       }
       if (state.homeCase && state.homeOwners.has(value)) {
-        ensure(value === 777n && state.homeRetains === 0 && state.homeOwners.get(value) === 1,
+        ensure(value === 0x7ffc000000000309n && state.homeRetains === 0 && state.homeOwners.get(value) === 1,
                'only the explicit borrowed return may retain a home binding');
         state.homeRetains++;
         state.homeOwners.set(value,2);
@@ -290,7 +292,7 @@ function instantiate(path) {
       if (state.mixedCase && state.homeOwners.has(value)) {
         ensure(state.homeOwners.get(value)>0, 'releasing dead joined integer');
         // Anchor cleanup clears the published slot before releasing its credit.
-        const slot=Number(value-1001n);
+        const slot=Number(value-0x7ffc0000000003e9n);
         const bits=new DataView(imports.env.memory.buffer).getBigInt64(state.mixedAnchorPtr+8*slot,true);
         if (bits===boxedNone) {
           ensure(state.mixedAnchorLive && !state.mixedReleased.has(value),
@@ -425,7 +427,7 @@ for (const chooseView of [true,false]) {
   assert.equal(state.mixedAnchorChecks,2,'both constructors observed before frame entry');
   assert.equal(state.mixedAnchorAllocations,1,'one invocation-owned literal region');
   assert.equal(state.mixedAnchorFrees,1,'literal region retired exactly once');
-  assert.equal(result,chooseView ? state.published : 1002n,'join carries the selected object identity');
+  assert.equal(result,chooseView ? state.published : 0x7ffc0000000003ean,'join carries the selected object identity');
   assert.equal(state.homeOwners.get(result),1,'returned owner survives frame cleanup');
   assert.equal([...state.homeOwners.values()].reduce((a,b)=>a+b,0),1,'only returned owner remains');
   ensure(state.enters===1 && state.exits===1 && state.depth===0 && !state.pending,
@@ -452,7 +454,7 @@ for (const test of config.home_modules) {
     const result = test.stateful ? homeApp.molt_main(64n) : homeApp.molt_main();
     const early = anchorFailure!=='none';
     const failed = failure !== 0 || failEntry || failLend || early;
-    assert.equal(result,failed ? boxedNone : 777n,state.label);
+    assert.equal(result,failed ? boxedNone : 0x7ffc000000000309n,state.label);
     ensure(state.depth === state.initialDepth && state.enters === Number(!early) && state.exits === Number(!early)
            && state.attempts.length === 0,'home return lost frame-attempt custody');
     assert.equal(state.homeLends,Number(!early),state.label);
@@ -473,8 +475,8 @@ for (const test of config.home_modules) {
            'anchor storage or owner escaped home cleanup');
     if (!failed) {
       // Frame exit released the home's owner; the returned alias alone lives.
-      assert.equal(state.homeOwners.get(777n),1,state.label);
-      state.homeOwners.set(777n,0); // caller releases its returned owner
+      assert.equal(state.homeOwners.get(0x7ffc000000000309n),1,state.label);
+      state.homeOwners.set(0x7ffc000000000309n,0); // caller releases its returned owner
     }
     ensure([...state.homeOwners.values()].every(count => count === 0),
            'borrowed home or returned owner leaked');

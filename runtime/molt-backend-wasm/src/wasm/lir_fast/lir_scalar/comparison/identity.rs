@@ -22,6 +22,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_identity_comparison(
     ctx.emit_runtime_call(LirRuntimeCall::Is);
 
     match result.repr {
+        LirRepr::Immortal64 => panic!("predicate producer must use its proven boolean carrier"),
         LirRepr::Bool1 => {
             ctx.instructions.push(Instruction::I64Const(1));
             ctx.instructions.push(Instruction::I64And);

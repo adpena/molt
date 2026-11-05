@@ -98,7 +98,9 @@ impl LirLowerCtx<'_> {
         }
         for result in &op.result_values {
             let zero = match result.repr {
-                LirRepr::DynBox | LirRepr::Ref64 => Instruction::I64Const(box_none_bits()),
+                LirRepr::DynBox | LirRepr::Ref64 | LirRepr::Immortal64 => {
+                    Instruction::I64Const(box_none_bits())
+                }
                 LirRepr::I64 => Instruction::I64Const(0),
                 LirRepr::Bool1 => Instruction::I32Const(0),
                 LirRepr::F64 => Instruction::F64Const(Ieee64::from(0.0)),

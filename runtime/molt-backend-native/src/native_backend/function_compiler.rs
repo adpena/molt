@@ -1,7 +1,7 @@
 use super::*;
 use crate::repr::{ContainerKind, ContainerStorageKind, ScalarKind};
 use crate::representation_plan::ScalarRepresentationPlan;
-use crate::runtime_import_abi::{MOLT_DEC_REF, MOLT_DEC_REF_OBJ, MOLT_INC_REF_OBJ};
+use crate::runtime_import_abi::{MOLT_DEC_REF_OBJ, MOLT_INC_REF_OBJ, MOLT_REFCOUNT_ADMISSION};
 use crate::tir::simple_def_use::simple_ir_binding;
 use molt_ir::OpKind;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
@@ -313,7 +313,7 @@ impl SimpleBackend {
             std::collections::HashSet::new();
         let mut label_blocks = BTreeMap::new();
         let mut resume_blocks = BTreeMap::new();
-        let mut import_refs: BTreeMap<&'static str, FuncRef> = BTreeMap::new();
+        let mut import_refs = NativeFunctionImports::default();
         let mut reachable_blocks: BTreeSet<Block> = BTreeSet::new();
         // Cranelift SSA-variable correctness relies on sealing blocks once all predecessors
         // are known. Our IR uses structured control-flow; for `if` this means then/else
@@ -455,21 +455,14 @@ impl SimpleBackend {
             BTreeSet::new()
         };
 
-        let _local_dec_ref = import_runtime_func_ref(
-            &mut self.module,
-            &mut self.import_ids,
-            &mut builder,
-            &mut import_refs,
-            MOLT_DEC_REF,
-        );
-        let local_dec_ref_obj = import_runtime_func_ref(
+        let local_dec_ref_slow = import_runtime_func_ref(
             &mut self.module,
             &mut self.import_ids,
             &mut builder,
             &mut import_refs,
             MOLT_DEC_REF_OBJ,
         );
-        let local_inc_ref_obj = import_runtime_func_ref(
+        let local_inc_ref_slow = import_runtime_func_ref(
             &mut self.module,
             &mut self.import_ids,
             &mut builder,
@@ -604,7 +597,7 @@ impl SimpleBackend {
             (cranelift_module::FuncId, ImportSignatureShape),
         >,
                                            builder: &mut FunctionBuilder<'_>,
-                                           import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                           import_refs: &mut NativeFunctionImports,
                                            sealed_blocks: &mut BTreeSet<Block>,
                                            vars: &BTreeMap<String, Variable>,
                                            name: &str,
@@ -680,6 +673,19 @@ impl SimpleBackend {
                     .stack_store(pointer_type, word_ptr, work_slot, 0);
             }
         }
+
+        // Finalization replaces this entry value only when a generated RC
+        // site consumes it. Scalar-only functions make no admission call.
+        let admission = builder.ins().iconst(types::I64, 0);
+        import_refs.set_refcount_admission(admission);
+        let local_inc_ref_obj = import_refs.refcount_site(
+            local_inc_ref_slow,
+            molt_codegen_abi::inline_refcount::RefcountOperation::Retain,
+        );
+        let local_dec_ref_obj = import_refs.refcount_site(
+            local_dec_ref_slow,
+            molt_codegen_abi::inline_refcount::RefcountOperation::Release,
+        );
 
         // ── Entry-block variable initialization ──────────────────────────
         //
@@ -1210,932 +1216,963 @@ impl SimpleBackend {
             // values actually read. Eagerly snapshotting all live values here
             // repeats whole live sets even for operations that never split.
             pending_definition_op = Some(op_idx);
-            match op_family {
-                fc::NativeOpFamily::NoCodegen => {
-                    assert!(
-                        defined_names.is_empty(),
-                        "native backend: no-codegen op kind `{}` declares values {:?} in function `{}`",
-                        op.kind,
-                        defined_names,
-                        func_ir.name,
-                    );
-                }
-                fc::NativeOpFamily::ConstLiterals => {
-                    let __flow = fc::const_literals::handle_const_literal_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &vars,
-                        representation_plan,
-                        &literal_hoists,
-                        local_inc_ref_obj,
-                    );
-                    match __flow {
-                        fc::OpFlow::Continue => continue,
-                        fc::OpFlow::Proceed => {}
-                    }
-                }
-                // Arithmetic family (fc::arith), INCLUDING the 24 `vec_*`
-                // reductions `handle_arith_op` delegates to `fc::vec_reductions`.
-                // Both kind sets route here via `op_family`: the scalar authority
-                // is `fc::arith::HANDLED_KINDS`, the reduction authority is
-                // `fc::vec_reductions::HANDLED_KINDS`, and the dispatch table maps
-                // both to `NativeOpFamily::Arith`. Dropping the dispatch's copy of
-                // the `vec_*` list was the 334c4466d regression (fixed 85de1bbb2);
-                // there is no longer a copy here to drop.
-                fc::NativeOpFamily::Arith => {
-                    let __flow = fc::arith::handle_arith_op(
-                        &op,
-                        op_idx,
-                        &func_ir.name,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &loop_stack,
-                        scalar_fast_paths_enabled,
-                        &nbc,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                    );
-                    match __flow {
-                        fc::OpFlow::Continue => continue,
-                        fc::OpFlow::Proceed => {}
-                    }
-                }
-                // Bitwise/shift binary operators are split from scalar add/sub/mul
-                // so arithmetic lowering stays a set of smaller codegen units.
-                fc::NativeOpFamily::BitwiseShift => {
-                    let __flow = fc::bitwise_shift::handle_bitwise_shift_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        scalar_fast_paths_enabled,
-                        &nbc,
-                    );
-                    match __flow {
-                        fc::OpFlow::Continue => continue,
-                        fc::OpFlow::Proceed => {}
-                    }
-                }
-                // Matrix operators are runtime-backed binary ops, not scalar
-                // arithmetic; keep their routing authority out of fc::arith.
-                fc::NativeOpFamily::MatrixOps => {
-                    let __flow = fc::matrix_ops::handle_matrix_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                    );
-                    match __flow {
-                        fc::OpFlow::Continue => continue,
-                        fc::OpFlow::Proceed => {}
-                    }
-                }
-                // Division/modulo/power/rounding arithmetic family extracted
-                // from fc::arith so quotient/remainder codegen is its own
-                // function-level rustc codegen unit and kind authority.
-                fc::NativeOpFamily::ArithDivision => {
-                    let __flow = fc::arith_division::handle_arith_division_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        scalar_fast_paths_enabled,
-                        &nbc,
-                    );
-                    match __flow {
-                        fc::OpFlow::Continue => continue,
-                        fc::OpFlow::Proceed => {}
-                    }
-                }
-                // handle_sequence_op family - extracted to fc::sequence_ops (M1)
-                fc::NativeOpFamily::Sequence => {
-                    let __flow = fc::sequence_ops::handle_sequence_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &mut scalarized_tuples,
-                        representation_plan,
-                        &nbc,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                    );
-                    match __flow {
-                        fc::OpFlow::Continue => continue,
-                        fc::OpFlow::Proceed => {}
-                    }
-                }
-                // handle_generator_op family - extracted to fc::generators (M1)
-                fc::NativeOpFamily::Generators => {
-                    fc::generators::handle_generator_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                    );
-                }
-                fc::NativeOpFamily::ScalarBuiltins => {
-                    fc::scalar_builtins::handle_scalar_builtin(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                    );
-                }
-                // handle_callargs_op family — extracted to fc::callargs (M1)
-                fc::NativeOpFamily::Callargs => {
-                    let __flow = fc::callargs::handle_callargs_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                    );
-                    match __flow {
-                        fc::OpFlow::Continue => continue,
-                        fc::OpFlow::Proceed => {}
-                    }
-                }
-                // handle_list_op family — extracted to fc::list_ops (M1)
-                fc::NativeOpFamily::ListOps => {
-                    let __flow = fc::list_ops::handle_list_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                    );
-                    match __flow {
-                        fc::OpFlow::Continue => continue,
-                        fc::OpFlow::Proceed => {}
-                    }
-                }
-                // handle_dict_op family — extracted to fc::dict_ops (M1)
-                fc::NativeOpFamily::DictOps => {
-                    let __flow = fc::dict_ops::handle_dict_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                    );
-                    match __flow {
-                        fc::OpFlow::Continue => continue,
-                        fc::OpFlow::Proceed => {}
-                    }
-                }
-                // handle_set_op family — extracted to fc::set_ops (M1)
-                fc::NativeOpFamily::SetOps => {
-                    let __flow = fc::set_ops::handle_set_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                    );
-                    match __flow {
-                        fc::OpFlow::Continue => continue,
-                        fc::OpFlow::Proceed => {}
-                    }
-                }
-                // Subscript read fast paths: extracted from the old aggregate indexing bucket.
-                fc::NativeOpFamily::SubscriptGet => {
-                    fc::subscript_get::handle_subscript_get_op(
-                        &op,
-                        op_idx,
-                        &const_int_map,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &scalarized_tuples,
-                        representation_plan,
-                        &mut list_index_fast_paths,
-                        scalar_fast_paths_enabled,
-                        local_inc_ref_obj,
-                        &nbc,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                    );
-                }
-                // Subscript write fast paths: mutating list/dict setitem lowering is its own unit.
-                fc::NativeOpFamily::SubscriptStore => {
-                    fc::subscript_store::handle_subscript_store_op(
-                        &op,
-                        op_idx,
-                        &func_ir.name,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                    );
-                }
-                // Thin delete/slice runtime-call lowering: separate from get/set fast paths.
-                fc::NativeOpFamily::SliceOps => {
-                    fc::slice_ops::handle_slice_op(
-                        &op,
-                        op_idx,
-                        &func_ir.name,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                    );
-                }
-                // The closed contract owns meaning, signature and result custody.
-                fc::NativeOpFamily::ContractRuntimeCalls => {
-                    use molt_ir::runtime_calls::RuntimeCall;
-                    let call = RuntimeCall::from_op(op.kind).expect("contract family");
-                    shared::emit_contract_runtime_call(
-                        &op,
-                        call,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                    );
-                }
-                // The ABI manifest admits this complete positional boxed-call family.
-                fc::NativeOpFamily::BoxedRuntimeCalls => {
-                    let abi = molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(op.kind)
-                        .expect("generated boxed-call family must have an ABI");
-                    let args = op.args.as_deref().unwrap_or(&[]);
-                    assert_eq!(args.len(), abi.arity, "{} boxed-call arity", op.kind);
-                    shared::emit_operand_transaction_call(
-                        &op,
-                        args,
-                        abi.symbol,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                    );
-                }
-                // handle_text_transform family — extracted to fc::text_transform (M1)
-                fc::NativeOpFamily::TextTransform => {
-                    fc::text_transform::handle_text_transform(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                    );
-                }
-                // handle_runtime_op family - extracted to fc::runtime_ops (M1)
-                fc::NativeOpFamily::RuntimeOps => {
-                    fc::runtime_ops::handle_runtime_op(
-                        &op,
-                        &func_ir.name,
-                        is_block_filled,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        local_exc_pending_fast,
-                        exc_flag_ptr_slot,
-                        &nbc,
-                    );
-                }
-                // handle_type_conversion family — extracted to fc::type_conversions (M1)
-                fc::NativeOpFamily::TypeConversions => {
-                    fc::type_conversions::handle_type_conversion(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                    );
-                }
-                // handle_compare_op family - extracted to fc::compare (M1)
-                fc::NativeOpFamily::Compare => {
-                    fc::compare::handle_compare_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &loop_stack,
-                        scalar_fast_paths_enabled,
-                        &nbc,
-                    );
-                }
-                // handle_unary_logic_op family - extracted to fc::unary_logic (M1)
-                fc::NativeOpFamily::UnaryLogic => {
-                    let __flow = fc::unary_logic::handle_unary_logic_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        local_inc_ref_obj,
-                        scalar_fast_paths_enabled,
-                        &nbc,
-                    );
-                    match __flow {
-                        fc::OpFlow::Continue => continue,
-                        fc::OpFlow::Proceed => {}
-                    }
-                }
-                // handle_coroutine_op family - extracted to fc::coroutine (M1)
-                fc::NativeOpFamily::Coroutine => {
-                    let __flow = fc::coroutine::handle_coroutine_op(
-                        &op,
-                        entry_block,
-                        &resume_blocks,
-                        &mut reachable_blocks,
-                        &mut is_block_filled,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                        local_inc_ref_obj,
-                        &nbc,
-                    );
-                    match __flow {
-                        fc::OpFlow::Continue => continue,
-                        fc::OpFlow::Proceed => {}
-                    }
-                }
-                // handle_funcobj_op family - extracted to fc::funcobj (M1)
-                fc::NativeOpFamily::Funcobj => {
-                    let __flow = fc::funcobj::handle_funcobj_op(
-                        &op,
-                        op_idx,
-                        owned_frame_entered,
-                        frame_homes,
-                        leading_frame_entry_op_idx,
-                        frame_location_active,
-                        is_block_filled,
-                        rc_authority,
-                        !loop_stack.is_empty(),
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        task_kinds,
-                        task_closure_sizes,
-                        defined_functions,
-                        known_function_arities,
-                        function_has_ret,
-                        &self.function_entry_custody,
-                        &mut self.trampoline_ids,
-                        &mut self.declared_func_arities,
-                        &mut local_closure_envs,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                        &last_use,
-                        &mut cleanup_roots,
-                        local_inc_ref_obj,
-                        local_dec_ref_obj,
-                        &nbc,
-                    );
-                    match __flow {
-                        fc::OpFlow::Continue => continue,
-                        fc::OpFlow::Proceed => {}
-                    }
-                }
-                // handle_object_construct_op family — extracted to fc::object_construct (M1)
-                fc::NativeOpFamily::ObjectConstruct => {
-                    fc::object_construct::handle_object_construct_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                    );
-                }
-                // handle_gpu_intrinsic_op family - extracted to fc::funcobj (M1)
-                fc::NativeOpFamily::GpuIntrinsic => {
-                    fc::funcobj::handle_gpu_intrinsic_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &vars,
-                    );
-                }
-                // handle_call_op family - extracted to fc::calls (M1)
-                fc::NativeOpFamily::Calls => {
-                    fc::calls::handle_call_op(
-                        &op,
-                        op_idx,
-                        func_ir.name.as_str(),
-                        master_return_block,
-                        returns_value,
-                        rc_authority,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &param_name_set,
-                        &first_defined_at,
-                        &last_use,
-                        &alias_roots,
-                        closure_functions,
-                        leaf_functions,
-                        &local_closure_envs,
-                        known_function_arities,
-                        &self.declared_func_arities,
-                        function_has_ret,
-                        defined_functions,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                        &mut cleanup_roots,
-                        local_dec_ref_obj,
-                        thread_record_slot,
-                        &nbc,
-                    );
-                }
-                // handle_value_transfer_op family - extracted to fc::value_transfer (M1)
-                //
-                // `copy` is grouped with the args-based alias ops here. The
-                // frontend emits `{kind:OpKind::Copy, args:[src], out:result}` (a
-                // pure SSA value move), and typed copy propagation
-                // (ir_rewrites.rs) collapses it to `nop` ONLY when neither
-                // `out` nor `src` is a mutable-storage name — a `copy` whose
-                // result/source is a reassigned local SURVIVES with kind
-                // OpKind::Copy and reaches codegen. Omitting it routes the op to the
-                // silent `_ => {}` arm below, which emits no codegen and leaves
-                // the result SSA value undefined (resolving to the None
-                // sentinel) — the same silent-miscompile class as the vec_*
-                // dispatch drop fixed in 85de1bbb2. `copy` shares the
-                // args-based alias lowering, whose generated ownership facts
-                // distinguish transparent aliases from the owned
-                // `binding_alias` lane. Keep in sync with
-                // fc::value_transfer::handle_value_transfer_op.
-                fc::NativeOpFamily::ValueTransfer => {
-                    fc::value_transfer::handle_value_transfer_op(
-                        &op,
-                        op_idx,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &alias_roots,
-                        &mut cleanup_roots,
-                        &rc_skip_inc,
-                        rc_authority,
-                        local_inc_ref_obj,
-                        local_dec_ref_obj,
-                        &nbc,
-                    );
-                }
-                // handle_module_op family — extracted to fc::modules (M1)
-                fc::NativeOpFamily::Modules => {
-                    fc::modules::handle_module_op(
-                        &op,
-                        op_idx,
-                        &func_ir.name,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                        local_inc_ref_obj,
-                        literal_hoists.str_output_slots(),
-                    );
-                }
-                // handle_class_op family — extracted to fc::class_ops (M1)
-                fc::NativeOpFamily::ClassOps => {
-                    fc::class_ops::handle_class_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                    );
-                }
-                // Outlined class definition via molt_guarded_class_def
-                // handle_type_check_op family — extracted to fc::type_checks (M1)
-                fc::NativeOpFamily::TypeChecks => {
-                    fc::type_checks::handle_type_check_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                    );
-                }
-                // handle_exception_op family — extracted to fc::exceptions (M1)
-                fc::NativeOpFamily::Exceptions => {
-                    fc::exceptions::handle_exception_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        pending_work_slots,
-                        &nbc,
-                    );
-                }
-                // handle_context_op family — extracted to fc::context_mgmt (M1)
-                fc::NativeOpFamily::ContextMgmt => {
-                    fc::context_mgmt::handle_context_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                    );
-                }
-                // handle_exception_stack_op family — extracted to fc::exception_stack (M1)
-                fc::NativeOpFamily::ExceptionStack => {
-                    fc::exception_stack::handle_exception_stack_op(
-                        &op,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                    );
-                }
-                // handle_exception_control_op family - extracted to fc::exception_control (M1)
-                fc::NativeOpFamily::ExceptionControl => {
-                    fc::exception_control::handle_exception_control_op(
-                        &op,
-                        op_idx,
-                        &func_ir.name,
-                        body_entry_block,
-                        loop_depth,
-                        &label_blocks,
-                        &label_transport_plans,
-                        &mut reachable_blocks,
-                        &mut is_block_filled,
-                        rc_authority,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                        &mut tracked_obj_vars,
-                        &mut tracked_vars,
-                        &mut tracked_obj_vars_set,
-                        &mut tracked_vars_set,
-                        &last_use,
-                        &mut cleanup_roots,
-                        local_dec_ref_obj,
-                        local_exc_pending_fast,
-                        exc_flag_ptr_slot,
-                        pending_work_slots,
-                        &maybe_debug_seal,
-                        &nbc,
-                    );
-                }
-                // handle_control_flow_op family - extracted to fc::control_flow (M1)
-                fc::NativeOpFamily::ControlFlow => {
-                    let __flow = fc::control_flow::handle_control_flow_op(
-                        &op,
-                        op_idx,
-                        func_ir.name.as_str(),
-                        &func_ir.ops,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &first_defined_at,
-                        &last_use,
-                        &if_to_else,
-                        &if_to_end_if,
-                        &else_to_end_if,
-                        &int_store_target_names,
-                        &exception_label_ids,
-                        &list_index_fast_paths,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                        &mut cleanup_roots,
-                        &mut reachable_blocks,
-                        &mut if_stack,
-                        &mut skip_ops,
-                        &mut is_block_filled,
-                        rc_authority,
-                        scalar_fast_paths_enabled,
-                        &maybe_debug_seal,
-                        local_inc_ref_obj,
-                        local_dec_ref_obj,
-                        &nbc,
-                    );
-                    match __flow {
-                        fc::OpFlow::Continue => continue,
-                        fc::OpFlow::Proceed => {}
-                    }
-                }
-                // handle_loop_op family - extracted to fc::loops (M1)
-                fc::NativeOpFamily::Loops => {
-                    let __flow = fc::loops::handle_loop_op(
-                        &op,
-                        op_idx,
-                        &func_ir,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &last_use,
-                        &exception_label_ids,
-                        &loop_body_init_vars,
-                        &mut list_index_fast_paths,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                        &mut cleanup_roots,
-                        &mut reachable_blocks,
-                        &mut loop_stack,
-                        &mut skip_ops,
-                        &mut loop_depth,
-                        &mut is_block_filled,
-                        rc_authority,
-                        scalar_fast_paths_enabled,
-                        debug_loop_cfg.as_deref(),
-                        debug_block_origins.as_deref(),
-                        &maybe_debug_seal,
-                        local_exc_pending_fast,
-                        exc_flag_ptr_slot,
-                        local_dec_ref_obj,
-                        &nbc,
-                    );
-                    match __flow {
-                        fc::OpFlow::Continue => continue,
-                        fc::OpFlow::Proceed => {}
-                    }
-                }
-                // handle_memory_op family - extracted to fc::memory (M1)
-                fc::NativeOpFamily::Memory => {
-                    let __flow = fc::memory::handle_memory_op(
-                        &op,
-                        op_idx,
-                        func_ir.name.as_str(),
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &alias_roots,
-                        &last_use,
-                        &field_store_modes,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                        &mut cleanup_roots,
-                        defined_functions,
-                        &mut output_is_ptr,
-                        stateful,
-                        entry_block,
-                        local_profile_struct,
-                        profile_enabled_val,
-                        guard_facts.is_profile_only(&op),
-                        local_inc_ref_obj,
-                        local_dec_ref_obj,
-                        rc_authority,
-                        &nbc,
-                    );
-                    match __flow {
-                        fc::OpFlow::Continue => continue,
-                        fc::OpFlow::Proceed => {}
-                    }
-                }
-                // handle_attr_op family — extracted to fc::attrs (M1)
-                fc::NativeOpFamily::Attrs => {
-                    let __flow = fc::attrs::handle_attr_op(
-                        &op,
-                        op_idx,
-                        &func_ir.name,
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &nbc,
-                    );
-                    match __flow {
-                        fc::OpFlow::Continue => continue,
-                        fc::OpFlow::Proceed => {}
-                    }
-                }
-                // handle_ret_jump_op family - extracted to fc::ret_jump (M1)
-                fc::NativeOpFamily::RetJump => {
-                    let __flow = fc::ret_jump::handle_ret_jump_op(
-                        &op,
-                        op_idx,
-                        func_ir.name.as_str(),
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        representation_plan,
-                        &first_defined_at,
-                        &alias_roots,
-                        &last_use,
-                        &mut block_tracked_obj,
-                        &mut block_tracked_ptr,
-                        &mut cleanup_roots,
-                        &mut reachable_blocks,
-                        &label_blocks,
-                        &label_transport_plans,
-                        &ssa_values,
-                        function_exception_label_id,
-                        &slot_backed_join_slots,
-                        &raw_backed_slot_names,
-                        &list_index_fast_paths,
-                        master_return_block,
-                        &mut is_block_filled,
-                        returns_value,
-                        rc_authority,
-                        scalar_fast_paths_enabled,
-                        debug_block_origins.as_deref(),
-                        &maybe_debug_seal,
-                        local_inc_ref_obj,
-                        local_dec_ref_obj,
-                        &nbc,
-                    );
-                    match __flow {
-                        fc::OpFlow::Continue => continue,
-                        fc::OpFlow::Proceed => {}
-                    }
-                }
-                // Loud single-source-of-truth backstop for the dispatch<->handler
-                // mirror. Routing above is derived from each handler's
-                // `HANDLED_KINDS` via `op_family`, so a handler's kind can never be
-                // silently dropped from the dispatch (the 334c4466d regression).
-                // This arm catches the residual case: a result-producing kind that
-                // NO inline arm and NO family claims. Leaving it unhandled would
-                // leave its result SSA value undefined (resolving to the None
-                // sentinel) -> the exact silent miscompile fixed in 85de1bbb2. Fail
-                // loud here, just as every fc::* handler's own `_ => unreachable!`.
-                fc::NativeOpFamily::Unsupported => {
-                    if let Some(binding) = simple_ir_binding(&op) {
-                        panic!(
-                            "native backend: no codegen for binding op kind `{}` (destination={:?}) in function `{}`",
-                            op.kind, binding.destination, func_ir.name,
+            let operation_origin = builder.current_block();
+            let operation_flow = (|| {
+                match op_family {
+                    fc::NativeOpFamily::NoCodegen => {
+                        assert!(
+                            defined_names.is_empty(),
+                            "native backend: no-codegen op kind `{}` declares values {:?} in function `{}`",
+                            op.kind,
+                            defined_names,
+                            func_ir.name,
                         );
                     }
-                    {
-                        panic!(
-                            "native backend: no codegen for op kind `{}` \
+                    fc::NativeOpFamily::ConstLiterals => {
+                        let __flow = fc::const_literals::handle_const_literal_op(
+                            &op,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &vars,
+                            representation_plan,
+                            &literal_hoists,
+                            local_inc_ref_obj,
+                        );
+                        match __flow {
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Proceed => {}
+                        }
+                    }
+                    // Arithmetic family (fc::arith), INCLUDING the 24 `vec_*`
+                    // reductions `handle_arith_op` delegates to `fc::vec_reductions`.
+                    // Both kind sets route here via `op_family`: the scalar authority
+                    // is `fc::arith::HANDLED_KINDS`, the reduction authority is
+                    // `fc::vec_reductions::HANDLED_KINDS`, and the dispatch table maps
+                    // both to `NativeOpFamily::Arith`. Dropping the dispatch's copy of
+                    // the `vec_*` list was the 334c4466d regression (fixed 85de1bbb2);
+                    // there is no longer a copy here to drop.
+                    fc::NativeOpFamily::Arith => {
+                        let __flow = fc::arith::handle_arith_op(
+                            &op,
+                            op_idx,
+                            &func_ir.name,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &loop_stack,
+                            scalar_fast_paths_enabled,
+                            &nbc,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                        );
+                        match __flow {
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Proceed => {}
+                        }
+                    }
+                    // Bitwise/shift binary operators are split from scalar add/sub/mul
+                    // so arithmetic lowering stays a set of smaller codegen units.
+                    fc::NativeOpFamily::BitwiseShift => {
+                        let __flow = fc::bitwise_shift::handle_bitwise_shift_op(
+                            &op,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            scalar_fast_paths_enabled,
+                            &nbc,
+                        );
+                        match __flow {
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Proceed => {}
+                        }
+                    }
+                    // Matrix operators are runtime-backed binary ops, not scalar
+                    // arithmetic; keep their routing authority out of fc::arith.
+                    fc::NativeOpFamily::MatrixOps => {
+                        let __flow = fc::matrix_ops::handle_matrix_op(
+                            &op,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &nbc,
+                        );
+                        match __flow {
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Proceed => {}
+                        }
+                    }
+                    // Division/modulo/power/rounding arithmetic family extracted
+                    // from fc::arith so quotient/remainder codegen is its own
+                    // function-level rustc codegen unit and kind authority.
+                    fc::NativeOpFamily::ArithDivision => {
+                        let __flow = fc::arith_division::handle_arith_division_op(
+                            &op,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            scalar_fast_paths_enabled,
+                            &nbc,
+                        );
+                        match __flow {
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Proceed => {}
+                        }
+                    }
+                    // handle_sequence_op family - extracted to fc::sequence_ops (M1)
+                    fc::NativeOpFamily::Sequence => {
+                        let __flow = fc::sequence_ops::handle_sequence_op(
+                            &op,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            &mut scalarized_tuples,
+                            representation_plan,
+                            &nbc,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                        );
+                        match __flow {
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Proceed => {}
+                        }
+                    }
+                    // handle_generator_op family - extracted to fc::generators (M1)
+                    fc::NativeOpFamily::Generators => {
+                        fc::generators::handle_generator_op(
+                            &op,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &nbc,
+                        );
+                    }
+                    fc::NativeOpFamily::ScalarBuiltins => {
+                        fc::scalar_builtins::handle_scalar_builtin(
+                            &op,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &nbc,
+                        );
+                    }
+                    // handle_callargs_op family — extracted to fc::callargs (M1)
+                    fc::NativeOpFamily::Callargs => {
+                        let __flow = fc::callargs::handle_callargs_op(
+                            &op,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &nbc,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                        );
+                        match __flow {
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Proceed => {}
+                        }
+                    }
+                    // handle_list_op family — extracted to fc::list_ops (M1)
+                    fc::NativeOpFamily::ListOps => {
+                        let __flow = fc::list_ops::handle_list_op(
+                            &op,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &nbc,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                        );
+                        match __flow {
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Proceed => {}
+                        }
+                    }
+                    // handle_dict_op family — extracted to fc::dict_ops (M1)
+                    fc::NativeOpFamily::DictOps => {
+                        let __flow = fc::dict_ops::handle_dict_op(
+                            &op,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &nbc,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                        );
+                        match __flow {
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Proceed => {}
+                        }
+                    }
+                    // handle_set_op family — extracted to fc::set_ops (M1)
+                    fc::NativeOpFamily::SetOps => {
+                        let __flow = fc::set_ops::handle_set_op(
+                            &op,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &nbc,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                        );
+                        match __flow {
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Proceed => {}
+                        }
+                    }
+                    // Subscript read fast paths: extracted from the old aggregate indexing bucket.
+                    fc::NativeOpFamily::SubscriptGet => {
+                        fc::subscript_get::handle_subscript_get_op(
+                            &op,
+                            op_idx,
+                            &const_int_map,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            &scalarized_tuples,
+                            representation_plan,
+                            &mut list_index_fast_paths,
+                            scalar_fast_paths_enabled,
+                            local_inc_ref_obj,
+                            &nbc,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                        );
+                    }
+                    // Subscript write fast paths: mutating list/dict setitem lowering is its own unit.
+                    fc::NativeOpFamily::SubscriptStore => {
+                        fc::subscript_store::handle_subscript_store_op(
+                            &op,
+                            op_idx,
+                            &func_ir.name,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &nbc,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                        );
+                    }
+                    // Thin delete/slice runtime-call lowering: separate from get/set fast paths.
+                    fc::NativeOpFamily::SliceOps => {
+                        fc::slice_ops::handle_slice_op(
+                            &op,
+                            op_idx,
+                            &func_ir.name,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &nbc,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                        );
+                    }
+                    // The closed contract owns meaning, signature and result custody.
+                    fc::NativeOpFamily::ContractRuntimeCalls => {
+                        use molt_ir::runtime_calls::RuntimeCall;
+                        let call = RuntimeCall::from_op(op.kind).expect("contract family");
+                        shared::emit_contract_runtime_call(
+                            &op,
+                            call,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &nbc,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                        );
+                    }
+                    // The ABI manifest admits this complete positional boxed-call family.
+                    fc::NativeOpFamily::BoxedRuntimeCalls => {
+                        let abi =
+                            molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(op.kind)
+                                .expect("generated boxed-call family must have an ABI");
+                        let args = op.args.as_deref().unwrap_or(&[]);
+                        assert_eq!(args.len(), abi.arity, "{} boxed-call arity", op.kind);
+                        shared::emit_operand_transaction_call(
+                            &op,
+                            args,
+                            abi.symbol,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &nbc,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                        );
+                    }
+                    // handle_text_transform family — extracted to fc::text_transform (M1)
+                    fc::NativeOpFamily::TextTransform => {
+                        fc::text_transform::handle_text_transform(
+                            &op,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &nbc,
+                        );
+                    }
+                    // handle_runtime_op family - extracted to fc::runtime_ops (M1)
+                    fc::NativeOpFamily::RuntimeOps => {
+                        fc::runtime_ops::handle_runtime_op(
+                            &op,
+                            &func_ir.name,
+                            is_block_filled,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            local_exc_pending_fast,
+                            exc_flag_ptr_slot,
+                            &nbc,
+                        );
+                    }
+                    // handle_type_conversion family — extracted to fc::type_conversions (M1)
+                    fc::NativeOpFamily::TypeConversions => {
+                        fc::type_conversions::handle_type_conversion(
+                            &op,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &nbc,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                        );
+                    }
+                    // handle_compare_op family - extracted to fc::compare (M1)
+                    fc::NativeOpFamily::Compare => {
+                        fc::compare::handle_compare_op(
+                            &op,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &loop_stack,
+                            scalar_fast_paths_enabled,
+                            &nbc,
+                        );
+                    }
+                    // handle_unary_logic_op family - extracted to fc::unary_logic (M1)
+                    fc::NativeOpFamily::UnaryLogic => {
+                        let __flow = fc::unary_logic::handle_unary_logic_op(
+                            &op,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            local_inc_ref_obj,
+                            scalar_fast_paths_enabled,
+                            &nbc,
+                        );
+                        match __flow {
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Proceed => {}
+                        }
+                    }
+                    // handle_coroutine_op family - extracted to fc::coroutine (M1)
+                    fc::NativeOpFamily::Coroutine => {
+                        let __flow = fc::coroutine::handle_coroutine_op(
+                            &op,
+                            entry_block,
+                            &resume_blocks,
+                            &mut reachable_blocks,
+                            &mut is_block_filled,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                            local_inc_ref_obj,
+                            &nbc,
+                        );
+                        match __flow {
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Proceed => {}
+                        }
+                    }
+                    // handle_funcobj_op family - extracted to fc::funcobj (M1)
+                    fc::NativeOpFamily::Funcobj => {
+                        let __flow = fc::funcobj::handle_funcobj_op(
+                            &op,
+                            op_idx,
+                            owned_frame_entered,
+                            frame_homes,
+                            leading_frame_entry_op_idx,
+                            frame_location_active,
+                            is_block_filled,
+                            rc_authority,
+                            !loop_stack.is_empty(),
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            task_kinds,
+                            task_closure_sizes,
+                            defined_functions,
+                            known_function_arities,
+                            function_has_ret,
+                            &self.function_entry_custody,
+                            &mut self.trampoline_ids,
+                            &mut self.declared_func_arities,
+                            &mut local_closure_envs,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                            &last_use,
+                            &mut cleanup_roots,
+                            local_inc_ref_obj,
+                            local_dec_ref_obj,
+                            &nbc,
+                        );
+                        match __flow {
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Proceed => {}
+                        }
+                    }
+                    // handle_object_construct_op family — extracted to fc::object_construct (M1)
+                    fc::NativeOpFamily::ObjectConstruct => {
+                        fc::object_construct::handle_object_construct_op(
+                            &op,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &nbc,
+                        );
+                    }
+                    // handle_gpu_intrinsic_op family - extracted to fc::funcobj (M1)
+                    fc::NativeOpFamily::GpuIntrinsic => {
+                        fc::funcobj::handle_gpu_intrinsic_op(
+                            &op,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &vars,
+                        );
+                    }
+                    // handle_call_op family - extracted to fc::calls (M1)
+                    fc::NativeOpFamily::Calls => {
+                        fc::calls::handle_call_op(
+                            &op,
+                            op_idx,
+                            func_ir.name.as_str(),
+                            master_return_block,
+                            returns_value,
+                            rc_authority,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &param_name_set,
+                            &first_defined_at,
+                            &last_use,
+                            &alias_roots,
+                            closure_functions,
+                            leaf_functions,
+                            &local_closure_envs,
+                            known_function_arities,
+                            &self.declared_func_arities,
+                            function_has_ret,
+                            defined_functions,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                            &mut cleanup_roots,
+                            local_dec_ref_obj,
+                            thread_record_slot,
+                            &nbc,
+                        );
+                    }
+                    // handle_value_transfer_op family - extracted to fc::value_transfer (M1)
+                    //
+                    // `copy` is grouped with the args-based alias ops here. The
+                    // frontend emits `{kind:OpKind::Copy, args:[src], out:result}` (a
+                    // pure SSA value move), and typed copy propagation
+                    // (ir_rewrites.rs) collapses it to `nop` ONLY when neither
+                    // `out` nor `src` is a mutable-storage name — a `copy` whose
+                    // result/source is a reassigned local SURVIVES with kind
+                    // OpKind::Copy and reaches codegen. Omitting it routes the op to the
+                    // silent `_ => {}` arm below, which emits no codegen and leaves
+                    // the result SSA value undefined (resolving to the None
+                    // sentinel) — the same silent-miscompile class as the vec_*
+                    // dispatch drop fixed in 85de1bbb2. `copy` shares the
+                    // args-based alias lowering, whose generated ownership facts
+                    // distinguish transparent aliases from the owned
+                    // `binding_alias` lane. Keep in sync with
+                    // fc::value_transfer::handle_value_transfer_op.
+                    fc::NativeOpFamily::ValueTransfer => {
+                        fc::value_transfer::handle_value_transfer_op(
+                            &op,
+                            op_idx,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &alias_roots,
+                            &mut cleanup_roots,
+                            &rc_skip_inc,
+                            rc_authority,
+                            local_inc_ref_obj,
+                            local_dec_ref_obj,
+                            &nbc,
+                        );
+                    }
+                    // handle_module_op family — extracted to fc::modules (M1)
+                    fc::NativeOpFamily::Modules => {
+                        fc::modules::handle_module_op(
+                            &op,
+                            op_idx,
+                            &func_ir.name,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &nbc,
+                            local_inc_ref_obj,
+                            literal_hoists.str_output_slots(),
+                        );
+                    }
+                    // handle_class_op family — extracted to fc::class_ops (M1)
+                    fc::NativeOpFamily::ClassOps => {
+                        fc::class_ops::handle_class_op(
+                            &op,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &nbc,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                        );
+                    }
+                    // Outlined class definition via molt_guarded_class_def
+                    // handle_type_check_op family — extracted to fc::type_checks (M1)
+                    fc::NativeOpFamily::TypeChecks => {
+                        fc::type_checks::handle_type_check_op(
+                            &op,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &nbc,
+                        );
+                    }
+                    // handle_exception_op family — extracted to fc::exceptions (M1)
+                    fc::NativeOpFamily::Exceptions => {
+                        fc::exceptions::handle_exception_op(
+                            &op,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            pending_work_slots,
+                            &nbc,
+                        );
+                    }
+                    // handle_context_op family — extracted to fc::context_mgmt (M1)
+                    fc::NativeOpFamily::ContextMgmt => {
+                        fc::context_mgmt::handle_context_op(
+                            &op,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &nbc,
+                        );
+                    }
+                    // handle_exception_stack_op family — extracted to fc::exception_stack (M1)
+                    fc::NativeOpFamily::ExceptionStack => {
+                        fc::exception_stack::handle_exception_stack_op(
+                            &op,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &nbc,
+                        );
+                    }
+                    // handle_exception_control_op family - extracted to fc::exception_control (M1)
+                    fc::NativeOpFamily::ExceptionControl => {
+                        fc::exception_control::handle_exception_control_op(
+                            &op,
+                            op_idx,
+                            &func_ir.name,
+                            body_entry_block,
+                            loop_depth,
+                            &label_blocks,
+                            &label_transport_plans,
+                            &mut reachable_blocks,
+                            &mut is_block_filled,
+                            rc_authority,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                            &mut tracked_obj_vars,
+                            &mut tracked_vars,
+                            &mut tracked_obj_vars_set,
+                            &mut tracked_vars_set,
+                            &last_use,
+                            &mut cleanup_roots,
+                            local_dec_ref_obj,
+                            local_exc_pending_fast,
+                            exc_flag_ptr_slot,
+                            pending_work_slots,
+                            &maybe_debug_seal,
+                            &nbc,
+                        );
+                    }
+                    // handle_control_flow_op family - extracted to fc::control_flow (M1)
+                    fc::NativeOpFamily::ControlFlow => {
+                        let __flow = fc::control_flow::handle_control_flow_op(
+                            &op,
+                            op_idx,
+                            func_ir.name.as_str(),
+                            &func_ir.ops,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &first_defined_at,
+                            &last_use,
+                            &if_to_else,
+                            &if_to_end_if,
+                            &else_to_end_if,
+                            &int_store_target_names,
+                            &exception_label_ids,
+                            &list_index_fast_paths,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                            &mut cleanup_roots,
+                            &mut reachable_blocks,
+                            &mut if_stack,
+                            &mut skip_ops,
+                            &mut is_block_filled,
+                            rc_authority,
+                            scalar_fast_paths_enabled,
+                            &maybe_debug_seal,
+                            local_inc_ref_obj,
+                            local_dec_ref_obj,
+                            &nbc,
+                        );
+                        match __flow {
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Proceed => {}
+                        }
+                    }
+                    // handle_loop_op family - extracted to fc::loops (M1)
+                    fc::NativeOpFamily::Loops => {
+                        let __flow = fc::loops::handle_loop_op(
+                            &op,
+                            op_idx,
+                            &func_ir,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &last_use,
+                            &exception_label_ids,
+                            &loop_body_init_vars,
+                            &mut list_index_fast_paths,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                            &mut cleanup_roots,
+                            &mut reachable_blocks,
+                            &mut loop_stack,
+                            &mut skip_ops,
+                            &mut loop_depth,
+                            &mut is_block_filled,
+                            rc_authority,
+                            scalar_fast_paths_enabled,
+                            debug_loop_cfg.as_deref(),
+                            debug_block_origins.as_deref(),
+                            &maybe_debug_seal,
+                            local_exc_pending_fast,
+                            exc_flag_ptr_slot,
+                            local_dec_ref_obj,
+                            &nbc,
+                        );
+                        match __flow {
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Proceed => {}
+                        }
+                    }
+                    // handle_memory_op family - extracted to fc::memory (M1)
+                    fc::NativeOpFamily::Memory => {
+                        let __flow = fc::memory::handle_memory_op(
+                            &op,
+                            op_idx,
+                            func_ir.name.as_str(),
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &alias_roots,
+                            &last_use,
+                            &field_store_modes,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                            &mut cleanup_roots,
+                            defined_functions,
+                            &mut output_is_ptr,
+                            stateful,
+                            entry_block,
+                            local_profile_struct,
+                            profile_enabled_val,
+                            guard_facts.is_profile_only(&op),
+                            local_inc_ref_obj,
+                            local_dec_ref_obj,
+                            rc_authority,
+                            &nbc,
+                        );
+                        match __flow {
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Proceed => {}
+                        }
+                    }
+                    // handle_attr_op family — extracted to fc::attrs (M1)
+                    fc::NativeOpFamily::Attrs => {
+                        let __flow = fc::attrs::handle_attr_op(
+                            &op,
+                            op_idx,
+                            &func_ir.name,
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &nbc,
+                        );
+                        match __flow {
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Proceed => {}
+                        }
+                    }
+                    // handle_ret_jump_op family - extracted to fc::ret_jump (M1)
+                    fc::NativeOpFamily::RetJump => {
+                        let __flow = fc::ret_jump::handle_ret_jump_op(
+                            &op,
+                            op_idx,
+                            func_ir.name.as_str(),
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &mut sealed_blocks,
+                            &vars,
+                            representation_plan,
+                            &first_defined_at,
+                            &alias_roots,
+                            &last_use,
+                            &mut block_tracked_obj,
+                            &mut block_tracked_ptr,
+                            &mut cleanup_roots,
+                            &mut reachable_blocks,
+                            &label_blocks,
+                            &label_transport_plans,
+                            &ssa_values,
+                            function_exception_label_id,
+                            &slot_backed_join_slots,
+                            &raw_backed_slot_names,
+                            &list_index_fast_paths,
+                            master_return_block,
+                            &mut is_block_filled,
+                            returns_value,
+                            rc_authority,
+                            scalar_fast_paths_enabled,
+                            debug_block_origins.as_deref(),
+                            &maybe_debug_seal,
+                            local_inc_ref_obj,
+                            local_dec_ref_obj,
+                            &nbc,
+                        );
+                        match __flow {
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Proceed => {}
+                        }
+                    }
+                    // Loud single-source-of-truth backstop for the dispatch<->handler
+                    // mirror. Routing above is derived from each handler's
+                    // `HANDLED_KINDS` via `op_family`, so a handler's kind can never be
+                    // silently dropped from the dispatch (the 334c4466d regression).
+                    // This arm catches the residual case: a result-producing kind that
+                    // NO inline arm and NO family claims. Leaving it unhandled would
+                    // leave its result SSA value undefined (resolving to the None
+                    // sentinel) -> the exact silent miscompile fixed in 85de1bbb2. Fail
+                    // loud here, just as every fc::* handler's own `_ => unreachable!`.
+                    fc::NativeOpFamily::Unsupported => {
+                        if let Some(binding) = simple_ir_binding(&op) {
+                            panic!(
+                                "native backend: no codegen for binding op kind `{}` (destination={:?}) in function `{}`",
+                                op.kind, binding.destination, func_ir.name,
+                            );
+                        }
+                        {
+                            panic!(
+                                "native backend: no codegen for op kind `{}` \
                              (out={:?}) in function `{}`. It is claimed by no inline dispatch \
                              arm and no fc::* family (HANDLED_KINDS) — the dispatch<->handler \
                              mirror drift class regressed by 334c4466d / fixed 85de1bbb2. Add \
                              the kind to the owning handler's typed lowering family.",
-                            op.kind, op.out, func_ir.name,
-                        );
+                                op.kind, op.out, func_ir.name,
+                            );
+                        }
                     }
                 }
+
+                fc::OpFlow::Proceed
+            })();
+            // Generated internal branches do not change a SimpleIR operation's
+            // ownership scope. Preserve its cleanup candidates across the final
+            // continuation, including handlers that skip the common epilogue.
+            // Generated CFG roles distinguish real Python edges; their owning
+            // handlers already distribute roots to the semantic successors.
+            if !op.kind.is_block_leader()
+                && !op.kind.is_block_ender()
+                && !op.kind.is_terminator()
+                && !op.kind.is_conditional_branch()
+                && !is_block_filled
+                && let Some(continuation) = builder.current_block()
+            {
+                carry_internal_cfg_tracking(
+                    operation_origin,
+                    continuation,
+                    &mut block_tracked_obj,
+                    &mut block_tracked_ptr,
+                );
+                if operation_origin == Some(body_entry_block) {
+                    body_entry_block = continuation;
+                }
+            }
+            if matches!(operation_flow, fc::OpFlow::Continue) {
+                continue;
             }
 
             // The frontend owns the exception policy for a leading frame entry.
@@ -2211,6 +2248,7 @@ impl SimpleBackend {
                     );
                 }
             }
+            let cleanup_origin = builder.current_block();
             if !is_block_filled
                 && loop_depth == 0
                 && builder.current_block() == Some(body_entry_block)
@@ -2238,6 +2276,18 @@ impl SimpleBackend {
                     for name in cleanup {
                         cleanup_roots.release(&mut builder, local_dec_ref_obj, &name);
                     }
+                }
+            }
+
+            if !is_block_filled && let Some(continuation) = builder.current_block() {
+                carry_internal_cfg_tracking(
+                    cleanup_origin,
+                    continuation,
+                    &mut block_tracked_obj,
+                    &mut block_tracked_ptr,
+                );
+                if cleanup_origin == Some(body_entry_block) {
+                    body_entry_block = continuation;
                 }
             }
 
@@ -2272,6 +2322,19 @@ impl SimpleBackend {
                     {
                         cleanup_roots.acquire(&mut builder, local_dec_ref_obj, name, *value);
                     }
+                    let continuation = builder
+                        .current_block()
+                        .expect("owner acquisition has a continuation");
+                    carry_internal_cfg_tracking(
+                        Some(block),
+                        continuation,
+                        &mut block_tracked_obj,
+                        &mut block_tracked_ptr,
+                    );
+                    if block == body_entry_block {
+                        body_entry_block = continuation;
+                    }
+                    let block = continuation;
                     if block == body_entry_block && loop_depth == 0 {
                         if output_is_ptr {
                             if tracked_vars_set.insert(name.to_string()) {
@@ -2341,7 +2404,7 @@ impl SimpleBackend {
                     continue;
                 }
                 let val = builder.ins().stack_load(pointer_type, types::I64, *slot, 0);
-                builder.ins().call(local_dec_ref_obj, &[val]);
+                emit_refcount(&mut builder, val, local_dec_ref_obj);
             }
         }
 
@@ -2427,6 +2490,15 @@ impl SimpleBackend {
         // Finish SSA before the shared deferred-codegen boundary admits the
         // actual CFG and retires complete unreachable components through
         // Cranelift. Emission-time reachability is not a retirement authority.
+        materialize_refcount_admission(&mut builder, admission, |builder| {
+            import_runtime_func_ref(
+                &mut self.module,
+                &mut self.import_ids,
+                builder,
+                &mut import_refs,
+                MOLT_REFCOUNT_ADMISSION,
+            )
+        });
         builder.seal_all_blocks();
         builder.finalize(frontend_config);
 

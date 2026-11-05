@@ -54,7 +54,7 @@ fn method_receiver_prefix_executes_null_present_and_failed_push_custody() {
         r#"
 const fs = require('fs'), assert = require('assert/strict');
 const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
-const none = BigInt(config.none), nullWord = BigInt(config.null), receiver = 0x501n, builder = 0x777n;
+const none = BigInt(config.none), nullWord = BigInt(config.null), receiver = 0x7ffc000000000501n, builder = 0x777n;
 const module = new WebAssembly.Module(fs.readFileSync(config.path));
 for (const present of [false, true]) for (const fail of [false, true]) {
   let owners = present ? 1 : 0, pushes = 0, pending = false;
@@ -63,6 +63,8 @@ for (const present of [false, true]) for (const fail of [false, true]) {
     __indirect_function_table:new WebAssembly.Table({initial:config.table_entries,element:'anyfunc'}),
   }};
   const providers = {
+  refcount_admission: () => 0n, // isolated image: no runtime execution custody
+
     callargs_push_pos: (actualBuilder, value) => {
       assert.equal(actualBuilder, builder); assert.equal(value, receiver);
       assert.equal(owners, 1); assert.equal(pushes++, 0);
@@ -156,7 +158,7 @@ fn hash_constructor_execution_preserves_owner_and_failure_atomicity() {
         r#"
 const fs = require('fs'), assert = require('assert/strict');
 const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
-const none = BigInt(config.none), owner = 777n, value = 23n;
+const none = BigInt(config.none), owner = 0x7ffc000000000309n, value = 23n;
 for (const test of config.cases) {
   const module = new WebAssembly.Module(fs.readFileSync(test.path));
   for (const failure of ['success', 'allocate', 'first', 'second']) {
@@ -170,6 +172,8 @@ for (const test of config.cases) {
       __indirect_function_table: new WebAssembly.Table({initial:test.table_entries, element:'anyfunc'}),
     }};
     const providers = {
+  refcount_admission: () => 0n, // isolated image: no runtime execution custody
+
       [test.constructor]: (...args) => {
         if (test.width === 2) {
           const [keys, values, len] = args;
@@ -318,7 +322,7 @@ fn fixed_arity_constructors_transport_borrowed_words_through_private_scratch() {
         r#"
 const fs = require('fs'), assert = require('assert/strict');
 const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
-const none = BigInt(config.none), owner = 777n;
+const none = BigInt(config.none), owner = 0x7ffc000000000309n;
 const operands = [101n, 102n, 103n, 104n, 105n];
 for (const test of config.cases) {
   const module = new WebAssembly.Module(fs.readFileSync(test.path));
@@ -349,6 +353,8 @@ for (const test of config.cases) {
       return owner;
     };
     const providers = {
+  refcount_admission: () => 0n, // isolated image: no runtime execution custody
+
       scratch_alloc: size => {
         assert.equal(live, null, name + ': one private range per construction');
         assert.equal(size, BigInt(words.length * 8), name + ': exact range size');
@@ -634,7 +640,7 @@ fn numeric_runtime_results_follow_generated_ownership_for_every_result_shape() {
         r#"
 const fs = require('fs'), assert = require('assert/strict');
 const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
-const none = BigInt(config.none), owner = 777n;
+const none = BigInt(config.none), owner = 0x7ffc000000000309n;
 for (const test of config.cases) {
   const module = new WebAssembly.Module(fs.readFileSync(test.path));
   for (const failed of [false, true]) {
@@ -645,6 +651,8 @@ for (const test of config.cases) {
       __indirect_function_table: new WebAssembly.Table({initial:test.table_entries, element:'anyfunc'}),
     }};
     const providers = {
+  refcount_admission: () => 0n, // isolated image: no runtime execution custody
+
       [test.import]: (...args) => {
         calls++;
         assert.equal(args.length, test.arity, name + ': arity');
@@ -776,10 +784,14 @@ fn manual_field_and_closure_consumers_obey_selected_import_ownership() {
                         "{kind}: {operators:?}"
                     );
                 } else {
-                    assert_eq!(
-                        operators[index + 1],
-                        format!("Call {{ function_index: {} }}", imports["dec_ref_obj"]),
-                        "{kind} {result:?}: {operators:?}"
+                    assert!(
+                        operators[index + 1].starts_with("LocalSet {"),
+                        "the effect result enters its checked release unchanged: {kind} {result:?}: {operators:?}"
+                    );
+                    assert!(
+                        operators[(index + 2)..].iter().any(|op| op
+                            == &format!("Call {{ function_index: {} }}", imports["dec_ref_obj"])),
+                        "effect result retains the original terminal transition: {operators:?}"
                     );
                 }
             }
@@ -862,7 +874,18 @@ fn effect_output_metadata_cannot_publish_a_runtime_value() {
             .enumerate()
             .filter_map(|(i, op)| (op == &call).then_some(i))
         {
-            assert_eq!(operators[index + 1], expected, "{kind}: {operators:?}");
+            if borrowed {
+                assert_eq!(operators[index + 1], expected, "{kind}: {operators:?}");
+            } else {
+                assert!(
+                    operators[index + 1].starts_with("LocalSet {"),
+                    "the original effect word enters the checked release: {kind}: {operators:?}"
+                );
+                assert!(
+                    operators[(index + 2)..].contains(&expected),
+                    "the effect retains its cold terminal transition: {operators:?}"
+                );
+            }
         }
         let retains = imports
             .get("inc_ref_obj")
@@ -1381,10 +1404,14 @@ fn callable_constructors_release_only_discarded_owned_results() {
                     .iter()
                     .position(|operator| operator == &call)
                     .unwrap();
-                assert_eq!(
-                    operators[position + 1],
-                    format!("Call {{ function_index: {} }}", imports["dec_ref_obj"]),
-                    "{operators:?}"
+                assert!(
+                    operators[position + 1].starts_with("LocalSet {"),
+                    "the owned result must enter the checked RC site's original-word local: {operators:?}"
+                );
+                assert!(
+                    operators[(position + 2)..].iter().any(|op| op
+                        == &format!("Call {{ function_index: {} }}", imports["dec_ref_obj"])),
+                    "discarded result must retain its cold terminal transition: {operators:?}"
                 );
             }
         }
@@ -1437,10 +1464,16 @@ fn closure_extraction_retains_only_bound_borrowed_results() {
                 operators[position + 1].starts_with("LocalTee {"),
                 "{operators:?}"
             );
-            assert_eq!(
-                operators[position + 2],
-                format!("Call {{ function_index: {} }}", imports["inc_ref_obj"]),
-                "{operators:?}"
+            assert!(
+                operators[position + 2].starts_with("LocalSet {"),
+                "selected borrowed result must enter its checked retain: {operators:?}"
+            );
+            assert!(
+                operators[(position + 3)..]
+                    .iter()
+                    .any(|op| op
+                        == &format!("Call {{ function_index: {} }}", imports["inc_ref_obj"])),
+                "bound borrowed result needs its cold retain transition: {operators:?}"
             );
         } else {
             assert_eq!(operators[position + 1], "Drop", "{operators:?}");
@@ -1460,7 +1493,16 @@ pub(super) fn assert_single_anchor_epilogue(operators: &[String], dec_ref_index:
     assert_eq!(operators.last().map(String::as_str), Some("End"));
     let release_index = operators.iter().rposition(|op| op == &release).unwrap();
     assert!(
-        operators[release_index - 1].starts_with("I64Store {"),
+        {
+            let start = operators[..release_index]
+                .windows(2)
+                .rposition(|ops| {
+                    ops[0] == "Block { blockty: Empty }" && ops[1] == "Block { blockty: Empty }"
+                })
+                .expect("checked release has explicit outer/slow blocks");
+            assert!(operators[start - 1].starts_with("LocalSet {"));
+            operators[start - 2].starts_with("I64Store {")
+        },
         "publish an empty owner before the cleanup callback: {operators:?}"
     );
     assert!(
@@ -1551,6 +1593,11 @@ fn full_i64_const_uses_fallible_anchor_instead_of_inline_47_truncation() {
             .iter()
             .any(|operator| operator == &format!("I64Const {{ value: {} }}", i64::MAX)),
         "full-width constant must reach int_from_i64 without a 47-bit mask; operators={operators:?}"
+    );
+    assert_eq!(
+        call_count(&operators, imports["dec_ref_obj"]),
+        2,
+        "the boxed BigInt has two independently owned credits: its literal anchor and its explicit result; both must release"
     );
     assert_single_anchor_epilogue(&operators, imports["dec_ref_obj"]);
 }
@@ -1649,6 +1696,8 @@ for (const failure of [-1, 0, 1, 2, 3]) {
       __indirect_function_table: new WebAssembly.Table({initial:config.table_entries, element:'anyfunc'}),
     }};
     const hooks = {
+  refcount_admission: () => 0n, // isolated image: no runtime execution custody
+
       scratch_alloc(size) {
         assert.equal(size, 24n); assert.equal(live, false);
         if (failure === -1) { pending = true; return 0n; }
@@ -1670,7 +1719,7 @@ for (const failure of [-1, 0, 1, 2, 3]) {
         for (let i = constructed - 1; i < 3; i++) assert.equal(view.getBigInt64(Number(range) + 8*i, true), none, 'all holes initialized before constructors');
         view.setBigInt64(out, none, true);
         if (constructed === failure) { pending = true; return 2; }
-        const owner = BigInt(constructed);
+        const owner = 0x7ffc000000000000n | BigInt(constructed);
         owners.set(owner, 1);
         view.setBigInt64(out, owner, true);
         return 0;
@@ -1686,7 +1735,7 @@ for (const failure of [-1, 0, 1, 2, 3]) {
         assert.ok(owners.get(bits) > 0, 'anchor must not be released twice');
         const count = owners.get(bits) - 1;
         owners.set(bits, count);
-        if (!count) destroyed.push(Number(bits));
+        if (!count) destroyed.push(Number(bits & 0xffffffffffffn));
       },
     };
     for (const entry of WebAssembly.Module.imports(module)) {
@@ -1708,5 +1757,40 @@ for (const failure of [-1, 0, 1, 2, 3]) {
 "#,
         &[&config],
         "WASM shared anchor epilogue branches and failure atomicity",
+    );
+}
+
+#[test]
+fn proven_none_aliases_and_explicit_rc_have_no_header_transition() {
+    let (operators, imports) = compile_literal_body(
+        vec![],
+        vec![
+            wasm_test_op(molt_ir::OpKind::ConstNone, Some("immortal"), vec![]),
+            wasm_test_op(
+                molt_ir::OpKind::BindingAlias,
+                Some("alias"),
+                vec!["immortal"],
+            ),
+            wasm_test_op(molt_ir::OpKind::Borrow, Some("borrowed"), vec!["alias"]),
+            wasm_test_op(molt_ir::OpKind::Box, Some("boxed"), vec!["borrowed"]),
+            wasm_test_op(molt_ir::OpKind::DecRef, None, vec!["boxed"]),
+            wasm_test_op(molt_ir::OpKind::DecRef, None, vec!["alias"]),
+            wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
+        ],
+    );
+    for name in ["inc_ref_obj", "dec_ref_obj"] {
+        assert_eq!(
+            imports
+                .get(name)
+                .map_or(0, |&index| call_count(&operators, index)),
+            0,
+            "producer-proven None never acquires or releases a heap credit: {operators:?}"
+        );
+    }
+    assert!(
+        !operators
+            .iter()
+            .any(|op| op.starts_with("I64Load32U") || op.starts_with("I32Store")),
+        "proven None must not touch a header: {operators:?}"
     );
 }

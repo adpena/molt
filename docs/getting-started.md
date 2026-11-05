@@ -64,7 +64,7 @@ no separately created Python environment is required for this bootstrap.
 For an inventoried farm host, the same workflow is automated by
 `python -B tools/trunk_loop.py provision --host NAME` from a provisioned controller.
 The implementation in `tools/trunk_loop.py::provision_script` owns the automated
-sequence: check system prerequisites (including CMake), install missing uv and rustup through their
+sequence: check system prerequisites (git, curl and a C compiler), install the pinned uv and rustup through their
 official user installers, clone or fetch, admit `rust-toolchain.toml`, synchronize
 the locked development dependencies, then run the strict doctor command above.
 It does not upgrade existing system tools or reset an existing checkout.

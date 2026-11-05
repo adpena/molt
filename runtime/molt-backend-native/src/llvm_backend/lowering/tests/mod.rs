@@ -155,6 +155,7 @@ fn make_dummy_lowering<'ctx, 'func>(
         poll_context: None,
         polls_async_work: super::function_polls_async_work(func),
         frame_homes: None,
+        refcount_admission: std::cell::Cell::new(None),
         owned_frame_entered: None,
     }
 }

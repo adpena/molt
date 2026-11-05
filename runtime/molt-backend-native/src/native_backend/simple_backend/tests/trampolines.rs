@@ -2,6 +2,7 @@ use super::*;
 use crate::TrampolineSpec;
 use crate::runtime_import_abi::{MOLT_ASYNCGEN_NEW, MOLT_DEC_REF_OBJ};
 use cranelift_module::Linkage;
+use molt_codegen_abi::inline_refcount::RefcountStorage;
 use molt_ir::OpKind;
 use molt_tir::trampolines::TrampolineTaskKind;
 
@@ -93,8 +94,24 @@ fn assert_task_allocation_guard(
             })
         })
         .collect();
-    assert!(stores.iter().all(|(block, _)| *block == success), "{clif}");
-    let store_count = stores.len();
+    let cfg = cranelift_codegen::flowgraph::ControlFlowGraph::with_function(function);
+    let dominators =
+        cranelift_codegen::dominator_tree::DominatorTree::with_function(function, &cfg);
+    assert!(
+        stores
+            .iter()
+            .all(|(_, inst)| dominators.dominates(success, *inst, &function.layout)),
+        "{clif}"
+    );
+    let store_count =
+        stores
+            .iter()
+            .filter(|(_, inst)| {
+                function.dfg.inst_args(*inst).first().is_some_and(|&v| {
+                    function.dfg.value_type(v) == cranelift_codegen::ir::types::I64
+                })
+            })
+            .count();
     assert_eq!(store_count, payload.slot_count(), "{clif}");
     let calls: Vec<_> = function
         .layout
@@ -108,8 +125,32 @@ fn assert_task_allocation_guard(
             })
         })
         .collect();
+    // Payload retains and the AsyncGen release are RC sites in every build.
+    // A plain-storage compiler inlines each one as one count load and one
+    // store; debug and atomic compilers send all of them to the runtime.
+    // Only an inlined transition consumes invocation admission.
+    let rc_sites = payload.slot_count() + usize::from(task_kind == TrampolineTaskKind::AsyncGen);
+    let inlined_accesses = match RefcountStorage::for_build(molt_codegen_abi::MOLT_REFCOUNT_ATOMIC)
+    {
+        RefcountStorage::Plain => 2 * rc_sites,
+        RefcountStorage::HardenedPlain | RefcountStorage::Atomic => 0,
+    };
+    assert_eq!(
+        refcount_word_accesses(function).len(),
+        inlined_accesses,
+        "{clif}"
+    );
+    let admission = assert_refcount_word_access_is_admitted(compiled);
+    let calls: Vec<_> = calls
+        .into_iter()
+        .filter(|call| !admission.contains(call))
+        .collect();
     assert!(
-        calls.iter().skip(1).all(|(block, _)| *block == success),
+        calls.iter().skip(1).all(|(_, inst)| dominators.dominates(
+            success,
+            *inst,
+            &function.layout
+        )),
         "{clif}"
     );
     let call_count = calls.len();
@@ -140,7 +181,21 @@ fn assert_task_allocation_guard(
             "{clif}"
         );
         let wrapper_value = function.dfg.first_result(wrap_calls[0].1);
-        let return_inst = function.layout.last_inst(success).unwrap();
+        let returns: Vec<_> = function
+            .layout
+            .blocks()
+            .flat_map(|block| function.layout.block_insts(block))
+            .filter(|&inst| {
+                function.dfg.insts[inst].opcode() == Opcode::Return
+                    && dominators.dominates(success, inst, &function.layout)
+            })
+            .collect();
+        assert_eq!(
+            returns.len(),
+            1,
+            "allocation-success paths must rejoin one exact wrapper return: {clif}"
+        );
+        let return_inst = returns[0];
         assert_eq!(
             function.dfg.insts[return_inst].opcode(),
             Opcode::Return,

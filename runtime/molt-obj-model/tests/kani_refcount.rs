@@ -10,7 +10,7 @@
 
 #[cfg(kani)]
 mod refcount_proofs {
-    use molt_codegen_abi::IMMORTAL_REFCOUNT;
+    use molt_codegen_abi::{IMMORTAL_REFCOUNT, REFCOUNT_OWNER_LIMIT};
     use molt_codegen_abi::{
         RetainError, live_upgrade_next, release_transition, retain_next, revival_window_baseline,
     };
@@ -30,7 +30,7 @@ mod refcount_proofs {
             } else {
                 assert!(next > current);
             }
-            assert!(next < IMMORTAL_REFCOUNT);
+            assert!(next < REFCOUNT_OWNER_LIMIT);
         }
     }
 
@@ -48,7 +48,7 @@ mod refcount_proofs {
             assert_eq!(result, Err(RetainError::Deallocating));
         } else if !matches!(
             current.checked_add(count),
-            Some(next) if next < IMMORTAL_REFCOUNT
+            Some(next) if next < REFCOUNT_OWNER_LIMIT
         ) {
             assert_eq!(result, Err(RetainError::Overflow));
         } else {
@@ -70,10 +70,10 @@ mod refcount_proofs {
     fn release_reaches_zero_exactly_from_one() {
         let previous: u32 = kani::any();
         match release_transition(previous) {
-            None => assert!(previous == 0 || previous == IMMORTAL_REFCOUNT),
+            None => assert!(previous == 0 || previous >= REFCOUNT_OWNER_LIMIT),
             Some(transition) => {
                 assert!(previous > 0);
-                assert!(previous < IMMORTAL_REFCOUNT);
+                assert!(previous < REFCOUNT_OWNER_LIMIT);
                 assert_eq!(transition.previous(), previous);
                 assert_eq!(transition.next(), previous - 1);
                 assert_eq!(transition.reached_zero(), previous == 1);

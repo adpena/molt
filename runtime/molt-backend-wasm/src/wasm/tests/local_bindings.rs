@@ -274,7 +274,7 @@ for (const test of config.cases) {
       continue;
     }
     assert.equal(entry.kind, 'function');
-    imports[entry.module][entry.name] = ['inc_ref_obj', 'dec_ref_obj'].includes(entry.name)
+    imports[entry.module][entry.name] = entry.name === 'refcount_admission' ? () => 0n : ['inc_ref_obj', 'dec_ref_obj'].includes(entry.name)
       ? scalarReference : () => { throw new Error(test.name + ': unexpected runtime call ' + entry.name); };
   }
   const app = new WebAssembly.Instance(module, imports).exports;

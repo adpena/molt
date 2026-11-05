@@ -35,7 +35,17 @@ impl WasmBackend {
             let task_local_types = task_trampoline_local_types(task_kind);
             local_types.extend(task_local_types);
         }
+        let refcount = matches!(behavior, TrampolineBehavior::Task(_)).then(|| {
+            crate::wasm::refcount::WasmRefcountScratch::allocate(|ty| {
+                let slot = 3 + local_types.len() as u32;
+                local_types.push(ty);
+                slot
+            })
+        });
         let mut func = Function::new_with_locals_types(local_types);
+        if let Some(scratch) = refcount {
+            scratch.initialize(&mut func, &self.import_ids, reloc_enabled);
+        }
         match behavior {
             TrampolineBehavior::ForwardCallFrame => {
                 func.instruction(&Instruction::LocalGet(0));
@@ -56,6 +66,7 @@ impl WasmBackend {
                 arity,
                 has_closure,
                 closure_size,
+                refcount.expect("task refcount admission"),
             ),
             TrampolineBehavior::UnpackArgs => {
                 if has_closure {

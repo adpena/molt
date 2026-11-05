@@ -31,7 +31,6 @@ use crate::builtins::signal_ext::{SignalRuntimeState, signal_runtime_state_publi
 use crate::builtins::sys_ext::SysRuntimeState;
 use crate::builtins::types::TypesRuntimeState;
 use crate::c_api::CApiModuleRuntimeState;
-use crate::call::bind::CallBindRuntimeState;
 use crate::concurrency::gil::gil_held;
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
@@ -448,7 +447,6 @@ pub(crate) struct RuntimeState {
     pub(crate) types: TypesRuntimeState,
     pub(crate) sys_ext: SysRuntimeState,
     pub(crate) c_api_module: Mutex<CApiModuleRuntimeState>,
-    pub(crate) call_bind: Mutex<CallBindRuntimeState>,
     pub(crate) stateful_locals: Mutex<HashMap<u64, Arc<StatefulLocalsLayout>>>,
     pub(crate) weakrefs: Mutex<WeakRefRegistry>,
     pub(crate) exit_registry: Mutex<ExitRegistry>,
@@ -616,7 +614,6 @@ impl RuntimeState {
             types: TypesRuntimeState::new(),
             sys_ext: SysRuntimeState::new(),
             c_api_module: Mutex::new(CApiModuleRuntimeState::new()),
-            call_bind: Mutex::new(CallBindRuntimeState::new()),
             stateful_locals: Mutex::new(HashMap::new()),
             weakrefs: Mutex::new(WeakRefRegistry::new()),
             exit_registry: Mutex::new(ExitRegistry::new()),

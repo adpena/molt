@@ -10,6 +10,8 @@ use super::values::ValueId;
 pub enum LirRepr {
     DynBox,
     Ref64,
+    /// A boxed word whose producer proves no retain or release obligation.
+    Immortal64,
     I64,
     F64,
     Bool1,
@@ -30,10 +32,16 @@ impl LirRepr {
         }
     }
 
+    /// A boxed immortal may flow into an ordinary boxed slot by forgetting its
+    /// no-RC proof. The reverse would invent a producer proof and is forbidden.
+    pub fn accepts(self, actual: Self) -> bool {
+        self == actual || (self == Self::DynBox && actual == Self::Immortal64)
+    }
+
     /// True for representations whose physical carrier is a runtime reference
     /// word rather than a semantic machine scalar.
     pub fn is_runtime_reference_word(self) -> bool {
-        matches!(self, Self::DynBox | Self::Ref64)
+        matches!(self, Self::DynBox | Self::Ref64 | Self::Immortal64)
     }
 }
 
@@ -172,6 +180,9 @@ pub struct LirFunction {
     /// Physical storage facts proved on the source TIR after alias/mutation/
     /// escape closure. Backends consume this projection without reseeding it.
     pub container_storage: HashMap<ValueId, crate::repr::ContainerStorageFact>,
+    /// Projection of RawI64Safe from the same final representation map. I64
+    /// also carries full-width integers; backends must not rediscover the range.
+    pub inline_i64_values: std::collections::HashSet<ValueId>,
     pub name: String,
     pub param_names: Vec<String>,
     pub param_types: Vec<TirType>,

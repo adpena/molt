@@ -1,7 +1,6 @@
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_abi_generated::{WasmRuntimeImport, WasmRuntimeReturn};
-use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use wasm_encoder::{Function, Instruction};
 
@@ -18,6 +17,7 @@ pub(super) fn store_owned_result_or_release(
         locals.bound_op_result_slot(op),
         import_ids,
         reloc_enabled,
+        locals.refcount(),
     );
 }
 
@@ -26,14 +26,17 @@ pub(super) fn store_owned_value(
     output: Option<u32>,
     import_ids: &TrackedImportIds,
     reloc_enabled: bool,
+    refcount: crate::wasm::refcount::WasmRefcountScratch,
 ) {
     if let Some(out) = output {
         func.instruction(&Instruction::LocalSet(out));
     } else {
-        emit_call(
+        crate::wasm::refcount::emit_refcount(
             func,
             reloc_enabled,
-            import_ids[WasmRuntimeImport::DecRefObj],
+            import_ids,
+            refcount,
+            molt_codegen_abi::inline_refcount::RefcountOperation::Release,
         );
     }
 }
@@ -49,13 +52,16 @@ pub(super) fn store_borrowed_value(
     output: Option<u32>,
     import_ids: &TrackedImportIds,
     reloc_enabled: bool,
+    refcount: crate::wasm::refcount::WasmRefcountScratch,
 ) {
     if let Some(out) = output {
         func.instruction(&Instruction::LocalTee(out));
-        emit_call(
+        crate::wasm::refcount::emit_refcount(
             func,
             reloc_enabled,
-            import_ids[WasmRuntimeImport::IncRefObj],
+            import_ids,
+            refcount,
+            molt_codegen_abi::inline_refcount::RefcountOperation::Retain,
         );
     } else {
         func.instruction(&Instruction::Drop);
@@ -107,6 +113,7 @@ pub(super) fn store_runtime_result(
         import_ids,
         reloc_enabled,
         import,
+        locals.refcount(),
     );
 }
 
@@ -115,8 +122,9 @@ pub(super) fn discard_runtime_result(
     import_ids: &TrackedImportIds,
     reloc_enabled: bool,
     import: WasmRuntimeImport,
+    refcount: crate::wasm::refcount::WasmRefcountScratch,
 ) {
-    emit_runtime_result(func, None, import_ids, reloc_enabled, import);
+    emit_runtime_result(func, None, import_ids, reloc_enabled, import, refcount);
 }
 
 fn emit_runtime_result(
@@ -125,15 +133,16 @@ fn emit_runtime_result(
     import_ids: &TrackedImportIds,
     reloc_enabled: bool,
     import: WasmRuntimeImport,
+    refcount: crate::wasm::refcount::WasmRefcountScratch,
 ) {
     match import.return_contract() {
         // Pending is an immediate tag, not a heap pointer; DecRefObj is a
         // no-op for it and consumes exactly one owner for a ready value.
         WasmRuntimeReturn::OwnedObject | WasmRuntimeReturn::PollResult => {
-            store_owned_value(func, output, import_ids, reloc_enabled);
+            store_owned_value(func, output, import_ids, reloc_enabled, refcount);
         }
         WasmRuntimeReturn::BorrowedObject => {
-            store_borrowed_value(func, output, import_ids, reloc_enabled);
+            store_borrowed_value(func, output, import_ids, reloc_enabled, refcount);
         }
         WasmRuntimeReturn::RawBits => store_raw_value(func, output),
         WasmRuntimeReturn::Void => assert!(

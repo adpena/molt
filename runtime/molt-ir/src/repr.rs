@@ -67,11 +67,31 @@ pub enum Repr {
     MaybeBigInt,
     /// Bare `f64` register. Float lane.
     FloatUnboxed,
+    /// A boxed word with no heap credit: a proven immortal singleton or a
+    /// boxed inline-safe integer, bool or float. Annotations never prove it.
+    BoxedImmortal,
     /// NaN-box with fully unknown tag. No raw op is sound.
     DynBox,
 }
 
 impl Repr {
+    pub const fn carrier_refcount_is_noop(self) -> bool {
+        matches!(
+            self,
+            Self::RawI64Safe
+                | Self::RawI64FullDeopt
+                | Self::Bool
+                | Self::FloatUnboxed
+                | Self::BoxedImmortal
+        )
+    }
+
+    pub const fn boxed_refcount_is_noop(self) -> bool {
+        matches!(
+            self,
+            Self::RawI64Safe | Self::Bool | Self::FloatUnboxed | Self::BoxedImmortal
+        )
+    }
     /// Project a proven representation into a machine-carrier type. Semantic
     /// annotations may retain boxed reference information, but only a raw
     /// representation fact can select a machine scalar. All ABI and SSA
@@ -81,24 +101,26 @@ impl Repr {
             Self::RawI64Safe | Self::RawI64FullDeopt => TirType::I64,
             Self::Bool => TirType::Bool,
             Self::FloatUnboxed => TirType::F64,
-            Self::Never | Self::MaybeBigInt | Self::DynBox => match semantic {
-                TirType::I64 | TirType::F64 | TirType::Bool | TirType::Never => TirType::DynBox,
-                TirType::None
-                | TirType::Str
-                | TirType::Bytes
-                | TirType::List(_)
-                | TirType::Dict(_, _)
-                | TirType::Set(_)
-                | TirType::Tuple(_)
-                | TirType::Iterator(_)
-                | TirType::Box(_)
-                | TirType::DynBox
-                | TirType::UserClass(_)
-                | TirType::Func(_)
-                | TirType::BigInt
-                | TirType::Ptr(_)
-                | TirType::Union(_) => semantic.clone(),
-            },
+            Self::Never | Self::MaybeBigInt | Self::DynBox | Self::BoxedImmortal => {
+                match semantic {
+                    TirType::I64 | TirType::F64 | TirType::Bool | TirType::Never => TirType::DynBox,
+                    TirType::None
+                    | TirType::Str
+                    | TirType::Bytes
+                    | TirType::List(_)
+                    | TirType::Dict(_, _)
+                    | TirType::Set(_)
+                    | TirType::Tuple(_)
+                    | TirType::Iterator(_)
+                    | TirType::Box(_)
+                    | TirType::DynBox
+                    | TirType::UserClass(_)
+                    | TirType::Func(_)
+                    | TirType::BigInt
+                    | TirType::Ptr(_)
+                    | TirType::Union(_) => semantic.clone(),
+                }
+            }
         }
     }
 

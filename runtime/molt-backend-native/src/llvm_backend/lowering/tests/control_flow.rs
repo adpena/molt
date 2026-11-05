@@ -345,7 +345,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             assert!(init_ir.contains("inttoptr"), "{ir}");
             assert_eq!(init_ir.matches("store i64").count(), payload_count, "{ir}");
             assert_eq!(
-                init_ir.matches("@molt_inc_ref_obj(").count(),
+                init_ir.matches("@__molt_inline_retain(").count(),
                 payload_count,
                 "{ir}"
             );
@@ -371,7 +371,11 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             );
             assert!(!init_ir.contains("ret "), "{ir}");
             assert!(ready_ir.contains("@molt_exception_pending("), "{ir}");
-            assert_eq!(ready_ir.matches("@molt_dec_ref_obj(").count(), 2, "{ir}");
+            assert_eq!(
+                ready_ir.matches("@__molt_inline_release(").count(),
+                2,
+                "{ir}"
+            );
             assert!(
                 allocation_ir.contains("store i1 true"),
                 "frame credit must precede allocation: {ir}"
@@ -408,7 +412,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 "{ir}"
             );
             assert!(
-                !ready_ir.contains("@molt_inc_ref_obj(")
+                !ready_ir.contains("@__molt_inline_retain(")
                     && !ready_ir.contains("@molt_task_register_execution("),
                 "{ir}"
             );
@@ -594,7 +598,7 @@ fn lowers_exception_pop_then_dec_ref_from_shared_drop_shape() {
         .find("molt_exception_pop")
         .unwrap_or_else(|| panic!("LLVM must call molt_exception_pop; IR:\n{ir}"));
     let dec_pos = ir
-        .find("molt_dec_ref_obj")
+        .find("__molt_inline_release")
         .unwrap_or_else(|| panic!("LLVM must call molt_dec_ref_obj; IR:\n{ir}"));
     assert!(
         pop_pos < dec_pos,

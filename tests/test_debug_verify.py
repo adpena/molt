@@ -228,7 +228,9 @@ def test_scan_backend_kinds_parses_alternating_match_arms() -> None:
         "molt_ir::OpKind::Release",
         "molt_ir::OpKind::DelBoundary",
         "emit_dec_ref_like",
-        "WasmRuntimeImport::DecRefObj",
+        "boxed_refcount_is_noop",
+        "crate::wasm::refcount::emit_refcount",
+        "RefcountOperation::Release",
         "emit_none",
     ],
 )
@@ -239,7 +241,7 @@ def test_semantic_assertions_detect_each_release_contract_regression(
     source = (
         ROOT / "runtime/molt-backend-wasm/src/wasm/op_loop/call_ops/refcount_ops.rs"
     ).read_text(encoding="utf-8")
-    expected = "[wasm] dec_ref/release/del_boundary call dec_ref_obj import and write None on out"
+    expected = "[wasm] dec_ref/release/del_boundary use generated release and write None on out"
     assert expected not in module.check_semantic_assertions(
         native_backend_text="", wasm_backend_text=source
     )
@@ -249,6 +251,84 @@ def test_semantic_assertions_detect_each_release_contract_regression(
         wasm_backend_text=source.replace(removed, "broken_contract"),
     )
     assert expected in failures
+
+
+@pytest.mark.parametrize(
+    "removed",
+    [
+        "molt_ir::OpKind::IncRef",
+        "molt_ir::OpKind::Borrow",
+        "emit_inc_ref_like",
+        "boxed_refcount_is_noop",
+        "crate::wasm::refcount::emit_refcount",
+        "RefcountOperation::Retain",
+    ],
+)
+def test_semantic_assertions_detect_each_generated_retain_contract_regression(
+    removed: str,
+) -> None:
+    module = _load_verify_module()
+    source = (
+        ROOT / "runtime/molt-backend-wasm/src/wasm/op_loop/call_ops/refcount_ops.rs"
+    ).read_text(encoding="utf-8")
+    expected = "[wasm] inc_ref/borrow use generated retain"
+    assert expected not in module.check_semantic_assertions("", source)
+    assert removed in source
+    assert expected in module.check_semantic_assertions(
+        "", source.replace(removed, "broken_contract")
+    )
+
+
+@pytest.mark.parametrize(
+    ("operation", "removed"),
+    [
+        ("retain", "OpKind::IncRef"),
+        ("retain", "OpKind::Borrow"),
+        ("retain", "carrier_refcount_is_noop"),
+        ("retain", "emit_refcount"),
+        ("retain", "local_inc_ref_obj"),
+        ("release", "OpKind::DecRef"),
+        ("release", "OpKind::Release"),
+        ("release", "carrier_refcount_is_noop"),
+        ("release", "emit_refcount"),
+        ("release", "local_dec_ref_obj"),
+        ("release", "box_none()"),
+    ],
+)
+def test_semantic_assertions_detect_native_generated_refcount_regressions(
+    operation: str, removed: str
+) -> None:
+    module = _load_verify_module()
+    source = (
+        ROOT
+        / "runtime/molt-backend-native/src/native_backend/function_compiler/fc/value_transfer.rs"
+    ).read_text(encoding="utf-8")
+    expected = (
+        "[native] inc_ref/borrow use the generated retain site"
+        if operation == "retain"
+        else "[native] dec_ref/release use the generated release site and write None on out"
+    )
+    assert expected not in module.check_semantic_assertions(source, "")
+    assert removed in source
+    assert expected in module.check_semantic_assertions(
+        source.replace(removed, "broken_contract"), ""
+    )
+
+
+def test_generated_retain_check_cannot_borrow_another_helpers_operation() -> None:
+    module = _load_verify_module()
+    source = (
+        ROOT / "runtime/molt-backend-wasm/src/wasm/op_loop/call_ops/refcount_ops.rs"
+    ).read_text(encoding="utf-8")
+    broken = source.replace("RefcountOperation::Retain", "RefcountOperation::Release")
+    broken += (
+        "\nfn unrelated() {"
+        " let _ = molt_codegen_abi::inline_refcount::RefcountOperation::Retain; }\n"
+    )
+    assert (
+        "[wasm] inc_ref/borrow use generated retain"
+        in module.check_semantic_assertions("", broken)
+    )
 
 
 def test_required_diff_probes_exist_in_repo() -> None:

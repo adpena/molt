@@ -2154,3 +2154,56 @@ def test_wasm_json_capture_refuses_unclosed_normal_result(tmp_path, monkeypatch)
         )
     assert Path(owners[0].name).exists()
     owners[0].cleanup()
+
+
+def test_missing_cmake_and_ninja_are_reported_not_setup_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only LLVM source bootstrap uses system CMake and Ninja (2026-11-04: the
+    Intel Mac mini farm host failed strict doctor for tools no cell uses)."""
+    install_module_view(
+        monkeypatch, "platform", platform, SETUP_READINESS, system=lambda: "Darwin"
+    )
+    present = {
+        "python": "python",
+        "uv": "uv",
+        "cargo": "cargo",
+        "rustup": "rustup",
+        "cargo-upgrade": "cargo-upgrade",
+        "clang": "clang",
+        "wasm-ld": "wasm-ld",
+        "wasm-tools": "wasm-tools",
+        "wasm-pack": "wasm-pack",
+    }
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        SETUP_READINESS,
+        which=lambda name: present.get(name),
+    )
+    monkeypatch.setattr(
+        SETUP_READINESS,
+        "_detect_llvm_backend_toolchain",
+        lambda _root: (22, None),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        SETUP_READINESS,
+        "_run_completed_command",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, "clang version 22.0.0\n", ""
+        ),
+        raising=True,
+    )
+
+    report = SETUP_READINESS._build_toolchain_report(ROOT)
+
+    for name in ("cmake", "ninja"):
+        check = next(check for check in report.checks if check["name"] == name)
+        assert check["ok"] is False
+        assert check["level"] == "warning"
+        assert "only to build LLVM from source" in check["detail"]
+    assert not any(error.startswith(("cmake:", "ninja:")) for error in report.errors)
+    assert any(warning.startswith("cmake:") for warning in report.warnings)
+    assert any(warning.startswith("ninja:") for warning in report.warnings)

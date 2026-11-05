@@ -206,7 +206,14 @@ fn assert_task_allocation_admission(compiled: &CompiledFunctionClif) -> (Value, 
         compiled.import_ids[crate::runtime_import_abi::MOLT_TASK_NEW.name],
     );
     assert_eq!(calls.len(), 1, "{}", function.display());
-    let (block, call) = calls[0];
+    assert_task_allocation_admission_for(compiled, calls[0])
+}
+
+fn assert_task_allocation_admission_for(
+    compiled: &CompiledFunctionClif,
+    (block, call): (Block, Inst),
+) -> (Value, Block, Block) {
+    let function = &compiled.function;
     let task = function.dfg.first_result(call);
     let branch = function
         .layout
@@ -253,6 +260,83 @@ fn assert_task_allocation_admission(compiled: &CompiledFunctionClif) -> (Value, 
     assert_eq!(predecessors.len(), 1, "{}", function.display());
     assert_eq!(predecessors[0].inst, branch, "{}", function.display());
     (task, success, failure)
+}
+
+/// Compiled accesses to an object's reference-count word. A generated plain
+/// transition reads and writes only this header word; every other mode
+/// reaches the runtime transaction without touching it.
+fn refcount_word_accesses(function: &Function) -> Vec<Inst> {
+    function
+        .layout
+        .blocks()
+        .flat_map(|block| function.layout.block_insts(block))
+        .filter(|&inst| {
+            let data = &function.dfg.insts[inst];
+            (data.opcode().can_load() || data.opcode().can_store())
+                && data.load_store_offset() == Some(molt_codegen_abi::HEADER_REFCOUNT_OFFSET)
+        })
+        .collect()
+}
+
+/// Invocation admission guards compiled count-word access, and nothing else
+/// requests it (`docs/design/foundation/inline_refcount.md`). A body makes
+/// exactly one admission call when it touches a count word, and none when
+/// every transition reaches the runtime: debug and atomic compilers, or
+/// immediate-only bodies. Each count-word access must lie under the
+/// `== AttachedPlain` arm of a branch on that call's result. The oracle is
+/// the emitted body, so it holds whichever storage mode built the compiler.
+/// Returns the admission call sites.
+fn assert_refcount_word_access_is_admitted(compiled: &CompiledFunctionClif) -> Vec<(Block, Inst)> {
+    let function = &compiled.function;
+    let admissions = compiled
+        .import_ids
+        .get(crate::runtime_import_abi::MOLT_REFCOUNT_ADMISSION.name)
+        .map_or_else(Vec::new, |&id| call_sites_for_import(function, id));
+    let accesses = refcount_word_accesses(function);
+    assert_eq!(
+        admissions.len(),
+        usize::from(!accesses.is_empty()),
+        "one invocation admission exactly when compiled code touches a count word:\n{}",
+        function.display()
+    );
+    let [(_, admission_call)] = admissions[..] else {
+        return admissions;
+    };
+    let admission = function.dfg.first_result(admission_call);
+    let cfg = ControlFlowGraph::with_function(function);
+    let dominators =
+        cranelift_codegen::dominator_tree::DominatorTree::with_function(function, &cfg);
+    let admitted_arms: Vec<Block> = function
+        .layout
+        .blocks()
+        .filter_map(|block| {
+            let branch = function.layout.last_inst(block)?;
+            let InstructionData::Brif { blocks, .. } = &function.dfg.insts[branch] else {
+                return None;
+            };
+            let condition = function.dfg.inst_args(branch)[0];
+            comparison_operand(
+                function,
+                condition,
+                IntCC::Equal,
+                molt_codegen_abi::inline_refcount::CompiledRefcountAdmission::AttachedPlain as i64,
+            )
+            .filter(|&operand| value_originates_only_from(function, operand, admission))?;
+            let admitted = blocks[0].block(&function.dfg.value_lists);
+            let predecessors: Vec<_> = cfg.pred_iter(admitted).collect();
+            (predecessors.len() == 1 && predecessors[0].inst == branch).then_some(admitted)
+        })
+        .collect();
+    for access in accesses {
+        assert!(
+            admitted_arms
+                .iter()
+                .any(|&arm| dominators.dominates(arm, access, &function.layout)),
+            "count-word access {access} bypasses the AttachedPlain admission check:\n{}",
+            function.display()
+        );
+    }
+    admissions
 }
 
 fn compile_function_to_clif_with_imports(
@@ -496,12 +580,23 @@ fn call_sites_for_import(function: &Function, import_id: FuncId) -> Vec<(Block, 
 /// Resolve an observed SSA value to its instruction/function-parameter
 /// origins through Cranelift aliases and explicit block transport.
 fn canonical_value_sources(function: &Function, value: Value) -> BTreeSet<Value> {
+    canonical_value_sources_from(function, value, None)
+}
+
+/// Restrict phi predecessors to the observed continuation when proving a
+/// successful arm: unrelated error exits may join the same final return.
+fn canonical_value_sources_from(
+    function: &Function,
+    value: Value,
+    reachable: Option<&BTreeSet<Block>>,
+) -> BTreeSet<Value> {
     fn collect(
         function: &Function,
         cfg: &ControlFlowGraph,
         value: Value,
         visiting: &mut BTreeSet<Value>,
         sources: &mut BTreeSet<Value>,
+        reachable: Option<&BTreeSet<Block>>,
     ) {
         let value = function.dfg.resolve_aliases(value);
         if !visiting.insert(value) {
@@ -513,12 +608,17 @@ fn canonical_value_sources(function: &Function, value: Value) -> BTreeSet<Value>
                 sources.insert(value);
             }
             ValueDef::Union(left, right) => {
-                collect(function, cfg, left, visiting, sources);
-                collect(function, cfg, right, visiting, sources);
+                collect(function, cfg, left, visiting, sources, reachable);
+                collect(function, cfg, right, visiting, sources, reachable);
             }
             ValueDef::Param(block, index) => {
                 let mut found_incoming = false;
                 for predecessor in cfg.pred_iter(block) {
+                    if reachable.is_some_and(|reachable| {
+                        reachable.contains(&block) && !reachable.contains(&predecessor.block)
+                    }) {
+                        continue;
+                    }
                     let destinations = function.dfg.insts[predecessor.inst].branch_destination(
                         &function.dfg.jump_tables,
                         &function.dfg.exception_tables,
@@ -534,7 +634,7 @@ fn canonical_value_sources(function: &Function, value: Value) -> BTreeSet<Value>
                         found_incoming = true;
                         match argument {
                             BlockArg::Value(incoming) => {
-                                collect(function, cfg, incoming, visiting, sources);
+                                collect(function, cfg, incoming, visiting, sources, reachable);
                             }
                             BlockArg::TryCallRet(_) | BlockArg::TryCallExn(_) => {
                                 sources.insert(value);
@@ -554,7 +654,14 @@ fn canonical_value_sources(function: &Function, value: Value) -> BTreeSet<Value>
 
     let cfg = ControlFlowGraph::with_function(function);
     let mut sources = BTreeSet::new();
-    collect(function, &cfg, value, &mut BTreeSet::new(), &mut sources);
+    collect(
+        function,
+        &cfg,
+        value,
+        &mut BTreeSet::new(),
+        &mut sources,
+        reachable,
+    );
     sources
 }
 
