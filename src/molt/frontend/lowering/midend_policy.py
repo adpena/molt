@@ -712,33 +712,8 @@ class MidendPolicyMixin(GeneratorMixinBase):
         if os.getenv("MOLT_MIDEND_STATS") is None:
             return
         self._midend_stats_reported = True
-        ordered_keys = [
-            "expanded_attempts",
-            "expanded_accepted",
-            "expanded_fallbacks",
-            "invalid_unbound_rollback",
-            "invalid_unbound_uses",
-            "fixed_point_fail_fast",
-            "cfg_structural_failures",
-            "cfg_structural_canonicalizations",
-            "sccp_iteration_cap_hits",
-            "cse_dce_fp_cap_hits",
-            "sccp_branch_prunes",
-            "loop_edge_thread_prunes",
-            "try_edge_thread_prunes",
-            "unreachable_blocks_removed",
-            "cfg_region_prunes",
-            "label_prunes",
-            "jump_noop_elisions",
-            "guard_hoist_attempts",
-            "guard_hoist_accepted",
-            "guard_hoist_rejected",
-            "phi_edge_trims",
-            "gvn_hits",
-            "dce_removed_total",
-        ]
         rendered = " ".join(
-            f"{key}={self.midend_stats.get(key, 0)}" for key in ordered_keys
+            f"{key}={value}" for key, value in self.midend_stats.items()
         )
         print(
             f"molt midend stats: {rendered}",

@@ -518,14 +518,19 @@ def test_lowering_product_restores_metadata_and_coverage(
     from molt.cli.frontend_worker import _module_frontend_payload
     from molt.logical_source_paths import toolchain_logical_path
 
-    path = _write_module(tmp_path, "m", "def g():\n    return 41 + 1\n")
+    module_name = "collections" if stdlib else "m"
+    logical_source_path = (
+        toolchain_logical_path(("stdlib", "collections.py"))
+        if stdlib
+        else str(tmp_path / "m.py")
+    )
+    path = _write_module(tmp_path, module_name, "def g():\n    return 41 + 1\n")
     lease = _ModuleSourceLease.path_backed(path)
     gen = MC.SimpleTIRGenerator(
-        module_name="m",
-        known_modules={"m"},
-        source_path=toolchain_logical_path(("stdlib", "collections.py"))
-        if stdlib
-        else str(path),
+        module_name=module_name,
+        known_modules={module_name},
+        module_source_role="stdlib" if stdlib else "user",
+        source_path=logical_source_path,
     )
     gen.visit(ast.parse(path.read_text(encoding="utf-8")))
     ir = gen.to_json(scope="module")
@@ -548,13 +553,13 @@ def test_lowering_product_restores_metadata_and_coverage(
     else:
         assert product["midend_pass_stats_by_function"]
     context = MC._module_lowering_context_payload(
-        "m",
+        module_name,
         path,
         source_lease=lease,
-        logical_source_path=str(path),
+        logical_source_path=logical_source_path,
         is_package=False,
         **_LOWERING_CTX,
-        module_source_role="user",
+        module_source_role="stdlib" if stdlib else "user",
         namespace_premise=None,
     )
     assert context is not None
@@ -569,10 +574,10 @@ def test_lowering_product_restores_metadata_and_coverage(
     restored = MC._read_persisted_module_lowering(
         path,
         source_lease=lease,
-        module_name="m",
+        module_name=module_name,
         context_digest=digest,
         body_selection=ModuleBodySelection("complete_source"),
-        known_modules={"m"},
+        known_modules={module_name},
     )
     assert restored is not None
     for key in (
@@ -584,13 +589,13 @@ def test_lowering_product_restores_metadata_and_coverage(
         assert restored[key] == product[key], key
     monkeypatch.setenv("MOLT_SCCP_MAX_ITERS", "1")
     changed = MC._module_lowering_context_payload(
-        "m",
+        module_name,
         path,
         source_lease=lease,
-        logical_source_path=str(path),
+        logical_source_path=logical_source_path,
         is_package=False,
         **_LOWERING_CTX,
-        module_source_role="user",
+        module_source_role="stdlib" if stdlib else "user",
         namespace_premise=None,
     )
     assert changed is not None
@@ -600,10 +605,10 @@ def test_lowering_product_restores_metadata_and_coverage(
         MC._read_persisted_module_lowering(
             path,
             source_lease=lease,
-            module_name="m",
+            module_name=module_name,
             context_digest=changed_digest,
             body_selection=ModuleBodySelection("complete_source"),
-            known_modules={"m"},
+            known_modules={module_name},
         )
         is None
     )

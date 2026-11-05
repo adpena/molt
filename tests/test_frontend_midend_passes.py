@@ -6108,7 +6108,7 @@ def test_midend_large_user_bodies_and_stdlib_cost_policy(
 
 @pytest.mark.parametrize("empty", [False, True])
 def test_stdlib_cost_policy_counts_skips_without_starting_pass_profiler(
-    monkeypatch, empty: bool
+    monkeypatch, capsys, empty: bool
 ) -> None:
     from molt.frontend.lowering import midend_telemetry
 
@@ -6134,6 +6134,8 @@ def test_stdlib_cost_policy_counts_skips_without_starting_pass_profiler(
         }
     assert gen.midend_stats["midend_module_skips"] == 2
     assert gen.midend_pass_stats_by_function == {}
+    gen._maybe_report_midend_stats()
+    assert "midend_module_skips=2" in capsys.readouterr().err
 
 
 def test_midend_monolith_pressure_preserves_cold_function_coverage() -> None:
