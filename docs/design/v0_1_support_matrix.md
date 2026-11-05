@@ -329,7 +329,7 @@ moves these consumers in one landing, with the rewritten tests:
 | `tools/release/release_evidence.py` (`:107-118`, `:155-204`) | H0, full v1 acceptance, all-coordinate E3 provenance; version from the caller | Tier 1 E3 provenance; version from the gate report |
 | `tools/release/release_authority.py` `resolve_source` (`:316-317`), candidates (`:1608-1614`), consumer scope (`:1075-1089`), notes (`:1709-1716`) | H0 planned; six targets; every lane × Python | no H0; Tier 1 hosts and lanes; notes append `tools/known_issues.py` |
 | `tools/release/release_model.py` (`:251`, `:280-296`, `:326`) | `phase_exit` required | absent; manifest schema v6 |
-| `.github/workflows/release.yml` (`:304-392`, build matrix from `needs.plan.outputs.matrix`) | always signs H0; builds all six targets | signs H0 for `stable` only; `pre-1.0` builds and publishes macos-arm64 and linux-x86_64 only (12.3) |
+| `.github/workflows/release.yml` (`:304-392`, build matrix from `needs.plan.outputs.matrix`) | always signs H0; builds all six targets | signs H0 for `stable` only; `pre-1.0` builds and publishes macos-arm64 and linux-x86_64 only, and no sdist or platform-independent wheel (12.3) |
 
 An unreadable version selects the `stable` rule. The decided `pre-1.0` role set is exact: E4 plus the
 Tier 1 E3 roles; carried E1/E2 or non-Tier-1 E3 roles are refused, so a stale Tier 2 artifact cannot
@@ -365,7 +365,7 @@ The `bar` column of the classification data says why a row blocks v0.1:
 Everything else is `known-issue`, with its reason:
 
 - a loud failure: an exception (even with CPython-different text or class), a crash or signal, a
-  build-time refusal; HF-442 (SIGSEGV with empty stderr) is listed for the integrator to confirm;
+  build-time refusal (a signal death with no Python-level error is `safety`; 12.6);
 - an unsupported or missing surface;
 - slowness or build cost with no public performance claim;
 - display-only metadata: the type, name or repr of a runtime-internal object (builtin functions,
@@ -433,9 +433,10 @@ Rows that moved from the step-4 data:
 - Release artifacts for 0.x are built and published only for the two Tier 1 build hosts, macos-arm64 and
   linux-x86_64. The claim page lists the other four release targets as Tier 2 and "not published in
   v0.1"; the owner may widen this. Section 11's slice owns the enforcement: `release.yml`'s build matrix,
-  `_stage_candidate_assets` and the consumer scope select only those hosts for `pre-1.0`. Open for the
-  parent: whether v0.1 also withholds the sdist (and any platform-independent wheel), since either would
-  let users on the other four targets install it.
+  `_stage_candidate_assets` and the consumer scope select only those hosts for `pre-1.0`.
+- v0.1 publishes no sdist and no platform-independent wheel (parent, 2026-11-05). Users on a Tier 2
+  target build from the git source, which v0.1 does not support. The same `release.yml` change in
+  section 11 enforces it. The owner may widen this.
 
 ### 12.4 Review record (one round)
 
@@ -461,7 +462,23 @@ Rows that moved from the step-4 data:
 - NOTE: `needs_pin` carried no information. **Fixed**: computed for every row, defined by citations,
   with unnamed pins listed.
 - NOTE (design): HF-185 contradicts the E2 decision; "not published" conflicts with PyPI; nothing
-  enforces two hosts until section 11 lands. **Fixed** in 12.3; the sdist question goes to the parent.
+  enforces two hosts until section 11 lands. **Fixed** in 12.3; the parent decided the sdist question.
+
+### 12.6 Final parent calls (2026-11-05)
+
+- HF-186 stays blocking (`safety`). HF-442 becomes `v0_1_blocking` with bar `safety`: a SIGSEGV with
+  empty stderr on a valid program is a memory fault, not a loud failure, because the user sees no
+  Python-level error. The loud rule in 12.1 therefore covers exceptions, build refusals and crashes that
+  print an error; a silent signal death is `safety`.
+- No sdist and no platform-independent wheel in v0.1 (12.3).
+- The new rows are HF-794 (a, `delivery`), HF-795 (b, `witness`), HF-796 (c, `witness`), all
+  `v0_1_blocking`, and HF-797 (d, `post_v0_1`). HF-791 (cold import discovery for an asyncio program
+  takes over 20 minutes; both witnesses' cold builds pay it) is `v0_1_blocking`, bar `witness`. HF-792
+  and HF-793 (silent cache-off sites) are `post_v0_1`. HF-777 is left out; it closes when HF-776 lands.
+- Final data: 383 rows, 65 `v0_1_blocking`, 27 `tier2`, 291 `post_v0_1`. Bars: 28 miscompile, 14
+  witness, 11 safety, 7 verified-subset, 5 delivery, 318 known-issue. 60 of the 65 blocking rows need a
+  pin. Against the ledger lane at `402f863aee` the data applies with no problem; HF-779, HF-780 and
+  HF-781 are open there and unclassified, so they hold until classified.
 
 ### 12.5 New rows for the integrator
 

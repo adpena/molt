@@ -31,7 +31,8 @@ engine with WebAssembly SIMD128.
 and the [public contract](PUBLIC_CONTRACT_V1.md) snapshots them.
 
 - **Tier 1** cells block the release. v0.1 publishes release artifacts only for their two build hosts,
-  macOS arm64 and Linux x86_64.
+  macOS arm64 and Linux x86_64. It publishes no sdist and no platform-independent wheel. On any other
+  target, building from the git source is possible but unsupported in v0.1.
 - **Tier 2** is every other cell: Python 3.13 and 3.14, the LLVM backend, the JIT tier, the browser and
   split-runtime WASM hosts, WebGPU, C extensions, and free-threaded builds. They are tested, but they do
   not block v0.1.
