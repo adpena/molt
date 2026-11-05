@@ -361,18 +361,24 @@ fn assert_linked_guard_call(module: &[u8], parameter_operands: bool) {
         matches!(operators.get(call + 1), Some(Operator::Drop)),
         "borrowed guard result is discarded"
     );
+    let operator_text = operators
+        .iter()
+        .map(|op| format!("{op:?}"))
+        .collect::<Vec<_>>();
+    let logical_end =
+        crate::wasm::test_execution::attached_call_operands_end(&operator_text, call, 2);
     if parameter_operands {
         assert!(
             matches!(
-                operators.get(call.wrapping_sub(2)),
-                Some(Operator::LocalGet { local_index: 0 })
+                operators.get(logical_end.wrapping_sub(2)),
+                Some(Operator::LocalGet { local_index: 1 })
             ),
             "guard reads the value parameter"
         );
         assert!(
             matches!(
-                operators.get(call.wrapping_sub(1)),
-                Some(Operator::LocalGet { local_index: 1 })
+                operators.get(logical_end.wrapping_sub(1)),
+                Some(Operator::LocalGet { local_index: 2 })
             ),
             "guard reads the tag parameter"
         );

@@ -1,7 +1,7 @@
 # Runtime execution context (HF-198 stage 2)
 
-Status: B1/B2 implemented and measured; attached ABI selected 2026-11-04, with implementation
-and qualification pending. Section 11 supersedes the earlier deferral. The first draft proposed
+Status: B1/B2 implemented and measured; attached ABI implemented, with merged-tree qualification
+in progress as of 2026-11-05. Section 11 supersedes the earlier deferral. The first draft proposed
 an attached ABI: runtime entries
 that take the execution context as an argument. Three reviews rejected it as written (section 6).
 The measured B1 change makes the nested runtime entry cheaper and binds the runtime state once
@@ -475,6 +475,9 @@ machine signatures. Compiled calls select the schema-qualified attached entries.
 invoke the single typed implementation. The handle-based `Python.h` bytes-concatenation consumer
 uses the existing public number API; unused direct-intrinsic declarations are retired. Pure raw
 pointer/table/byte protocols keep their established borrowing and lifecycle preconditions.
+Allocator-only bridge frees and foreign C error completion remain raw close protocols in the
+same generated boundary classification. Protected Python-value release instead borrows the
+attached token, since retiring that owner can execute Python finalizers.
 
 Private Python providers and cached executable pointers carry the same leading context, including
 native iterator-next slots, class-initializer caches, descriptor callbacks and async polls.
@@ -488,6 +491,9 @@ isolate bootstrap, launch code, generic and lir_fast WASM, callable tables and s
 hosts together. Every callable key selects its ABI classification and correctly typed executable
 target together; a raw cast cannot make a body function eligible. Generated Python/JS projections,
 build/install/link/cache consumers and public-header fixtures are direct readers of this change.
+Native stateful frame and closure operations select logical argument zero after the context;
+they must never reinterpret the context parameter as a task object. Tests track actual frame
+provenance and exact context forwarding independently.
 
 Every independently compiled artifact requires its own schema. Bind physical compiled entries
 and attached runtime imports/exports to that generated schema and extend the existing per-object
@@ -497,7 +503,7 @@ Split-WASM admission compares the application's required schema with the runtime
 before any application initializer executes. Preserve `pending_work_ptr` and its Arc lifetime;
 do not impose a RuntimeState prefix, duplicate that word or reinterpret a state address as it.
 
-The object witness is revision 8: the existing 66 facts plus context schema, argument position,
+The object witness is revision 9: the existing 66 facts plus context schema, argument position,
 carrier width, header size/alignment and thread-record offset. Physical bindings qualify each
 individual producer as well as its selected runtime. WASM's application custom section contains
 exactly eight little-endian fingerprint bytes; manifest fingerprints use decimal strings so JS

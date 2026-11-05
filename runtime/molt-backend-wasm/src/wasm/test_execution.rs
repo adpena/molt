@@ -360,3 +360,29 @@ fn allocation_never_adopts_an_existing_directory_with_its_name() {
         b"foreign owner"
     );
 }
+
+/// Validate the physical context forwarding moves, then locate the end of
+/// the original logical operands. Values are checked independently by callers.
+pub(crate) fn attached_call_operands_end(ops: &[String], call: usize, arity: usize) -> usize {
+    let start = call
+        .checked_sub(2 * arity + 1)
+        .expect("attached call setup");
+    assert_eq!(
+        ops[start + arity],
+        "LocalGet { local_index: 0 }",
+        "exact entry context"
+    );
+    for index in 0..arity {
+        let stored = ops[start + arity - 1 - index]
+            .strip_prefix("LocalSet ")
+            .expect("save operand");
+        let loaded = ops[start + arity + 1 + index]
+            .strip_prefix("LocalGet ")
+            .expect("restore operand");
+        assert_eq!(
+            stored, loaded,
+            "attached call must preserve operand order and identity"
+        );
+    }
+    start
+}

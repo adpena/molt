@@ -107,7 +107,7 @@ fn jumpful_and_native_eh_dispatch_call_async_observer_then_branch() {
             .position(|op| op == &call)
             .expect("molt_main must call the async observer");
         assert!(
-            ops[call_pos - 1].starts_with("If"),
+            ops[attached_call_operands_end(&ops, call_pos, 0) - 1].starts_with("If"),
             "service must be conditional: {ops:?}"
         );
         assert_eq!(ops[call_pos + 1], "Else");

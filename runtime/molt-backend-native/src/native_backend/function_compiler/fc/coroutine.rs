@@ -24,7 +24,7 @@ use super::var_get_boxed_overflow_safe_fn;
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
     op: &OpIR,
-    entry_block: Block,
+    _entry_block: Block,
     resume_blocks: &BTreeMap<i64, Block>,
     reachable_blocks: &mut BTreeSet<Block>,
     is_block_filled: &mut bool,
@@ -70,7 +70,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             // Resume state belongs to the poll closure object passed
             // to the native poll function, not to any user-visible
             // local named `self` inside async methods.
-            let self_ptr = builder.block_params(entry_block)[0];
+            let self_ptr = compiled_argument(builder, 0);
             // State may live inline or in the stable aux sidecar — call through
             // the C API instead of an inline memory load.
             let get_state_ref = import_func_ref(
@@ -105,7 +105,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             // the poll frame neither suspends nor returns. A ready wait saves
             // its running state, which no resume dispatches to.
             let state = op.value.expect("state_set requires its state");
-            let self_ptr = builder.block_params(entry_block)[0];
+            let self_ptr = compiled_argument(builder, 0);
             let state_val = builder.ins().iconst(types::I64, state);
             let set_state = import_func_ref(
                 &mut *module,
@@ -154,7 +154,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 future,
                 OpKind::TaskWait,
             );
-            let self_ptr = builder.block_params(entry_block)[0];
+            let self_ptr = compiled_argument(builder, 0);
             let future_ptr = unbox_ptr_value(&mut *builder, word);
             let sleep_register = import_func_ref(
                 &mut *module,

@@ -717,12 +717,8 @@ pub extern "C" fn attached_molt_function_direct_call_eligible(_context: u64, _ar
     molt_function_direct_call_eligible(_arg0, _arg1, _arg2)
 }
 pub fn molt_function_direct_call_eligible(_:u64,_:u64,_:u64) ->u64 {0}
-#[export_name = "molt_handle_resolve@EXECUTION_SUFFIX@"]
-pub extern "C" fn attached_molt_handle_resolve(_context: u64, _arg0: u64) ->u64 {
-    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
-    molt_handle_resolve(_arg0)
-}
-pub fn molt_handle_resolve(_:u64) ->u64 {panic!("ineligible callable must not be resolved")}
+#[no_mangle]
+pub extern "C" fn molt_handle_resolve(_:u64) ->u64 {panic!("ineligible callable must not be resolved")}
 unsafe fn words<'a>(p:u64,n:u64)->&'a[u64]{if n==0{&[]}else{unsafe{core::slice::from_raw_parts(p as *const u64,n as usize)}}}
 fn release(words:&[u64]){for &word in words{molt_dec_ref_obj(word);}}
 fn result()->u64{CALLS.fetch_add(1,SeqCst);assert_eq!(RESULT.swap(1,SeqCst),0);0x7ffc000000000200}
@@ -861,16 +857,18 @@ pub fn molt_frame_home_load(home: u64) -> u64 {
     unsafe { HOME = [HOME_PLAIN, boxed]; }
     boxed
 }
-#[no_mangle]
-pub extern "C" fn custody_home_success(view: u64) -> u64 {
+#[export_name = "custody_home_success@EXECUTION_SUFFIX@"]
+pub extern "C" fn custody_home_success(_context: u64, view: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
     assert_eq!(ERROR.load(SeqCst), 0, "store failure crossed the authored exception edge");
     assert_eq!(HOME_SUCCESSES.fetch_add(1, SeqCst), 0);
     assert_eq!((view, home_pair()), (0x7ffc000000000101, (HOME_PLAIN, 0x7ffc000000000101)));
     assert_eq!(FIRST.load(SeqCst), 1, "home owns the persistent box");
     NONE
 }
-#[no_mangle]
-pub extern "C" fn custody_home_failure() -> u64 {
+#[export_name = "custody_home_failure@EXECUTION_SUFFIX@"]
+pub extern "C" fn custody_home_failure(_context: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
     assert_eq!(ERROR.load(SeqCst), 0xb001, "intended handler observes original allocation failure");
     assert_eq!(HOME_FAILURES.fetch_add(1, SeqCst), 0);
     assert_eq!(HOME_SUCCESSES.load(SeqCst), 0);
@@ -895,20 +893,23 @@ pub extern "C" fn custody_home_finish(failure: u64) {
         assert_eq!(count.load(SeqCst), 0, "every home owner released exactly once");
     }
 }
-#[no_mangle]
-pub extern "C" fn custody_home_numeric_ok() -> u64 {
+#[export_name = "custody_home_numeric_ok@EXECUTION_SUFFIX@"]
+pub extern "C" fn custody_home_numeric_ok(_context: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
     assert_eq!(ATTEMPTS.load(SeqCst), 0, "numeric-only publication allocated");
     assert_eq!(ERROR.load(SeqCst), 0);
     assert_eq!(HOME_SUCCESSES.fetch_add(1, SeqCst), 0);
     assert_eq!(home_pair(), (HOME_RAW, 1_u64 << 62));
     NONE
 }
-#[no_mangle]
-pub extern "C" fn custody_home_numeric_bad() -> u64 {
+#[export_name = "custody_home_numeric_bad@EXECUTION_SUFFIX@"]
+pub extern "C" fn custody_home_numeric_bad(_context: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
     panic!("numeric-only publication changed the arithmetic result or raised");
 }
-#[no_mangle]
-pub extern "C" fn custody_home_observed_numeric_ok() -> u64 {
+#[export_name = "custody_home_observed_numeric_ok@EXECUTION_SUFFIX@"]
+pub extern "C" fn custody_home_observed_numeric_ok(_context: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
     assert_eq!(ATTEMPTS.load(SeqCst), 1);
     assert_eq!(HOME_SUCCESSES.load(SeqCst), 1);
     assert_eq!(home_pair(), (HOME_PLAIN, 0x7ffc000000000101));

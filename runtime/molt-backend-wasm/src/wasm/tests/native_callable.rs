@@ -735,10 +735,14 @@ fn native_callable_pyinit_passes_app_owned_table_address_to_runtime_transaction(
         operators[site + 2].starts_with("LocalGet"),
         "the boxed module name must follow the initializer address: {operators:?}"
     );
+    let transaction = operators
+        .iter()
+        .position(|op| op == &format!("Call {{ function_index: {run_init} }}"))
+        .expect("runtime initialization transaction");
     assert_eq!(
-        operators[site + 3],
-        format!("Call {{ function_index: {run_init} }}"),
-        "the address and module name must feed the runtime transaction: {operators:?}"
+        attached_call_operands_end(&operators, transaction, 2),
+        site + 3,
+        "the exact address and module name feed the runtime transaction: {operators:?}"
     );
 }
 

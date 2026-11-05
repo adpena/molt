@@ -972,11 +972,16 @@ fn handwritten_container_owned_results_release_when_discarded() {
                 let Some(callee) = call.get_called_fn_value() else {
                     continue;
                 };
-                if callee.get_name().to_bytes() == producer.as_bytes() {
+                if callee.get_name().to_bytes()
+                    == crate::llvm_backend::execution_abi::execution_symbol(producer).as_bytes()
+                {
                     produced.push(call.try_as_basic_value().unwrap_basic().into_int_value());
-                } else if callee.get_name().to_bytes() == b"__molt_inline_release" {
+                } else if callee.get_name().to_bytes()
+                    == crate::llvm_backend::execution_abi::execution_symbol("__molt_inline_release")
+                        .as_bytes()
+                {
                     let owner = instruction
-                        .get_operand(0)
+                        .get_operand(1)
                         .unwrap()
                         .value()
                         .unwrap()

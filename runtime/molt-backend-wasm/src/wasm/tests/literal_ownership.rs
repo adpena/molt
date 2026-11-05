@@ -491,9 +491,14 @@ fn raw_allocations_publish_before_binding_or_releasing_the_result() {
                 .iter()
                 .position(|operator| operator == &format!("Call {{ function_index: {allocate} }}"))
                 .expect("allocation must be emitted");
+            let publication = operators
+                .iter()
+                .position(|op| op == &format!("Call {{ function_index: {publish} }}"))
+                .expect("publish initialized allocation");
             assert_eq!(
-                operators[position + 1],
-                format!("Call {{ function_index: {publish} }}")
+                attached_call_operands_end(&operators, publication, 1),
+                position + 1,
+                "the exact allocation result feeds publication before binding or cleanup"
             );
             assert_eq!(call_count(&operators, publish), 1, "{kind} {result:?}");
             let releases = imports

@@ -394,7 +394,7 @@ fn on_demand_runtime_declaration_uses_conservative_attributes() {
 
 #[test]
 #[should_panic(
-    expected = "LLVM runtime import `molt_unclassified_runtime_symbol` has no ABI classification"
+    expected = "LLVM runtime import `molt_unclassified_runtime_symbol` has no execution ABI"
 )]
 fn unclassified_runtime_declaration_rejects_new_symbol_drift() {
     let ctx = Context::create();

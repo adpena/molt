@@ -447,7 +447,9 @@ fn generated_runtime_call_agreement_jit_admits_declared_import_before_relocation
             panic!("JIT must report unresolved imports before relocation");
         };
         assert!(
-            symbols.iter().any(|symbol| symbol == abi.symbol),
+            symbols
+                .iter()
+                .any(|symbol| symbol == physical_runtime_symbol(abi.symbol)),
             "{call:?}: {symbols:?}"
         );
         assert!(

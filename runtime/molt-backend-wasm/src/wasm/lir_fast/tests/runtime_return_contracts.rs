@@ -75,7 +75,7 @@ fn sink_body(
         entry_block: BlockId(0),
         label_id_map: HashMap::new(),
     };
-    let mut ctx = LirLowerCtx::new_with_local_base(&function, 0);
+    let mut ctx = LirLowerCtx::new_with_local_base(&function, 1);
     ctx.allocate_function_locals();
     ctx.begin_operation_owners();
     for &operand in &op.tir_op.operands {
@@ -93,9 +93,11 @@ fn sink_body(
     }
     ctx.instructions.push(Instruction::End);
     WasmBody {
-        param_types: args.iter().copied().map(machine_type).collect(),
+        param_types: std::iter::once(ValType::I64)
+            .chain(args.iter().copied().map(machine_type))
+            .collect(),
         result_types: result.map(machine_type).into_iter().collect(),
-        locals: ctx.local_declarations_after(args.len() as u32),
+        locals: ctx.local_declarations_after(args.len() as u32 + 1),
         ops: ctx.instructions.into_vec(),
     }
 }

@@ -125,8 +125,8 @@ fn typed_task_constructors_guard_allocation_before_payload_and_completion() {
             let ops = task_trampoline_ops(&wasm, task_new);
             let task_call = call_position(&ops, task_new);
             let expected_guard = [
-                "LocalSet { local_index: 3 }".to_string(),
-                "LocalGet { local_index: 3 }".to_string(),
+                "LocalSet { local_index: 4 }".to_string(),
+                "LocalGet { local_index: 4 }".to_string(),
                 format!(
                     "I64Const {{ value: {} }}",
                     molt_codegen_abi::box_none_bits()
@@ -135,7 +135,7 @@ fn typed_task_constructors_guard_allocation_before_payload_and_completion() {
             ];
             assert_eq!(&ops[(task_call + 1)..(task_call + 5)], expected_guard);
             assert!(ops[task_call + 5].starts_with("If"), "{ops:?}");
-            assert_eq!(ops[task_call + 6], "LocalGet { local_index: 3 }");
+            assert_eq!(ops[task_call + 6], "LocalGet { local_index: 4 }");
             assert_eq!(ops[task_call + 7], "Return");
             assert_eq!(ops[task_call + 8], "End");
             let guard_end = task_call + 8;
@@ -179,7 +179,8 @@ fn typed_task_constructors_guard_allocation_before_payload_and_completion() {
                         .iter()
                         .find(|op| op.as_str() != "End")
                         .unwrap(),
-                    "LocalGet { local_index: 5 }",
+                    ops[call_position(&ops, imports["asyncgen_new"]) + 1]
+                        .replace("LocalSet", "LocalGet"),
                     "asyncgen must restore exact wrapper/error after task release: {ops:?}"
                 );
             }

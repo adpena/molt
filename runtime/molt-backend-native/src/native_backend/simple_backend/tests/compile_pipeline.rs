@@ -3,6 +3,7 @@ use crate::runtime_import_abi::{MOLT_DEC_REF_OBJ, MOLT_TASK_NEW, NATIVE_RUNTIME_
 use cranelift_codegen::flowgraph::ControlFlowGraph;
 use cranelift_codegen::ir::InstructionData;
 use molt_ir::OpKind;
+use molt_ir::runtime_callable_abi_generated::runtime_execution_abi;
 
 fn cfg_reaches(
     cfg: &ControlFlowGraph,
@@ -2187,7 +2188,8 @@ fn runtime_builtin_callable_admits_exact_manifest_contracts() {
         ("molt_abs_builtin", 1, true),
         ("molt_sys_version", 0, true),
         ("molt_socket_drop", 1, true),
-        ("molt_cpython_abi_cext_call_trampoline", 3, true),
+        ("molt_cpython_abi_cext_call_trampoline_admitted", 3, true),
+        ("molt_cpython_abi_cext_call_trampoline", 3, false),
         ("molt_importlib_import_transaction", 4, false),
         ("molt_abs_builtin", -1, false),
         ("molt_int_from_i64", 1, false),
@@ -2335,7 +2337,11 @@ fn class_statement_identity_imports_its_stable_slot_binding() {
         ] {
             assert!(
                 common.symbols().any(|entry| entry.is_undefined()
-                    && entry.name().ok() == Some(linker_name(runtime).as_str())),
+                    && entry.name().ok()
+                        == Some(
+                            linker_name(runtime_execution_abi(runtime).unwrap().physical_symbol)
+                                .as_str()
+                        )),
                 "{kind:?}: {runtime} must be called"
             );
         }

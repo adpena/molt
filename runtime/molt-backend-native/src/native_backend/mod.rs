@@ -76,6 +76,16 @@ fn compiled_context(builder: &FunctionBuilder<'_>) -> Value {
     builder.func.dfg.block_params(entry)[0]
 }
 
+/// Logical Python operands follow the attached context in every compiled entry.
+fn compiled_argument(builder: &FunctionBuilder<'_>, index: usize) -> Value {
+    let entry = builder
+        .func
+        .layout
+        .entry_block()
+        .expect("compiled entry block");
+    builder.func.dfg.block_params(entry)[index + 1]
+}
+
 /// Complete the physical arguments of attached direct calls exactly once.
 /// The schema-bound symbol identifies the ABI; arity is checked, never used to
 /// infer a missing classification. Foreign C calls retain their real protocol.

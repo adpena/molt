@@ -1399,7 +1399,8 @@ fn symbolic_code_slots_emit_program_bound_immediates() {
             let call = format!("Call {{ function_index: {} }}", imports[import]);
             let index = operators.iter().position(|op| *op == call).unwrap();
             assert_eq!(
-                operators[index - argument_distance],
+                operators[attached_call_operands_end(&operators, index, argument_distance)
+                    - argument_distance],
                 format!("I64Const {{ value: {expected_slot} }}"),
                 "{import} must use the final program's immediate slot binding"
             );

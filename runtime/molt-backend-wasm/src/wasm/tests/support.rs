@@ -521,3 +521,5 @@ pub(super) fn wasm_type_section_value_signatures(wasm: &[u8]) -> Vec<(Vec<String
     }
     sigs
 }
+
+pub(super) use crate::wasm::test_execution::attached_call_operands_end;

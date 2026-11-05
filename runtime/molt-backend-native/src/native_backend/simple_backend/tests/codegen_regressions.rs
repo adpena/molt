@@ -388,18 +388,25 @@ fn native_boxed_or_retains_selected_operand_result() {
         execution_context: Default::default(),
     };
 
-    let clif = compile_function_to_clif_text(vec![func], "boxed_or_selected_owner");
-    let selected = clif
-        .lines()
-        .find_map(|line| line.trim().split_once(" = select ").map(|(v, _)| v.trim()))
-        .unwrap_or_else(|| panic!("boxed or must emit a selected result:\n{clif}"));
-    let selected_call = format!("({selected})");
-    assert!(
-        clif.lines().any(|line| {
-            let line = line.trim();
-            line.starts_with("call fn") && line.contains(&selected_call)
-        }),
-        "boxed or must retain the selected result before returning it:\n{clif}"
+    let compiled = compile_function_to_clif_with_imports(vec![func], "boxed_or_selected_owner");
+    let function = &compiled.function;
+    let selected = function
+        .layout
+        .blocks()
+        .flat_map(|block| function.layout.block_insts(block))
+        .find(|&inst| function.dfg.insts[inst].opcode() == Opcode::Select)
+        .map(|inst| function.dfg.inst_results(inst)[0])
+        .expect("boxed or must emit a selected result");
+    let retain = compiled
+        .import_ids
+        .get("molt_inc_ref_obj")
+        .expect("selected result retain");
+    let calls = call_sites_for_import(function, *retain);
+    assert_eq!(calls.len(), 1, "{}", function.display());
+    assert_eq!(
+        attached_arguments(function, calls[0].1),
+        &[selected],
+        "boxed or must retain the exact selected result before returning it"
     );
 }
 

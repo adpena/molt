@@ -276,7 +276,11 @@ mod tests {
                 .iter()
                 .position(|op| matches!(op, Operator::Call { function_index: 0 }))
                 .unwrap();
-            assert!(matches!(operators[call - 1], Operator::If { .. }));
+            assert!(matches!(
+                operators[call - 1],
+                Operator::LocalGet { local_index: 0 }
+            ));
+            assert!(matches!(operators[call - 2], Operator::If { .. }));
             assert!(matches!(operators[call + 1], Operator::Else));
             assert!(
                 operators

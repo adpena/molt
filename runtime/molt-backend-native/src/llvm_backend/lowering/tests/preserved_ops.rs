@@ -274,7 +274,7 @@ fn runtime_builtin_callable_rejects_unknown_raw_and_wrong_arity() {
 fn runtime_builtin_call_frame_uses_provider_as_trampoline() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    let symbol = "molt_cpython_abi_cext_call_trampoline";
+    let symbol = "molt_cpython_abi_cext_call_trampoline_admitted";
     let function = builtin_callable_function(symbol, 3, false);
     let lowered = try_lower_tir_to_llvm(&function, &backend).unwrap();
     backend.module.verify().unwrap();
@@ -632,7 +632,7 @@ fn retired_exact_runtime_kinds_take_the_admitted_boxed_route() {
                 "call void @__molt_inline_release(i64 %boxed_call_owner_bits, i64 %rc_admission)";
             assert_eq!(ir.matches_execution(release).count(), 1, "{kind}: {ir}");
             assert!(
-                ir.find_execution(call).unwrap() < ir.find_execution(release).unwrap(),
+                ir.find(call).unwrap() < ir.find_execution(release).unwrap(),
                 "{kind}: the box outlives the borrowing call: {ir}"
             );
         }
@@ -1063,7 +1063,8 @@ fn stateful_locals_registration_preserves_mixed_abi() {
             .expect("generator locals mixed ABI must verify");
         assert!(
             ir.contains_execution(&format!(
-                "call i64 @molt_{kind}(i64 ptrtoint (ptr @poll_fn to i64), i64 %0, i64 %1)"
+                "call i64 @molt_{kind}(i64 ptrtoint (ptr @{} to i64), i64 %0, i64 %1)",
+                crate::llvm_backend::execution_abi::execution_symbol("poll_fn")
             )),
             "{ir}"
         );

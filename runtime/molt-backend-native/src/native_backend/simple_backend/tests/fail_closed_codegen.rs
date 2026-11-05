@@ -1,9 +1,13 @@
 use super::*;
 use molt_ir::OpKind;
+use molt_ir::runtime_callable_abi_generated::compiled_execution_symbol;
 
 fn compile_exact_target_reference(kind: OpKind, target: &str, arity: usize, returns_value: bool) {
     let mut backend = SimpleBackend::new();
     let mut signature = backend.module.make_signature();
+    signature
+        .params
+        .push(cranelift_codegen::ir::AbiParam::new(types::I64));
     for _ in 0..arity {
         signature
             .params
@@ -16,7 +20,11 @@ fn compile_exact_target_reference(kind: OpKind, target: &str, arity: usize, retu
     }
     backend
         .module
-        .declare_function(target, cranelift_module::Linkage::Import, &signature)
+        .declare_function(
+            &compiled_execution_symbol(target),
+            cranelift_module::Linkage::Import,
+            &signature,
+        )
         .expect("predeclare exact target ABI");
     // The exact target's own parameter declaration: every argument borrowed.
     backend.function_entry_custody.insert(
@@ -100,7 +108,7 @@ fn call_async_accepts_exact_opaque_task_target() {
 }
 
 #[test]
-#[should_panic(expected = "must have ABI (i64) -> i64")]
+#[should_panic(expected = "must have ABI (context, task) -> i64")]
 fn call_async_rejects_poll_spelling_with_wrong_signature() {
     compile_exact_target_reference(OpKind::CallAsync, "ordinary_poll", 0, true);
 }
@@ -114,12 +122,23 @@ fn compile_caller_with_incompatible_predeclared_helper(caller: FunctionIR) {
     backend
         .module
         .declare_function(
-            "helper",
+            &compiled_execution_symbol("helper"),
             cranelift_module::Linkage::Import,
             &predeclared_sig,
         )
         .expect("predeclare helper");
 
+    backend.function_entry_custody.insert(
+        "helper".into(),
+        molt_codegen_abi::EntryCustodyDeclaration::declare(
+            caller
+                .ops
+                .iter()
+                .any(|op| op.kind == OpKind::FuncNewClosure),
+            1,
+            &[],
+        ),
+    );
     let defined_functions = BTreeSet::from(["caller".to_string(), "helper".to_string()]);
     let function_arities = BTreeMap::from([
         ("caller".to_string(), caller.params.len()),

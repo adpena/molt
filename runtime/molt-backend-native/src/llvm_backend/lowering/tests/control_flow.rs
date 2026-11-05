@@ -510,9 +510,13 @@ fn llvm_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
                 while let Some(inst) = current {
                     current = inst.get_next_instruction();
                     if let Ok(call) = inkwell::values::CallSiteValue::try_from(inst)
-                        && call
-                            .get_called_fn_value()
-                            .is_some_and(|callee| callee.get_name().to_bytes() == b"molt_task_new")
+                        && call.get_called_fn_value().is_some_and(|callee| {
+                            callee.get_name().to_bytes()
+                                == crate::llvm_backend::execution_abi::execution_symbol(
+                                    "molt_task_new",
+                                )
+                                .as_bytes()
+                        })
                     {
                         allocations.push(inst);
                     }
@@ -520,7 +524,7 @@ fn llvm_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
             }
             assert_eq!(allocations.len(), 1);
             let poll = allocations[0]
-                .get_operand(0)
+                .get_operand(1)
                 .unwrap()
                 .value()
                 .unwrap()

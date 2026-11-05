@@ -244,7 +244,8 @@ fn iterator_step_calls_iter_next_unboxed_with_an_out_word() {
         .position(|operator| operator == &call)
         .unwrap_or_else(|| panic!("missing {call}; operators={operators:?}"));
     assert!(
-        operators[call_pos - 1].starts_with("I64Const {"),
+        operators[attached_call_operands_end(&operators, call_pos, 2) - 1]
+            .starts_with("I64Const {"),
         "the second argument is the scratch word's address; operators={operators:?}"
     );
     assert!(
