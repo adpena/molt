@@ -974,9 +974,9 @@ run time (see "Open siblings").
     (`builtins.locals = builtins.locals`) makes the reads unproved; `globals`,
     `locals`, `vars`, `dir` and `super` are then called at module scope, in a
     method, a comprehension, a generator, a coroutine and a closure;
-  - `proven_class_body_builtins.py`: proved builtin reads and a proved
-    `locals()` call in a class body before its first call; the reads after
-    that call keep the live lookup.
+  - `proven_class_body_builtins.py`: proved builtin reads in a class body
+    before its first call, and live reads after it, select the objects
+    `builtins` publishes.
 - Census of the 144 programs, binary sizes and module counts for hello and
   `loop`, the five-pair primitive A/B, and a count of named-lowering operations
   against dynamic calls in the emitted IR of hello and `loop` on base and head
@@ -997,10 +997,11 @@ source before it lands.
 
 ### Implementation changes after review
 
-- **Class bodies.** The first differential run showed that a class body lost
-  its frame-aware `locals()` lowering: HF-226 proves only `global` lookups,
-  and a class-body read that misses the class mapping is a `class_global`
-  lookup. `exact_builtin_name` now accepts `class_global` reads too. The flow
+- **Class bodies.** Keying the lowering on the proof made every class-body
+  builtin read live, where base lowered it by spelling: HF-226 proves only
+  `global` lookups, and a class-body read that misses the class mapping is a
+  `class_global` lookup. `exact_builtin_name` now accepts `class_global`
+  reads too. The flow
   gives such a read a builtin identity only when the class mapping cannot run
   code (`_namespace_can_call`: no `__prepare__` result, no reflection) and the
   class-local binding is unbound, so the proof needs no new fact. The flow
@@ -1010,17 +1011,17 @@ source before it lands.
   `x = compute(); ns = locals(); ...`). `_builtin_read_replaces_guard` keeps
   `global` reads only: a class body is not an activation, so its proved shape
   calls keep the call fact's elision proof, as module code does.
-- **Frame-reading builtins.** The same run showed a pre-existing runtime gap: a
-  dynamic call of `locals`, `vars` or zero-argument `dir` from a class body
-  reads the enclosing frame, not the class mapping. Base gives the same wrong
-  result for an aliased call (`alias = locals` at module scope, `alias()` in
-  the body) and for a `locals()` call after the body's first call (measured:
-  base and head print the module's names for `kind = type(x)` followed by
-  `names = sorted(locals())`). `_FRAME_REFLECTIVE_BUILTINS` never covered that
-  case (base routes such a call to the dynamic path before named dispatch), so
+- **Frame-reading builtins.** The differential runs showed a pre-existing
+  gap: `locals()`, `vars()` and zero-argument `dir()` in a module-level class
+  body return the module namespace, not the class mapping. Base and head
+  lower a proved call there to `molt_globals_builtin` (measured on the
+  frontend output of both), and a dynamic call reads the enclosing frame;
+  base also fails an aliased call (`alias = locals`, then `alias()` in the
+  body). `_FRAME_REFLECTIVE_BUILTINS` never covered a class body (base
+  routes an unproved call to the dynamic path before named dispatch), so
   deleting it changes no class-body lowering. `unproved_frame_builtins.py`
-  covers the scopes where the dynamic call is correct, and
-  `proven_class_body_builtins.py` covers the proved class-body reads.
+  covers the function scopes and module scope, where both paths are correct;
+  `proven_class_body_builtins.py` covers the other proved class-body reads.
 - **`__import__` provenance.** The IR count showed two `__import__(...)`
   calls in the `loop` program (`_frozen_importlib.spec_from_loader`,
   `typing._require_importlib_util_module`) that base lowered to `BUILTIN_FUNC`
@@ -1049,10 +1050,10 @@ source before it lands.
   reads the base live, so runtime class creation is correct; the static
   classification feeds layout and constructor choice. It needs the proof
   query for class bases. Not in this lane.
-- A dynamic call of `locals`, `vars` or zero-argument `dir` from a class body
-  reads the enclosing frame (see above). Correct unproved class-body calls,
-  and a replaced `builtins.locals` in a class body, need a runtime class-body
-  frame. Not in this lane.
+- `locals()`, `vars()` and zero-argument `dir()` in a class body return the
+  module namespace or the enclosing frame, proved or not (see above). Correct
+  class-body calls, and a replaced `builtins.locals` in a class body, need a
+  runtime class-body frame or mapping handle. Not in this lane.
 - `BUILTIN_FUNC` and `EXCEPTION_CLASS` still find their object by its
   spelling at run time (`lookup_builtin_name`, `exception_type_bits`). A typed
   runtime handle for each catalogued builtin would remove those lookups; it is
