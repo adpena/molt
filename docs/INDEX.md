@@ -10,6 +10,7 @@ the source of truth.
 - First install and run: [getting-started.md](getting-started.md)
 - Current V1.0 burndown, priorities and blockers: [agent/V1_HANDOFF_FINDINGS.md](agent/V1_HANDOFF_FINDINGS.md)
 - Current supported state: [spec/STATUS.md](spec/STATUS.md)
+- The v0.1 public claim and its Tier 1 matrix: [spec/PUBLIC_CLAIM_V0_1.md](spec/PUBLIC_CLAIM_V0_1.md)
 - Forward plan: [../ROADMAP.md](../ROADMAP.md)
 
 ## Core Navigation
@@ -82,6 +83,7 @@ the source of truth.
 - Memory guard custody sampling (a poll reads its tree's rows through kernel filters, not the host table; after Windows job members, systemd/Bazel cgroups and subreapers; HF-358): [design/memory_guard_custody_sampling.md](design/memory_guard_custody_sampling.md)
 - Linux VM apparatus (one definition for the Lima VMs, which mount no host path; drift check, `push` over Lima's SSH, release of host files a mounting guest pins through Apple's 64-forget batch, idle-only apply that starts the VM as a service launch; after Lima, virtiofsd file handles and Docker Desktop's synchronized file shares; HF-463, HF-471): [design/linux_vm_apparatus.md](design/linux_vm_apparatus.md)
 - Landing queue (main advances only to a commit that passed its selected proofs on every cell; rollups on the owner's machines; HF-334): [design/landing_queue.md](design/landing_queue.md)
+- v0.1 support matrix (one typed Tier 1 authority in `config/release_targets.toml`, the v0.1 ledger class and the release-line slice; after Rust target tiers, Go first-class ports and PEP 11; HF-620): [design/v0_1_support_matrix.md](design/v0_1_support_matrix.md)
 - Target frontend selection (a differential cell compiles under the oracle's exact CPython release, from a managed per-release image; after Nuitka, tox, cibuildwheel and rustup; HF-726): [design/target_frontend_selection.md](design/target_frontend_selection.md)
 - Process environment (one Windows/POSIX name-rule authority for child environments, after Rust `EnvKey`, Cargo `Env` and Go `dedupEnvCase`; HF-355): [design/process_environment.md](design/process_environment.md)
 - Development JIT tier (run from memory through Cranelift JIT, no object or link, after rustc_codegen_cranelift's JIT mode and Goose's TinyCC route; HF-371): [design/dev_jit_tier.md](design/dev_jit_tier.md)

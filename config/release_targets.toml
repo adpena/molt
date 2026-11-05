@@ -1,4 +1,6 @@
-schema = "molt.release-targets.v1"
+schema = "molt.release-targets.v2"
+
+# Release targets: every OS/architecture Molt ships an archive for.
 
 [[target]]
 id = "macos-arm64"
@@ -47,3 +49,43 @@ platform = "windows"
 arch = "arm64"
 rust_target = "aarch64-pc-windows-msvc"
 archive = "zip"
+
+# Tier 1: the cells the two flagship witnesses need, plus Python 3.15 (owner
+# decision 2026-11-05; docs/design/v0_1_support_matrix.md). A Tier 1 cell blocks
+# a release; every other cell is Tier 2: tested, not release-blocking. Tier 1
+# widens only by owner decision. The generator derives each cell's id and
+# artifact target; `host` is a [[target]] id and (backend, release,
+# runtime_profile) a lane of config/release_acceptance_matrix.toml. Rows are
+# sorted by derived id (tier1-<host>-py<tag>-<backend>).
+
+[[tier1_cell]]
+witness = "django-offload"
+host = "linux-x86_64"
+python = "3.12"
+backend = "native"
+runtime_profile = "release-output"
+execution = "host"
+
+[[tier1_cell]]
+witness = "django-offload"
+host = "linux-x86_64"
+python = "3.15"
+backend = "native"
+runtime_profile = "release-output"
+execution = "host"
+
+[[tier1_cell]]
+witness = "falcon-ocr-workers"
+host = "macos-arm64"
+python = "3.12"
+backend = "wasm"
+runtime_profile = "wasm-release"
+execution = "workerd"
+
+[[tier1_cell]]
+witness = "falcon-ocr-workers"
+host = "macos-arm64"
+python = "3.15"
+backend = "wasm"
+runtime_profile = "wasm-release"
+execution = "workerd"

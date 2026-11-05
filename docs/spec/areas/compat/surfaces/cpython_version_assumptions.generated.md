@@ -6,9 +6,9 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 ## Counts
 
-- `authority-routed` files: 69
+- `authority-routed` files: 70
 - `operational-tooling` files: 76
-- `scattered-assumption` files: 356
+- `scattered-assumption` files: 357
 
 ## Files
 
@@ -61,7 +61,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/python_interpreter.py` | 5 | authority-routed | `3.12` |
 | `src/molt/python_runtime_admission.py` | 1 | scattered-assumption | `3.5` |
 | `src/molt/python_runtime_identity.py` | 13 | operational-tooling | `sys.version_info` |
-| `src/molt/release_matrix.py` | 3 | operational-tooling | `3.12` |
+| `src/molt/release_matrix.py` | 7 | operational-tooling | `3.12` |
 | `src/molt/stdlib/__future__.py` | 3 | operational-tooling | `sys.version_info` |
 | `src/molt/stdlib/_collections_abc.py` | 1 | scattered-assumption | `3.17` |
 | `src/molt/stdlib/_compression.py` | 1 | scattered-assumption | `3.12` |
@@ -424,6 +424,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `config/llvm_toolchain_releases.toml` | 1 | scattered-assumption | `3.20` |
 | `config/public_contract_v1.toml` | 1 | scattered-assumption | `3.12` |
 | `config/python_numeric_errors.toml` | 4 | scattered-assumption | `3.12` |
+| `config/release_targets.toml` | 5 | scattered-assumption | `3.15` |
 | `config/scientific_stack_versions.toml` | 2 | scattered-assumption | `3.12` |
 | `config/source_extension_package_sets.toml` | 2 | scattered-assumption | `3.12` |
 | `config/verified_subset.toml` | 3 | scattered-assumption | `3.12` |
@@ -463,6 +464,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/gen_cpython_type_slots.py` | 1 | scattered-assumption | `3.12` |
 | `tools/gen_diff_lanes.py` | 3 | operational-tooling | `3.12` |
 | `tools/gen_intrinsics.py` | 1 | scattered-assumption | `3.11` |
+| `tools/gen_release_matrix.py` | 1 | authority-routed | `3.15` |
 | `tools/generator_manifest.toml` | 1 | authority-routed | `3.12` |
 | `tools/generators.py` | 1 | operational-tooling | `sys.version_info` |
 | `tools/hooks/session_digest.py` | 2 | operational-tooling | `3.12` |

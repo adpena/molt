@@ -1,6 +1,8 @@
 # v0.1 support matrix: one typed Tier 1 authority (HF-620)
 
-Status: design, reviewed before implementation (section 9). Owner decisions of 2026-11-05 bind it:
+Status: design, reviewed in two Goldfish rounds (section 9). After round 2 the release-line migration
+(4.2) is cut from the HF-620 lane and specified as its own slice (section 11); the lane implements 4.1,
+4.3, 4.4, 4.5 and 4.6. Owner decisions of 2026-11-05 bind it:
 
 - "Both of the symposium's two recommendations are approved. But Python 3.15 belongs in there too."
 - "All of the symposium's recommendations are approved. We must not lose our project to process."
@@ -121,9 +123,10 @@ producers exist. Once they do, those runners read `TIER1_CELLS`.
   verifies the gate report and the Tier 1 E3 provenance. The release manifest's `phase_exit` becomes
   absent for `pre-1.0`, so the manifest schema moves from v5 to v6 and the contract declaration follows.
   `RELEASE_NOTES.md` of a `pre-1.0` release appends the generated known-issues list (4.4).
-- **Not changed, decision for the parent**: release candidates stay required for all six release targets
-  (`release_authority.py:1608-1614`). A Tier 2 host that fails to build still blocks the pipeline; Rust's
-  Tier 2 has the same "must build" rule. Changing it moves the build matrix in `release.yml`.
+- **Release candidates**: `_stage_candidate_assets` requires all six targets
+  (`release_authority.py:1608-1614`), and `validate_consumer_proof` (`:1422`) requires installed-consumer
+  runs for every acceptance lane, LLVM included, times every admitted Python (`:1075-1089`). For
+  `pre-1.0` both narrow to the Tier 1 hosts and lanes (section 11).
 - **Docs**: only `PUBLIC_CONTRACT_V1.md` "Versioning and release gating" states the rule. The claim page,
   `packaging/PACKAGING.md:20-31`, the gate docstring and the ledger link to it. Section 10 supplies the
   integrator's ledger text.
@@ -186,7 +189,8 @@ and the known-issues command, and links the version rule. `README.md` and
 2. A Tier 1 change changes the public contract surface.
 3. `stable` releases: unchanged hold (every open row; full E3; H0).
 4. `pre-1.0` releases: held by `v0_1_blocking` and unclassified rows and by Tier 1 E3 coordinates; never by
-   Tier 2 rows or cells.
+   Tier 2 rows or cells. Invariants 3, 4 and 6 are the release-line slice's (section 11); until it lands,
+   every version keeps the 1.x hold.
 5. No presubmit or postsubmit cell runs an experimental backend.
 6. A Tier 1 Python that Molt does not admit fails the gate; it is never silently skipped.
 
@@ -217,7 +221,9 @@ a claim change.
   stated; `--check` detects drift.
 - `finding_status`: the v0.1 table parses; a class on a closed row, a duplicate and an unknown value are
   problems; a missing class is not.
-- `ledger_edit v01-class`: add, restate, bulk apply; refusals for closed rows and unknown classes.
+- `ledger_edit v01 set` and `v01 apply`: add, restate, bulk apply; refusals for closed rows and unknown
+  classes; `open --v01-class`; `close` and `merge` clear the class; a merge keeps the stricter class, and
+  an unclassified side counts as `v0_1_blocking`.
 - Release gate (tests inject `TIER1_CELLS`, because the real 3.15 cells always FAIL today): for 0.x, a
   ledger with only `tier2` open rows does not hold; an unclassified or `v0_1_blocking` row holds; a row
   classed twice is a problem; a Tier 1 cell whose Python is not admitted FAILs but the bundle assembles;
@@ -227,8 +233,8 @@ a claim change.
 - Release evidence and authority: a 0.x index without H0 succeeds; a 1.x index without H0 is refused;
   release notes come from the ledger at the source revision.
 - Known issues: rendering from a fixture ledger groups and orders rows as stated.
-- Proof plan: Tier 1 cells are synthesized with the stated axes; a matrix cell with an excluded backend
-  is refused.
+- Proof plan: a command whose argv selects an excluded backend is refused; the Falcon driver command
+  runs in `linux-x86_64-py312-wasm-release`.
 - Owning suites: `tests/tools/test_release_supply_chain.py`, `tests/tools/test_public_contract_gate.py`,
   the release-gate tests, `tests/test_proof_plan.py`, the ledger tool tests.
 
@@ -266,6 +272,21 @@ Round 1 (2026-11-05): `egm-design` and `egm-implementation-readiness`, each give
   generated doc, `aarch64`/`arm64` spelling. **Fixed** in 4.2, section 7 and the implementation; the
   candidate set is a decision for the parent (4.2).
 
+Round 2 (2026-11-05): the same reviewers, given only the revised file.
+
+- BLOCKER (design): release candidates and the consumer scope still require Tier 2 hosts, lanes and
+  Pythons. BLOCKER (design): E1's registry stays a required root key. BLOCKER (both): "a bundle may
+  still carry E1/E2" leaves gate behavior undecided. **Cut**: the release-line migration is section 11,
+  with the exact `pre-1.0` role set decided; this lane does not change release code.
+- BLOCKER (design): HF-788 and HF-790 are not on main. **Answered**: the integrator opened them in the
+  ledger lane; section 10 supplies their exit duty.
+- NOTE: the argv rule misses `--workspace` clippy and `cwd`-selected crates. **Answered**: invariant 5 is
+  "no command runs or compiles an experimental backend's tests or programs"; whole-workspace lint with
+  the backends' features off compiles their code but runs nothing of theirs, and stays.
+- NOTE: tests pin `mlir.test.backend` and `lune`. **Fixed** in the implementation with the commands.
+- NOTE: test plan out of date; merge order for unclassified; ledger line numbers; HF-626; version
+  guards. **Fixed** (sections 8, 10, 11).
+
 ## 10. Supplied text for the integrator's ledger edit
 
 1. In "Release decision and exit scope", replace the text from "`tools/release_exit_gate.py` reads this
@@ -276,7 +297,33 @@ Round 1 (2026-11-05): `egm-design` and `egm-implementation-readiness`, each give
    > (owner decision 2026-11-05: the first release is v0.1). Each open row carries one v0.1 class in the
    > family dependency order; an unclassified row holds a 0.x release.
 
-2. Restate the HF-620 row's finding cell: "The v0.1 support matrix is decided (owner, 2026-11-05): Tier 1
+2. HF-788 and HF-790 (opened by the integrator in the ledger lane, not yet on main) hold the
+   witness-level proof. Their exits add the duty: "once the producer exists, the release gate requires
+   its receipt for each Tier 1 cell of this witness". Class: `v0_1_blocking`.
+3. Restate the HF-620 row's finding cell: "The v0.1 support matrix is decided (owner, 2026-11-05): Tier 1
    is the four witness cells in `config/release_targets.toml`; every other cell is Tier 2." Its exit:
-   "The release gate, release evidence and the claim read `TIER1_CELLS`; every open row has a v0.1
-   class." The ledger lines 782, 1379 and 1383 that restate the 10-30 Tier 1 link to the same file.
+   "The release gate, release evidence and the claim read `TIER1_CELLS` (section 11); every open row has
+   a v0.1 class." The rows that restate the 10-30 Tier 1 link to the same file: HF-613, HF-621, HF-626
+   ("Windows … a Tier 1 target"; Windows is Tier 2) and the family T description.
+
+## 11. Release-line slice (cut from the HF-620 lane after round 2)
+
+Two review rounds showed that "a 0.x release is held only by Tier 1" changes the release pipeline in
+more places than the gate. The rule says to cut scope after two rounds, so this lane does not change
+release code; the gate and release tooling still hold every version to the 1.x bar. The next slice
+moves these consumers in one landing, with the rewritten tests:
+
+| Consumer | Today | `pre-1.0` |
+| --- | --- | --- |
+| `tools/release_exit_gate.py` `_derive_status`, `source_findings` (`:141-144`, `:575-588`) | every open row holds | `v0_1_blocking` and unclassified rows hold |
+| gate E3 roles (`:106-117`, `:780-794`, `:913`, `:1141-1149`, `:1223`) | all 108 coordinates | `tier1_coordinates()`; a cell without a coordinate is a FAIL input |
+| gate E1 registry and receipts (`:78-88`, `:352-359`, `:758-770`, `:836-839`, `:1137-1138`) | required root key and two receipts | absent; the exact `pre-1.0` role set refuses E1 and E2 |
+| gate E2 scoreboard (`:848-855`, `:1186-1194`) | required | absent |
+| `tools/release/release_evidence.py` (`:107-118`, `:155-204`) | H0, full v1 acceptance, all-coordinate E3 provenance; version from the caller | Tier 1 E3 provenance; version from the gate report |
+| `tools/release/release_authority.py` `resolve_source` (`:316-317`), candidates (`:1608-1614`), consumer scope (`:1075-1089`), notes (`:1709-1716`) | H0 planned; six targets; every lane × Python | no H0; Tier 1 hosts and lanes; notes append `tools/known_issues.py` |
+| `tools/release/release_model.py` (`:251`, `:280-296`, `:326`) | `phase_exit` required | absent; manifest schema v6 |
+| `.github/workflows/release.yml` (`:304-392`) | always signs H0 | `stable` only |
+
+An unreadable version selects the `stable` rule. The decided `pre-1.0` role set is exact: E4 plus the
+Tier 1 E3 roles; carried E1/E2 or non-Tier-1 E3 roles are refused, so a stale Tier 2 artifact cannot
+fail a 0.x release by accident.

@@ -178,7 +178,7 @@ discovery_only = false
 [[generator]]
 tool = "tools/gen_release_matrix.py"
 outputs = ["src/molt/release_matrix.py"]
-source = "config/release_targets.toml + src/molt/target_python.py + tools/generator_io.py"
+source = "config/release_targets.toml + config/release_acceptance_matrix.toml + src/molt/target_python_policy.py + src/molt/_python_release_generated.py + tools/generator_io.py"
 check_mode = true
 toolchains = []
 check_command = "tools/gen_release_matrix.py --check"

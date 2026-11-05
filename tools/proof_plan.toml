@@ -2663,7 +2663,7 @@ timeout_seconds = 900
 cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "python3", "-m", "pytest", "-q"]
-pytest = ["tests/tools/test_release_supply_chain.py", "tests/tools/test_release_sealed_replay.py", "tests/tools/test_release_matrix_acceptance.py", "tests/tools/test_release_matrix_consumer.py", "tests/tools/test_release_archive.py", "tests/tools/test_release_remote.py", "tests/tools/test_provision_wasi_sdk.py", "tests/test_release_lanes.py", "tests/tools/test_release_native_build.py", "tests/tools/test_release_installed_distribution.py", "tests/tools/test_release_exit_gate.py"]
+pytest = ["tests/tools/test_release_supply_chain.py", "tests/tools/test_release_sealed_replay.py", "tests/tools/test_release_matrix_acceptance.py", "tests/tools/test_release_matrix_consumer.py", "tests/tools/test_tier1_matrix.py", "tests/tools/test_release_archive.py", "tests/tools/test_release_remote.py", "tests/tools/test_provision_wasi_sdk.py", "tests/test_release_lanes.py", "tests/tools/test_release_native_build.py", "tests/tools/test_release_installed_distribution.py", "tests/tools/test_release_exit_gate.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
