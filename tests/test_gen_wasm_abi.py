@@ -4025,3 +4025,15 @@ def test_host_test_deny_launch_is_projected_from_the_python_authority():
             f"{json.dumps(name)}: {json.dumps(value)},"
             in (outputs[gen_wasm_host_test_launch.OUTPUT])
         )
+
+
+def test_manifest_registers_every_runtime_abi_projection() -> None:
+    import tomllib
+
+    manifest = tomllib.loads((ROOT / "tools/generator_manifest.toml").read_text())
+    producer = next(
+        row for row in manifest["generator"] if row["tool"] == "tools/gen_wasm_abi.py"
+    )
+    assert set(producer["outputs"]) == {
+        path.relative_to(ROOT).as_posix() for path in gen_wasm_abi.OUTPUT_PATHS
+    }
