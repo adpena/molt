@@ -519,7 +519,7 @@ def test_optimized_lowering_product_restores_metadata_and_coverage(
     path = _write_module(tmp_path, "m", "def g():\n    return 41 + 1\n")
     lease = _ModuleSourceLease.path_backed(path)
     gen = MC.SimpleTIRGenerator(module_name="m", known_modules={"m"})
-    gen.visit(ast.parse(path.read_text()))
+    gen.visit(ast.parse(path.read_text(encoding="utf-8")))
     ir = gen.to_json(scope="module")
     product = _module_frontend_payload(
         gen,
