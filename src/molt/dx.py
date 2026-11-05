@@ -13,6 +13,7 @@ import tempfile
 import tomllib
 import uuid
 import contextlib
+import functools
 from collections.abc import Callable, Collection, MutableMapping
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -50,6 +51,7 @@ from molt.environment_registry import (
 from molt import custody_layout
 from molt.path_custody import (
     host_path_is_within,
+    resolved_host_path_key,
     same_host_path,
 )
 from molt.source_root import compiler_source_root, installed_distribution_root
@@ -1803,6 +1805,18 @@ class StorageWriteClaim:
     path: Path
     exact: bool = False
 
+    @functools.cached_property
+    def key(self) -> str:
+        """The claim's comparison key: Windows DOS and verbatim (``\\\\?\\``)
+        spellings of one path share it (``path_custody.resolved_host_path_key``)."""
+        return resolved_host_path_key(self.path)
+
+    @functools.cached_property
+    def descendant_prefix(self) -> str:
+        # A Windows key is always in the verbatim namespace (\\?\ or \\.\).
+        separator = "\\" if self.key.startswith("\\\\") else "/"
+        return self.key if self.key.endswith(separator) else self.key + separator
+
 
 def sccache_server_temp_path(
     repo: Path,
@@ -2029,8 +2043,15 @@ def _storage_write_target(event: str, path: Path) -> Path:
 
 
 def _storage_write_admitted(check: _StorageWriteCheck, path: Path) -> bool:
-    return path == Path(os.devnull) or any(
-        path == claim.path or (not claim.exact and claim.path in path.parents)
+    # Compare keys, not spellings: Windows cleanup names long paths in the
+    # verbatim namespace (\\?\C:\...), and the claim that admits them is a
+    # DOS path (bat00, 2026-11-04: ~680 farm test failures).
+    if path == Path(os.devnull):
+        return True
+    key = resolved_host_path_key(path)
+    return any(
+        key == claim.key
+        or (not claim.exact and key.startswith(claim.descendant_prefix))
         for claim in check.claims
     )
 
