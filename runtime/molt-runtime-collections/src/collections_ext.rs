@@ -178,7 +178,6 @@ fn od_handle_from_bits(_py: &CoreGilToken, handle_bits: u64) -> Option<i64> {
 // ─── Public intrinsics: OrderedDict ──────────────────────────────────────────
 
 /// Create a new empty OrderedDict. Returns an integer handle.
-
 pub fn molt_ordereddict_new_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let id = next_ordereddict_handle(_py);
@@ -192,7 +191,6 @@ pub fn molt_ordereddict_new_attached_body(_py: &molt_runtime_core::PyToken) -> u
 }
 
 /// Create an OrderedDict from a list of (k, v) 2-tuples. Returns handle.
-
 pub fn molt_ordereddict_from_pairs_attached_body(
     _py: &molt_runtime_core::PyToken,
     pairs_bits: u64,
@@ -246,7 +244,6 @@ pub fn molt_ordereddict_from_pairs_attached_body(
 }
 
 /// Set key → value. Returns None.
-
 pub fn molt_ordereddict_setitem_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -268,7 +265,6 @@ pub fn molt_ordereddict_setitem_attached_body(
 }
 
 /// Get value for key. Raises KeyError if missing.
-
 pub fn molt_ordereddict_getitem_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -292,7 +288,6 @@ pub fn molt_ordereddict_getitem_attached_body(
 }
 
 /// Delete key. Raises KeyError if missing. Returns None.
-
 pub fn molt_ordereddict_delitem_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -316,7 +311,6 @@ pub fn molt_ordereddict_delitem_attached_body(
 }
 
 /// Return True if key is present.
-
 pub fn molt_ordereddict_contains_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -340,7 +334,6 @@ pub fn molt_ordereddict_contains_attached_body(
 }
 
 /// Return number of entries.
-
 pub fn molt_ordereddict_len_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -361,7 +354,6 @@ pub fn molt_ordereddict_len_attached_body(
 }
 
 /// Return list of keys in insertion order.
-
 pub fn molt_ordereddict_keys_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -388,7 +380,6 @@ pub fn molt_ordereddict_keys_attached_body(
 }
 
 /// Return list of values in insertion order.
-
 pub fn molt_ordereddict_values_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -415,7 +406,6 @@ pub fn molt_ordereddict_values_attached_body(
 }
 
 /// Return list of (key, value) 2-tuples in insertion order.
-
 pub fn molt_ordereddict_items_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -454,7 +444,6 @@ pub fn molt_ordereddict_items_attached_body(
 }
 
 /// Move key to end (last=True) or front (last=False). Returns None.
-
 pub fn molt_ordereddict_move_to_end_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -487,7 +476,6 @@ pub fn molt_ordereddict_move_to_end_attached_body(
 }
 
 /// Remove and return (key, value) from end (last=True) or front (last=False).
-
 pub fn molt_ordereddict_popitem_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -517,7 +505,6 @@ pub fn molt_ordereddict_popitem_attached_body(
 
 /// Pop key, returning value or default. Returns None sentinel if key missing
 /// and no default provided (default_bits must be None sentinel or a value).
-
 pub fn molt_ordereddict_pop_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -555,7 +542,6 @@ pub fn molt_ordereddict_pop_attached_body(
 }
 
 /// Update from another OrderedDict handle or a regular dict object. Returns None.
-
 pub fn molt_ordereddict_update_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -618,7 +604,6 @@ pub fn molt_ordereddict_update_attached_body(
 }
 
 /// Clear all entries. Returns None.
-
 pub fn molt_ordereddict_clear_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -638,7 +623,6 @@ pub fn molt_ordereddict_clear_attached_body(
 }
 
 /// Return a shallow copy as a new handle.
-
 pub fn molt_ordereddict_copy_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -671,7 +655,6 @@ pub fn molt_ordereddict_copy_attached_body(
 }
 
 /// Release handle resources. Returns None.
-
 pub fn molt_ordereddict_drop_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -855,7 +838,6 @@ fn resolve_index(index: i64, len: usize) -> Option<usize> {
 // ─── Public intrinsics: deque ───────────────────────────────────────────────
 
 /// Create a new empty deque with optional maxlen. Returns an integer handle.
-
 pub fn molt_deque_new_attached_body(_py: &molt_runtime_core::PyToken, maxlen_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let maxlen = match parse_maxlen(_py, maxlen_bits) {
@@ -875,7 +857,6 @@ pub fn molt_deque_new_attached_body(_py: &molt_runtime_core::PyToken, maxlen_bit
 /// Create a deque from an iterable (list/tuple) with optional maxlen.
 /// If maxlen is set and the iterable is longer, keeps only the last maxlen elements.
 /// Returns handle.
-
 pub fn molt_deque_from_iterable_attached_body(
     _py: &molt_runtime_core::PyToken,
     iterable_bits: u64,
@@ -902,7 +883,6 @@ pub fn molt_deque_from_iterable_attached_body(
 
 /// Append item to the right end. If bounded and full, pop from the left.
 /// Returns None.
-
 pub fn molt_deque_append_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -939,7 +919,6 @@ pub fn molt_deque_append_attached_body(
 
 /// Append item to the left end. If bounded and full, pop from the right.
 /// Returns None.
-
 pub fn molt_deque_appendleft_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -975,7 +954,6 @@ pub fn molt_deque_appendleft_attached_body(
 
 /// Remove and return the rightmost element.
 /// Raises IndexError if the deque is empty.
-
 pub fn molt_deque_pop_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
@@ -1002,7 +980,6 @@ pub fn molt_deque_pop_attached_body(_py: &molt_runtime_core::PyToken, handle_bit
 
 /// Remove and return the leftmost element.
 /// Raises IndexError if the deque is empty.
-
 pub fn molt_deque_popleft_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
@@ -1030,7 +1007,6 @@ pub fn molt_deque_popleft_attached_body(_py: &molt_runtime_core::PyToken, handle
 /// Extend the right side from an iterable (list/tuple).
 /// For bounded deques, evicts from the left as needed.
 /// Returns None.
-
 pub fn molt_deque_extend_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1079,7 +1055,6 @@ pub fn molt_deque_extend_attached_body(
 /// iterable (equivalent to appendleft() for each element in order).
 /// For bounded deques, evicts from the right as needed.
 /// Returns None.
-
 pub fn molt_deque_extendleft_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1130,7 +1105,6 @@ pub fn molt_deque_extendleft_attached_body(
 /// n == 0 or empty deque: no-op.
 /// Uses VecDeque::rotate_right/rotate_left for O(min(n, len)) performance.
 /// Returns None.
-
 pub fn molt_deque_rotate_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1169,7 +1143,6 @@ pub fn molt_deque_rotate_attached_body(
 }
 
 /// Return the length of the deque as a NaN-boxed int.
-
 pub fn molt_deque_len_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
@@ -1188,7 +1161,6 @@ pub fn molt_deque_len_attached_body(_py: &molt_runtime_core::PyToken, handle_bit
 
 /// Get element at index. Supports negative indexing.
 /// Raises IndexError "deque index out of range" if out of bounds.
-
 pub fn molt_deque_getitem_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1222,7 +1194,6 @@ pub fn molt_deque_getitem_attached_body(
 /// Set element at index. Supports negative indexing.
 /// Raises IndexError if out of bounds.
 /// Returns None.
-
 pub fn molt_deque_setitem_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1267,7 +1238,6 @@ pub fn molt_deque_setitem_attached_body(
 /// Uses VecDeque::remove() which is O(min(i, n-i)).
 /// Raises IndexError if out of bounds.
 /// Returns None.
-
 pub fn molt_deque_delitem_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1312,7 +1282,6 @@ pub fn molt_deque_delitem_attached_body(
 
 /// Return True if item is found in the deque via rich equality comparison.
 /// Uses iterator, no allocation.
-
 pub fn molt_deque_contains_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1355,7 +1324,6 @@ pub fn molt_deque_contains_attached_body(
 
 /// Count elements equal to item via rich equality. Returns count as NaN-boxed int.
 /// Reloads and retains one live element per comparison.
-
 pub fn molt_deque_count_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1400,7 +1368,6 @@ pub fn molt_deque_count_attached_body(
 /// Search for item in range [start, stop). Negative indices resolved relative
 /// to length, clamped to [0, len].
 /// Raises ValueError "x is not in deque" if not found.
-
 pub fn molt_deque_index_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1482,7 +1449,6 @@ pub fn molt_deque_index_attached_body(
 /// IndexError "deque already at its maximum size".
 /// Negative indices resolve but clamp to 0. Index beyond len clamps to len.
 /// Returns None.
-
 pub fn molt_deque_insert_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1552,7 +1518,6 @@ pub fn molt_deque_insert_attached_body(
 /// Remove first occurrence of item. Raises ValueError
 /// "deque.remove(x): x not in deque" if not found.
 /// Returns None.
-
 pub fn molt_deque_remove_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1619,7 +1584,6 @@ pub fn molt_deque_remove_attached_body(
 /// Reverse the deque in place.
 /// Uses make_contiguous() + reverse() for performance.
 /// Returns None.
-
 pub fn molt_deque_reverse_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
@@ -1636,7 +1600,6 @@ pub fn molt_deque_reverse_attached_body(_py: &molt_runtime_core::PyToken, handle
 }
 
 /// Clear all elements. Returns None.
-
 pub fn molt_deque_clear_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
@@ -1662,7 +1625,6 @@ pub fn molt_deque_clear_attached_body(_py: &molt_runtime_core::PyToken, handle_b
 
 /// Create a shallow copy. The new deque owns retained references to the same elements.
 /// Returns a new handle with the same maxlen.
-
 pub fn molt_deque_copy_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
@@ -1688,7 +1650,6 @@ pub fn molt_deque_copy_attached_body(_py: &molt_runtime_core::PyToken, handle_bi
 }
 
 /// Return maxlen as NaN-boxed int, or None if unbounded.
-
 pub fn molt_deque_maxlen_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
@@ -1708,7 +1669,6 @@ pub fn molt_deque_maxlen_attached_body(_py: &molt_runtime_core::PyToken, handle_
 }
 
 /// Remove handle from the global registry. Returns None.
-
 pub fn molt_deque_drop_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
@@ -1878,7 +1838,6 @@ fn defaultdict_missing_value(_py: &CoreGilToken, handle_bits: u64, key_bits: u64
 
 /// Create a new defaultdict handle storing the factory callable (or None).
 /// Returns integer handle.
-
 pub fn molt_defaultdict_new_attached_body(
     _py: &molt_runtime_core::PyToken,
     factory_bits: u64,
@@ -1900,7 +1859,6 @@ pub fn molt_defaultdict_new_attached_body(
 /// If factory is not None, call it with 0 args and return the default value
 /// bits.  The Python caller is responsible for inserting the value into the
 /// underlying dict.
-
 pub fn molt_defaultdict_missing_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1912,7 +1870,6 @@ pub fn molt_defaultdict_missing_attached_body(
 }
 
 /// Return the factory_bits.  If None, return None bits.
-
 pub fn molt_defaultdict_factory_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1933,7 +1890,6 @@ pub fn molt_defaultdict_factory_attached_body(
 }
 
 /// Release defaultdict handle.  Returns None.
-
 pub fn molt_defaultdict_drop_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -2017,7 +1973,6 @@ mod identifier_tests;
 /// - rename_bits: bool — whether to auto-rename invalid names
 ///
 /// Returns: tuple[str, ...] of validated/normalized field names.
-
 pub fn molt_namedtuple_validate_fields_attached_body(
     _py: &molt_runtime_core::PyToken,
     typename_bits: u64,

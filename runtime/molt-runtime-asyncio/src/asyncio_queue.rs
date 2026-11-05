@@ -312,7 +312,6 @@ fn handle_from_bits(bits: u64) -> i64 {
 /// `queue_type`: NaN-boxed int, 0 = FIFO, 1 = LIFO, 2 = Priority.
 ///
 /// Returns a NaN-boxed int handle.
-
 pub fn molt_asyncio_queue_new_attached_body(
     _py: &molt_runtime_core::PyToken,
     maxsize_bits: u64,
@@ -358,7 +357,6 @@ pub fn molt_asyncio_queue_new_attached_body(
 /// If the queue is shut down, raises `asyncio.QueueShutDown`.
 ///
 /// Returns `MoltObject::none()` on success.
-
 pub fn molt_asyncio_queue_put_nowait_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -408,7 +406,6 @@ pub fn molt_asyncio_queue_put_nowait_attached_body(
 /// If the queue is empty, raises `asyncio.QueueEmpty`.
 ///
 /// Returns the item bits (caller takes ownership of the reference).
-
 pub fn molt_asyncio_queue_get_nowait_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -444,7 +441,6 @@ pub fn molt_asyncio_queue_get_nowait_attached_body(
 }
 
 /// Return the current number of items in the queue.
-
 pub fn molt_asyncio_queue_qsize_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -463,7 +459,6 @@ pub fn molt_asyncio_queue_qsize_attached_body(
 }
 
 /// Return the maxsize of the queue (0 = unlimited).
-
 pub fn molt_asyncio_queue_maxsize_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -482,7 +477,6 @@ pub fn molt_asyncio_queue_maxsize_attached_body(
 }
 
 /// Return True if the queue is empty.
-
 pub fn molt_asyncio_queue_empty_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -501,7 +495,6 @@ pub fn molt_asyncio_queue_empty_attached_body(
 }
 
 /// Return True if the queue is full.
-
 pub fn molt_asyncio_queue_full_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -523,7 +516,6 @@ pub fn molt_asyncio_queue_full_attached_body(
 ///
 /// Raises `ValueError` if called more times than items have been put.
 /// Returns `MoltObject::none()` on success.
-
 pub fn molt_asyncio_queue_task_done_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -554,7 +546,6 @@ pub fn molt_asyncio_queue_task_done_attached_body(
 }
 
 /// Return the current `unfinished_tasks` count.
-
 pub fn molt_asyncio_queue_unfinished_tasks_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -578,7 +569,6 @@ pub fn molt_asyncio_queue_unfinished_tasks_attached_body(
 /// and all remaining items are dec_ref'd.
 ///
 /// Returns `MoltObject::none()`.
-
 pub fn molt_asyncio_queue_shutdown_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -621,7 +611,6 @@ pub fn molt_asyncio_queue_shutdown_attached_body(
 }
 
 /// Return True if the queue has been shut down.
-
 pub fn molt_asyncio_queue_is_shutdown_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -640,7 +629,6 @@ pub fn molt_asyncio_queue_is_shutdown_attached_body(
 }
 
 /// Drop and clean up a queue handle. All remaining items are dec_ref'd.
-
 pub fn molt_asyncio_queue_drop_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,

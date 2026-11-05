@@ -13,7 +13,6 @@ use super::common::{alloc_tuple_result, bits_to_string};
 ///   - "#RRRRGGGGBBBB" — each component 0-65535, scaled to 0-255 (component >> 8)
 ///
 /// Returns None on failure (not a valid hex color string).
-
 pub fn molt_tk_hex_to_rgb_attached_body(_py: &molt_runtime_core::PyToken, color_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(color) = bits_to_string(_py, color_bits) else {

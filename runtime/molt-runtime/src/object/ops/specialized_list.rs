@@ -625,7 +625,6 @@ pub(crate) fn molt_list_getitem_int_fast_attached_body(
 /// the as_int_unchecked() unbox — the index is already a plain i64.
 ///
 /// The list operand is still NaN-boxed (it's a heap pointer).
-
 #[inline(never)]
 pub(crate) fn molt_list_getitem_raw_idx_attached_body(
     _py: &crate::PyToken<'_>,

@@ -922,7 +922,6 @@ pub fn molt_binascii_crc_hqx_attached_body(
 
 /// `molt_uu_codec_encode(data, filename, mode)` — full UU-encoded message with
 /// begin/end framing.  Reuses the internal `uu_encode` per-line function.
-
 pub fn molt_uu_codec_encode_attached_body(
     _py: &molt_runtime_core::PyToken,
     data_bits: u64,
@@ -966,7 +965,6 @@ pub fn molt_uu_codec_encode_attached_body(
 
 /// `molt_uu_codec_decode(data)` — decode a full UU-encoded message (find begin,
 /// decode lines, expect end).
-
 pub fn molt_uu_codec_decode_attached_body(_py: &molt_runtime_core::PyToken, data_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let input_export = match unsafe { ByteInput::acquire(_py, data_bits) } {

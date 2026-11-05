@@ -182,7 +182,6 @@ fn parse_root(
 // ---------------------------------------------------------------------------
 
 /// Returns normalized pathlib parts using the same root provider as splitroot.
-
 pub fn molt_pathlib_parts_attached_body(
     _py: &molt_runtime_core::PyToken,
     path_bits: u64,
@@ -236,7 +235,6 @@ pub fn molt_pathlib_parts_attached_body(
 }
 
 /// Split original separator spelling; pathlib normalizes its own input first.
-
 pub fn molt_path_splitroot_attached_body(
     _py: &molt_runtime_core::PyToken,
     path_bits: u64,
@@ -297,7 +295,6 @@ pub fn molt_path_splitroot_attached_body(
 // ---------------------------------------------------------------------------
 
 /// `Path.cwd()` -> str
-
 pub fn molt_pathlib_cwd_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         match std::env::current_dir() {
@@ -308,7 +305,6 @@ pub fn molt_pathlib_cwd_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 }
 
 /// `path.resolve()` -> str  (absolute, normalized path)
-
 pub fn molt_pathlib_resolve_attached_body(_py: &molt_runtime_core::PyToken, path_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "pathlib.resolve", audit_path_arg(path_bits)) {
@@ -337,7 +333,6 @@ pub fn molt_pathlib_resolve_attached_body(_py: &molt_runtime_core::PyToken, path
 }
 
 /// `path.is_mount()` -> bool
-
 pub fn molt_pathlib_is_mount_attached_body(
     _py: &molt_runtime_core::PyToken,
     path_bits: u64,
@@ -384,7 +379,6 @@ pub fn molt_pathlib_is_mount_attached_body(
 }
 
 /// `path.iterdir()` -> list[str]
-
 pub fn molt_pathlib_iterdir_attached_body(_py: &molt_runtime_core::PyToken, path_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "pathlib.iterdir", audit_path_arg(path_bits)) {
@@ -410,7 +404,6 @@ pub fn molt_pathlib_iterdir_attached_body(_py: &molt_runtime_core::PyToken, path
 }
 
 /// `path.touch(exist_ok=True)` -> None
-
 pub fn molt_pathlib_touch_attached_body(
     _py: &molt_runtime_core::PyToken,
     path_bits: u64,
@@ -487,7 +480,6 @@ pub fn molt_pathlib_hardlink_to_attached_body(
 }
 
 /// `path.read_bytes()` -> bytes
-
 pub fn molt_pathlib_read_bytes_attached_body(
     _py: &molt_runtime_core::PyToken,
     path_bits: u64,
@@ -516,7 +508,6 @@ pub fn molt_pathlib_read_bytes_attached_body(
 }
 
 /// `path.write_bytes(data)` -> int
-
 pub fn molt_pathlib_write_bytes_attached_body(
     _py: &molt_runtime_core::PyToken,
     path_bits: u64,
@@ -553,7 +544,6 @@ pub fn molt_pathlib_write_bytes_attached_body(
 }
 
 /// `path.owner()` -> str (Unix only)
-
 pub fn molt_pathlib_owner_attached_body(_py: &molt_runtime_core::PyToken, path_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let s = match path_from_bits(_py, path_bits) {
@@ -612,7 +602,6 @@ pub fn molt_pathlib_owner_attached_body(_py: &molt_runtime_core::PyToken, path_b
 }
 
 /// `path.group()` -> str (Unix only)
-
 pub fn molt_pathlib_group_attached_body(_py: &molt_runtime_core::PyToken, path_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let s = match path_from_bits(_py, path_bits) {
@@ -673,7 +662,6 @@ pub fn molt_pathlib_group_attached_body(_py: &molt_runtime_core::PyToken, path_b
 }
 
 /// `path.samefile(other_path)` -> bool
-
 pub fn molt_pathlib_samefile_attached_body(
     _py: &molt_runtime_core::PyToken,
     path_bits: u64,

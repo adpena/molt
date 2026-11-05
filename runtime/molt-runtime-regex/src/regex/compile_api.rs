@@ -9,7 +9,6 @@ use molt_runtime_core::BuiltinExc;
 ///
 /// Parse a regex pattern string and return an owned immutable native handle.
 /// Returns -1 and raises `re.error` on parse failure.
-
 pub fn molt_re_compile_attached_body(
     _py: &molt_runtime_core::PyToken,
     pattern_bits: u64,
@@ -91,7 +90,6 @@ pub fn molt_re_compile_attached_body(
 ///   1: group_names â€” dict,  {name: index}
 ///   2: flags       â€” int,   effective flags (pattern flags | inline flags)
 ///   3: warn_pos    â€” int or None,  char position of nested-set warning (or None)
-
 pub fn molt_re_pattern_info_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,

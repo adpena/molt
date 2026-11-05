@@ -17,7 +17,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static TASK_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Returns the next asyncio task name as a NaN-boxed string: "Task-N".
-
 pub fn molt_asyncio_task_next_name_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
         let n = TASK_NAME_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
@@ -35,7 +34,6 @@ pub fn molt_asyncio_task_next_name_attached_body(_py: &molt_runtime_core::PyToke
 /// runtime. The entrypoint must be called only while the Molt runtime is
 /// initialized; Python-level errors are reported through the runtime exception
 /// state.
-
 pub unsafe fn molt_asyncio_validate_coro_attached_body(
     _py: &molt_runtime_core::PyToken,
     coro_bits: u64,
@@ -61,7 +59,6 @@ pub unsafe fn molt_asyncio_validate_coro_attached_body(
 /// `cancel_requested_bits` must be a NaN-boxed Molt object value produced by
 /// the active runtime. The entrypoint must be called only while the Molt
 /// runtime is initialized.
-
 pub unsafe fn molt_asyncio_task_cancel_state_attached_body(
     _py: &molt_runtime_core::PyToken,
     cancel_requested_bits: u64,
@@ -80,7 +77,6 @@ pub unsafe fn molt_asyncio_task_cancel_state_attached_body(
 /// `cancel_requested_bits` must be a NaN-boxed Molt object value produced by
 /// the active runtime. The entrypoint must be called only while the Molt
 /// runtime is initialized.
-
 pub unsafe fn molt_asyncio_task_uncancel_state_attached_body(
     _py: &molt_runtime_core::PyToken,
     cancel_requested_bits: u64,
@@ -101,7 +97,6 @@ pub unsafe fn molt_asyncio_task_uncancel_state_attached_body(
 /// runtime. The entrypoint must be called only while the Molt runtime is
 /// initialized; invalid Python values are reported through the runtime
 /// exception state.
-
 pub unsafe fn molt_asyncio_validate_semaphore_value_attached_body(
     _py: &molt_runtime_core::PyToken,
     value_bits: u64,
@@ -128,7 +123,6 @@ pub unsafe fn molt_asyncio_validate_semaphore_value_attached_body(
 /// runtime. The entrypoint must be called only while the Molt runtime is
 /// initialized; invalid Python values are reported through the runtime
 /// exception state.
-
 pub unsafe fn molt_asyncio_validate_barrier_parties_attached_body(
     _py: &molt_runtime_core::PyToken,
     parties_bits: u64,
@@ -153,7 +147,6 @@ pub unsafe fn molt_asyncio_validate_barrier_parties_attached_body(
 /// `count_bits` must be a NaN-boxed Molt object value produced by the active
 /// runtime. The entrypoint must be called only while the Molt runtime is
 /// initialized.
-
 pub unsafe fn molt_asyncio_barrier_count_incr_attached_body(
     _py: &molt_runtime_core::PyToken,
     count_bits: u64,
@@ -165,14 +158,12 @@ pub unsafe fn molt_asyncio_barrier_count_incr_attached_body(
 }
 
 /// Barrier reset: returns 0 (new count) as int bits.
-
 pub fn molt_asyncio_barrier_reset_state_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, { int_bits_from_i64(py, 0) })
 }
 
 /// Barrier abort: returns 0 (new count) as int bits.
 /// The Python side sets the broken flag separately.
-
 pub fn molt_asyncio_barrier_abort_state_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, { int_bits_from_i64(py, 0) })
 }
@@ -187,7 +178,6 @@ pub fn molt_asyncio_barrier_abort_state_attached_body(_py: &molt_runtime_core::P
 /// runtime. The entrypoint must be called only while the Molt runtime is
 /// initialized; invalid lock state is reported through the runtime exception
 /// state.
-
 pub unsafe fn molt_asyncio_lock_validate_release_attached_body(
     _py: &molt_runtime_core::PyToken,
     locked_bits: u64,
@@ -212,7 +202,6 @@ pub unsafe fn molt_asyncio_lock_validate_release_attached_body(
 /// runtime. The entrypoint must be called only while the Molt runtime is
 /// initialized; invalid condition state is reported through the runtime
 /// exception state.
-
 pub unsafe fn molt_asyncio_condition_validate_locked_attached_body(
     _py: &molt_runtime_core::PyToken,
     locked_bits: u64,
@@ -240,7 +229,6 @@ pub unsafe fn molt_asyncio_condition_validate_locked_attached_body(
 /// `_buffer_bits` and `n_bits` must be NaN-boxed Molt object values produced by
 /// the active runtime. The entrypoint must be called only while the Molt
 /// runtime is initialized.
-
 pub unsafe fn molt_asyncio_stream_buffer_read_attached_body(
     _py: &molt_runtime_core::PyToken,
     _buffer_bits: u64,
@@ -268,7 +256,6 @@ pub unsafe fn molt_asyncio_stream_buffer_read_attached_body(
 /// by the active runtime. The entrypoint must be called only while the Molt
 /// runtime is initialized; invalid Python values are reported through the
 /// runtime exception state.
-
 pub unsafe fn molt_asyncio_stream_writer_buffer_append_attached_body(
     _py: &molt_runtime_core::PyToken,
     _buffer_bits: u64,

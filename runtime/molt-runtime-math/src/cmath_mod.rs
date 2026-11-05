@@ -509,7 +509,6 @@ pub fn molt_cmath_atanh_attached_body(
 }
 
 /// phase(z) = atan2(imag, real)
-
 pub fn molt_cmath_phase_attached_body(
     _py: &molt_runtime_core::PyToken,
     real_bits: u64,
@@ -529,7 +528,6 @@ pub fn molt_cmath_phase_attached_body(
 }
 
 /// polar(z) -> (r, phi) where r = |z|, phi = phase(z)
-
 pub fn molt_cmath_polar_attached_body(
     _py: &molt_runtime_core::PyToken,
     real_bits: u64,
@@ -559,7 +557,6 @@ pub fn molt_cmath_polar_attached_body(
 }
 
 /// rect(r, phi) -> (r*cos(phi), r*sin(phi))
-
 pub fn molt_cmath_rect_attached_body(
     _py: &molt_runtime_core::PyToken,
     r_bits: u64,
@@ -633,7 +630,6 @@ pub fn molt_cmath_isnan_attached_body(
 }
 
 /// isclose(a, b, rel_tol=1e-09, abs_tol=0.0)
-
 pub fn molt_cmath_isclose_attached_body(
     _py: &molt_runtime_core::PyToken,
     a_real: u64,
@@ -669,7 +665,6 @@ pub fn molt_cmath_isclose_attached_body(
 }
 
 /// constants() -> tuple (pi, e, tau, inf, infj_real, infj_imag, nan, nanj_real, nanj_imag)
-
 pub fn molt_cmath_constants_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         use std::f64::consts;

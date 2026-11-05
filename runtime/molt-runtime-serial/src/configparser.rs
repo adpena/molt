@@ -1171,7 +1171,6 @@ pub fn molt_configparser_drop_attached_body(
 
 /// Serialize the config to an INI-format string and return it (instead of writing to file).
 /// This allows the Python side to write to any file-like object.
-
 pub fn molt_configparser_write_string_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1206,7 +1205,6 @@ pub fn molt_configparser_write_string_attached_body(
 
 /// Get a raw (uninterpolated) value for ConfigParser.get(raw=True).
 /// Returns the raw string value, or None if not found.
-
 pub fn molt_configparser_get_raw_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1254,7 +1252,6 @@ pub fn molt_configparser_get_raw_attached_body(
 
 /// Perform basic %(key)s interpolation on a value string within a section context.
 /// Returns the interpolated string.
-
 pub fn molt_configparser_interpolate_basic_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1298,7 +1295,6 @@ pub fn molt_configparser_interpolate_basic_attached_body(
 
 /// Perform extended ${section:option} interpolation on a value string.
 /// Returns the interpolated string.
-
 pub fn molt_configparser_interpolate_extended_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1402,7 +1398,6 @@ fn interpolate_extended(state: &ConfigState, value: &str, section: &str) -> Stri
 
 /// Read from a file-like object (string content) into the configparser.
 /// This wraps read_string but accepts an explicit source name for error messages.
-
 pub fn molt_configparser_read_file_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1440,7 +1435,6 @@ pub fn molt_configparser_read_file_attached_body(
 }
 
 /// Get the defaults dict as a list of (key, value) pairs.
-
 pub fn molt_configparser_defaults_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,

@@ -3,7 +3,6 @@ use molt_runtime_core::BuiltinExc;
 use std::sync::{Arc, Mutex};
 
 /// `molt_re_execute(handle, text, pos, end, mode) -> match_result | None`.
-
 pub fn molt_re_execute_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -73,7 +72,6 @@ pub fn molt_re_execute_attached_body(
 
 /// Create a GREEN scanner state for one Pattern.finditer call. The Python
 /// iterator owns the original subject and the memoryview lease for byte input.
-
 pub fn molt_re_scanner_new_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -126,7 +124,6 @@ pub fn molt_re_scanner_new_attached_body(
 
 /// Advance the scanner once and return one ordinary match-result tuple, or
 /// None on exhaustion. The live memoryview is borrowed only during matching.
-
 pub fn molt_re_finditer_next_attached_body(
     _py: &molt_runtime_core::PyToken,
     scanner_bits: u64,

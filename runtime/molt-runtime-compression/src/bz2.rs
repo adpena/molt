@@ -43,7 +43,6 @@ fn return_bytes(_py: &PyToken, data: &[u8]) -> u64 {
 // ── One-shot compress / decompress ───────────────────────────────────────────
 
 /// `bz2.compress(data, compresslevel=9) -> bytes`
-
 pub fn molt_bz2_compress_attached_body(
     _py: &molt_runtime_core::PyToken,
     data_bits: u64,
@@ -83,7 +82,6 @@ pub fn molt_bz2_compress_attached_body(
 }
 
 /// `bz2.decompress(data) -> bytes`
-
 pub fn molt_bz2_decompress_attached_body(_py: &molt_runtime_core::PyToken, data_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let data_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
@@ -127,7 +125,6 @@ fn bz2_compressor_from_bits(
 }
 
 /// `bz2.BZ2Compressor(compresslevel=9)` → handle
-
 pub fn molt_bz2_compressor_new_attached_body(
     _py: &molt_runtime_core::PyToken,
     compresslevel_bits: u64,
@@ -151,7 +148,6 @@ pub fn molt_bz2_compressor_new_attached_body(
 }
 
 /// `compressor.compress(data) -> bytes`
-
 pub fn molt_bz2_compressor_compress_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -199,7 +195,6 @@ pub fn molt_bz2_compressor_compress_attached_body(
 }
 
 /// `compressor.flush() -> bytes`  (finalises the stream)
-
 pub fn molt_bz2_compressor_flush_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -282,7 +277,6 @@ fn bz2_decompressor_from_bits(
 }
 
 /// `bz2.BZ2Decompressor()` → handle
-
 pub fn molt_bz2_decompressor_new_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let handle = Arc::new(Mutex::new(Bz2DecompressorHandle {
@@ -299,7 +293,6 @@ pub fn molt_bz2_decompressor_new_attached_body(_py: &molt_runtime_core::PyToken)
 }
 
 /// `decompressor.decompress(data, max_length=-1) -> bytes`
-
 pub fn molt_bz2_decompressor_decompress_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -355,7 +348,6 @@ pub fn molt_bz2_decompressor_decompress_attached_body(
 }
 
 /// `decompressor.eof` property
-
 pub fn molt_bz2_decompressor_eof_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -373,7 +365,6 @@ pub fn molt_bz2_decompressor_eof_attached_body(
 }
 
 /// `decompressor.needs_input` property
-
 pub fn molt_bz2_decompressor_needs_input_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -394,7 +385,6 @@ pub fn molt_bz2_decompressor_needs_input_attached_body(
 
 /// Returns the number of bytes written to the underlying stream so far.
 /// Matches `BZ2Compressor.unused_data` / `BZ2Decompressor.unused_data` concept.
-
 pub fn molt_bz2_decompressor_unused_data_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -435,7 +425,6 @@ fn bz2_file_handle_from_bits(
 }
 
 /// `bz2.open(filename, mode, compresslevel) -> handle`
-
 pub fn molt_bz2_file_open_attached_body(
     _py: &molt_runtime_core::PyToken,
     filename_bits: u64,
@@ -509,7 +498,6 @@ pub fn molt_bz2_file_open_attached_body(
 }
 
 /// `handle.read(size=-1) -> bytes`
-
 pub fn molt_bz2_file_read_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -563,7 +551,6 @@ pub fn molt_bz2_file_read_attached_body(
 }
 
 /// `handle.write(data) -> int`
-
 pub fn molt_bz2_file_write_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -607,7 +594,6 @@ pub fn molt_bz2_file_write_attached_body(
 }
 
 /// `handle.close() -> None`  (finishes the bz2 stream)
-
 pub fn molt_bz2_file_close_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,

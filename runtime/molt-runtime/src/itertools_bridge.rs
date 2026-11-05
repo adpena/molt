@@ -219,7 +219,6 @@ pub extern "C" fn molt_itertools_object_class_bits(ptr: *mut u8) -> u64 {
 // ---------------------------------------------------------------------------
 
 /// Object type ID — exposed for the itertools crate.
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_type_id(ptr: *mut u8) -> u32 {
     unsafe { object_type_id(ptr) }

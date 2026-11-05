@@ -37,7 +37,6 @@ fn gzip_handle_from_bits(
 /// `gzip.open(filename, mode, compresslevel) -> handle`
 ///
 /// This is the retained filename READ owner. Writing uses BufferedWriter and zlib.
-
 pub fn molt_gzip_open_attached_body(
     _py: &molt_runtime_core::PyToken,
     filename_bits: u64,
@@ -99,7 +98,6 @@ pub fn molt_gzip_open_attached_body(
 }
 
 /// `handle.read(size=-1) -> bytes`
-
 pub fn molt_gzip_read_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -153,7 +151,6 @@ pub fn molt_gzip_read_attached_body(
 }
 
 /// `reader.close() -> None`
-
 pub fn molt_gzip_close_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(handle_owner) = gzip_handle_from_bits(_py, handle_bits) else {

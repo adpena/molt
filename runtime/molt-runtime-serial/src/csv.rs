@@ -1059,7 +1059,6 @@ pub fn molt_csv_quote_notnull_attached_body(_py: &molt_runtime_core::PyToken) ->
 /// Get or set the per-thread field size limit.
 /// Pass MoltObject::none() as `new_limit_bits` to query without changing.
 /// Returns the previous (or current) limit.
-
 pub fn molt_csv_field_size_limit_attached_body(
     _py: &molt_runtime_core::PyToken,
     new_limit_bits: u64,
@@ -1290,7 +1289,6 @@ pub fn molt_csv_get_dialect_attached_body(
 ///   strict_bits         – bool
 ///
 /// Returns the handle ID as an int.
-
 pub fn molt_csv_reader_new_attached_body(
     _py: &molt_runtime_core::PyToken,
     delimiter_bits: u64,
@@ -1348,7 +1346,6 @@ pub fn molt_csv_reader_new_attached_body(
 // ── Reader: parse_line (arity 2) ──────────────────────────────────────────────
 
 /// Parse a single line of CSV text into a list<str> of fields.
-
 pub fn molt_csv_reader_parse_line_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1396,7 +1393,6 @@ pub fn molt_csv_reader_parse_line_attached_body(
 // ── Reader: parse_lines (arity 3) ─────────────────────────────────────────────
 
 /// Parse multi-line CSV text into a list<list<str>>.
-
 pub fn molt_csv_reader_parse_lines_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1511,7 +1507,6 @@ pub fn molt_csv_reader_drop_attached_body(
 ///   lineterminator_bits  – str (default "\r\n" when None is passed)
 ///
 /// Returns the handle ID as an int.
-
 pub fn molt_csv_writer_new_attached_body(
     _py: &molt_runtime_core::PyToken,
     delimiter_bits: u64,
@@ -1584,7 +1579,6 @@ pub fn molt_csv_writer_new_attached_body(
 // ── Writer: writerow (arity 3) ────────────────────────────────────────────────
 
 /// Write a single row (list/tuple of objects) and return the CSV record string.
-
 pub fn molt_csv_writer_writerow_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1622,7 +1616,6 @@ pub fn molt_csv_writer_writerow_attached_body(
 
 /// Write multiple rows (list/tuple of list/tuple of objects) and return the
 /// concatenated CSV records as a single string.
-
 pub fn molt_csv_writer_writerows_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1696,7 +1689,6 @@ pub fn molt_csv_writer_drop_attached_body(
 
 /// Project DictReader row semantics in Rust:
 /// dict(zip(fieldnames, row)) + restkey/restval handling.
-
 pub fn molt_csv_dict_project_attached_body(
     _py: &molt_runtime_core::PyToken,
     fieldnames_bits: u64,
@@ -1761,7 +1753,6 @@ pub fn molt_csv_dict_project_attached_body(
 ///
 /// `delimiters_bits` is an optional str of candidate delimiter characters, or
 /// None to use the default set (",\t;|:").
-
 pub fn molt_csv_sniff_attached_body(
     _py: &molt_runtime_core::PyToken,
     sample_bits: u64,
@@ -1836,7 +1827,6 @@ pub fn molt_csv_sniff_attached_body(
 }
 
 /// Apply CPython-compatible `Sniffer.has_header` voting against intrinsic csv parsing.
-
 pub fn molt_csv_has_header_attached_body(
     _py: &molt_runtime_core::PyToken,
     sample_bits: u64,
@@ -1915,7 +1905,6 @@ pub fn molt_csv_has_header_attached_body(
 
 /// Validate that all fmtparam keys are valid Dialect attribute names.
 /// Returns None on success, raises TypeError on invalid key.
-
 pub fn molt_csv_validate_fmtparams_attached_body(
     _py: &molt_runtime_core::PyToken,
     keys_bits: u64,
@@ -2001,7 +1990,6 @@ fn dialect_char(
 /// tuple uses the same field order as the registry's get_dialect projection.
 /// Python supplies its existing target version and whether quoting was absent;
 /// an explicit None remains a value and is never treated as a missing setting.
-
 pub fn molt_csv_validate_dialect_attached_body(
     _py: &molt_runtime_core::PyToken,
     delimiter_bits: u64,
@@ -2180,7 +2168,6 @@ pub fn molt_csv_validate_dialect_attached_body(
 /// Normalize a row into a list. If already a list/tuple, return as-is.
 /// Otherwise try to iterate and collect into a list.
 /// Raises csv.Error if not iterable.
-
 pub fn molt_csv_normalize_row_attached_body(
     _py: &molt_runtime_core::PyToken,
     row_bits: u64,
@@ -2207,7 +2194,6 @@ pub fn molt_csv_normalize_row_attached_body(
 /// Returns the string on success.
 /// Raises Error("unknown dialect") for non-string hashable values.
 /// Raises TypeError for unhashable values.
-
 pub fn molt_csv_dialect_lookup_name_attached_body(
     _py: &molt_runtime_core::PyToken,
     name_bits: u64,

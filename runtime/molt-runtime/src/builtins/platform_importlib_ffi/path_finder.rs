@@ -266,7 +266,6 @@ pub fn molt_importlib_file_loader_types_declare_attached_body(
 
 /// CPython's private `_NamespacePath._epoch` (bpo-45703), owned natively so
 /// `PathFinder.invalidate_caches` needs no facade.
-
 pub fn molt_importlib_namespace_path_epoch_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
         let epoch = platform_state(py)

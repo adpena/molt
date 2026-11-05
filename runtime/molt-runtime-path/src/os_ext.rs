@@ -101,7 +101,6 @@ fn mkdir_with_mode(path: &Path, mode: i32) -> std::io::Result<()> {
 // ---------------------------------------------------------------------------
 
 /// `os.listdir(path)` → list[str] or list[bytes], matching the path flavor
-
 pub fn molt_os_listdir_attached_body(_py: &molt_runtime_core::PyToken, path_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.listdir", AuditArg::None) {
@@ -150,7 +149,6 @@ pub fn molt_os_listdir_attached_body(_py: &molt_runtime_core::PyToken, path_bits
 
 /// `os.scandir(path)` → entries whose name/path match the input str/bytes flavor.
 /// Each tuple: (name, path, is_dir, is_file, is_symlink)
-
 pub fn molt_os_scandir_attached_body(_py: &molt_runtime_core::PyToken, path_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.scandir", AuditArg::None) {
@@ -236,7 +234,6 @@ pub fn molt_os_scandir_attached_body(_py: &molt_runtime_core::PyToken, path_bits
 ///
 /// Each element: (dirpath, dirnames, filenames).
 /// We collect the full walk eagerly (no generator semantics in the intrinsic layer).
-
 pub fn molt_os_walk_attached_body(
     _py: &molt_runtime_core::PyToken,
     top_bits: u64,
@@ -368,7 +365,6 @@ fn walk_dir_collect(
 }
 
 /// `os.getcwd()` → str
-
 pub fn molt_os_getcwd_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.getcwd", AuditArg::None) {
@@ -382,7 +378,6 @@ pub fn molt_os_getcwd_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 }
 
 /// `os.chdir(path)` → None
-
 pub fn molt_os_chdir_attached_body(_py: &molt_runtime_core::PyToken, path_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.chdir", AuditArg::None) {
@@ -400,7 +395,6 @@ pub fn molt_os_chdir_attached_body(_py: &molt_runtime_core::PyToken, path_bits: 
 }
 
 /// `os.mkdir(path, mode=0o777)` → None  (single directory only)
-
 pub fn molt_os_mkdir_attached_body(
     _py: &molt_runtime_core::PyToken,
     path_bits: u64,
@@ -426,7 +420,6 @@ pub fn molt_os_mkdir_attached_body(
 }
 
 /// `os.rmdir(path)` → None  (remove empty directory)
-
 pub fn molt_os_rmdir_attached_body(_py: &molt_runtime_core::PyToken, path_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.rmdir", AuditArg::None) {
@@ -444,7 +437,6 @@ pub fn molt_os_rmdir_attached_body(_py: &molt_runtime_core::PyToken, path_bits: 
 }
 
 /// `os.removedirs(path)` → None  (remove leaf then successive empty parents)
-
 pub fn molt_os_removedirs_attached_body(_py: &molt_runtime_core::PyToken, path_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.removedirs", AuditArg::None) {
@@ -476,7 +468,6 @@ pub fn molt_os_removedirs_attached_body(_py: &molt_runtime_core::PyToken, path_b
 // ---------------------------------------------------------------------------
 
 /// `os.access(path, mode)` -> bool
-
 pub fn molt_os_access_attached_body(
     _py: &molt_runtime_core::PyToken,
     path_bits: u64,
@@ -502,7 +493,6 @@ pub fn molt_os_access_attached_body(
 }
 
 /// `os.chmod(path, mode)` → None
-
 pub fn molt_os_chmod_attached_body(
     _py: &molt_runtime_core::PyToken,
     path_bits: u64,
@@ -705,7 +695,6 @@ unsafe extern "C" {
 }
 
 /// `os.getpid()` → int, using the same host transport on every WASM profile.
-
 pub fn molt_os_getpid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.getpid", AuditArg::None) {
@@ -918,7 +907,6 @@ pub fn molt_os_getlogin_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 }
 
 /// `os.cpu_count()` → int | None
-
 pub fn molt_os_cpu_count_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.cpu_count", AuditArg::None) {
@@ -1127,7 +1115,6 @@ pub fn molt_os_umask_attached_body(_py: &molt_runtime_core::PyToken, _mask_bits:
 
 /// `os.path.commonpath(paths)` → str or bytes, matching the path flavor
 /// All paths must share a common root; raises ValueError if they do not.
-
 pub fn molt_os_path_commonpath_attached_body(
     _py: &molt_runtime_core::PyToken,
     paths_bits: u64,
@@ -1334,7 +1321,6 @@ fn common_path_impl(paths: &[(Vec<u8>, (usize, usize))]) -> Option<Vec<u8>> {
 
 /// `os.path.commonprefix(paths)` → str
 /// Character-level common prefix of the string representations.
-
 pub fn molt_os_path_commonprefix_attached_body(
     _py: &molt_runtime_core::PyToken,
     paths_bits: u64,
@@ -1402,7 +1388,6 @@ pub fn molt_os_path_commonprefix_attached_body(
 }
 
 /// `os.path.getsize(path)` → int
-
 pub fn molt_os_path_getsize_attached_body(_py: &molt_runtime_core::PyToken, path_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let path = match path_from_bits(_py, path_bits) {
@@ -1425,7 +1410,6 @@ pub fn molt_os_path_getsize_attached_body(_py: &molt_runtime_core::PyToken, path
 }
 
 /// `os.path.getmtime(path)` → float  (modification time, seconds since epoch)
-
 pub fn molt_os_path_getmtime_attached_body(
     _py: &molt_runtime_core::PyToken,
     path_bits: u64,
@@ -1444,7 +1428,6 @@ pub fn molt_os_path_getmtime_attached_body(
 }
 
 /// `os.path.getatime(path)` → float  (access time)
-
 pub fn molt_os_path_getatime_attached_body(
     _py: &molt_runtime_core::PyToken,
     path_bits: u64,
@@ -1463,7 +1446,6 @@ pub fn molt_os_path_getatime_attached_body(
 }
 
 /// `os.path.getctime(path)` → float  (creation/metadata-change time)
-
 pub fn molt_os_path_getctime_attached_body(
     _py: &molt_runtime_core::PyToken,
     path_bits: u64,
@@ -1482,7 +1464,6 @@ pub fn molt_os_path_getctime_attached_body(
 }
 
 /// `os.path.samefile(path1, path2)` uses the selected filesystem identity.
-
 pub fn molt_os_path_samefile_attached_body(
     _py: &molt_runtime_core::PyToken,
     path1_bits: u64,
@@ -1506,7 +1487,6 @@ pub fn molt_os_path_samefile_attached_body(
 // ---------------------------------------------------------------------------
 
 /// `os.sep` → str  ("/" on POSIX, "\\" on Windows)
-
 pub fn molt_os_sep_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let sep = std::path::MAIN_SEPARATOR_STR;
@@ -1515,7 +1495,6 @@ pub fn molt_os_sep_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 }
 
 /// `os.linesep` → str  ("\n" on POSIX, "\r\n" on Windows)
-
 pub fn molt_os_linesep_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         #[cfg(windows)]
@@ -1530,7 +1509,6 @@ pub fn molt_os_linesep_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 }
 
 /// `os.devnull` → str  ("/dev/null" on POSIX, "nul" on Windows)
-
 pub fn molt_os_devnull_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         #[cfg(windows)]
@@ -1545,25 +1523,21 @@ pub fn molt_os_devnull_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 }
 
 /// `os.curdir` → str  (".")
-
 pub fn molt_os_curdir_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, str_bits(_py, "."))
 }
 
 /// `os.pardir` → str  ("..")
-
 pub fn molt_os_pardir_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, str_bits(_py, ".."))
 }
 
 /// `os.extsep` → str  (".")
-
 pub fn molt_os_extsep_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, str_bits(_py, "."))
 }
 
 /// `os.altsep` → str | None  (None on POSIX, "/" on Windows)
-
 pub fn molt_os_altsep_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         #[cfg(windows)]
@@ -1578,7 +1552,6 @@ pub fn molt_os_altsep_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 }
 
 /// `os.pathsep` → str  (":" on POSIX, ";" on Windows)
-
 pub fn molt_os_pathsep_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         #[cfg(windows)]
@@ -1597,7 +1570,6 @@ pub fn molt_os_pathsep_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 // ---------------------------------------------------------------------------
 
 /// `os.dup2(fd, fd2)` → int — duplicate fd onto fd2
-
 pub fn molt_os_dup2_attached_body(
     _py: &molt_runtime_core::PyToken,
     fd_bits: u64,
@@ -1636,7 +1608,6 @@ pub fn molt_os_dup2_attached_body(
 }
 
 /// `os.lseek(fd, pos, how)` → int — seek within file descriptor
-
 pub fn molt_os_lseek_attached_body(
     _py: &molt_runtime_core::PyToken,
     fd_bits: u64,
@@ -1702,7 +1673,6 @@ pub fn molt_os_lseek_attached_body(
 }
 
 /// `os.ftruncate(fd, length)` → None — truncate fd to length
-
 pub fn molt_os_ftruncate_attached_body(
     _py: &molt_runtime_core::PyToken,
     fd_bits: u64,
@@ -1750,7 +1720,6 @@ pub fn molt_os_ftruncate_attached_body(
 }
 
 /// `os.isatty(fd)` → bool — return True if fd is a tty
-
 pub fn molt_os_isatty_attached_body(_py: &molt_runtime_core::PyToken, fd_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
@@ -1772,7 +1741,6 @@ pub fn molt_os_isatty_attached_body(_py: &molt_runtime_core::PyToken, fd_bits: u
 }
 
 /// `os.fdopen(fd, mode, closefd)` — stub: raises NotImplementedError
-
 pub fn molt_os_fdopen_attached_body(
     _py: &molt_runtime_core::PyToken,
     _fd_bits: u64,
@@ -1793,7 +1761,6 @@ pub fn molt_os_fdopen_attached_body(
 // ---------------------------------------------------------------------------
 
 /// `os.kill(pid, sig)` → None — send signal to process
-
 pub fn molt_os_kill_attached_body(
     _py: &molt_runtime_core::PyToken,
     pid_bits: u64,
@@ -1835,7 +1802,6 @@ pub fn molt_os_kill_attached_body(
 }
 
 /// `os.waitpid(pid, options)` → (pid, status) — wait for process
-
 pub fn molt_os_waitpid_attached_body(
     _py: &molt_runtime_core::PyToken,
     pid_bits: u64,
@@ -1887,7 +1853,6 @@ pub fn molt_os_waitpid_attached_body(
 }
 
 /// `os.getpgrp()` → int — get process group
-
 pub fn molt_os_getpgrp_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.getpgrp", AuditArg::None) {
@@ -1910,7 +1875,6 @@ pub fn molt_os_getpgrp_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 }
 
 /// `os.setpgrp()` → None — set process group
-
 pub fn molt_os_setpgrp_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.setpgrp", AuditArg::None) {
@@ -1941,7 +1905,6 @@ pub fn molt_os_setpgrp_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 }
 
 /// `os.setsid()` → int — create new session
-
 pub fn molt_os_setsid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.setsid", AuditArg::None) {
@@ -1994,7 +1957,6 @@ const WASM_SYSCONF_ENTRIES: &[(&str, i64, i64)] = &[
 ];
 
 /// `os.sysconf(name)` → int — get system configuration value
-
 pub fn molt_os_sysconf_attached_body(_py: &molt_runtime_core::PyToken, name_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(name) = to_i64(obj_from_bits(name_bits)) else {
@@ -2065,7 +2027,6 @@ fn alloc_sysconf_names(
 }
 
 /// Target-owned sysconf names, or None when this target has no sysconf API.
-
 pub fn molt_os_sysconf_names_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         #[cfg(target_arch = "wasm32")]
@@ -2121,7 +2082,6 @@ pub fn molt_os_sysconf_names_attached_body(_py: &molt_runtime_core::PyToken) -> 
 // ---------------------------------------------------------------------------
 
 /// `os.path.realpath(path)` → str or bytes, matching the path flavor — resolve path following symlinks
-
 pub fn molt_os_path_realpath_attached_body(
     _py: &molt_runtime_core::PyToken,
     path_bits: u64,
@@ -2145,7 +2105,6 @@ pub fn molt_os_path_realpath_attached_body(
 ///
 /// `atime_bits` and `mtime_bits` are floats, or both None for current time.
 /// The Python wrapper decomposes the `times` tuple before calling this.
-
 pub fn molt_os_utime_attached_body(
     _py: &molt_runtime_core::PyToken,
     path_bits: u64,
@@ -2549,7 +2508,6 @@ fn at_resolve_dir_fd(_py: &CoreGilToken, dir_fd_bits: u64) -> Result<libc::c_int
 }
 
 /// `os.readlink(path, dir_fd=...)` → str or bytes, matching the path flavor.
-
 pub fn molt_os_readlink_at_attached_body(
     _py: &molt_runtime_core::PyToken,
     path_bits: u64,
@@ -2848,7 +2806,6 @@ pub fn molt_os_utime_at_attached_body(
 }
 
 /// `os.sendfile(out_fd, in_fd, offset, count)` → int — zero-copy file send
-
 pub fn molt_os_sendfile_attached_body(
     _py: &molt_runtime_core::PyToken,
     out_fd_bits: u64,
@@ -3018,7 +2975,6 @@ fn wait_status_macro(status_bits: u64, project: fn(i32) -> MoltObject) -> u64 {
 }
 
 /// `os.WIFEXITED(status)` -> bool
-
 pub fn molt_os_wifexited_attached_body(_py: &molt_runtime_core::PyToken, status_bits: u64) -> u64 {
     wait_status_macro(status_bits, |status| {
         MoltObject::from_bool(wait_status::exited(status))
@@ -3026,7 +2982,6 @@ pub fn molt_os_wifexited_attached_body(_py: &molt_runtime_core::PyToken, status_
 }
 
 /// `os.WEXITSTATUS(status)` -> int
-
 pub fn molt_os_wexitstatus_attached_body(
     _py: &molt_runtime_core::PyToken,
     status_bits: u64,
@@ -3037,7 +2992,6 @@ pub fn molt_os_wexitstatus_attached_body(
 }
 
 /// `os.WIFSIGNALED(status)` -> bool
-
 pub fn molt_os_wifsignaled_attached_body(
     _py: &molt_runtime_core::PyToken,
     status_bits: u64,
@@ -3048,7 +3002,6 @@ pub fn molt_os_wifsignaled_attached_body(
 }
 
 /// `os.WTERMSIG(status)` -> int
-
 pub fn molt_os_wtermsig_attached_body(_py: &molt_runtime_core::PyToken, status_bits: u64) -> u64 {
     wait_status_macro(status_bits, |status| {
         MoltObject::from_int(i64::from(wait_status::term_sig(status)))
@@ -3056,7 +3009,6 @@ pub fn molt_os_wtermsig_attached_body(_py: &molt_runtime_core::PyToken, status_b
 }
 
 /// `os.WIFSTOPPED(status)` -> bool
-
 pub fn molt_os_wifstopped_attached_body(_py: &molt_runtime_core::PyToken, status_bits: u64) -> u64 {
     wait_status_macro(status_bits, |status| {
         MoltObject::from_bool(wait_status::stopped(status))
@@ -3064,7 +3016,6 @@ pub fn molt_os_wifstopped_attached_body(_py: &molt_runtime_core::PyToken, status
 }
 
 /// `os.WSTOPSIG(status)` -> int
-
 pub fn molt_os_wstopsig_attached_body(_py: &molt_runtime_core::PyToken, status_bits: u64) -> u64 {
     wait_status_macro(status_bits, |status| {
         MoltObject::from_int(i64::from(wait_status::stop_sig(status)))
@@ -3072,7 +3023,6 @@ pub fn molt_os_wstopsig_attached_body(_py: &molt_runtime_core::PyToken, status_b
 }
 
 /// os.fspath shares the canonical runtime protocol and preserves result type.
-
 pub fn molt_os_fspath_attached_body(_py: &molt_runtime_core::PyToken, path_bits: u64) -> u64 {
     crate::bridge::fspath_bits(_py, path_bits)
 }
@@ -3171,7 +3121,6 @@ fn makedirs_tree(
 }
 
 /// `os.makedirs(name, mode=0o777, exist_ok=False)` → None
-
 pub fn molt_os_makedirs_attached_body(
     _py: &molt_runtime_core::PyToken,
     path_bits: u64,

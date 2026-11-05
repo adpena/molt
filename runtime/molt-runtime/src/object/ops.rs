@@ -2405,7 +2405,6 @@ pub(crate) unsafe fn molt_guarded_class_def_attached_body(
 ///
 /// This consolidates the multi-op f-string assembly (N const_str + N string_format
 /// + tuple_new + string_join) into a single runtime call.
-
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub(crate) fn molt_fstring_build_attached_body(
     _py: &crate::PyToken<'_>,

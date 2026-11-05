@@ -280,7 +280,6 @@ pub(crate) fn decompress_bytes(
 // ── zlib.crc32 ───────────────────────────────────────────────────────────────
 
 /// `zlib.crc32(data, value=0) -> int`
-
 pub fn molt_zlib_crc32_attached_body(
     _py: &molt_runtime_core::PyToken,
     data_bits: u64,
@@ -390,7 +389,6 @@ fn adler32_compute(data: &[u8], initial: u32) -> u32 {
 }
 
 /// `zlib.adler32(data, value=1) -> int`
-
 pub fn molt_zlib_adler32_attached_body(
     _py: &molt_runtime_core::PyToken,
     data_bits: u64,
@@ -656,7 +654,6 @@ fn compressor_from_bits(
 /// Options are converted in Clinic order before backend validation. Supplied
 /// dictionary bytes are borrowed only through deflateSetDictionary, never saved
 /// as an untraced Python edge in the native owner.
-
 pub fn molt_zlib_compressobj_new_attached_body(
     _py: &molt_runtime_core::PyToken,
     error_class: u64,
@@ -1208,7 +1205,6 @@ fn decompressor_from_bits(
 }
 
 /// `zlib.decompressobj(wbits=MAX_WBITS) -> handle`
-
 pub fn molt_zlib_decompressobj_new_attached_body(
     _py: &molt_runtime_core::PyToken,
     wbits_bits: u64,
@@ -1259,7 +1255,6 @@ pub fn molt_zlib_decompressobj_new_attached_body(
 }
 
 /// `decompressobj.decompress(data, max_length=0) -> bytes`
-
 pub fn molt_zlib_decompressobj_decompress_attached_body(
     _py: &molt_runtime_core::PyToken,
     error_class: u64,
@@ -1338,7 +1333,6 @@ pub fn molt_zlib_decompressobj_decompress_attached_body(
 }
 
 /// `decompressobj.flush(length=DEF_BUF_SIZE) -> bytes`
-
 pub fn molt_zlib_decompressobj_flush_attached_body(
     _py: &molt_runtime_core::PyToken,
     error_class: u64,
@@ -1405,7 +1399,6 @@ pub fn molt_zlib_decompressobj_flush_attached_body(
 }
 
 /// `decompressobj.eof` property
-
 pub fn molt_zlib_decompressobj_eof_attached_body(
     _py: &molt_runtime_core::PyToken,
     error_class: u64,
@@ -1430,7 +1423,6 @@ pub fn molt_zlib_decompressobj_eof_attached_body(
 }
 
 /// `decompressobj.unconsumed_tail` property
-
 pub fn molt_zlib_decompressobj_unconsumed_tail_attached_body(
     _py: &molt_runtime_core::PyToken,
     error_class: u64,
@@ -1463,7 +1455,6 @@ pub fn molt_zlib_decompressobj_unconsumed_tail_attached_body(
 /// Per CPython zlib semantics, this is b"" until the last byte of compressed
 /// data has been processed; once the stream ends it holds any bytes found
 /// past the end of the compressed data (e.g. trailing/concatenated streams).
-
 pub fn molt_zlib_decompressobj_unused_data_attached_body(
     _py: &molt_runtime_core::PyToken,
     error_class: u64,

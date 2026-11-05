@@ -2632,7 +2632,6 @@ pub fn molt_decimal_is_signed_attached_body(_py: &molt_runtime_core::PyToken, a_
 /// Decimal hashes equal to a numerically-equal int/float/Fraction
 /// (`Lib/_pydecimal.py::Decimal.__hash__`). NaN handling (sNaN -> TypeError;
 /// qNaN -> identity) stays in the Python shim, which guards this call.
-
 pub fn molt_decimal_hash_attached_body(_py: &molt_runtime_core::PyToken, a_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {

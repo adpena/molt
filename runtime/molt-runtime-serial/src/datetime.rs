@@ -402,7 +402,6 @@ pub fn molt_datetime_isocalendar_attached_body(
 
 /// Normalize 7 timedelta components to canonical (days, seconds, microseconds).
 /// All inputs are i64 Molt integers.
-
 pub fn molt_datetime_td_normalize_attached_body(
     _py: &molt_runtime_core::PyToken,
     days_bits: u64,
@@ -724,7 +723,6 @@ pub fn molt_datetime_parse_isoformat_time_attached_body(
 
 /// Parse a full ISO 8601 datetime string: YYYY-MM-DDTHH:MM:SS[.ffffff][Z|+HH:MM]
 /// Returns tuple (y, m, d, h, min, s, us, utcoff_secs_or_none).
-
 pub fn molt_datetime_parse_isoformat_attached_body(
     _py: &molt_runtime_core::PyToken,
     text_bits: u64,
@@ -784,7 +782,6 @@ pub fn molt_datetime_parse_isoformat_attached_body(
 /// strptime: parse text with format string.  Supported directives:
 /// %Y %m %d %H %M %S %f %z %Z %% and literal characters.
 /// Returns tuple (y, m, d, h, min, s, us).
-
 pub fn molt_datetime_strptime_attached_body(
     _py: &molt_runtime_core::PyToken,
     text_bits: u64,
@@ -1110,7 +1107,6 @@ fn month_name_to_num(lower: &str) -> Result<i32, String> {
 // ===========================================================================
 
 /// "YYYY-MM-DD"
-
 pub fn molt_datetime_format_isodate_attached_body(
     _py: &molt_runtime_core::PyToken,
     y_bits: u64,
@@ -1138,7 +1134,6 @@ pub fn molt_datetime_format_isodate_attached_body(
 /// Format ISO time string.
 /// `timespec_bits` is a string: "auto", "hours", "minutes", "seconds",
 /// "milliseconds", "microseconds".
-
 pub fn molt_datetime_format_isotime_attached_body(
     _py: &molt_runtime_core::PyToken,
     h_bits: u64,
@@ -1232,7 +1227,6 @@ fn format_isotime_impl(
 
 /// Format a full ISO datetime string.
 /// Parameters: y, m, d, h, min, s, us, sep (str), timespec (str), tz_str (str)
-
 pub fn molt_datetime_format_isodatetime_attached_body(
     _py: &molt_runtime_core::PyToken,
     y_bits: u64,
@@ -1598,7 +1592,6 @@ fn strftime_impl(args: &StrftimeArgs<'_>) -> Result<String, String> {
 }
 
 /// `strftime(y, m, d, h, min, s, us, utcoff, fmt)` — 9 parameters.
-
 pub fn molt_datetime_strftime_attached_body(
     _py: &molt_runtime_core::PyToken,
     y_bits: u64,
@@ -1668,7 +1661,6 @@ pub fn molt_datetime_strftime_attached_body(
 }
 
 /// `ctime(y, m, d, h, min, s)` → "Thu Jan  1 00:00:00 2000"
-
 pub fn molt_datetime_ctime_attached_body(
     _py: &molt_runtime_core::PyToken,
     y_bits: u64,
@@ -1754,7 +1746,6 @@ pub fn molt_datetime_now_utc_attached_body(_py: &molt_runtime_core::PyToken) -> 
 }
 
 /// Get local time as (y, m, d, h, min, s, us, utcoff_secs).
-
 pub fn molt_datetime_now_local_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         #[cfg(not(target_arch = "wasm32"))]
@@ -1961,7 +1952,6 @@ pub fn molt_datetime_fromtimestamp_local_attached_body(
 
 /// Convert (y, m, d, h, min, s, us, utcoff_secs_or_none) → UNIX timestamp float.
 /// `utcoff_bits` is int (seconds east) or None (treat as local time).
-
 pub fn molt_datetime_to_timestamp_attached_body(
     _py: &molt_runtime_core::PyToken,
     y_bits: u64,
@@ -2372,7 +2362,6 @@ pub fn molt_datetime_validate_time_attached_body(
 
 /// combine(year, month, day, hour, minute, second, microsecond, fold)
 /// Returns validated 8-tuple for Python wrapper to unpack.
-
 pub fn molt_datetime_combine_attached_body(
     _py: &molt_runtime_core::PyToken,
     y_bits: u64,
@@ -2467,7 +2456,6 @@ pub fn molt_datetime_combine_attached_body(
 // ─── date.fromisocalendar ───────────────────────────────────────────────────
 
 /// fromisocalendar(year, week, day) -> (year, month, day) tuple
-
 pub fn molt_date_fromisocalendar_attached_body(
     _py: &molt_runtime_core::PyToken,
     iso_year_bits: u64,
@@ -2550,7 +2538,6 @@ fn numeric_zero_error(py: &PyToken, context: NumericErrorContext) -> u64 {
 }
 
 /// timedelta / scalar (int or float) -> timedelta (days, seconds, us) tuple
-
 pub fn molt_timedelta_truediv_scalar_attached_body(
     _py: &molt_runtime_core::PyToken,
     days_bits: u64,
@@ -2583,7 +2570,6 @@ pub fn molt_timedelta_truediv_scalar_attached_body(
 }
 
 /// timedelta / timedelta -> float
-
 pub fn molt_timedelta_truediv_td_attached_body(
     _py: &molt_runtime_core::PyToken,
     a_days: u64,
@@ -2604,7 +2590,6 @@ pub fn molt_timedelta_truediv_td_attached_body(
 }
 
 /// timedelta // timedelta -> int
-
 pub fn molt_timedelta_floordiv_td_attached_body(
     _py: &molt_runtime_core::PyToken,
     a_days: u64,
@@ -2636,7 +2621,6 @@ pub fn molt_timedelta_floordiv_td_attached_body(
 }
 
 /// timedelta % timedelta -> timedelta (days, seconds, us) tuple
-
 pub fn molt_timedelta_mod_td_attached_body(
     _py: &molt_runtime_core::PyToken,
     a_days: u64,
@@ -2673,7 +2657,6 @@ pub fn molt_timedelta_mod_td_attached_body(
 }
 
 /// timedelta // int -> timedelta (days, seconds, us) tuple
-
 pub fn molt_timedelta_floordiv_scalar_attached_body(
     _py: &molt_runtime_core::PyToken,
     days_bits: u64,
@@ -2729,7 +2712,6 @@ pub fn molt_timedelta_floordiv_scalar_attached_body(
 }
 
 /// abs(timedelta) -> timedelta (days, seconds, us) tuple
-
 pub fn molt_timedelta_abs_attached_body(
     _py: &molt_runtime_core::PyToken,
     days_bits: u64,
@@ -2821,7 +2803,6 @@ fn timedelta_tuple(_py: &PyToken, days: i64, secs: i64, us: i64) -> u64 {
 // ===========================================================================
 
 /// Coerce a value to int: bools are promoted, ints pass through, else TypeError.
-
 pub fn molt_datetime_as_int_attached_body(
     _py: &molt_runtime_core::PyToken,
     value_bits: u64,
@@ -2848,7 +2829,6 @@ pub fn molt_datetime_as_int_attached_body(
 }
 
 /// Format time components into a string for a given timespec.
-
 pub fn molt_datetime_format_time_attached_body(
     _py: &molt_runtime_core::PyToken,
     hour_bits: u64,
@@ -2902,7 +2882,6 @@ pub fn molt_datetime_format_time_attached_body(
 }
 
 /// timedelta.__repr__()
-
 pub fn molt_timedelta_repr_attached_body(
     _py: &molt_runtime_core::PyToken,
     days_bits: u64,
@@ -2931,7 +2910,6 @@ pub fn molt_timedelta_repr_attached_body(
 }
 
 /// timedelta.__str__()
-
 pub fn molt_timedelta_str_attached_body(
     _py: &molt_runtime_core::PyToken,
     days_bits: u64,
@@ -2974,7 +2952,6 @@ pub fn molt_timedelta_str_attached_body(
 }
 
 /// timezone.__init__ validation: return offset total seconds or raise.
-
 pub fn molt_timezone_validate_attached_body(
     _py: &molt_runtime_core::PyToken,
     days_bits: u64,
@@ -3002,7 +2979,6 @@ pub fn molt_timezone_validate_attached_body(
 }
 
 /// timezone.tzname() formatting
-
 pub fn molt_timezone_tzname_attached_body(
     _py: &molt_runtime_core::PyToken,
     days_bits: u64,
@@ -3031,7 +3007,6 @@ pub fn molt_timezone_tzname_attached_body(
 }
 
 /// date.__repr__()
-
 pub fn molt_datetime_date_repr_attached_body(
     _py: &molt_runtime_core::PyToken,
     y_bits: u64,
@@ -3057,7 +3032,6 @@ pub fn molt_datetime_date_repr_attached_body(
 }
 
 /// time.__repr__()
-
 pub fn molt_datetime_time_repr_attached_body(
     _py: &molt_runtime_core::PyToken,
     h_bits: u64,
@@ -3094,7 +3068,6 @@ pub fn molt_datetime_time_repr_attached_body(
 }
 
 /// datetime.timetuple() -> 9-tuple of ints
-
 pub fn molt_datetime_timetuple_attached_body(
     _py: &molt_runtime_core::PyToken,
     y_bits: u64,

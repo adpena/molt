@@ -3042,7 +3042,6 @@ pub(crate) fn molt_recursion_exit_fast_attached_body(_py: &crate::PyToken<'_>) {
 
 /// Cold-path: raise RecursionError. Only called when molt_recursion_enter_fast
 /// returns 0. Acquires the GIL to create the exception object.
-
 #[cold]
 pub(crate) fn molt_raise_recursion_error_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {

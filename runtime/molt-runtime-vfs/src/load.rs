@@ -286,7 +286,6 @@ static INJECTED_BUNDLE: Mutex<Option<InjectedBundleState>> = Mutex::new(None);
 ///
 /// `path_ptr` must reference `path_len` bytes. When `data_len > 0`,
 /// `data_ptr` must reference `data_len` bytes.
-
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_vfs_inject_entry(
     path_ptr: *const u8,
@@ -330,7 +329,6 @@ pub unsafe extern "C" fn molt_vfs_inject_entry(
 
 /// Host calls this to signal all entries have been injected.
 /// Returns the number of entries loaded.
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_vfs_inject_finish() -> i32 {
     let guard = INJECTED_BUNDLE.lock().unwrap();

@@ -197,7 +197,6 @@ fn in_table_a1(cp: u32) -> bool {
 // ---------------------------------------------------------------------------
 
 /// `molt_stringprep_in_table(table_name, char) -> bool`
-
 pub fn molt_stringprep_in_table_attached_body(
     _py: &molt_runtime_core::PyToken,
     table_bits: u64,
@@ -306,7 +305,6 @@ fn map_stringprep_table(
 }
 
 /// `molt_stringprep_map_table_b2(char) -> str`
-
 pub fn molt_stringprep_map_table_b2_attached_body(
     _py: &molt_runtime_core::PyToken,
     char_bits: u64,
@@ -317,7 +315,6 @@ pub fn molt_stringprep_map_table_b2_attached_body(
 }
 
 /// `molt_stringprep_map_table_b3(char) -> str`
-
 pub fn molt_stringprep_map_table_b3_attached_body(
     _py: &molt_runtime_core::PyToken,
     char_bits: u64,

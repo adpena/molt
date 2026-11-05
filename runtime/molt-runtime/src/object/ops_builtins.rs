@@ -324,7 +324,6 @@ pub(crate) fn molt_trace_exit_attached_body(_py: &crate::PyToken<'_>) -> u64 {
 /// Replaces the multi-block inline sequence previously generated for every
 /// `call` op, eliminating ~3 Cranelift blocks and ~12 function-declaration/import
 /// operations per call site.
-
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub(crate) fn molt_guarded_call_attached_body(
     _py: &crate::PyToken<'_>,
@@ -984,7 +983,6 @@ unsafe fn molt_guarded_call_dispatch(
 /// Invoke a borrowed Python callable through the canonical argument binder.
 /// The argument buffer contains visible Python arguments, never packed ABI slots.
 /// `code_id` identifies this call site in optional dispatch tracing.
-
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub(crate) fn molt_call_func_dispatch_attached_body(
     _py: &crate::PyToken<'_>,
@@ -1049,7 +1047,6 @@ pub(crate) fn molt_call_func_dispatch_attached_body(
 ///   args_ptr: pointer to the adopted argument bits (spilled by the caller)
 ///   nargs: number of arguments
 ///   code_id: call-site identity, 0 when absent
-
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub(crate) fn molt_call_func_owned_attached_body(
     _py: &crate::PyToken<'_>,
@@ -1080,7 +1077,6 @@ pub(crate) fn molt_call_func_owned_attached_body(
 /// them: `args_ptr[..nargs]` in the target version's order, then
 /// `callable_bits` unless it is zero. Every backend releases through this one
 /// order authority instead of spelling its own.
-
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub(crate) fn molt_call_inputs_release_attached_body(
     _py: &crate::PyToken<'_>,

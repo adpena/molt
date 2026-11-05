@@ -13,7 +13,6 @@ pub extern "C" fn molt_seq_read_len(ptr: *mut u8) -> usize {
 
 /// Return one GIL-borrowed handle. The caller must keep the sequence alive and
 /// consume the result before releasing the runtime GIL.
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_seq_read_item_gil_borrowed(
     ptr: *mut u8,

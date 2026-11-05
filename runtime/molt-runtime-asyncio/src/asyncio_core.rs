@@ -265,7 +265,6 @@ fn release_waiters(_py: &PyToken, waiters: Vec<u64>) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Create a new future. Returns a handle as NaN-boxed integer bits.
-
 pub fn molt_asyncio_future_new_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let registry = asyncio_core_state(_py);
@@ -282,7 +281,6 @@ pub fn molt_asyncio_future_new_attached_body(_py: &molt_runtime_core::PyToken) -
 /// Get the result of a future. Raises InvalidStateError if not done.
 /// If cancelled, raises CancelledError. If exception is set, raises it.
 /// Otherwise returns the result bits.
-
 pub fn molt_asyncio_future_result_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -340,7 +338,6 @@ pub fn molt_asyncio_future_result_attached_body(
 /// Get the exception of a future. Raises InvalidStateError if not done.
 /// If cancelled, raises CancelledError. Otherwise returns exception bits
 /// (may be None if no exception was set).
-
 pub fn molt_asyncio_future_exception_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -380,7 +377,6 @@ pub fn molt_asyncio_future_exception_attached_body(
 
 /// Atomically store the result and mark the Future done.
 /// Raises InvalidStateError if already done.
-
 pub fn molt_asyncio_future_set_result_fast_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -418,7 +414,6 @@ pub fn molt_asyncio_future_set_result_fast_attached_body(
 /// Atomically store the exception and mark the Future done.
 /// Raises InvalidStateError if already done. Storing an exception never
 /// transitions a Future to cancelled; cancellation has its own transition.
-
 pub fn molt_asyncio_future_set_exception_fast_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -457,7 +452,6 @@ pub fn molt_asyncio_future_set_exception_fast_attached_body(
 /// False if already done).
 ///
 /// msg_bits: cancel message (may be None for no message).
-
 pub fn molt_asyncio_future_cancel_fast_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -502,7 +496,6 @@ pub fn molt_asyncio_future_cancel_fast_attached_body(
 
 /// Check if a future is done (result set, exception set, or cancelled).
 /// Returns bool bits.
-
 pub fn molt_asyncio_future_done_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -519,7 +512,6 @@ pub fn molt_asyncio_future_done_attached_body(
 }
 
 /// Check if a future was cancelled. Returns bool bits.
-
 pub fn molt_asyncio_future_cancelled_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -536,7 +528,6 @@ pub fn molt_asyncio_future_cancelled_attached_body(
 }
 
 /// Drop a future handle. Dec-refs all stored bits and removes from registry.
-
 pub fn molt_asyncio_future_drop_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -560,7 +551,6 @@ pub fn molt_asyncio_future_drop_attached_body(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Create a new asyncio.Event. Returns handle as NaN-boxed integer bits.
-
 pub fn molt_asyncio_event_new_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let registry = asyncio_core_state(_py);
@@ -575,7 +565,6 @@ pub fn molt_asyncio_event_new_attached_body(_py: &molt_runtime_core::PyToken) ->
 }
 
 /// Check if an event's internal flag is set. Returns bool bits.
-
 pub fn molt_asyncio_event_is_set_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -594,7 +583,6 @@ pub fn molt_asyncio_event_is_set_attached_body(
 /// Set the event's internal flag. Returns the waiter count as int bits
 /// so the Python layer can notify all waiters. Idempotent: if already set,
 /// returns 0.
-
 pub fn molt_asyncio_event_set_fast_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -628,7 +616,6 @@ pub fn molt_asyncio_event_set_fast_attached_body(
 }
 
 /// Clear the event's internal flag. Returns None bits.
-
 pub fn molt_asyncio_event_clear_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -645,7 +632,6 @@ pub fn molt_asyncio_event_clear_attached_body(
 }
 
 /// Drop an event handle. Dec-refs all stored waiter bits and removes from registry.
-
 pub fn molt_asyncio_event_drop_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -668,7 +654,6 @@ pub fn molt_asyncio_event_drop_attached_body(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Create a new asyncio.Lock. Returns handle as NaN-boxed integer bits.
-
 pub fn molt_asyncio_lock_new_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let registry = asyncio_core_state(_py);
@@ -683,7 +668,6 @@ pub fn molt_asyncio_lock_new_attached_body(_py: &molt_runtime_core::PyToken) -> 
 }
 
 /// Check if a lock is currently acquired. Returns bool bits.
-
 pub fn molt_asyncio_lock_locked_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -704,7 +688,6 @@ pub fn molt_asyncio_lock_locked_attached_body(
 ///
 /// This is the fast path — the Python layer calls this first, and only if
 /// it returns False does it create a Future waiter and park.
-
 pub fn molt_asyncio_lock_acquire_fast_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -729,7 +712,6 @@ pub fn molt_asyncio_lock_acquire_fast_attached_body(
 /// Release the lock. If there are waiters, returns the waiter count (>0)
 /// so the Python layer can notify the next waiter. If no waiters, unlocks
 /// and returns 0. Raises RuntimeError if the lock is not held.
-
 pub fn molt_asyncio_lock_release_fast_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -767,7 +749,6 @@ pub fn molt_asyncio_lock_release_fast_attached_body(
 }
 
 /// Drop a lock handle. Dec-refs all stored waiter bits and removes from registry.
-
 pub fn molt_asyncio_lock_drop_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -792,7 +773,6 @@ pub fn molt_asyncio_lock_drop_attached_body(
 /// Create a new asyncio.Semaphore with the given initial value.
 /// value_bits: NaN-boxed integer for the initial counter value.
 /// Returns handle as NaN-boxed integer bits.
-
 pub fn molt_asyncio_semaphore_new_attached_body(
     _py: &molt_runtime_core::PyToken,
     value_bits: u64,
@@ -820,7 +800,6 @@ pub fn molt_asyncio_semaphore_new_attached_body(
 /// Try to acquire the semaphore immediately. Returns True if acquired
 /// (counter was > 0 and has been decremented), False if the counter is 0
 /// (caller must await).
-
 pub fn molt_asyncio_semaphore_acquire_fast_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -849,7 +828,6 @@ pub fn molt_asyncio_semaphore_acquire_fast_attached_body(
 /// max_value_bits: for BoundedSemaphore, the initial value cap. Pass None
 /// or -1 for unbounded Semaphore. If the counter would exceed max_value,
 /// raises ValueError.
-
 pub fn molt_asyncio_semaphore_release_fast_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -894,7 +872,6 @@ pub fn molt_asyncio_semaphore_release_fast_attached_body(
 
 /// Query the current counter value of a semaphore.
 /// Returns the value as NaN-boxed integer bits, or -1 if the handle is not found.
-
 pub fn molt_asyncio_semaphore_value_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -909,7 +886,6 @@ pub fn molt_asyncio_semaphore_value_attached_body(
 }
 
 /// Drop a semaphore handle. Dec-refs all stored waiter bits and removes from registry.
-
 pub fn molt_asyncio_semaphore_drop_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,

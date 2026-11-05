@@ -563,7 +563,6 @@ fn alloc_list_bits(_py: &PyToken, elems: &[u64]) -> Result<u64, u64> {
 // ─── Public intrinsics ────────────────────────────────────────────────────────
 
 /// Create a new MT RNG seeded from OS randomness. Returns integer handle.
-
 pub fn molt_random_new_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let key = match seed_from_os(_py) {
@@ -583,7 +582,6 @@ pub fn molt_random_new_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
 ///                  str/bytes, matching CPython 3.2+).
 /// `seed_bits`    — None, int, float, str, bytes, or bytearray.
 ///                  None → re-seed from OS.
-
 pub fn molt_random_seed_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -624,7 +622,6 @@ pub fn molt_random_seed_attached_body(
 }
 
 /// Return a random float in [0.0, 1.0).
-
 pub fn molt_random_random_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = rng_handle_from_bits(_py, handle_bits) else {
@@ -639,7 +636,6 @@ pub fn molt_random_random_attached_body(_py: &molt_runtime_core::PyToken, handle
 }
 
 /// Return a Python int with k random bits.
-
 pub fn molt_random_getrandbits_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -694,7 +690,6 @@ pub fn molt_random_getrandbits_attached_body(
 
 /// Return a random integer in [0, n) via rejection sampling.
 /// `n_bits` must be a Python int.
-
 pub fn molt_random_randbelow_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -741,7 +736,6 @@ pub fn molt_random_randbelow_attached_body(
 /// Get the internal MT state as a Python tuple:
 ///   (version=3, internalstate_tuple, gauss_next_or_None)
 /// where internalstate_tuple is a 625-element tuple of u32 words (624 MT state + index).
-
 pub fn molt_random_getstate_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -796,7 +790,6 @@ pub fn molt_random_getstate_attached_body(
 
 /// Restore the MT state from a tuple produced by getstate().
 /// Expected format: (version, internalstate_tuple, gauss_next_or_None)
-
 pub fn molt_random_setstate_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -905,7 +898,6 @@ pub fn molt_random_setstate_attached_body(
 
 /// Fisher-Yates in-place shuffle of a Molt list.
 /// `list_bits` must be a mutable list object.
-
 pub fn molt_random_shuffle_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -969,7 +961,6 @@ pub fn molt_random_shuffle_attached_body(
 
 /// Box-Muller Gaussian variate with caching.
 /// `mu_bits`, `sigma_bits` — floats or ints.
-
 pub fn molt_random_gauss_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -995,7 +986,6 @@ pub fn molt_random_gauss_attached_body(
 }
 
 /// Uniform distribution: a + (b - a) * random().
-
 pub fn molt_random_uniform_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1024,7 +1014,6 @@ pub fn molt_random_uniform_attached_body(
 /// `low_bits`, `high_bits`, `mode_bits` — float/int or None for mode.
 ///
 /// If mode is None, uses (low + high) / 2.
-
 pub fn molt_random_triangular_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1072,7 +1061,6 @@ pub fn molt_random_triangular_attached_body(
 }
 
 /// Exponential distribution: -log(random()) / lambd.
-
 pub fn molt_random_expovariate_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1108,7 +1096,6 @@ pub fn molt_random_expovariate_attached_body(
 }
 
 /// Normal variate using Kinderman-Monahan (CPython random.normalvariate).
-
 pub fn molt_random_normalvariate_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1134,7 +1121,6 @@ pub fn molt_random_normalvariate_attached_body(
 }
 
 /// Log-normal variate: exp(normalvariate(mu, sigma)).
-
 pub fn molt_random_lognormvariate_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1161,7 +1147,6 @@ pub fn molt_random_lognormvariate_attached_body(
 }
 
 /// Von Mises variate (CPython random.vonmisesvariate).
-
 pub fn molt_random_vonmisesvariate_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1216,7 +1201,6 @@ pub fn molt_random_vonmisesvariate_attached_body(
 }
 
 /// Pareto distribution: 1.0 / pow(random(), 1.0 / alpha).
-
 pub fn molt_random_paretovariate_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1244,7 +1228,6 @@ pub fn molt_random_paretovariate_attached_body(
 }
 
 /// Weibull distribution.
-
 pub fn molt_random_weibullvariate_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1277,7 +1260,6 @@ pub fn molt_random_weibullvariate_attached_body(
 
 /// Gamma variate (CPython random.gammavariate).
 /// alpha > 0, beta > 0.
-
 pub fn molt_random_gammavariate_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1352,7 +1334,6 @@ fn gamma_marsaglia(rng: &mut MersenneTwisterRng, alpha: f64) -> f64 {
 
 /// Beta variate using two gamma variates (CPython random.betavariate).
 /// alpha > 0, beta > 0.
-
 pub fn molt_random_betavariate_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1407,7 +1388,6 @@ pub fn molt_random_betavariate_attached_body(
 /// `k_bits` — integer count.
 ///
 /// Returns a new list of k elements.
-
 pub fn molt_random_choices_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1541,7 +1521,6 @@ pub fn molt_random_choices_attached_body(
 /// `k_bits` — integer count.
 ///
 /// Returns a new list of k distinct elements (by position).
-
 pub fn molt_random_sample_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1655,7 +1634,6 @@ fn rng_lgamma(x: f64) -> f64 {
 
 /// Mirrors CPython random.Random.binomialvariate exactly.
 /// Parameters: handle, n (int), p (float).
-
 pub fn molt_random_binomialvariate_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1775,7 +1753,6 @@ fn binomialvariate_impl(rng: &mut MersenneTwisterRng, n: i64, p: f64) -> i64 {
 
 /// randrange(start, stop, step) -> int
 /// All validation and range arithmetic done in Rust.
-
 pub fn molt_random_randrange_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -1875,7 +1852,6 @@ pub fn molt_random_randrange_attached_body(
 }
 
 /// randbytes(n) -> generates n random bytes
-
 pub fn molt_random_randbytes_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,

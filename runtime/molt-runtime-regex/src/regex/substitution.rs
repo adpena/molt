@@ -38,7 +38,6 @@ fn alloc_text_units(py: &CoreGilToken, units: &[u32]) -> *mut u8 {
 ///
 /// Zero-length matches are handled per CPython 3.7+ semantics: they split at
 /// every position but do not split at the same position twice.
-
 pub fn molt_re_split_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -186,7 +185,6 @@ pub fn molt_re_split_attached_body(
 /// `count` of 0 means replace all occurrences.
 ///
 /// Returns a tuple `(result_string, num_replacements)`.
-
 pub fn molt_re_sub_attached_body(
     _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
@@ -399,7 +397,6 @@ pub(super) fn expand_match_replacement(
 ///
 /// Escape all special regex characters in `pattern` so it can be used as a
 /// literal string in a regex.
-
 pub fn molt_re_escape_attached_body(_py: &molt_runtime_core::PyToken, pattern_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let object = obj_from_bits(pattern_bits);

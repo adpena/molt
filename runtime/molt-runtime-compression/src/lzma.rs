@@ -113,7 +113,6 @@ fn resolve_check(check: i64) -> xz2::stream::Check {
 // ── One-shot compress ─────────────────────────────────────────────────────────
 
 /// `lzma.compress(data, format=FORMAT_XZ, check=-1, preset=None) -> bytes`
-
 pub fn molt_lzma_compress_attached_body(
     _py: &molt_runtime_core::PyToken,
     error_class: u64,
@@ -202,7 +201,6 @@ pub fn molt_lzma_compress_attached_body(
 // ── One-shot decompress ───────────────────────────────────────────────────────
 
 /// `lzma.decompress(data, format=FORMAT_AUTO, memlimit=None) -> bytes`
-
 pub fn molt_lzma_decompress_attached_body(
     _py: &molt_runtime_core::PyToken,
     error_class: u64,
@@ -349,7 +347,6 @@ pub fn molt_lzma_compressor_new_attached_body(
 }
 
 /// `compressor.compress(data) -> bytes`
-
 pub fn molt_lzma_compressor_compress_attached_body(
     _py: &molt_runtime_core::PyToken,
     error_class: u64,
@@ -400,7 +397,6 @@ pub fn molt_lzma_compressor_compress_attached_body(
 }
 
 /// `compressor.flush() -> bytes`  (finalises and returns compressed stream)
-
 pub fn molt_lzma_compressor_flush_attached_body(
     _py: &molt_runtime_core::PyToken,
     error_class: u64,
@@ -614,7 +610,6 @@ pub fn molt_lzma_decompressor_new_attached_body(
 }
 
 /// `decompressor.decompress(data, max_length=-1) -> bytes`
-
 pub fn molt_lzma_decompressor_decompress_attached_body(
     _py: &molt_runtime_core::PyToken,
     error_class: u64,
@@ -678,7 +673,6 @@ pub fn molt_lzma_decompressor_decompress_attached_body(
 }
 
 /// `decompressor.eof` property
-
 pub fn molt_lzma_decompressor_eof_attached_body(
     _py: &molt_runtime_core::PyToken,
     error_class: u64,
@@ -703,7 +697,6 @@ pub fn molt_lzma_decompressor_eof_attached_body(
 }
 
 /// `decompressor.needs_input` property
-
 pub fn molt_lzma_decompressor_needs_input_attached_body(
     _py: &molt_runtime_core::PyToken,
     error_class: u64,
@@ -728,7 +721,6 @@ pub fn molt_lzma_decompressor_needs_input_attached_body(
 }
 
 /// `decompressor.unused_data` property
-
 pub fn molt_lzma_decompressor_unused_data_attached_body(
     _py: &molt_runtime_core::PyToken,
     error_class: u64,
@@ -783,7 +775,6 @@ fn lzma_file_handle_from_bits(
 }
 
 /// `lzma.open(filename, mode, format, check, preset) -> handle`
-
 pub fn molt_lzma_file_open_attached_body(
     _py: &molt_runtime_core::PyToken,
     error_class: u64,
@@ -905,7 +896,6 @@ pub fn molt_lzma_file_open_attached_body(
 }
 
 /// `handle.read(size=-1) -> bytes`
-
 pub fn molt_lzma_file_read_attached_body(
     _py: &molt_runtime_core::PyToken,
     error_class: u64,
@@ -966,7 +956,6 @@ pub fn molt_lzma_file_read_attached_body(
 }
 
 /// `handle.write(data) -> int`
-
 pub fn molt_lzma_file_write_attached_body(
     _py: &molt_runtime_core::PyToken,
     error_class: u64,
@@ -1007,7 +996,6 @@ pub fn molt_lzma_file_write_attached_body(
 }
 
 /// `handle.close() -> None` (finishes the lzma stream and writes to file)
-
 pub fn molt_lzma_file_close_attached_body(
     _py: &molt_runtime_core::PyToken,
     error_class: u64,

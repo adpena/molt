@@ -263,7 +263,6 @@ pub fn molt_http_client_connection_new_attached_body(
 /// Constructor for `http.client.HTTPSConnection` — same shape as
 /// `molt_http_client_connection_new` but marks the connection as TLS so that
 /// request execution dispatches over rustls.
-
 pub fn molt_http_client_connection_new_https_attached_body(
     _py: &molt_runtime_core::PyToken,
     host_bits: u64,

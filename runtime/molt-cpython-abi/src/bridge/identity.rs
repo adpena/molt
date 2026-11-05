@@ -113,7 +113,6 @@ pub(crate) fn observe_pyobject(ptr: *mut PyObject) -> Option<ResolvedPyObject> {
 ///
 /// Identity is recovered only from the bridge maps. No object-address or
 /// adjacent-memory encoding participates in the ABI contract.
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NumericCarrierKind {
     Long { allocation_size: usize },

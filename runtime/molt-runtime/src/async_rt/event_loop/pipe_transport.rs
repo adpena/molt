@@ -158,7 +158,6 @@ fn pipe_require_bytes_slice(_py: &crate::PyToken<'_>, bits: u64) -> Result<&'sta
 /// `is_read_bits`: NaN-boxed integer (truthy = read pipe, falsy = write pipe).
 ///
 /// Returns a NaN-boxed integer handle for the pipe transport.
-
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn molt_pipe_transport_new_attached_body(
     _py: &crate::PyToken<'_>,
@@ -230,7 +229,6 @@ pub(crate) fn molt_pipe_transport_is_closing_attached_body(
 /// Marks the transport as closing and closes the underlying fd.
 /// For write pipes, any buffered data is flushed first.
 /// Returns None.
-
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn molt_pipe_transport_close_attached_body(
     _py: &crate::PyToken<'_>,
@@ -362,7 +360,6 @@ pub(crate) fn molt_pipe_transport_resume_reading_attached_body(
 ///
 /// The data is written directly to the fd if possible; any remainder that would
 /// block is buffered internally. Returns None.
-
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn molt_pipe_transport_write_attached_body(
     _py: &crate::PyToken<'_>,

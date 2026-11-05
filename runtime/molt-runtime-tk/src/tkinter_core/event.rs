@@ -124,7 +124,6 @@ const MODIFIER_NAMES: &[&str] = &[
 ///   strings: char, keysym, type, widget_path
 ///
 /// Returns None on malformed input.
-
 pub fn molt_tk_event_build_from_args_attached_body(
     _py: &molt_runtime_core::PyToken,
     _widget_path_bits: u64,
@@ -200,7 +199,6 @@ pub fn molt_tk_event_build_from_args_attached_body(
 ///   - If value is already int, return it.
 ///   - If value is a string and `value.lstrip("-").isdigit()`, parse as int.
 ///   - Otherwise return value unchanged.
-
 pub fn molt_tk_event_int_attached_body(_py: &molt_runtime_core::PyToken, value_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, event_int_convert(_py, value_bits))
 }
@@ -216,7 +214,6 @@ pub fn molt_tk_event_int_attached_body(_py: &molt_runtime_core::PyToken, value_b
 /// just "0x0".
 ///
 /// Returns a Molt list of strings, or the "|"-joined string representation.
-
 pub fn molt_tk_event_state_decode_attached_body(
     _py: &molt_runtime_core::PyToken,
     state_bits: u64,

@@ -15,7 +15,6 @@ use super::common::{
 ///
 /// Returns a Molt list of [key, value] pairs (each pair is a 2-element list).
 /// Raises RuntimeError if the element count is odd.
-
 pub fn molt_tk_splitdict_attached_body(
     _py: &molt_runtime_core::PyToken,
     tcl_str_bits: u64,

@@ -4567,7 +4567,6 @@ fn cext_ingress_failure(py: &crate::PyToken<'_>, message: &str) -> i64 {
 /// Checked external-ingress trampoline for callers that do not already hold
 /// Molt runtime execution custody. Signature matches Molt's
 /// `extern "C" fn(closure_bits, args_ptr, args_len) -> i64`.
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cpython_abi_cext_call_trampoline(
     closure_bits: u64,

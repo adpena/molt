@@ -14,7 +14,6 @@ use super::common::{
 ///
 /// Recursively descends into list/tuple elements, collecting non-None leaf
 /// values into a flat list. None values are skipped.
-
 pub fn molt_tk_flatten_args_attached_body(_py: &molt_runtime_core::PyToken, args_bits: u64) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
         let mut out: Vec<u64> = Vec::new();
@@ -64,7 +63,6 @@ fn flatten_recursive<'py>(
 ///   - Append "-key" and value to output list
 ///
 /// Returns a Molt list of alternating "-key", value elements.
-
 pub fn molt_tk_cnfmerge_attached_body(
     _py: &molt_runtime_core::PyToken,
     cnf_bits: u64,
