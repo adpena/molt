@@ -417,9 +417,16 @@ class PythonExpressionFact:
 
         Exactness is the flow's closed-world value identity: no writer in the
         graph can bind the name in this namespace or replace the builtins
-        member before this read. An invalidated read proves nothing.
+        member before this read. An invalidated read proves nothing, and
+        neither does a read that a source value can reach: a star import
+        publishes its exports as source origins of later global reads, not
+        as identity bits (``tests/differential/basic/builtin_binding_guards_star.py``).
         """
-        if self.binding_invalidated or self.name_lookup != "global":
+        if (
+            self.binding_invalidated
+            or self.name_lookup != "global"
+            or self.result.source_origins
+        ):
             return None
         return BUILTIN_NAMES_BY_IDENTITY.get(self.identities)
 

@@ -325,3 +325,18 @@ def test_unproved_catalogued_builtin_calls_its_live_binding() -> None:
         assert "isinstance" not in _kinds(slow)
         assert "isinstance" in _global_reads(slow)
         assert "call_func" in _kinds(slow)
+
+
+def test_star_import_source_origins_withdraw_the_builtin_proof() -> None:
+    """A star import may export `len`; its read has a source origin.
+
+    The flow publishes star exports as source origins of later global reads,
+    not as identity bits, so the identity alone still reads BUILTIN_LEN.
+    """
+    source = (
+        "def measure(xs):\n    return len(xs)\n\n"
+        "measure([1])\nfrom support import *\nmeasure([1])\n"
+    )
+    ops = _premise_ops(source, "measure")
+    assert "len" in _global_reads(ops)
+    assert "len" not in _kinds(ops)
