@@ -5534,37 +5534,16 @@ def _run_command(
         },
         "termination_escalated": False,
         "guard_returncode": completed_returncode,
-        "guard_custody": {
-            "launch_id": process.launch_id,
-            "launch_pid": process.pid,
-            "guard_pid": process.guard_pid,
-            "startup_path": str(process.startup_path),
-            "summary_path": str(process.summary_path),
-            "cancellation_path": str(process.cancellation_path),
-            "evidence_path": str(process.evidence_path),
-            "terminal": process.terminal,
-            "cancellation_observation_seconds": cancellation_elapsed,
-            "cancellation_observation_budget_seconds": (
+        "guard_custody": proof_receipts.guarded_command_custody(
+            process,
+            cancellation_elapsed=cancellation_elapsed,
+            cancellation_budget=(
                 GUARD_CANCELLATION_OBSERVATION_SECONDS
                 if cancellation_started is not None
                 else None
             ),
-            "observation_error": None
-            if custody_error is None
-            else {
-                "type": type(custody_error).__name__,
-                "message": str(custody_error),
-                "closure": "confirmed" if process.terminal else "unresolved",
-                "cleanup_error": (
-                    None
-                    if getattr(custody_error, "cleanup_error", None) is None
-                    else {
-                        "type": type(custody_error.cleanup_error).__name__,
-                        "message": str(custody_error.cleanup_error),
-                    }
-                ),
-            },
-        },
+            observation_error=custody_error,
+        ),
         "environment_policies_applied": list(applied_environment_policies),
         "evidence_outputs": evidence_outputs,
     }

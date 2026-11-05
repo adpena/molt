@@ -2215,7 +2215,9 @@ def test_macos_first_exec_report_distinguishes_timing_from_permission(
 ):
     from types import SimpleNamespace
 
-    monkeypatch.setattr(SETUP_READINESS.platform, "system", lambda: "Darwin")
+    install_module_view(
+        monkeypatch, "platform", platform, SETUP_READINESS, system=lambda: "Darwin"
+    )
     calls = []
     durations = iter((first, warm))
 
@@ -2245,9 +2247,11 @@ def test_macos_first_exec_report_distinguishes_timing_from_permission(
 def test_macos_first_exec_report_marks_unavailable_and_other_hosts(
     monkeypatch, tmp_path
 ):
-    monkeypatch.setattr(SETUP_READINESS.platform, "system", lambda: "Linux")
+    platform_view = install_module_view(
+        monkeypatch, "platform", platform, SETUP_READINESS, system=lambda: "Linux"
+    )
     assert SETUP_READINESS._macos_execution_check(tmp_path) is None
-    monkeypatch.setattr(SETUP_READINESS.platform, "system", lambda: "Darwin")
+    platform_view.system = lambda: "Darwin"
     monkeypatch.setattr(
         SETUP_READINESS,
         "_run_completed_command",
