@@ -1,5 +1,6 @@
 use super::*;
 use molt_ir::OpKind;
+use molt_ir::tir::op_kinds_generated::ExceptionEdgeKind;
 
 #[test]
 fn local_frame_credit_is_guarded_on_early_normal_and_suspension_returns() {
@@ -760,7 +761,7 @@ fn check_exception_edge_feeds_handler_phi() {
             attrs: AttrDict::from([("module".into(), AttrValue::Str("checked_name".into()))]),
             source_span: None,
         });
-        entry.ops.push(TirOp {
+        let mut check = TirOp {
             origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
@@ -768,7 +769,9 @@ fn check_exception_edge_feeds_handler_phi() {
             results: vec![],
             attrs: handler_attrs,
             source_span: None,
-        });
+        };
+        check.set_exception_edge_kind(ExceptionEdgeKind::Origin);
+        entry.ops.push(check);
         entry.terminator = Terminator::Branch {
             target: exit_id,
             args: vec![],
@@ -853,6 +856,7 @@ fn check_exception_requires_explicit_target_inside_and_outside_try() {
                 attrs: AttrDict::new(),
                 source_span: None,
             };
+            check.set_exception_edge_kind(ExceptionEdgeKind::Origin);
             if poll {
                 check.mark_async_work_poll();
             }
