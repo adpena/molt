@@ -1481,7 +1481,8 @@ pub struct RuntimeHooks {
     pub object_contains: unsafe extern "C" fn(container: u64, needle: u64) -> std::os::raw::c_int,
     /// Marshal's sole runtime codec. ABI-only hosts without a runtime refuse
     /// this capability; they cannot substitute another serialization format.
-    pub marshal_write: Option<unsafe extern "C" fn(u64, i32, MarshalInputOwnership) -> OwnedHandleResult>,
+    pub marshal_write:
+        Option<unsafe extern "C" fn(u64, i32, MarshalInputOwnership) -> OwnedHandleResult>,
     pub marshal_read: Option<unsafe extern "C" fn(*const u8, usize) -> OwnedHandleResult>,
     /// Context objects and bindings have one runtime owner. Optional values use
     /// an explicit presence flag; float +0.0 is a valid successful value.

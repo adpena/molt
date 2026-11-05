@@ -122,7 +122,10 @@ mod builtins;
 mod c_api;
 mod call;
 mod marshal;
-pub use marshal::{molt_marshal_dump, molt_marshal_dumps, molt_marshal_load, molt_marshal_loads, molt_marshal_version};
+pub use marshal::{
+    molt_marshal_dump, molt_marshal_dumps, molt_marshal_load, molt_marshal_loads,
+    molt_marshal_version,
+};
 #[cfg(feature = "stdlib_collections")]
 mod collections_bridge;
 mod concurrency;
