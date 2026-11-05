@@ -3867,7 +3867,9 @@ mod tests {
             let baseline = ref_count(value);
             let recursion = crate::state::recursion::current_thread_recursion_depth();
             let frames = crate::FRAME_STACK.with(|stack| stack.borrow().len());
-            assert!(!current_thread_has_c_extension_execution_context());
+            assert!(current_thread_has_c_extension_execution_context());
+            let execution_before =
+                (molt_cpython_abi::hooks::hooks_or_stubs().foreign_execution_capture)();
             for admitted in [false, true] {
                 let _execution = admitted.then(RuntimeExecutionGuard::enter);
                 for width in 0..=13 {
@@ -3883,7 +3885,12 @@ mod tests {
                         assert!(!crate::exception_pending(&py));
                         assert_eq!(result, if width == 0 { int(197) } else { value });
                         assert_cext_dispatch(recursion, frames, width, 0);
-                        assert_eq!(current_thread_has_c_extension_execution_context(), admitted);
+                        assert!(current_thread_has_c_extension_execution_context());
+                        assert_eq!(
+                            (molt_cpython_abi::hooks::hooks_or_stubs().foreign_execution_capture)(),
+                            execution_before,
+                            "exact execution custody must be restored"
+                        );
                         dec_ref_bits(&py, result);
                         assert_eq!(ref_count(value), baseline);
                     }
@@ -3899,15 +3906,21 @@ mod tests {
                 assert_eq!(result, value);
                 assert!(!crate::exception_pending(&py));
                 assert_cext_dispatch(recursion, frames, 1, 1);
-                assert_eq!(current_thread_has_c_extension_execution_context(), admitted);
+                assert!(current_thread_has_c_extension_execution_context());
+                assert_eq!(
+                    (molt_cpython_abi::hooks::hooks_or_stubs().foreign_execution_capture)(),
+                    execution_before,
+                    "exact execution custody must be restored"
+                );
                 dec_ref_bits(&py, result);
                 dec_ref_bits(&py, key);
                 assert_eq!(ref_count(value), baseline);
             }
-            assert!(!current_thread_has_c_extension_execution_context());
+            assert!(current_thread_has_c_extension_execution_context());
             dec_ref_bits(&py, value);
             dec_ref_bits(&py, function);
         });
+        assert!(!crate::concurrency::execution::current_thread_has_c_extension_execution_context());
     }
 
     #[test]
@@ -3943,6 +3956,8 @@ mod tests {
                 let function = cext_dispatch_function_for(target, flags);
                 assert_ne!(function, 0);
                 let args = [int(10), int(20)];
+                let execution_before =
+                    (molt_cpython_abi::hooks::hooks_or_stubs().foreign_execution_capture)();
                 for admitted in [false, true] {
                     let _execution = admitted.then(RuntimeExecutionGuard::enter);
                     CEXT_DISPATCH.with(|state| *state.borrow_mut() = Default::default());
@@ -3976,12 +3991,18 @@ mod tests {
                     }
                     assert!(errors::PyErr_Occurred().is_null());
                     assert!(!crate::exception_pending(&py));
-                    assert_eq!(current_thread_has_c_extension_execution_context(), admitted);
+                    assert!(current_thread_has_c_extension_execution_context());
+                    assert_eq!(
+                        (molt_cpython_abi::hooks::hooks_or_stubs().foreign_execution_capture)(),
+                        execution_before,
+                        "exact execution custody must be restored"
+                    );
                 }
                 dec_ref_bits(&py, function);
             }
-            assert!(!current_thread_has_c_extension_execution_context());
+            assert!(current_thread_has_c_extension_execution_context());
         });
+        assert!(!crate::concurrency::execution::current_thread_has_c_extension_execution_context());
     }
 
     #[test]
@@ -4003,7 +4024,9 @@ mod tests {
             let baseline = ref_count(value);
             let recursion = crate::state::recursion::current_thread_recursion_depth();
             let frames = crate::FRAME_STACK.with(|stack| stack.borrow().len());
-            assert!(!current_thread_has_c_extension_execution_context());
+            assert!(current_thread_has_c_extension_execution_context());
+            let execution_before =
+                (molt_cpython_abi::hooks::hooks_or_stubs().foreign_execution_capture)();
             for admitted in [false, true] {
                 let _execution = admitted.then(RuntimeExecutionGuard::enter);
                 for fail in [false, true] {
@@ -4018,7 +4041,12 @@ mod tests {
                     crate::inc_ref_bits(&py, value);
                     let result = super::call_function_obj_moved(&py, function, &[value, value]);
                     assert_cext_dispatch(recursion, frames, 2, 0);
-                    assert_eq!(current_thread_has_c_extension_execution_context(), admitted);
+                    assert!(current_thread_has_c_extension_execution_context());
+                    assert_eq!(
+                        (molt_cpython_abi::hooks::hooks_or_stubs().foreign_execution_capture)(),
+                        execution_before,
+                        "exact execution custody must be restored"
+                    );
                     if fail {
                         assert!(crate::exception_pending(&py));
                         let raised = CEXT_DISPATCH.with(|state| state.borrow().raised);
@@ -4068,10 +4096,11 @@ mod tests {
                 dec_ref_bits(&py, ordinary);
                 assert_eq!(ref_count(value), baseline);
             }
-            assert!(!current_thread_has_c_extension_execution_context());
+            assert!(current_thread_has_c_extension_execution_context());
             dec_ref_bits(&py, value);
             dec_ref_bits(&py, function);
         });
+        assert!(!crate::concurrency::execution::current_thread_has_c_extension_execution_context());
     }
 
     // An ordinary call owns its callable. A temporary bound method ends before

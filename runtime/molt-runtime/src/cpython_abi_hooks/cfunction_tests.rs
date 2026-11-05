@@ -14,7 +14,7 @@ fn managed_exception_class_creation_and_calls_use_runtime_authority() {
 
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     assert!(register_cpython_hooks());
-    unsafe {
+    with_gil(|_| unsafe {
         // PyErr_NewException calls the canonical type(name, bases, dict),
         // then its result must itself be callable through the C API.
         let class = errors::PyErr_NewException(
@@ -71,7 +71,7 @@ fn managed_exception_class_creation_and_calls_use_runtime_authority() {
         ] {
             refcount::Py_DECREF(value);
         }
-    }
+    });
 }
 
 #[derive(Debug, PartialEq)]
@@ -575,6 +575,7 @@ fn cext_fixed_conventions_reject_wrong_widths_across_call_routes() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     assert!(register_cpython_hooks());
     with_gil(|py| unsafe {
+        let outer_custody = hook_foreign_execution_capture();
         for (flags, target, width, expected) in [
             (
                 METH_NOARGS,
@@ -633,6 +634,7 @@ fn cext_fixed_conventions_reject_wrong_widths_across_call_routes() {
                     "abi-vectorcall-tuple",
                 ] {
                     OBSERVED.with(|slot| *slot.borrow_mut() = None);
+                    let custody_before = hook_foreign_execution_capture();
                     let runtime_result = match route {
                         "fixed" => Some(match width {
                             0 => function::call_function_obj0(&py, callable_bits),
@@ -714,9 +716,17 @@ fn cext_fixed_conventions_reject_wrong_widths_across_call_routes() {
                             "{route}: flags={flags:#x}, admitted={admitted}",
                         );
                     }
+                    assert_eq!(
+                        hook_foreign_execution_capture(),
+                        custody_before,
+                        "{route}: exact execution custody must be restored"
+                    );
                     assert!(errors::PyErr_Occurred().is_null());
                     assert!(!crate::exception_pending(&py));
-                    assert_eq!(current_thread_has_c_extension_execution_context(), admitted);
+                    assert!(
+                        current_thread_has_c_extension_execution_context(),
+                        "the surrounding Python execution remains attached"
+                    );
                 }
             }
             drop(tuple);
@@ -725,8 +735,10 @@ fn cext_fixed_conventions_reject_wrong_widths_across_call_routes() {
         }
         assert!(errors::PyErr_Occurred().is_null());
         assert!(!crate::exception_pending(&py));
-        assert!(!current_thread_has_c_extension_execution_context());
+        assert!(current_thread_has_c_extension_execution_context());
+        assert_eq!(hook_foreign_execution_capture(), outer_custody);
     });
+    assert!(!current_thread_has_c_extension_execution_context());
 }
 
 #[test]
@@ -1004,7 +1016,7 @@ fn cext_method_accepts_and_preserves_physical_extension_defining_class() {
     ) -> *mut PyObject {
         unsafe { molt_cpython_abi::api::object::Py_NewRef(class.cast()) }
     }
-    unsafe {
+    with_gil(|_| unsafe {
         let mut class: Box<PyTypeObject> = Box::new(std::mem::zeroed());
         class.ob_base.ob_base.ob_refcnt = 1;
         class.ob_base.ob_base.ob_type = &raw mut molt_cpython_abi::abi_types::PyType_Type;
@@ -1062,7 +1074,7 @@ fn cext_method_accepts_and_preserves_physical_extension_defining_class() {
             class.ob_base.ob_base.ob_refcnt, 1,
             "both class custody edges must retire"
         );
-    }
+    });
 }
 
 thread_local! {
@@ -2096,7 +2108,7 @@ fn capi_numeric_readonly_members_use_runtime_descriptors() {
     use molt_cpython_abi::api::{errors, object, refcount};
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     assert!(register_cpython_hooks());
-    unsafe {
+    with_gil(|_| unsafe {
         for (value, owner, fields) in [
             (
                 numeric::PyLong_FromLong(37),
@@ -2161,7 +2173,7 @@ fn capi_numeric_readonly_members_use_runtime_descriptors() {
             }
         }
         assert!(errors::PyErr_Occurred().is_null());
-    }
+    });
 }
 
 #[test]
@@ -2169,7 +2181,7 @@ fn capi_numeric_origins_survive_method_container_and_attribute_owners() {
     use molt_cpython_abi::api::{errors, object, refcount, typeobj};
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     assert!(register_cpython_hooks());
-    unsafe {
+    with_gil(|_| unsafe {
         for floating in [false, true] {
             let new = || {
                 if floating {
@@ -2223,7 +2235,7 @@ fn capi_numeric_origins_survive_method_container_and_attribute_owners() {
             assert!(GLOBAL_BRIDGE.managed_handle_for_pyobj(second).is_none());
             assert!(errors::PyErr_Occurred().is_null());
         }
-    }
+    });
 }
 
 #[test]

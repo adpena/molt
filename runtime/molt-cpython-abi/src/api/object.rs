@@ -4983,11 +4983,48 @@ unsafe extern "C" fn abi_test_native_gc_claim_finalizer(addr: usize) -> c_int {
 }
 
 #[cfg(test)]
+unsafe extern "C" fn abi_test_foreign_execution_capture() -> crate::hooks::ForeignExecutionSnapshot
+{
+    use crate::hooks::{ForeignExecutionDomain, ForeignExecutionSnapshot};
+    if !abi_test_native_gc_active() {
+        return ForeignExecutionSnapshot::UNAVAILABLE;
+    }
+    MOLT_THREAD_STATE.with(|slot| {
+        let slot = slot.borrow();
+        let Some(record) = slot.as_deref() else {
+            return ForeignExecutionSnapshot::UNAVAILABLE;
+        };
+        ForeignExecutionSnapshot {
+            domain: ForeignExecutionDomain::StandaloneHost,
+            thread_record: std::ptr::from_ref(record) as u64,
+            runtime_identity: record.runtime_owner as u64,
+            thread_state: std::ptr::from_ref(&record.state) as u64,
+            ensure_scope: record.id,
+            ..ForeignExecutionSnapshot::UNAVAILABLE
+        }
+    })
+}
+
+#[cfg(test)]
+unsafe extern "C" fn abi_test_foreign_execution_validate(
+    expected: crate::hooks::ForeignExecutionSnapshot,
+) -> i32 {
+    i32::from(
+        expected.domain == crate::hooks::ForeignExecutionDomain::StandaloneHost
+            && expected == unsafe { abi_test_foreign_execution_capture() },
+    )
+}
+
+#[cfg(test)]
 fn install_abi_unit_test_native_gc_hooks() {
     static INSTALL: std::sync::Once = std::sync::Once::new();
     INSTALL.call_once(|| {
         let mut hooks = crate::hooks::STUB_HOOKS;
         hooks.runtime_is_initialized = abi_test_runtime_is_initialized;
+        // The existing unit transaction owns this exact standalone C record.
+        // It cannot issue an AttachedRuntime receipt or outlive its record.
+        hooks.foreign_execution_capture = abi_test_foreign_execution_capture;
+        hooks.foreign_execution_validate = abi_test_foreign_execution_validate;
         hooks.native_gc_allocate = Some(abi_test_native_gc_allocate);
         hooks.native_gc_track = abi_test_native_gc_track;
         hooks.native_gc_untrack = abi_test_native_gc_untrack;
@@ -5811,6 +5848,35 @@ mod thread_state_tests {
     }
 
     #[test]
+    fn unit_host_foreign_receipts_follow_the_exact_record_lifetime() {
+        let transaction = AbiTestThreadStateTransaction::new();
+        let snapshot = unsafe { abi_test_foreign_execution_capture() };
+        assert_eq!(
+            snapshot.domain,
+            crate::hooks::ForeignExecutionDomain::StandaloneHost
+        );
+        assert_eq!(snapshot.thread_state, ensure_current_thread_state() as u64);
+        assert_eq!(unsafe { abi_test_foreign_execution_validate(snapshot) }, 1);
+        let mut changed = snapshot;
+        changed.thread_state ^= 8;
+        assert_eq!(unsafe { abi_test_foreign_execution_validate(changed) }, 0);
+        assert_eq!(
+            std::thread::spawn(move || unsafe { abi_test_foreign_execution_validate(snapshot) })
+                .join()
+                .unwrap(),
+            0
+        );
+        drop(transaction);
+        assert_eq!(unsafe { abi_test_foreign_execution_validate(snapshot) }, 0);
+        let _next = AbiTestThreadStateTransaction::new();
+        assert_ne!(
+            unsafe { abi_test_foreign_execution_capture() }.ensure_scope,
+            snapshot.ensure_scope
+        );
+        assert_eq!(unsafe { abi_test_foreign_execution_validate(snapshot) }, 0);
+    }
+
+    #[test]
     fn thread_state_identity_and_custody_are_thread_local() {
         let _thread_state = AbiTestThreadStateTransaction::new();
         let local = ensure_current_thread_state();
@@ -5964,7 +6030,7 @@ mod thread_state_tests {
     }
 
     #[test]
-    fn ordinary_empty_thread_state_drain_does_not_reacquire_runtime_custody() {
+    fn empty_c_record_still_drains_runtime_tls_before_retirement() {
         let thread_state = AbiTestThreadStateTransaction::new();
         let cleanup_calls = Cell::new(0);
         destroy_current_thread_state(
@@ -5976,7 +6042,9 @@ mod thread_state_tests {
             },
         );
 
-        assert_eq!(cleanup_calls.get(), 0);
+        // An empty C record does not prove the separate runtime TLS domain is empty.
+        // Its first custody-held cleanup can execute a Python finalizer.
+        assert_eq!(cleanup_calls.get(), 1);
         assert!(
             existing_current_thread_state().is_none(),
             "an empty ordinary record must still be retired"
