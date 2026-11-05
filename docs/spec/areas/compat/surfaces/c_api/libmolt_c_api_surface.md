@@ -53,6 +53,22 @@ are statements with borrowed receivers, not owned result values.
 - `molt_gil_acquire`, `molt_gil_release`
 - `molt_gil_is_held`
 
+`molt_init` and `molt_gil_acquire` return 0 on success and -1 on failure.
+Callers must check those results before C object access and retain their GIL
+admission through the last read. Runtime lifecycle initialization alone does
+not prove that the exported C type cohort is ready. Standalone compiled Python
+bootstrap publishes hooks and shell identities; the first C exposure completes
+type namespaces, bases and MROs. Failed readiness preserves the prepared runtime
+and original error without granting foreign access. Shutdown drains admitted
+readers before retiring runtime-backed static fields.
+
+The void source-header `Py_Initialize`/`Py_InitializeEx` and acquisition helpers
+stop fatally on failed admission. Compiled `PyGILState_Ensure` likewise cannot
+return with an incomplete cohort. Source headers retain their existing opaque
+thread-state transport; the CPython ABI uses its compiled attachment owner.
+Their thread-state representations must not be mixed by routing only part of
+an acquire/release/save/restore protocol through the other transport.
+
 ### 4.2 Error Handling
 - `molt_err_set`, `molt_err_clear`, `molt_err_pending`, `molt_err_peek`
 - `molt_err_fetch`, `molt_err_restore`

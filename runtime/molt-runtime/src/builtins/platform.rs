@@ -584,6 +584,11 @@ fn source_extension_loader_dlopen(
     init_symbol: &str,
 ) -> Result<(), String> {
     type InitFn = unsafe extern "C" fn() -> *mut u8;
+    let _execution = crate::concurrency::execution::RuntimeExecutionGuard::enter();
+    // A library constructor can read exported C type fields before PyInit.
+    if !crate::cpython_abi_hooks::expose_cpython_types() {
+        return Err("C type readiness failed before extension loading".to_owned());
+    }
     let library = unsafe { libloading::Library::new(Path::new(path)) }
         .map_err(|err| format!("dlopen failed: {err}"))?;
     let module_ptr = {

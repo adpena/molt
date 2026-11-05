@@ -615,12 +615,17 @@ static inline double PyOS_string_to_double(
     return value;
 }
 
-static inline int Py_IsInitialized(void) {
-    return 1;
-}
+PyAPI_FUNC(int) Py_IsInitialized(void);
+#ifdef MOLT_EXTENSION_HOST_ABI
+#define Py_IsInitialized ((int (*)(void))_molt_host_abi_symbol("Py_IsInitialized"))
+#endif
+
+static inline void Py_FatalError(const char *message);
 
 static inline void Py_Initialize(void) {
-    (void)molt_init();
+    if (molt_init() != 0 || (molt_gil_is_held() == 0 && molt_gil_acquire() != 0)) {
+        Py_FatalError("Molt C-API initialization failed");
+    }
 }
 
 static inline void Py_Finalize(void) {
@@ -638,8 +643,8 @@ static inline PyThreadState *PyThreadState_Get(void) {
 
 static inline PyGILState_STATE PyGILState_Ensure(void) {
     PyGILState_STATE state = molt_gil_is_held() != 0 ? PyGILState_LOCKED : PyGILState_UNLOCKED;
-    if (state == PyGILState_UNLOCKED) {
-        (void)molt_gil_acquire();
+    if (state == PyGILState_UNLOCKED && molt_gil_acquire() != 0) {
+        Py_FatalError("Molt GIL acquisition failed");
     }
     return state;
 }
@@ -3014,6 +3019,7 @@ static inline int Py_FinalizeEx(void) {
 
 static inline void Py_InitializeEx(int initsigs) {
     (void)initsigs;
+    Py_Initialize();
 }
 
 /* ========================================================================
@@ -3105,7 +3111,9 @@ static inline PyObject *Py_CompileStringExFlags(const char *str, const char *fil
  * ======================================================================== */
 
 static inline void PyEval_AcquireLock(void) {
-    (void)molt_gil_acquire();
+    if (molt_gil_acquire() != 0) {
+        Py_FatalError("Molt GIL acquisition failed");
+    }
 }
 
 static inline void PyEval_ReleaseLock(void) {
@@ -3114,7 +3122,9 @@ static inline void PyEval_ReleaseLock(void) {
 
 static inline void PyEval_AcquireThread(PyThreadState *tstate) {
     (void)tstate;
-    (void)molt_gil_acquire();
+    if (molt_gil_acquire() != 0) {
+        Py_FatalError("Molt GIL acquisition failed");
+    }
 }
 
 static inline void PyEval_ReleaseThread(PyThreadState *tstate) {
@@ -3130,7 +3140,9 @@ static inline PyThreadState *PyEval_SaveThread(void) {
 
 static inline void PyEval_RestoreThread(PyThreadState *tstate) {
     (void)tstate;
-    (void)molt_gil_acquire();
+    if (molt_gil_acquire() != 0) {
+        Py_FatalError("Molt GIL acquisition failed");
+    }
 }
 
 static inline PyFrameObject *PyEval_GetFrame(void) {

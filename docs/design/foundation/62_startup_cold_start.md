@@ -1043,6 +1043,8 @@ is warmed separately; these are repeated-run instruction/RSS observations.
 | --- | --- | --- | --- | --- | --- |
 | HF-748 | hello world | 189,826,165 → 158,813,153 | -31,013,012 (-16.34%) | 16,400,384 → 16,498,688 | 13,505,480 → 13,571,552 |
 | HF-748 | import tiny | 195,288,848 → 163,784,321 | -31,504,527 (-16.13%) | 17,039,360 → 16,957,440 | 32,236,728 → 32,302,776 |
+| HF-749 | hello world | 159,547,202 → 120,967,247 | -38,579,955 (-24.18%) | 16,498,688 → 16,318,464 | 13,571,552 → 13,555,024 |
+| HF-749 | import tiny | 163,552,032 → 124,921,295 | -38,630,737 (-23.62%) | 16,957,440 → 16,695,296 | 32,302,776 → 32,286,272 |
 
 HF-748 reduces executed work, with approximately flat RSS and about 66 KB extra
 code. The implementation also preserves all 64 bits of boxed scratch keys on
@@ -1051,3 +1053,55 @@ address mixing and scratch word mixing share one folded-multiply authority.
 Membership tests cover typed domains, duplicate insertion and high-word spread.
 The full differential/profile matrix remains required for qualification; these
 measurements alone do not claim semantic acceptance or a Linux result.
+
+### HF-749 implementation and second review
+
+Bootstrap publishes hooks, canonical C-shell bindings and the mandatory
+preallocated MemoryError views, then commits `Prepared`. It defers the exported
+type cohort's dictionaries, bases and MROs until C exposure. First exposure owns
+`Readying { owner }`; success commits `Ready`. Failure retains the hooks and
+original error, restores `Prepared` and permits a real retry. Individual
+`PyType_Ready` rollback remains authoritative; completed parents stay valid.
+This removes the eager cohort cost, not all transport bootstrap allocations.
+
+The final Goldfish round accepted four gaps and resolved them together:
+
+- Public `molt_init`/GIL admission return failure; void `Py_Initialize` and
+  `Py_InitializeEx` stop fatally on failure rather than returning foreign
+  control. `Py_IsInitialized` uses the compiled owner, including host transport.
+- Same-owner bridge recursion may use hooks during readiness, but a second
+  foreign entry requires committed `Ready`. Static PyInit, prepared module exec
+  and dynamic loading cross this boundary before foreign control, including
+  dlopen constructors. The real C probe reads raw builtin/exception fields.
+- A waiter releases the registration mutex before suspending its GIL, waits
+  on the existing predicate/condition variable, drops the mutex before GIL
+  reacquisition and revalidates the phase. No new lock authority is introduced.
+- Readiness and foreign bodies retain existing runtime execution admission
+  independently of GIL release. Compiled `PyGILState_Ensure` also completes
+  exposure. Source headers keep their distinct opaque thread-state transport;
+  all its acquisition wrappers check the fallible `molt_gil_acquire` boundary.
+  Routing only Ensure/Release to the ABI would mix save/restore ownership.
+
+The runtime dev semantic gate passed (2,169 runtime tests and four declared
+core/math controls). A previous run exposed a raw-dictionary test consumer;
+it now enters the real C exposure boundary and retains all publication,
+allocation-failure, declaration and watcher assertions. The header direct reader
+passed 84 tests with six platform skips. Release-fast, reverse dependencies,
+compiled-extension and target differential qualification remain required.
+
+The raw C probe exposed a bootstrap-only READY marker on `PyType_Type` with
+no runtime MRO/bases. The cohort now calls the canonical readiness transaction
+on every shell; the flag alone is not exposure proof. That wider call also
+exposed Context's typed lazy producer: admit it before capturing the binding
+identity that readiness must preserve, rather than accepting a changed binding.
+The strengthened regression checks dictionaries, bases and MROs throughout the
+cohort; the dev semantic gate passed again. CPython 3.12 keeps static builtin
+dictionaries per interpreter, so the independent C probe reads raw READY,
+bases/MRO first and then uses `PyType_GetDict` for dictionary access.
+
+The complete extension fixture reaches those raw checks but fails later in
+static-extension import body execution. A controlled reversal of the entire
+owned HF-749 change (and the new probe) fails with the same missing-body
+ImportError. This is an existing catalog-loader consumer gap, not a successful
+extension parity result or permission to add a missing-body fallback. The
+integrator owns its typed C create/exec versus private source-body connection.

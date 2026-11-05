@@ -207,7 +207,17 @@ fn gil_restore_thread() {
 }
 
 unsafe extern "C" fn hook_gil_ensure() -> c_int {
-    gil_ensure_unit()
+    let state = gil_ensure_unit();
+    if !expose_cpython_types() {
+        // Like Py_Initialize, Ensure cannot report allocation failure. Never
+        // return foreign control with a partially prepared exported type.
+        unsafe {
+            molt_cpython_abi::api::memory::Py_FatalError(
+                c"Molt C type readiness failed during PyGILState_Ensure".as_ptr(),
+            )
+        }
+    }
+    state
 }
 
 unsafe extern "C" fn hook_gil_leave(state: c_int) {
@@ -5021,6 +5031,8 @@ unsafe extern "C" fn hook_register_c_function(
 enum HookRegistrationState {
     Uninitialized,
     Initializing { owner: std::thread::ThreadId },
+    Prepared,
+    Readying { owner: std::thread::ThreadId },
     Ready,
     Retiring,
     Retired,
@@ -5180,7 +5192,10 @@ impl CpythonRuntimeState {
         match *registration {
             HookRegistrationState::Uninitialized | HookRegistrationState::Retired => return,
             HookRegistrationState::Retiring => return,
-            HookRegistrationState::Ready | HookRegistrationState::Initializing { .. } => {
+            HookRegistrationState::Prepared
+            | HookRegistrationState::Readying { .. }
+            | HookRegistrationState::Ready
+            | HookRegistrationState::Initializing { .. } => {
                 *registration = HookRegistrationState::Retiring;
             }
             HookRegistrationState::Failed => panic!("retiring failed CPython bootstrap twice"),
@@ -5260,7 +5275,10 @@ impl<'a> HookRegistrationGuard<'a> {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         loop {
             match *state {
-                HookRegistrationState::Ready | HookRegistrationState::Retiring => return None,
+                HookRegistrationState::Prepared
+                | HookRegistrationState::Readying { .. }
+                | HookRegistrationState::Ready
+                | HookRegistrationState::Retiring => return None,
                 HookRegistrationState::Retired => {
                     panic!("CPython bootstrap entered a retired runtime")
                 }
@@ -5299,7 +5317,7 @@ impl<'a> HookRegistrationGuard<'a> {
             HookRegistrationState::Initializing { owner: self.owner },
             "CPython hook registration lost publication ownership"
         );
-        *state = HookRegistrationState::Ready;
+        *state = HookRegistrationState::Prepared;
         self.committed = true;
         self.runtime.ready.notify_all();
     }
@@ -5354,7 +5372,7 @@ pub(crate) fn bind_context_class(
     if !crate::state::runtime_state::owns_process_cpython_state(crate::runtime_state(py)) {
         return true;
     }
-    if !register_cpython_hooks() {
+    if !prepare_cpython_hooks() {
         return false;
     }
     let pointer = match shape {
@@ -5389,9 +5407,139 @@ pub(crate) fn bind_context_class(
     true
 }
 
-/// Register the runtime hooks into `molt-lang-cpython-abi`.
-/// Install process-lived hooks once and publish static bindings once per runtime.
+/// Expose the process-static C type cohort at a C entry boundary. Exported
+/// data symbols permit direct field reads, so extension and embedding entry
+/// complete the cohort before giving control to foreign code.
 pub fn register_cpython_hooks() -> bool {
+    // A readiness callback can release the GIL. Retain the runtime independently
+    // of that lock while another thread waits for the same exposure transaction.
+    let _execution = RuntimeExecutionGuard::enter();
+    if !prepare_cpython_hooks() {
+        return false;
+    }
+    with_gil(|py| {
+        let runtime = &crate::runtime_state(&py).cpython;
+        let owner = std::thread::current().id();
+        loop {
+            let mut state = runtime.registration.lock().unwrap();
+            match *state {
+                HookRegistrationState::Ready | HookRegistrationState::Retiring => return true,
+                HookRegistrationState::Readying { owner: active } if active == owner => {
+                    // Readiness itself uses bridge operations under this GIL.
+                    // Extension initializers have an additional complete-state
+                    // check before foreign code can observe this transaction.
+                    return true;
+                }
+                HookRegistrationState::Readying { .. } => {
+                    // A readiness callback can release the GIL. Do not wait
+                    // with it held, preventing the owner from resuming.
+                    drop(state);
+                    let released = GilReleaseGuard::suspend();
+                    let mut state = runtime.registration.lock().unwrap();
+                    while matches!(*state, HookRegistrationState::Readying { .. }) {
+                        state = runtime.ready.wait(state).unwrap();
+                    }
+                    drop(state);
+                    drop(released);
+                }
+                HookRegistrationState::Prepared => {
+                    *state = HookRegistrationState::Readying { owner };
+                    drop(state);
+                    let transaction = TypeReadinessGuard {
+                        runtime,
+                        owner,
+                        committed: false,
+                    };
+                    if unsafe { molt_cpython_abi::abi_types::ready_exception_singleton_types() } < 0
+                    {
+                        return false;
+                    }
+                    transaction.commit();
+                    return true;
+                }
+                HookRegistrationState::Initializing { .. } => {
+                    drop(state);
+                    crate::raise_exception::<u64>(
+                        &py,
+                        BuiltinExc::RuntimeError,
+                        "C type exposure during runtime hook publication",
+                    );
+                    return false;
+                }
+                HookRegistrationState::Uninitialized
+                | HookRegistrationState::Retired
+                | HookRegistrationState::Failed => {
+                    unreachable!("C type exposure requires live prepared bindings")
+                }
+            }
+        }
+    })
+}
+
+struct TypeReadinessGuard<'a> {
+    runtime: &'a CpythonRuntimeState,
+    owner: std::thread::ThreadId,
+    committed: bool,
+}
+
+impl TypeReadinessGuard<'_> {
+    fn commit(mut self) {
+        let mut state = self.runtime.registration.lock().unwrap();
+        assert_eq!(
+            *state,
+            HookRegistrationState::Readying { owner: self.owner }
+        );
+        *state = HookRegistrationState::Ready;
+        self.committed = true;
+        self.runtime.ready.notify_all();
+    }
+}
+
+impl Drop for TypeReadinessGuard<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            // PyType_Ready owns each type's rollback. Completed parents stay
+            // valid; a failed exposure retains hooks/bindings and can retry
+            // without replacing the original exception or retiring a runtime.
+            let mut state = self.runtime.registration.lock().unwrap();
+            if matches!(*state, HookRegistrationState::Readying { owner } if owner == self.owner) {
+                *state = HookRegistrationState::Prepared;
+            }
+            self.runtime.ready.notify_all();
+        }
+    }
+}
+
+/// Foreign code may read C type fields without returning through the bridge.
+/// Refuse a reentrant foreign entry while the outer readiness transaction is
+/// still constructing those fields; internal bridge operations remain usable.
+pub(crate) fn expose_cpython_types() -> bool {
+    if !register_cpython_hooks() {
+        return false;
+    }
+    with_gil(|py| {
+        let ready = matches!(
+            *crate::runtime_state(&py)
+                .cpython
+                .registration
+                .lock()
+                .unwrap(),
+            HookRegistrationState::Ready
+        );
+        if !ready {
+            crate::raise_exception::<u64>(
+                &py,
+                BuiltinExc::RuntimeError,
+                "C extension entry before type readiness completed",
+            );
+        }
+        ready
+    })
+}
+
+/// Publish lifecycle hooks and canonical shell identities during runtime
+/// bootstrap. Physical type dictionaries are prepared only on C exposure.
+pub(crate) fn prepare_cpython_hooks() -> bool {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     with_gil(|_py| {
         if !admit_process_cpython_state(&_py) {
@@ -5770,11 +5918,6 @@ pub fn register_cpython_hooks() -> bool {
             );
         });
         unsafe { molt_cpython_abi::abi_types::prepare_builtin_static_type_runtime_state() };
-        assert_eq!(
-            unsafe { molt_cpython_abi::abi_types::ready_exception_singleton_types() },
-            0,
-            "CPython exception singleton types failed readiness after production hook publication"
-        );
         registration.commit();
         true
     })
@@ -5810,6 +5953,8 @@ mod native_raised_state_tests;
 pub(crate) mod native_test_fixture;
 #[cfg(test)]
 mod pending_cleanup_tests;
+#[cfg(test)]
+mod readiness_tests;
 #[cfg(test)]
 mod semantic_retirement_tests;
 #[cfg(test)]
@@ -8308,6 +8453,18 @@ mod tests {
                 let _execution = RuntimeExecutionGuard::enter();
                 let py = _execution.token();
                 let runtime = crate::runtime_state(&py);
+                assert_eq!(
+                    *runtime.cpython.registration.lock().unwrap(),
+                    HookRegistrationState::Prepared
+                );
+                unsafe {
+                    assert!(
+                        (*(&raw mut molt_cpython_abi::abi_types::PyExc_ZeroDivisionError))
+                            .tp_dict
+                            .is_null()
+                    );
+                }
+                assert!(expose_cpython_types());
                 assert_eq!(
                     *runtime.cpython.registration.lock().unwrap(),
                     HookRegistrationState::Ready
