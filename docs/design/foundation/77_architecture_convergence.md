@@ -309,8 +309,13 @@ cross-layer migrations rather than a local pipeline replacement:
    genuinely AST-dependent lowering work in Python. Generated builders replace
    the remaining name-based wire ingress without re-lifting optimized bodies.
 
-HF-572 enables and measures the existing frontend pipeline; it does not carry
-out this structural migration or establish a calendar estimate for it.
+HF-572 measures the existing frontend pipeline and retains its semantic fixes
+and bounded fact propagation. Its measured stdlib cost policy bypasses Python
+optimization for stdlib bodies; backend TIR processing remains active. HF-773
+owns this structural migration and stdlib qualification, with the round-2
+per-program instruction observations as its measured acceptance targets (see
+the [optimizer coverage contract](../optimizer_foundation.md#mid-end-coverage-and-bounded-work)).
+This census does not establish a calendar estimate for the migration.
 
 ### C. One runtime boundary
 

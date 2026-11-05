@@ -13,8 +13,24 @@ architectural goal.
 
 ## Mid-end coverage and bounded work
 
-Every serialized lowered function enters the frontend mid-end, including
-stdlib bodies and large functions. The build's existing mid-end diagnostics
+Every serialized lowered function receives frontend mid-end coverage accounting,
+including stdlib bodies and large functions. User functions enter the optimizer
+regardless of size. Stdlib bodies bypass the Python optimizer as a measured cost
+policy owned by HF-773, while the backend Rust TIR pipeline still processes them.
+This is a cost decision, not a correctness gate: the 2026-11-05 round-2 native
+release measurements found cold builds growing from 51.66 to 111.58 seconds for
+`bench_math_numeric`, 59.05 to 109.70 for `bench_colorsys`, and 40.91 to 77.04 for
+`binary_trees`, for 0–3.4% fewer runtime instructions across the measured corpus.
+Receipts: `logs/agents/lane-hf572-midend-coverage/artifacts/round-2/report.md`
+in the integration checkout. These are whole-lane observations, not an isolated
+attribution of every instruction delta to stdlib optimization. HF-773 must carry
+the measured opportunities into the existing typed SSA optimizer and retire the
+overlapping Python fact families. It owns full stdlib differential qualification.
+The round-3 design and two sequential read-only review records are retained in
+the same lane's `artifacts/round-3/`; the first review's six findings were answered
+and the implementation-readiness review found no remaining design gap.
+
+The build's existing mid-end diagnostics
 record original input ops, output ops, status and reasons per function; a
 program summary is also emitted without detailed timing diagnostics. The
 denominator includes generated module chunks and precedes backend reachability.
@@ -29,6 +45,11 @@ overlap; their counts must not be added as category totals. Missing cached
 outcomes retain their function inventory as skipped with unknown input ops;
 op fractions are null until the denominator is complete. Empty denominators
 also have null fractions. Failed builds do not establish program coverage.
+Stdlib bypass records `skipped` with reason `stdlib_cost_policy`, including empty
+functions, original/output op counts and zero executed passes. The historical
+`midend_module_skips` counter counts per-function invocations of this policy;
+program function/module inventories provide their own denominators. Skipped
+stdlib functions are never counted as fully optimized by the Python pipeline.
 
 Required outer rewrites and SCCP's default worklists drain to a fixed point.
 Tier/profile round counts calibrate optional CSE's work budget, not required-pass
@@ -94,7 +115,8 @@ walk long parent paths. A macOS arm64 / slot Python 3.12.15 measurement on
 2026-11-05 took 0.056/0.213/0.827/1.283 seconds at 4k/8k/16k/20k nodes
 (2N-3 edges), with a 155.9 MiB process high-water RSS at 20k including Python
 and imports. This bounds that measured case only; arbitrary graph construction
-is not claimed to be near-linear. Required passes still admit every function.
+is not claimed to be near-linear. Required frontend passes still admit every
+user function.
 
 PHI operands belong to incoming merge edges, including normal continuations
 through exception checks after a structured merge. One linear CFG edge table
