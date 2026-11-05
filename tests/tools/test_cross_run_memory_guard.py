@@ -2249,6 +2249,6 @@ def test_windows_standard_handles_point_at_the_rebound_descriptors(tmp_path):
     ) % (str(log), str(tmp_path / "calls.txt"))
     result = _run_stdio_child(code, tmp_path)
     assert result.returncode == 0, result.stderr
-    assert (
-        tmp_path / "calls.txt"
-    ).read_text() == "[(-10, 1000), (-11, 1001), (-12, 1002)]"
+    assert (tmp_path / "calls.txt").read_text(
+        encoding="utf-8"
+    ) == "[(-10, 1000), (-11, 1001), (-12, 1002)]"
