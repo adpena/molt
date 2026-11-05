@@ -90,6 +90,7 @@ if TYPE_CHECKING:
     from molt.frontend.lowering.builtin_guards import MoltBuiltinGuardArmExpr
     from molt.frontend.lowering.builtin_guards import MoltBuiltinGuardTest
     from molt.frontend.lowering.exception_lowering import MoltSyntaxError
+    from molt.frontend.lowering.midend_telemetry import PassMemorySample
     from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
     from molt.compiler_analysis.python_lexical_scope import PythonCellStoragePlan
     from molt.compiler_analysis.python_lexical_scope import PythonCodeNameLayout
@@ -110,6 +111,7 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
+    imported_module_attr_mutations: set[tuple[str, str]]
     imported_module_provenance: dict[str, frozenset[str]]
     imported_modules: dict[str, str]
     imported_names: dict[str, str]
@@ -2421,7 +2423,14 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> None: ...
 
     def _record_midend_pass_sample(
-        self, pass_name: str, *, elapsed_ms: float, accepted: bool, degraded: bool = ...
+        self,
+        pass_name: str,
+        *,
+        elapsed_ms: float,
+        accepted: bool | None,
+        degraded: bool = ...,
+        executed: bool = ...,
+        memory: PassMemorySample | None = ...,
     ) -> None: ...
 
     def _record_midend_policy_outcome(
@@ -2692,6 +2701,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> tuple[list[ast.arg], list[ast.arg], list[ast.arg], str | None, str | None]: ...
 
     def _stamp_exact_class(self, value: MoltValue, class_id: ClassId) -> MoltValue: ...
+
+    def _start_midend_pass_memory(self) -> PassMemorySample | None: ...
 
     def _stateful_locals_layout(
         self,

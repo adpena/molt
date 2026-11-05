@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Sequence, cast
 
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend.value_liveness import ValueLiveness
+from molt.frontend.lowering.midend_telemetry import profile_midend_solver
 from molt.compiler_analysis.literal_identity import (
     literal_identity_key,
     same_literal_value,
@@ -497,6 +498,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
             return False
         return True
 
+    @profile_midend_solver("sccp_solver")
     def _compute_sccp(
         self,
         ops: list[MoltOp],

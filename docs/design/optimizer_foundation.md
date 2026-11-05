@@ -74,6 +74,19 @@ CSE compares the four closed fact maps directly, using target SSA identity for
 aliases and available expressions. It retains no sorted signature projection
 or mutation-invalidated memo alongside those maps.
 
+With `MOLT_MIDEND_STATS` present, existing pass statistics also record actual
+call counts and sampled compiler-process peak RSS, including entry/exit samples
+and a 10 ms observer. Nested SCCP/CSE solver calls have their own records; their
+inclusive wall times and resident peaks overlap outer stages and must not be
+added as a total. RSS includes retained inputs and allocator pages, rather than
+only allocations made by the pass. Peak growth is relative to its first valid
+sample; unavailable observations remain null with explicit missing-sample counts.
+Disabled or rejected-before-execution stages have zero calls, independently of
+their recorded optimization attempts. The observer is owned by one function's
+mid-end invocation and closes on success or failure. Normal builds start no
+observer. Restored module-product timings remain historical receipts, so fresh
+optimizer profiling disables lowering-cache reuse.
+
 Frontend dominance queries use intervals and retained tree storage is linear.
 The CHK construction itself has a quadratic worst case: a chain whose final
 node has edges back to every earlier non-entry node makes repeated intersections

@@ -21,6 +21,10 @@ from molt.frontend._types import (
     _TrackedOpsList,
 )
 from molt.frontend._mixin_base import GeneratorMixinBase
+from molt.frontend.lowering.midend_telemetry import (
+    MidendMemoryProfiler,
+    PassMemorySample,
+)
 
 if TYPE_CHECKING:
     from molt.frontend import SimpleTIRGenerator
@@ -72,6 +76,7 @@ class MidendPolicyMixin(GeneratorMixinBase):
         self.midend_policy_outcomes_by_function: dict[str, dict[str, Any]] = {}
         self._active_midend_function_name = "<direct>"
         self._midend_stats_reported = False
+        self._midend_memory_profiler: MidendMemoryProfiler | None = None
 
     def _midend_function_stats(self) -> dict[str, int]:
         name = self._active_midend_function_name
@@ -119,6 +124,11 @@ class MidendPolicyMixin(GeneratorMixinBase):
                 "ms_total": 0.0,
                 "ms_max": 0.0,
                 "samples_ms": [],
+                "call_count": 0,
+                "peak_rss_bytes": None,
+                "peak_rss_growth_bytes": None,
+                "memory_samples": 0,
+                "memory_missing_samples": 0,
             }
             per_func[pass_name] = stats
         return stats
@@ -555,20 +565,49 @@ class MidendPolicyMixin(GeneratorMixinBase):
             monolith_pressure_level=monolith_pressure_level,
         )
 
+    def _start_midend_pass_memory(self) -> PassMemorySample | None:
+        profiler = self._midend_memory_profiler
+        return profiler.begin() if profiler is not None else None
+
     def _record_midend_pass_sample(
         self,
         pass_name: str,
         *,
         elapsed_ms: float,
-        accepted: bool,
+        accepted: bool | None,
         degraded: bool = False,
+        executed: bool = True,
+        memory: PassMemorySample | None = None,
     ) -> None:
+        if memory is not None:
+            profiler = self._midend_memory_profiler
+            if profiler is None:
+                raise RuntimeError("midend memory sample has no live owner")
+            profiler.finish(memory)
         stats = self._midend_pass_stats(pass_name)
-        stats["attempted"] = int(stats.get("attempted", 0)) + 1
-        if accepted:
+        stats["call_count"] = int(stats.get("call_count", 0)) + int(executed)
+        if accepted is not None:
+            stats["attempted"] = int(stats.get("attempted", 0)) + 1
+        if accepted is True:
             stats["accepted"] = int(stats.get("accepted", 0)) + 1
-        else:
+        elif accepted is False:
             stats["rejected"] = int(stats.get("rejected", 0)) + 1
+        if memory is not None:
+            stats["memory_samples"] = (
+                int(stats.get("memory_samples", 0)) + memory.samples
+            )
+            stats["memory_missing_samples"] = (
+                int(stats.get("memory_missing_samples", 0)) + memory.missing_samples
+            )
+            if memory.peak_rss_bytes is not None:
+                stats["peak_rss_bytes"] = max(
+                    stats["peak_rss_bytes"] or 0, memory.peak_rss_bytes
+                )
+                stats["peak_rss_growth_bytes"] = max(
+                    stats["peak_rss_growth_bytes"] or 0,
+                    memory.peak_rss_bytes
+                    - (memory.start_rss_bytes or memory.peak_rss_bytes),
+                )
         if degraded:
             stats["degraded"] = int(stats.get("degraded", 0)) + 1
         stats["ms_total"] = float(stats.get("ms_total", 0.0)) + max(0.0, elapsed_ms)
@@ -812,10 +851,14 @@ class MidendPolicyMixin(GeneratorMixinBase):
                 accepted,
                 degraded,
             ) in pass_hotspots[:10]:
+                measurement = self.midend_pass_stats_by_function[func_name][pass_name]
                 top_passes.append(
                     f"{func_name}:{pass_name} total_ms={total_ms:.3f} "
                     f"p95_ms={p95:.3f} attempted={attempted} "
-                    f"accepted={accepted} degraded={degraded}"
+                    f"accepted={accepted} degraded={degraded} "
+                    f"calls={measurement.get('call_count', 0)} "
+                    f"peak_rss_bytes={measurement.get('peak_rss_bytes')} "
+                    f"memory_samples={measurement.get('memory_samples', 0)}"
                 )
             print(
                 "molt midend pass hotspots: " + " | ".join(top_passes),

@@ -29,6 +29,10 @@ from molt.frontend.lowering.midend_dataflow import (
     current_unique_result_definitions,
 )
 from molt.frontend.value_liveness import ValueLiveness
+from molt.frontend.lowering.midend_telemetry import (
+    profile_midend_function,
+    profile_midend_solver,
+)
 
 
 _CANONICALIZE_CONTROL_AWARE_OPS_IMPL_KINDS_1: frozenset[FrontendOpKind] = frozenset(
@@ -37,6 +41,7 @@ _CANONICALIZE_CONTROL_AWARE_OPS_IMPL_KINDS_1: frozenset[FrontendOpKind] = frozen
 
 
 class MidendPipelineMixin(GeneratorMixinBase):
+    @profile_midend_function
     def _run_ir_midend_passes(self, ops: list[MoltOp]) -> list[MoltOp]:
         self._refresh_midend_env_config_if_needed()
         # Dev-profile mid-end gate removed: MISSING-value miscompile fixes
@@ -50,6 +55,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
         self.midend_stats["cfg_structural_canonicalizations"] += structural_rewrites
         return self._canonicalize_control_aware_ops(ops)
 
+    @profile_midend_solver("cse_solver")
     def _run_cse_canonicalization_round(
         self,
         ops: list[MoltOp],
@@ -301,6 +307,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
             function_name=self._active_midend_function_name,
             block_count=len(cfg.blocks),
         )
+        pass_memory = self._start_midend_pass_memory()
         pass_start = time.perf_counter()
         rewritten_ops, pre_cfg_rewrites = self._canonicalize_cfg_before_optimization(
             validated_ops
@@ -308,6 +315,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
         self._record_midend_pass_sample(
             "cfg_precanonicalize",
             elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+            memory=pass_memory,
             accepted=pre_cfg_rewrites > 0,
             degraded=False,
         )
@@ -460,6 +468,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
             post_cse_dce_ran = False
 
             # 1) simplify
+            pass_memory = self._start_midend_pass_memory()
             pass_start = time.perf_counter()
             step_ops, structural_prunes = (
                 self._canonicalize_structured_regions_pre_sccp(step_ops)
@@ -467,6 +476,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
             self._record_midend_pass_sample(
                 "simplify",
                 elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                memory=pass_memory,
                 accepted=structural_prunes > 0,
                 degraded=degraded,
             )
@@ -481,6 +491,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
             # 2) SCCP/edge-thread
             iter_cfg = build_cfg(step_ops)
             if iter_cfg.blocks:
+                pass_memory = self._start_midend_pass_memory()
                 pass_start = time.perf_counter()
                 iter_sccp = self._compute_sccp(
                     step_ops,
@@ -548,6 +559,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
                 self._record_midend_pass_sample(
                     "sccp_edge_thread",
                     elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                    memory=pass_memory,
                     accepted=(
                         branch_prunes
                         + loop_rewrites
@@ -563,6 +575,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
                 self._record_midend_pass_sample(
                     "sccp_edge_thread",
                     elapsed_ms=0.0,
+                    executed=False,
                     accepted=False,
                     degraded=degraded,
                 )
@@ -579,6 +592,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
             )
 
             # 3) join canonicalize
+            pass_memory = self._start_midend_pass_memory()
             pass_start = time.perf_counter()
             join_cfg = build_cfg(step_ops)
             if join_cfg.blocks:
@@ -592,6 +606,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
             self._record_midend_pass_sample(
                 "join_canonicalize",
                 elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                memory=pass_memory,
                 accepted=try_join_threads > 0,
                 degraded=degraded,
             )
@@ -603,6 +618,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
             )
 
             # 4) prune
+            pass_memory = self._start_midend_pass_memory()
             pass_start = time.perf_counter()
             prune_cfg = build_cfg(step_ops)
             if prune_cfg.blocks:
@@ -639,6 +655,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
             self._record_midend_pass_sample(
                 "prune",
                 elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                memory=pass_memory,
                 accepted=(
                     region_prunes
                     + unreachable_blocks
@@ -657,6 +674,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
             )
 
             # 5) verifier
+            pass_memory = self._start_midend_pass_memory()
             pass_start = time.perf_counter()
             # Compute predefined from the ORIGINAL ops at round start, not the
             # current ops. If a rewrite eliminated a variable's definition,
@@ -671,6 +689,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
             self._record_midend_pass_sample(
                 "verifier",
                 elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                memory=pass_memory,
                 accepted=not round_failures,
                 degraded=degraded,
             )
@@ -680,6 +699,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
                 *,
                 pass_name: str,
             ) -> tuple[list[MoltOp], bool]:
+                pass_memory = self._start_midend_pass_memory()
                 pass_start = time.perf_counter()
                 dce_candidate = self._eliminate_dead_trivial_consts(dce_input)
                 dce_failures = self._verify_definite_assignment_in_ops(
@@ -689,6 +709,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
                 self._record_midend_pass_sample(
                     pass_name,
                     elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                    memory=pass_memory,
                     accepted=accepted,
                     degraded=degraded,
                 )
@@ -707,12 +728,14 @@ class MidendPipelineMixin(GeneratorMixinBase):
                 self._record_midend_pass_sample(
                     "dce",
                     elapsed_ms=0.0,
+                    executed=False,
                     accepted=False,
                     degraded=True,
                 )
                 self._record_midend_pass_sample(
                     "cse",
                     elapsed_ms=0.0,
+                    executed=False,
                     accepted=False,
                     degraded=True,
                 )
@@ -731,6 +754,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
                     cse_dce_closure_converged = False
                     cse_dce_fp_max_iters = max(1, self.midend_env.cse_fp_max_iters)
                     for cse_dce_fp_iter in range(1, cse_dce_fp_max_iters + 1):
+                        pass_memory = self._start_midend_pass_memory()
                         pass_start = time.perf_counter()
                         cse_input = step_ops
                         cse_candidate, cse_phi_trims = (
@@ -753,6 +777,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
                         self._record_midend_pass_sample(
                             "cse",
                             elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                            memory=pass_memory,
                             accepted=cse_accepted,
                             degraded=degraded,
                         )
@@ -788,6 +813,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
                         self._record_midend_pass_sample(
                             "cse_dce_closure",
                             elapsed_ms=0.0,
+                            executed=False,
                             accepted=False,
                             degraded=True,
                         )
@@ -795,6 +821,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
                     self._record_midend_pass_sample(
                         "cse",
                         elapsed_ms=0.0,
+                        executed=False,
                         accepted=False,
                         degraded=True,
                     )

@@ -5229,6 +5229,77 @@ def test_sccp_folds_contains_constant_branch() -> None:
     assert all(op.get("value") != 999 for op in lowered if op.get("kind") == "const")
 
 
+def test_midend_memory_samples_follow_nested_pass_scopes(monkeypatch) -> None:
+    from molt.frontend.lowering import midend_telemetry as telemetry
+
+    samples = iter((100, 200, 300, 150))
+    monkeypatch.setattr(telemetry, "_resident_bytes", lambda: next(samples))
+    monkeypatch.setattr(telemetry, "RSS_SAMPLE_INTERVAL_S", 60.0)
+    profiler = telemetry.MidendMemoryProfiler()
+    try:
+        outer = profiler.begin()
+        inner = profiler.begin()
+        profiler.finish(inner)
+        profiler.finish(outer)
+    finally:
+        profiler.close()
+    assert (inner.start_rss_bytes, inner.peak_rss_bytes, inner.samples) == (200, 300, 2)
+    assert (outer.start_rss_bytes, outer.peak_rss_bytes, outer.samples) == (100, 300, 4)
+    assert not profiler._thread.is_alive()
+
+
+def test_midend_unavailable_memory_is_unknown(monkeypatch) -> None:
+    from molt.frontend.lowering import midend_telemetry as telemetry
+
+    monkeypatch.setattr(telemetry, "_resident_bytes", lambda: None)
+    monkeypatch.setattr(telemetry, "RSS_SAMPLE_INTERVAL_S", 60.0)
+    profiler = telemetry.MidendMemoryProfiler()
+    try:
+        sample = profiler.begin()
+        profiler.finish(sample)
+    finally:
+        profiler.close()
+    assert sample.peak_rss_bytes is None and sample.start_rss_bytes is None
+    assert sample.samples == 0 and sample.missing_samples == 2
+
+
+def test_midend_memory_observer_closes_on_failure(monkeypatch) -> None:
+    from molt.frontend.lowering import midend_telemetry as telemetry
+
+    monkeypatch.setenv("MOLT_MIDEND_STATS", "1")
+    owner = SimpleTIRGenerator()
+    observed = []
+
+    @telemetry.profile_midend_function
+    def fail(generator):
+        observed.append(generator._midend_memory_profiler)
+        raise ValueError("original pass failure")
+
+    with pytest.raises(ValueError, match="original pass failure"):
+        fail(owner)
+    assert owner._midend_memory_profiler is None
+    assert len(observed) == 1 and not observed[0]._thread.is_alive()
+
+
+def test_midend_disabled_memory_observer_does_no_sampling(monkeypatch) -> None:
+    from molt.frontend.lowering import midend_telemetry as telemetry
+
+    monkeypatch.delenv("MOLT_MIDEND_STATS", raising=False)
+    monkeypatch.setattr(
+        telemetry, "_resident_bytes", lambda: pytest.fail("sampling disabled")
+    )
+    gen = SimpleTIRGenerator()
+    gen.map_ops_to_json(
+        [
+            MoltOp("CONST", [7], MoltValue("answer")),
+            MoltOp("ret", [MoltValue("answer")], MoltValue("none")),
+        ]
+    )
+    for stats in gen.midend_pass_stats_by_function["<direct>"].values():
+        assert stats["peak_rss_bytes"] is None
+        assert stats["memory_samples"] == 0
+
+
 def test_midend_pipeline_is_idempotent_on_second_round() -> None:
     gen = SimpleTIRGenerator()
     input_ops = [
