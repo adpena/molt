@@ -697,9 +697,10 @@ builds with symbols kept, CPython 3.12.16 as oracle and denominator.
 
 ## Every named builtin lowering requires a proof (HF-776)
 
-Status: design on lane `lane/hf776-builtin-proofs` (base origin/main
+Status: implemented on lane `lane/hf776-builtin-proofs` (base origin/main
 6cbf288f590b10cac4e13b2d18027f9829d391c1), 2026-11-05. The problem section
-holds measured base evidence; the rest is the planned change. This section closes the
+holds measured base evidence; "Implementation changes after review" and
+"Results of this lane" record what changed and what was measured. This section closes the
 HF-226 open sibling "Named lowerings of builtins without a catalog identity".
 The HF-226 sibling about fast-arm typing of `str(source)` at module scope stays
 open, and so does `__build_class__` (see "Open siblings" below).
@@ -1054,6 +1055,12 @@ source before it lands.
   module namespace or the enclosing frame, proved or not (see above). Correct
   class-body calls, and a replaced `builtins.locals` in a class body, need a
   runtime class-body frame or mapping handle. Not in this lane.
+- A parameter whose default reads a builtin without a catalog identity
+  (`memoryview`, `pow`, `round`) inherits the default's `OTHER | UNBOUND`
+  identity, so each read of it reloads the frame home and checks for an
+  unbound value (measured: `def f(*, category=memoryview)`). A parameter is
+  always bound at entry; the flow can drop `UNBOUND` from formal bindings.
+  Speed only. Not in this lane.
 - `BUILTIN_FUNC` and `EXCEPTION_CLASS` still find their object by its
   spelling at run time (`lookup_builtin_name`, `exception_type_bits`). A typed
   runtime handle for each catalogued builtin would remove those lookups; it is
@@ -1096,6 +1103,40 @@ test, family commits, the softened type-checker claim, the lowering-only scope
 of the proof and the class-base sibling. Not adopted: dropping the
 changed-function table (round 1 asked for it), and a standalone IR bound
 (standalone compilation is the unit-test entry, not a shipped mode).
+
+### Results of this lane
+
+Measured 2026-11-05 on macOS arm64 against origin/main 6cbf288f59, with
+CPython 3.12.16 as oracle and denominator.
+
+- **Primitive A/B** (`tools/perf_scoreboard.py primitives`, five pairs per
+  leg, legs run separately, frontend lowering cache disabled in both). No
+  axis rises beyond its noise bound. The largest rise is 0.93%
+  (`tuple_unpack` startup, bound 20.3%); the largest per-operation rise is
+  0.28% (`reduce_ex`, bound 26.1%). A proved read in a function loses its
+  guard: `id` per operation goes from 0.549 to 0.452 times CPython (0.823x),
+  `memo_get` from 1.446 to 1.369 (0.947x), `memo_set` from 1.247 to 1.143
+  (0.916x).
+- **Binaries and modules.** hello stays at 13,505,480 bytes; `loop` goes from
+  32,269,752 to 32,220,216. hello admits 7 modules and `loop` 29 on both,
+  with identical module-registry digests.
+- **Emitted IR** (hello and `loop`, every admitted stdlib module). In `loop`,
+  guards go from 281 to 266, named operations from 1,362 to 1,420, and live
+  builtin reads from 782 to 704. One site gains a live read: `__future__`
+  reads `globals` in a module-level loop that writes `globals()[name]` with a
+  computed name. That write can bind any global, so the read is unproved, as
+  CPython's semantics require. Seven parameter reloads leave `warnings` and
+  `typing`: base gave a default that reads an uncatalogued builtin
+  (`category=Warning`) the identity `OTHER | UNBOUND`, and the parameter
+  inherited the possibly-unbound check (see "Open siblings").
+- **Census.** Module-graph discovery of the 144 census programs admits the
+  same modules on main and on this lane: 2,226 admissions each, no program
+  gains or loses a module, no refusals. The `__import__` provenance change
+  reads no fact that discovery consumes.
+- **Differentials.** The 11 programs pass on native, LLVM and WASM against
+  CPython 3.12.16 (33 cells; native and LLVM through `molt_dev.py
+  difftest`, WASM through `tests/molt_diff.py`). On main the repro prints
+  `replaced <class 'int'> 97`.
 
 ## Tests
 
