@@ -889,7 +889,11 @@ def test_run_ships_no_bundle_when_the_host_has_both_commits(tmp_path):
         )
         commits.append(
             subprocess.run(
-                [*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+                [*git, "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
             ).stdout.strip()
         )
     first, second = commits
