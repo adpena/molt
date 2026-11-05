@@ -10788,7 +10788,11 @@ def test_posix_child_clock_has_one_reaper_independent_of_sampling(monkeypatch):
 
     def wait4(pid, flags):
         calls.append((pid, flags))
-        return pid, 0, types.SimpleNamespace(ru_maxrss=64)
+        return (
+            pid,
+            0,
+            types.SimpleNamespace(ru_maxrss=64, ru_utime=0.25, ru_stime=0.125),
+        )
 
     # The clock's own reaper thread calls wait4 and waitid, so these fakes
     # answer every thread that reads process_custody's os.
@@ -10816,7 +10820,9 @@ def test_posix_child_clock_has_one_reaper_independent_of_sampling(monkeypatch):
     assert proc.wait(timeout=1) == 0
     exited = clock.finished
     assert proc.poll() == 0
-    assert process_custody._take_child_exit_usage(proc).max_rss_kb > 0
+    usage = process_custody._take_child_exit_usage(proc)
+    assert usage.max_rss_kb > 0
+    assert usage.cpu_seconds == 0.375
     assert process_custody._take_child_exit_usage(proc) is None
     assert clock.finished == exited
     assert calls == [(123456, process_custody.os.WNOHANG)]
@@ -11350,11 +11356,13 @@ def test_deadline_holds_while_the_guard_thread_is_blocked_sampling() -> None:
         (action.target_kind, action.target_id, action.signal_name, action.result)
         for action in report.actions
     ]
-    # SIGTERM to the root's own group; SIGKILL follows only a root that
-    # outlived the grace; the run loop observed the group's exit afterwards.
-    assert actions[0] == ("process_group", pid, "SIGTERM", "sent")
-    assert actions[-1] == ("process_group", pid, None, "exited")
-    assert {action[2] for action in actions[1:-1]} <= {"SIGKILL"}
+    # A timed-out Python root dumps through its fatal handler even when the
+    # observer is blocked. Its sole reaper then proves the owned handle closed;
+    # no sampled descendant or stale process group receives that signal.
+    assert actions == [
+        ("owned_child_handle", pid, "SIGABRT", "sent"),
+        ("owned_child_handle", pid, None, "completed_or_missing"),
+    ]
     assert result.descendants_closed
 
 
@@ -11774,3 +11782,73 @@ def test_run_guarded_output_bound_ignores_time_the_guard_did_not_watch(
     assert result.timed_out is False, result.stderr
     assert result.returncode == 0
     assert result.stdout.split() == ["before", "after"]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX faulthandler timeout signal")
+def test_python_timeout_retains_the_blocked_frame_before_termination(
+    tmp_path, monkeypatch
+):
+    from tools import harness_memory_guard
+    from molt.process_environment import ProcessEnvironment
+    from molt.process_guard import raise_for_guard_outcome
+    from tests.process_guard_common import install_module_view
+
+    ready = tmp_path / "python-ready"
+    source = (
+        "import pathlib, threading\n"
+        "def blocked_child_frame():\n"
+        f"    pathlib.Path({str(ready)!r}).touch()\n"
+        "    threading.Event().wait()\n"
+        "blocked_child_frame()\n"
+    )
+    start = time.perf_counter()
+    # Readiness controls the deadline: startup and foreign load cannot race
+    # this witness. The real child still receives the guard's real signal.
+    install_module_view(
+        monkeypatch,
+        "time",
+        time,
+        memory_guard,
+        perf_counter=lambda: start + (2 if ready.exists() else 0),
+    )
+    profile = tmp_path / "durable-evidence" / "commands.jsonl"
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-I", "-S", "-c", source],
+        prefix="MOLT_PYTEST",
+        env=ProcessEnvironment(
+            {
+                **os.environ,
+                "MOLT_GUARD_PROFILE_LOG": str(profile),
+                "MOLT_GUARD_PROFILE": "incident",
+            }
+        ),
+        timeout=1,
+        capture_output=True,
+        text=True,
+        limits=harness_memory_guard.HarnessMemoryLimits(
+            enabled=True,
+            max_process_rss_gb=1,
+            max_total_rss_gb=2,
+            max_global_rss_gb=4,
+            poll_interval=0.02,
+        ),
+    )
+    assert result.timed_out and result.descendants_closed, (
+        result.infrastructure_failure,
+        result.temporary_artifacts,
+        result.stderr,
+        result.termination_reports,
+    )
+    assert "blocked_child_frame" in result.stderr
+    incidents = list((profile.parent / "incidents").glob("*.json"))
+    assert len(incidents) == 1
+    incident = json.loads(incidents[0].read_text())
+    assert "blocked_child_frame" in incident["stderr_tail"]
+    assert incident["timed_out"] is True
+    assert any(
+        action.signal == signal.SIGABRT
+        for report in result.termination_reports
+        for action in report.actions
+    )
+    with pytest.raises(subprocess.TimeoutExpired, match="blocked_child_frame"):
+        raise_for_guard_outcome([sys.executable, "-c", source], result, timeout=1)

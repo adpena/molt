@@ -149,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
                 getattr(result, "cargo_incremental_quarantine", None)
             ),
             "duration_seconds": getattr(result, "elapsed_s", None),
+            "child_cpu_seconds": getattr(result, "child_cpu_seconds", None),
             "peak_process_rss_bytes": (
                 int(peak.rss_kb) * 1024
                 if peak is not None and getattr(peak, "rss_kb", None) is not None

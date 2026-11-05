@@ -842,3 +842,19 @@ def test_hung_child_cleanup_stops_only_what_carries_its_own_marker() -> None:
     finally:
         for process in (carrying, mentioning, foreign):
             close_owned_test_process(process)
+
+
+def test_timeout_diagnostic_includes_bounded_child_stack_and_output():
+    result = SimpleNamespace(
+        timed_out=True,
+        output_stall_s=None,
+        guard_signal=None,
+        stdout="before blocking\n",
+        stderr="x" * 10000 + "\n  File child.py in blocked_frame\n",
+    )
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        process_guard.raise_for_guard_outcome(["python", "child.py"], result, timeout=3)
+    rendered = str(caught.value)
+    assert "before blocking" in rendered and "blocked_frame" in rendered
+    assert len(rendered) < 9000
+    assert caught.value.stderr == result.stderr

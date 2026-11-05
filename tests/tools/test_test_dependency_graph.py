@@ -16,6 +16,7 @@ from pathlib import Path
 from dataclasses import replace
 
 import pytest
+from molt.python_environment_identity import PYTHON_IDENTITY_PROBE_TIMEOUT_S
 
 from tests.process_guard_common import run_guarded_test_process
 from tools.molt_dev_policy import GateConfig, LandingMode, select_landing_gates
@@ -272,7 +273,7 @@ def test_observed_plugin_records_real_reads_and_shared_fixture_consumers(
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=PYTHON_IDENTITY_PROBE_TIMEOUT_S,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     observed = ObservedTestInputs(
@@ -346,7 +347,7 @@ def test_interrupted_observation_retains_static_readers(tmp_path, monkeypatch, p
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=PYTHON_IDENTITY_PROBE_TIMEOUT_S,
     )
     assert result.returncode == 2, result.stdout + result.stderr
     directory = observation_directory(context)

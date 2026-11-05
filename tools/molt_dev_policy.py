@@ -117,7 +117,7 @@ PRECHECK_TOOLCHAINS = frozenset({"generators", "git", "python", "rustfmt", "uv"}
 
 @dataclass(frozen=True)
 class PrecheckBudget:
-    """The wall-clock limit of one lane try run (HF-710: 15 minutes at p90).
+    """The wall-clock limit of one lane try run, including any allowed retry.
 
     The static gates and the repairs before them run outside it. The try run
     stops at the limit: its running gates are cancelled through
@@ -132,7 +132,12 @@ class PrecheckBudget:
             raise ValueError("a precheck budget must be positive")
 
 
-PRECHECK_BUDGET = PrecheckBudget(seconds=15 * 60)
+# HF-623, 2026-11-05: one capped try run took 1423 s against 900 s.
+# Host-shared CPU and disk/first-exec waits are wall time, not failed tests.
+# Receipts retain per-gate CPU/wall time to support the next budget decision.
+# A 2026-11-05 reader witness measured 343 s child CPU / 341 s child wall,
+# plus 75 s cleanup: dividing CPU alone cannot budget the blocked/serial tail.
+PRECHECK_BUDGET = PrecheckBudget(seconds=30 * 60)
 
 
 @dataclass(frozen=True)

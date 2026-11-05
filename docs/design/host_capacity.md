@@ -78,9 +78,12 @@ An independent audit (2026-10-17) found more:
    keep their per-job budget; the proof executor's global ceiling comes from
    the authority. `max_parallel` stays only where commands share mutable
    state (one Cargo target), which is a correctness bound, not capacity.
-3. **pytest uses `-n auto` everywhere.** Molt's pytest plugin implements
+3. **pytest declares `-n auto`.** Molt's pytest plugin implements
    `pytest_xdist_auto_num_workers` from the authority, so checked-in commands
-   stay identical on every machine and each machine picks its own count.
+   stay identical on every machine. Before execution, the proof executor
+   divides one CPU budget among concurrent pytest gates and the runner
+   resolves each allocation to explicit `-n N`, bounded by its memory slice.
+   Standalone invocations continue to use the plugin's auto sizing.
 4. **One scheduler.** Landing gates become typed commands (id, argv, resource
    class, timeout) that the proof executor runs, so the pytest run and the
    Cargo gates overlap, a failure cancels the rest, and every landing leaves a
@@ -106,14 +109,18 @@ An independent audit (2026-10-17) found more:
    first pair). A replay of xdist's scheduler over the measured durations,
    with the final marks, gives the busiest worker 474 s against 529 s in the
    first warm run and 763 s against 934 s in a new lane's cold first run.
-6. **One host-wide token pool for CPU, per-peer slices for memory.**
-   Concurrent tools on one host (landings, other agents' builds, nested
-   Cargo) take CPU tokens from one GNU make jobserver, so idle peers return
-   capacity; Cargo, rustc and Ninja are already clients, and the backend can
-   join through the `jobserver` crate already in `Cargo.lock`. Memory cannot be
-   a token (a parent holding memory its child waits for deadlocks), so a
-   parent divides its memory slice among the units it admits and exports it;
-   a child sizes itself against the smaller of its slice and live memory.
+6. **One executor CPU budget, per-peer memory slices.** The 2026-11-02
+   host-wide jobserver attempt was rejected: leaked allotments and blocked
+   I/O defeated its assumptions. The executor instead divides one observed
+   CPU budget (performance cores first on macOS, affinity/quota bounded)
+   among its pytest gates. It admits at most that many pytest sessions;
+   serial sessions also reserve one CPU. Shares return when commands finish.
+   This does not claim to budget other processes on the host. A parent
+   divides its memory slice among admitted work, and each runner bounds its
+   CPU share by live/sliced memory before passing an explicit worker count.
+   Receipts preserve the share, worker count, executed argv, wall time and
+   the sole child reaper's CPU observation. See the
+   [landing contract](landing_queue.md#executor-owned-landing-budget-and-stall-evidence-hf-623-hf-779-hf-780).
 
 ### Landing test resource cohorts
 

@@ -138,6 +138,7 @@ class GuardedCompletedProcess[Output: str | bytes](subprocess.CompletedProcess[O
         descendants_closed: bool = False,
         worker_peaks: WorkerPeakSummary | None = None,
         output_stall_s: float | None = None,
+        child_cpu_seconds: float | None = None,
     ) -> None:
         super().__init__(
             args=list(args), returncode=returncode, stdout=stdout, stderr=stderr
@@ -170,6 +171,7 @@ class GuardedCompletedProcess[Output: str | bytes](subprocess.CompletedProcess[O
         self.sampling_interval_s = sampling_interval_s
         # The output bound that ended the command, when silence ended it.
         self.output_stall_s = output_stall_s
+        self.child_cpu_seconds = child_cpu_seconds
 
 
 def _claim_terminated_pgid(pgid: int) -> bool:
@@ -935,6 +937,9 @@ def _append_guarded_command_profile(
     cancelled: bool = False,
     descendants_closed: bool = False,
     name_incident: bool = False,
+    stdout_tail: str | bytes | None = None,
+    stderr_tail: str | bytes | None = None,
+    child_cpu_seconds: float | None = None,
 ) -> tuple[Path, str | None, tuple[str, Mapping[str, object]] | None]:
     """Append one profile event; return its log, any write error, and the
     repro record it holds (``(locator, payload)``) when it holds one."""
@@ -1026,6 +1031,15 @@ def _append_guarded_command_profile(
     }
     if operation_role is not None:
         payload["operation_role"] = operation_role
+    payload["child_cpu_seconds"] = child_cpu_seconds
+    if name_incident:
+        for name, value in (("stdout_tail", stdout_tail), ("stderr_tail", stderr_tail)):
+            tail = value[-8192:] if value else ""
+            payload[name] = (
+                tail.decode("utf-8", errors="replace")
+                if isinstance(tail, bytes)
+                else tail
+            )
     if status != "pass":
         payload["repro"] = _guard_repro_payload(
             command=command,
@@ -1341,6 +1355,9 @@ def guarded_completed_process(
     )
     _profile_path, profile_error, profile_record = _append_guarded_command_profile(
         name_incident=incident,
+        stdout_tail=guarded.stdout,
+        stderr_tail=guarded.stderr,
+        child_cpu_seconds=guarded.child_cpu_seconds,
         command=command,
         prefix=prefix,
         cwd=cwd,
@@ -1399,6 +1416,7 @@ def guarded_completed_process(
         child_elapsed_s=guarded.child_elapsed_s,
         cleanup_elapsed_s=guarded.cleanup_elapsed_s,
         violation=guarded.violation,
+        child_cpu_seconds=guarded.child_cpu_seconds,
         peak=guarded.peak,
         peak_total=guarded.peak_total,
         timed_out=guarded.timed_out,
@@ -1611,6 +1629,9 @@ def guarded_completed_process_to_tempfiles(
     )
     _profile_path, profile_error, profile_record = _append_guarded_command_profile(
         name_incident=incident,
+        stdout_tail=guarded.stdout,
+        stderr_tail=guarded.stderr,
+        child_cpu_seconds=guarded.child_cpu_seconds,
         command=command,
         prefix=prefix,
         cwd=cwd,
@@ -1663,6 +1684,7 @@ def guarded_completed_process_to_tempfiles(
         stdout,
         stderr,
         elapsed_s=guarded.elapsed_s,
+        child_cpu_seconds=guarded.child_cpu_seconds,
         child_elapsed_s=guarded.child_elapsed_s,
         cleanup_elapsed_s=guarded.cleanup_elapsed_s,
         violation=guarded.violation,

@@ -628,7 +628,7 @@ Git hooks run on it. `land` refuses the commit when a path outside the lane's
 diff since the merge base and the generator manifest's declared outputs
 changed (another writer touched the checkout), and refuses to repair a branch
 that a pending landing request pins. Repairs have no deadline and sit outside
-the 15-minute precheck claim: a full `generators.py write` of all 40
+the try-run budget: a full `generators.py write` of all 40
 reproducible generators took 16-25 s on the primary (2026-11-02), and one
 lane's whole repair took 43.5 s. Then `land` runs
 the precheck in the lane against its merge base with main, through the same
@@ -639,7 +639,8 @@ readers) and the gates of `precheck = true` rules (changed-crate Clippy).
 Other Cargo builds and the rules' curated pytest cohorts wait for the batch. A
 failing gate stops `land` before it queues anything. The static gates run to
 their verdict with no deadline. `PRECHECK_BUDGET` (`tools/molt_dev_policy.py`,
-15 minutes) bounds the try run alone, from its first gate: at the limit the
+30 minutes; HF-623's capped run measured 1423 seconds) bounds the try run
+alone, from its first gate: at the limit the
 guards cancel running gates, later gates never start, and `land` names each
 refused gate, then queues; the batch runs every selected gate. A try run that
 the disk-capacity check refuses is named and queued the same way. It then writes one request under

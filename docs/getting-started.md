@@ -34,6 +34,8 @@ themselves establish that a release is available or accepted for your target.
 Follow the [binary installation guide](../packaging/INSTALL.md) for explicit
 private-dependency setup. `molt doctor --json` reports the active source,
 interpreter and competing PATH installations; it does not remove or repair them.
+On macOS, its [first-execution check](OPERATIONS.md#macos-first-execution-delays)
+reports timing and read-only Developer Tools information without changing settings.
 
 ### Local repo workflow
 

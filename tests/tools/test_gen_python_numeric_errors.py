@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 from tools import gen_python_numeric_errors as policy  # noqa: E402
 from tests.process_guard_common import run_guarded_test_process  # noqa: E402
+from molt.process_guard import FRESH_EXECUTABLE_TIMEOUT_S  # noqa: E402
 
 
 def test_policy_coordinates_and_class_contract():
@@ -156,7 +157,11 @@ def test_compiled_policy_and_integer_sign_family(tmp_path):
         timeout=60,
     )
     run_guarded_test_process(
-        [str(binary)], check=True, capture_output=True, text=True, timeout=10
+        [str(binary)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=FRESH_EXECUTABLE_TIMEOUT_S,
     )
 
 
@@ -248,7 +253,10 @@ fn molt_sys_version_state()->&'static std::sync::Mutex<Target> { static STATE:st
     )
     assert result.returncode == 0, result.stderr
     result = run_guarded_test_process(
-        [str(binary)], capture_output=True, text=True, timeout=10
+        [str(binary)],
+        capture_output=True,
+        text=True,
+        timeout=FRESH_EXECUTABLE_TIMEOUT_S,
     )
     assert result.returncode == 0, result.stderr
 
@@ -302,7 +310,10 @@ def test_actual_timedelta_integer_normalizer_sign_range_and_overflow(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     result = run_guarded_test_process(
-        [str(binary)], capture_output=True, text=True, timeout=10
+        [str(binary)],
+        capture_output=True,
+        text=True,
+        timeout=FRESH_EXECUTABLE_TIMEOUT_S,
     )
     assert result.returncode == 0, result.stderr
 
@@ -374,7 +385,10 @@ def test_compiled_float_divmod_against_host_cpython(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     result = run_guarded_test_process(
-        [str(binary)], capture_output=True, text=True, timeout=10
+        [str(binary)],
+        capture_output=True,
+        text=True,
+        timeout=FRESH_EXECUTABLE_TIMEOUT_S,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines() == expected

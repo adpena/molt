@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from collections import Counter
+from dataclasses import dataclass, replace
 import datetime as dt
 from enum import Enum
 import heapq
@@ -17,6 +19,33 @@ if TYPE_CHECKING:
 from molt.artifact_publication import atomic_write_json
 from tools import proof_receipts
 from tools.proof_receipts import ReceiptCommand
+from molt import host_capacity
+
+
+@dataclass(frozen=True, slots=True)
+class CommandAllocation:
+    """The executor's CPU share; the runner applies its memory bound second."""
+
+    pytest_cpus: int | None = None
+    attempt: int = 1
+
+
+def _pytest_shares(plan: ProofPlan, commands: tuple[ReceiptCommand, ...]) -> list[int]:
+    selected = Counter(
+        str(command.data["resource_class"])
+        for command in commands
+        if command.data.get("pytest")
+    )
+    if not selected:
+        return []
+    cpus = host_capacity.execution_cpu_count()
+    slots = min(
+        cpus,
+        plan.executor_max_workers,
+        sum(min(selected[p.name], p.max_parallel) for p in plan.resource_policies),
+    )
+    quotient, remainder = divmod(cpus, slots)
+    return [quotient + (index < remainder) for index in range(slots)]
 
 
 class FailurePolicy(str, Enum):
@@ -49,7 +78,8 @@ def execute_commands(
     _normalized_arch: Callable[[], str],
     _required_toolchains: Callable[[ReceiptCommand], tuple[str, ...]],
     _run_command: Callable[
-        [ProofPlan, ReceiptCommand, threading.Event | None], dict[str, Any]
+        [ProofPlan, ReceiptCommand, threading.Event | None, CommandAllocation],
+        dict[str, Any],
     ],
     _cache_disposition: Callable[[ReceiptCommand], str],
 ) -> int:
@@ -84,6 +114,9 @@ def execute_commands(
         raise ValueError(
             f"receipt execution has unknown resources {sorted(unknown_resources)!r}"
         )
+    available_shares = _pytest_shares(plan, command_list)
+    cpu_budget = sum(available_shares)
+    allocations: dict[str, CommandAllocation] = {}
     records_by_id: dict[str, dict[str, Any]] = {}
     requested_toolchains = tuple(
         dict.fromkeys(
@@ -101,6 +134,8 @@ def execute_commands(
     execution: dict[str, Any] = {
         "schema": "molt.proof-plan-dag-executor.v2",
         "max_workers": plan.executor_max_workers,
+        "pytest_cpu_budget": cpu_budget,
+        "pytest_cpu_shares": list(available_shares),
         "resource_limits": resource_limits,
         "declared_timeout_seconds": sum(
             int(command.data["timeout_seconds"]) for command in command_list
@@ -250,6 +285,63 @@ def execute_commands(
                 )
             raise
 
+    def run_command(
+        command: ReceiptCommand, allocation: CommandAllocation
+    ) -> dict[str, Any]:
+        from molt.process_spawn import ProcessLaunchError
+        from tools.ci_triage import (
+            InfrastructureClassification,
+            classify_infrastructure_failure,
+        )
+
+        attempts: list[dict[str, Any]] = []
+        for attempt in (1, 2):
+            attempt_started = time.monotonic()
+            attempt_started_at = dt.datetime.now(dt.UTC).isoformat()
+            try:
+                record = _run_command(
+                    plan, command, cancel_event, replace(allocation, attempt=attempt)
+                )
+            except ProcessLaunchError as exc:
+                record = {
+                    **proof_receipts.command_record(command),
+                    "status": "failure",
+                    "returncode": 2,
+                    "duration_seconds": round(time.monotonic() - attempt_started, 6),
+                    "child_cpu_seconds": None,
+                    "peak_rss_bytes": None,
+                    "started_at": attempt_started_at,
+                    "failure_scope": "global",
+                    "failure_reason": str(exc),
+                    "launch_failure": exc.json_payload(),
+                }
+            attempts.append(record)
+            classification = classify_infrastructure_failure(record)
+            if (
+                attempt == 2
+                or classification is InfrastructureClassification.NOT_RETRYABLE
+                or cancel_event.is_set()
+            ):
+                break
+            changed = source_change()
+            if changed is not None:
+                record = {
+                    **record,
+                    "failure_scope": "global",
+                    "failure_reason": changed,
+                }
+                break
+        if len(attempts) == 2:
+            record = {
+                **record,
+                "attempts": attempts,
+                "infrastructure_retry": InfrastructureClassification.LAUNCH_RESOURCE.value,
+                "duration_seconds": sum(
+                    float(item.get("duration_seconds") or 0.0) for item in attempts
+                ),
+            }
+        return record
+
     with ThreadPoolExecutor(
         max_workers=plan.executor_max_workers,
         thread_name_prefix="proof-plan",
@@ -266,6 +358,10 @@ def execute_commands(
                             for resource, ready in ready_by_resource.items()
                             if ready
                             and active_by_resource[resource] < resource_limits[resource]
+                            and (
+                                available_shares
+                                or not command_by_id[ready[0][1]].data.get("pytest")
+                            )
                         )
                         if not available_resources:
                             break
@@ -278,9 +374,13 @@ def execute_commands(
                             continue
                         command = command_by_id[command_id]
                         pending_ids.remove(command.id)
-                        future = executor.submit(
-                            _run_command, plan, command, cancel_event
+                        allocation = CommandAllocation(
+                            available_shares.pop(0)
+                            if command.data.get("pytest")
+                            else None
                         )
+                        allocations[command.id] = allocation
+                        future = executor.submit(run_command, command, allocation)
                         active[future] = command
                         active_by_resource[resource] += 1
                         execution["scheduled_commands"] = (
@@ -329,6 +429,11 @@ def execute_commands(
                             custody_errors.append(exc)
                             record = getattr(exc, "proof_record", record)
                     records_by_id[command.id] = record
+                    allocation = allocations.pop(command.id)
+                    record["pytest_cpu_share"] = allocation.pytest_cpus
+                    if allocation.pytest_cpus is not None:
+                        available_shares.append(allocation.pytest_cpus)
+                        available_shares.sort(reverse=True)
                     active.pop(future)
                     resource = str(command.data["resource_class"])
                     active_by_resource[resource] -= 1

@@ -9,7 +9,7 @@ therefore does two things in the lane first.
    the change reaches). ``repair_landing`` applies them against the merge base
    and commits what they change as one commit, so a stale projection never
    costs a precheck or a batch. Repairs have no deadline: they sit outside
-   the 15-minute claim (a full generator write took 16-25 s, 2026-11-02).
+   the try-run budget (a full generator write took 16-25 s, 2026-11-02).
 2. **Precheck.** ``precheck_landing`` runs the static gates (toolchains within
    ``PRECHECK_TOOLCHAINS``, not a pytest session) and the try run: the
    dependency graph's test cohorts (changed tests and their direct readers) and

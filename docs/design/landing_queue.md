@@ -408,7 +408,7 @@ One runner owns main. Agents enqueue and continue.
   changed-crate Clippy; `tools/molt_dev_precheck.py`) within
   `PRECHECK_BUDGET` (the static gates run to their verdict outside it; the
   budget clock starts with the try run; repairs are unbounded and outside the
-  15-minute claim), so a lint, format, generator, policy or direct-reader
+  try-run budget), so a lint, format, generator, policy or direct-reader
   test failure costs that lane alone instead of a batch run; GitHub's merge
   queue likewise admits only changes whose required checks passed, Zuul runs
   its check pipeline before its gate pipeline, and Chromium's commit queue and
@@ -742,9 +742,13 @@ D1's `flaky(OpenFindingId)` quarantine is distinct from strict expected failures
 collection validates the open identity, presubmit skips with its finding reason,
 and postsubmit passes `--run-flaky` and executes normally. A slow test is not a
 flake; no current test is quarantined without evidence. `ci_triage` owns the
-exhaustive infrastructure-retry classification. Only a typed pre-birth resource
-failure (EAGAIN or ENOMEM) can receive one retry: it has no child effects to
-repeat. Source drift, cancellation, product failures, timeout alone and unresolved
+exhaustive infrastructure-retry classification. Only a typed launch resource
+failure (EAGAIN or ENOMEM) before payload execution can receive one retry.
+`Popen` may fork and reap a child whose exec failed, so this is not a claim
+that no child was ever born; pre-exec CPU usage is unknown. Its controlled
+pre-exec hook only sets limits and writes its startup pipe. See
+[CPython's launch exception contract](https://docs.python.org/3/library/subprocess.html#exceptions).
+Source drift, cancellation, product failures, timeout alone and unresolved
 custody do not qualify. Both attempts retain separate streams and classified
 records; they share the enclosing try-run bound. There is no retry ladder.
 
@@ -776,7 +780,7 @@ worker load.
 
 Design review, 2026-11-05: two sequential isolated read-only Goldfish reviews
 (design and implementation readiness). The first identified seven gaps;
-dispositions tightened diagnostic signal custody, pre-birth retry eligibility,
+dispositions tightened diagnostic signal custody, launch retry eligibility,
 enclosing-budget precedence, serial/memory floors, supported wrapper parsing,
 probe interpretation and evidence required to quarantine a test. The second
 identified a shell-budget escape; unsupported shell pytest now must refuse.

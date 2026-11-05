@@ -45,6 +45,7 @@ Hazard -> proving test(s):
 
 from __future__ import annotations
 from molt.python_environment_location import environment_bytecode_arguments
+from molt.python_environment_identity import PYTHON_IDENTITY_PROBE_TIMEOUT_S
 
 import argparse
 import json
@@ -3577,9 +3578,9 @@ def test_budget_cancellation_names_an_unresolved_closure_as_its_refusal(
         molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 2)
     assert caught.value.reason is molt_dev_gates.CancelReason.PRECHECK_BUDGET
     assert caught.value.unresolved
-    assert {item.partition(":")[0] for item in caught.value.unresolved} <= {
-        molt_dev_gates.display(command) for command in launched
-    }
+    for item in caught.value.unresolved:
+        declared = tuple(shlex.split(item.partition(":")[0]))
+        assert any(tuple(command[: len(declared)]) == declared for command in launched)
     assert runtime.passed == []
 
 
@@ -3598,9 +3599,9 @@ def test_gate_adapter_preserves_real_outcomes_after_shared_cancellation(
     def observe_executor(*args, **kwargs):
         run = kwargs["_run_command"]
 
-        def observe(plan, command, cancel):
+        def observe(plan, command, cancel, allocation):
             events[command.gate.command] = cancel
-            return run(plan, command, cancel)
+            return run(plan, command, cancel, allocation)
 
         return execute(*args, **{**kwargs, "_run_command": observe})
 
@@ -3706,9 +3707,9 @@ def _observe_gate_cancellation(monkeypatch) -> dict:
     def observe_executor(*args, **kwargs):
         run = kwargs["_run_command"]
 
-        def observe(plan, command, cancel):
+        def observe(plan, command, cancel, allocation):
             events[command.gate.command] = cancel
-            return run(plan, command, cancel)
+            return run(plan, command, cancel, allocation)
 
         return execute(*args, **{**kwargs, "_run_command": observe})
 
@@ -3757,11 +3758,13 @@ def _run_block_beside_cancelled_sibling(
             _DEFERRED_CARGO_RECOVERY if cleanup == "cargo" else None
         ),
     )
-    outcomes = {("gate", "first"): first, ("gate", "sibling"): sibling}
+    outcomes = {("pytest", "first"): first, ("pytest", "sibling"): sibling}
 
     def run(command, repo, environment, cancelled, streams=None):
+        assert command[-2] == "-n" and int(command[-1]) > 0
+        command = command[:-2]
         entered.wait(timeout=30)
-        if command == ("gate", "sibling"):
+        if command == ("pytest", "sibling"):
             assert events[command].wait(timeout=30), "executor did not cancel"
             assert cancelled()
         outcome = outcomes[command]
@@ -3782,9 +3785,9 @@ def _run_block_beside_cancelled_sibling(
         run_captured_gate=run,
     )
     gates = [
-        SelectedGate(command=("gate", "first"), toolchains=("python",), pytest=True),
+        SelectedGate(command=("pytest", "first"), toolchains=("python",), pytest=True),
         SelectedGate(
-            command=("gate", "sibling"),
+            command=("pytest", "sibling"),
             toolchains=("cargo", "python"),
             pytest=True,
             cargo_target_access=CargoTargetAccess(access),
@@ -8420,7 +8423,7 @@ def test_detached_run_prints_a_verify_command_that_finds_its_state(
         [*argv[:root_index], *argv[root_index + 2 :]],
         cwd=unrelated_cwd,
         env=verify_env,
-        timeout=120,
+        timeout=PYTHON_IDENTITY_PROBE_TIMEOUT_S,
     )
     assert missing_root.returncode != EXIT_OK
     assert "no state" in missing_root.stderr
@@ -8428,7 +8431,7 @@ def test_detached_run_prints_a_verify_command_that_finds_its_state(
     # Execute the actual returned argv unchanged, from the other environment
     # and cwd. Verification observes the original run; it must never relaunch it.
     completed = run_guarded_test_process(
-        argv, cwd=unrelated_cwd, env=verify_env, timeout=120
+        argv, cwd=unrelated_cwd, env=verify_env, timeout=PYTHON_IDENTITY_PROBE_TIMEOUT_S
     )
     assert completed.returncode == EXIT_OK, completed.stdout + completed.stderr
     assert "DONE rc=0" in completed.stderr
@@ -10777,7 +10780,7 @@ print(pytest_run_selections(
         ],
         cwd=tmp_path,
         env=ProcessEnvironment(os.environ),
-        timeout=120,
+        timeout=PYTHON_IDENTITY_PROBE_TIMEOUT_S,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert completed.stdout.strip() == "('tests/test_molt_dev.py',)"
@@ -10905,7 +10908,7 @@ raise SystemExit(0)
         ],
         cwd=tmp_path,
         env=ProcessEnvironment(os.environ),
-        timeout=120,
+        timeout=PYTHON_IDENTITY_PROBE_TIMEOUT_S,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     observed = json.loads(report.read_text(encoding="utf-8"))
@@ -11724,7 +11727,7 @@ def test_cargo_effects_overlap_private_work_and_preserve_writer_exclusion(
     gates = [
         SelectedGate(("writer", "first"), ("python", "cargo")),
         SelectedGate(
-            ("private",),
+            ("pytest", "private"),
             ("python", "cargo"),
             pytest=True,
             cargo_target_access=CargoTargetAccess.ISOLATED,
@@ -11733,7 +11736,8 @@ def test_cargo_effects_overlap_private_work_and_preserve_writer_exclusion(
     ]
 
     def run(command, repo, environment, cancelled, streams=None):
-        if command[0] == "private":
+        if command[:2] == ("pytest", "private"):
+            assert command[-2] == "-n" and int(command[-1]) > 0
             assert writer_started.wait(5)
             assert lease.exists(), "isolated work waited for shared-target release"
             private_started.set()
@@ -11786,7 +11790,7 @@ def test_only_selected_shared_target_effects_admit_shared_output_capacity(tmp_pa
 
     config = GateConfig.parse("always=[]\n", "effects", root=tmp_path)
     private = SelectedGate(
-        ("python", "private"),
+        ("pytest", "private"),
         ("python", "cargo"),
         pytest=True,
         cargo_target_access=CargoTargetAccess.ISOLATED,
@@ -12956,3 +12960,12 @@ class TestStorageAuthority:
         row = next(row for row in rows if row.kind == "replaced-family-landing-sandbox")
         assert row.source == old
         assert row.action == "keep" and row.reason == "within last-use retention window"
+
+
+def test_shell_pytest_gate_cannot_bypass_executor_worker_budget():
+    gate = SelectedGate(
+        "python -m pytest -n 18 tests/test_molt_dev.py && echo bypass",
+        ("python",),
+    )
+    with pytest.raises(DriverError, match="simple argv"):
+        molt_dev_gates._local_command(1, gate, "local", repo=REPO_ROOT)

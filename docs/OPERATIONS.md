@@ -1556,3 +1556,29 @@ lanes must follow that protocol first.
 
 Artifact-root provisioning and retained-scratch migration follow the
 [durable filesystem identity contract](design/durable_file_identity.md).
+
+## macOS first-execution delays
+
+`molt doctor` measures one freshly written executable shebang script's first
+launch and a second launch of the same inode, using the guard's child clock.
+This reports first-exec overhead on that path; it does not establish that
+Gatekeeper caused a wait or qualify freshly linked native executables. A failed
+probe is reported as unavailable. The check never retries or changes security
+settings.
+
+The report preserves `DevToolsSecurity -status` as global debugger-authorization
+information. That command does not reveal the invoking app's per-app Developer
+Tools permission, which remains unknown. The owner can inspect **System Settings
+> Privacy & Security > Developer Tools**, including the actual launching app
+(terminal, editor or automation host). See
+[Apple's Developer Tools control](https://support.apple.com/guide/mac-help/mchlc5fb7f9c/mac).
+Changing that setting is an owner decision, never a prerequisite Molt silently
+enables. The compiler must work without an exemption.
+
+Landing worker counts come from the proof executor's CPU budget and memory
+slices; operators do not pin independent auto-worker overrides. The retained
+receipt names each gate's explicit worker count, wall time and child CPU time.
+Timeout incidents retain child output and Python stack dumps when available
+beside that run's durable gate evidence, rather than inside reclaimable scratch.
+`flaky(OpenFindingId)` tests skip presubmit with their finding reason;
+postsubmit uses `--run-flaky` and treats them as ordinary tests.
