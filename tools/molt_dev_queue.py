@@ -958,7 +958,12 @@ def refuse_second_ledger_writer(
 
 
 def cmd_land(args: argparse.Namespace) -> int:
+    if args.fast:
+        from tools.molt_dev_land_fast import cmd_land_fast
 
+        return cmd_land_fast(args)
+    if args.subject is not None or args.no_push or args.dry_run:
+        raise DriverError("--subject, --no-push and --dry-run belong to land --fast")
     drv = _driver()
     repo = Path(args.repo).resolve()
     git = drv.Git(repo)
@@ -1633,8 +1638,28 @@ def add_queue_arguments(
         "--static-only",
         action="store_true",
         help="repair the lane and run its static gates (lint, format, generators, "
-        "registries, policy), then stop: no try run, nothing queued; the tier a "
-        "fast-path push never waives",
+        "registries, policy), then stop: no try run, nothing queued",
+    )
+    precheck.add_argument(
+        "--fast",
+        action="store_true",
+        help="the integrator's push: merge main into the lane, run its static gates "
+        "and complete try run on the merged tree, write a landing receipt, and push "
+        "one landing commit with a lease (docs/design/landing_queue.md, section 9)",
+    )
+    p_land.add_argument(
+        "--subject",
+        help="land --fast: the landing commit's first line; the receipt writes the rest",
+    )
+    p_land.add_argument(
+        "--no-push",
+        action="store_true",
+        help="land --fast: stop after the receipt; a later land --fast pushes it",
+    )
+    p_land.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="land --fast: print the merge and the static, try-run and waived gates",
     )
     add_pinned_controller_arguments(p_land)
     p_land.set_defaults(func=cmd_land)

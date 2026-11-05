@@ -130,7 +130,7 @@ SECTIONS: dict[str, tuple[str, ...]] = {
     "triality": ("TRIALITY_WIRING",),
     "preflight": ("PREMISE_VERIFICATION",),
     "egm": ("DESIGN_REVIEW",),
-    "handoff": ("HANDOFF_PRECHECK",),
+    "handoff": ("HANDOFF_PRECHECK", "WHOLE_CRATE_TESTS"),
 }
 
 

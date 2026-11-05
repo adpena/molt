@@ -217,8 +217,13 @@ def test_bench_cli_native_smoke_contract_batch_reuses_compiler(
         "0",
         "--molt-profile",
         "dev",
+        # The slow script never ends, so this bound sets the test's floor. It
+        # also must fit the fast script's first exec: on macOS a freshly
+        # linked binary waited in admission past 5 s under landing-gate
+        # concurrency (2026-11-04: `print(1)` timed out at 4.95 s in two of
+        # three land --fast runs).
         "--runtime-timeout-sec",
-        "5.0",
+        "30.0",
         "--json-out",
         str(out_json),
         "--script",

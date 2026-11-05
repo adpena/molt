@@ -223,6 +223,7 @@ from tools.molt_dev_policy import (  # noqa: E402
     GateConfig,
     GateEnvironment,
     LandingMode,
+    SelectedGate,
     select_landing_gates,
 )
 from tools.dirty_tree_policy import (  # noqa: E402
@@ -1013,6 +1014,46 @@ def _gate_runtime(
     )
 
 
+def _write_queue_receipt(
+    repo: Path,
+    git: Git,
+    *,
+    base: str,
+    commit: str,
+    gates: list[SelectedGate],
+    seconds: list[tuple[float, str]],
+    logs: Path | None,
+    controller: str | None,
+) -> None:
+    """The landing receipt of an integrate run: every selected gate passed."""
+    from tools import landing_receipt
+    from tools.molt_dev_gates import display
+
+    common_dir = _git_common_directory(repo)
+    if common_dir is None:
+        raise DriverError("cannot resolve the Git common directory for the receipt")
+    elapsed = {shown: value for value, shown in seconds}
+    records = [
+        landing_receipt.gate_record(
+            phase="static" if gate.static else "batch",
+            command=display(gate.command),
+            seconds=elapsed.get(display(gate.command)),
+            log=None if logs is None else logs / f"gate-{ordinal:03d}.stdout.log",
+        )
+        for ordinal, gate in enumerate(gates, start=1)
+    ]
+    receipt = landing_receipt.build_receipt(
+        mode="queue",
+        base=base,
+        tree=git.rev_parse(f"{commit}^{{tree}}"),
+        tested_commit=commit,
+        controller=controller,
+        started_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        gates=records,
+    )
+    _ok(f"landing receipt {landing_receipt.write_receipt(common_dir, receipt)}")
+
+
 @dataclass
 class _IntegrationProgress:
     """Advisory stdout events; absent terminal output never establishes success."""
@@ -1415,6 +1456,7 @@ def _integrate_exclusive(
             )
         _assert_integration_source(git, selected_commit)
     gate_seconds: list[tuple[float, str]] = []
+    gate_logs: Path | None = None
     if dry:
         for gate in gate_cmds:
             _assert_integration_source(git, selected_commit)
@@ -1426,26 +1468,42 @@ def _integrate_exclusive(
             run_remote(repo, selected_commit, gate_cmds, host=farm_host)
         )
     else:
+        runtime = _gate_runtime(
+            git,
+            selected_commit,
+            repo=repo,
+            policy=policy,
+            config=config,
+            environments=environments,
+            cargo_outputs=cargo_outputs,
+            capacity_requirements=capacity_requirements,
+            progress=progress,
+            toolchains=toolchains,
+            deferred=prepared.deferred,
+        )
+        gate_logs = runtime.output_dir
         run_selected_gates(
             gate_cmds,
-            _gate_runtime(
-                git,
-                selected_commit,
-                repo=repo,
-                policy=policy,
-                config=config,
-                environments=environments,
-                cargo_outputs=cargo_outputs,
-                capacity_requirements=capacity_requirements,
-                progress=progress,
-                toolchains=toolchains,
-                deferred=prepared.deferred,
-            ),
+            runtime,
             gate_seconds,
             host_limit=lambda: concurrent_gate_limit(),
         )
     if gate_seconds:
         _say(gate_time_summary(gate_seconds))
+    if not dry:
+        # Every selected gate passed on this exact tree: the receipt the
+        # pre-push hook requires (docs/design/landing_queue.md, section 9).
+        _assert_integration_source(git, selected_commit)
+        _write_queue_receipt(
+            repo,
+            git,
+            base=upstream_before,
+            commit=selected_commit,
+            gates=gate_cmds,
+            seconds=gate_seconds,
+            logs=gate_logs,
+            controller=progress.controller,
+        )
 
     # --- step 6: push (only after every gate is green) ----------------------
     _step(f"push to {upstream_ref}")

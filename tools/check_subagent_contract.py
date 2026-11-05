@@ -57,6 +57,7 @@ REQUIRED_CONSTANTS: tuple[str, ...] = (
     "PREMISE_VERIFICATION",
     "DESIGN_REVIEW",
     "HANDOFF_PRECHECK",
+    "WHOLE_CRATE_TESTS",
 )
 
 #: The verbatim-grade fragment each required constant must still contain.
@@ -76,6 +77,7 @@ REQUIRED_KEY_PHRASES: dict[str, str] = {
     "PREMISE_VERIFICATION": "before your first Write",
     "DESIGN_REVIEW": "Elephant Goldfish",
     "HANDOFF_PRECHECK": "--precheck-only",
+    "WHOLE_CRATE_TESTS": "--lib --no-fail-fast",
 }
 
 
