@@ -1253,8 +1253,9 @@ def _expression_result_for_publication_shallow(
     result, but concrete contents, cardinality, truth, freshness, and
     reference-bearing release safety cease to be stable once an alias is
     published. A subsequent object-write or callback expires element shape,
-    retaining only possible canonical identities beside OTHER. Immutable owners retain
-    their own truth and cardinality while unsafe descendant shape is erased.
+    retaining only possible canonical identities beside OTHER. Immutable owners
+    retain their own membership, truth and cardinality; publication of each
+    referent separately widens its release custody and mutable shape.
     Bytearrays remain release-safe because their payload cannot contain object
     references.
     """
@@ -1298,8 +1299,10 @@ def _expression_result_for_publication_shallow(
 def expression_result_for_publication(
     result: StaticExpressionResult,
 ) -> StaticExpressionResult:
-    # Publishing a tuple cannot replace its elements. Erase mutable descendant
-    # contents, retaining each immutable positional edge and its provenance.
+    # Immutable membership does not prove descendant release safety. Each node's
+    # cached recursive publication proof widens release risk before edges are
+    # rebuilt. Callback expiry additionally erases mutable homogeneous elements
+    # through expression_result_without_mutable_contents, not publication alone.
     if result.kind in {"tuple", "frozenset"} and not result._recursively_stable:
         return _publish_expression_result_dag(result, expire_mutable_elements=False)
     return _expression_result_for_publication_shallow(result)

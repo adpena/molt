@@ -599,6 +599,9 @@ user key, hiding its comparison callback. The existing recursive mutable-content
 expiry authority must handle loop and comprehension yields, retained temporaries,
 and earlier call arguments. Ordinary binding/selection publication remains
 distinct, preserving the namespace-mapping precision from section 12.
+Cached iterator yields also consult the existing accumulated body-write effects:
+an object write need not advance the callback epoch. The correction does not
+depend on incidental unpacking or retirement callbacks to expire these facts.
 
 The owning shape tests use CPython witnesses whose nested mutable-leaf release
 runs `__del__`, and whose changed dictionary key runs `__eq__`. They retain

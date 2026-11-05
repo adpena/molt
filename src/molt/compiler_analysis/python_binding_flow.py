@@ -2276,7 +2276,7 @@ def _result_after_retained_boundary(
     """Drop alias-sensitive facts when a retained value can be exposed."""
 
     return (
-        expression_result_for_publication(result)
+        expression_result_without_mutable_contents(result)
         if boundary & _CALLEE_ELISION_FORBIDDEN_EFFECTS
         else result
     )
@@ -5796,7 +5796,7 @@ class _Analyzer:
             if publishes:
                 for retained_index in range(publication_cursor, len(retained)):
                     index, expression, result = retained[retained_index]
-                    result = expression_result_for_publication(result)
+                    result = expression_result_without_mutable_contents(result)
                     retained[retained_index] = (index, expression, result)
                     evaluated[index] = result
                     crossed_boundaries.add(index)
@@ -6114,12 +6114,15 @@ class _Analyzer:
                 if iteration.empty:
                     return current, header_flow.without_normal()
                 strings, element = iteration.element_strings, iteration.element_result
-                if self.states.get(current).taint_epoch != entry_epoch:
+                if (
+                    self.states.get(current).taint_epoch != entry_epoch
+                    or retained_boundary & WRITES_OBJECT_STATE
+                ):
                     if iteration.mutable:
                         strings = None
                         element = expression_result_without_value_facts(element)
                     else:
-                        element = expression_result_for_publication(element)
+                        element = expression_result_without_mutable_contents(element)
                 current, assigned = self.assign_target(
                     generator.target,
                     element.identities,
@@ -7932,14 +7935,17 @@ class _Analyzer:
                 assert iteration is not None
                 strings = iteration.element_strings
                 element_result = iteration.element_result
-                if self.states.get(body_entry).taint_epoch != entry_epoch:
+                if (
+                    self.states.get(body_entry).taint_epoch != entry_epoch
+                    or retained_boundary & WRITES_OBJECT_STATE
+                ):
                     if iteration.mutable:
                         strings = None
                         element_result = expression_result_without_value_facts(
                             element_result
                         )
                     else:
-                        element_result = expression_result_for_publication(
+                        element_result = expression_result_without_mutable_contents(
                             element_result
                         )
                 body_entry, target_effects = self.assign_target(
