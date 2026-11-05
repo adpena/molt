@@ -6,6 +6,7 @@
 //! replacing/reconstructing code never accidentally reuses another body's plan.
 
 use super::field_runtime::{DcValue, dc_attr, dc_result};
+use super::initializer_spec_generated::{INIT_SPEC_FIELDS, InitSpecField};
 use super::*;
 use crate::builtins::functions::{molt_func_new_closure, molt_function_init_metadata_packed};
 use crate::object::class_storage::ClassReferenceSlot;
@@ -259,11 +260,11 @@ fn prepare_plan(
     spec: &[u64],
     has_post_init: bool,
 ) -> Result<(InitPlan, Vec<DcValue>), ()> {
-    let parameters = tuple_items(py, spec[0])?;
-    let captures = tuple_items(py, spec[5])?;
+    let parameters = tuple_items(py, spec[InitSpecField::Parameters as usize])?;
+    let captures = tuple_items(py, spec[InitSpecField::Captures as usize])?;
     let mut names = Vec::new();
     let mut stores = Vec::new();
-    for row in tuple_items(py, spec[6])? {
+    for row in tuple_items(py, spec[InitSpecField::Stores as usize])? {
         let row = tuple_items(py, row)?;
         if row.len() != 5 {
             invalid(py, "invalid dataclass initializer store");
@@ -286,7 +287,12 @@ fn prepare_plan(
             value,
         });
     }
-    let factory_marker = optional_input(py, spec[8], parameters.len(), captures.len())?;
+    let factory_marker = optional_input(
+        py,
+        spec[InitSpecField::FactoryMarker as usize],
+        parameters.len(),
+        captures.len(),
+    )?;
     if stores.iter().any(|store| {
         matches!(
             store.value,
@@ -300,7 +306,7 @@ fn prepare_plan(
         invalid(py, "factory sentinel capture is missing");
         return Err(());
     }
-    let post_rows = tuple_items(py, spec[7])?;
+    let post_rows = tuple_items(py, spec[InitSpecField::PostInitInputs as usize])?;
     let post_init = if has_post_init {
         let post_name = DcValue::owned(crate::NameId::DunderPostInit.owned_bits(py).ok_or(())?);
         let name = add_name(py, &mut names, post_name.bits)?;
@@ -325,7 +331,12 @@ fn prepare_plan(
             stores,
             post_init,
             factory_marker,
-            frozen_object: optional_input(py, spec[9], parameters.len(), captures.len())?,
+            frozen_object: optional_input(
+                py,
+                spec[InitSpecField::FrozenObject as usize],
+                parameters.len(),
+                captures.len(),
+            )?,
             arity: parameters.len(),
             cells: captures.len(),
             frame: crate::builtins::frames::FramePlan::default(),
@@ -351,7 +362,7 @@ fn build_initializer(
         return Ok(DcValue::owned(MoltObject::none().bits()));
     }
     let spec = tuple_items(py, packed)?;
-    if spec.len() != 14 {
+    if spec.len() != INIT_SPEC_FIELDS {
         invalid(py, "invalid dataclass initializer specification");
         return Err(());
     }
@@ -360,7 +371,11 @@ fn build_initializer(
         invalid(py, "invalid dataclass initializer schema");
         return Err(());
     }
-    prepare_globals(py, spec[11], spec[13])?;
+    prepare_globals(
+        py,
+        spec[InitSpecField::Globals as usize],
+        spec[InitSpecField::Builtins as usize],
+    )?;
     let candidate_owner = DcValue::owned(unsafe {
         ClassReferenceSlot::DataclassInitTemplate.exchange_owned(class_ptr, 0)
     });
@@ -372,14 +387,20 @@ fn build_initializer(
             .then_some(candidate_items[1])
     };
     let function = if let Some(factory) = candidate {
-        dc_result(py, unsafe { call_callable1(py, factory, spec[5]) })?
+        dc_result(py, unsafe {
+            call_callable1(py, factory, spec[InitSpecField::Captures as usize])
+        })?
     } else {
         let (mut plan, names) =
             prepare_plan(py, &spec, shape[2] == MoltObject::from_bool(true).bits())?;
         let name_values: Vec<_> = names.iter().map(|name| name.bits).collect();
         let names_tuple = owned_tuple(py, &name_values)?;
-        let parameters = tuple_items(py, spec[0])?;
-        let positional = require_index(py, spec[1], parameters.len() + 1)?;
+        let parameters = tuple_items(py, spec[InitSpecField::Parameters as usize])?;
+        let positional = require_index(
+            py,
+            spec[InitSpecField::Positional as usize],
+            parameters.len() + 1,
+        )?;
         let name = DcValue::owned(crate::NameId::DunderInit.owned_bits(py).ok_or(())?);
         let filename = text(py, b"<string>")?;
         // The native body executes at LocationId 0. Publish its entry in the
@@ -395,7 +416,7 @@ fn build_initializer(
             name.bits,
             2,
             locations.bits,
-            spec[0],
+            spec[InitSpecField::Parameters as usize],
             names_tuple.bits,
             positional as u64,
             0,
@@ -405,7 +426,7 @@ fn build_initializer(
             return Err(());
         }
         let code = DcValue::owned(MoltObject::from_ptr(code).bits());
-        let capture_values = tuple_items(py, spec[5])?;
+        let capture_values = tuple_items(py, spec[InitSpecField::Captures as usize])?;
         let mut cells = Vec::new();
         for value in capture_values {
             cells.push(dc_result(py, crate::object::cells::molt_cell_new(value))?);
@@ -433,17 +454,17 @@ fn build_initializer(
             &[
                 name.bits,
                 qualname.bits,
-                spec[12],
+                spec[InitSpecField::Module as usize],
                 positional_names.bits,
                 MoltObject::from_int(0).bits(),
                 keyword_names.bits,
                 none,
                 none,
-                spec[2],
-                spec[3],
+                spec[InitSpecField::Defaults as usize],
+                spec[InitSpecField::Kwdefaults as usize],
                 none,
                 MoltObject::from_int(0).bits(),
-                spec[4],
+                spec[InitSpecField::CaptureNames as usize],
                 empty.bits,
             ],
         )?;
@@ -468,15 +489,21 @@ fn build_initializer(
     // The transform captured the class module namespace before field callbacks.
     // A class naming an absent module uses its own empty globals dictionary.
     unsafe {
-        crate::function_set_globals_bits(py, ptr, spec[11])?;
+        crate::function_set_globals_bits(py, ptr, spec[InitSpecField::Globals as usize])?;
     }
     let set = |name, bits| unsafe {
         crate::call::class_init::function_set_attr_name(py, ptr, name, bits)
     };
-    if !set(crate::NameId::DunderDefaults, spec[2])
-        || !set(crate::NameId::DunderKwdefaults, spec[3])
-        || !set(crate::NameId::DunderAnnotations, spec[10])
-    {
+    if !set(
+        crate::NameId::DunderDefaults,
+        spec[InitSpecField::Defaults as usize],
+    ) || !set(
+        crate::NameId::DunderKwdefaults,
+        spec[InitSpecField::Kwdefaults as usize],
+    ) || !set(
+        crate::NameId::DunderAnnotations,
+        spec[InitSpecField::Annotations as usize],
+    ) {
         return Err(());
     }
     let qualname = dc_attr(py, class, crate::NameId::DunderQualname)?;
@@ -484,7 +511,10 @@ fn build_initializer(
         .ok_or_else(|| invalid(py, "dataclass qualname must be a string"))?;
     let qualname = text(py, format!("{qualname}.__init__").as_bytes())?;
     if !set(crate::NameId::DunderQualname, qualname.bits)
-        || !set(crate::NameId::DunderModule, spec[12])
+        || !set(
+            crate::NameId::DunderModule,
+            spec[InitSpecField::Module as usize],
+        )
     {
         return Err(());
     }

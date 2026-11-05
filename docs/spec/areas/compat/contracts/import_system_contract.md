@@ -101,9 +101,9 @@ The backend cannot replace a public transaction with numeric initialization mere
 because its literal name has a catalog row.
 
 A completed public cache hit keeps its existing dictionary/spec-probe policy and
-avoids finder dispatch. A cold ordinary miss pays admitted initial finder completion, one
-ordered finder traversal and the admitted spec transaction rather than a compiled-first
-attempt followed by fallback. These callback/locking/allocation costs require
+avoids finder dispatch. A cold ordinary miss pays one ordered finder traversal and
+the admitted spec transaction rather than a compiled-first attempt followed by
+fallback; the default finders already exist, so no finder initialization runs. These callback/locking/allocation costs require
 native and WASM qualification and the existing cached-import probes; source
 structure alone is not a performance result. See the current
 [storage and execution contract](../../../../design/foundation/import_bedrock_pr2_sys_modules_view_cutover.md)
@@ -178,15 +178,19 @@ post-callback cache/spec reads occur after release. `util.find_spec` retains its
 separate relative-name, parent-path and cached-spec API. No import enters that
 public helper to bootstrap its own implementation.
 
-The initial runtime catalog finder exists before Python importlib facades. Actual
-stdlib source-role capability and the body's defining namespace, not a cached
-object with a matching spelling, own default PathFinder/hook publication. Exact
-initial-list identities and backing epochs prevent replacing or repairing public
-customization. Pending owners retire on completion, cancellation, failure and
-shutdown. The compiler's one reached-call identity/demand authority admits this
-finite support source even for public low-level intrinsic entrypoints; merely
-acquiring, rebinding or leaving a call unreachable does not retain it. There is
-no unconditional full-stdlib expansion for a microbinary.
+The runtime seeds CPython's default finders when `sys` is created, before any
+Python importlib facade runs, as CPython's `_bootstrap._install` and
+`_bootstrap_external._install` do: `sys.meta_path` is `[BuiltinImporter,
+FrozenImporter, PathFinder]` and `sys.path_hooks` is the archive hook followed
+by `FileFinder.path_hook()`. `PathFinder`, `FileFinder` and both hooks are
+runtime-owned (`_frozen_importlib_external` class origin); `importlib.machinery`
+re-exports them. No later step appends, repairs or cancels these lists, so
+public customization before the first import keeps the defaults. The file
+loader classes and `_NamespacePath` stay in the machinery body, which declares
+them to the runtime; a filesystem hit or a namespace result acquires them by
+running that admitted body, never through a public `sys.modules` spelling. A
+catalog hit, a miss and a custom finder run no facade body. Design:
+[native default finders](../../../../design/foundation/import_native_default_finders.md).
 
 The protocol uses ordered control flow; persistent initialization state stays in
 the existing module registry. [V8's module state model](https://chromium.googlesource.com/v8/v8/+/refs/heads/main/src/objects/module.h)
@@ -248,8 +252,9 @@ transaction. The importlib facade does not reconstruct `__path__` from `__file__
 or import filesystem machinery to repair that metadata. Describing a compiled
 provider therefore does not initialize `os` or acquire its filesystem providers.
 
-The existing runtime-owned `BuiltinImporter` is registered before `PathFinder`
-for Molt's compiled providers. Its read-only projection uses the admitted module
+The existing runtime-owned `BuiltinImporter` is registered before
+`FrozenImporter` and `PathFinder` for Molt's compiled providers. Molt has no
+frozen bytecode, so `FrozenImporter.find_spec` returns `None`. Its read-only projection uses the admitted module
 registry and the shared compiled loader; describing a provider does not execute
 or publish it. Custom meta paths remain authoritative. This is Molt's existing
 compiled-provider classification, not a claim that compiled source modules are

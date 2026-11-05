@@ -36,8 +36,8 @@ class _StandinMachinery:
         raise AssertionError("cached stand-in acquired bootstrap provenance")
 
     @property
-    def _default_path_hooks(self):
-        raise AssertionError("cached stand-in acquired bootstrap hooks")
+    def _NamespacePath(self):
+        raise AssertionError("cached stand-in supplied a declared machinery class")
 
 
 _early_machinery = sys.modules.get("importlib.machinery")

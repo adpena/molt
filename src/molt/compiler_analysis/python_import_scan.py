@@ -770,6 +770,8 @@ def _collect_imports(
                 binding_index.source_bases,
                 binding_index.source_completions,
                 binding_index.source_callables,
+                native_initializers=binding_index.source_native_initializers,
+                classes=binding_index.source_classes,
             )
         )
 

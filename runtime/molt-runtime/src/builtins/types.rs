@@ -140,6 +140,8 @@ define_types_runtime_state! {
     compiled_loader_builtin_class,
     compiled_loader_frozen_class,
     compiled_loader_singleton,
+    path_finder_class,
+    file_finder_class,
 }
 
 fn types_state(_py: &PyToken<'_>) -> &'static TypesRuntimeState {
