@@ -585,13 +585,13 @@ gives `isinstance` and `issubclass`; that changes discovery for every program
 and needs its own census. The lane reports this family to the integrator for
 its own ledger row.
 
-Main also fails to persist the frontend lowering record of a module that
-defines a dataclass: `local_classes` carries `dataclass_init_projection`, a
+At `5bdef368edd3`, persisting the frontend lowering record of a module that
+defined a dataclass failed: `local_classes` carried `dataclass_init_projection`, a
 tuple of `DataclassInitField` dataclasses, and `_write_persisted_module_lowering`
-raises `TypeError: Object of type DataclassInitField is not JSON serializable`
+raised `TypeError: Object of type DataclassInitField is not JSON serializable`
 (`cache_keys._json_ir_default`). Any cold build of the
-`dataclass_construction` primitive with the lowering cache enabled fails. This
-is outside this lane's mechanism; the lane reports it to the integrator.
+`dataclass_construction` primitive with the lowering cache enabled failed. HF-777
+owns this persistence boundary; the reviewed repair below extends HF-561 to it.
 
 HF-561's required primitive baseline reproduced HF-777 on `5bdef368edd3` before
 any runtime edit. Its selected repair adds `DataclassInitField` as a typed leaf

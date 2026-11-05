@@ -390,6 +390,10 @@ private canonical lane artifacts. No sampled percentage is converted to Ir.
 
 ### 2.5 Raise and catch (p7, HF-561)
 
+This is the historical constructor-detour measurement. See the
+[2026-11-05 refresh](#hf-561-refresh-and-first-implementation-slice-2026-11-05)
+for the current mechanism and measured first slice.
+
 210,274 instructions per iteration; CPython 2,038 (103x; wall 15.46 s against 0.09 s). Shares
 (12,372 samples):
 
@@ -849,6 +853,45 @@ alone does not establish the <=3x outcome. Reprofile its changed source before
 choosing the next cost. Frame locations and traceback origin/propagation remain
 HF-764's reserved authority until it lands; then merge it from main and reuse its
 `LocationId`. Do not copy that implementation or create a second location table.
+
+The completed five-pair expanded primitive comparison at `39c629c1a1` measures
+the following native instruction slopes against exact CPython 3.12.16. The
+codec repair and workload bytes are held constant across base and head.
+
+| Caught raise | Base instructions/op | Head instructions/op | Base/CPython | Head/CPython |
+| --- | ---: | ---: | ---: | ---: |
+| User `ValueError("x")` | 22,947.928 | 15,585.818 | 11.2881 | 7.6672 |
+| Runtime `int("abc")` | 26,318.134 | 21,726.307 | 3.1539 | 2.6084 |
+
+These are diagnostic instruction measurements, not wall-time or release
+acceptance. The outlined tuple-membership helper makes no calls. Its caller
+invokes it and returns a published-tuple result before the bootstrap pin/drop
+paths. A new sample has 2,517 self samples, with
+managed ancestry at 69 (2.74%). Traceback prefix capture is 311 (12.36%), of which
+308 descend from `record_exception_with_caller_frame`; frame-column work is 181
+(7.19%). Terminal retirement is 696 (27.65%), including finalizer policy work.
+These inclusive buckets overlap. The next frame capture/location change must
+reuse HF-764's authority after it lands. Its branch deletes the old caller-frame
+sweep; it was not an ancestor of main `5bdef368edd3` at this measurement.
+
+Declared runtime semantic cells pass in dev, dev-fast and release-fast. Seven
+selected exception differentials pass on LLVM and on WASM, including context,
+finally, traceback access, `except*`, generator throws and nested reraises.
+The native selection exposes invalid-handler `TypeError` values losing their
+original exception context. Its current-base cause remains unisolated; the
+full exception matrix, traceback text/lines and coroutine obligations remain
+unqualified. Dynamic ABI calls per operation remain unknown; eliminating
+owner-transition calls from this one path is a different claim.
+
+The expanded primitive comparison reports no regression rows, but it does
+report four required improvement updates and dataclass spread 2.382% against
+its 1.400% bound. It is not a passing ratchet check. The default ratchet still
+has the old workload identity: complete its consumer migration with qualified
+calibration before landing the expanded declaration. Do not loosen its bounds
+to hide this result. The wall goal is also unqualified: native sampling stops
+on a guard custody failure, and the five WASM pairs have a descriptive median
+slope ratio 13.0321 but fail the adjacent-slope linearity requirement. Retain
+the evidence and resolve these obligations through their existing authorities.
 
 ### Stage 6: scalar loops and observation-point locals
 
