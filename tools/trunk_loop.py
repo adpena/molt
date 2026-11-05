@@ -65,12 +65,14 @@ def uv_python(*argv: str) -> list[str]:
 
 
 # The apt packages the documented Linux workflow needs (docs/getting-started.md).
+# No farm cell declares system CMake (proof-plan toolchains): Cargo builds take
+# AWS-LC's cc builder (molt.cargo_execution_policy refuses its CMake builder), and
+# only LLVM source bootstrap uses system CMake, checking at the point of use.
 LINUX_SYSTEM_PACKAGES = (
     "git",
     "curl",
     "clang",
     "lld",
-    "cmake",
     "build-essential",
     "valgrind",
 )
@@ -85,19 +87,29 @@ def provision_script(host, *, repository: str, uv_version: str) -> str:
     Never import Molt before uv has resolved the project's dependencies.
     """
     checkout = host.checkout
+    if host.is_windows and not (host.target or "").startswith("x86_64-"):
+        # The vswhere query below names the x64 MSVC component; an ARM64 host
+        # needs config/llvm_toolchain_arches.toml's ARM64 component.
+        raise ValueError(f"{host.name}: Windows farm hosts are x86_64 only")
     if host.is_windows:
         return f"""$ErrorActionPreference='Stop'
 $env:UV_PROJECT_ENVIRONMENT=$null
 $env:VIRTUAL_ENV=$null
 $env:MOLT_VENV=$null
 $env:PATH="$env:USERPROFILE\\.local\\bin;$env:USERPROFILE\\.cargo\\bin;$env:PATH"
-foreach ($tool in @('git','cl.exe','link.exe')) {{
- if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {{
-  throw 'Missing system toolchain; run: winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"; then use its developer shell'
- }}
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {{ throw 'Missing system prerequisite git; run: winget install --id Git.Git' }}
+# Builds select MSVC through vswhere and build their own environment
+# (molt.platform_toolchain.visual_studio_installation); no developer shell is
+# needed. This mirrors that query because Molt is not importable before uv sync.
+$vswhere=Join-Path ${{env:ProgramFiles(x86)}} 'Microsoft Visual Studio\\Installer\\vswhere.exe'
+if (-not (Test-Path -LiteralPath $vswhere) -or @(& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Count -ne 1) {{
+ throw 'Missing MSVC Build Tools; run: winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"'
 }}
-if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {{
+# The pinned uv, not whichever one is installed (the toolchain contract pins it).
+if (-not (Get-Command uv -ErrorAction SilentlyContinue) -or ((& uv --version) -split ' ')[1] -ne {ps(uv_version)}) {{
+ $env:UV_NO_MODIFY_PATH='1'
  Invoke-RestMethod https://astral.sh/uv/{uv_version}/install.ps1 | Invoke-Expression
+ if (((& uv --version) -split ' ')[1] -ne {ps(uv_version)}) {{ throw {ps("uv: the pinned " + uv_version + " is not the first uv on PATH after install")} }}
 }}
 if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {{
  $installer=Join-Path $env:TEMP ('molt-rustup-'+[guid]::NewGuid().ToString('N')+'.exe')
@@ -126,24 +138,50 @@ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
 & uv run --locked molt doctor --json --strict
 if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
 """
-    system_command = (
-        "xcode-select --install; brew install cmake"
-        if host.os == authorities().HostOS.MACOS
-        else "sudo apt-get update && sudo apt-get install "
-        + " ".join(LINUX_SYSTEM_PACKAGES)
+    macos = host.os == authorities().HostOS.MACOS
+    # Each missing tool names its own fix, so the message never asks for an
+    # install the host already has.
+    fixes = (
+        {"cc": "xcode-select --install", "git": "xcode-select --install"}
+        if macos
+        else {
+            tool: "sudo apt-get update && sudo apt-get install "
+            + " ".join(LINUX_SYSTEM_PACKAGES)
+            for tool in ("git", "curl", "clang")
+        }
     )
+    checks = "\n".join(
+        (
+            # /usr/bin/cc and /usr/bin/git are shims that exist without the
+            # Command Line Tools; xcode-select -p is the real presence test.
+            "xcode-select -p >/dev/null 2>&1 || missing_fix "
+            if macos and tool in ("cc", "git")
+            else f"command -v {tool} >/dev/null || missing_fix "
+        )
+        + shlex.quote(f"{tool}: run {fix}")
+        for tool, fix in fixes.items()
+    )
+    # The owner approves package installation per host (its inventory record).
     return f"""set -eu
 unset UV_PROJECT_ENVIRONMENT VIRTUAL_ENV MOLT_VENV
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-for tool in git curl cc cmake; do
- command -v "$tool" >/dev/null || {{ echo {shlex.quote("Missing system prerequisites; run: " + system_command)} >&2; exit 2; }}
-done
-if ! command -v uv >/dev/null; then
+missing=""
+missing_fix() {{ missing="$missing
+ $1"; }}
+{checks}
+if test -n "$missing"; then
+ printf 'Missing system prerequisites:%s\n' "$missing" >&2
+ exit 2
+fi
+# The pinned uv, not whichever one is installed: an older uv cannot install
+# the pinned Python patch release ("No interpreter found").
+if ! command -v uv >/dev/null || test "$(uv --version | cut -d' ' -f2)" != {shlex.quote(uv_version)}; then
  installer=$(mktemp)
  trap 'rm -f "$installer"' EXIT
  curl -LsSf https://astral.sh/uv/{uv_version}/install.sh -o "$installer"
- sh "$installer"
+ UV_NO_MODIFY_PATH=1 sh "$installer"
  rm "$installer"
+ test "$(uv --version | cut -d' ' -f2)" = {shlex.quote(uv_version)} || {{ echo {shlex.quote("uv: the pinned " + uv_version + " is not the first uv on PATH after install")} >&2; exit 2; }}
 fi
 if ! command -v rustup >/dev/null; then
  installer=$(mktemp)
@@ -1394,13 +1432,58 @@ def provision(record: dict, stage: Path) -> dict[str, str]:
     return env
 
 
-def worker(record_path: Path) -> int:
-    stage = record_path.parent
-    # Redirect native file descriptors before loading repository authorities.
-    # No PowerShell redirection (which writes UTF-16) and no inherited SSH pipe.
-    with (stage / "worker.log").open("ab", buffering=0) as log:
+_WINDOWS_STD_HANDLES = ((-10, 0), (-11, 1), (-12, 2))  # STD_INPUT/OUTPUT/ERROR
+
+
+def bind_standard_streams(
+    log_path: Path, *, set_std_handle=None, get_osfhandle=None
+) -> None:
+    """Give the worker real standard streams: stdin from the null device, output to the log.
+
+    A CIM-created Windows process starts with invalid standard handles. dup2
+    rebinds only the C runtime descriptors, so `subprocess` children without
+    explicit stdio still duplicate the invalid OS handles and fail with
+    WinError 6 (the 2026-11-04 bat00 run lost sys.stderr this way). On Windows
+    the OS standard handles are pointed at the same descriptors, which is what
+    the POSIX launchers already get from `exec </dev/null >>worker.log 2>&1`.
+    """
+    null = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(null, 0)
+    os.close(null)
+    with log_path.open("ab", buffering=0) as log:
         os.dup2(log.fileno(), 1)
         os.dup2(log.fileno(), 2)
+    if (set_std_handle is None) != (get_osfhandle is None):
+        raise TypeError("pass both set_std_handle and get_osfhandle, or neither")
+    if os.name == "nt" or set_std_handle is not None:
+        if set_std_handle is None:
+            import ctypes
+            import msvcrt
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+            def set_std_handle(which: int, handle: int) -> None:
+                if not kernel32.SetStdHandle(which, handle):
+                    raise ctypes.WinError(ctypes.get_last_error())
+
+            get_osfhandle = msvcrt.get_osfhandle
+        for which, fd in _WINDOWS_STD_HANDLES:
+            set_std_handle(which, get_osfhandle(fd))
+    # Python's stream objects were built from the startup handles; rebuild them.
+    sys.stdin = open(0, encoding="utf-8", closefd=False)
+    sys.stdout = open(
+        1, "w", encoding="utf-8", errors="backslashreplace", buffering=1, closefd=False
+    )
+    sys.stderr = open(
+        2, "w", encoding="utf-8", errors="backslashreplace", buffering=1, closefd=False
+    )
+
+
+def worker(record_path: Path) -> int:
+    stage = record_path.parent
+    # Bind standard streams before loading repository authorities. No
+    # PowerShell redirection (which writes UTF-16) and no inherited SSH pipe.
+    bind_standard_streams(stage / "worker.log")
     authorities()
     record = json.loads(record_path.read_text(encoding="utf-8"))
     transfer_for_record(record)

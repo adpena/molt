@@ -93,6 +93,17 @@ until compiled code returns; a balanced C-API GIL suspension restores that
 boundary before returning to compiled code. Generator suspension ends an
 invocation, and resumption obtains a fresh admission.
 
+Only plain storage reads the snapshot. Debug-compiler (HardenedPlain) and
+atomic sites send every pointer word to the runtime and never touch a count
+word, so they need no admission. The query has no side effect. Native calls it
+once when a compiled count-word access consumes it, and not otherwise. Its
+backend tests check that relation on the emitted body, so they hold under both
+the dev and the release-fast compiler profile. LLVM and WASM do not test
+consumption. LLVM calls it at each task-trampoline entry and before a body's
+first RC site. WASM calls it at each op-loop body and task-trampoline entry,
+and before a LIR body's first RC site. Where no site reads it, the call costs
+time, not safety.
+
 Each backend also tracks whether its local execution
 policy actually entered a frame; every return, including an early error or
 suspension, closes only that frame. The credit is cleared before frame-owned
