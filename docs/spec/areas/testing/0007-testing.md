@@ -18,6 +18,8 @@ a source/image-bound descendant record (see `docs/agent/PROOF_QUEUE.md`).
 `runtime/molt-runtime/src/test_support.rs` owns process-wide runtime test
 transactions. Cleanup must preserve an original body panic and report a second
 cleanup failure separately; cleanup failure cannot produce a successful result.
+These transactions own lifecycle restoration, not GIL admission. Raw C-API fixtures
+must retain a real `RuntimeExecutionGuard` through callbacks and Python-object cleanup.
 After terminal runtime failure, restoration must neither initialize the runtime
 nor release detached owners through partially retired metadata. Pending-call
 cleanup uses its existing callback-free queue operation, and the failed process

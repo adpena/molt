@@ -4823,11 +4823,21 @@ impl Drop for RuntimeInitializationThreadStateGuard {
                 !current_thread_state_attached(),
                 "runtime initialization thread state became execution-attached"
             );
-            destroy_current_thread_state(
-                ThreadStatePanicBoundary::Propagate,
-                ThreadStateDropCustodyMode::Acquire,
-                || false,
-            );
+            // This private initialization owner precedes ordinary execution.
+            // An empty record has no Python edges to finalize, and no runtime
+            // TLS domain was admitted by this guard. Retire it through the
+            // canonical empty-record checks without requesting unavailable
+            // runtime custody. Ordinary thread teardown must still drain both
+            // domains, even when its C record is empty.
+            if current_thread_state_has_managed_edges() {
+                destroy_current_thread_state(
+                    ThreadStatePanicBoundary::Propagate,
+                    ThreadStateDropCustodyMode::Acquire,
+                    || false,
+                );
+            } else {
+                retire_empty_current_thread_state();
+            }
             self.created = false;
         }
     }

@@ -1,7 +1,8 @@
 # Runtime execution context (HF-198 stage 2)
 
-Status: B1/B2 implemented and measured; attached ABI implemented, with merged-tree qualification
-in progress as of 2026-11-05. Section 11 supersedes the earlier deferral. The first draft proposed
+Status: B1/B2 implemented and measured; attached ABI implemented. The
+[V1 ledger](../agent/V1_HANDOFF_FINDINGS.md) owns current qualification and release status.
+Section 11 supersedes the earlier deferral. The first draft proposed
 an attached ABI: runtime entries
 that take the execution context as an argument. Three reviews rejected it as written (section 6).
 The measured B1 change makes the nested runtime entry cheaper and binds the runtime state once
@@ -478,6 +479,13 @@ pointer/table/byte protocols keep their established borrowing and lifecycle prec
 Allocator-only bridge frees and foreign C error completion remain raw close protocols in the
 same generated boundary classification. Protected Python-value release instead borrows the
 attached token, since retiring that owner can execute Python finalizers.
+The private initialization thread-state owner can retire a proven-empty C record before runtime
+admission exists, through the canonical empty-record checks. This owner has admitted no ordinary
+runtime TLS work. Ordinary thread teardown still drains both domains under execution custody;
+an empty C record alone cannot prove that runtime TLS has no finalizers.
+Exception construction requires GC allocation authority and a live execution domain. Bootstrap
+and detached-boundary refusals retain the existing class-only C indicator without executing a
+Python constructor; attached errors preserve normal construction, identity and channel custody.
 
 Private Python providers and cached executable pointers carry the same leading context, including
 native iterator-next slots, class-initializer caches, descriptor callbacks and async polls.
