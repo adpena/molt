@@ -46,7 +46,7 @@ name = "regalloc2"
 path = "src/lib.rs"
 
 [dependencies.allocator-api2]
-version = "0.2.18"
+version = "0.4.0"
 features = ["alloc"]
 default-features = false
 
