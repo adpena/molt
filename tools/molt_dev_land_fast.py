@@ -385,9 +385,13 @@ def _install_hooks(repo: Path) -> None:
 
 
 def _dry_run(git, repo: Path, *, head: str, base: str) -> int:
-    """What a landing would do, from the lane as it is: no merge, no gate."""
-    from tools.molt_dev_policy import select_landing_gates
+    """What a landing would do, from the lane as it is: no merge, no gate.
+
+    Selection diffs the lane against its merge base with main, which is the
+    lane's own change once main is merged in."""
+    from tools.git_identity import merge_base
     from tools.molt_dev_gates import display
+    from tools.molt_dev_policy import select_landing_gates
 
     merge = (
         "none"
@@ -395,12 +399,24 @@ def _dry_run(git, repo: Path, *, head: str, base: str) -> int:
         else f"merge {git.short(base)} into the lane"
     )
     _say(f"    merge: {merge}")
-    _policy, _config, touched, gates, matched = select_landing_gates(
-        git, repo, head, base, extra=[]
+    fork = merge_base(head, base, run_git=lambda args: git._run(args).stdout)
+    _policy, config, touched, gates, matched = select_landing_gates(
+        git, repo, head, fork, extra=[]
     )
     _say(
-        f"    {len(touched)} touched path(s); matched rules: {', '.join(r.name for r in matched) or 'none'}"
+        f"    {len(touched)} touched path(s); matched rules: "
+        f"{', '.join(r.name for r in matched) or 'none'}"
     )
+    graph = config.graph_selection(touched)
+    if graph is not None:
+        _say(
+            f"    dependency graph: {len(graph.selected)} test file(s) read a touched "
+            f"path; {len(graph.run)} run in the try run"
+        )
+        for test, cells in sorted(graph.deferred.items()):
+            _say(
+                f"    deferred  {test}  ({', '.join(cells) or 'no proof cell owns it'})"
+            )
     for gate in gates:
         role = "static" if gate.static else "try-run" if gate.try_run else "waived"
         _say(f"    {role:8} {display(gate.command)}")
