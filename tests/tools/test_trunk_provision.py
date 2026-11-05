@@ -878,17 +878,19 @@ def test_run_ships_no_bundle_when_the_host_has_both_commits(tmp_path):
     """Provision checks out the commit it provisions, so the host often holds
     the run's subject and controller already; git refuses an empty bundle
     (macmini, 2026-11-04)."""
+    from tests.process_guard_common import run_custody_subject_process
+
     repo = tmp_path / "repo"
     repo.mkdir()
     git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
-    subprocess.run([*git, "init", "-q"], check=True)
+    run_custody_subject_process([*git, "init", "-q"], check=True)
     commits = []
     for message in ("first", "second"):
-        subprocess.run(
+        run_custody_subject_process(
             [*git, "commit", "-q", "--allow-empty", "-m", message], check=True
         )
         commits.append(
-            subprocess.run(
+            run_custody_subject_process(
                 [*git, "rev-parse", "HEAD"],
                 check=True,
                 capture_output=True,
