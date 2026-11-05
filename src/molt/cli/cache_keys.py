@@ -7,6 +7,7 @@ from molt.compilation_target import Target
 import ast
 import hashlib
 import json
+import keyword
 import os
 from typing import Any, Iterable, Mapping, TextIO
 
@@ -19,6 +20,7 @@ from molt.frontend import (
     ReceiverKind,
 )
 from molt.opcode_literal_payloads import integer_literal_bytes, literal_ast_dump
+from molt.frontend.dataclass_init import DataclassInitField
 
 from molt.cli import function_records
 from molt.cli.function_records import FunctionDigestSeed
@@ -33,8 +35,10 @@ _FUNCTION_CACHE_KEY_SCHEMA_VERSION = "func-v4"
 # tooling changes are upstream of this boundary and matter only when they change
 # that payload.
 _BACKEND_IR_PAYLOAD_TOOLING_FINGERPRINT = "backend-ir-payload-authority-v1"
+_DATACLASS_INIT_FIELD_TAG = "__dataclass_init_field__"
 _CACHE_JSON_TAGS = frozenset(
     {
+        _DATACLASS_INIT_FIELD_TAG,
         "__integer_bytes__",
         "__dict__",
         "__ellipsis__",
@@ -53,6 +57,25 @@ _CACHE_JSON_TAGS = frozenset(
 )
 
 type _ClassIdentity = ClassId | BuiltinClass | DeclaredClass | BoundMethodHint
+
+
+def _encode_dataclass_init_field(value: DataclassInitField) -> dict[str, Any]:
+    return {_DATACLASS_INIT_FIELD_TAG: list(value.schema())}
+
+
+def _decode_dataclass_init_field(payload: Any) -> DataclassInitField:
+    if not (
+        isinstance(payload, list)
+        and len(payload) == 5
+        and isinstance(payload[0], str)
+        and payload[0].isidentifier()
+        and not keyword.iskeyword(payload[0])
+        and all(type(flag) is bool for flag in payload[1:4])
+        and type(payload[4]) is int
+        and payload[4] in {0, 1, 2}
+    ):
+        raise ValueError("invalid cached dataclass initializer field")
+    return DataclassInitField(*payload)
 
 
 # ── Class identity codec (HF-203) ──────────────────────────────────────────
@@ -153,6 +176,8 @@ def _cache_json_value(value: Any) -> Any:
         return {"__integer_bytes__": list(integer_literal_bytes(value))}
     if isinstance(value, (ClassId, BuiltinClass, DeclaredClass, BoundMethodHint)):
         return _encode_class_identity(value)
+    if isinstance(value, DataclassInitField):
+        return _encode_dataclass_init_field(value)
     if isinstance(value, dict):
         name_map = all(isinstance(key, str) for key in value)
         if not name_map or any(key in _CACHE_JSON_TAGS for key in value):
@@ -192,6 +217,8 @@ def _cache_json_value(value: Any) -> Any:
 
 
 def _json_ir_default(value: Any) -> Any:
+    if isinstance(value, DataclassInitField):
+        return _encode_dataclass_init_field(value)
     if isinstance(value, complex):
         return {"__complex__": [value.real, value.imag]}
     if value is Ellipsis:

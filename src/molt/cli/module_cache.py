@@ -32,8 +32,10 @@ from molt.cli.cache_fingerprints import (
     _source_tree_fingerprint_transaction,
 )
 from molt.cli.cache_keys import (
+    _DATACLASS_INIT_FIELD_TAG,
     _cache_json_value,
     _decode_class_identity,
+    _decode_dataclass_init_field,
     _encode_class_identity,
     _json_ir_default,
 )
@@ -776,7 +778,7 @@ def _frontend_lowering_cache_disabled() -> bool:
 _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 13
 
 
-_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 10
+_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 11
 
 
 _MODULE_ANALYSIS_FUNC_KINDS = frozenset({"sync", "async", "gen", "asyncgen"})
@@ -1056,6 +1058,8 @@ def _decode_cached_json_value_inner(value: Any) -> Any:
         class_identity = _decode_class_identity(value)
         if class_identity is not None:
             return class_identity
+        if _DATACLASS_INIT_FIELD_TAG in value and len(value) == 1:
+            return _decode_dataclass_init_field(value[_DATACLASS_INIT_FIELD_TAG])
         if "__molt_value__" in value and isinstance(value["__molt_value__"], dict):
             payload = value["__molt_value__"]
             name = payload.get("name")

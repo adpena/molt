@@ -603,10 +603,14 @@ in the existing name-map escaping contract. Restored fields must remain typed
 because inherited dataclass lowering reads their attributes. Generic dataclass
 serialization, cache-off retries and a second cache schema are excluded.
 The final independent Goldfish design/readiness review returned no findings
-after the caller and oracle responses. This is a reviewed repair design;
-implementation qualification requires the direct codec readers, an independently
-specified field schema and inherited consumer, and actual cold/warm dataclass
-primitive builds with the lowering cache enabled. The parent owns ledger closure.
+after the caller and oracle responses. The codec now restores the typed leaf;
+its regression exercises frontend-produced fields, an independently specified
+schema, the inherited-field consumer and malformed records. A cold dataclass
+primitive build reused 0/32 lowering records and a warm build reused 32/32;
+both executables matched exact CPython 3.12.16 at N=100 (`(99, 2)`). Direct
+codec reader checks passed. These establish the repaired persistence boundary;
+the complete primitive board and landing precheck remain separate qualification.
+The parent owns ledger closure.
 
 ### Acceptance and evidence rules
 

@@ -25,7 +25,10 @@ import dataclasses
 import importlib
 import json
 
+import pytest
+
 from molt.frontend import BuiltinClass, ClassId, MoltValue, SimpleTIRGenerator
+from molt.frontend.dataclass_init import DataclassInitField, project_initializer_fields
 
 CK = importlib.import_module("molt.cli.cache_keys")
 MC = importlib.import_module("molt.cli.module_cache")
@@ -146,3 +149,81 @@ def test_lowering_a_dependent_module_leaves_known_class_info_frozen() -> None:
     assert consumer._exception_subclass_memo
     assert _snapshot(known) == before, "a dependent module mutated a shared ClassInfo"
     assert _digest(known) == digest_before
+
+
+@pytest.mark.parametrize(
+    ("declaration", "expected"),
+    [
+        (
+            "required: int\n    defaulted: int = 7",
+            (("required", True, False, False, 0), ("defaulted", True, False, False, 1)),
+        ),
+        (
+            "values: list = field(init=False, kw_only=True, default_factory=list)",
+            (("values", False, True, False, 2),),
+        ),
+        ("initial: InitVar[int] = 10", (("initial", True, False, True, 1),)),
+    ],
+)
+def test_cached_dataclass_fields_keep_their_schema_and_inherited_consumer(
+    declaration, expected
+) -> None:
+    # Each module starts with the canonical imported identities. A preceding
+    # effectful field/annotation call can make later identities unproved; such
+    # proposals deliberately leave certification to the decoration-time plan.
+    source = (
+        "from dataclasses import dataclass, field, InitVar\n"
+        "@dataclass\n"
+        "class Record:\n"
+        f"    {declaration}\n"
+    )
+    _generator, classes = _lowered_classes("pkg.records", source)
+    record = ClassId("pkg.records", "Record")
+    fields = classes[record]["dataclass_init_projection"]
+    assert fields is not None
+    assert tuple(field.schema() for field in fields) == expected
+    hydrated = _round_trip(classes)
+    restored = hydrated[record]["dataclass_init_projection"]
+    assert all(isinstance(field, DataclassInitField) for field in restored)
+    assert tuple(field.schema() for field in restored) == expected
+    assert _digest(hydrated) == _digest(classes)
+    # Exercise the canonical inherited-field consumer with hydrated metadata.
+    # Import binding certification belongs to the frontend's namespace tests.
+    child = ast.parse("class Child(Record):\n    added: int = 11\n").body[0]
+    inherited = project_initializer_fields(child, (restored,), False, None)
+    assert inherited is not None
+    assert tuple(field.schema() for field in inherited) == (
+        *expected,
+        ("added", True, False, False, 1),
+    )
+
+
+def test_cached_dataclass_field_tag_does_not_capture_a_name_map() -> None:
+    value = {"__dataclass_init_field__": ["x", True, False, False, 0]}
+    assert _round_trip(value) == value
+    field = DataclassInitField("x", True, False, False, 0)
+    encoded = json.dumps(field, default=CK._json_ir_default)
+    assert MC._decode_cached_json_value(json.loads(encoded)) == field
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        [],
+        ["x", True, False, False],
+        ["x", True, False, False, 0, 0],
+        [7, True, False, False, 0],
+        ["not a name", True, False, False, 0],
+        ["class", True, False, False, 0],
+        ["x", 1, False, False, 0],
+        ["x", True, 0, False, 0],
+        ["x", True, False, 1, 0],
+        ["x", True, False, False, True],
+        ["x", True, False, False, -1],
+        ["x", True, False, False, 3],
+    ],
+)
+def test_cached_dataclass_field_rejects_malformed_schema(payload) -> None:
+    with pytest.raises(ValueError, match="dataclass initializer field"):
+        MC._decode_cached_json_value({"__dataclass_init_field__": payload})
