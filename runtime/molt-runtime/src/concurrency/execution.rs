@@ -1364,12 +1364,29 @@ mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    fn published_poll_word(record: u64) -> u64 {
+        let address = record + molt_codegen_abi::THREAD_RECORD_PENDING_WORK_PTR_OFFSET as u64;
+        // Read the physical ABI consumed by compiled native and LLVM polls.
+        unsafe { std::ptr::with_exposed_provenance::<u64>(address as usize).read() }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn compiled_poll_word(py: &crate::PyToken<'_>) -> u64 {
+        let address =
+            py.attached_context() + molt_codegen_abi::ATTACHED_CONTEXT_THREAD_RECORD_OFFSET as u64;
+        let record = unsafe { std::ptr::with_exposed_provenance::<u64>(address as usize).read() };
+        assert_eq!(record, std::ptr::from_ref(py.execution_tls()) as u64);
+        published_poll_word(record)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn lease_custody_binds_the_resolved_state_until_its_release() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
         std::thread::spawn(|| {
             let tls = crate::state::execution_tls();
             assert!(tls.bound_state.get().is_null());
+            assert_eq!(published_poll_word(std::ptr::from_ref(tls) as u64), 0);
             {
                 let guard = RuntimeExecutionGuard::enter_with_worker_cleanup();
                 let bound = tls.bound_state.get();
@@ -1377,11 +1394,17 @@ mod tests {
                     .expect("an admitted thread resolves its runtime");
                 assert!(std::ptr::eq(bound, resolved));
                 assert!(std::ptr::eq(crate::runtime_state(&guard.token()), resolved));
+                assert_eq!(
+                    compiled_poll_word(guard.token()),
+                    resolved.pending_work.word_ptr() as u64,
+                    "a fresh callback must publish the real runtime eval breaker before any host entry"
+                );
             }
             assert!(
                 tls.bound_state.get().is_null(),
                 "the last lease release resets the binding"
             );
+            assert_eq!(published_poll_word(std::ptr::from_ref(tls) as u64), 0);
         })
         .join()
         .unwrap();
@@ -1394,7 +1417,11 @@ mod tests {
         std::thread::spawn(|| {
             let tls = crate::state::execution_tls();
             let guard = RuntimeExecutionGuard::enter_with_worker_cleanup();
-            let shared = crate::runtime_state(&guard.token()) as *const _;
+            let shared = crate::runtime_state(guard.token());
+            assert_eq!(
+                compiled_poll_word(guard.token()),
+                shared.pending_work.word_ptr() as u64
+            );
             let mut isolate = Box::new(crate::state::runtime_state::RuntimeState::new());
             crate::state::runtime_state::set_thread_runtime_state(&mut *isolate);
             assert!(std::ptr::eq(tls.bound_state.get(), &*isolate));
@@ -1402,9 +1429,24 @@ mod tests {
                 crate::runtime_state(&guard.token()),
                 &*isolate
             ));
+            assert_eq!(
+                compiled_poll_word(guard.token()),
+                isolate.pending_work.word_ptr() as u64
+            );
             crate::state::runtime_state::clear_thread_runtime_state();
             assert!(tls.bound_state.get().is_null());
+            assert_eq!(published_poll_word(std::ptr::from_ref(tls) as u64), 0);
             assert!(std::ptr::eq(crate::runtime_state(&guard.token()), shared));
+            // Internal full resolution after clear is distinct from publishing
+            // a new compiled entry. The host boundary uses the same binder.
+            assert_eq!(
+                crate::state::tls::molt_attached_context(),
+                guard.token().attached_context()
+            );
+            assert_eq!(
+                compiled_poll_word(guard.token()),
+                shared.pending_work.word_ptr() as u64
+            );
             drop(guard);
             drop(isolate);
         })
@@ -1423,12 +1465,17 @@ mod tests {
             let resolved = crate::state::runtime_state::runtime_state_for_gil_in(tls)
                 .expect("drain custody resolves the ready runtime");
             assert!(std::ptr::eq(tls.bound_state.get(), resolved));
+            assert_eq!(
+                compiled_poll_word(gil.token()),
+                resolved.pending_work.word_ptr() as u64
+            );
             {
                 let nested = RuntimeExecutionGuard::enter();
                 assert!(nested.owned.is_none(), "a callback borrows drain custody");
             }
             drop(custody);
             assert!(tls.bound_state.get().is_null());
+            assert_eq!(published_poll_word(std::ptr::from_ref(tls) as u64), 0);
             drop(gil);
         })
         .join()
@@ -1448,11 +1495,16 @@ mod tests {
             assert_eq!(terminal.is_some(), shutdown);
             let count = crate::state::runtime_state::active_runtime_execution_lease_count();
             let attached = molt_cpython_abi::api::object::runtime_execution_thread_is_attached();
+            let runtime = crate::runtime_state(gil.token());
+            let word = compiled_poll_word(gil.token());
+            assert_eq!(word, runtime.pending_work.word_ptr() as u64);
             {
                 let _release = crate::GilReleaseGuard::suspend();
                 assert!(!crate::gil_held());
                 let token = unsafe { molt_cpython_abi::api::object::PyGILState_Ensure() };
                 assert!(crate::gil_held());
+                assert!(std::ptr::eq(crate::runtime_state(gil.token()), runtime));
+                assert_eq!(compiled_poll_word(gil.token()), word);
                 assert!(
                     crate::obj_from_bits(crate::with_gil_entry_nopanic!(__entry_py, {
                         crate::object::ops_sys::molt_getrecursionlimit_attached_body(__entry_py)
@@ -1476,6 +1528,8 @@ mod tests {
                     count
                 );
             }
+            assert!(std::ptr::eq(crate::runtime_state(gil.token()), runtime));
+            assert_eq!(compiled_poll_word(gil.token()), word);
             drop(terminal);
             drop(ordinary);
             drop(gil);

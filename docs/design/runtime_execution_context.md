@@ -527,6 +527,11 @@ callback; callers without a lease acquire the ordinary shutdown-drain binding in
 Split-WASM admission compares the application's required schema with the runtime's offered schema
 before any application initializer executes. Preserve `pending_work_ptr` and its Arc lifetime;
 do not impose a RuntimeState prefix, duplicate that word or reinterpret a state address as it.
+The runtime-state binding publishes that word's address together with the resolved state for
+every lease, drain, retained worker and runtime switch; terminal unbinding clears both borrows.
+The host entry uses this same authority, and runtime-originated callbacks require no host helper.
+A compiled activation retains its resolved runtime allocation until return, including through
+GIL suspension. Rebinding a later activation cannot refresh an earlier activation's cached pointer.
 
 The object witness is revision 9: the existing 66 facts plus context schema, argument position,
 carrier width, header size/alignment and thread-record offset. Physical bindings qualify each

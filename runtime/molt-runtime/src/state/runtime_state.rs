@@ -1495,14 +1495,19 @@ fn debug_assert_binding_matches_resolution(
 /// do not change for this thread, and `set_thread_runtime_state` rebinds, so
 /// the binding stays equal to the resolution.
 pub(crate) fn bind_execution_state(tls: &crate::state::ExecutionTls) {
+    let state = runtime_state_for_gil_in(tls);
     tls.bound_state
-        .set(runtime_state_for_gil_in(tls).map_or(std::ptr::null(), std::ptr::from_ref));
+        .set(state.map_or(std::ptr::null(), std::ptr::from_ref));
+    // Runtime-originated callbacks receive the token directly, without the
+    // host entry helper. Publish every compiled borrow at its lifetime owner.
+    tls.pending_work_ptr
+        .set(state.map_or(0, |state| state.pending_work.word_ptr() as u64));
 }
 
 /// Reset the binding once this thread holds neither a lease nor drain custody.
 pub(crate) fn release_execution_state_binding(tls: &crate::state::ExecutionTls) {
     if tls.lease_depth.get() == 0 && tls.shutdown_drain_depth.get() == 0 {
-        tls.bound_state.set(std::ptr::null());
+        unbind_execution_state(tls);
     }
 }
 
@@ -1510,6 +1515,7 @@ pub(crate) fn release_execution_state_binding(tls: &crate::state::ExecutionTls) 
 /// edges that unpublish or free a state call it for their own thread.
 pub(crate) fn unbind_execution_state(tls: &crate::state::ExecutionTls) {
     tls.bound_state.set(std::ptr::null());
+    tls.pending_work_ptr.set(0);
 }
 
 /// `runtime_state_for_gil` for a caller that has already read this thread's

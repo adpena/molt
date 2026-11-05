@@ -27,8 +27,9 @@ pub(crate) struct ExecutionTls {
     /// for the call (`THREAD_RECORD_PENDING_INVOCATION_OFFSET`,
     /// `builtins::frames::namespace`).
     pub(crate) pending_invocation: Cell<u64>,
-    /// Borrowed address of this invocation's runtime eval breaker.
-    pending_work_ptr: Cell<u64>,
+    /// Borrowed eval-breaker address, published and cleared with bound_state
+    /// at runtime custody transitions, including runtime-originated callbacks.
+    pub(crate) pending_work_ptr: Cell<u64>,
     /// The Python recursion depth this thread's execution stack holds
     /// (`state::recursion`).
     pub(crate) recursion_depth: Cell<usize>,
@@ -147,10 +148,11 @@ pub(crate) fn execution_tls() -> &'static ExecutionTls {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_attached_context() -> u64 {
     let tls = execution_tls();
-    let state = super::runtime_state::admitted_runtime_state_in(tls)
-        .expect("compiled thread record requires an attached runtime");
-    tls.pending_work_ptr
-        .set(state.pending_work.word_ptr() as u64);
+    super::runtime_state::bind_execution_state(tls);
+    assert!(
+        !tls.bound_state.get().is_null(),
+        "compiled thread record requires an attached runtime"
+    );
     unsafe { crate::PyToken::with_custody(tls) }.attached_context()
 }
 
