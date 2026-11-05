@@ -42,10 +42,9 @@ fn builtin_materialization_scope_releases_packed_owners_on_success_and_error() {
                 } else {
                     let bound = bound.unwrap();
                     assert_eq!(refs(value), baseline + 2);
-                    let result =
-                        crate::ops_string_format::molt_string_format_method_attached_body(
-                            py, bound[0], bound[1], bound[2],
-                        );
+                    let result = crate::ops_string_format::molt_string_format_method_attached_body(
+                        py, bound[0], bound[1], bound[2],
+                    );
                     assert!(!exception_pending(py));
                     dec_ref_bits(py, result);
                     drop(storage);
