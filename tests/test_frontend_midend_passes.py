@@ -6440,6 +6440,38 @@ def test_cse_keeps_eliminated_value_substitution_through_exception_cleanup() -> 
     assert returned_op.args[0].name in literals
 
 
+@pytest.mark.parametrize("cross_block", [False, True])
+def test_cse_retains_local_substitutions_and_future_expression_reuse(
+    cross_block,
+) -> None:
+    gen = SimpleTIRGenerator()
+    first, second, returned = (
+        MoltValue(name) for name in ("first", "second", "returned")
+    )
+    ops = [
+        MoltOp("CONST_NONE", [], first),
+        MoltOp("LABEL", [1], MoltValue("none")),
+        MoltOp("CONST_NONE", [], second),
+        MoltOp("CONST_NONE", [], MoltValue("unused_alias")),
+        MoltOp("LABEL", [2], MoltValue("none")),
+        MoltOp("CONST_NONE", [], returned),
+        MoltOp("EXCEPTION_POP", [], MoltValue("none")),
+        MoltOp("ret", [returned], MoltValue("none")),
+    ]
+    candidate, _ = gen._run_cse_canonicalization_round(
+        ops,
+        allow_cross_block_const_dedupe=cross_block,
+    )
+    assert gen._verify_definite_assignment_in_ops(candidate) == []
+    literals = {op.result.name: None for op in candidate if op.kind == "CONST_NONE"}
+    # No original operand refers to `first`; it is dead in value liveness.
+    # Its expression is still available for the later identical computation.
+    assert len(literals) == (1 if cross_block else 3)
+    ret = next(op for op in candidate if op.kind == "ret")
+    assert ret.args[0].name in literals
+    assert literals[ret.args[0].name] is None
+
+
 def test_missing_taint_propagates_through_phi_to_call() -> None:
     """A PHI that collapses to a single MISSING-tainted input must be flagged.
 

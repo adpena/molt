@@ -28,6 +28,7 @@ from molt.frontend._types import (
 from molt.frontend.lowering.midend_dataflow import (
     current_unique_result_definitions,
 )
+from molt.frontend.value_liveness import ValueLiveness
 
 
 _CANONICALIZE_CONTROL_AWARE_OPS_IMPL_KINDS_1: frozenset[FrontendOpKind] = frozenset(
@@ -86,6 +87,14 @@ class MidendPipelineMixin(GeneratorMixinBase):
                 _def_name = working_ops[_op_idx].result.name
                 if _def_name != "none" and _def_name not in _value_def_block:
                     _value_def_block[_def_name] = _blk.id
+
+        live = ValueLiveness(working_ops, cfg=round_cfg)
+        live_out_names = [set(live.live_out_of(block.id)) for block in round_cfg.blocks]
+        # Substitutions for eliminated local definitions are needed by final
+        # operand rewriting even when their original names are no longer live.
+        # Keep each at its producer instead of copying all earlier aliases
+        # through every subsequent block (millions of entries in stdlib chunks).
+        local_aliases: list[dict[str, MoltValue]] = [{} for _ in round_cfg.blocks]
 
         block_inputs: dict[int, CanonicalizationState] = {
             block.id: self._empty_canonicalization_state() for block in round_cfg.blocks
@@ -180,6 +189,17 @@ class MidendPipelineMixin(GeneratorMixinBase):
                     in_state,
                     induction_steps=induction_steps,
                 )
+                local_aliases[block_id] = {
+                    name: value
+                    for name, value in out_state["aliases"].items()
+                    if _value_def_block.get(name) == block_id
+                }
+                out_state["aliases"] = {
+                    name: value
+                    for name, value in out_state["aliases"].items()
+                    if name in live_out_names[block_id]
+                }
+                self._invalidate_canonicalization_state_signature(out_state)
                 if self._canonicalization_state_signature(
                     out_state
                 ) != self._canonicalization_state_signature(block_outputs[block_id]):
@@ -206,11 +226,11 @@ class MidendPipelineMixin(GeneratorMixinBase):
         # When allow_cross_block_const_dedupe is False, these aliases are
         # NOT propagated to successor blocks — a variable eliminated in
         # block A can still be referenced in block B.  Collect the union
-        # of all aliases from every block's output state and apply them
+        # of substitutions from their defining blocks and apply them
         # to the reassembled ops so that no dangling references remain.
         global_aliases: dict[str, MoltValue] = {}
         for block_id in range(len(round_cfg.blocks)):
-            for alias_name, alias_target in block_outputs[block_id]["aliases"].items():
+            for alias_name, alias_target in local_aliases[block_id].items():
                 if alias_name not in global_aliases:
                     global_aliases[alias_name] = alias_target
         if global_aliases:

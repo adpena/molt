@@ -58,6 +58,15 @@ identified by the existing cache-hit worker mode. There is no separate stdlib
 optimization cache. Cold compile cost and warm product reuse are distinct
 measurements; backend artifact reuse is another boundary.
 
+CSE propagates aliases only for values live out of each block. Substitutions
+for that block's eliminated definitions remain at their producers until final
+operand rewriting, including substitutions that are dead in the original
+value graph. This bounds propagated alias entries by the sum of live-out names,
+plus one local substitution per defining operation, instead of copying every
+earlier eliminated definition through every later block. Available expressions
+remain a separate fact: a dead representative may eliminate a future repeated
+computation. Their removal cannot be justified by value liveness alone.
+
 Frontend dominance queries use intervals and retained tree storage is linear.
 The CHK construction itself has a quadratic worst case: a chain whose final
 node has edges back to every earlier non-entry node makes repeated intersections

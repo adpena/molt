@@ -43,3 +43,21 @@ try:
     target.update([("bad",)])
 except ValueError as error:
     print(type(error).__name__, target)
+
+
+def alias_joins(flag):
+    first = None
+    second = None
+    try:
+        if flag:
+            chosen = first if flag else second
+        else:
+            chosen = second
+        for index in range(3):
+            chosen = chosen if index % 2 else first
+        return chosen, second, None
+    finally:
+        print("alias cleanup", flag)
+
+
+print(alias_joins(False), alias_joins(True))
