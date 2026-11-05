@@ -49,7 +49,12 @@ ordinary repeated SSA definitions or flow-insensitive literal facts.
 
 PHI operands belong to incoming merge edges, including normal continuations
 through exception checks after a structured merge. One linear CFG edge table
-feeds liveness, SCCP, trimming and verification. Suspended values use explicit
+feeds liveness, SCCP, trimming and verification.
+The structured wire boundary additionally requires PHIs immediately after
+their `END_IF`; branch tail merging must retain common checks and metadata
+inside the branches when a PHI follows. CFG validity alone does not prove that
+backend attachment contract.
+Suspended values use explicit
 local homes, fresh SSA results on reload, and the existing backend SSA
 construction. Checked producers publish into a home only on the success path.
 Branch transport uses the same typed local homes; the retired frontend `COPY`

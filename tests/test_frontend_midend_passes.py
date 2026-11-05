@@ -2911,6 +2911,29 @@ def test_sccp_uses_type_of_eq_implication_for_branch_fold() -> None:
     assert all(op.get("value") != 999 for op in lowered if op.get("kind") == "const")
 
 
+def test_branch_tail_merge_preserves_structured_phi_attachment() -> None:
+    gen = SimpleTIRGenerator()
+    flag, left, right, selected = map(MoltValue, ("flag", "left", "right", "selected"))
+    ops = [
+        MoltOp("IF", [flag], MoltValue("none")),
+        MoltOp("CONST_STR", ["left"], left),
+        MoltOp("CHECK_EXCEPTION", [5729], MoltValue("none")),
+        MoltOp("ELSE", [], MoltValue("none")),
+        MoltOp("CONST_STR", ["right"], right),
+        MoltOp("CHECK_EXCEPTION", [5729], MoltValue("none")),
+        MoltOp("END_IF", [], MoltValue("none")),
+        MoltOp("PHI", [left, right], selected),
+        MoltOp("ret", [selected], MoltValue("none")),
+        MoltOp("LABEL", [5729], MoltValue("none")),
+        MoltOp("ret_void", [], MoltValue("none")),
+    ]
+    lowered = gen.map_ops_to_json(ops)
+    (phi_index,) = (i for i, op in enumerate(lowered) if op["kind"] == "phi")
+    assert lowered[phi_index - 1]["kind"] == "end_if"
+    assert lowered[phi_index]["args"] == ["left", "right"]
+    assert sum(op["kind"] == "check_exception" for op in lowered[:phi_index]) == 2
+
+
 def test_branch_tail_merge_collapses_identical_line_suffix() -> None:
     lowered = _lower_ops(
         [
