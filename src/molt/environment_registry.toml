@@ -3101,7 +3101,7 @@ audience = "user"
 kind = "int"
 default = "48"
 owner = "src/molt/frontend/lowering/midend_policy.py"
-summary = "Function count at which a module counts as a monolith for mid-end policy; values below 8 raise to 8, and empty or non-integer values fall back to 48."
+summary = "Function count at which mid-end telemetry marks module pressure; this does not skip functions or truncate required passes; values below 8 raise to 8, and empty or non-integer values fall back to 48."
 
 [[variable]]
 name = "MOLT_MIDEND_MONOLITH_TOTAL_OPS_THRESHOLD"
@@ -3109,7 +3109,7 @@ audience = "user"
 kind = "int"
 default = "4000"
 owner = "src/molt/frontend/lowering/midend_policy.py"
-summary = "Total op count at which a module counts as a monolith for mid-end policy; values below 256 raise to 256, and empty or non-integer values fall back to 4000."
+summary = "Total op count at which mid-end telemetry marks module pressure; this does not skip functions or truncate required passes; values below 256 raise to 256, and empty or non-integer values fall back to 4000."
 
 [[variable]]
 name = "MOLT_MIDEND_PROFILE"
@@ -3119,14 +3119,6 @@ default = ""
 values = ["dev", "release"]
 owner = "src/molt/frontend/lowering/midend_policy.py"
 summary = "Overrides the mid-end optimization profile for every function; dev or release (case-insensitive) replace the build's profile, and any other value, including unset, keeps the build's profile."
-
-[[variable]]
-name = "MOLT_MIDEND_SKIP_OP_THRESHOLD"
-audience = "user"
-kind = "int"
-default = "800"
-owner = "src/molt/frontend/lowering/midend_policy.py"
-summary = "Op count above which the mid-end skips a function as oversized; values below 1 and empty or non-integer values fall back to 800."
 
 [[variable]]
 name = "MOLT_MIDEND_STATS"
@@ -3199,7 +3191,7 @@ audience = "user"
 kind = "float"
 default = ""
 owner = "src/molt/frontend/lowering/midend_policy.py"
-summary = "Fixed deterministic work-unit budget for the mid-end degrade ladder that replaces the value computed from the tier's base budget, round count, and op count; negative values clamp to 0, a non-numeric value is ignored, and unset keeps the computed budget."
+summary = "Fixed deterministic work-unit budget for optional cross-block CSE; required CFG, SCCP and DCE passes still complete. The override replaces the value computed from the tier's base budget, round count, and op count; negative values clamp to 0, a non-numeric value is ignored, and unset keeps the computed budget."
 
 [[variable]]
 name = "MOLT_MLIR_DUMP_DIR"
@@ -3946,7 +3938,7 @@ audience = "user"
 kind = "int"
 default = ""
 owner = "src/molt/frontend/lowering/midend_policy.py"
-summary = "Caps the SCCP iteration count per midend round when set; parsed as an integer with a floor of 1 (invalid or smaller values become 1); unset applies no override."
+summary = "Diagnostic cap on SCCP block transfers per invocation; exhaustion reports degraded coverage and returns no facts with all edges executable; parsed as an integer with a floor of 1 (invalid or smaller values become 1); unset drains the worklists to a fixed point."
 
 [[variable]]
 name = "MOLT_SCIENTIFIC_STACK_CONFIG"

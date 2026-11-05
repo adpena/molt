@@ -46,6 +46,7 @@ from molt.frontend._types import (
     ClassInfo,
     ClassRef,
     CodeSlotDeclaration,
+    CompilerLocalHome,
     ComprehensionBinding,
     ControlMaps,
     DeclaredClass,
@@ -412,9 +413,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         tuple[tuple[str, int], ...],
         tuple[tuple[str, int], ...],
         tuple[tuple[tuple[Any, ...], str], ...],
-        tuple[tuple[str, int], ...],
-        tuple[tuple[str, int], ...],
-        int,
     ]: ...
 
     def _canonicalize_block_with_state(
@@ -2074,6 +2072,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _load_boxed_cell(self, name: str) -> MoltValue | None: ...
 
+    def _load_compiler_local(self, home: CompilerLocalHome) -> MoltValue: ...
+
     def _load_comprehension_slot(self, binding: ComprehensionBinding) -> MoltValue: ...
 
     def _load_free_var_cell(self, name: str) -> MoltValue | None: ...
@@ -2104,10 +2104,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _load_type_parameter(self, name: str) -> MoltValue | None: ...
 
     def _local_name_shadows_import_binding(self, name: str) -> bool: ...
-
-    def _log_degrade_levels(
-        self, degrade_level: int, reasons: list[str], budget_ms: float
-    ) -> None: ...
 
     def _lookup_func_defaults(
         self, module_name: str | None, func_id: str
@@ -2229,6 +2225,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _new_async_internal_slot(self) -> int: ...
 
     def _new_call_args_builder(self, form: CallForm) -> MoltValue: ...
+
+    def _new_compiler_local(self, type_hint: TypeHint) -> CompilerLocalHome: ...
 
     def _new_condition_merge(
         self, width: int, names: tuple[str, ...]
@@ -2424,6 +2422,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _record_list_element_write(
         self, target: MoltValue, target_name: str | None, elem_hint: TypeHint | None
+    ) -> None: ...
+
+    def _record_midend_coverage(
+        self, *, input_ops: int, output_ops: int, counter_baseline: dict[str, int]
     ) -> None: ...
 
     def _record_midend_pass_sample(
@@ -2712,6 +2714,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _static_truth_kwargs(self) -> StaticTruthKwargs: ...
 
+    def _store_compiler_local(
+        self, home: CompilerLocalHome, value: MoltValue
+    ) -> None: ...
+
     def _store_comprehension_local_value(self, name: str, value: MoltValue) -> None: ...
 
     def _store_comprehension_slot(
@@ -2877,10 +2883,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         const_int_values: dict[str, int],
         value_type_tags: dict[str, int],
         induction_steps: dict[str, int],
-        *,
-        alias_epochs: dict[str, int],
-        object_epochs: dict[str, int],
-        memory_epoch: int,
     ) -> tuple[Any, ...] | None: ...
 
     def _varnames_from_params(

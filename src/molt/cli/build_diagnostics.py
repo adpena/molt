@@ -443,6 +443,9 @@ def _emit_build_diagnostics(
                 file=sys.stderr,
             )
     if isinstance(midend, dict):
+        coverage = midend.get("coverage")
+        if isinstance(coverage, dict):
+            _emit_midend_coverage(coverage)
         requested_profile = midend.get("requested_profile")
         if isinstance(requested_profile, str) and requested_profile:
             print(f"- midend.profile: {requested_profile}", file=sys.stderr)
@@ -805,6 +808,71 @@ def _normalize_midend_pass_stat(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _emit_midend_coverage(coverage: Mapping[str, Any]) -> None:
+    categories = coverage["categories"]
+    counts = " ".join(
+        f"{status}={row['functions']}functions/{row['input_ops']}ops"
+        for status, row in categories.items()
+    )
+    print(
+        f"molt midend coverage: functions={coverage['functions']} "
+        f"input_ops={coverage['input_ops']} {counts} "
+        f"unknown_input_ops={coverage['functions_with_unknown_input_ops']} "
+        f"reasons={json.dumps(coverage['reasons'], sort_keys=True)}",
+        file=sys.stderr,
+    )
+
+
+def _build_midend_coverage_payload(
+    outcomes: Mapping[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Project existing per-body outcomes; never infer original ops from output."""
+    categories = {
+        status: {"functions": 0, "input_ops": 0}
+        for status in ("full", "degraded", "skipped", "fallback")
+    }
+    reasons: dict[str, dict[str, int]] = {}
+    unknown_ops = 0
+    for outcome in outcomes.values():
+        coverage = outcome.get("coverage", {})
+        status = coverage.get("status", "skipped")
+        if status not in categories:
+            raise ValueError(f"Invalid midend coverage status: {status!r}")
+        row = categories[status]
+        row["functions"] += 1
+        ops = coverage.get("input_ops")
+        if ops is None:
+            unknown_ops += 1
+        elif type(ops) is not int or ops < 0:
+            raise ValueError(f"Invalid midend input op count: {ops!r}")
+        else:
+            row["input_ops"] += ops
+        for reason in set(coverage.get("reasons", ["missing_outcome"])):
+            tally = reasons.setdefault(reason, {"functions": 0, "input_ops": 0})
+            tally["functions"] += 1
+            tally["input_ops"] += ops if ops is not None else 0
+    functions = sum(row["functions"] for row in categories.values())
+    input_ops = sum(row["input_ops"] for row in categories.values())
+    return {
+        "denominator": "serialized_lowered_functions_before_backend_reachability",
+        "functions": functions,
+        "input_ops": input_ops,
+        "functions_with_unknown_input_ops": unknown_ops,
+        "complete": unknown_ops == 0,
+        "categories": {
+            status: {
+                **row,
+                "function_share": row["functions"] / functions if functions else None,
+                "op_share": row["input_ops"] / input_ops
+                if input_ops and not unknown_ops
+                else None,
+            }
+            for status, row in categories.items()
+        },
+        "reasons": {reason: reasons[reason] for reason in sorted(reasons)},
+    }
+
+
 def _build_midend_diagnostics_payload(
     *,
     requested_profile: BuildProfile,
@@ -931,6 +999,7 @@ def _build_midend_diagnostics_payload(
             "work_units_spent": work_units_spent,
             "degraded": degraded,
             "degrade_events": degrade_events,
+            "coverage": raw_outcome.get("coverage"),
         }
 
     normalized_pass_stats: dict[str, dict[str, dict[str, Any]]] = {}
@@ -1090,6 +1159,7 @@ def _build_midend_diagnostics_payload(
 
     return {
         "requested_profile": requested_profile,
+        "coverage": _build_midend_coverage_payload(policy_outcomes_by_function),
         "effective_profiles": sorted(effective_profiles),
         "policy_config": _midend_policy_config_snapshot(),
         "function_count": max(

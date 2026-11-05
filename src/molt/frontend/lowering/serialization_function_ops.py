@@ -51,14 +51,6 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == FrontendKinds.COPY:
-            ctx.json_ops.append(
-                {
-                    "kind": "copy",
-                    "args": [op.args[0].name],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == FrontendKinds.BUILTIN_TYPE:
             ctx.json_ops.append(
                 {

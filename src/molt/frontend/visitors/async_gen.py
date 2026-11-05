@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from molt.frontend.lowering.op_kinds_generated import (
     FrontendKinds,
-    FrontendOpKind,
     FRONTEND_FIRST_TRAILING_RESULT_ARG,
 )
 
@@ -19,13 +18,13 @@ from molt.compiler_analysis.python_lexical_scope import (
 )
 
 import ast
+from dataclasses import replace
 from molt.python_private_names import python_definition_name
 from collections.abc import Sequence
 from typing import (
     Any,
 )
 
-from molt.frontend.cfg_analysis import build_cfg
 from molt.frontend._types import (
     GEN_CONTROL_SIZE,
     GEN_SEND_OFFSET,
@@ -35,12 +34,12 @@ from molt.frontend._types import (
     AsyncFrameSlotRole,
     AsyncContextExit,
     MoltOp,
+    CompilerLocalHome,
     MoltValue,
     FunctionDefinitionValues,
     ScratchCell,
     TryScope,
     TypeHint,
-    loaded_method_self_name,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -55,110 +54,7 @@ from molt.compiler_analysis.python_function_kind import FunctionKind
 from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-# Names that are frame state rather than SSA values.
-_INIT_KINDS_1: frozenset[FrontendOpKind] = frozenset(
-    {"CALLARGS_PUSH_METHOD_RECEIVER", "CALL_LOADED_METHOD"}
-)
-_INIT_KINDS_2: frozenset[FrontendOpKind] = frozenset(
-    {"LOAD_METHOD", "LOAD_SUPER_METHOD"}
-)
-
-
-_RESUME_LIVENESS_EXEMPT = frozenset({"self", "none", ""})
-
-
-class _ResumeLiveness:
-    """SSA value liveness of one stateful poll, over the frontend CFG.
-
-    The CFG gives STATE_SWITCH a resume edge to every STATE_LABEL, and gives
-    loops their back edges and checks their exception edges, so a value is live
-    into a label exactly when some path from the label uses it before any op
-    defines it again. Bit ``i`` of a block's live set is name ``i``.
-    """
-
-    def __init__(self, ops: Sequence[MoltOp]) -> None:
-        self.cfg = build_cfg(ops)
-        self.names: list[str] = []
-        self.def_sites: dict[str, list[int]] = {}
-        self.type_hints: dict[str, TypeHint] = {}
-        # A method load's `self_or_null` word is a wire name, not a frontend
-        # value; it is tracked here so that a resume can never lose it.
-        self.loaded_method_selves: set[str] = set()
-        index: dict[str, int] = {}
-
-        def bit(value: MoltValue) -> int:
-            position = index.get(value.name)
-            if position is None:
-                position = index[value.name] = len(self.names)
-                self.names.append(value.name)
-            if value.type_hint:
-                self.type_hints.setdefault(value.name, value.type_hint)
-            return 1 << position
-
-        blocks = self.cfg.blocks
-        uses = [0] * len(blocks)
-        defs = [0] * len(blocks)
-        for block in blocks:
-            used = defined = 0
-            for idx in range(block.start, block.end):
-                op = ops[idx]
-                # The generated field authority names the ops whose trailing
-                # args are outputs (UNPACK_SEQUENCE's targets), not operands.
-                first_output = FRONTEND_FIRST_TRAILING_RESULT_ARG.get(
-                    op.kind, len(op.args)
-                )
-                operands = [
-                    arg for arg in op.args[:first_output] if isinstance(arg, MoltValue)
-                ]
-                outputs = [op.result, *op.args[first_output:]]
-                if op.kind in _INIT_KINDS_1:
-                    operands.append(MoltValue(loaded_method_self_name(op)))
-                elif op.kind in _INIT_KINDS_2:
-                    self_name = loaded_method_self_name(op)
-                    self.loaded_method_selves.add(self_name)
-                    outputs.append(MoltValue(self_name))
-                for arg in operands:
-                    if arg.name not in _RESUME_LIVENESS_EXEMPT:
-                        mask = bit(arg)
-                        if not defined & mask:
-                            used |= mask
-                for output in outputs:
-                    if (
-                        isinstance(output, MoltValue)
-                        and output.name not in _RESUME_LIVENESS_EXEMPT
-                    ):
-                        defined |= bit(output)
-                        self.def_sites.setdefault(output.name, []).append(idx)
-            uses[block.id] = used
-            defs[block.id] = defined
-        live_in = [0] * len(blocks)
-        # Reverse op order visits most successors first; iterate to a fixpoint.
-        order = sorted(self.cfg.reachable, reverse=True)
-        changed = True
-        while changed:
-            changed = False
-            for block_id in order:
-                live_out = 0
-                for successor in self.cfg.successors[block_id]:
-                    live_out |= live_in[successor]
-                updated = uses[block_id] | (live_out & ~defs[block_id])
-                if updated != live_in[block_id]:
-                    live_in[block_id] = updated
-                    changed = True
-        self._live_in = live_in
-
-    def live_into(self, op_index: int) -> list[str]:
-        """The names live on entry to the block that starts at ``op_index``."""
-        block = self.cfg.block_for_op(op_index)
-        if block is None:
-            raise KeyError(op_index)
-        mask = self._live_in[block]
-        names: list[str] = []
-        while mask:
-            lowest = mask & -mask
-            names.append(self.names[lowest.bit_length() - 1])
-            mask ^= lowest
-        return names
+from molt.frontend.value_liveness import ValueLiveness
 
 
 class AsyncGenVisitorMixin(GeneratorMixinBase):
@@ -1244,7 +1140,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         if switch_idx is None or not label_indices:
             # Only STATE_SWITCH resumes into a label.
             return
-        live = _ResumeLiveness(ops)
+        live = ValueLiveness(ops)
         prologue_names: set[str] = set()
         body_names: set[str] = set()
         for name, sites in live.def_sites.items():
@@ -1343,7 +1239,71 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                         result=MoltValue("none"),
                     )
                 )
-        self.current_ops[:] = new_ops
+        # A frame reload is a new SSA definition. Keep the value shared by
+        # entry, resume, backedges and cleanup in an explicit local home; the
+        # backend's existing SSA construction promotes these STORE/LOAD_VARs.
+        # Reusing the original SSA name here invalidated frontend dominance and
+        # allowed flow-insensitive facts to describe the wrong activation.
+        homes = {
+            name: self._new_compiler_local(live.type_hints.get(name, "Unknown"))
+            for name in sorted(spill_names)
+        }
+        self.funcs_map[self.current_func_name]["resume_value_homes"] = homes
+        transported: list[MoltOp] = []
+        home_stores_after: dict[int, list[tuple[CompilerLocalHome, MoltValue]]] = {}
+        for op_index, op in enumerate(new_ops):
+            first_output = FRONTEND_FIRST_TRAILING_RESULT_ARG.get(op.kind, len(op.args))
+            read_names: set[str] = set()
+            for arg in op.args[:first_output]:
+                self._collect_arg_value_names(arg, read_names)
+            aliases: dict[str, MoltValue] = {}
+            for name in sorted(read_names & spill_names):
+                value = MoltValue(
+                    self.next_var(), type_hint=live.type_hints.get(name, "Unknown")
+                )
+                transported.append(
+                    MoltOp(
+                        kind="LOAD_VAR",
+                        args=[],
+                        result=value,
+                        metadata={"var": homes[name].name},
+                    )
+                )
+                aliases[name] = value
+            args = [
+                self._rewrite_aliases_in_arg(arg, aliases)
+                for arg in op.args[:first_output]
+            ]
+            outputs = [op.result, *op.args[first_output:]]
+            stores: list[tuple[CompilerLocalHome, MoltValue]] = []
+            for index, output in enumerate(outputs):
+                if isinstance(output, MoltValue) and output.name in homes:
+                    value = MoltValue(self.next_var(), type_hint=output.type_hint)
+                    stores.append((homes[output.name], value))
+                    outputs[index] = value
+            transported.append(
+                replace(op, args=[*args, *outputs[1:]], result=outputs[0])
+            )
+            # A failed producer must not publish its result into mutable state.
+            # Match the existing frame-store success boundary above: the check
+            # branches to the handler before either kind of home is updated.
+            anchor = op_index
+            if (
+                op_index + 1 < len(new_ops)
+                and new_ops[op_index + 1].kind == FrontendKinds.CHECK_EXCEPTION
+            ):
+                anchor += 1
+            home_stores_after.setdefault(anchor, []).extend(stores)
+            for home, value in home_stores_after.pop(op_index, ()):
+                transported.append(
+                    MoltOp(
+                        kind="STORE_VAR",
+                        args=[value],
+                        result=MoltValue("none"),
+                        metadata={"var": home.name},
+                    )
+                )
+        self.current_ops[:] = transported
 
     def _emit_await_anext(
         self,

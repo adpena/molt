@@ -33,7 +33,7 @@ from molt.frontend.diagnostics import FrontendRejection, raise_compatibility_err
 from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-_EMIT_KINDS_1: frozenset[FrontendOpKind] = frozenset({"COPY", "PHI", "IDENTITY_ALIAS"})
+_EMIT_KINDS_1: frozenset[FrontendOpKind] = frozenset({"PHI", "IDENTITY_ALIAS"})
 
 
 class EmissionCoreMixin(GeneratorMixinBase):

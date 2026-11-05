@@ -285,6 +285,33 @@ the Python midend keeps only the work that needs AST facts. SimpleIR remains the
 frontend's wire format until the frontend emits TIR through generated builders.
 TIR gets a textual parser, FileCheck-style tests and verify-each.
 
+The HF-572 starting census at `45c442523be8` contains 5,913 lines in six
+`frontend/lowering/midend_*.py` modules. This is the Python optimization/policy
+surface to reconcile, not an estimate of deletable lines: CFG, liveness,
+serialization, generated protocol methods and direct tests are additional
+consumers. Native, LLVM and WASM must share the retirement proof; source
+backends retain their explicit ingress and target obligations. This is several
+cross-layer migrations rather than a local pipeline replacement:
+
+1. Close the typed ingress contract for values, mutable homes, block/edge
+   identity, PHI inputs, exception/cleanup and resume edges, source spans and
+   generated operation effects. Transport AST-derived facts on those values.
+2. Transfer CFG canonicalization, SCCP and DCE to the retained TIR owner, one
+   fact family at a time, with CPython differentials and compile/RSS/runtime
+   A/Bs over the same complete lowered-program inventory. Delete the matching
+   Python pass and its selection/cap consumers in each slice.
+3. Transfer CSE/GVN and path-local heap observations under TIR's memory/effect
+   authority; then retire Python canonicalization state and duplicate SimpleIR
+   passes together with their real consumers. Preserve valuable fast paths
+   until the shared implementation has measured equivalence.
+4. Retire the Python optimizer policy after its last pass moves. Keep build
+   coverage as a projection of the retained TIR pipeline, and keep only
+   genuinely AST-dependent lowering work in Python. Generated builders replace
+   the remaining name-based wire ingress without re-lifting optimized bodies.
+
+HF-572 enables and measures the existing frontend pipeline; it does not carry
+out this structural migration or establish a calendar estimate for it.
+
 ### C. One runtime boundary
 
 Compiled code runs attached and carries one execution context: one per-thread

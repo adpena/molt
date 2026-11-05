@@ -35,6 +35,53 @@ _BUILD_DIAGNOSTICS_NAMES = (
     "_wasm_link_operation_counts",
 )
 
+
+def test_midend_coverage_weights_original_ops_and_keeps_losses() -> None:
+    outcomes = {
+        "small": {
+            "coverage": {
+                "status": "full",
+                "input_ops": 10,
+                "output_ops": 1,
+                "reasons": [],
+            }
+        },
+        "large": {
+            "coverage": {
+                "status": "degraded",
+                "input_ops": 90,
+                "output_ops": 2,
+                "reasons": ["work_budget_exceeded"],
+            }
+        },
+    }
+    report = build_diagnostics._build_midend_coverage_payload(outcomes)
+    assert report["functions"] == 2
+    assert report["input_ops"] == 100
+    assert report["categories"]["full"]["function_share"] == 0.5
+    assert report["categories"]["full"]["op_share"] == 0.1
+    assert report["reasons"]["work_budget_exceeded"] == {
+        "functions": 1,
+        "input_ops": 90,
+    }
+    assert report["complete"]
+
+
+def test_midend_coverage_cannot_hide_missing_or_empty_denominators() -> None:
+    missing = build_diagnostics._build_midend_coverage_payload({"cached": {}})
+    assert missing["functions"] == 1
+    assert missing["categories"]["skipped"]["functions"] == 1
+    assert missing["categories"]["skipped"]["op_share"] is None
+    assert missing["functions_with_unknown_input_ops"] == 1
+    assert not missing["complete"]
+    empty = build_diagnostics._build_midend_coverage_payload({})
+    assert empty["functions"] == 0
+    assert all(
+        row["function_share"] is None and row["op_share"] is None
+        for row in empty["categories"].values()
+    )
+
+
 _BUILD_DIAGNOSTICS_DEFINITIONS = (
     "def _build_allocation_diagnostics_enabled(",
     "def _build_phase_attribution(",

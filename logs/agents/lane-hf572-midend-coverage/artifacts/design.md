@@ -298,7 +298,7 @@ not a moving origin/main. A temporary observer wrapping the existing serializati
 and pass entry/return boundaries records original ops, function identities,
 existing policy events and counter deltas; it does not change outputs or policy.
 Missing baseline-only telemetry stays unknown (especially internal verifier
-rejections not already counted). Report full as a lower bound when unavailable
+rejections not already counted). Report full as an upper bound when unavailable
 loss fields prevent exact classification. Coverage observer overhead is excluded
 from paired performance by running clean CLI builds separately. Performance
 manifests bind both source SHAs, exact interpreter, arguments/stdin and artifact

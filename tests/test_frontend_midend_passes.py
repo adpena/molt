@@ -556,7 +556,7 @@ def test_dynamic_operators_survive_dce_and_remain_inside_loops(
     )
 
 
-@pytest.mark.parametrize("overwrite_kind", ["COPY", "CALL", "PHI", "CONST"])
+@pytest.mark.parametrize("overwrite_kind", ["IDENTITY_ALIAS", "CALL", "PHI", "CONST"])
 @pytest.mark.parametrize("reverse_definitions", [False, True])
 @pytest.mark.parametrize("kind", ["BOOL", "NOT"])
 def test_repeated_literal_names_cannot_admit_dead_callbacks(
@@ -612,22 +612,21 @@ def test_absent_current_producer_cannot_borrow_stale_emitter_literal(kind: str) 
         ("CONST_FLOAT", 1, 1.0),
     ],
 )
-def test_unique_current_literal_and_copy_remain_optimizable(
+def test_unique_current_literal_remains_optimizable(
     const_kind: str, payload: object, expected: object
 ) -> None:
     gen = SimpleTIRGenerator()
-    value, alias = MoltValue("unique"), MoltValue("alias")
+    value = MoltValue("unique")
     producer = MoltOp(kind=const_kind, args=[payload], result=value)
-    copy = MoltOp(kind="COPY", args=[value], result=alias)
-    predicate = MoltOp(kind="BOOL", args=[alias], result=MoltValue("unused", "bool"))
+    predicate = MoltOp(kind="BOOL", args=[value], result=MoltValue("unused", "bool"))
     emitter_index = {
         value.name: MoltOp(kind="MISSING", args=[], result=value),
     }
     gen._op_by_result = emitter_index
-    literals = gen._primitive_const_value_map([producer, copy])
+    literals = gen._primitive_const_value_map([producer])
     assert literals == {value.name: expected}
     assert type(literals[value.name]) is type(expected)
-    rewritten = gen._eliminate_dead_trivial_consts([producer, copy, predicate])
+    rewritten = gen._eliminate_dead_trivial_consts([producer, predicate])
     assert all(op is not predicate for op in rewritten)
     assert gen._op_by_result is emitter_index
 
@@ -718,7 +717,7 @@ def test_predicate_callbacks_survive_without_exact_operand_provenance(
         "missing-payload",
         "extra-payload",
         "wrong-result",
-        "copy-cycle",
+        "alias-cycle",
         "malformed-truth",
     ],
 )
@@ -732,8 +731,8 @@ def test_predicate_provenance_rejects_malformed_producer_shapes(defect: str) -> 
         producer.args = [1, 2]
     elif defect == "wrong-result":
         producer.result = MoltValue("different")
-    elif defect == "copy-cycle":
-        producer.kind, producer.args = "COPY", [value]
+    elif defect == "alias-cycle":
+        producer.kind, producer.args = "IDENTITY_ALIAS", [value]
     elif defect == "malformed-truth":
         producer.kind, producer.args = "NOT", []
     gen._op_by_result[value.name] = producer
@@ -1247,6 +1246,7 @@ def _temp_env(name: str, value: str) -> object:
 
 def _build_sccp_growth_ops(depth: int, *, constant_cond: bool | None) -> list[MoltOp]:
     ops: list[MoltOp] = [MoltOp(kind="CONST", args=[0], result=MoltValue("acc"))]
+    accumulator = "acc"
     for idx in range(depth):
         cond_name = f"cond_{idx}"
         if constant_cond is None:
@@ -1268,8 +1268,8 @@ def _build_sccp_growth_ops(depth: int, *, constant_cond: bool | None) -> list[Mo
         ops.append(
             MoltOp(
                 kind="ADD",
-                args=[MoltValue("acc"), MoltValue(one_name)],
-                result=MoltValue("acc"),
+                args=[MoltValue(accumulator), MoltValue(one_name)],
+                result=MoltValue(f"then_{idx}"),
             )
         )
         ops.append(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
@@ -1277,12 +1277,22 @@ def _build_sccp_growth_ops(depth: int, *, constant_cond: bool | None) -> list[Mo
         ops.append(
             MoltOp(
                 kind="ADD",
-                args=[MoltValue("acc"), MoltValue(two_name)],
-                result=MoltValue("acc"),
+                args=[MoltValue(accumulator), MoltValue(two_name)],
+                result=MoltValue(f"else_{idx}"),
             )
         )
         ops.append(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-    ops.append(MoltOp(kind="ret", args=[MoltValue("acc")], result=MoltValue("none")))
+        accumulator = f"acc_{idx}"
+        ops.append(
+            MoltOp(
+                kind="PHI",
+                args=[MoltValue(f"then_{idx}"), MoltValue(f"else_{idx}")],
+                result=MoltValue(accumulator),
+            )
+        )
+    ops.append(
+        MoltOp(kind="ret", args=[MoltValue(accumulator)], result=MoltValue("none"))
+    )
     return ops
 
 
@@ -1336,6 +1346,13 @@ def _eval_simple_ops(ops: list[MoltOp]) -> int | None:
             lhs = int(env[op.args[0].name])
             rhs = int(env[op.args[1].name])
             env[op.result.name] = lhs + rhs
+            pc += 1
+            continue
+        if op.kind == "PHI":
+            # The untaken branch's unique producer never executes.
+            available = [arg for arg in op.args if arg.name in env]
+            assert available
+            env[op.result.name] = env[available[0].name]
             pc += 1
             continue
         if op.kind == "IF":
@@ -5197,7 +5214,10 @@ def test_retired_midend_disable_env_does_not_skip_pipeline(
 
     assert all(op.get("kind") not in {"if", "else", "end_if"} for op in lowered)
     assert all(op.get("value") != 999 for op in lowered if op.get("kind") == "const")
-    assert gen.midend_stats["midend_module_skips"] == 0
+    assert (
+        gen.midend_policy_outcomes_by_function["<direct>"]["coverage"]["status"]
+        == "full"
+    )
     assert gen.midend_pass_stats_by_function["<direct>"]["simplify"]["attempted"] >= 1
 
 
@@ -5531,10 +5551,20 @@ def test_sccp_new_executable_edge_revisits_phi_with_equal_predecessor_states() -
         MoltOp(kind="CONST", args=[2], result=MoltValue("two")),
         MoltOp(kind="MISSING", args=[], result=MoltValue("condition")),
         MoltOp(kind="IF", args=[MoltValue("condition")], result=MoltValue("none")),
+        MoltOp(
+            kind="PRINT",
+            args=[MoltValue("one"), MoltValue("two")],
+            result=MoltValue("none"),
+        ),
         MoltOp(kind="JUMP", args=["join"], result=MoltValue("none")),
         MoltOp(kind="LABEL", args=["delay"], result=MoltValue("none")),
         MoltOp(kind="JUMP", args=["delayed_end"], result=MoltValue("none")),
         MoltOp(kind="LABEL", args=["delayed_end"], result=MoltValue("none")),
+        MoltOp(
+            kind="PRINT",
+            args=[MoltValue("one"), MoltValue("two")],
+            result=MoltValue("none"),
+        ),
         MoltOp(kind="JUMP", args=["join"], result=MoltValue("none")),
         MoltOp(kind="LABEL", args=["join"], result=MoltValue("none")),
         MoltOp(
@@ -5546,10 +5576,10 @@ def test_sccp_new_executable_edge_revisits_phi_with_equal_predecessor_states() -
     ]
     blocks = [
         BasicBlock(0, 0, 4),
-        BasicBlock(1, 4, 5),
-        BasicBlock(2, 5, 7),
-        BasicBlock(3, 7, 9),
-        BasicBlock(4, 9, 12),
+        BasicBlock(1, 4, 6),
+        BasicBlock(2, 6, 8),
+        BasicBlock(3, 8, 11),
+        BasicBlock(4, 11, 14),
     ]
     cfg = CFGGraph(
         blocks=blocks,
@@ -5664,7 +5694,8 @@ def test_midend_policy_matrix_resolves_profile_and_tier() -> None:
     assert stdlib_policy.tier == "C"
     assert stdlib_policy.tier_base == "C"
     assert stdlib_policy.promoted is False
-    assert stdlib_policy.enable_deep_edge_thread is False
+    assert stdlib_policy.enable_deep_edge_thread is True
+    assert stdlib_policy.sccp_iter_cap is None
 
 
 def test_midend_hot_function_promotion_applies_one_step_only() -> None:
@@ -5897,88 +5928,44 @@ def test_midend_policy_budget_ms_does_not_gate_on_wall_clock(
     assert outcome.get("degrade_events", []) == []
 
 
-def test_midend_skips_oversized_functions_by_default() -> None:
+@pytest.mark.parametrize("op_count", [600, 900, 1300])
+@pytest.mark.parametrize("stdlib", [False, True])
+@pytest.mark.parametrize("profile", ["dev", "release"])
+def test_midend_optimizes_large_and_stdlib_bodies(
+    op_count: int,
+    stdlib: bool,
+    profile: str,
+) -> None:
     ops = [
         MoltOp(kind="CONST", args=[idx], result=MoltValue(f"v{idx}"))
-        for idx in range(1300)
+        for idx in range(op_count)
     ]
-    gen = SimpleTIRGenerator(optimization_profile="release", module_name="pkg.mod")
-
-    lowered = gen.map_ops_to_json(ops, function_name="huge_render")
-
-    assert len(lowered) == len(ops) + 1
-    outcome = gen.midend_policy_outcomes_by_function["huge_render"]
-    assert outcome["degraded"] is True
-    reasons = {event.get("reason") for event in outcome.get("degrade_events", [])}
-    assert "oversized_function_skip" in reasons
-    assert gen.midend_stats["midend_oversized_function_skips"] >= 1
-
-
-def test_midend_default_skip_threshold_catches_mid_sized_functions() -> None:
-    ops = [
-        MoltOp(kind="CONST", args=[idx], result=MoltValue(f"v{idx}"))
-        for idx in range(900)
-    ]
-    gen = SimpleTIRGenerator(optimization_profile="release", module_name="pkg.mod")
-
-    lowered = gen.map_ops_to_json(ops, function_name="mid_sized_render")
-
-    assert len(lowered) == len(ops) + 1
-    outcome = gen.midend_policy_outcomes_by_function["mid_sized_render"]
-    assert outcome["degraded"] is True
-    reasons = {event.get("reason") for event in outcome.get("degrade_events", [])}
-    assert "oversized_function_skip" in reasons
-    events = [
-        event
-        for event in outcome.get("degrade_events", [])
-        if event.get("reason") == "oversized_function_skip"
-    ]
-    assert events
-    value = events[0].get("value")
-    assert isinstance(value, dict)
-    assert value.get("threshold") == 800
-    assert value.get("op_count") == 900
+    ops.append(
+        MoltOp(
+            kind="ret", args=[MoltValue(f"v{op_count - 1}")], result=MoltValue("none")
+        )
+    )
+    gen = SimpleTIRGenerator(
+        optimization_profile=profile,
+        module_name="pkg.mod",
+        source_path=toolchain_logical_path(("stdlib", "collections.py"))
+        if stdlib
+        else None,
+    )
+    expected = _eval_simple_ops(ops)
+    optimized = gen._run_ir_midend_passes(ops)
+    assert _eval_simple_ops(optimized) == expected == op_count - 1
+    assert len(optimized) < 10
+    # Exercise serialization's independent original-op denominator too.
+    gen.map_ops_to_json(ops, function_name="large_body")
+    coverage = gen.midend_policy_outcomes_by_function["large_body"]["coverage"]
+    assert coverage["status"] == "full"
+    assert coverage["input_ops"] == len(ops)
+    assert coverage["output_ops"] < 10
+    assert coverage["reasons"] == []
 
 
-def test_midend_monolith_pressure_lowers_skip_threshold_for_cold_functions() -> None:
-    ops = [
-        MoltOp(kind="CONST", args=[idx], result=MoltValue(f"v{idx}"))
-        for idx in range(600)
-    ]
-    gen = SimpleTIRGenerator(optimization_profile="release", module_name="pkg.mod")
-    gen.funcs_map = {
-        "molt_main": {"params": [], "ops": []},
-        **{
-            f"helper_{idx}": {
-                "params": [],
-                "ops": [
-                    MoltOp(kind="CONST", args=[j], result=MoltValue(f"h{idx}_{j}"))
-                    for j in range(80)
-                ],
-            }
-            for idx in range(96)
-        },
-    }
-
-    lowered = gen.map_ops_to_json(ops, function_name="cold_render")
-
-    assert len(lowered) == len(ops) + 1
-    outcome = gen.midend_policy_outcomes_by_function["cold_render"]
-    reasons = {event.get("reason") for event in outcome.get("degrade_events", [])}
-    assert "oversized_function_skip" in reasons
-    events = [
-        event
-        for event in outcome.get("degrade_events", [])
-        if event.get("reason") == "oversized_function_skip"
-    ]
-    assert events
-    value = events[0].get("value")
-    assert isinstance(value, dict)
-    assert value.get("threshold") == 500
-    assert value.get("op_count") == 600
-
-
-def test_midend_monolith_pressure_trims_cold_function_policy() -> None:
+def test_midend_monolith_pressure_preserves_cold_function_coverage() -> None:
     baseline_gen = SimpleTIRGenerator(
         optimization_profile="release",
         module_name="pkg.mod",
@@ -6021,9 +6008,9 @@ def test_midend_monolith_pressure_trims_cold_function_policy() -> None:
     assert pressured.module_total_ops >= 96 * 80
     assert baseline.max_rounds == 3
     assert pressured.max_rounds == baseline.max_rounds
-    assert pressured.sccp_iter_cap < baseline.sccp_iter_cap
-    assert pressured.cse_iter_cap < baseline.cse_iter_cap
-    assert pressured.budget_ms < baseline.budget_ms
+    assert pressured.sccp_iter_cap is baseline.sccp_iter_cap is None
+    assert pressured.cse_iter_cap == baseline.cse_iter_cap
+    assert pressured.budget_ms == baseline.budget_ms
 
 
 def test_midend_monolith_pressure_preserves_hot_function_aggressive_policy() -> None:
@@ -6091,6 +6078,189 @@ def test_midend_monolith_pressure_tracks_new_ops_incrementally() -> None:
     assert first.module_total_ops == initial_total_ops
     assert second.module_total_ops == updated_total_ops
     assert updated_total_ops > initial_total_ops
+
+
+def test_definite_assignment_matches_paths_without_definition() -> None:
+    """Availability is absence of a path around a producer, not a set snapshot."""
+    rng = random.Random(572)
+    for _ in range(40):
+        ops: list[MoltOp] = []
+        for node in range(8):
+            ops.extend(
+                [
+                    MoltOp(kind="LABEL", args=[f"b{node}"], result=MoltValue("none")),
+                    MoltOp(
+                        kind="PRINT",
+                        args=[MoltValue(f"v{rng.randrange(8)}")],
+                        result=MoltValue("none"),
+                    ),
+                    MoltOp(kind="CONST", args=[node], result=MoltValue(f"v{node}")),
+                    MoltOp(
+                        kind="CHECK_EXCEPTION",
+                        args=[f"b{rng.randrange(8)}"],
+                        result=MoltValue("none"),
+                    ),
+                    MoltOp(
+                        kind="JUMP",
+                        args=[f"b{rng.randrange(8)}"],
+                        result=MoltValue("none"),
+                    ),
+                ]
+            )
+        cfg = build_cfg(ops)
+        definitions = {
+            op.result.name: index
+            for index, op in enumerate(ops)
+            if op.result.name != "none"
+        }
+        expected = set()
+        for index, op in enumerate(ops):
+            if op.kind != "PRINT" or cfg.op_blocks[index] not in cfg.reachable:
+                continue
+            name = op.args[0].name
+            definition = definitions[name]
+            def_block, use_block = cfg.op_blocks[definition], cfg.op_blocks[index]
+            if def_block == use_block:
+                available = definition < index
+            else:
+                seen = set()
+                pending = [0]
+                while pending:
+                    block = pending.pop()
+                    if block == def_block or block in seen:
+                        continue
+                    seen.add(block)
+                    pending.extend(cfg.successors[block])
+                available = use_block not in seen
+            if not available:
+                expected.add((index, op.kind, name))
+        actual = set(SimpleTIRGenerator()._verify_definite_assignment_in_ops(ops))
+        assert actual == expected
+
+
+def test_definite_assignment_rejects_after_check_and_resume_producers() -> None:
+    for prefix in (
+        [MoltOp(kind="CHECK_EXCEPTION", args=["use"], result=MoltValue("none"))],
+        [
+            MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")),
+            MoltOp(kind="STATE_YIELD", args=[], result=MoltValue("none")),
+        ],
+    ):
+        ops = [
+            *prefix,
+            MoltOp(kind="CONST", args=[42], result=MoltValue("late")),
+            MoltOp(kind="STATE_LABEL", args=["use"], result=MoltValue("none")),
+            MoltOp(kind="PRINT", args=[MoltValue("late")], result=MoltValue("none")),
+        ]
+        assert (
+            len(ops) - 1,
+            "PRINT",
+            "late",
+        ) in SimpleTIRGenerator()._verify_definite_assignment_in_ops(ops)
+
+
+def test_phi_operands_keep_their_branch_edges_across_exception_checks() -> None:
+    ops = [
+        MoltOp("IF", [MoltValue("flag")], MoltValue("none")),
+        MoltOp("CONST", [11], MoltValue("left")),
+        MoltOp("ELSE", [], MoltValue("none")),
+        MoltOp("CONST", [22], MoltValue("right")),
+        MoltOp("END_IF", [], MoltValue("none")),
+        MoltOp("CHECK_EXCEPTION", [572], MoltValue("none")),
+        MoltOp("PHI", [MoltValue("left"), MoltValue("right")], MoltValue("selected")),
+        MoltOp("ret", [MoltValue("selected")], MoltValue("none")),
+        MoltOp("LABEL", [572], MoltValue("none")),
+        MoltOp("ret_void", [], MoltValue("none")),
+    ]
+    gen = SimpleTIRGenerator()
+    assert (
+        gen._verify_definite_assignment_in_ops(ops, predefined_value_names={"flag"})
+        == []
+    )
+    swapped = list(ops)
+    swapped[6] = MoltOp(
+        "PHI", [MoltValue("right"), MoltValue("left")], MoltValue("selected")
+    )
+    assert set(
+        gen._verify_definite_assignment_in_ops(swapped, predefined_value_names={"flag"})
+    ) == {(6, "PHI", "left"), (6, "PHI", "right")}
+    gen.map_ops_to_json(ops)
+    assert (
+        gen.midend_policy_outcomes_by_function["<direct>"]["coverage"]["status"]
+        == "full"
+    )
+
+
+@pytest.mark.parametrize("count", [32, 128, 512])
+def test_sccp_retains_linear_facts_across_shared_handler_fanin(count: int) -> None:
+    ops = []
+    for index in range(count):
+        ops.extend(
+            [
+                MoltOp("CONST", [index], MoltValue(f"v{index}")),
+                MoltOp("CHECK_EXCEPTION", ["handler"], MoltValue("none")),
+            ]
+        )
+    ops.extend(
+        [
+            MoltOp("ret", [MoltValue(f"v{count - 1}")], MoltValue("none")),
+            MoltOp("LABEL", ["handler"], MoltValue("none")),
+            MoltOp("ret_void", [], MoltValue("none")),
+        ]
+    )
+    gen = SimpleTIRGenerator()
+    cfg = build_cfg(ops)
+    facts = gen._compute_sccp(ops, cfg)
+    assert facts.out_values[cfg.op_blocks[-3]][f"v{count - 1}"] == count - 1
+    assert gen.midend_stats["sccp_iteration_cap_hits"] == 0
+    assert sum(map(len, facts.in_values.values())) + sum(
+        map(len, facts.out_values.values())
+    ) <= 12 * len(ops)
+
+
+def test_phi_arm_order_does_not_follow_block_number_for_empty_else() -> None:
+    ops = [
+        MoltOp("IF", [MoltValue("flag")], MoltValue("none")),
+        MoltOp("CONST", [11], MoltValue("created")),
+        MoltOp("ELSE", [], MoltValue("none")),
+        MoltOp("END_IF", [], MoltValue("none")),
+        MoltOp(
+            "PHI", [MoltValue("created"), MoltValue("existing")], MoltValue("selected")
+        ),
+        MoltOp("ret", [MoltValue("selected")], MoltValue("none")),
+    ]
+    gen = SimpleTIRGenerator()
+    assert (
+        gen._verify_definite_assignment_in_ops(
+            ops, predefined_value_names={"flag", "existing"}
+        )
+        == []
+    )
+    swapped = list(ops)
+    swapped[4] = MoltOp(
+        "PHI", [MoltValue("existing"), MoltValue("created")], MoltValue("selected")
+    )
+    assert gen._verify_definite_assignment_in_ops(
+        swapped, predefined_value_names={"flag", "existing"}
+    ) == [(4, "PHI", "created")]
+    gen.map_ops_to_json(ops)
+    assert (
+        gen.midend_policy_outcomes_by_function["<direct>"]["coverage"]["status"]
+        == "full"
+    )
+
+
+def test_midend_coverage_retains_explicit_solver_cap_loss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_SCCP_MAX_ITERS", "1")
+    gen = SimpleTIRGenerator()
+    ops = _build_sccp_growth_ops(depth=8, constant_cond=None)
+    gen.map_ops_to_json(ops)
+    coverage = gen.midend_policy_outcomes_by_function["<direct>"]["coverage"]
+    assert coverage["status"] == "degraded"
+    assert "sccp_iteration_cap_hits" in coverage["reasons"]
+    assert coverage["input_ops"] == len(ops)
 
 
 # ---------------------------------------------------------------------------
@@ -6164,6 +6334,56 @@ def test_sccp_comparison_ops_do_not_fold_through_missing() -> None:
             assert not isinstance(known["ne_result"], bool), (
                 "NE must not fold through MISSING sentinels"
             )
+
+
+@pytest.mark.parametrize(
+    "defect", [None, "missing-start", "wrong-loop", "ssa-redefinition"]
+)
+def test_loop_carrier_updates_require_their_own_dominating_start(defect) -> None:
+    gen = SimpleTIRGenerator()
+    seed, index, next_index = (MoltValue(name) for name in ("seed", "index", "next"))
+    ops = [
+        MoltOp("CONST", [0], seed),
+        MoltOp("LOOP_START", [], MoltValue("none")),
+        MoltOp("LOOP_INDEX_START", [seed], index),
+        MoltOp("ADD", [index, seed], next_index),
+        MoltOp("LOOP_INDEX_NEXT", [next_index], index),
+        MoltOp("LOOP_CONTINUE", [], MoltValue("none")),
+        MoltOp("LOOP_END", [], MoltValue("none")),
+    ]
+    if defect == "missing-start":
+        del ops[2]
+    elif defect == "wrong-loop":
+        ops.insert(4, MoltOp("LOOP_START", [], MoltValue("none")))
+        ops.insert(6, MoltOp("LOOP_END", [], MoltValue("none")))
+    elif defect == "ssa-redefinition":
+        ops[4] = MoltOp("CONST", [1], index)
+    failures = gen._verify_definite_assignment_in_ops(ops)
+    assert bool(failures) == (defect is not None)
+    # A mutable carrier can never acquire a flow-insensitive literal fact.
+    assert "index" not in gen._primitive_const_value_map(ops)
+
+
+def test_cse_keeps_eliminated_value_substitution_through_exception_cleanup() -> None:
+    gen = SimpleTIRGenerator()
+    first, returned = MoltValue("first"), MoltValue("returned")
+    ops = [
+        MoltOp("CONST_NONE", [], first),
+        MoltOp("CALL", ["observe", first], MoltValue("none")),
+        MoltOp("CONST_NONE", [], returned),
+        MoltOp("EXCEPTION_POP", [], MoltValue("none")),
+        MoltOp("ret", [returned], MoltValue("none")),
+    ]
+    candidate, _ = gen._run_cse_canonicalization_round(
+        ops, allow_cross_block_const_dedupe=True
+    )
+    assert gen._verify_definite_assignment_in_ops(candidate) == []
+    # Both the call argument and returned value independently denote None.
+    literals = {op.result.name: None for op in candidate if op.kind == "CONST_NONE"}
+    call = next(op for op in candidate if op.kind == "CALL")
+    returned_op = next(op for op in candidate if op.kind == "ret")
+    assert call.args[1].name in literals
+    assert returned_op.args[0].name in literals
 
 
 def test_missing_taint_propagates_through_phi_to_call() -> None:
@@ -6448,9 +6668,9 @@ def test_cfg_dense_operation_blocks_keep_absent_indices_absent(
 
 
 def test_resume_liveness_rejects_indices_outside_the_operation_stream() -> None:
-    from molt.frontend.visitors.async_gen import _ResumeLiveness
+    from molt.frontend.value_liveness import ValueLiveness
 
-    live = _ResumeLiveness(
+    live = ValueLiveness(
         [MoltOp("ADD", [MoltValue("left"), MoltValue("right")], MoltValue("result"))]
     )
     assert live.live_into(0) == ["left", "right"]
@@ -6583,6 +6803,10 @@ def _op_reads_and_writes(op: MoltOp) -> tuple[list[str], list[str]]:
         for value in (op.result, *op.args[first_output:])
         if isinstance(value, MoltValue) and value.name not in _FRAME_NAMES
     ]
+    if op.kind == "LOAD_VAR":
+        reads.append("home:" + op.metadata["var"])
+    elif op.kind == "STORE_VAR":
+        writes.append("home:" + op.metadata["var"])
     return reads, writes
 
 
@@ -6635,15 +6859,20 @@ def _reads_without_definition(ops: list[MoltOp]) -> list[tuple[int, str]]:
 
 
 def _spill_reloads(ops: list[MoltOp]) -> list[int]:
-    """A spill reload re-defines, from its frame slot, a value defined earlier."""
-    defined: set[str] = set()
-    reloads = []
-    for idx, op in enumerate(ops):
-        writes = _op_reads_and_writes(op)[1]
-        if op.kind == "LOAD_CLOSURE" and writes and writes[0] in defined:
-            reloads.append(idx)
-        defined.update(writes)
-    return reloads
+    """Frame reloads transport into a home with entry/resume definitions."""
+    stores = {}
+    for op in ops:
+        if op.kind == "STORE_VAR":
+            home = op.metadata["var"]
+            stores[home] = stores.get(home, 0) + 1
+    return [
+        idx
+        for idx, op in enumerate(ops[:-1])
+        if op.kind == "LOAD_CLOSURE"
+        and ops[idx + 1].kind == "STORE_VAR"
+        and ops[idx + 1].args == [op.result]
+        and stores[ops[idx + 1].metadata["var"]] > 1
+    ]
 
 
 def _reloads_before_their_store(ops: list[MoltOp]) -> list[int]:
@@ -6719,6 +6948,45 @@ def test_values_read_after_a_resume_inside_a_loop_are_defined(source: str) -> No
         assert _reloads_before_their_store(ops) == [], name
 
 
+def test_spilled_results_are_published_only_after_the_exception_check() -> None:
+    gen = SimpleTIRGenerator()
+    value = MoltValue("checked_result")
+    gen.current_ops[:] = [
+        MoltOp("STATE_SWITCH", [], MoltValue("none")),
+        MoltOp("CALL", ["effect"], value),
+        MoltOp("CHECK_EXCEPTION", [900], MoltValue("none")),
+        MoltOp("STATE_YIELD", [], MoltValue("none")),
+        MoltOp("STATE_LABEL", [901], MoltValue("none")),
+        MoltOp("ret", [value], MoltValue("none")),
+        MoltOp("LABEL", [900], MoltValue("none")),
+        MoltOp("ret_void", [], MoltValue("none")),
+    ]
+    gen._spill_async_temporaries()
+    polls = {"checked_result": gen.current_ops}
+    checked = 0
+    for ops in polls.values():
+        producers = {op.result.name: index for index, op in enumerate(ops)}
+        for index, op in enumerate(ops):
+            if op.kind != "STORE_VAR":
+                continue
+            producer = producers[op.args[0].name]
+            # CHECK_EXCEPTION is the success boundary of a raising producer.
+            # Publishing beforehand would expose a failed operation's value
+            # to a handler rather than preserving the home's previous value.
+            boundary = next(
+                (
+                    i
+                    for i in range(producer + 1, index + 2)
+                    if i < len(ops) and ops[i].kind == "CHECK_EXCEPTION"
+                ),
+                None,
+            )
+            if boundary is not None:
+                assert producer < boundary < index
+                checked += 1
+    assert checked, "fixture must spill a checked producer across an await"
+
+
 def test_prologue_values_keep_the_first_activation_value() -> None:
     # The handler makes the poll save its exception-stack baselines in the
     # prologue, and the return restores them after the await's resume.
@@ -6733,13 +7001,19 @@ def test_prologue_values_keep_the_first_activation_value() -> None:
     (ops,) = polls.values()
     switch = next(idx for idx, op in enumerate(ops) if op.kind == "STATE_SWITCH")
     prologue = {name for op in ops[:switch] for name in _op_reads_and_writes(op)[1]}
-    reloaded = {ops[idx].result.name for idx in _spill_reloads(ops)}
-    assert prologue & reloaded, "the restore after the resume needs the baselines"
+    baseline_homes = {
+        op.metadata["var"]
+        for op in ops[:switch]
+        if op.kind == "STORE_VAR" and op.args[0].name in prologue
+    }
     baseline_slots = {
         ops[idx].args[1]
         for idx in _spill_reloads(ops)
-        if ops[idx].result.name in prologue
+        if ops[idx + 1].metadata["var"] in baseline_homes
     }
+    assert baseline_slots, "resume must reload the first activation's baselines"
+    definitions = [op.result.name for op in ops if op.result.name != "none"]
+    assert len(definitions) == len(set(definitions))
     assert _reads_without_definition(ops) == []
     assert _reloads_before_their_store(ops) == []
     # No resume may overwrite the frame's first-activation baseline.

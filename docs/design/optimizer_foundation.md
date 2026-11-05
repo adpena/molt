@@ -6,6 +6,62 @@ architecture). Origin: user vision — "bleeding edge, like Mojo and Julia but b
 like Codon but more ecosystem compatibility / language support / flexibility; like Nuitka but
 way faster and even more flexible."
 
+Support and release claims are bounded by the
+[verified subset](../spec/areas/compat/contracts/verified_subset_contract.md)
+and its qualified target cells. The north-star comparisons below describe the
+architectural goal.
+
+## Mid-end coverage and bounded work
+
+Every serialized lowered function enters the frontend mid-end, including
+stdlib bodies and large functions. The build's existing mid-end diagnostics
+record original input ops, output ops, status and reasons per function; a
+program summary is also emitted without detailed timing diagnostics. The
+denominator includes generated module chunks and precedes backend reachability.
+It is not a count of source functions or surviving optimized operations.
+
+The disjoint statuses are `full`, `degraded`, `skipped`, and `fallback`, with
+skipped taking precedence over fallback, and fallback over degraded. A fixed
+point without a rewrite is full optimization. A verification rejection,
+rollback, solver limit, disabled required pass or deterministic optional-pass
+budget is coverage loss even when a later attempt verifies. Reasons may
+overlap; their counts must not be added as category totals. Missing cached
+outcomes retain their function inventory as skipped with unknown input ops;
+op fractions are null until the denominator is complete. Empty denominators
+also have null fractions. Failed builds do not establish program coverage.
+
+SCCP's default worklists drain to a fixed point. An explicit diagnostic visit
+limit returns no value or branch facts and marks all CFG blocks and edges
+executable; its loss remains in coverage. Successive scalar outputs widen by
+the exact-literal lattice, and killed heap relations cannot resurrect around
+a cycle. The shared value-liveness analysis bounds retained block facts to
+values used locally or later. Joins project needed values before merging:
+a shared exception handler must not join every dead temporary from every
+predecessor. The verifier uses unique producer sites, instruction order and
+dominator intervals rather than a definition set for every block. MISSING
+taint follows PHI use dependencies iteratively.
+Authored `LOOP_INDEX_START`/`LOOP_INDEX_NEXT` are explicit pre-SSA loop carriers:
+an update requires its own loop's unique dominating start. They do not admit
+ordinary repeated SSA definitions or flow-insensitive literal facts.
+
+PHI operands belong to incoming merge edges, including normal continuations
+through exception checks after a structured merge. One linear CFG edge table
+feeds liveness, SCCP, trimming and verification. Suspended values use explicit
+local homes, fresh SSA results on reload, and the existing backend SSA
+construction. Checked producers publish into a home only on the success path.
+Branch transport uses the same typed local homes; the retired frontend `COPY`
+identity has no remaining producer or consumer. The backend wire `copy` remains
+part of its own SSA lowering contract. Heap-read CSE invalidates available reads at effects and joins
+only identical available results; numeric mutation epochs are unnecessary and
+would grow indefinitely on loop backedges. Deterministic work budgets may
+disable the superlinear cross-block CSE optimization, with a coverage reason;
+they do not truncate required CFG/SCCP/DCE work or skip a function.
+
+This coverage contract does not qualify all backend/profile cells by itself.
+The findings ledger owns current qualification. The
+[single typed IR migration](foundation/77_architecture_convergence.md#b-one-typed-ir-as-the-backend-input)
+owns retirement of the overlapping Python and Rust optimizers.
+
 ## What "better than each" technically requires
 - **vs Nuitka** (full CPython compat, but slow — inherits CPython's runtime/object model via
   libpython): molt keeps the compatibility but has its OWN runtime, so the win comes from an

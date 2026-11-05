@@ -528,7 +528,17 @@ class SerializationMixin(
         for op in ops:
             validate_frontend_kind(op.kind, diagnostic_function)
         if run_midend:
+            input_op_count = len(ops)
+            counter_baseline = dict(self.midend_stats)
+            # A second serialization is a new invocation, not a continuation of
+            # a previous body's outcome. Internal retries retain their losses.
+            self.midend_policy_outcomes_by_function.pop(diagnostic_function, None)
             ops = self._run_ir_midend_passes(ops)
+            self._record_midend_coverage(
+                input_ops=input_op_count,
+                output_ops=len(ops),
+                counter_baseline=counter_baseline,
+            )
         json_ops: list[SimpleIROp] = []
         json_list_int_containers = set(getattr(self, "_list_int_containers", set()))
         function_owns_frame = self._function_needs_frame_trace(function_name)

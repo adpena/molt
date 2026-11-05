@@ -177,9 +177,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             "const_int_values": {},
             "value_type_tags": {},
             "available_values": {},
-            "alias_epochs": {},
-            "object_epochs": {},
-            "memory_epoch": 0,
         }
 
     def _clone_canonicalization_state(
@@ -190,9 +187,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             "const_int_values": state["const_int_values"].copy(),
             "value_type_tags": state["value_type_tags"].copy(),
             "available_values": state["available_values"].copy(),
-            "alias_epochs": state["alias_epochs"].copy(),
-            "object_epochs": state["object_epochs"].copy(),
-            "memory_epoch": state["memory_epoch"],
         }
         cached_signature = cast(Any, state).get(
             _CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY
@@ -296,13 +290,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                 )
             visiting.add(value.name)
             try:
-                if (
-                    producer.kind == FrontendKinds.COPY
-                    and len(producer.args) == 1
-                    and not producer.metadata
-                ):
-                    source = producer.args[0]
-                    return exact_type(source) if isinstance(source, MoltValue) else None
                 if producer.kind in FRONTEND_PREDICATE_SEMANTICS:
                     if all(isinstance(arg, MoltValue) for arg in producer.args):
                         facts = frontend_predicate_facts(
@@ -373,8 +360,8 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
         if isinstance(op, MoltOp):
             # Reuse the single write-alias authority for the exact-list
             # mutations whose runtime path cannot dispatch user callbacks.
-            # Do not let their coarse generated ``writes_heap`` class advance
-            # the arbitrary-heap epoch and discard unrelated guards/caches.
+            # Their coarse generated writes_heap class must not discard
+            # unrelated heap observations.
             if self._heap_alias_classes_for_write_op(op):
                 return False
             if op.kind in FRONTEND_TRUTHINESS_CONTROL_KINDS:
@@ -494,7 +481,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
     def _heap_alias_classes_for_write_op(self, op: MoltOp) -> set[str]:
         # Only exact built-in mutations with no lookup, iteration, equality,
         # attribute, or overwritten-value destruction callbacks are local.
-        # Every unproved mutation advances the global heap epoch.
+        # Every unproved mutation invalidates all heap reads.
         exact_types = self._exact_primitive_operand_types(op)
         if (
             (
@@ -1002,10 +989,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
         const_int_values: dict[str, int],
         value_type_tags: dict[str, int],
         induction_steps: dict[str, int],
-        *,
-        alias_epochs: dict[str, int],
-        object_epochs: dict[str, int],
-        memory_epoch: int,
     ) -> tuple[Any, ...] | None:
         effect_class = self._op_effect_class(op, const_by_name=const_int_values)
         if effect_class not in {"pure", "reads_heap"}:
@@ -1022,7 +1005,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                 return (
                     "RUNTIME_CALLABLE_READ",
                     runtime_symbol,
-                    memory_epoch,
                     op.kind,
                     tuple(normalized_args),
                 )
@@ -1042,7 +1024,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             arg = self._normalize_value_operand_key(op.args[0], const_int_values)
             if arg is not None:
                 if effect_class == "reads_heap":
-                    return ("READ_HEAP", memory_epoch, "TYPE_OF", arg)
+                    return ("READ_HEAP", "TYPE_OF", arg)
                 return ("TYPE_OF", arg)
 
         if op.kind == FrontendKinds.NOT and len(op.args) == 1:
@@ -1119,43 +1101,13 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             )
             if read_alias_class is None:
                 return None
-            object_epoch = 0
-            if op.args and isinstance(op.args[0], MoltValue):
-                object_epoch = object_epochs.get(op.args[0].name, 0)
-            if read_alias_class == "immutable_len":
-                return (
-                    "READ_HEAP_CLASS",
-                    read_alias_class,
-                    object_epoch,
-                    op.kind,
-                    tuple(normalized_args),
-                )
-            class_epoch = alias_epochs.get(read_alias_class, 0)
-            if read_alias_class in {"dict", "list"}:
-                return (
-                    "READ_HEAP_CLASS",
-                    read_alias_class,
-                    class_epoch,
-                    object_epoch,
-                    op.kind,
-                    tuple(normalized_args),
-                )
-            if read_alias_class == "indexable":
-                indexable_epoch = alias_epochs.get("indexable", 0)
-                return (
-                    "READ_HEAP_CLASS",
-                    read_alias_class,
-                    indexable_epoch,
-                    object_epoch,
-                    op.kind,
-                    tuple(normalized_args),
-                )
+            # Availability already removes every read invalidated by a
+            # mutation/callback. Intersections keep only identical SSA results
+            # present on every predecessor; numeric mutation epochs added no
+            # proof and grew without bound on backedges.
             return (
                 "READ_HEAP_CLASS",
                 read_alias_class,
-                class_epoch,
-                object_epoch,
-                memory_epoch,
                 op.kind,
                 tuple(normalized_args),
             )
@@ -1180,8 +1132,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
         for key in stale_values:
             available_values.pop(key, None)
 
-        object_epochs: dict[str, int] = state["object_epochs"]
-        object_epochs.pop(name, None)
         self._invalidate_canonicalization_state_signature(state)
 
     def _intersect_canonicalization_state(
@@ -1217,32 +1167,11 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             ):
                 available_values[key] = left_value
 
-        alias_epochs: dict[str, int] = {}
-        left_alias_epochs = left["alias_epochs"]
-        right_alias_epochs = right["alias_epochs"]
-        for key in set(left_alias_epochs.keys()).union(right_alias_epochs.keys()):
-            alias_epochs[key] = max(
-                int(left_alias_epochs.get(key, 0)),
-                int(right_alias_epochs.get(key, 0)),
-            )
-
-        object_epochs: dict[str, int] = {}
-        left_object_epochs = left["object_epochs"]
-        right_object_epochs = right["object_epochs"]
-        for key in set(left_object_epochs.keys()).union(right_object_epochs.keys()):
-            object_epochs[key] = max(
-                int(left_object_epochs.get(key, 0)),
-                int(right_object_epochs.get(key, 0)),
-            )
-
         return {
             "aliases": aliases,
             "const_int_values": const_int_values,
             "value_type_tags": value_type_tags,
             "available_values": available_values,
-            "alias_epochs": alias_epochs,
-            "object_epochs": object_epochs,
-            "memory_epoch": max(left["memory_epoch"], right["memory_epoch"]),
         }
 
     def _intersect_canonicalization_states(
@@ -1262,9 +1191,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
         tuple[tuple[str, int], ...],
         tuple[tuple[str, int], ...],
         tuple[tuple[tuple[Any, ...], str], ...],
-        tuple[tuple[str, int], ...],
-        tuple[tuple[str, int], ...],
-        int,
     ]:
         cached_signature = cast(Any, state).get(
             _CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY
@@ -1276,9 +1202,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                     tuple[tuple[str, int], ...],
                     tuple[tuple[str, int], ...],
                     tuple[tuple[tuple[Any, ...], str], ...],
-                    tuple[tuple[str, int], ...],
-                    tuple[tuple[str, int], ...],
-                    int,
                 ],
                 cached_signature,
             )
@@ -1292,17 +1215,11 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                 (key, value.name) for key, value in state["available_values"].items()
             )
         )
-        alias_epoch_items = tuple(sorted(state["alias_epochs"].items()))
-        object_epoch_items = tuple(sorted(state["object_epochs"].items()))
-        memory_epoch = state["memory_epoch"]
         signature = (
             alias_items,
             const_items,
             tag_items,
             available_items,
-            alias_epoch_items,
-            object_epoch_items,
-            memory_epoch,
         )
         cast(Any, state)[_CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY] = signature
         return signature
@@ -1320,9 +1237,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
         const_int_values: dict[str, int] = state["const_int_values"]
         value_type_tags: dict[str, int] = state["value_type_tags"]
         available_values: dict[tuple[Any, ...], MoltValue] = state["available_values"]
-        alias_epochs: dict[str, int] = state["alias_epochs"]
-        object_epochs: dict[str, int] = state["object_epochs"]
-        memory_epoch = state["memory_epoch"]
         state_dirty = False
 
         out: list[MoltOp] = []
@@ -1377,9 +1291,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                 const_int_values,
                 value_type_tags,
                 induction_steps,
-                alias_epochs=alias_epochs,
-                object_epochs=object_epochs,
-                memory_epoch=memory_epoch,
             )
             effect_class = self._op_effect_class(
                 canonical_op, const_by_name=const_int_values
@@ -1557,7 +1468,11 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                 state_dirty = True
 
             if self._is_canonicalization_barrier_op(canonical_op.kind):
-                aliases.clear()
+                # Eliminated SSA definitions still need their substitutions
+                # after an effect/control barrier. Effects invalidate available
+                # computations and type facts, not equivalence of value bits.
+                # Clearing aliases here left later users of a deleted constant
+                # dangling (notably None returned after exception cleanup).
                 const_int_values.clear()
                 value_type_tags.clear()
                 available_values.clear()
@@ -1565,19 +1480,13 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
 
             arbitrary_heap = self._op_may_access_arbitrary_heap(canonical_op)
             if effect_class == "writes_heap" or arbitrary_heap:
+                state_dirty = True
                 write_alias_classes = (
                     set()
                     if arbitrary_heap
                     else self._heap_alias_classes_for_write_op(canonical_op)
                 )
-                if canonical_op.args and isinstance(canonical_op.args[0], MoltValue):
-                    obj_name = canonical_op.args[0].name
-                    object_epochs[obj_name] = object_epochs.get(obj_name, 0) + 1
-                    state_dirty = True
                 if write_alias_classes:
-                    for alias_class in sorted(write_alias_classes):
-                        alias_epochs[alias_class] = alias_epochs.get(alias_class, 0) + 1
-                    state_dirty = True
                     stale_read_keys = [
                         key
                         for key in list(available_values.keys())
@@ -1588,7 +1497,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                     for key in stale_read_keys:
                         available_values.pop(key, None)
                 else:
-                    memory_epoch += 1
                     state_dirty = True
                     stale_read_keys = [
                         key
@@ -1601,12 +1509,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                         # Callbacks can mutate captured objects independently
                         # of the explicit operands, including their classes.
                         value_type_tags.clear()
-                        for alias_class in sorted(alias_epochs):
-                            alias_epochs[alias_class] += 1
 
-        state["alias_epochs"] = alias_epochs
-        state["object_epochs"] = object_epochs
-        state["memory_epoch"] = memory_epoch
         if state_dirty:
             self._invalidate_canonicalization_state_signature(state)
         return out, state

@@ -312,6 +312,14 @@ class AsyncFrameSlot:
 
 
 @dataclass(frozen=True)
+class CompilerLocalHome:
+    """Promotable compiler transport, separate from Python binding storage."""
+
+    name: str
+    type_hint: TypeHint
+
+
+@dataclass(frozen=True)
 class ScratchCell:
     """Opaque compiler-temporary storage, never a Python frame binding."""
 
@@ -471,8 +479,18 @@ _SCCP_UNKNOWN = object()
 _SCCP_MISSING = object()  # Sentinel for MISSING values — must never propagate or fold
 MidendProfile = Literal["dev", "release"]
 MidendTier = Literal["A", "B", "C"]
+
+
+class MidendCoverage(TypedDict):
+    """Coverage of one serialized body, measured before optimization."""
+
+    status: Literal["full", "degraded", "skipped", "fallback"]
+    input_ops: int | None
+    output_ops: int
+    reasons: list[str]
+
+
 _MIDEND_ENV_KEYS = (
-    "MOLT_MIDEND_SKIP_OP_THRESHOLD",
     "MOLT_MIDEND_MONOLITH_FUNCTION_THRESHOLD",
     "MOLT_MIDEND_MONOLITH_TOTAL_OPS_THRESHOLD",
     "MOLT_MIDEND_HOT_TIER_PROMOTION",
@@ -531,7 +549,7 @@ class MidendFunctionPolicy:
     promotion_source: str
     promotion_signal: str
     max_rounds: int
-    sccp_iter_cap: int
+    sccp_iter_cap: int | None
     cse_iter_cap: int
     enable_deep_edge_thread: bool
     enable_cse: bool
@@ -553,7 +571,6 @@ class MidendFunctionPolicy:
 
 @dataclass(frozen=True)
 class MidendEnvConfig:
-    skip_op_threshold: int
     monolith_function_threshold: int
     monolith_total_ops_threshold: int
     hot_tier_promotion_enabled: bool
@@ -901,6 +918,7 @@ class FuncInfo(TypedDict):
     frame_entry_failure_label: NotRequired[int]
     stateful_frame_plan: NotRequired[StatefulFunctionFramePlan]
     stateful_locals_layout: NotRequired[StatefulLocalsLayout]
+    resume_value_homes: NotRequired[dict[str, CompilerLocalHome]]
     source_module_publication: NotRequired[SourceModulePublication]
     gpu_body_origin: NotRequired[dict[str, Any]]
 
@@ -984,9 +1002,6 @@ class CanonicalizationState(TypedDict):
     const_int_values: dict[str, int]
     value_type_tags: dict[str, int]
     available_values: dict[tuple[Any, ...], MoltValue]
-    alias_epochs: dict[str, int]
-    object_epochs: dict[str, int]
-    memory_epoch: int
 
 
 _CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY = "__signature_cache"

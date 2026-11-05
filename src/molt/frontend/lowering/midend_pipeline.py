@@ -42,56 +42,11 @@ class MidendPipelineMixin(GeneratorMixinBase):
         # (SCCP non-propagation, DCE protection, definite-assignment hardening)
         # are now in place.  MOLT_MIDEND_DEV_ENABLE is no longer
         # required — mid-end runs for both dev and release profiles.
-        # Correctness gate: keep stdlib modules out of mid-end canonicalization
-        # until canonicalized stdlib lowering is proven stable (HF-572).
-        if self._source_is_stdlib_module:
-            self.midend_stats["midend_module_skips"] += 1
-            return ops
         ops = self._coalesce_check_exception_ops(ops)
         ops, structural_rewrites = self._ensure_structural_cfg_validity(
             ops, stage="midend_entry"
         )
         self.midend_stats["cfg_structural_canonicalizations"] += structural_rewrites
-        oversized_skip_threshold = self.midend_env.skip_op_threshold
-        _module_function_count, _module_total_ops, monolith_pressure_level = (
-            self._current_module_pressure_snapshot()
-        )
-        effective_skip_threshold = oversized_skip_threshold
-        if monolith_pressure_level >= 1:
-            effective_skip_threshold = min(effective_skip_threshold, 650)
-        if monolith_pressure_level >= 2:
-            effective_skip_threshold = min(effective_skip_threshold, 500)
-        if len(ops) >= effective_skip_threshold:
-            cfg = build_cfg(ops)
-            policy = self._resolve_midend_function_policy(
-                ops,
-                function_name=self._active_midend_function_name,
-                block_count=max(1, len(cfg.blocks)),
-            )
-            if len(ops) >= oversized_skip_threshold or (
-                not policy.promoted and policy.tier != "A"
-            ):
-                self.midend_stats["midend_oversized_function_skips"] += 1
-                self._record_midend_policy_outcome(
-                    policy=policy,
-                    spent_ms=0.0,
-                    work_units_spent=0.0,
-                    degraded=True,
-                    degrade_events=[
-                        {
-                            "reason": "oversized_function_skip",
-                            "stage": "midend_entry",
-                            "action": "emit_unoptimized_ir",
-                            "spent_ms": 0.0,
-                            "value": {
-                                "op_count": len(ops),
-                                "threshold": effective_skip_threshold,
-                            },
-                        }
-                    ],
-                    round_snapshots=[],
-                )
-                return ops
         return self._canonicalize_control_aware_ops(ops)
 
     def _run_cse_canonicalization_round(
@@ -336,14 +291,11 @@ class MidendPipelineMixin(GeneratorMixinBase):
         enable_deep_edge_thread = policy.enable_deep_edge_thread
         enable_cse = policy.enable_cse
         max_rounds = max(2, policy.max_rounds)
-        sccp_iter_cap = max(1, policy.sccp_iter_cap)
+        sccp_iter_cap = policy.sccp_iter_cap
         cse_iter_cap = max(1, policy.cse_iter_cap)
 
-        # --- Per-function DETERMINISTIC work budget, 3-level degrade ladder ---
-        # (formerly a wall-time budget, MOL-27; made deterministic for #73).
+        # Only optional cross-block CSE is subject to this work budget.
         per_func_work_budget = max(0.0, float(policy.work_budget))
-        degrade_level: int = 0
-        degrade_level_reasons: list[str] = []
 
         if self.midend_env.max_rounds_override is not None:
             max_rounds = max(2, self.midend_env.max_rounds_override)
@@ -411,42 +363,18 @@ class MidendPipelineMixin(GeneratorMixinBase):
             the input, never on wall-clock timing (#73).
             """
             nonlocal degraded
-            nonlocal degrade_level
-            nonlocal enable_deep_edge_thread
             nonlocal enable_cse
-            nonlocal max_rounds
-            nonlocal sccp_iter_cap
-            nonlocal cse_iter_cap
-            if per_func_work_budget < 0:
-                return
             charge_work(max(1, ops_now))
             while work_units_spent > per_func_work_budget:
                 action: str | None = None
-                proof_floor = round_index + 2
-                if max_rounds > proof_floor:
-                    max_rounds = proof_floor
-                    action = f"cap_rounds_to_{max_rounds}"
-                elif sccp_iter_cap > 8:
-                    sccp_iter_cap = max(8, sccp_iter_cap // 2)
-                    action = f"shrink_sccp_iter_cap_to_{sccp_iter_cap}"
-                elif cse_iter_cap > 4:
-                    cse_iter_cap = max(4, cse_iter_cap // 2)
-                    action = f"shrink_cse_iter_cap_to_{cse_iter_cap}"
-                elif enable_cse:
+                # Only cross-block CSE retains superlinear per-block facts.
+                # Required CFG/SCCP/DCE passes always complete.
+                if enable_cse:
                     enable_cse = False
                     action = "disable_cse"
-                elif enable_deep_edge_thread:
-                    enable_deep_edge_thread = False
-                    action = "disable_deep_edge_thread"
                 if action is None:
                     break
                 degraded = True
-                degrade_level = min(3, degrade_level + 1)
-                degrade_level_reasons.append(
-                    f"work_budget_exceeded at {stage}: "
-                    f"work={work_units_spent:.0f} > budget="
-                    f"{per_func_work_budget:.0f}; action={action}"
-                )
                 extra_value: dict[str, Any] = {
                     "work_units": round(work_units_spent, 1),
                     "work_budget": round(per_func_work_budget, 1),
@@ -726,10 +654,16 @@ class MidendPipelineMixin(GeneratorMixinBase):
                     degraded=degraded,
                 )
                 if dce_failures:
+                    self.midend_stats["midend_verifier_rejections"] = (
+                        self.midend_stats.get("midend_verifier_rejections", 0) + 1
+                    )
                     return dce_input, False
                 return dce_candidate, accepted
 
             if round_failures:
+                self.midend_stats["midend_verifier_rejections"] = (
+                    self.midend_stats.get("midend_verifier_rejections", 0) + 1
+                )
                 step_ops = step_before
                 self._record_midend_pass_sample(
                     "dce",
@@ -784,6 +718,10 @@ class MidendPipelineMixin(GeneratorMixinBase):
                             degraded=degraded,
                         )
                         if cse_failures:
+                            self.midend_stats["midend_verifier_rejections"] = (
+                                self.midend_stats.get("midend_verifier_rejections", 0)
+                                + 1
+                            )
                             cse_dce_closure_converged = True
                             break
                         step_ops = cse_candidate

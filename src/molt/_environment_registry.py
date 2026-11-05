@@ -4723,7 +4723,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_MIDEND_MONOLITH_FUNCTION_THRESHOLD",
       "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Function count at which a module counts as a monolith for mid-end policy; values below 8 raise to 8, and empty or non-integer values fall back to 48.",
+      "summary": "Function count at which mid-end telemetry marks module pressure; this does not skip functions or truncate required passes; values below 8 raise to 8, and empty or non-integer values fall back to 48.",
       "values": []
     },
     {
@@ -4733,7 +4733,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_MIDEND_MONOLITH_TOTAL_OPS_THRESHOLD",
       "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Total op count at which a module counts as a monolith for mid-end policy; values below 256 raise to 256, and empty or non-integer values fall back to 4000.",
+      "summary": "Total op count at which mid-end telemetry marks module pressure; this does not skip functions or truncate required passes; values below 256 raise to 256, and empty or non-integer values fall back to 4000.",
       "values": []
     },
     {
@@ -4748,16 +4748,6 @@ _REGISTRY_JSON = r"""{
         "dev",
         "release"
       ]
-    },
-    {
-      "audience": "user",
-      "default": "800",
-      "kind": "int",
-      "name": "MOLT_MIDEND_SKIP_OP_THRESHOLD",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Op count above which the mid-end skips a function as oversized; values below 1 and empty or non-integer values fall back to 800.",
-      "values": []
     },
     {
       "audience": "user",
@@ -4850,7 +4840,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_MIDEND_WORK_BUDGET",
       "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Fixed deterministic work-unit budget for the mid-end degrade ladder that replaces the value computed from the tier's base budget, round count, and op count; negative values clamp to 0, a non-numeric value is ignored, and unset keeps the computed budget.",
+      "summary": "Fixed deterministic work-unit budget for optional cross-block CSE; required CFG, SCCP and DCE passes still complete. The override replaces the value computed from the tier's base budget, round count, and op count; negative values clamp to 0, a non-numeric value is ignored, and unset keeps the computed budget.",
       "values": []
     },
     {
@@ -5796,7 +5786,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_SCCP_MAX_ITERS",
       "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Caps the SCCP iteration count per midend round when set; parsed as an integer with a floor of 1 (invalid or smaller values become 1); unset applies no override.",
+      "summary": "Diagnostic cap on SCCP block transfers per invocation; exhaustion reports degraded coverage and returns no facts with all edges executable; parsed as an integer with a floor of 1 (invalid or smaller values become 1); unset drains the worklists to a fixed point.",
       "values": []
     },
     {

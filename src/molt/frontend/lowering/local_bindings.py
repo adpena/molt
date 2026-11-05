@@ -33,6 +33,7 @@ from molt.frontend._types import (
     AsyncFrameSlotRole,
     ClassId,
     ComprehensionBinding,
+    CompilerLocalHome,
     ExactClassFact,
     MoltOp,
     MoltValue,
@@ -258,19 +259,15 @@ class LocalBindingMixin(GeneratorMixinBase):
             self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", slot], result=res))
             return res
 
-        # Sync path: a single SSA value updated in both branches replaces the
-        # LIST_NEW + STORE_INDEX cell.
-        res = MoltValue(self.next_var(), type_hint="str")
-        placeholder = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[""], result=placeholder))
-        self.emit(MoltOp(kind="COPY", args=[placeholder], result=res))
+        # Branch transport is a promotable local, never a redefined SSA value.
+        home = self._new_compiler_local("str")
         self.emit(MoltOp(kind="IF", args=[is_missing], result=MoltValue("none")))
         fallback = self._emit_str_from_obj(obj)
-        self.emit(MoltOp(kind="COPY", args=[fallback], result=res))
+        self._store_compiler_local(home, fallback)
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="COPY", args=[name_val], result=res))
+        self._store_compiler_local(home, name_val)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        return res
+        return self._load_compiler_local(home)
 
     def _emit_type_name(self, value: MoltValue) -> MoltValue:
         type_val = MoltValue(self.next_var(), type_hint="type")
@@ -365,6 +362,31 @@ class LocalBindingMixin(GeneratorMixinBase):
                     result=MoltValue(self.next_var(), type_hint="None"),
                 )
             )
+
+    def _new_compiler_local(self, type_hint: TypeHint) -> CompilerLocalHome:
+        return CompilerLocalHome(self.next_var(), type_hint)
+
+    def _store_compiler_local(self, home: CompilerLocalHome, value: MoltValue) -> None:
+        self.emit(
+            MoltOp(
+                kind="STORE_VAR",
+                args=[value],
+                result=MoltValue("none"),
+                metadata={"var": home.name},
+            )
+        )
+
+    def _load_compiler_local(self, home: CompilerLocalHome) -> MoltValue:
+        value = MoltValue(self.next_var(), type_hint=home.type_hint)
+        self.emit(
+            MoltOp(
+                kind="LOAD_VAR",
+                args=[],
+                result=value,
+                metadata={"var": home.name},
+            )
+        )
+        return value
 
     def _new_scratch_cell(
         self,
