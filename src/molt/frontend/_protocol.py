@@ -406,14 +406,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _can_tail_merge_op(self, op: MoltOp) -> bool: ...
 
-    def _canonicalization_state_signature(
-        self, state: CanonicalizationState
-    ) -> tuple[
-        tuple[tuple[str, str], ...],
-        tuple[tuple[str, int], ...],
-        tuple[tuple[str, int], ...],
-        tuple[tuple[tuple[Any, ...], str], ...],
-    ]: ...
+    @staticmethod
+    def _canonicalization_states_equal(
+        left: CanonicalizationState, right: CanonicalizationState
+    ) -> bool: ...
 
     def _canonicalize_block_with_state(
         self,
@@ -1975,10 +1971,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _invalidate_bytearray_len_hint(
         self, name: str | None, value: MoltValue | None = ...
-    ) -> None: ...
-
-    def _invalidate_canonicalization_state_signature(
-        self, state: CanonicalizationState
     ) -> None: ...
 
     def _invalidate_loop_guard(self, name: str) -> None: ...

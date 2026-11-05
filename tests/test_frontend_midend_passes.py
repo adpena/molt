@@ -5550,23 +5550,34 @@ def test_midend_idempotence_probe_has_no_env_or_budget_bypass() -> None:
     assert gen.midend_stats["fixed_point_fail_fast"] >= 1
 
 
-def test_canonicalization_state_signature_reuses_cached_tuple() -> None:
+@pytest.mark.parametrize(
+    "field", ["aliases", "const_int_values", "value_type_tags", "available_values"]
+)
+def test_canonicalization_state_equality_reads_current_closed_facts(field) -> None:
     gen = SimpleTIRGenerator()
     state = gen._empty_canonicalization_state()
-
-    first = gen._canonicalization_state_signature(state)
-    second = gen._canonicalization_state_signature(state)
-
-    assert first is second
-
+    state["aliases"]["x"] = MoltValue("value", type_hint="int")
+    state["const_int_values"]["value"] = 7
+    state["value_type_tags"]["value"] = BUILTIN_TYPE_TAGS["int"]
+    key = ("CONST", 7)
+    state["available_values"][key] = MoltValue("value")
     clone = gen._clone_canonicalization_state(state)
-    cloned = gen._canonicalization_state_signature(clone)
-    assert cloned is first
-
-    state["aliases"]["x"] = MoltValue("y")
-    gen._invalidate_canonicalization_state_signature(state)
-    updated = gen._canonicalization_state_signature(state)
-    assert updated != first
+    assert gen._canonicalization_states_equal(state, clone)
+    # An alias denotes an SSA identity; its type fact is a different field.
+    clone["aliases"]["x"] = MoltValue("value", type_hint="Unknown")
+    assert gen._canonicalization_states_equal(state, clone)
+    if field == "aliases":
+        clone["aliases"]["x"] = MoltValue("different")
+    elif field == "const_int_values":
+        clone["const_int_values"]["value"] = 8
+    elif field == "value_type_tags":
+        clone["value_type_tags"]["value"] = BUILTIN_TYPE_TAGS["float"]
+    else:
+        clone["available_values"][key] = MoltValue("different")
+    # No invalidation or memo maintenance may hide this actual fact change.
+    assert not gen._canonicalization_states_equal(state, clone)
+    assert not gen._canonicalization_states_equal(clone, state)
+    assert gen._canonicalization_states_equal(state, state)
 
 
 def test_sccp_worklist_solver_handles_large_cfg_without_cap_hit() -> None:
@@ -6641,15 +6652,7 @@ def test_full_pipeline_rejects_missing_leak_through_phi() -> None:
                     )
 
 
-def test_cse_projected_inputs_invalidate_predecessor_signature() -> None:
-    class CheckedInputs(SimpleTIRGenerator):
-        def _canonicalize_block_with_state(self, ops, in_state, **kwargs):
-            observed = self._canonicalization_state_signature(in_state)
-            fresh = self._clone_canonicalization_state(in_state)
-            self._invalidate_canonicalization_state_signature(fresh)
-            assert observed == self._canonicalization_state_signature(fresh)
-            return super()._canonicalize_block_with_state(ops, in_state, **kwargs)
-
+def test_cse_projected_inputs_keep_local_substitutions() -> None:
     a, b = MoltValue("a"), MoltValue("b")
     ops = [
         MoltOp(kind="CONST", args=[1], result=a),
@@ -6658,9 +6661,9 @@ def test_cse_projected_inputs_invalidate_predecessor_signature() -> None:
         MoltOp(kind="LABEL", args=[1], result=MoltValue("none")),
         MoltOp(kind="ret", args=[b], result=MoltValue("none")),
     ]
-    # Single-predecessor cloning preserves a cached signature; the must-fact
-    # projection removes its alias before this block's transfer executes.
-    lowered, _ = CheckedInputs()._run_cse_canonicalization_round(
+    # Must-fact projection removes the propagated alias; final rewriting must
+    # still retain the defining block's substitution for the eliminated value.
+    lowered, _ = SimpleTIRGenerator()._run_cse_canonicalization_round(
         ops, allow_cross_block_const_dedupe=False
     )
     assert lowered[-1].kind == "ret"

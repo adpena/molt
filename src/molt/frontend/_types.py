@@ -1013,8 +1013,6 @@ class CanonicalizationState(TypedDict):
     available_values: dict[tuple[Any, ...], MoltValue]
 
 
-_CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY = "__signature_cache"
-
 __all__ = [
     "MoltValue",
     "MoltOp",
@@ -1058,7 +1056,6 @@ __all__ = [
     "FuncInfo",
     "_TrackedOpsList",
     "CanonicalizationState",
-    "_CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY",
     "CompatibilityError",
     "CompatibilityReporter",
     "CFGGraph",

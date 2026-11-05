@@ -166,12 +166,9 @@ class MidendPipelineMixin(GeneratorMixinBase):
                     in_state["const_int_values"][name] = value
                     in_state["value_type_tags"][name] = BUILTIN_TYPE_TAGS["int"]
 
-                # The predecessor clone may carry a cached signature. Both the
-                # must-fact projection and SCCP overlay changed its contents.
-                self._invalidate_canonicalization_state_signature(in_state)
-                input_changed = self._canonicalization_state_signature(
-                    in_state
-                ) != self._canonicalization_state_signature(block_inputs[block_id])
+                input_changed = not self._canonicalization_states_equal(
+                    in_state, block_inputs[block_id]
+                )
                 if block_id in processed_blocks and not input_changed:
                     # Transfer is deterministic for this fixed block, induction
                     # analysis and input state. Reuse only inside this round;
@@ -219,10 +216,9 @@ class MidendPipelineMixin(GeneratorMixinBase):
                     for name, value in out_state["value_type_tags"].items()
                     if name in needed
                 }
-                self._invalidate_canonicalization_state_signature(out_state)
-                if self._canonicalization_state_signature(
-                    out_state
-                ) != self._canonicalization_state_signature(block_outputs[block_id]):
+                if not self._canonicalization_states_equal(
+                    out_state, block_outputs[block_id]
+                ):
                     block_outputs[block_id] = self._clone_canonicalization_state(
                         out_state
                     )

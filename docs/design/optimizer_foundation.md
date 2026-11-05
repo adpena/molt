@@ -70,6 +70,9 @@ Scalar and type facts propagate for live values, live alias targets and all
 available representatives; dead eliminated aliases do not retain duplicate
 facts in every later block. This projects the existing fact domain without
 dropping expression availability or changing effect invalidation.
+CSE compares the four closed fact maps directly, using target SSA identity for
+aliases and available expressions. It retains no sorted signature projection
+or mutation-invalidated memo alongside those maps.
 
 Frontend dominance queries use intervals and retained tree storage is linear.
 The CHK construction itself has a quadratic worst case: a chain whose final

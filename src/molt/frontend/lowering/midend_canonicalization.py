@@ -20,7 +20,7 @@ from molt.frontend.lowering.op_kinds_generated import (
 
 from molt.opcode_literal_payloads import integer_literal_bytes, integer_literal_value
 
-from typing import Any, cast
+from typing import Any
 
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.compiler_analysis.literal_identity import literal_identity_key
@@ -33,7 +33,6 @@ from molt.frontend._types import (
     LoopBoundFact,
     MoltOp,
     MoltValue,
-    _CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY,
     _INLINE_INT_MAX,
     _INLINE_INT_MIN,
 )
@@ -182,25 +181,12 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
     def _clone_canonicalization_state(
         self, state: CanonicalizationState
     ) -> CanonicalizationState:
-        cloned: CanonicalizationState = {
+        return {
             "aliases": state["aliases"].copy(),
             "const_int_values": state["const_int_values"].copy(),
             "value_type_tags": state["value_type_tags"].copy(),
             "available_values": state["available_values"].copy(),
         }
-        cached_signature = cast(Any, state).get(
-            _CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY
-        )
-        if cached_signature is not None:
-            cast(Any, cloned)[_CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY] = (
-                cached_signature
-            )
-        return cloned
-
-    def _invalidate_canonicalization_state_signature(
-        self, state: CanonicalizationState
-    ) -> None:
-        cast(Any, state).pop(_CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY, None)
 
     def _const_cache_key_for_op(self, op: MoltOp) -> tuple[Any, ...] | None:
         if op.kind in _CONST_CACHE_KEY_FOR_OP_KINDS_1:
@@ -1132,8 +1118,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
         for key in stale_values:
             available_values.pop(key, None)
 
-        self._invalidate_canonicalization_state_signature(state)
-
     def _intersect_canonicalization_state(
         self, left: CanonicalizationState, right: CanonicalizationState
     ) -> CanonicalizationState:
@@ -1184,45 +1168,26 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             merged = self._intersect_canonicalization_state(merged, state)
         return merged
 
-    def _canonicalization_state_signature(
-        self, state: CanonicalizationState
-    ) -> tuple[
-        tuple[tuple[str, str], ...],
-        tuple[tuple[str, int], ...],
-        tuple[tuple[str, int], ...],
-        tuple[tuple[tuple[Any, ...], str], ...],
-    ]:
-        cached_signature = cast(Any, state).get(
-            _CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY
-        )
-        if cached_signature is not None:
-            return cast(
-                tuple[
-                    tuple[tuple[str, str], ...],
-                    tuple[tuple[str, int], ...],
-                    tuple[tuple[str, int], ...],
-                    tuple[tuple[tuple[Any, ...], str], ...],
-                ],
-                cached_signature,
+    @staticmethod
+    def _canonicalization_states_equal(
+        left: CanonicalizationState, right: CanonicalizationState
+    ) -> bool:
+        # Compare the closed fact domain directly. Retained sorted projections
+        # doubled state storage and needed invalidation at every mutation.
+        return (
+            left["const_int_values"] == right["const_int_values"]
+            and left["value_type_tags"] == right["value_type_tags"]
+            and left["aliases"].keys() == right["aliases"].keys()
+            and all(
+                value.name == right["aliases"][name].name
+                for name, value in left["aliases"].items()
             )
-        alias_items = tuple(
-            sorted((key, value.name) for key, value in state["aliases"].items())
-        )
-        const_items = tuple(sorted(state["const_int_values"].items()))
-        tag_items = tuple(sorted(state["value_type_tags"].items()))
-        available_items = tuple(
-            sorted(
-                (key, value.name) for key, value in state["available_values"].items()
+            and left["available_values"].keys() == right["available_values"].keys()
+            and all(
+                value.name == right["available_values"][key].name
+                for key, value in left["available_values"].items()
             )
         )
-        signature = (
-            alias_items,
-            const_items,
-            tag_items,
-            available_items,
-        )
-        cast(Any, state)[_CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY] = signature
-        return signature
 
     def _canonicalize_block_with_state(
         self,
@@ -1237,7 +1202,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
         const_int_values: dict[str, int] = state["const_int_values"]
         value_type_tags: dict[str, int] = state["value_type_tags"]
         available_values: dict[tuple[Any, ...], MoltValue] = state["available_values"]
-        state_dirty = False
 
         out: list[MoltOp] = []
         for op in ops:
@@ -1266,7 +1230,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                 ):
                     shared = self._resolve_alias_value(phi_args[0], aliases)
                     aliases[result_name] = shared
-                    state_dirty = True
                     if shared.name in const_int_values:
                         const_int_values[result_name] = const_int_values[shared.name]
                     if shared.name in value_type_tags:
@@ -1368,7 +1331,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                                 end_col_offset=canonical_op.end_col_offset,
                             )
                         const_int_values[result_name] = folded
-                        state_dirty = True
 
             # Constant-fold bitwise operations: when both operands are
             # known integer constants, compute the result at compile time.
@@ -1386,7 +1348,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                             folded_bw = ~arg_const
                             if _INLINE_INT_MIN <= folded_bw <= _INLINE_INT_MAX:
                                 const_int_values[result_name] = folded_bw
-                                state_dirty = True
                 elif len(args) == 2:
                     lhs_bw, rhs_bw = args
                     if isinstance(lhs_bw, MoltValue) and isinstance(rhs_bw, MoltValue):
@@ -1419,7 +1380,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                                     )
                                     _folded_to_bigint = True
                                 const_int_values[result_name] = folded_bw
-                                state_dirty = True
 
             out.append(canonical_op)
 
@@ -1427,14 +1387,12 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                 value = canonical_op.args[0]
                 if isinstance(value, int) and not isinstance(value, bool):
                     const_int_values[result_name] = value
-                    state_dirty = True
             elif canonical_op.kind == FrontendKinds.ABS and len(canonical_op.args) == 1:
                 arg = canonical_op.args[0]
                 if isinstance(arg, MoltValue):
                     arg_const = const_int_values.get(arg.name)
                     if arg_const is not None:
                         const_int_values[result_name] = abs(arg_const)
-                        state_dirty = True
             type_tag = self._const_type_tag(canonical_op)
             if type_tag is None and result_name != "none":
                 if canonical_op.kind in _CANONICALIZE_BLOCK_WITH_STATE_KINDS_3:
@@ -1459,13 +1417,10 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                     ]
             if type_tag is not None and result_name != "none":
                 value_type_tags[result_name] = type_tag
-                state_dirty = True
             if canonical_op.kind == FrontendKinds.IS and result_name != "none":
                 value_type_tags[result_name] = BUILTIN_TYPE_TAGS["bool"]
-                state_dirty = True
             if value_key is not None and result_name != "none":
                 available_values[value_key] = canonical_op.result
-                state_dirty = True
 
             if self._is_canonicalization_barrier_op(canonical_op.kind):
                 # Eliminated SSA definitions still need their substitutions
@@ -1476,11 +1431,9 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                 const_int_values.clear()
                 value_type_tags.clear()
                 available_values.clear()
-                state_dirty = True
 
             arbitrary_heap = self._op_may_access_arbitrary_heap(canonical_op)
             if effect_class == "writes_heap" or arbitrary_heap:
-                state_dirty = True
                 write_alias_classes = (
                     set()
                     if arbitrary_heap
@@ -1497,7 +1450,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                     for key in stale_read_keys:
                         available_values.pop(key, None)
                 else:
-                    state_dirty = True
                     stale_read_keys = [
                         key
                         for key in list(available_values.keys())
@@ -1510,6 +1462,4 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                         # of the explicit operands, including their classes.
                         value_type_tags.clear()
 
-        if state_dirty:
-            self._invalidate_canonicalization_state_signature(state)
         return out, state
