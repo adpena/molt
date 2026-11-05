@@ -121,9 +121,7 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(
         "/// Structural/forwarding producers, shared with the frontend's auto-check authority.\n"
     )
-    out.append(
-        "pub fn kind_defers_source_exception_check(kind: OpKind) -> bool {\n"
-    )
+    out.append("pub fn kind_defers_source_exception_check(kind: OpKind) -> bool {\n")
     deferred = []
     for kind in sorted(registered_simpleir_kinds(data)):
         frontend = frontend_kinds_for_wire_kind(data, kind)
