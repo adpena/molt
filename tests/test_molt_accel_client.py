@@ -27,6 +27,12 @@ def _worker_cmd() -> list[str]:
     return [sys.executable, "-u", str(worker)]
 
 
+# A call to a real worker includes starting its Python process. 500 ms fired
+# on a saturated landing host (2026-11-05, receipt 5a52f77deb, HF-545); owner
+# D1 raises a deadline that fired by 5-10x with its measured cause.
+_WORKER_CALL_TIMEOUT_MS = 5_000
+
+
 def _worker_env() -> dict[str, str]:
     root = Path(__file__).resolve().parents[1]
     env = os.environ.copy()
@@ -39,7 +45,9 @@ def _worker_env() -> dict[str, str]:
 def test_client_echo_roundtrip() -> None:
     client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
     payload = {"ok": True, "count": 3}
-    result = client.call(entry="echo", payload=payload, codec="json", timeout_ms=500)
+    result = client.call(
+        entry="echo", payload=payload, codec="json", timeout_ms=_WORKER_CALL_TIMEOUT_MS
+    )
     assert result == payload
     client.close()
 
@@ -61,7 +69,10 @@ def test_dead_worker_buffered_stdin_cleanup_preserves_replacement(
             successor = client._ensure_process()
             assert successor is not worker
             assert client.call(
-                entry="echo", payload={"alive": True}, codec="json", timeout_ms=500
+                entry="echo",
+                payload={"alive": True},
+                codec="json",
+                timeout_ms=_WORKER_CALL_TIMEOUT_MS,
             ) == {"alive": True}
             assert client._worker is successor
         else:
@@ -76,7 +87,12 @@ def test_dead_worker_buffered_stdin_cleanup_preserves_replacement(
 def test_client_unknown_entry() -> None:
     client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
     with pytest.raises(MoltInvalidInput):
-        client.call(entry="missing", payload={}, codec="json", timeout_ms=500)
+        client.call(
+            entry="missing",
+            payload={},
+            codec="json",
+            timeout_ms=_WORKER_CALL_TIMEOUT_MS,
+        )
     client.close()
 
 
@@ -102,7 +118,7 @@ def test_client_hooks_and_metrics() -> None:
         entry="echo",
         payload={"ok": True},
         codec="json",
-        timeout_ms=500,
+        timeout_ms=_WORKER_CALL_TIMEOUT_MS,
         before_send=before_send,
         after_recv=after_recv,
         metrics_hook=on_metrics,
@@ -151,7 +167,7 @@ def test_client_cancel_check() -> None:
             entry="echo",
             payload={"ok": True},
             codec="json",
-            timeout_ms=500,
+            timeout_ms=_WORKER_CALL_TIMEOUT_MS,
             cancel_check=lambda: True,
         )
     client.close()
@@ -175,7 +191,7 @@ def test_client_retry_on_timeout_with_backoff(monkeypatch: pytest.MonkeyPatch) -
         entry="echo",
         payload={"ok": True},
         codec="json",
-        timeout_ms=500,
+        timeout_ms=_WORKER_CALL_TIMEOUT_MS,
         idempotent=True,
         retry_on_timeout=True,
         retry_backoff_ms=7,
@@ -203,7 +219,7 @@ def test_client_retry_on_busy_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
         entry="echo",
         payload={"ok": True},
         codec="json",
-        timeout_ms=500,
+        timeout_ms=_WORKER_CALL_TIMEOUT_MS,
         idempotent=True,
         retry_on_busy=True,
     )
@@ -225,7 +241,7 @@ def test_client_timeout_not_retried_by_default(
             entry="echo",
             payload={"ok": True},
             codec="json",
-            timeout_ms=500,
+            timeout_ms=_WORKER_CALL_TIMEOUT_MS,
             idempotent=True,
         )
 
@@ -238,7 +254,7 @@ def test_client_decode_response_false() -> None:
         entry="echo",
         payload=payload,
         codec="json",
-        timeout_ms=500,
+        timeout_ms=_WORKER_CALL_TIMEOUT_MS,
         decode_response=False,
     )
     assert isinstance(result, (bytes, bytearray))
@@ -266,7 +282,7 @@ def test_client_concurrent_calls() -> None:
                 entry="echo",
                 payload=payload,
                 codec="json",
-                timeout_ms=500,
+                timeout_ms=_WORKER_CALL_TIMEOUT_MS,
             )
             with lock:
                 results.append(response["id"])
@@ -330,8 +346,18 @@ def test_client_pool_round_robin() -> None:
     pool = MoltClientPool(
         worker_cmd=_worker_cmd(), wire="json", env=_worker_env(), pool_size=2
     )
-    first = pool.call(entry="echo", payload={"id": 1}, codec="json", timeout_ms=500)
-    second = pool.call(entry="echo", payload={"id": 2}, codec="json", timeout_ms=500)
+    first = pool.call(
+        entry="echo",
+        payload={"id": 1},
+        codec="json",
+        timeout_ms=_WORKER_CALL_TIMEOUT_MS,
+    )
+    second = pool.call(
+        entry="echo",
+        payload={"id": 2},
+        codec="json",
+        timeout_ms=_WORKER_CALL_TIMEOUT_MS,
+    )
     assert first["id"] == 1
     assert second["id"] == 2
     clients = pool.clients
