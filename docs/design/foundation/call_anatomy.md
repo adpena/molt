@@ -586,6 +586,16 @@ Its exceptional target publishes at its own label, where location knowledge rese
 control-flow boundaries reset that knowledge conservatively. Backend-generated exits retain
 their originating source terminator's location.
 
+Region labels, jumps, try markers and non-callback exception-state transport do not
+publish a new source site. Their structural adjacency is part of the region model.
+The frontend derives non-observing controls from the generated control, callback
+and automatic-check facts; throwing guards remain observers. Compiler-owned home
+restoration forwards the incoming location to any release callback instead of
+publishing synthetic scope coordinates. Ordinary binding writes retain their
+publication obligation. Await resumption retains and clears its hidden result
+carrier before taking an error edge, captures the received Origin, then retires
+the awaited task and dispatches Unwind to authored cleanup.
+
 Reserve a raw location word beside each executing frame's binding homes, even for module bodies
 and frames with no local slots. The existing home-base lend supplies its address once per
 invocation, only after successful entry; inherited chunks borrow that same frame's storage.
