@@ -8968,6 +8968,10 @@ thread_record_offset = 0
 section = "molt.attached-context-abi.v1"
 compiled_entries = ["molt_main", "molt_host_init", "molt_isolate_import", "molt_isolate_bootstrap"]
 boundary_entries = [
+  # Allocator-only close and native C-error completion retain their raw protocols.
+  "__molt_bridge_free_u8",
+  "__molt_bridge_free_u64",
+  "__molt_native_reference_complete",
   "molt_c_heap_type_canonicalize",
   "molt_c_heap_register_buffer_exporter",
   "molt_c_heap_register_buffer_releaser",

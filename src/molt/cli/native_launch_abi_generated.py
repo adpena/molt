@@ -8,7 +8,7 @@ same command line and image format from it.
 """
 
 COMPILED_ISOLATE_BOOTSTRAP_SYMBOL = (
-    "molt_isolate_bootstrap__molt_context_4f0a38f533b47b0b"
+    "molt_isolate_bootstrap__molt_context_a8c6010e2cbb56a1"
 )
 
 # The JIT runner's command line: [<receipt flag> <path>] <image flag> <image> [args...].

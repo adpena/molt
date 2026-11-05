@@ -64,10 +64,15 @@ def strip_line_comment(line: str) -> str:
 
 
 def declared_bridge_symbols() -> list[str]:
+    from tools.check_runtime_symbol_owners import _c_link_identity
+
     symbols: set[str] = set()
     for source in bridge_sources():
         in_extern = False
         brace_depth = 0
+        attrs: list[str] = []
+        pending_attr = ""
+        attr_depth = 0
         for raw_line in source.read_text(encoding="utf-8").splitlines():
             line = strip_line_comment(raw_line)
             if not in_extern and EXTERN_START_RE.search(line):
@@ -77,9 +82,21 @@ def declared_bridge_symbols() -> list[str]:
             if not in_extern:
                 continue
 
+            if pending_attr or line.lstrip().startswith("#["):
+                pending_attr += line.strip()
+                attr_depth += line.count("[") - line.count("]")
+                if attr_depth == 0:
+                    attrs.append(pending_attr)
+                    pending_attr = ""
+                continue
             match = FN_DECL_RE.match(line)
             if match:
-                symbols.add(match.group(1))
+                symbol = _c_link_identity(
+                    tuple(attrs), match.group(1), declaration=True
+                )
+                assert symbol is not None
+                symbols.add(symbol)
+                attrs.clear()
 
             brace_depth += line.count("{") - line.count("}")
             if brace_depth <= 0:

@@ -1407,12 +1407,14 @@ pub(crate) fn molt_inc_ref_obj_attached_body(_py: &crate::PyToken<'_>, bits: u64
 
 /// Explicitly protected cleanup preserves both the runtime and
 /// native pending-error channels through their existing shared transaction.
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_runtime_release_protected_value(bits: u64) {
+pub(crate) fn __molt_runtime_release_protected_value_attached_body(
+    _py: &crate::PyToken<'_>,
+    bits: u64,
+) {
     if !obj_from_bits(bits).is_ptr() {
         return;
     }
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         molt_cpython_abi::api::errors::with_preserved_error(|| {
             molt_dec_ref_obj_attached_body(_py, bits)
         });

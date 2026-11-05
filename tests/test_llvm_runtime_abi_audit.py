@@ -325,3 +325,18 @@ def test_stale_logical_export_does_not_satisfy_attached_declaration(
         AUDIT.runtime_exports(tmp_path), AUDIT.physical_runtime_import_facts(facts)
     )
     assert [issue.problem for issue in issues] == ["missing-runtime-export"]
+
+
+def test_raw_close_and_native_completion_keep_their_original_link_protocol() -> None:
+    facts = {
+        ("__molt_bridge_free_u8", 2): AUDIT.AbiFact(
+            "__molt_bridge_free_u8", 2, "Void", ("Ptr", "I64")
+        ),
+        ("__molt_bridge_free_u64", 2): AUDIT.AbiFact(
+            "__molt_bridge_free_u64", 2, "Void", ("Ptr", "I64")
+        ),
+        ("__molt_native_reference_complete", 0): AUDIT.AbiFact(
+            "__molt_native_reference_complete", 0, "Void", ()
+        ),
+    }
+    assert AUDIT.physical_runtime_import_facts(facts) == facts

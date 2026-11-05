@@ -204,7 +204,7 @@ def runtime_exports(
 ) -> dict[str, RuntimeSignature]:
     from molt.rust_source_scan import mask_rust_test_items, rust_test_only_source_files
     from tools.check_runtime_symbol_owners import (
-        _export_identity,
+        _c_link_identity,
         _without_macro_templates,
     )
     from tools.wasm_abi_gen.attached_entries import functions, split_params
@@ -226,7 +226,7 @@ def runtime_exports(
         for function in functions(text, include_private=True):
             if not function.external:
                 continue
-            symbol = _export_identity(function.attrs, function.name)
+            symbol = _c_link_identity(function.attrs, function.name)
             if symbol is None:
                 continue
             rust_params = tuple(

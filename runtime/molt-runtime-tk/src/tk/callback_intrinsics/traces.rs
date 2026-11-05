@@ -39,7 +39,7 @@ pub fn molt_tk_trace_add_attached_body(
             Ok(value) => value,
             Err(message) => return raise_tcl_for_handle(_py, handle, message),
         };
-        if !callback_is_callable(callback_bits) {
+        if !callback_is_callable(_py, callback_bits) {
             return raise_exception_u64(
                 _py,
                 BuiltinExc::TypeError,

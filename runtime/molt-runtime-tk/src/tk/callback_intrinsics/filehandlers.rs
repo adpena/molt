@@ -45,7 +45,7 @@ pub fn molt_tk_filehandler_create_attached_body(
         let Some(mask) = to_i64(obj_from_bits(mask_bits)) else {
             return raise_tcl_for_handle(_py, handle, "filehandler mask must be an integer");
         };
-        if !callback_is_callable(callback_bits) {
+        if !callback_is_callable(_py, callback_bits) {
             return raise_exception_u64(_py, BuiltinExc::TypeError, "bad argument list");
         }
 

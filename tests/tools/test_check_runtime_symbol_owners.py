@@ -238,7 +238,7 @@ def test_generated_attached_symbol_macro_owns_its_physical_identity() -> None:
     assert execution is not None
     attr = '#[unsafe(export_name = molt_codegen_abi::attached_symbol!("molt_add"))]'
     assert (
-        check_runtime_symbol_owners._export_identity((attr,), "private_name")
+        check_runtime_symbol_owners._c_link_identity((attr,), "private_name")
         == execution.physical_symbol
     )
 
@@ -249,4 +249,20 @@ def test_attached_symbol_macro_rejects_unclassified_and_boundary_exports(
 ) -> None:
     attr = f'#[unsafe(export_name = molt_codegen_abi::attached_symbol!("{logical}"))]'
     with pytest.raises(ValueError, match="unclassified attached export"):
-        check_runtime_symbol_owners._export_identity((attr,), "private_name")
+        check_runtime_symbol_owners._c_link_identity((attr,), "private_name")
+
+
+def test_attached_macro_observation_reads_fresh_rust_projection(
+    tmp_path, monkeypatch
+) -> None:
+    tool = check_runtime_symbol_owners
+    source = tmp_path / "runtime/molt-codegen-abi/src/attached_context_generated.rs"
+    source.parent.mkdir(parents=True)
+    monkeypatch.setattr(tool, "REPO_ROOT", tmp_path)
+    attr = '#[unsafe(export_name = molt_codegen_abi::attached_symbol!("molt_fixture"))]'
+    for physical in ("first_schema_symbol", "next_schema_symbol"):
+        source.write_text(
+            f'macro_rules! attached_symbol {{\n    ("molt_fixture") => {{ "{physical}" }};\n}}\n',
+            encoding="utf-8",
+        )
+        assert tool._c_link_identity((attr,), "private_name") == physical

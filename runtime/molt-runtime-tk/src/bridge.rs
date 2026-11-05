@@ -29,7 +29,8 @@ unsafe extern "C" {
         base_bits: u64,
         has_base_bits: u64,
     ) -> u64;
-    fn molt_is_callable_bool(obj_bits: u64) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_is_callable_bool")]
+    fn molt_is_callable_bool(__molt_context: u64, obj_bits: u64) -> i32;
     #[link_name = molt_runtime_core::attached_symbol!("molt_dict_snapshot") ]
     fn molt_dict_snapshot(
         __molt_context: u64,
@@ -110,8 +111,8 @@ pub(crate) unsafe fn call_callable_args(_py: &PyToken, callback_bits: u64, args:
     unsafe { molt_call_bind(_py.attached_context(), callback_bits, builder_bits) }
 }
 
-pub(crate) fn is_callable_bits(bits: u64) -> bool {
-    unsafe { molt_is_callable_bool(bits) != 0 }
+pub(crate) fn is_callable_bits(py: &PyToken, bits: u64) -> bool {
+    unsafe { molt_is_callable_bool(py.attached_context(), bits) != 0 }
 }
 
 pub(crate) fn int_from_obj(

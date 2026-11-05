@@ -200,9 +200,8 @@ macro_rules! unexpected_ptr_mut_u8 {
     };
 }
 
-#[unsafe(export_name = molt_runtime_core::attached_symbol!("__molt_bridge_free_u8"))]
-pub extern "C" fn __molt_bridge_free_u8(context: u64, ptr: *mut u8, len: usize) {
-    assert_fixture_context(context);
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_bridge_free_u8(ptr: *mut u8, len: usize) {
     if ptr.is_null() {
         return;
     }
@@ -211,9 +210,8 @@ pub extern "C" fn __molt_bridge_free_u8(context: u64, ptr: *mut u8, len: usize) 
     }
 }
 
-#[unsafe(export_name = molt_runtime_core::attached_symbol!("__molt_bridge_free_u64"))]
-pub extern "C" fn __molt_bridge_free_u64(context: u64, ptr: *mut u64, len: usize) {
-    assert_fixture_context(context);
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_bridge_free_u64(ptr: *mut u64, len: usize) {
     if ptr.is_null() {
         return;
     }

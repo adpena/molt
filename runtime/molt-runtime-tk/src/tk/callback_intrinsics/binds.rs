@@ -38,7 +38,7 @@ pub fn molt_tk_bind_callback_register_attached_body(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        if !callback_is_callable(callback_bits) {
+        if !callback_is_callable(_py, callback_bits) {
             return raise_exception_u64(
                 _py,
                 BuiltinExc::TypeError,
@@ -181,7 +181,7 @@ pub fn molt_tk_widget_bind_callback_register_attached_body(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        if !callback_is_callable(callback_bits) {
+        if !callback_is_callable(_py, callback_bits) {
             return raise_exception_u64(
                 _py,
                 BuiltinExc::TypeError,
@@ -346,7 +346,7 @@ pub fn molt_tk_text_tag_bind_callback_register_attached_body(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        if !callback_is_callable(callback_bits) {
+        if !callback_is_callable(_py, callback_bits) {
             return raise_exception_u64(
                 _py,
                 BuiltinExc::TypeError,
@@ -514,7 +514,7 @@ pub fn molt_tk_treeview_tag_bind_callback_register_attached_body(
                 Ok(value) => value,
                 Err(bits) => return bits,
             };
-        if !callback_is_callable(callback_bits) {
+        if !callback_is_callable(_py, callback_bits) {
             return raise_exception_u64(
                 _py,
                 BuiltinExc::TypeError,

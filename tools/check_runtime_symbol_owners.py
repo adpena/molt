@@ -66,7 +66,10 @@ def _without_macro_templates(text: str) -> tuple[str, set[str]]:
     return "".join(projected), producers
 
 
-def _export_identity(attrs: tuple[str, ...], name: str) -> str | None:
+def _c_link_identity(
+    attrs: tuple[str, ...], name: str, *, declaration: bool = False
+) -> str | None:
+    """Read one physical C link identity at an export or extern declaration."""
     unmangled = False
     physical = None
     for attr in attrs:
@@ -75,19 +78,28 @@ def _export_identity(attrs: tuple[str, ...], name: str) -> str | None:
             tokens = tokens[2:-1]
         if tokens == ["no_mangle"]:
             unmangled = True
-        elif tokens[:2] == ["export_name", "="]:
+        elif tokens[:2] == ["link_name" if declaration else "export_name", "="]:
             attached = re.fullmatch(
-                r'molt_codegen_abi::attached_symbol!\(("(?:[^"\\]|\\.)*")\)',
+                r'molt_(?:codegen_abi|runtime_core)::attached_symbol!\(("(?:[^"\\]|\\.)*")\)',
                 "".join(tokens[2:]),
             )
             if attached is not None:
-                from molt._wasm_abi_generated import runtime_execution_abi
-
+                # Read the actual Rust macro projection. Generators run in one
+                # Python process; an imported Python projection can remain stale
+                # after an upstream generator publishes a new schema.
                 logical = json.loads(attached[1])
-                execution = runtime_execution_abi(logical)
-                if execution is None or execution.context != "Attached":
+                macro_source = (
+                    REPO_ROOT
+                    / "runtime/molt-codegen-abi/src/attached_context_generated.rs"
+                ).read_text(encoding="utf-8")
+                arm = re.search(
+                    rf'^\s*\({re.escape(json.dumps(logical))}\)\s*=>\s*\{{\s*("[^"\n]+")\s*\}};',
+                    macro_source,
+                    re.MULTILINE,
+                )
+                if arm is None:
                     raise ValueError(f"unclassified attached export on {name}: {attr}")
-                physical = execution.physical_symbol
+                physical = json.loads(arm[1])
                 continue
             if len(tokens) != 3:
                 raise ValueError(f"nonliteral export_name on {name}: {attr}")
@@ -103,7 +115,9 @@ def _export_identity(attrs: tuple[str, ...], name: str) -> str | None:
                 raise ValueError(f"invalid export_name on {name}: {attr}")
         elif "export_name" in tokens or "no_mangle" in tokens:
             raise ValueError(f"conditional export attribute on {name}: {attr}")
-    return physical if physical is not None else name if unmangled else None
+    return (
+        physical if physical is not None else name if unmangled or declaration else None
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,7 +182,7 @@ def collect_symbol_owners(
                 if not re.search(r'\bextern\s+(?:"C"\s+)?fn\b', header):
                     continue
                 try:
-                    symbol = _export_identity(function.attrs, function.name)
+                    symbol = _c_link_identity(function.attrs, function.name)
                 except ValueError as error:
                     raise ValueError(f"{rel_path}: {error}") from error
                 if symbol is None:
