@@ -23,7 +23,15 @@ def test_admitted_uv_oracle_does_not_require_a_system_python(
 ):
     # Supported target capability is decided by the selected interpreter, not
     # an old platform-wide exclusion or the presence of a system executable.
-    monkeypatch.setattr(cpython_regrtest.shutil, "which", lambda _name: None)
+    from tests.process_guard_common import install_module_view
+
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        cpython_regrtest.shutil,
+        cpython_regrtest,
+        which=lambda _name: None,
+    )
     config = cpython_regrtest.parse_args(
         [
             "--uv",

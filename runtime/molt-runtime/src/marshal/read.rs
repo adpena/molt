@@ -1,4 +1,5 @@
 use super::*;
+use crate::builtins::compatibility_error::CompatibilityError;
 use std::collections::HashSet;
 
 #[cfg(test)]
@@ -264,8 +265,7 @@ impl<'a, 'py, 'input> Reader<'a, 'py, 'input> {
                 )));
             }
             Tag::Code => {
-                crate::builtins::compatibility_error::CompatibilityError::MarshalCodeObject
-                    .raise::<()>(py);
+                CompatibilityError::MarshalCodeObject.raise::<()>(py);
                 return Err(());
             }
             Tag::Ref => {

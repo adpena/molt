@@ -930,6 +930,11 @@ def generated_outputs() -> dict[Path, str]:
 
 def describe(outcome: str) -> str:
     facts = OUTCOMES[outcome]
+    reference_label = (
+        "AOT contract"
+        if facts.provenance is OutcomeProvenance.AOT_BOUNDARY
+        else "CPython"
+    )
     availability = ",".join(
         operation
         + "@"
@@ -944,7 +949,7 @@ def describe(outcome: str) -> str:
         f"{outcome}; operations={','.join(facts.operations)}; "
         f"versions={','.join(facts.versions)}; platforms={','.join(facts.platforms)}; "
         f"availability={availability}; predicate={facts.predicate}; "
-        f"CPython={facts.reference}; witness={facts.witness}"
+        f"{reference_label}={facts.reference}; witness={facts.witness}"
     )
 
 

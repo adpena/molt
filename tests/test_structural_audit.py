@@ -3038,6 +3038,23 @@ def test_compatibility_source_refresh_rejects_authority_drift(tmp_path, changed)
     assert receipt.read_bytes() == expected_receipt
 
 
+def test_compatibility_aot_inventory_preserves_policy_provenance():
+    protocol = SA.compatibility_errors
+    source = (
+        "use crate::builtins::compatibility_error::CompatibilityError; "
+        "CompatibilityError::MarshalCodeObject.raise::<()>(py);"
+    )
+    inventory = protocol.rust_inventory(
+        source, SA.mask_rust_comments_and_strings(source), True
+    )
+    assert len(inventory) == 1 and inventory[0].proved
+    assert "AOT contract=docs/design/marshal.md" in inventory[0].detail
+    assert "CPython=" not in inventory[0].detail
+    findings = SA._compatibility_findings(ROOT / "reader.rs", ROOT, inventory)
+    assert findings[0].title == "proved compatibility outcome: MarshalCodeObject"
+    assert findings[0].metric == 0
+
+
 def test_compatibility_refresh_requires_explicit_aot_authority_before_network(tmp_path):
     protocol = SA.compatibility_errors
     _compatibility_source_policy_fixture(tmp_path)
