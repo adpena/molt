@@ -1,6 +1,6 @@
 # Compiler-only Python identity, acquisition and mutation authority.
 # Bit positions are stable cache identities; never renumber an existing entry.
-schema_version = 2
+schema_version = 3
 
 [identity_bits]
 IMPORTLIB_MODULE = 0
@@ -81,6 +81,11 @@ DATACLASSES_FIELD = 74
 BUILTIN_GETATTR = 75
 BUILTIN_HASATTR = 76
 BUILTIN_DELATTR = 77
+INTRINSIC_DATACLASSES_INIT_GLOBALS = 78
+INTRINSIC_DATACLASSES_INIT = 79
+
+[native_initializer]
+DATACLASS = ["PARAMETERS", "POSITIONAL", "DEFAULTS", "KWDEFAULTS", "CAPTURE_NAMES", "CAPTURES", "STORES", "POST_INIT_INPUTS", "FACTORY_MARKER", "FROZEN_OBJECT", "ANNOTATIONS", "GLOBALS", "MODULE", "BUILTINS"]
 
 [target_property]
 SYS_PLATFORM = "sys_platform"
@@ -132,6 +137,16 @@ minimum_arguments = 1
 name = "molt_sys_platform"
 identity = "INTRINSIC_SYS_PLATFORM"
 target_property = "SYS_PLATFORM"
+
+[[intrinsic_callable]]
+name = "molt_dataclasses_init_globals"
+identity = "INTRINSIC_DATACLASSES_INIT_GLOBALS"
+attribute_read = { argument = 0, member = "__dict__" }
+
+[[intrinsic_callable]]
+name = "molt_dataclasses_init"
+identity = "INTRINSIC_DATACLASSES_INIT"
+native_initializer = "DATACLASS"
 
 [[intrinsic_callable]]
 name = "molt_os_name"

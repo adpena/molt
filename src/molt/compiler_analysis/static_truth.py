@@ -59,6 +59,7 @@ SourceDemandPhase = Literal[
     "escape",
     "expose",
     "release",
+    "release_contents",
     "protocol",
     "descriptor",
     "mutate",
@@ -1243,7 +1244,7 @@ def iterable_element_result(
     return sequence_element_result(result.items)
 
 
-def expression_result_for_publication(
+def _expression_result_for_publication_shallow(
     result: StaticExpressionResult,
 ) -> StaticExpressionResult:
     """Publish a value into a binding without inventing heap/alias custody.
@@ -1252,8 +1253,9 @@ def expression_result_for_publication(
     result, but concrete contents, cardinality, truth, freshness, and
     reference-bearing release safety cease to be stable once an alias is
     published. A subsequent object-write or callback expires element shape,
-    retaining only possible canonical identities beside OTHER. Immutable owners retain
-    their own truth and cardinality while unsafe descendant shape is erased.
+    retaining only possible canonical identities beside OTHER. Immutable owners
+    retain their own membership, truth and cardinality; publication of each
+    referent separately widens its release custody and mutable shape.
     Bytearrays remain release-safe because their payload cannot contain object
     references.
     """
@@ -1275,7 +1277,7 @@ def expression_result_for_publication(
         result.truth is truth
         and result.value is None
         and not result.value_known
-        and result.items is None
+        and (immutable_owner or result.items is None)
         and result.release_may_call is release_may_call
         and not result.fresh_container
         and result.length == length
@@ -1286,12 +1288,24 @@ def expression_result_for_publication(
         truth=truth,
         value=None,
         value_known=False,
-        items=None,
+        items=result.items if immutable_owner else None,
         release_may_call=release_may_call,
         fresh_container=False,
         length=length,
         element_result=iterable_element_result(result),
     )
+
+
+def expression_result_for_publication(
+    result: StaticExpressionResult,
+) -> StaticExpressionResult:
+    # Immutable membership does not prove descendant release safety. Each node's
+    # cached recursive publication proof widens release risk before edges are
+    # rebuilt. Callback expiry additionally erases mutable homogeneous elements
+    # through expression_result_without_mutable_contents, not publication alone.
+    if result.kind in {"tuple", "frozenset"} and not result._recursively_stable:
+        return _publish_expression_result_dag(result, expire_mutable_elements=False)
+    return _expression_result_for_publication_shallow(result)
 
 
 def expression_result_for_owned_binding(
@@ -1312,6 +1326,15 @@ def expression_result_without_mutable_contents(
     result: StaticExpressionResult, *, preserve_owner: bool = False
 ) -> StaticExpressionResult:
     """Expire alias-sensitive mutable contents while retaining normal kind."""
+    return _publish_expression_result_dag(result, preserve_owner=preserve_owner)
+
+
+def _publish_expression_result_dag(
+    result: StaticExpressionResult,
+    *,
+    preserve_owner: bool = False,
+    expire_mutable_elements: bool = True,
+) -> StaticExpressionResult:
 
     # A proven nonalias outer allocation can survive a write to another owner,
     # but any mutable object reachable through it can still be that receiver.
@@ -1329,7 +1352,7 @@ def expression_result_without_mutable_contents(
             published = (
                 expression_result_for_owned_binding(current)
                 if retain_outer
-                else expression_result_for_publication(current)
+                else _expression_result_for_publication_shallow(current)
             )
             # Keep normalized item edges alive and identical across revisits.
             published_results[identity] = published
@@ -1338,6 +1361,9 @@ def expression_result_without_mutable_contents(
             continue
         child = published.element_result
         if published.kind in _MUTABLE_EXPRESSION_KINDS and not retain_outer:
+            if not expire_mutable_elements:
+                completed[identity] = published
+                continue
             child = (
                 expression_result_without_value_facts(child)
                 if child is not None

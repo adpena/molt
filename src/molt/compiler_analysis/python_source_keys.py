@@ -38,12 +38,16 @@ def decode_python_source_key(value: object) -> PythonSourceKey:
 
 class PythonSourceProjection(StrEnum):
     YIELD_FROM_ELEMENTS = "YieldFrom.elements"
+    CALL_ATTRIBUTE = "Call.attribute"
+    CALL_NATIVE_INITIALIZER = "Call.native_initializer"
+    CALL_MAPPING_VALUE = "Call.mapping_value"
+    CALL_NATIVE_BUILTINS = "Call.native_builtins"
 
 
 def python_source_projection_key(
-    node: ast.YieldFrom, projection: PythonSourceProjection
+    node: ast.YieldFrom | ast.Call, projection: PythonSourceProjection
 ) -> PythonSourceKey:
-    """Keep a delegated element distinct from its expression's completion."""
+    """Keep a projected value distinct from its expression's completion."""
     source = python_node_source_key(node)
     return (*source[:4], projection.value)
 

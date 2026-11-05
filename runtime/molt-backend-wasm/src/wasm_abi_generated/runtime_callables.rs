@@ -1383,23 +1383,8 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 1,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_importlib_ensure_default_meta_path",
-        import: WasmRuntimeImport::ImportlibEnsureDefaultMetaPath,
-        arity: 1,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_extension_loader_payload",
         import: WasmRuntimeImport::ImportlibExtensionLoaderPayload,
-        arity: 3,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_importlib_admit_spec",
-        import: WasmRuntimeImport::ImportlibAdmitSpec,
-        arity: 2,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_importlib_filefinder_find_spec",
-        import: WasmRuntimeImport::ImportlibFilefinderFindSpec,
         arity: 3,
     },
     RuntimeCallableImportSpec {
@@ -6718,11 +6703,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 2,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_importlib_extension_loader_type_declare",
-        import: WasmRuntimeImport::ImportlibExtensionLoaderTypeDeclare,
-        arity: 1,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_sourcefileloader_exec_module",
         import: WasmRuntimeImport::ImportlibSourcefileloaderExecModule,
         arity: 3,
@@ -6780,6 +6760,21 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_compiled_loader_types",
         import: WasmRuntimeImport::ImportlibCompiledLoaderTypes,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_importlib_path_finder_types",
+        import: WasmRuntimeImport::ImportlibPathFinderTypes,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_importlib_file_loader_types_declare",
+        import: WasmRuntimeImport::ImportlibFileLoaderTypesDeclare,
+        arity: 1,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_importlib_namespace_path_epoch",
+        import: WasmRuntimeImport::ImportlibNamespacePathEpoch,
         arity: 0,
     },
     RuntimeCallableImportSpec {
@@ -12975,15 +12970,8 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_importlib_cache_from_source" => Some(WasmRuntimeImport::ImportlibCacheFromSource),
         "molt_importlib_coerce_module_name" => Some(WasmRuntimeImport::ImportlibCoerceModuleName),
         "molt_importlib_decode_source" => Some(WasmRuntimeImport::ImportlibDecodeSource),
-        "molt_importlib_ensure_default_meta_path" => {
-            Some(WasmRuntimeImport::ImportlibEnsureDefaultMetaPath)
-        }
         "molt_importlib_extension_loader_payload" => {
             Some(WasmRuntimeImport::ImportlibExtensionLoaderPayload)
-        }
-        "molt_importlib_admit_spec" => Some(WasmRuntimeImport::ImportlibAdmitSpec),
-        "molt_importlib_filefinder_find_spec" => {
-            Some(WasmRuntimeImport::ImportlibFilefinderFindSpec)
         }
         "molt_importlib_find_in_path_package_context" => {
             Some(WasmRuntimeImport::ImportlibFindInPathPackageContext)
@@ -14312,9 +14300,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_uuid_uuid1_bytes" => Some(WasmRuntimeImport::UuidUuid1Bytes),
         "molt_uuid_uuid3_bytes" => Some(WasmRuntimeImport::UuidUuid3Bytes),
         "molt_uuid_uuid5_bytes" => Some(WasmRuntimeImport::UuidUuid5Bytes),
-        "molt_importlib_extension_loader_type_declare" => {
-            Some(WasmRuntimeImport::ImportlibExtensionLoaderTypeDeclare)
-        }
         "molt_importlib_sourcefileloader_exec_module" => {
             Some(WasmRuntimeImport::ImportlibSourcefileloaderExecModule)
         }
@@ -14342,6 +14327,13 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_importlib_compiled_loader" => Some(WasmRuntimeImport::ImportlibCompiledLoader),
         "molt_importlib_compiled_loader_types" => {
             Some(WasmRuntimeImport::ImportlibCompiledLoaderTypes)
+        }
+        "molt_importlib_path_finder_types" => Some(WasmRuntimeImport::ImportlibPathFinderTypes),
+        "molt_importlib_file_loader_types_declare" => {
+            Some(WasmRuntimeImport::ImportlibFileLoaderTypesDeclare)
+        }
+        "molt_importlib_namespace_path_epoch" => {
+            Some(WasmRuntimeImport::ImportlibNamespacePathEpoch)
         }
         "molt_importlib_find_spec" => Some(WasmRuntimeImport::ImportlibFindSpec),
         "molt_imp_acquire_lock" => Some(WasmRuntimeImport::ImpAcquireLock),
