@@ -102,9 +102,11 @@ pub(in crate::wasm::op_loop) fn release_adopted_callable(
     }
     let args = op.args.as_deref().unwrap_or(&[]);
     func.instruction(&Instruction::LocalGet(locals[&args[0]]));
-    emit_call(
+    crate::wasm::refcount::emit_refcount(
         func,
         reloc_enabled,
-        import_ids[WasmRuntimeImport::DecRefObj],
+        import_ids,
+        locals.refcount(),
+        molt_codegen_abi::inline_refcount::RefcountOperation::Release,
     );
 }

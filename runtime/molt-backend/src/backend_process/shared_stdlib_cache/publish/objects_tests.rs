@@ -232,13 +232,14 @@ fn constituent_publication_roundtrips_rejects_corruption_and_preserves_prior_gen
     let different = object_bytes("different");
     std::fs::write(&source, &different).unwrap();
     let changed_origin = worker_origin(&different, 505);
-    assert!(
-        cache
-            .publish(&key, &source, &changed_origin)
-            .unwrap_err()
-            .to_string()
-            .contains("different output")
-    );
+    let disagreement = cache
+        .publish(&key, &source, &changed_origin)
+        .unwrap_err()
+        .to_string();
+    assert!(disagreement.contains("different output"));
+    assert!(disagreement.contains(&bytes_to_lower_hex(&key)));
+    assert!(disagreement.contains(&cache.path(&key).display().to_string()));
+    assert!(disagreement.contains("first_difference="));
     assert_eq!(std::fs::read(cache.path(&key)).unwrap(), stored);
     std::fs::write(&source, b"invalid object").unwrap();
     assert!(cache.publish(&key, &source, &origin).is_err());

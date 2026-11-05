@@ -13,6 +13,7 @@ use super::{
     import_func_ref, is_cold_module_chunk_function, jump_block, materialize_label_block,
     preanalyze_function_ir, protect_cleanup_names, switch_to_block_materialized,
 };
+use crate::native_backend::{NativeFunctionImports, NativeRefcountSite};
 use crate::repr::{ContainerStorageKind, ScalarKind};
 use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
 use cranelift_codegen::isa::CallConv;
@@ -22,6 +23,7 @@ use cranelift_codegen::{
     verifier::verify_function,
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_ir::OpKind;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -138,3 +140,22 @@ mod preanalysis_slot_backing;
 mod preanalysis_slot_exclusion;
 mod scalar_carriers;
 mod shared;
+
+/// These IR-only fixtures have no attached runtime invocation. Every dynamic
+/// pointer must consequently retain its original cold transition.
+fn detached_refcount_site(
+    builder: &mut FunctionBuilder<'_>,
+    slow: cranelift_codegen::ir::FuncRef,
+    operation: RefcountOperation,
+) -> NativeRefcountSite {
+    NativeRefcountSite {
+        slow,
+        admission: builder.ins().iconst(types::I64, 0),
+        operation,
+    }
+}
+fn detached_imports(builder: &mut FunctionBuilder<'_>) -> NativeFunctionImports {
+    let mut imports = NativeFunctionImports::default();
+    imports.set_refcount_admission(builder.ins().iconst(types::I64, 0));
+    imports
+}

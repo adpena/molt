@@ -3,8 +3,6 @@ use crate::wasm::const_materialization::WasmConstOpPolicy;
 use crate::wasm::frame_locals::WasmFrameLocalKind;
 use crate::wasm::function_frame::{WasmConstAnchorRegion, WasmConstAnchorSlot};
 use crate::wasm::{WasmBackend, WasmFrameLocals, WasmFrameSyntheticLocal};
-use crate::wasm_abi_generated::WasmRuntimeImport;
-use crate::wasm_binary::emit_call;
 use crate::wasm_data::DataSegmentRef;
 use crate::wasm_import_tracking::TrackedImportIds;
 use wasm_encoder::Function;
@@ -85,10 +83,12 @@ pub(in crate::wasm) fn emit_const_anchor_result(
         .unwrap_or_else(|| panic!("anchored const op {} requires an output", op.kind));
     let out_local = locals.result_slot(out_name);
     region.emit_load(func, slot);
-    emit_call(
+    crate::wasm::refcount::emit_refcount(
         func,
         reloc_enabled,
-        import_ids[WasmRuntimeImport::IncRefObj],
+        import_ids,
+        locals.refcount(),
+        molt_codegen_abi::inline_refcount::RefcountOperation::Retain,
     );
     region.emit_load(func, slot);
     func.instruction(&wasm_encoder::Instruction::LocalSet(out_local));
@@ -102,10 +102,12 @@ pub(in crate::wasm) fn emit_const_anchor_result(
         )
     {
         func.instruction(&wasm_encoder::Instruction::LocalGet(out_local));
-        emit_call(
+        crate::wasm::refcount::emit_refcount(
             func,
             reloc_enabled,
-            import_ids[WasmRuntimeImport::DecRefObj],
+            import_ids,
+            locals.refcount(),
+            molt_codegen_abi::inline_refcount::RefcountOperation::Release,
         );
     }
 }

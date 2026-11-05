@@ -285,6 +285,7 @@ pub(crate) enum WasmRuntimeImport {
     CodeSlotsInit,
     FrameLocalsSet,
     ThreadRecord,
+    RefcountAdmission,
     TraceEnterSlot,
     TraceExit,
     TraceSetLine,

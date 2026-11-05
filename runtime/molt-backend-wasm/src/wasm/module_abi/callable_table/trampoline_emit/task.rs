@@ -28,6 +28,7 @@ pub(super) fn emit_task_trampoline(
     arity: usize,
     has_closure: bool,
     closure_size: i64,
+    refcount: crate::wasm::refcount::WasmRefcountScratch,
 ) {
     let layout = WasmTaskRuntimeLayout::for_trampoline_task_kind(task_kind);
     task_kind.constructor_layout().validate_closure_size(
@@ -66,6 +67,7 @@ pub(super) fn emit_task_trampoline(
         layout.payload_base_offset(),
         arity,
         has_closure,
+        refcount,
     );
     layout.emit_completion_result(
         func,
@@ -73,6 +75,7 @@ pub(super) fn emit_task_trampoline(
         reloc_enabled,
         TASK_LOCAL,
         VAL_LOCAL,
+        refcount,
     );
     // NOTE: no `Instruction::End` here — the shared tail in trampoline_emit.rs
     // is the single function-body `End` authority for every TrampolineBehavior.
@@ -87,6 +90,7 @@ fn emit_payload_slots(
     payload_base_offset: i32,
     arity: usize,
     has_closure: bool,
+    refcount: crate::wasm::refcount::WasmRefcountScratch,
 ) {
     let payload_slots = arity + usize::from(has_closure);
     if payload_slots == 0 {
@@ -115,6 +119,7 @@ fn emit_payload_slots(
             BASE_LOCAL,
             offset,
             0,
+            Some(refcount),
         );
         offset += 8;
     }
@@ -134,6 +139,7 @@ fn emit_payload_slots(
             BASE_LOCAL,
             arg_offset,
             VAL_LOCAL,
+            Some(refcount),
         );
     }
 }

@@ -5,6 +5,7 @@ pub(crate) fn repr_name(repr: LirRepr) -> &'static str {
     match repr {
         LirRepr::DynBox => "dynbox",
         LirRepr::Ref64 => "ref64",
+        LirRepr::Immortal64 => "immortal64",
         LirRepr::I64 => "i64",
         LirRepr::F64 => "f64",
         LirRepr::Bool1 => "bool1",

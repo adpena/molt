@@ -34,7 +34,10 @@ pub(in crate::wasm::lir_fast) fn emit_lir_bool_select(
     }
 
     assert!(
-        matches!(result.repr, LirRepr::DynBox | LirRepr::Ref64),
+        matches!(
+            result.repr,
+            LirRepr::DynBox | LirRepr::Ref64 | LirRepr::Immortal64
+        ),
         "boxed Python boolean selection must produce a boxed result, got {:?}",
         result.repr
     );
@@ -65,7 +68,11 @@ pub(in crate::wasm::lir_fast) fn emit_lir_bool_select(
         emit_get_boxed_for_repr(ctx, rhs);
     }
     ctx.instructions.push(Instruction::End);
-    ctx.instructions
-        .push(Instruction::LocalTee(ctx.get_local(dst)));
-    ctx.emit_runtime_call(LirRuntimeCall::IncRefObj);
+    if result.repr == LirRepr::Immortal64 {
+        ctx.emit_set(dst);
+    } else {
+        ctx.instructions
+            .push(Instruction::LocalTee(ctx.get_local(dst)));
+        ctx.emit_runtime_call(LirRuntimeCall::IncRefObj);
+    }
 }

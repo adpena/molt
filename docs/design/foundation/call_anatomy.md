@@ -226,6 +226,168 @@ dead int costs `dec_ref_ptr_terminal` 33.7% because a leaf int runs the generic 
   binding and frame push for the wrapper (`bind_python_frame` 10.4%, `frame_stack_pop` 6.7%),
   `_normalize_format` 11.0%, the intrinsic 16.2%, of which packing proper is 5.7%.
 
+### 2.4.1 Construction argument storage (HF-685, 2026-11-04)
+
+The later canonical `plain_construction`, `new_and_update` and
+`dataclass_construction` programs distinguish a builder cost from the broader
+constructor/namespace gap. The cell below compares source `ca1cdefc68c1` with
+`540e467c5d`, Linux x86_64, Cranelift, logical release, release compiler and
+release-output runtime, Rust 1.99.1 and Valgrind 3.22.0. It counts Callgrind
+instruction reads (`Ir`); hardware retired instructions are a separate cell.
+
+Compile each program from `tools/perf_scoreboard_primitives.py` once with
+`MOLT_KEEP_SYMBOLS=1`. Capture that same executable with Callgrind at N=0 and
+10,000/20,000 actual operations (`new_and_update` receives N=100,000/200,000).
+Subtract N=0 function costs and divide by operations; loop/control work stays in
+the slope. Every raw exclusive sum matches its event summary. All six K/2K slopes
+agree within 0.1%; all 18 outputs and program hashes match exact CPython 3.12.16.
+The frontend image is CPython 3.12.15. Function costs follow the
+[Callgrind format](https://valgrind.org/docs/manual/cl-format.html);
+inclusive rows overlap and cannot be summed as a semantic partition.
+
+| Primitive | Base Ir/op | Head Ir/op | Change |
+| --- | ---: | ---: | ---: |
+| `plain_construction` | 16012.50910 | 12123.85650 | -24.285% |
+| `new_and_update` | 27740.20570 | 27875.10090 | +0.486% |
+| `dataclass_construction` | 29268.72200 | 29247.29260 | -0.073% |
+
+Plain construction executes 17 pointer hashes per operation. Its builder map is
+checked twice per push, then an independent storage set is checked again; both
+registries are updated on allocation and retirement. Hash bodies plus the three
+provenance helper bodies account for 3,435.96 Ir/op (21.46%), before Box and lock
+overhead. This is a measured removable subset, not a complete mechanism partition.
+
+The managed builder now contains its typed `CallArgs` value inline. It has one
+storage owner, with Rust size/alignment and the `inline_rust`,
+`linear_unpublished` heap-kind contract. The external Box, pointer payload,
+builder map, storage set and runtime-state mutex are retired together. A live
+compiler-owned builder supplies the unsafe projection's lifetime; a live
+wrong-kind object is rejected before projection. This retains the existing ABI
+precondition rather than admitting forged/freed addresses. Native, LLVM and WASM
+pass opaque handles and contain no payload offset. Shared builders retain copies;
+unique builders transfer argument edges. Cleanup empties both fields before any
+edge release, leaving valid empty inline storage through deallocation. Allocation
+refusal releases prepared keyword/vector storage; inline bytes belong to normal
+object accounting. The owning call-custody contract is
+[SIMPLE_IR_JSON_SCHEMA.md](../../spec/areas/compiler/SIMPLE_IR_JSON_SCHEMA.md).
+
+The corrected mechanism removes every builder-registry hash caller. Plain's
+remaining usize-hash slope is 0.0003 calls/op; its mimalloc allocation entry falls
+from 4.0000 to 3.0003 calls/op, and free from 4.0005 to 3.0007, matching the removed
+external Box. The other primitives have zero steady-state builder calls:
+new-and-update's four pointer hashes belong to attribute IC lookup, while the
+dataclass's nine belong to retirement and callable-target lookup. Their larger
+resolution/retirement obligations remain; these measurements do not close HF-685,
+HF-680/HF-688, HF-205 or HF-79/HF-226.
+
+Two sequential read-only design and implementation-readiness reviews accepted
+this mechanism after an explicit producer/consumer lifetime audit, initialization
+and reentry rules, and a fixed performance criterion. The affected differentials
+pass against CPython 3.12 on native, LLVM and WASM, covering constructor/new/init
+variants, namespace identity/update, slots, vars, pickling, argument
+failure/expansion and reentrant release. The runtime semantic gate also passes.
+Serial failed-cell retries retain the guards: the initial concurrent LLVM build
+reported unequal bytes for identical object inputs, and two WASM builds exceeded
+their 600-second guard. Those build incidents do not become semantic passes;
+the matching serial receipts establish the affected semantic cells.
+The five-pair native hardware A/B uses exact CPython 3.12.16 and the unchanged
+per-primitive noise bounds. Plain qualification requires every head slope below
+every base slope; material regression on either other primitive is an increase
+beyond its existing bound. Allocation/RSS and artifact size remain separate claims.
+
+A single five-pair hardware run on macOS aarch64 compares the same programs and
+profiles at base `ca1cdefc68c1` and head `4c8b6bd2e5` (production sources equal to
+`540e467c5d`), with exact CPython 3.12.16. Counts below are median N=K minus N=0
+`/usr/bin/time -l` retired-instruction slopes; K is 100,000 actual operations.
+The paired ratio median need not equal the ratio of the two medians.
+
+| Primitive | Base retired/op | Head retired/op | Paired head/base median | Paired spread | Qualification |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `plain_construction` | 16670.41749 | 12110.77932 | 0.726705 | 0.169% | separated; within existing spread bound |
+| `new_and_update` | 27460.99875 | 27519.57211 | 1.001775 | 29.721% | inconclusive; head/CPython spread exceeds 1.5% bound |
+| `dataclass_construction` | 28975.14136 | 28938.18734 | 0.999063 | 0.093% | within existing spread bound; effectively unchanged |
+
+Plain's per-runtime Molt/CPython spreads are 1.180%/1.405%, below its 4.2%
+bound, and every head slope is below every base slope. Dataclass's corresponding
+spreads are 0.291%/0.291%, below 1.4%. New-and-update retains the head outlier of
+35,685.84246 retired/op and its 29.305% head/CPython spread; no sample is discarded
+or repeated, and no family-wide no-regression claim follows. Median peak RSS
+falls 0.42%, 0.83% and 0.15% for plain, new-and-update and dataclass respectively;
+binary size grows 1.58%, 1.50% and 1.41%. These cells establish the scoped plain
+construction improvement, not closure of the broader construction gap.
+
+The tables retain the top 15 exclusive functions of **each** build as one union.
+Ranks identify membership; `-` means outside that build's top 15. Costs retain
+signed startup differencing, including zero for retired functions. Names abbreviate
+`molt_runtime::` as `rt::`. Full call edges and review/proof receipts stay in the
+private canonical lane artifacts. No sampled percentage is converted to Ir.
+
+#### `plain_construction`
+
+| Rank B/H | Function | Base exclusive/inclusive Ir/op | Head exclusive/inclusive Ir/op | Calls B/H | Mechanism |
+| --- | --- | ---: | ---: | ---: | --- |
+| 1/- | `<std::hash::random::RandomState as core::hash::BuildHasher>::hash_one::<&usize>` | 1462.03/2397.04 | 0.03/0.04 | 17.000/0.000 | hashing |
+| 2/- | `<core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as core::hash::Hasher>::write` | 934.93/934.88 | 0.17/0.29 | 16.999/0.004 | hashing |
+| 3/1 | `rt::object::dec_ref_ptr_terminal_body` | 439.03/5171.85 | 433.03/4201.62 | 2.000/2.000 | refcount/retirement |
+| 4/- | `rt::call::bind::arguments::callargs_builder_is_live` | 380.00/1085.00 | 0.00/0.00 | 5.000/0.000 | builder guards/binding |
+| 5/- | `rt::call::bind::arguments::callargs_ptr` | 380.00/1110.00 | 0.00/0.00 | 5.000/0.000 | builder guards/binding |
+| 6/2 | `rt::object::seq_access::pin_tuple` | 356.04/356.04 | 356.04/356.04 | 4.000/4.000 | metadata guards |
+| 7/3 | `rt::object::object_shape_id` | 344.00/504.00 | 344.00/504.00 | 18.000/18.000 | type/shape guards |
+| 8/4 | `molt_dec_ref_obj` | 311.00/3621.02 | 311.00/3614.46 | 7.000/7.000 | refcount/retirement |
+| 9/- | `rt::call::bind::arguments::require_callargs_ptr` | 279.00/2019.00 | 0.00/0.00 | 3.000/0.000 | builder guards/binding |
+| 10/5 | `rt::object::alloc_object_zeroed_with_aux_policy` | 275.04/708.06 | 287.04/887.01 | 2.000/2.000 | allocation |
+| 11/7 | `core::ptr::drop_glue::<rt::object::seq_access::PinnedTuple>` | 268.03/268.03 | 268.03/268.03 | 4.000/4.000 | refcount/retirement |
+| 12/8 | `rt::object::heap_lifecycle::take_best_buffer::<u64>` | 264.04/264.04 | 264.04/264.04 | 4.001/4.001 | allocation/retirement |
+| 13/9 | `rt::call::bind::inline_cache::try_call_bind_ic_fast` | 263.97/4843.14 | 262.97/4936.90 | 1.000/1.000 | call binding |
+| 14/6 | `rt::builtins::frames::namespace::take_invocation_namespace` | 262.00/292.00 | 280.00/310.00 | 1.000/1.000 | call/frame binding |
+| 15/10 | `molt_frame_set_col` | 238.00/238.00 | 238.00/238.00 | 7.000/7.000 | call/frame binding |
+| -/11 | `<rt::builtins::frames::FrameEntry>::release` | 235.00/268.00 | 235.00/268.00 | 1.000/1.000 | call/frame binding |
+| -/12 | `rt::object::builders::canonical_special_singleton_bits` | 224.01/224.01 | 224.01/224.01 | 7.000/7.000 | runtime entry/singletons |
+| -/13 | `rt::object::instance_dict_bits_ptr` | 164.00/404.00 | 216.00/396.00 | 4.000/4.000 | dictionary admission |
+| -/14 | `molt_callargs_push_pos` | 209.00/2125.04 | 191.00/325.51 | 2.000/2.000 | builder guards/binding |
+| -/15 | `rt::object::accessors::guard_layout_match` | 186.00/276.00 | 186.00/276.00 | 2.000/2.000 | type/shape guards |
+
+#### `new_and_update`
+
+| Rank B/H | Function | Base exclusive/inclusive Ir/op | Head exclusive/inclusive Ir/op | Calls B/H | Mechanism |
+| --- | --- | ---: | ---: | ---: | --- |
+| 1/1 | `rt::builtins::attributes::get_attr_object_ic_with_mode` | 887.99/14060.55 | 887.99/14296.61 | 4.000/4.000 | attribute guards |
+| 2/2 | `rt::builtins::attr::cached_class_namespace_mro` | 780.28/1435.81 | 780.26/1435.09 | 10.000/10.000 | attribute guards |
+| 3/3 | `<rt::builtins::attr::class_cache::ClassLookupCache>::lookup` | 780.13/780.13 | 780.15/780.15 | 12.003/12.003 | attribute guards |
+| 4/4 | `rt::builtins::attr::bind_descriptor` | 757.00/3621.81 | 755.00/3795.60 | 2.000/2.000 | descriptor binding |
+| 5/5 | `rt::builtins::type_ops::type_of_bits` | 657.00/1500.00 | 657.00/1500.00 | 12.000/12.000 | type/shape guards |
+| 6/6 | `rt::builtins::attributes::class_lookup::attribute_lookup_transaction::<rt::builtins::attributes::attr_lookup_ptr_with_mode::{closure#0}>::{closure#0}` | 642.00/6189.32 | 642.00/6328.69 | 2.000/2.000 | attribute guards |
+| 7/7 | `rt::builtins::attr::object_attr_lookup_inner` | 581.00/7085.50 | 581.00/7217.84 | 3.000/3.000 | attribute guards |
+| 8/8 | `molt_dec_ref_obj` | 538.99/4507.30 | 538.99/4498.52 | 12.000/12.000 | refcount/retirement |
+| 9/9 | `rt::builtins::classes::builtin_classes` | 525.13/524.58 | 525.12/525.10 | 21.005/21.005 | runtime entry/singletons |
+| 10/- | `rt::builtins::attributes::class_lookup::type_attr_lookup_ptr_inner` | 452.04/2199.52 | 201.00/2303.48 | 1.000/1.000 | attribute guards |
+| 11/10 | `rt::call::bind::inline_cache::load_method` | 430.00/7033.51 | 408.00/7108.19 | 2.000/2.000 | call binding |
+| 12/12 | `rt::object::object_shape_id` | 396.00/616.00 | 396.00/616.00 | 22.000/22.000 | type/shape guards |
+| 13/13 | `rt::object::builders::canonical_special_singleton_bits` | 384.00/384.00 | 384.00/384.00 | 12.000/12.000 | runtime entry/singletons |
+| 14/14 | `rt::builtins::attr::object_attr_lookup_inner::{closure#0}` | 368.00/4694.76 | 361.00/4827.10 | 3.000/3.000 | attribute guards |
+| 15/15 | `<std::hash::random::RandomState as core::hash::BuildHasher>::hash_one::<&usize>` | 344.30/564.49 | 344.30/564.49 | 4.002/4.002 | hashing |
+| -/11 | `rt::object::instance_dict_bits_ptr` | 313.12/746.12 | 404.12/732.12 | 8.005/8.005 | dictionary admission |
+
+#### `dataclass_construction`
+
+| Rank B/H | Function | Base exclusive/inclusive Ir/op | Head exclusive/inclusive Ir/op | Calls B/H | Mechanism |
+| --- | --- | ---: | ---: | ---: | --- |
+| 1/1 | `rt::builtins::attr::bind_descriptor` | 857.00/3562.94 | 866.00/3576.62 | 2.000/2.000 | descriptor binding |
+| 2/2 | `<std::hash::random::RandomState as core::hash::BuildHasher>::hash_one::<&usize>` | 766.09/1229.14 | 766.06/1229.10 | 9.000/9.001 | hashing |
+| 3/3 | `rt::object::dec_ref_ptr_terminal_body` | 761.98/8914.29 | 755.98/8905.47 | 3.000/3.000 | refcount/retirement |
+| 4/4 | `rt::object::alloc_object_zeroed_with_aux_policy` | 554.01/1963.63 | 554.01/1951.39 | 4.000/4.000 | allocation |
+| 5/5 | `<rt::object::heap_lifecycle::DetachedEdgeSink>::release_all` | 553.00/2522.95 | 553.00/2522.95 | 3.000/3.000 | allocation/retirement |
+| 6/7 | `rt::object::heap_lifecycle::take_best_buffer::<u64>` | 521.01/521.01 | 521.01/521.01 | 8.000/8.000 | allocation/retirement |
+| 7/8 | `rt::object::gc::gc_untrack` | 514.71/642.35 | 515.61/643.12 | 4.000/4.000 | GC tracking |
+| 8/9 | `rt::builtins::attr::cached_class_namespace_mro` | 468.17/860.92 | 466.39/831.31 | 6.000/6.001 | attribute guards |
+| 9/10 | `molt_dec_ref_obj` | 459.00/5344.99 | 459.00/5340.38 | 9.000/9.000 | refcount/retirement |
+| 10/11 | `molt_lang_obj_model::release_ptr` | 448.01/1793.49 | 448.01/1796.18 | 4.000/4.000 | refcount/retirement |
+| 11/12 | `rt::object::seq_access::pin_tuple` | 445.24/445.24 | 442.80/442.80 | 5.003/4.975 | metadata guards |
+| 12/13 | `rt::object::gc::gc_admit_membership` | 437.27/534.31 | 436.48/533.76 | 3.000/3.000 | GC tracking |
+| 13/14 | `rt::object::object_shape_id` | 432.00/672.00 | 432.00/672.00 | 24.000/24.000 | type/shape guards |
+| 14/6 | `rt::object::instance_dict_bits_ptr` | 410.00/1010.00 | 540.00/990.00 | 10.000/10.000 | dictionary admission |
+| 15/15 | `<std::hash::random::DefaultHasher as core::hash::Hasher>::write` | 408.04/408.04 | 408.01/408.01 | 8.001/8.000 | hashing |
+
 ### 2.5 Raise and catch (p7, HF-561)
 
 210,274 instructions per iteration; CPython 2,038 (103x; wall 15.46 s against 0.09 s). Shares

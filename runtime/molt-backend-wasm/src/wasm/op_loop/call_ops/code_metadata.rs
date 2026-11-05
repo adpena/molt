@@ -199,7 +199,13 @@ fn emit_value_then_two_locals_drop_call(
     func.instruction(&Instruction::LocalGet(call_ctx.locals[&args[0]]));
     func.instruction(&Instruction::LocalGet(call_ctx.locals[&args[1]]));
     emit_call(func, call_ctx.reloc_enabled, call_ctx.import_ids[import]);
-    discard_runtime_result(func, call_ctx.import_ids, call_ctx.reloc_enabled, import);
+    discard_runtime_result(
+        func,
+        call_ctx.import_ids,
+        call_ctx.reloc_enabled,
+        import,
+        call_ctx.locals.refcount(),
+    );
 }
 
 fn emit_table_two_local_drop_call(
@@ -224,7 +230,13 @@ fn emit_table_two_local_drop_call(
     func.instruction(&Instruction::LocalGet(call_ctx.locals[&args[0]]));
     func.instruction(&Instruction::LocalGet(call_ctx.locals[&args[1]]));
     emit_call(func, call_ctx.reloc_enabled, call_ctx.import_ids[import]);
-    discard_runtime_result(func, call_ctx.import_ids, call_ctx.reloc_enabled, import);
+    discard_runtime_result(
+        func,
+        call_ctx.import_ids,
+        call_ctx.reloc_enabled,
+        import,
+        call_ctx.locals.refcount(),
+    );
 }
 
 fn emit_value_drop_call(
@@ -235,7 +247,13 @@ fn emit_value_drop_call(
 ) {
     func.instruction(&Instruction::I64Const(value));
     emit_call(func, call_ctx.reloc_enabled, call_ctx.import_ids[import]);
-    discard_runtime_result(func, call_ctx.import_ids, call_ctx.reloc_enabled, import);
+    discard_runtime_result(
+        func,
+        call_ctx.import_ids,
+        call_ctx.reloc_enabled,
+        import,
+        call_ctx.locals.refcount(),
+    );
 }
 
 fn emit_one_local_drop_call(
@@ -250,5 +268,11 @@ fn emit_one_local_drop_call(
         .expect("one-local metadata op args missing");
     func.instruction(&Instruction::LocalGet(call_ctx.locals[&args[0]]));
     emit_call(func, call_ctx.reloc_enabled, call_ctx.import_ids[import]);
-    discard_runtime_result(func, call_ctx.import_ids, call_ctx.reloc_enabled, import);
+    discard_runtime_result(
+        func,
+        call_ctx.import_ids,
+        call_ctx.reloc_enabled,
+        import,
+        call_ctx.locals.refcount(),
+    );
 }

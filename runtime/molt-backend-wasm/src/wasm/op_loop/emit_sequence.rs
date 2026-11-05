@@ -128,7 +128,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
             ) {
                 continue;
             }
-            if emit_local_slot_op(func, op, import_ids, locals, reloc_enabled) {
+            if emit_local_slot_op(func, op, import_ids, locals, reloc_enabled, scalar_plan) {
                 continue;
             }
 
@@ -175,6 +175,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                     call_site_abi,
                     import_ids,
                     locals,
+                    scalar_plan,
                     reloc_enabled,
                     guard_profile_local: self.frame.guard_profile_local(op),
                     native_eh_enabled,

@@ -151,10 +151,12 @@ fn arith_codegen_is_deterministic_and_size_bounded() {
     );
 }
 
-// Explicit live transport grows the former 3,423-byte wrong-code baseline to
-// 3,713 bytes (+8.47%). Keep 10.3% headroom for deterministic toolchain layout
+// Variant E with the merged producer-carrier plan emits 4,552 bytes on arm64
+// (2026-11-04). Its inline RC sites deliberately add text; retain the existing
+// 10.3% layout headroom rather than pinning the old runtime-call representation.
+// Explicit live transport previously emitted 3,713 bytes. Deterministic layout
 // movement while making another unbounded live-range/code-size regression red.
-const ARITH_OBJECT_SIZE_CEILING: usize = 4096;
+const ARITH_OBJECT_SIZE_CEILING: usize = 5_024;
 
 /// One-shot capture probe: run with `--ignored --nocapture` to print the
 /// current `(len, digest)` when investigating a deliberate codegen change.

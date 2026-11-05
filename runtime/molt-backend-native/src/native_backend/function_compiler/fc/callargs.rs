@@ -24,7 +24,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -72,7 +72,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
             );
             let call = builder.ins().call(local_callee, &[zero, zero]);
             let res = builder.inst_results(call)[0];
-            bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
+            bind_owned_runtime_result(op, res, module, import_ids, builder, import_refs, vars);
         }
         OpKind::CallargsPushMethodReceiver => {
             let [callargs, receiver] = names else {
@@ -104,7 +104,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
             );
             let call = builder.ins().call(push_fn, &[builder_word, receiver_word]);
             let result = builder.inst_results(call)[0];
-            bind_owned_runtime_result(op, result, module, import_ids, builder, vars);
+            bind_owned_runtime_result(op, result, module, import_ids, builder, import_refs, vars);
             let release = import_func_ref(
                 module,
                 import_ids,
@@ -114,7 +114,14 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
                 &[types::I64],
                 &[],
             );
-            builder.ins().call(release, &[receiver_word]);
+            emit_refcount(
+                builder,
+                receiver_word,
+                import_refs.refcount_site(
+                    release,
+                    molt_codegen_abi::inline_refcount::RefcountOperation::Release,
+                ),
+            );
             jump_block(builder, join, &[]);
             switch_to_block_materialized(builder, join);
             seal_block_once(builder, sealed_blocks, join);

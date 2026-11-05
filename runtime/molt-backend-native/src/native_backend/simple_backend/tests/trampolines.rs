@@ -93,8 +93,24 @@ fn assert_task_allocation_guard(
             })
         })
         .collect();
-    assert!(stores.iter().all(|(block, _)| *block == success), "{clif}");
-    let store_count = stores.len();
+    let cfg = cranelift_codegen::flowgraph::ControlFlowGraph::with_function(function);
+    let dominators =
+        cranelift_codegen::dominator_tree::DominatorTree::with_function(function, &cfg);
+    assert!(
+        stores
+            .iter()
+            .all(|(_, inst)| dominators.dominates(success, *inst, &function.layout)),
+        "{clif}"
+    );
+    let store_count =
+        stores
+            .iter()
+            .filter(|(_, inst)| {
+                function.dfg.inst_args(*inst).first().is_some_and(|&v| {
+                    function.dfg.value_type(v) == cranelift_codegen::ir::types::I64
+                })
+            })
+            .count();
     assert_eq!(store_count, payload.slot_count(), "{clif}");
     let calls: Vec<_> = function
         .layout
@@ -108,8 +124,25 @@ fn assert_task_allocation_guard(
             })
         })
         .collect();
+    let admission = compiled
+        .import_ids
+        .get(crate::runtime_import_abi::MOLT_REFCOUNT_ADMISSION.name)
+        .map_or_else(Vec::new, |&id| call_sites_for_import(function, id));
+    assert_eq!(
+        admission.len(),
+        usize::from(!stores.is_empty() || task_kind == TrampolineTaskKind::AsyncGen),
+        "admission only for generated transitions: {clif}"
+    );
+    let calls: Vec<_> = calls
+        .into_iter()
+        .filter(|call| !admission.contains(call))
+        .collect();
     assert!(
-        calls.iter().skip(1).all(|(block, _)| *block == success),
+        calls.iter().skip(1).all(|(_, inst)| dominators.dominates(
+            success,
+            *inst,
+            &function.layout
+        )),
         "{clif}"
     );
     let call_count = calls.len();
@@ -140,7 +173,21 @@ fn assert_task_allocation_guard(
             "{clif}"
         );
         let wrapper_value = function.dfg.first_result(wrap_calls[0].1);
-        let return_inst = function.layout.last_inst(success).unwrap();
+        let returns: Vec<_> = function
+            .layout
+            .blocks()
+            .flat_map(|block| function.layout.block_insts(block))
+            .filter(|&inst| {
+                function.dfg.insts[inst].opcode() == Opcode::Return
+                    && dominators.dominates(success, inst, &function.layout)
+            })
+            .collect();
+        assert_eq!(
+            returns.len(),
+            1,
+            "allocation-success paths must rejoin one exact wrapper return: {clif}"
+        );
+        let return_inst = returns[0];
         assert_eq!(
             function.dfg.insts[return_inst].opcode(),
             Opcode::Return,

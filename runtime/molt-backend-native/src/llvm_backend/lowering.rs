@@ -108,6 +108,8 @@ mod op_dispatch;
 #[cfg(feature = "llvm")]
 mod preserved_ops;
 #[cfg(feature = "llvm")]
+mod refcount;
+#[cfg(feature = "llvm")]
 mod runtime_helpers;
 #[cfg(feature = "llvm")]
 mod state_machine_ops;
@@ -499,6 +501,7 @@ struct FunctionLowering<'ctx, 'func> {
     owned_frame_entered: Option<inkwell::values::PointerValue<'ctx>>,
     guard_facts: molt_tir::passes::SsaRuntimeGuardFacts,
     guard_profile_flag: Option<inkwell::values::IntValue<'ctx>>,
+    refcount_admission: std::cell::Cell<Option<inkwell::values::IntValue<'ctx>>>,
     poll_context: Option<(
         inkwell::values::PointerValue<'ctx>,
         inkwell::values::PointerValue<'ctx>,
@@ -615,6 +618,7 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
         owned_frame_entered: None,
         guard_facts: molt_tir::passes::SsaRuntimeGuardFacts::for_function(func),
         guard_profile_flag: None,
+        refcount_admission: std::cell::Cell::new(None),
         poll_context: None,
         polls_async_work: function_polls_async_work(func),
     };
@@ -630,7 +634,9 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
         lowering.block_map.insert(func.entry_block, entry_bb);
         lowering.all_llvm_blocks.push(entry_bb);
     }
-    for block_id in func.blocks.keys() {
+    let mut block_ids: Vec<_> = func.blocks.keys().copied().collect();
+    block_ids.sort_by_key(|block| block.0);
+    for block_id in &block_ids {
         if *block_id == func.entry_block {
             continue; // already created above
         }

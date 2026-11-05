@@ -159,7 +159,7 @@ fn split_backend_runtime_generated_object_abi_fails_closed_in_both_directions() 
 }
 
 #[test]
-fn incompatible_pointer_and_thread_record_revisions_cannot_link() {
+fn incompatible_pointer_thread_record_and_refcount_revisions_cannot_link() {
     let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("pointer-abi-link")
         .expect("create pointer ABI link-contract outputs within Cargo image custody");
     for (mode, old_symbol, new_symbol) in [
@@ -171,6 +171,36 @@ fn incompatible_pointer_and_thread_record_revisions_cannot_link() {
         (
             "free",
             "molt_generated_object_abi_bf06a9269171acab_free_threaded_v3",
+            GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
+        ),
+        (
+            "gil_refcount_v7",
+            "molt_generated_object_abi_69bab6cda2adac1b_gil_v7",
+            GENERATED_OBJECT_ABI_GIL_SYMBOL,
+        ),
+        (
+            "free_refcount_v7",
+            "molt_generated_object_abi_69bab6cda2adac1b_free_threaded_v7",
+            GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
+        ),
+        (
+            "gil_frame_location_v7",
+            "molt_generated_object_abi_16b12518d4094b67_gil_v7",
+            GENERATED_OBJECT_ABI_GIL_SYMBOL,
+        ),
+        (
+            "free_frame_location_v7",
+            "molt_generated_object_abi_16b12518d4094b67_free_threaded_v7",
+            GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
+        ),
+        (
+            "gil_refcount_v6",
+            "molt_generated_object_abi_edf88c8f320447e7_gil_v6",
+            GENERATED_OBJECT_ABI_GIL_SYMBOL,
+        ),
+        (
+            "free_refcount_v6",
+            "molt_generated_object_abi_edf88c8f320447e7_free_threaded_v6",
             GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
         ),
         (

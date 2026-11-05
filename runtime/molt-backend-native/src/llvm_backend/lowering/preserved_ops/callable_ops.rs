@@ -1,5 +1,5 @@
 use super::*;
-use crate::runtime_import_abi::{MOLT_ASYNCGEN_NEW, MOLT_DEC_REF_OBJ};
+use crate::runtime_import_abi::MOLT_ASYNCGEN_NEW;
 use molt_ir::OpKind;
 
 // Handler-owned routing slice. `code_new` and the CallArgs push/expand
@@ -335,11 +335,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .build_conditional_branch(holds, release_bb, done_bb)
             .unwrap();
         self.backend.builder.position_at_end(release_bb);
-        let dec_ref = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
-        self.backend
-            .builder
-            .build_call(dec_ref, &[old_bits.into()], "frame_home_release")
-            .unwrap();
+        let dec_ref = self
+            .ensure_refcount_site(molt_codegen_abi::inline_refcount::RefcountOperation::Release);
+        dec_ref.emit(&self.backend.builder, old_bits);
         self.backend
             .builder
             .build_unconditional_branch(done_bb)

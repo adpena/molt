@@ -19,7 +19,6 @@ pub(super) fn emit_callargs_op(
                 panic!("validated method receiver prefix takes builder and receiver");
             };
             let push = crate::wasm_abi_generated::WasmRuntimeImport::CallargsPushPos;
-            let release = crate::wasm_abi_generated::WasmRuntimeImport::DecRefObj;
             func.instruction(&Instruction::LocalGet(locals[receiver]));
             func.instruction(&Instruction::I64Const(
                 molt_codegen_abi::loaded_method_null_bits(),
@@ -33,7 +32,13 @@ pub(super) fn emit_callargs_op(
             // push_pos borrows and retains. Settle the loaded pair's original
             // receiver credit on success and failure, before user arguments.
             func.instruction(&Instruction::LocalGet(locals[receiver]));
-            emit_call(func, reloc_enabled, import_ids[release]);
+            crate::wasm::refcount::emit_refcount(
+                func,
+                reloc_enabled,
+                import_ids,
+                locals.refcount(),
+                molt_codegen_abi::inline_refcount::RefcountOperation::Release,
+            );
             func.instruction(&Instruction::End);
         }
         molt_ir::OpKind::CallargsNew => {

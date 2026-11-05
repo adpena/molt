@@ -39,7 +39,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -182,7 +182,7 @@ fn handle_add_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -215,7 +215,7 @@ fn handle_add_op(
         (cranelift_module::FuncId, ImportSignatureShape),
     >,
                                        builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
@@ -569,7 +569,7 @@ fn handle_checked_add_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -581,7 +581,7 @@ fn handle_checked_add_op(
         (cranelift_module::FuncId, ImportSignatureShape),
     >,
                                        builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
@@ -694,7 +694,15 @@ fn handle_checked_add_op(
         let local_callee = module.declare_func_in_func(callee, builder.func);
         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
         let sum_boxed = builder.inst_results(call)[0];
-        bind_owned_runtime_result_name(sum_name, sum_boxed, module, import_ids, builder, vars);
+        bind_owned_runtime_result_name(
+            sum_name,
+            sum_boxed,
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            vars,
+        );
         if let Some(flag_name) = flag_name {
             let zero = builder.ins().iconst(types::I64, 0);
             def_raw_bool_value(
@@ -718,7 +726,7 @@ fn handle_checked_mul_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -730,7 +738,7 @@ fn handle_checked_mul_op(
         (cranelift_module::FuncId, ImportSignatureShape),
     >,
                                        builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
@@ -846,7 +854,15 @@ fn handle_checked_mul_op(
         let local_callee = module.declare_func_in_func(callee, builder.func);
         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
         let prod_boxed = builder.inst_results(call)[0];
-        bind_owned_runtime_result_name(prod_name, prod_boxed, module, import_ids, builder, vars);
+        bind_owned_runtime_result_name(
+            prod_name,
+            prod_boxed,
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            vars,
+        );
         if let Some(flag_name) = flag_name {
             let zero = builder.ins().iconst(types::I64, 0);
             def_raw_bool_value(
@@ -870,7 +886,7 @@ fn handle_inplace_add_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -903,7 +919,7 @@ fn handle_inplace_add_op(
         (cranelift_module::FuncId, ImportSignatureShape),
     >,
                                        builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
@@ -1199,7 +1215,7 @@ fn handle_sub_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -1226,7 +1242,7 @@ fn handle_sub_op(
         (cranelift_module::FuncId, ImportSignatureShape),
     >,
                                        builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
@@ -1505,7 +1521,7 @@ fn handle_inplace_sub_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -1531,7 +1547,7 @@ fn handle_inplace_sub_op(
         (cranelift_module::FuncId, ImportSignatureShape),
     >,
                                        builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
@@ -1786,7 +1802,7 @@ fn handle_mul_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -1813,7 +1829,7 @@ fn handle_mul_op(
         (cranelift_module::FuncId, ImportSignatureShape),
     >,
                                        builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
@@ -2088,7 +2104,7 @@ fn handle_inplace_mul_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -2114,7 +2130,7 @@ fn handle_inplace_mul_op(
         (cranelift_module::FuncId, ImportSignatureShape),
     >,
                                        builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,

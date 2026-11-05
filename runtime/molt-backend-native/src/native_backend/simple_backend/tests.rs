@@ -206,7 +206,14 @@ fn assert_task_allocation_admission(compiled: &CompiledFunctionClif) -> (Value, 
         compiled.import_ids[crate::runtime_import_abi::MOLT_TASK_NEW.name],
     );
     assert_eq!(calls.len(), 1, "{}", function.display());
-    let (block, call) = calls[0];
+    assert_task_allocation_admission_for(compiled, calls[0])
+}
+
+fn assert_task_allocation_admission_for(
+    compiled: &CompiledFunctionClif,
+    (block, call): (Block, Inst),
+) -> (Value, Block, Block) {
+    let function = &compiled.function;
     let task = function.dfg.first_result(call);
     let branch = function
         .layout
@@ -496,12 +503,23 @@ fn call_sites_for_import(function: &Function, import_id: FuncId) -> Vec<(Block, 
 /// Resolve an observed SSA value to its instruction/function-parameter
 /// origins through Cranelift aliases and explicit block transport.
 fn canonical_value_sources(function: &Function, value: Value) -> BTreeSet<Value> {
+    canonical_value_sources_from(function, value, None)
+}
+
+/// Restrict phi predecessors to the observed continuation when proving a
+/// successful arm: unrelated error exits may join the same final return.
+fn canonical_value_sources_from(
+    function: &Function,
+    value: Value,
+    reachable: Option<&BTreeSet<Block>>,
+) -> BTreeSet<Value> {
     fn collect(
         function: &Function,
         cfg: &ControlFlowGraph,
         value: Value,
         visiting: &mut BTreeSet<Value>,
         sources: &mut BTreeSet<Value>,
+        reachable: Option<&BTreeSet<Block>>,
     ) {
         let value = function.dfg.resolve_aliases(value);
         if !visiting.insert(value) {
@@ -513,12 +531,17 @@ fn canonical_value_sources(function: &Function, value: Value) -> BTreeSet<Value>
                 sources.insert(value);
             }
             ValueDef::Union(left, right) => {
-                collect(function, cfg, left, visiting, sources);
-                collect(function, cfg, right, visiting, sources);
+                collect(function, cfg, left, visiting, sources, reachable);
+                collect(function, cfg, right, visiting, sources, reachable);
             }
             ValueDef::Param(block, index) => {
                 let mut found_incoming = false;
                 for predecessor in cfg.pred_iter(block) {
+                    if reachable.is_some_and(|reachable| {
+                        reachable.contains(&block) && !reachable.contains(&predecessor.block)
+                    }) {
+                        continue;
+                    }
                     let destinations = function.dfg.insts[predecessor.inst].branch_destination(
                         &function.dfg.jump_tables,
                         &function.dfg.exception_tables,
@@ -534,7 +557,7 @@ fn canonical_value_sources(function: &Function, value: Value) -> BTreeSet<Value>
                         found_incoming = true;
                         match argument {
                             BlockArg::Value(incoming) => {
-                                collect(function, cfg, incoming, visiting, sources);
+                                collect(function, cfg, incoming, visiting, sources, reachable);
                             }
                             BlockArg::TryCallRet(_) | BlockArg::TryCallExn(_) => {
                                 sources.insert(value);
@@ -554,7 +577,14 @@ fn canonical_value_sources(function: &Function, value: Value) -> BTreeSet<Value>
 
     let cfg = ControlFlowGraph::with_function(function);
     let mut sources = BTreeSet::new();
-    collect(function, &cfg, value, &mut BTreeSet::new(), &mut sources);
+    collect(
+        function,
+        &cfg,
+        value,
+        &mut BTreeSet::new(),
+        &mut sources,
+        reachable,
+    );
     sources
 }
 

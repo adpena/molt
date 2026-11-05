@@ -246,7 +246,7 @@ impl WasmFunctionFramePlan {
 
         debug_assert_eq!(needs_dispatch, dispatch_locals.is_some());
 
-        let _ = local_count;
+        locals.allocate_refcount_scratch(&mut local_types, &mut local_count);
         Self {
             local_types,
             frame: WasmFunctionFrame {

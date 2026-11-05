@@ -220,6 +220,7 @@ fn print_lir_repr(repr: LirRepr) -> &'static str {
     match repr {
         LirRepr::DynBox => "dynbox",
         LirRepr::Ref64 => "ref64",
+        LirRepr::Immortal64 => "immortal64",
         LirRepr::I64 => "i64",
         LirRepr::F64 => "f64",
         LirRepr::Bool1 => "bool1",
@@ -257,6 +258,7 @@ mod tests {
         };
         let func = LirFunction {
             container_storage: std::collections::HashMap::new(),
+            inline_i64_values: Default::default(),
             name: "id_i64".to_string(),
             param_names: vec!["x".to_string()],
             param_types: vec![TirType::I64],

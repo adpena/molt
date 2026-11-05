@@ -183,6 +183,7 @@ pub struct ScalarPrimaryNameSets {
     pub int_full_deopt: BTreeSet<String>,
     pub bool_: BTreeSet<String>,
     pub float: BTreeSet<String>,
+    pub immortal: BTreeSet<String>,
 }
 
 /// A native operation lane justified by producer witnesses for its operands.
@@ -259,6 +260,16 @@ pub struct ProducerCarrierPlan {
 }
 
 impl ProducerCarrierPlan {
+    pub fn carrier_refcount_is_noop(&self, value: ValueId) -> bool {
+        self.repr_by_value
+            .get(&value)
+            .is_some_and(|repr| repr.carrier_refcount_is_noop())
+    }
+    pub fn boxed_refcount_is_noop(&self, value: ValueId) -> bool {
+        self.repr_by_value
+            .get(&value)
+            .is_some_and(|repr| repr.boxed_refcount_is_noop())
+    }
     /// Build carrier facts from the exact TIR function being lowered.
     pub fn build(tir_func: &TirFunction) -> Self {
         let vr = value_range_for(tir_func);
@@ -634,6 +645,9 @@ impl ScalarRepresentationPlan {
         for name in &primary.float {
             repr_by_name.insert(name.clone(), Repr::FloatUnboxed);
         }
+        for name in &primary.immortal {
+            repr_by_name.insert(name.clone(), Repr::BoxedImmortal);
+        }
         self.repr_by_name = repr_by_name;
     }
 
@@ -700,6 +714,11 @@ impl ScalarRepresentationPlan {
             int_full_deopt,
             bool_,
             float,
+            immortal: self
+                .repr_by_name
+                .iter()
+                .filter_map(|(name, repr)| (*repr == Repr::BoxedImmortal).then_some(name.clone()))
+                .collect(),
         }
     }
 
@@ -1239,13 +1258,17 @@ impl ScalarRepresentationPlan {
         modes
     }
 
-    pub fn name_is_non_heap_scalar(&self, name: &str) -> bool {
-        matches!(
-            self.name_scalar_kind(name),
-            Some(ScalarKind::Int | ScalarKind::Bool | ScalarKind::Float | ScalarKind::NoneValue)
-        ) || self.is_raw_int_carrier_name(name)
-            || self.is_bool_unboxed(name)
-            || self.is_float_unboxed(name)
+    /// Views of the final typed representation proof, including producer-proven
+    /// immortal words. An annotation is not an immortality proof.
+    pub fn carrier_refcount_is_noop(&self, name: &str) -> bool {
+        self.repr_by_name
+            .get(name)
+            .is_some_and(|repr| repr.carrier_refcount_is_noop())
+    }
+    pub fn boxed_refcount_is_noop(&self, name: &str) -> bool {
+        self.repr_by_name
+            .get(name)
+            .is_some_and(|repr| repr.boxed_refcount_is_noop())
     }
 
     fn compute_scalar_store_targets(
@@ -1296,6 +1319,7 @@ impl ScalarRepresentationPlan {
             int_full_deopt,
             bool_: bool_primary,
             float: float_primary,
+            immortal: Self::projected_names_with_repr(&projected, Repr::BoxedImmortal),
         }
     }
 
@@ -1542,6 +1566,7 @@ impl ScalarRepresentationPlan {
             return false;
         }
         match repr {
+            Repr::BoxedImmortal => true,
             Repr::RawI64Safe | Repr::RawI64FullDeopt => {
                 matches!(self.name_scalar_kind(name), Some(ScalarKind::Int))
             }

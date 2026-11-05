@@ -53,6 +53,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         );
         let builder = self.backend.context.create_builder();
         builder.position_at_end(self.backend.context.append_basic_block(trampoline, "entry"));
+        let refcount_admission = self.emit_refcount_admission(&builder);
         let construction = TaskConstruction::begin(
             self.backend,
             &builder,
@@ -63,6 +64,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             self.task_constructor_imports(layout),
             closure_size,
             ("task_new", "task_init", "task_ready"),
+            refcount_admission,
         );
         let arguments = trampoline.get_nth_param(1).unwrap().into_int_value();
         let arguments = builder
@@ -74,7 +76,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 "task_arguments",
             )
             .unwrap();
-        let retain = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
+        let retain = super::refcount::LlvmRefcountSite {
+            function: self.ensure_refcount_helper(
+                molt_codegen_abi::inline_refcount::RefcountOperation::Retain,
+            ),
+            admission: refcount_admission,
+        };
         let base = layout.payload_base_offset(crate::GENERATOR_CONTROL_BYTES) as u64 / 8;
         for index in 0..arity + usize::from(has_closure) {
             let word = if has_closure && index == 0 {
@@ -107,7 +114,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap()
             };
             builder.build_store(destination, word).unwrap();
-            builder.build_call(retain, &[word.into()], "").unwrap();
+            retain.emit(&builder, word.into());
         }
         let result = construction.finish(self.backend, &builder);
         builder.build_return(Some(&result)).unwrap();

@@ -23,12 +23,12 @@ pub(crate) const fn runtime_sig(
     }
 }
 
-pub(crate) const MOLT_DEC_REF: RuntimeImportSignature =
-    runtime_sig("molt_dec_ref", 1, RuntimeReturnAbi::Void);
 pub(crate) const MOLT_DEC_REF_OBJ: RuntimeImportSignature =
     runtime_sig("molt_dec_ref_obj", 1, RuntimeReturnAbi::Void);
 pub(crate) const MOLT_INC_REF_OBJ: RuntimeImportSignature =
     runtime_sig("molt_inc_ref_obj", 1, RuntimeReturnAbi::Void);
+pub(crate) const MOLT_REFCOUNT_ADMISSION: RuntimeImportSignature =
+    runtime_sig("molt_refcount_admission", 0, RuntimeReturnAbi::I64);
 pub(crate) const MOLT_TASK_NEW: RuntimeImportSignature =
     runtime_sig("molt_task_new", 3, RuntimeReturnAbi::I64);
 pub(crate) const MOLT_CANCEL_TOKEN_GET_CURRENT: RuntimeImportSignature =
@@ -40,9 +40,9 @@ pub(crate) const MOLT_ASYNCGEN_NEW: RuntimeImportSignature =
 
 #[cfg(test)]
 pub(crate) const NATIVE_RUNTIME_HELPER_IMPORTS: &[RuntimeImportSignature] = &[
-    MOLT_DEC_REF,
     MOLT_DEC_REF_OBJ,
     MOLT_INC_REF_OBJ,
+    MOLT_REFCOUNT_ADMISSION,
     MOLT_TASK_NEW,
     MOLT_CANCEL_TOKEN_GET_CURRENT,
     MOLT_TASK_REGISTER_EXECUTION,

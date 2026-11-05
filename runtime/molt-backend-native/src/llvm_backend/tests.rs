@@ -2,6 +2,128 @@ use super::*;
 use inkwell::context::Context;
 use object::{Object, ObjectSection, ObjectSymbol};
 
+#[test]
+fn refcount_cfg_is_deterministic_and_inlined_at_every_optimization_level() {
+    use crate::tir::blocks::{Terminator, TirBlock};
+    use crate::tir::function::TirFunction;
+    use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
+    use crate::tir::types::TirType;
+    use std::collections::HashMap;
+
+    let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("llvm-rc-determinism").unwrap();
+    let mut first_ir = None;
+    for level in 0..3 {
+        let opt = || match level {
+            0 => MoltOptLevel::None,
+            1 => MoltOptLevel::Speed,
+            _ => MoltOptLevel::Aggressive,
+        };
+        let mut first_object = None;
+        for attempt in 0..8 {
+            let ctx = Context::create();
+            let mut backend = LlvmBackend::new(&ctx, "rc_determinism");
+            super::runtime_imports::declare_runtime_functions(&ctx, &backend.module);
+            let mut func = TirFunction::new(
+                "rc_determinism".into(),
+                vec![TirType::Bool, TirType::DynBox],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Void,
+            );
+            let condition = func.blocks[&func.entry_block].args[0].id;
+            let owner = func.blocks[&func.entry_block].args[1].id;
+            let left = func.fresh_block();
+            let right = func.fresh_block();
+            let join = func.fresh_block();
+            let rc = |opcode| TirOp {
+                origin: None,
+                dialect: Dialect::Molt,
+                opcode,
+                operands: vec![owner],
+                results: vec![],
+                attrs: AttrDict::new(),
+                source_span: None,
+            };
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops.push(rc(OpCode::IncRef));
+            entry.terminator = Terminator::CondBranch {
+                cond: condition,
+                then_block: left,
+                then_args: vec![],
+                else_block: right,
+                else_args: vec![],
+            };
+            for (id, operations) in [
+                (left, vec![rc(OpCode::IncRef), rc(OpCode::DecRef)]),
+                (right, vec![rc(OpCode::DecRef), rc(OpCode::IncRef)]),
+                (join, vec![rc(OpCode::DecRef)]),
+            ] {
+                func.blocks.insert(
+                    id,
+                    TirBlock {
+                        id,
+                        args: vec![],
+                        ops: operations,
+                        terminator: if id == join {
+                            Terminator::Return { values: vec![] }
+                        } else {
+                            Terminator::Branch {
+                                target: join,
+                                args: vec![],
+                            }
+                        },
+                    },
+                );
+            }
+            // New hash seeds and reversed insertion order cannot change an
+            // immutable constituent's bytes. No optimizer rewrites this graph.
+            let mut rows: Vec<_> = func.blocks.drain().collect();
+            rows.sort_by_key(|(id, _)| id.0);
+            if attempt % 2 == 0 {
+                rows.reverse();
+            }
+            func.blocks = rows.into_iter().collect::<HashMap<_, _>>();
+            backend.function_repr_facts.insert(
+                func.name.clone(),
+                crate::representation_plan::ProducerCarrierPlan::build(&func),
+            );
+            super::lowering::lower_tir_to_llvm(&func, &backend);
+            backend.module.verify().unwrap();
+            let ir = backend.dump_ir();
+            if let Some(expected) = &first_ir {
+                assert_eq!(expected, &ir, "unordered TIR storage changed LLVM IR");
+            } else {
+                first_ir = Some(ir);
+            }
+            backend.optimize(opt()).unwrap();
+            let path = artifacts
+                .path()
+                .join(format!("level-{level}-attempt-{attempt}.o"));
+            backend.emit_object(&path, opt()).unwrap();
+            let bytes = std::fs::read(path).unwrap();
+            let object = object::File::parse(bytes.as_slice()).unwrap();
+            assert!(
+                !object.symbols().any(|symbol| symbol
+                    .name()
+                    .is_ok_and(|name| name.contains("__molt_inline_"))),
+                "alwaysinline must remove RC wrapper symbols at level {level}"
+            );
+            let undefined = crate::test_support::native_object_symbols(&bytes).undefined;
+            assert!(
+                undefined.contains("molt_inc_ref_obj") && undefined.contains("molt_dec_ref_obj"),
+                "dynamic cold transitions must survive: {undefined:?}"
+            );
+            if let Some(expected) = &first_object {
+                assert_eq!(
+                    expected, &bytes,
+                    "identical RC input changed object bytes at level {level}"
+                );
+            } else {
+                first_object = Some(bytes);
+            }
+        }
+    }
+}
+
 // LLVM emits in process; the shared helper also owns subprocess arguments.
 #[allow(dead_code)]
 mod cargo_test_artifacts {

@@ -19,6 +19,7 @@ mod heap_kinds_generated;
 pub use heap_kinds_generated::*;
 
 pub mod c_width;
+pub mod inline_refcount;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperatingSystem {
@@ -341,11 +342,57 @@ pub const HEADER_CLASS_WORD_BITS_MASK: u64 = !HEADER_CLASS_WORD_TAG_MASK;
 
 pub const HEADER_FLAG_HAS_PTRS: u32 = 1;
 pub const HEADER_FLAG_IMMORTAL: u32 = 1 << 15;
+pub const HEADER_FLAG_HAS_ABI_VIEW: u32 = 1 << 27;
+pub const HEADER_FLAG_DEALLOCATING: u32 = 1 << 30;
 pub const HEADER_FLAG_CONTAINS_REFS: u32 = 1 << 19;
 /// Two-phase lifecycle publication bit. Objects remain invisible to collector
 /// snapshots until initialization clears this bit with Release ordering.
 pub const HEADER_FLAG_GC_UNPUBLISHED: u32 = 1 << 29;
 pub const IMMORTAL_REFCOUNT: u32 = u32::MAX;
+/// Count-word bit that places every owner transition under runtime custody.
+/// Compiled plain sites test the count word alone, so this bit, not a flag
+/// load, is what rejects C-view, deallocating and immortal objects there.
+/// The immortal sentinel has it set by construction.
+pub const REFCOUNT_RUNTIME_CUSTODY: u32 = 1 << 31;
+/// Owner-count bits of a mortal count word.
+pub const REFCOUNT_OWNER_MASK: u32 = !REFCOUNT_RUNTIME_CUSTODY;
+/// Exclusive owner-count bound. A mortal word with custody can therefore never
+/// spell `IMMORTAL_REFCOUNT`.
+pub const REFCOUNT_OWNER_LIMIT: u32 = REFCOUNT_OWNER_MASK;
+/// Header flags whose presence requires runtime custody of the count word.
+/// `MoltHeader`'s flag mutators are the sole producer of the custody bit.
+pub const HEADER_FLAGS_REFCOUNT_CUSTODY: u32 =
+    HEADER_FLAG_IMMORTAL | HEADER_FLAG_HAS_ABI_VIEW | HEADER_FLAG_DEALLOCATING;
+/// Compiled sites update plain owner counts only inside this window: retain
+/// for counts `1..=WINDOW`, release for `2..=WINDOW + 1`. Everything else,
+/// including the custody bit, the terminal edge and overflow, is the runtime's.
+pub const COMPILED_PLAIN_REFCOUNT_WINDOW: u64 = 1 << 30;
+
+const _: () = {
+    assert!(IMMORTAL_REFCOUNT & REFCOUNT_RUNTIME_CUSTODY != 0);
+    assert!(COMPILED_PLAIN_REFCOUNT_WINDOW + 1 < REFCOUNT_OWNER_LIMIT as u64);
+};
+
+/// Owner count of a stored word: the immortal sentinel is preserved, the
+/// custody bit is not part of the count.
+#[inline(always)]
+pub const fn refcount_word_owners(word: u32) -> u32 {
+    if word == IMMORTAL_REFCOUNT {
+        word
+    } else {
+        word & REFCOUNT_OWNER_MASK
+    }
+}
+
+/// Store `owners` while keeping the custody bit of `word`.
+#[inline(always)]
+pub const fn refcount_word_with_owners(word: u32, owners: u32) -> u32 {
+    if owners == IMMORTAL_REFCOUNT {
+        owners
+    } else {
+        owners | (word & REFCOUNT_RUNTIME_CUSTODY)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GeneratedObjectAbiFacts {
@@ -411,10 +458,14 @@ pub struct GeneratedObjectAbiFacts {
     pub thread_record_pending_invocation_offset: i32,
     pub thread_record_pending_work_ptr_offset: i32,
     pub thread_record_pending_work_word_bytes: u32,
+    pub refcount_runtime_custody: u32,
+    pub refcount_owner_limit: u32,
+    pub compiled_plain_refcount_window: u64,
+    pub flags_refcount_custody: u32,
 }
 
 impl GeneratedObjectAbiFacts {
-    pub const fn words(self) -> [u64; 62] {
+    pub const fn words(self) -> [u64; 66] {
         [
             self.header_size as i64 as u64,
             self.header_align as u64,
@@ -478,6 +529,10 @@ impl GeneratedObjectAbiFacts {
             self.thread_record_pending_invocation_offset as i64 as u64,
             self.thread_record_pending_work_ptr_offset as i64 as u64,
             self.thread_record_pending_work_word_bytes as u64,
+            self.refcount_runtime_custody as u64,
+            self.refcount_owner_limit as u64,
+            self.compiled_plain_refcount_window,
+            self.flags_refcount_custody as u64,
         ]
     }
 
@@ -564,6 +619,10 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
     thread_record_pending_invocation_offset: THREAD_RECORD_PENDING_INVOCATION_OFFSET,
     thread_record_pending_work_ptr_offset: THREAD_RECORD_PENDING_WORK_PTR_OFFSET,
     thread_record_pending_work_word_bytes: THREAD_RECORD_PENDING_WORK_WORD_BYTES,
+    refcount_runtime_custody: REFCOUNT_RUNTIME_CUSTODY,
+    refcount_owner_limit: REFCOUNT_OWNER_LIMIT,
+    compiled_plain_refcount_window: COMPILED_PLAIN_REFCOUNT_WINDOW,
+    flags_refcount_custody: HEADER_FLAGS_REFCOUNT_CUSTODY,
 };
 
 /// Ratchet binding every hardcoded generated-code header fact. A layout/offset
@@ -580,18 +639,22 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
 /// `GENERATOR_RESUME_RETURNED`, one appended word. Old generated code cannot
 /// link to it. Revision 6 binds the thread-record prefix offsets and pending-work
 /// word width. A compiler reading the work-word pointer must never link to an
-/// older runtime whose recursion-depth field occupied that offset.
-/// Revision 7 reserves the code-location word immediately before every lent
-/// frame-home base. Old generated code must not link to this frame-storage ABI.
-pub const GENERATED_OBJECT_ABI_FINGERPRINT_V7: u64 = 0x16b12518d4094b67;
+/// older runtime whose recursion-depth field occupied that offset. Revision 7
+/// had two independent bindings on parallel lanes, and neither may link here:
+/// the count-word custody encoding, owner bound, inline window and custody
+/// flags (`molt_generated_object_abi_69bab6cda2adac1b_*_v7`), and the
+/// code-location word immediately before every lent frame-home base
+/// (`molt_generated_object_abi_16b12518d4094b67_*_v7`). Revision 8 binds both:
+/// it is the fingerprint of the merged fact words.
+pub const GENERATED_OBJECT_ABI_FINGERPRINT_V8: u64 = 0xb353_df98_e047_c49b;
 const _: () = assert!(
-    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V7,
+    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V8,
     "native generated-object ABI changed: bump the fingerprint revision and link symbols",
 );
 pub const GENERATED_OBJECT_ABI_GIL_SYMBOL: &str =
-    "molt_generated_object_abi_16b12518d4094b67_gil_v7";
+    "molt_generated_object_abi_b353df98e047c49b_gil_v8";
 pub const GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL: &str =
-    "molt_generated_object_abi_16b12518d4094b67_free_threaded_v7";
+    "molt_generated_object_abi_b353df98e047c49b_free_threaded_v8";
 /// Compile-time authority consumed by runtime storage and generated native
 /// access. Cargo feature unification may enable this through any dependency;
 /// consumers must branch on this value rather than a crate-local feature.
@@ -950,11 +1013,14 @@ pub const fn retain_next(current: u32, count: u32, deallocating: bool) -> Result
     if deallocating {
         return Err(RetainError::Deallocating);
     }
+    if current >= REFCOUNT_OWNER_LIMIT {
+        return Err(RetainError::Overflow);
+    }
     if count == 0 {
         return Ok(current);
     }
     match current.checked_add(count) {
-        Some(next) if next < IMMORTAL_REFCOUNT => Ok(next),
+        Some(next) if next < REFCOUNT_OWNER_LIMIT => Ok(next),
         Some(_) | None => Err(RetainError::Overflow),
     }
 }
@@ -966,7 +1032,7 @@ pub const fn live_upgrade_next(current: u32, deallocating: bool) -> Result<u32, 
 
 #[inline(always)]
 pub const fn release_transition(previous: u32) -> Option<RefCountRelease> {
-    if previous == 0 || previous == IMMORTAL_REFCOUNT {
+    if previous == 0 || previous >= REFCOUNT_OWNER_LIMIT {
         None
     } else {
         Some(RefCountRelease { previous })
@@ -1008,17 +1074,62 @@ pub struct MoltRefCount(RefCountWord);
 impl MoltRefCount {
     #[inline(always)]
     pub const fn new(value: u32) -> Self {
+        assert!(
+            value < REFCOUNT_OWNER_LIMIT || value == IMMORTAL_REFCOUNT,
+            "owner count outside encoded domain"
+        );
         Self(RefCountWord::new(value))
     }
 
     #[inline(always)]
     pub fn snapshot_owned(&self) -> u32 {
-        self.0.load(core::sync::atomic::Ordering::Relaxed)
+        refcount_word_owners(self.0.load(core::sync::atomic::Ordering::Relaxed))
     }
 
     #[inline(always)]
     pub fn snapshot_acquire(&self) -> u32 {
-        self.0.load(core::sync::atomic::Ordering::Acquire)
+        refcount_word_owners(self.0.load(core::sync::atomic::Ordering::Acquire))
+    }
+
+    /// Place the count word under runtime custody before a custody flag is
+    /// published. Idempotent; the immortal sentinel already carries the bit.
+    #[inline(always)]
+    pub fn enter_runtime_custody(&self) {
+        let mut word = self.0.load(core::sync::atomic::Ordering::Relaxed);
+        while word & REFCOUNT_RUNTIME_CUSTODY == 0 {
+            match self.0.compare_exchange_weak(
+                word,
+                word | REFCOUNT_RUNTIME_CUSTODY,
+                core::sync::atomic::Ordering::Release,
+                core::sync::atomic::Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(observed) => word = observed,
+            }
+        }
+    }
+
+    /// Return a mortal count word to compiled plain custody after its last
+    /// custody flag was retired. The immortal sentinel is never altered.
+    #[inline(always)]
+    pub fn leave_runtime_custody(&self) {
+        let mut word = self.0.load(core::sync::atomic::Ordering::Relaxed);
+        while word != IMMORTAL_REFCOUNT && word & REFCOUNT_RUNTIME_CUSTODY != 0 {
+            match self.0.compare_exchange_weak(
+                word,
+                word & REFCOUNT_OWNER_MASK,
+                core::sync::atomic::Ordering::Release,
+                core::sync::atomic::Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(observed) => word = observed,
+            }
+        }
+    }
+
+    #[inline(always)]
+    pub fn has_runtime_custody(&self) -> bool {
+        self.0.load(core::sync::atomic::Ordering::Relaxed) & REFCOUNT_RUNTIME_CUSTODY != 0
     }
 
     /// Retain an already-owned live object. Retention does not publish payload.
@@ -1027,20 +1138,21 @@ impl MoltRefCount {
     where
         F: Fn() -> bool,
     {
-        let mut current = self.snapshot_owned();
+        let mut word = self.0.load(core::sync::atomic::Ordering::Relaxed);
         loop {
+            let current = refcount_word_owners(word);
             let next = retain_next(current, count, is_deallocating())?;
             if next == current {
                 return Ok(current);
             }
             match self.0.compare_exchange_weak(
-                current,
-                next,
+                word,
+                refcount_word_with_owners(word, next),
                 core::sync::atomic::Ordering::Relaxed,
                 core::sync::atomic::Ordering::Relaxed,
             ) {
-                Ok(previous) => return Ok(previous),
-                Err(observed) => current = observed,
+                Ok(_) => return Ok(current),
+                Err(observed) => word = observed,
             }
         }
     }
@@ -1062,19 +1174,20 @@ impl MoltRefCount {
     where
         F: Fn() -> bool,
     {
-        let mut current = self.snapshot_acquire();
+        let mut word = self.0.load(core::sync::atomic::Ordering::Acquire);
         loop {
+            let current = refcount_word_owners(word);
             let Ok(next) = live_upgrade_next(current, is_deallocating()) else {
                 return None;
             };
             match self.0.compare_exchange_weak(
-                current,
-                next,
+                word,
+                refcount_word_with_owners(word, next),
                 core::sync::atomic::Ordering::Acquire,
                 core::sync::atomic::Ordering::Relaxed,
             ) {
                 Ok(_) => return Some(current),
-                Err(observed) => current = observed,
+                Err(observed) => word = observed,
             }
         }
     }
@@ -1082,14 +1195,15 @@ impl MoltRefCount {
     /// Standard release sequence: only the terminal edge pays the acquire fence.
     #[inline(always)]
     pub fn release_owned(&self) -> Result<RefCountRelease, u32> {
-        let mut current = self.snapshot_owned();
+        let mut word = self.0.load(core::sync::atomic::Ordering::Relaxed);
         loop {
+            let current = refcount_word_owners(word);
             let Some(transition) = release_transition(current) else {
                 return Err(current);
             };
             match self.0.compare_exchange_weak(
-                current,
-                transition.next(),
+                word,
+                refcount_word_with_owners(word, transition.next()),
                 core::sync::atomic::Ordering::Release,
                 core::sync::atomic::Ordering::Relaxed,
             ) {
@@ -1099,7 +1213,7 @@ impl MoltRefCount {
                     }
                     return Ok(transition);
                 }
-                Err(observed) => current = observed,
+                Err(observed) => word = observed,
             }
         }
     }
@@ -1114,10 +1228,14 @@ impl MoltRefCount {
         let Some(baseline) = revival_window_baseline(expected, has_stable_view_hold) else {
             unreachable!("constructed revival baseline must be legal");
         };
+        let mut word = self.0.load(core::sync::atomic::Ordering::Relaxed);
         loop {
+            if refcount_word_owners(word) != expected {
+                return Err(refcount_word_owners(word));
+            }
             match self.0.compare_exchange_weak(
-                expected,
-                baseline,
+                word,
+                refcount_word_with_owners(word, baseline),
                 core::sync::atomic::Ordering::Relaxed,
                 core::sync::atomic::Ordering::Relaxed,
             ) {
@@ -1127,8 +1245,7 @@ impl MoltRefCount {
                         baseline,
                     });
                 }
-                Err(observed) if observed == expected => {}
-                Err(observed) => return Err(observed),
+                Err(observed) => word = observed,
             }
         }
     }
@@ -1138,19 +1255,20 @@ impl MoltRefCount {
     /// legal baseline; counts below it are rejected without mutation.
     #[inline(always)]
     fn close_revival_window(&self, baseline: u32) -> Result<u32, u32> {
-        let mut current = self.snapshot_owned();
+        let mut word = self.0.load(core::sync::atomic::Ordering::Relaxed);
         loop {
+            let current = refcount_word_owners(word);
             if current < baseline || current == IMMORTAL_REFCOUNT {
                 return Err(current);
             }
             match self.0.compare_exchange_weak(
-                current,
-                current - 1,
+                word,
+                refcount_word_with_owners(word, current - 1),
                 core::sync::atomic::Ordering::AcqRel,
                 core::sync::atomic::Ordering::Relaxed,
             ) {
                 Ok(_) => return Ok(current),
-                Err(observed) => current = observed,
+                Err(observed) => word = observed,
             }
         }
     }
@@ -1172,7 +1290,12 @@ impl MoltRefCount {
     #[inline(always)]
     pub unsafe fn make_mortal_for_shutdown_exclusive(&self) {
         if self.snapshot_acquire() == IMMORTAL_REFCOUNT {
-            self.0.store(1, core::sync::atomic::Ordering::Release);
+            // The immortal flag is still published; its retirement through
+            // the header flag authority returns the word to plain custody.
+            self.0.store(
+                1 | REFCOUNT_RUNTIME_CUSTODY,
+                core::sync::atomic::Ordering::Release,
+            );
         }
     }
 
@@ -1182,7 +1305,11 @@ impl MoltRefCount {
     /// The bridge must prove the object has no ordinary owners or concurrent retainers.
     #[inline(always)]
     pub unsafe fn restore_stable_view_hold_exclusive(&self) {
-        self.0.store(1, core::sync::atomic::Ordering::Release);
+        let word = self.0.load(core::sync::atomic::Ordering::Relaxed);
+        self.0.store(
+            refcount_word_with_owners(word, 1),
+            core::sync::atomic::Ordering::Release,
+        );
     }
 
     /// Retire the bridge's sole stable-view hold under exclusive bridge custody.
@@ -1191,7 +1318,11 @@ impl MoltRefCount {
     /// The bridge must prove the stable hold is the only remaining owner.
     #[inline(always)]
     pub unsafe fn retire_stable_view_hold_exclusive(&self) {
-        self.0.store(0, core::sync::atomic::Ordering::Release);
+        let word = self.0.load(core::sync::atomic::Ordering::Relaxed);
+        self.0.store(
+            refcount_word_with_owners(word, 0),
+            core::sync::atomic::Ordering::Release,
+        );
     }
 }
 
@@ -1518,14 +1649,14 @@ mod tests {
         let canonical = GENERATED_OBJECT_ABI_FACTS.words();
         assert_eq!(
             fingerprint_words(canonical),
-            GENERATED_OBJECT_ABI_FINGERPRINT_V7
+            GENERATED_OBJECT_ABI_FINGERPRINT_V8
         );
         for index in 0..canonical.len() {
             let mut changed = canonical;
             changed[index] ^= 1;
             assert_ne!(
                 fingerprint_words(changed),
-                GENERATED_OBJECT_ABI_FINGERPRINT_V7,
+                GENERATED_OBJECT_ABI_FINGERPRINT_V8,
                 "generated-object ABI word {index} is not fingerprinted"
             );
         }
@@ -1533,13 +1664,13 @@ mod tests {
 
     #[test]
     fn generated_object_link_symbols_embed_fingerprint_and_revision() {
-        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V7);
+        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V8);
         for symbol in [
             GENERATED_OBJECT_ABI_GIL_SYMBOL,
             GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
         ] {
             assert!(symbol.contains(&fingerprint), "{symbol}");
-            assert!(symbol.ends_with("_v7"), "{symbol}");
+            assert!(symbol.ends_with("_v8"), "{symbol}");
         }
     }
 
@@ -1625,6 +1756,76 @@ mod tests {
         );
         assert_eq!(window.close(), Err(1));
         assert_eq!(counter.snapshot_owned(), 1);
+    }
+
+    #[test]
+    fn reserved_owner_counts_cannot_be_retained_or_released() {
+        for owners in [REFCOUNT_OWNER_LIMIT, REFCOUNT_OWNER_LIMIT + 1, u32::MAX - 1] {
+            assert_eq!(retain_next(owners, 0, false), Err(RetainError::Overflow));
+            assert_eq!(retain_next(owners, 1, false), Err(RetainError::Overflow));
+            assert_eq!(release_transition(owners), None);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "owner count outside encoded domain")]
+    fn count_construction_cannot_smuggle_custody_as_owners() {
+        let _ = MoltRefCount::new(REFCOUNT_RUNTIME_CUSTODY | 1);
+    }
+
+    #[test]
+    fn runtime_custody_bit_is_preserved_and_invisible_to_owner_counts() {
+        let counter = MoltRefCount::new(7);
+        counter.enter_runtime_custody();
+        assert!(counter.has_runtime_custody());
+        assert_eq!(counter.snapshot_owned(), 7);
+        assert_eq!(counter.retain_owned(3, || false), Ok(7));
+        assert_eq!(
+            counter.release_owned().map(RefCountRelease::previous),
+            Ok(10)
+        );
+        assert_eq!(counter.try_retain_live_previous(|| false), Some(9));
+        assert!(counter.has_runtime_custody());
+        assert_eq!(counter.snapshot_acquire(), 10);
+        counter.leave_runtime_custody();
+        assert!(!counter.has_runtime_custody());
+        assert_eq!(counter.snapshot_owned(), 10);
+
+        let terminal = MoltRefCount::new(1);
+        terminal.enter_runtime_custody();
+        let release = terminal.release_owned().expect("terminal release");
+        assert!(release.reached_zero());
+        assert_eq!(terminal.snapshot_owned(), 0);
+        assert!(terminal.has_runtime_custody());
+        let window = terminal
+            .open_revival_window(false)
+            .expect("custody does not change the revival baseline");
+        assert_eq!(window.close(), Ok(1));
+        assert!(terminal.has_runtime_custody());
+
+        let view = MoltRefCount::new(5);
+        view.enter_runtime_custody();
+        unsafe { view.restore_stable_view_hold_exclusive() };
+        assert_eq!(view.snapshot_owned(), 1);
+        assert!(view.has_runtime_custody());
+        unsafe { view.retire_stable_view_hold_exclusive() };
+        assert_eq!(view.snapshot_owned(), 0);
+        assert!(view.has_runtime_custody());
+
+        let immortal = MoltRefCount::new(1);
+        unsafe { immortal.make_immortal_exclusive() };
+        immortal.leave_runtime_custody();
+        assert_eq!(immortal.snapshot_owned(), IMMORTAL_REFCOUNT);
+        assert!(immortal.has_runtime_custody());
+        unsafe { immortal.make_mortal_for_shutdown_exclusive() };
+        assert_eq!(immortal.snapshot_owned(), 1);
+        assert!(immortal.has_runtime_custody());
+
+        // A mortal word with custody never spells the immortal sentinel.
+        let edge = MoltRefCount::new(REFCOUNT_OWNER_LIMIT - 1);
+        edge.enter_runtime_custody();
+        assert_eq!(edge.retain_owned(1, || false), Err(RetainError::Overflow));
+        assert_eq!(edge.snapshot_owned(), REFCOUNT_OWNER_LIMIT - 1);
     }
 
     #[test]

@@ -88,6 +88,11 @@ fn released_heap_alloc_publishes_before_releasing_its_owner() {
     assert!(!output.bails_to_generic_path);
     assert_eq!(
         output.runtime_calls,
-        ["alloc", "object_publish_initialized", "dec_ref_obj"]
+        [
+            "refcount_admission",
+            "alloc",
+            "object_publish_initialized",
+            "dec_ref_obj"
+        ]
     );
 }

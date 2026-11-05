@@ -210,12 +210,12 @@ fn verify_box_op(
     let Some(result) = op.result_values.first() else {
         return;
     };
-    if result.repr != LirRepr::DynBox {
+    if !matches!(result.repr, LirRepr::DynBox | LirRepr::Immortal64) {
         errors.push(LirVerifyError {
             block: Some(bid),
             op_index: Some(op_index),
             message: format!(
-                "box op must produce a DynBox-lane result, found {:?}/{:?}",
+                "box op must produce a boxed-word result, found {:?}/{:?}",
                 result.ty, result.repr,
             ),
         });

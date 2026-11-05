@@ -229,9 +229,25 @@ impl StdlibObjectCache {
                     if bytes.starts_with(MAGIC) {
                         let (offset, winner) = admitted_object(&bytes, key)?;
                         if &bytes[offset..] != object.as_ref() {
-                            return Err(invalid(
-                                "identical native object inputs produced different output bytes",
-                            ));
+                            let previous = &bytes[offset..];
+                            let first_difference = previous
+                                .iter()
+                                .zip(object.iter())
+                                .position(|(left, right)| left != right)
+                                .unwrap_or(previous.len().min(object.len()));
+                            let end = (first_difference + 16).min(previous.len().min(object.len()));
+                            return Err(invalid(&format!(
+                                "identical native object inputs produced different output bytes: \
+                                 input={} entry={} first_difference={} previous_size={} \
+                                 emitted_size={} previous_bytes={} emitted_bytes={}",
+                                bytes_to_lower_hex(key),
+                                path.display(),
+                                first_difference,
+                                previous.len(),
+                                object.len(),
+                                bytes_to_lower_hex(&previous[first_difference..end]),
+                                bytes_to_lower_hex(&object[first_difference..end]),
+                            )));
                         }
                         // The first generation owns its original emitter even
                         // when another worker independently emits equal bytes.

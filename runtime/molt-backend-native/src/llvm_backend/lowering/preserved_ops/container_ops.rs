@@ -104,11 +104,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                let release = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
-                self.backend
-                    .builder
-                    .build_call(release, &[unpack_result.into()], "unpack_result_release")
-                    .unwrap();
+                let release = self.ensure_refcount_site(
+                    molt_codegen_abi::inline_refcount::RefcountOperation::Release,
+                );
+                release.emit(&self.backend.builder, unpack_result);
                 // A sequence that could not be materialized skips the runtime,
                 // so its targets are published as None.
                 let none = i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false);

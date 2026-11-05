@@ -78,12 +78,14 @@ pub(super) fn emit_method_load_op(
         locals.bound_result_slot(self_or_null),
         import_ids,
         reloc_enabled,
+        locals.refcount(),
     );
     store_owned_value(
         func,
         locals.bound_result_slot(callable),
         import_ids,
         reloc_enabled,
+        locals.refcount(),
     );
     true
 }

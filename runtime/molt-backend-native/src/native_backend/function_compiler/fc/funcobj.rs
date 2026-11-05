@@ -143,7 +143,7 @@ fn emit_frame_home_release(
     sealed_blocks: &mut BTreeSet<Block>,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
-    local_dec_ref_obj: FuncRef,
+    local_dec_ref_obj: NativeRefcountSite,
 ) {
     let holds = builder
         .ins()
@@ -154,7 +154,7 @@ fn emit_frame_home_release(
     builder.ins().brif(holds, release, &[], done, &[]);
     switch_to_block_materialized(builder, release);
     seal_block_once(builder, sealed_blocks, release);
-    builder.ins().call(local_dec_ref_obj, &[old_bits]);
+    emit_refcount(builder, old_bits, local_dec_ref_obj);
     jump_block(builder, done, &[]);
     switch_to_block_materialized(builder, done);
     seal_block_once(builder, sealed_blocks, done);
@@ -250,7 +250,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -267,8 +267,8 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     last_use: &BTreeMap<String, usize>,
     cleanup_roots: &mut NativeCleanupRoots,
-    local_inc_ref_obj: FuncRef,
-    local_dec_ref_obj: FuncRef,
+    local_inc_ref_obj: NativeRefcountSite,
+    local_dec_ref_obj: NativeRefcountSite,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
@@ -277,7 +277,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
         (cranelift_module::FuncId, ImportSignatureShape),
     >,
                                        builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
@@ -386,7 +386,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                     .call(local_callee, &[func_addr, tramp_addr, arity_val])
             };
             let res = builder.inst_results(call)[0];
-            bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
+            bind_owned_runtime_result(op, res, module, import_ids, builder, import_refs, vars);
         }
         OpKind::FuncNew => {
             let Some(func_name) = op.s_value.as_ref() else {
@@ -473,7 +473,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &[func_addr, tramp_addr, arity_val, custody_val],
             );
             let res = builder.inst_results(call)[0];
-            bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
+            bind_owned_runtime_result(op, res, module, import_ids, builder, import_refs, vars);
         }
         OpKind::FuncNewClosure => {
             let Some(func_name) = op.s_value.as_ref() else {
@@ -589,7 +589,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             if let Some(out_name) = op.out.as_ref() {
                 local_closure_envs.insert(func_name.clone(), out_name.clone());
             }
-            bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
+            bind_owned_runtime_result(op, res, module, import_ids, builder, import_refs, vars);
         }
         OpKind::CodeNew => {
             let args = op.args.as_ref().expect("admitted code_new operands");
@@ -725,7 +725,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 ],
             );
             let res = builder.inst_results(call)[0];
-            bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
+            bind_owned_runtime_result(op, res, module, import_ids, builder, import_refs, vars);
         }
         OpKind::ModuleSlot => {
             let owner = op.s_value.as_deref().expect("admitted module_slot owner");
@@ -1079,7 +1079,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[home]);
             let taken = builder.inst_results(call)[0];
-            bind_owned_runtime_result(op, taken, module, import_ids, builder, vars);
+            bind_owned_runtime_result(op, taken, module, import_ids, builder, import_refs, vars);
         }
         OpKind::FrameHomeClear => {
             // `del`: the slot becomes unbound, then what it held is released.
@@ -1133,7 +1133,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[]);
             let dict = builder.inst_results(call)[0];
-            bind_owned_runtime_result(op, dict, module, import_ids, builder, vars);
+            bind_owned_runtime_result(op, dict, module, import_ids, builder, import_refs, vars);
         }
         OpKind::FrameContextSet => {
             let args: Vec<_> = op
@@ -1277,7 +1277,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             if let Some(out__) = op.out.as_ref() {
                 // The runtime borrows the function's closure edge. Acquire an
                 // owner only for a bound result; discarding it needs no RC.
-                emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj);
+                emit_refcount(&mut *builder, res, local_inc_ref_obj);
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
@@ -1295,7 +1295,7 @@ pub(in crate::native_backend::function_compiler) fn handle_gpu_intrinsic_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
 ) {
     match op.kind {

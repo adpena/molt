@@ -349,3 +349,140 @@ fn module_roots_and_literal_caches_survive_repeated_runtime_retirement() {
         });
     }
 }
+
+#[test]
+fn custody_flags_place_the_count_word_under_runtime_custody() {
+    let _transaction = RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let bits = MoltObject::from_ptr(crate::alloc_bytes(py, b"custody probe")).bits();
+        let ptr = crate::obj_from_bits(bits).as_ptr().expect("heap value");
+        let header = unsafe { &*header_from_obj_ptr(ptr) };
+        assert!(!header.ref_count.has_runtime_custody());
+        for flag in [HEADER_FLAG_HAS_ABI_VIEW, HEADER_FLAG_DEALLOCATING] {
+            header.fetch_or_flags(flag);
+            assert!(header.ref_count.has_runtime_custody(), "{flag:#x}");
+            assert_eq!(header.ref_count_snapshot(), 1);
+            header.fetch_and_flags(!flag);
+            assert!(!header.ref_count.has_runtime_custody(), "{flag:#x}");
+        }
+        // Retiring one custody flag keeps the other's custody.
+        header.update_flags(HEADER_FLAG_HAS_ABI_VIEW | HEADER_FLAG_DEALLOCATING, 0);
+        header.fetch_and_flags(!HEADER_FLAG_HAS_ABI_VIEW);
+        assert!(header.ref_count.has_runtime_custody());
+        assert_eq!(
+            header.take_flags(HEADER_FLAG_DEALLOCATING),
+            HEADER_FLAG_DEALLOCATING
+        );
+        assert!(!header.ref_count.has_runtime_custody());
+        // Unrelated flags never touch the count word.
+        header.fetch_or_flags(HEADER_FLAG_FINALIZER_RAN);
+        assert!(!header.ref_count.has_runtime_custody());
+        header.fetch_and_flags(!HEADER_FLAG_FINALIZER_RAN);
+        // A refused C-view publication leaves no custody of its own.
+        header.fetch_or_flags(HEADER_FLAG_DEALLOCATING);
+        assert!(!header.try_set_flags_unless(HEADER_FLAG_HAS_ABI_VIEW, HEADER_FLAG_DEALLOCATING));
+        header.fetch_and_flags(!HEADER_FLAG_DEALLOCATING);
+        assert!(!header.ref_count.has_runtime_custody());
+        // An accepted publication goes through the flag CAS authority.
+        assert!(header.try_set_flags_unless(HEADER_FLAG_HAS_ABI_VIEW, HEADER_FLAG_DEALLOCATING));
+        assert!(header.ref_count.has_runtime_custody());
+        assert_eq!(header.ref_count_snapshot(), 1);
+        header.fetch_and_flags(!HEADER_FLAG_HAS_ABI_VIEW);
+        assert!(!header.ref_count.has_runtime_custody());
+        // Plain runtime transitions keep the owner count exact.
+        crate::inc_ref_bits(py, bits);
+        assert_eq!(header.ref_count_snapshot(), 2);
+        crate::dec_ref_bits(py, bits);
+        assert_eq!(header.ref_count_snapshot(), 1);
+        crate::dec_ref_bits(py, bits);
+    });
+}
+
+#[test]
+fn custody_reconciliation_repairs_stale_failure_and_preserves_immortality() {
+    let _transaction = RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let ptr = crate::alloc_bytes(py, b"custody reconciliation");
+        let bits = MoltObject::from_ptr(ptr).bits();
+        let header = unsafe { &*header_from_obj_ptr(ptr) };
+        // A failed CAS speculates custody for a flag it never published.
+        header.fetch_or_flags(HEADER_FLAG_FINALIZER_RAN);
+        assert!(
+            header
+                .compare_exchange_synchronized_flags(0, HEADER_FLAG_HAS_ABI_VIEW)
+                .is_err()
+        );
+        assert!(!header.ref_count.has_runtime_custody());
+        header.fetch_and_flags(!HEADER_FLAG_FINALIZER_RAN);
+        // A remover's stale observation precedes a completed sibling publisher.
+        header.fetch_or_flags(HEADER_FLAG_HAS_ABI_VIEW);
+        header.refcount_custody_after(0, HEADER_FLAG_DEALLOCATING, 0);
+        assert!(header.ref_count.has_runtime_custody());
+        assert_eq!(header.ref_count_snapshot(), 1);
+        header.fetch_and_flags(!HEADER_FLAG_HAS_ABI_VIEW);
+        header.make_immortal();
+        assert_eq!(
+            header.ref_count_snapshot(),
+            molt_codegen_abi::IMMORTAL_REFCOUNT
+        );
+        header.fetch_and_flags(!HEADER_FLAG_IMMORTAL);
+        assert!(
+            header.ref_count.has_runtime_custody(),
+            "generic flag clear cannot demote a sentinel"
+        );
+        assert_eq!(
+            header.ref_count_snapshot(),
+            molt_codegen_abi::IMMORTAL_REFCOUNT
+        );
+        header.fetch_or_flags(HEADER_FLAG_IMMORTAL);
+        header.make_mortal_for_shutdown();
+        assert_eq!(header.ref_count_snapshot(), 1);
+        assert!(header.ref_count.has_runtime_custody());
+        header.fetch_and_flags(!HEADER_FLAG_IMMORTAL);
+        assert!(!header.ref_count.has_runtime_custody());
+        crate::dec_ref_bits(py, bits);
+    });
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
+#[test]
+fn atomic_owners_remain_exact_during_custody_publication() {
+    use std::sync::{Arc, Barrier};
+    let header = Arc::new(MoltHeader {
+        type_id: TYPE_ID_BYTES,
+        ref_count: MoltRefCount::new(7),
+        flags: MoltFlags::new(0),
+        size_class: 0,
+        aux_kind: HEADER_AUX_KIND_NONE,
+        aux: MoltAuxWord::new(0),
+    });
+    let barrier = Arc::new(Barrier::new(3));
+    let mut workers = Vec::new();
+    for publisher in [false, true] {
+        let header = Arc::clone(&header);
+        let barrier = Arc::clone(&barrier);
+        workers.push(std::thread::spawn(move || {
+            barrier.wait();
+            for _ in 0..1000 {
+                if publisher {
+                    header.fetch_or_flags(HEADER_FLAG_HAS_ABI_VIEW);
+                    header.fetch_and_flags(!HEADER_FLAG_HAS_ABI_VIEW);
+                } else {
+                    header.ref_count.retain_owned(1, || false).unwrap();
+                    let release = header.ref_count.release_owned().unwrap();
+                    assert!(!release.reached_zero());
+                }
+            }
+        }));
+    }
+    barrier.wait();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    assert_eq!(header.ref_count_snapshot(), 7);
+    header.fetch_or_flags(HEADER_FLAG_HAS_ABI_VIEW);
+    assert!(header.ref_count.has_runtime_custody());
+    header.fetch_and_flags(!HEADER_FLAG_HAS_ABI_VIEW);
+    assert!(!header.ref_count.has_runtime_custody());
+    assert_eq!(header.ref_count_snapshot(), 7);
+}

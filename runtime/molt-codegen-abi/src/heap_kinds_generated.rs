@@ -123,3 +123,11 @@ pub const ALL_HEAP_TYPE_IDS: [u32; 59] = [
     TYPE_ID_CONTEXT_BITMAP_NODE,
     TYPE_ID_CONTEXT_COLLISION_NODE,
 ];
+pub const HEAP_TYPE_ID_SPAN: u64 = 62;
+pub const HEAP_TYPE_ID_VALID_MASK: u64 = 0x3fffffff7fef7fdf;
+#[inline(always)]
+pub const fn is_valid_heap_type_id(type_id: u32) -> bool {
+    let index = type_id.wrapping_sub(MIN_HEAP_TYPE_ID);
+    type_id == TYPE_ID_OBJECT
+        || (index < HEAP_TYPE_ID_SPAN as u32 && (HEAP_TYPE_ID_VALID_MASK >> (index & 63)) & 1 != 0)
+}

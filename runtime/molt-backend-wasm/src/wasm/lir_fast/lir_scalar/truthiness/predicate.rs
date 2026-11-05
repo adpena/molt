@@ -19,7 +19,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_truthiness_i32(ctx: &mut LirLowerCtx, 
                 .push(Instruction::F64Const(wasm_encoder::Ieee64::from(0.0)));
             ctx.instructions.push(Instruction::F64Ne);
         }
-        LirRepr::DynBox | LirRepr::Ref64 => {
+        LirRepr::DynBox | LirRepr::Ref64 | LirRepr::Immortal64 => {
             ctx.emit_get(src);
             ctx.instructions
                 .push(Instruction::I64Const(QNAN_TAG_MASK_I64));

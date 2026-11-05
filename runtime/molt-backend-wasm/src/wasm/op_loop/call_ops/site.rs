@@ -113,13 +113,16 @@ pub(super) fn retain_live_object_locals(
     import_ids: &TrackedImportIds,
     reloc_enabled: bool,
     live_object_locals: &[u32],
+    refcount: crate::wasm::refcount::WasmRefcountScratch,
 ) {
     for local_idx in live_object_locals {
         func.instruction(&Instruction::LocalGet(*local_idx));
-        emit_call(
+        crate::wasm::refcount::emit_refcount(
             func,
             reloc_enabled,
-            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::IncRefObj],
+            import_ids,
+            refcount,
+            molt_codegen_abi::inline_refcount::RefcountOperation::Retain,
         );
     }
 }
@@ -129,13 +132,16 @@ pub(super) fn release_live_object_locals(
     import_ids: &TrackedImportIds,
     reloc_enabled: bool,
     live_object_locals: &[u32],
+    refcount: crate::wasm::refcount::WasmRefcountScratch,
 ) {
     for local_idx in live_object_locals.iter().rev() {
         func.instruction(&Instruction::LocalGet(*local_idx));
-        emit_call(
+        crate::wasm::refcount::emit_refcount(
             func,
             reloc_enabled,
-            import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DecRefObj],
+            import_ids,
+            refcount,
+            molt_codegen_abi::inline_refcount::RefcountOperation::Release,
         );
     }
 }
@@ -195,6 +201,7 @@ pub(super) fn build_positional_callargs(
             import_ids,
             reloc_enabled,
             crate::wasm_abi_generated::WasmRuntimeImport::CallargsPushPos,
+            locals.refcount(),
         );
     }
 }

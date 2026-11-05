@@ -228,11 +228,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             self.backend.context.i64_type().into(),
             "name consumer must return boxed i64 bits"
         );
-        let drop_name = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
-        self.backend
-            .builder
-            .build_call(drop_name, &[name_bits.into()], "owned_name_release")
-            .unwrap();
+        let drop_name = self
+            .ensure_refcount_site(molt_codegen_abi::inline_refcount::RefcountOperation::Release);
+        drop_name.emit(&self.backend.builder, name_bits.into());
         let consumed = self
             .backend
             .builder

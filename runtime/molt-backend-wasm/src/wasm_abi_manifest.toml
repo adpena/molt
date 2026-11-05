@@ -1807,6 +1807,12 @@ name = "thread_record"
 type = 0
 return_contract = "raw_bits"
 
+# Full execution admission borrowed for one compiled invocation's RC sites.
+[[import]]
+name = "refcount_admission"
+type = 0
+return_contract = "raw_bits"
+
 [[import]]
 name = "trace_enter_slot"
 type = 2
@@ -6031,6 +6037,10 @@ import_name = "module_del_global_if_present"
 [[lir_runtime_call]]
 variant = "IncRefObj"
 import_name = "inc_ref_obj"
+
+[[lir_runtime_call]]
+variant = "RefcountAdmission"
+import_name = "refcount_admission"
 
 [[lir_runtime_call]]
 variant = "DecRefObj"

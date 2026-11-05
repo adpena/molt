@@ -464,9 +464,11 @@ for (const test of config.cases) {
   const anchored = test.name.startsWith('roundtrip_anchor_');
   let lines, polls, failAt, savedState=0n;
   let stateReads=0, stateWrites=[];
-  let anchor, nextOwner=1001n;
+  let anchor, nextOwner=0x7ffc0000000003e9n;
   const owners=new Map(), returnedOwners=new Set();
   const hooks = {
+  refcount_admission: () => 0n, // isolated image: no runtime execution custody
+
     trace_set_line(line) { lines.push(Number(line)); return none; },
     exception_frame_origin(homes) { assert.equal(homes,0n); return none; },
     exception_pending() {

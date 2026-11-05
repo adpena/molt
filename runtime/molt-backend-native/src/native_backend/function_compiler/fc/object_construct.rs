@@ -29,7 +29,7 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -44,7 +44,7 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
         (cranelift_module::FuncId, ImportSignatureShape),
     >,
                                        builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
@@ -97,7 +97,7 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*func_bits, *self_bits]);
             let res = builder.inst_results(call)[0];
-            bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
+            bind_owned_runtime_result(op, res, module, import_ids, builder, import_refs, vars);
         }
         OpKind::ObjectNew => {
             let callee = SimpleBackend::import_func_id_split(
@@ -171,7 +171,7 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*func_bits]);
             let res = builder.inst_results(call)[0];
-            bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
+            bind_owned_runtime_result(op, res, module, import_ids, builder, import_refs, vars);
         }
         OpKind::StaticmethodNew => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -196,7 +196,7 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*func_bits]);
             let res = builder.inst_results(call)[0];
-            bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
+            bind_owned_runtime_result(op, res, module, import_ids, builder, import_refs, vars);
         }
         OpKind::PropertyNew => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -245,7 +245,7 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
                 .ins()
                 .call(local_callee, &[*getter, *setter, *deleter]);
             let res = builder.inst_results(call)[0];
-            bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
+            bind_owned_runtime_result(op, res, module, import_ids, builder, import_refs, vars);
         }
         _ => unreachable!("handler invoked with non-matching op.kind"),
     }

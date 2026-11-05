@@ -153,10 +153,18 @@ fn finally_pending_observer_services_only_the_notified_branch_without_exception_
                     ops[passive_index - 1].starts_with("If"),
                     "empty exception state must also avoid runtime entry: {ops:?}"
                 );
-                assert_eq!(calls, [imports["thread_record"], service, passive]);
+                assert_eq!(
+                    calls,
+                    [
+                        imports["thread_record"],
+                        imports["refcount_admission"],
+                        service,
+                        passive
+                    ]
+                );
             } else {
                 assert!(!imports.contains_key("async_work_poll_and_exception_last_pending"));
-                assert_eq!(calls, [passive]);
+                assert_eq!(calls, [imports["refcount_admission"], passive]);
             }
         }
     }

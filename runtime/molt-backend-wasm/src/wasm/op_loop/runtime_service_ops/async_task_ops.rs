@@ -69,6 +69,8 @@ pub(super) fn emit_async_task_runtime_op(
                         resolve_local,
                         layout.payload_base_offset() + (i as i32) * 8,
                         arg_local,
+                        (!context.scalar_plan.boxed_refcount_is_noop(name))
+                            .then(|| context.locals.refcount()),
                     );
                 }
             }

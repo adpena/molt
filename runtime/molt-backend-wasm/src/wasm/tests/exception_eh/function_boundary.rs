@@ -146,6 +146,8 @@ for (const test of config.cases) {
     __indirect_function_table:new WebAssembly.Table({initial:test.table_entries,element:'anyfunc'})
   }};
   const hooks = {
+  refcount_admission: () => 0n, // isolated image: no runtime execution custody
+
     trace_enter_slot: () => { frames++; return none; },
     trace_exit: () => { assert.equal(frames,1); frames--; return none; },
     trace_set_line: line => { assert.equal(frames,1); lines.push(Number(line)); return none; },
