@@ -1537,21 +1537,11 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             # The transition owns this carrier only until resumption. Loading
             # retains the result before clearing its hidden frame reference.
             res = self._consume_scratch_cell(result_storage)
-            # Consume the transition's result carrier before any error edge.
-            # These hidden-slot transfers preserve the received pending error;
-            # capture its Origin once before forwarding to authored cleanup.
-            received = self.next_label()
-            self.emit(
-                MoltOp(
-                    kind="CHECK_EXCEPTION",
-                    args=[received],
-                    result=MoltValue("none"),
-                    exception_edge=ExceptionEdgeKind.ORIGIN,
-                )
-            )
-            self.emit(MoltOp(kind="LABEL", args=[received], result=MoltValue("none")))
-            # Retiring the awaited task may release Python-owned state. Capture
-            # the received error before that release can reenter Python.
+            # Acquire a fresh owner after resumption. Clearing the hidden slot
+            # cannot finalize the awaited task while this owner remains live
+            # through Origin capture; pre-suspension SSA values are unavailable
+            # on an implicit resume.
+            completed = self._reload_async_value(awaitable_slot, "Future")
             cleared_val = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=cleared_val))
             self.emit(
@@ -1561,6 +1551,26 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                     result=MoltValue("none"),
                 )
             )
+            handler = (
+                self.try_end_labels[-1]
+                if self.try_end_labels
+                else self.function_exception_label
+            )
+            if handler is None:
+                raise AssertionError("await resumption requires an exception handler")
+            # Carrier consumption precedes every transfer. The Origin targets
+            # the lexical handler directly, just like awaitable acquisition.
+            self.emit(
+                MoltOp(
+                    kind="CHECK_EXCEPTION",
+                    args=[handler],
+                    result=MoltValue("none"),
+                    exception_edge=ExceptionEdgeKind.ORIGIN,
+                )
+            )
+            # Canonical exception-edge drops release this owner after Origin
+            # capture when the handler wins; this is its normal-path boundary.
+            self._emit_drop_owned_value(completed)
             self._emit_raise_if_pending()
         return res
 

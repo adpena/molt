@@ -593,8 +593,10 @@ and automatic-check facts; throwing guards remain observers. Compiler-owned home
 restoration forwards the incoming location to any release callback instead of
 publishing synthetic scope coordinates. Ordinary binding writes retain their
 publication obligation. Await resumption retains and clears its hidden result
-carrier before taking an error edge, captures the received Origin, then retires
-the awaited task and dispatches Unwind to authored cleanup.
+carrier before taking an error edge. A fresh post-resume owner keeps the awaited
+task alive while its hidden slot is cleared. The receiving Origin transfers
+directly to the lexical handler; the owner's normal release or canonical
+exception-edge release follows capture, before authored cleanup proceeds.
 
 Reserve a raw location word beside each executing frame's binding homes, even for module bodies
 and frames with no local slots. The existing home-base lend supplies its address once per
