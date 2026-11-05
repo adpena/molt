@@ -42,8 +42,12 @@ the integrator reconciles and retires them after landing.
 `tools/trunk_loop.py provision --host NAME --commit COMMIT` automates the
 [documented local install](../getting-started.md#local-repo-workflow) at
 `COMMIT`. The controller resolves `COMMIT` to a full id and refuses it unless an
-`origin` branch contains it, since the host fetches from origin. The host then
-fetches and checks out that commit before `uv sync` and doctor. A fetch alone
+`origin` branch contains it. The host fetches that exact commit from the
+controller's `origin` URL, the public repository, and checks it out before
+`uv sync` and doctor. It never fetches from the farm checkout's own `origin`:
+on 2026-11-04 bat00's was an SSH URL, and the fetch waited forever on the
+user's key. `GIT_TERMINAL_PROMPT=0` and SSH `BatchMode=yes` make any prompt fail
+instead of hanging. A fetch alone
 leaves the checkout at whatever commit it held: on 2026-11-04 the macmini's
 doctor judged pre-fix code and reported an error that main had already removed.
 The farm checkout is tool-owned. Provision refuses a checkout with tracked edits

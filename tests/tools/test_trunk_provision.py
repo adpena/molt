@@ -108,7 +108,11 @@ def test_provision_transport_runs_documented_workflow_twice(name, monkeypatch):
     assert str(path_type(uv).parent) in retention and uv in retention
     assert "--default-toolchain none" in install
     assert "rustup show active-toolchain" in install
-    assert "git clone --" in install and "fetch origin" in install
+    # The exact commit from the public URL: never the checkout's own origin,
+    # whose SSH key may prompt; a prompt fails instead of hanging.
+    assert "git clone --" in install
+    assert "fetch --no-tags -- " in install and commit in install
+    assert "fetch origin" not in install and "GIT_TERMINAL_PROMPT" in install
     assert installs[0] == installs[1]
     assert "envs/molt-dx-py312" not in install
     if name == "molt-gate":
@@ -712,7 +716,7 @@ def test_existing_posix_install_does_no_bootstrap_work(tmp_path, name, doctor_er
     assert (
         calls
         == [
-            f"git -C {checkout} fetch origin",
+            f"git -C {checkout} fetch --no-tags -- https://example.test/repo.git {commit}",
             f"git -C {checkout} status --porcelain --untracked-files=no",
             f"git -C {checkout} checkout --quiet --detach {commit}",
             "rustup show active-toolchain",

@@ -147,6 +147,10 @@ def provision_script(host, *, repository: str, commit: str) -> str:
 $env:UV_PROJECT_ENVIRONMENT=$null
 $env:VIRTUAL_ENV=$null
 $env:MOLT_VENV=$null
+# The public repository needs no credentials: a prompt fails instead of hanging
+# (bat00, 2026-11-04: a fetch through the user's SSH key waited forever).
+$env:GIT_TERMINAL_PROMPT='0'
+$env:GIT_SSH_COMMAND='ssh -o BatchMode=yes'
 $env:PATH={ps(str(PureWindowsPath(uv).parent) + ";")} + "$env:USERPROFILE\\.cargo\\bin;$env:PATH"
 $uv={ps(uv)}
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {{ throw 'Missing system prerequisite git; run: winget install --id Git.Git' }}
@@ -181,7 +185,7 @@ if (-not (Test-Path -LiteralPath {ps(checkout)})) {{
  & git clone -- {ps(repository)} {ps(checkout)}
  if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
 }} else {{
- & git -C {ps(checkout)} fetch origin
+ & git -C {ps(checkout)} fetch --no-tags -- {ps(repository)} {commit}
  if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
 }}
 if (& git -C {ps(checkout)} status --porcelain --untracked-files=no) {{ throw {ps(checkout + " has tracked edits; provision never discards them")} }}
@@ -221,6 +225,9 @@ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
     # The owner approves package installation per host (its inventory record).
     return f"""set -eu
 unset UV_PROJECT_ENVIRONMENT VIRTUAL_ENV MOLT_VENV
+# The public repository needs no credentials: a prompt fails instead of hanging
+# (bat00, 2026-11-04: a fetch through the user's SSH key waited forever).
+export GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes'
 {posix_path_head(host)}
 uv={shlex.quote(uv)}
 missing=""
@@ -251,7 +258,7 @@ if ! command -v rustup >/dev/null; then
 fi
 mkdir -p {shlex.quote(host.custody_root)}
 if test -e {shlex.quote(checkout)}; then
- git -C {shlex.quote(checkout)} fetch origin
+ git -C {shlex.quote(checkout)} fetch --no-tags -- {shlex.quote(repository)} {commit}
 else
  git clone -- {shlex.quote(repository)} {shlex.quote(checkout)}
 fi
