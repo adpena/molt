@@ -130,6 +130,75 @@ class PythonIdentity(IntFlag):
     BUILTIN_ZIP = 1 << 116
     BUILTIN_ELLIPSIS = 1 << 117
     BUILTIN_NOTIMPLEMENTED = 1 << 118
+    BUILTIN_ARITHMETICERROR = 1 << 119
+    BUILTIN_ASSERTIONERROR = 1 << 120
+    BUILTIN_ATTRIBUTEERROR = 1 << 121
+    BUILTIN_BASEEXCEPTION = 1 << 122
+    BUILTIN_BASEEXCEPTIONGROUP = 1 << 123
+    BUILTIN_BLOCKINGIOERROR = 1 << 124
+    BUILTIN_BROKENPIPEERROR = 1 << 125
+    BUILTIN_BUFFERERROR = 1 << 126
+    BUILTIN_BYTESWARNING = 1 << 127
+    BUILTIN_CHILDPROCESSERROR = 1 << 128
+    BUILTIN_CONNECTIONABORTEDERROR = 1 << 129
+    BUILTIN_CONNECTIONERROR = 1 << 130
+    BUILTIN_CONNECTIONREFUSEDERROR = 1 << 131
+    BUILTIN_CONNECTIONRESETERROR = 1 << 132
+    BUILTIN_DEPRECATIONWARNING = 1 << 133
+    BUILTIN_EOFERROR = 1 << 134
+    BUILTIN_ENCODINGWARNING = 1 << 135
+    BUILTIN_ENVIRONMENTERROR = 1 << 136
+    BUILTIN_EXCEPTION = 1 << 137
+    BUILTIN_EXCEPTIONGROUP = 1 << 138
+    BUILTIN_FILEEXISTSERROR = 1 << 139
+    BUILTIN_FILENOTFOUNDERROR = 1 << 140
+    BUILTIN_FLOATINGPOINTERROR = 1 << 141
+    BUILTIN_FUTUREWARNING = 1 << 142
+    BUILTIN_GENERATOREXIT = 1 << 143
+    BUILTIN_IOERROR = 1 << 144
+    BUILTIN_IMPORTERROR = 1 << 145
+    BUILTIN_IMPORTWARNING = 1 << 146
+    BUILTIN_INDENTATIONERROR = 1 << 147
+    BUILTIN_INDEXERROR = 1 << 148
+    BUILTIN_INTERRUPTEDERROR = 1 << 149
+    BUILTIN_ISADIRECTORYERROR = 1 << 150
+    BUILTIN_KEYERROR = 1 << 151
+    BUILTIN_KEYBOARDINTERRUPT = 1 << 152
+    BUILTIN_LOOKUPERROR = 1 << 153
+    BUILTIN_MEMORYERROR = 1 << 154
+    BUILTIN_MODULENOTFOUNDERROR = 1 << 155
+    BUILTIN_NAMEERROR = 1 << 156
+    BUILTIN_NOTADIRECTORYERROR = 1 << 157
+    BUILTIN_NOTIMPLEMENTEDERROR = 1 << 158
+    BUILTIN_OSERROR = 1 << 159
+    BUILTIN_OVERFLOWERROR = 1 << 160
+    BUILTIN_PENDINGDEPRECATIONWARNING = 1 << 161
+    BUILTIN_PERMISSIONERROR = 1 << 162
+    BUILTIN_PROCESSLOOKUPERROR = 1 << 163
+    BUILTIN_RECURSIONERROR = 1 << 164
+    BUILTIN_REFERENCEERROR = 1 << 165
+    BUILTIN_RESOURCEWARNING = 1 << 166
+    BUILTIN_RUNTIMEERROR = 1 << 167
+    BUILTIN_RUNTIMEWARNING = 1 << 168
+    BUILTIN_STOPASYNCITERATION = 1 << 169
+    BUILTIN_STOPITERATION = 1 << 170
+    BUILTIN_SYNTAXERROR = 1 << 171
+    BUILTIN_SYNTAXWARNING = 1 << 172
+    BUILTIN_SYSTEMERROR = 1 << 173
+    BUILTIN_SYSTEMEXIT = 1 << 174
+    BUILTIN_TABERROR = 1 << 175
+    BUILTIN_TIMEOUTERROR = 1 << 176
+    BUILTIN_TYPEERROR = 1 << 177
+    BUILTIN_UNBOUNDLOCALERROR = 1 << 178
+    BUILTIN_UNICODEDECODEERROR = 1 << 179
+    BUILTIN_UNICODEENCODEERROR = 1 << 180
+    BUILTIN_UNICODEERROR = 1 << 181
+    BUILTIN_UNICODETRANSLATEERROR = 1 << 182
+    BUILTIN_UNICODEWARNING = 1 << 183
+    BUILTIN_USERWARNING = 1 << 184
+    BUILTIN_VALUEERROR = 1 << 185
+    BUILTIN_WARNING = 1 << 186
+    BUILTIN_ZERODIVISIONERROR = 1 << 187
 
 
 class PythonMember(IntFlag):
@@ -221,6 +290,75 @@ class PythonMember(IntFlag):
     BUILTINS_ZIP = 1 << 85
     BUILTINS_ELLIPSIS = 1 << 86
     BUILTINS_NOTIMPLEMENTED = 1 << 87
+    BUILTINS_ARITHMETICERROR = 1 << 88
+    BUILTINS_ASSERTIONERROR = 1 << 89
+    BUILTINS_ATTRIBUTEERROR = 1 << 90
+    BUILTINS_BASEEXCEPTION = 1 << 91
+    BUILTINS_BASEEXCEPTIONGROUP = 1 << 92
+    BUILTINS_BLOCKINGIOERROR = 1 << 93
+    BUILTINS_BROKENPIPEERROR = 1 << 94
+    BUILTINS_BUFFERERROR = 1 << 95
+    BUILTINS_BYTESWARNING = 1 << 96
+    BUILTINS_CHILDPROCESSERROR = 1 << 97
+    BUILTINS_CONNECTIONABORTEDERROR = 1 << 98
+    BUILTINS_CONNECTIONERROR = 1 << 99
+    BUILTINS_CONNECTIONREFUSEDERROR = 1 << 100
+    BUILTINS_CONNECTIONRESETERROR = 1 << 101
+    BUILTINS_DEPRECATIONWARNING = 1 << 102
+    BUILTINS_EOFERROR = 1 << 103
+    BUILTINS_ENCODINGWARNING = 1 << 104
+    BUILTINS_ENVIRONMENTERROR = 1 << 105
+    BUILTINS_EXCEPTION = 1 << 106
+    BUILTINS_EXCEPTIONGROUP = 1 << 107
+    BUILTINS_FILEEXISTSERROR = 1 << 108
+    BUILTINS_FILENOTFOUNDERROR = 1 << 109
+    BUILTINS_FLOATINGPOINTERROR = 1 << 110
+    BUILTINS_FUTUREWARNING = 1 << 111
+    BUILTINS_GENERATOREXIT = 1 << 112
+    BUILTINS_IOERROR = 1 << 113
+    BUILTINS_IMPORTERROR = 1 << 114
+    BUILTINS_IMPORTWARNING = 1 << 115
+    BUILTINS_INDENTATIONERROR = 1 << 116
+    BUILTINS_INDEXERROR = 1 << 117
+    BUILTINS_INTERRUPTEDERROR = 1 << 118
+    BUILTINS_ISADIRECTORYERROR = 1 << 119
+    BUILTINS_KEYERROR = 1 << 120
+    BUILTINS_KEYBOARDINTERRUPT = 1 << 121
+    BUILTINS_LOOKUPERROR = 1 << 122
+    BUILTINS_MEMORYERROR = 1 << 123
+    BUILTINS_MODULENOTFOUNDERROR = 1 << 124
+    BUILTINS_NAMEERROR = 1 << 125
+    BUILTINS_NOTADIRECTORYERROR = 1 << 126
+    BUILTINS_NOTIMPLEMENTEDERROR = 1 << 127
+    BUILTINS_OSERROR = 1 << 128
+    BUILTINS_OVERFLOWERROR = 1 << 129
+    BUILTINS_PENDINGDEPRECATIONWARNING = 1 << 130
+    BUILTINS_PERMISSIONERROR = 1 << 131
+    BUILTINS_PROCESSLOOKUPERROR = 1 << 132
+    BUILTINS_RECURSIONERROR = 1 << 133
+    BUILTINS_REFERENCEERROR = 1 << 134
+    BUILTINS_RESOURCEWARNING = 1 << 135
+    BUILTINS_RUNTIMEERROR = 1 << 136
+    BUILTINS_RUNTIMEWARNING = 1 << 137
+    BUILTINS_STOPASYNCITERATION = 1 << 138
+    BUILTINS_STOPITERATION = 1 << 139
+    BUILTINS_SYNTAXERROR = 1 << 140
+    BUILTINS_SYNTAXWARNING = 1 << 141
+    BUILTINS_SYSTEMERROR = 1 << 142
+    BUILTINS_SYSTEMEXIT = 1 << 143
+    BUILTINS_TABERROR = 1 << 144
+    BUILTINS_TIMEOUTERROR = 1 << 145
+    BUILTINS_TYPEERROR = 1 << 146
+    BUILTINS_UNBOUNDLOCALERROR = 1 << 147
+    BUILTINS_UNICODEDECODEERROR = 1 << 148
+    BUILTINS_UNICODEENCODEERROR = 1 << 149
+    BUILTINS_UNICODEERROR = 1 << 150
+    BUILTINS_UNICODETRANSLATEERROR = 1 << 151
+    BUILTINS_UNICODEWARNING = 1 << 152
+    BUILTINS_USERWARNING = 1 << 153
+    BUILTINS_VALUEERROR = 1 << 154
+    BUILTINS_WARNING = 1 << 155
+    BUILTINS_ZERODIVISIONERROR = 1 << 156
 
 
 class PythonTargetProperty(Enum):
@@ -277,7 +415,7 @@ UNBOUND_IDENTITY: Final[IdentityMask] = int(PythonIdentity.UNBOUND)
 UNKNOWN_IDENTITY: Final[IdentityMask] = OTHER_IDENTITY | UNBOUND_IDENTITY
 SENTINEL_IDENTITIES: Final[IdentityMask] = UNKNOWN_IDENTITY
 NO_INVALID_MEMBERS: Final[MemberMask] = 0
-ALL_INVALID_MEMBERS: Final[MemberMask] = 309485009821345068724781055
+ALL_INVALID_MEMBERS: Final[MemberMask] = 182687704666362864775460604089535377456991567871
 
 class PythonImportCallable(NamedTuple):
     behavior: PythonImportBehavior
@@ -530,6 +668,75 @@ BUILTIN_IDENTITIES: Final[Mapping[str, tuple[PythonIdentity, PythonMember]]] = M
         'zip': (PythonIdentity.BUILTIN_ZIP, PythonMember.BUILTINS_ZIP),
         'Ellipsis': (PythonIdentity.BUILTIN_ELLIPSIS, PythonMember.BUILTINS_ELLIPSIS),
         'NotImplemented': (PythonIdentity.BUILTIN_NOTIMPLEMENTED, PythonMember.BUILTINS_NOTIMPLEMENTED),
+        'ArithmeticError': (PythonIdentity.BUILTIN_ARITHMETICERROR, PythonMember.BUILTINS_ARITHMETICERROR),
+        'AssertionError': (PythonIdentity.BUILTIN_ASSERTIONERROR, PythonMember.BUILTINS_ASSERTIONERROR),
+        'AttributeError': (PythonIdentity.BUILTIN_ATTRIBUTEERROR, PythonMember.BUILTINS_ATTRIBUTEERROR),
+        'BaseException': (PythonIdentity.BUILTIN_BASEEXCEPTION, PythonMember.BUILTINS_BASEEXCEPTION),
+        'BaseExceptionGroup': (PythonIdentity.BUILTIN_BASEEXCEPTIONGROUP, PythonMember.BUILTINS_BASEEXCEPTIONGROUP),
+        'BlockingIOError': (PythonIdentity.BUILTIN_BLOCKINGIOERROR, PythonMember.BUILTINS_BLOCKINGIOERROR),
+        'BrokenPipeError': (PythonIdentity.BUILTIN_BROKENPIPEERROR, PythonMember.BUILTINS_BROKENPIPEERROR),
+        'BufferError': (PythonIdentity.BUILTIN_BUFFERERROR, PythonMember.BUILTINS_BUFFERERROR),
+        'BytesWarning': (PythonIdentity.BUILTIN_BYTESWARNING, PythonMember.BUILTINS_BYTESWARNING),
+        'ChildProcessError': (PythonIdentity.BUILTIN_CHILDPROCESSERROR, PythonMember.BUILTINS_CHILDPROCESSERROR),
+        'ConnectionAbortedError': (PythonIdentity.BUILTIN_CONNECTIONABORTEDERROR, PythonMember.BUILTINS_CONNECTIONABORTEDERROR),
+        'ConnectionError': (PythonIdentity.BUILTIN_CONNECTIONERROR, PythonMember.BUILTINS_CONNECTIONERROR),
+        'ConnectionRefusedError': (PythonIdentity.BUILTIN_CONNECTIONREFUSEDERROR, PythonMember.BUILTINS_CONNECTIONREFUSEDERROR),
+        'ConnectionResetError': (PythonIdentity.BUILTIN_CONNECTIONRESETERROR, PythonMember.BUILTINS_CONNECTIONRESETERROR),
+        'DeprecationWarning': (PythonIdentity.BUILTIN_DEPRECATIONWARNING, PythonMember.BUILTINS_DEPRECATIONWARNING),
+        'EOFError': (PythonIdentity.BUILTIN_EOFERROR, PythonMember.BUILTINS_EOFERROR),
+        'EncodingWarning': (PythonIdentity.BUILTIN_ENCODINGWARNING, PythonMember.BUILTINS_ENCODINGWARNING),
+        'EnvironmentError': (PythonIdentity.BUILTIN_ENVIRONMENTERROR, PythonMember.BUILTINS_ENVIRONMENTERROR),
+        'Exception': (PythonIdentity.BUILTIN_EXCEPTION, PythonMember.BUILTINS_EXCEPTION),
+        'ExceptionGroup': (PythonIdentity.BUILTIN_EXCEPTIONGROUP, PythonMember.BUILTINS_EXCEPTIONGROUP),
+        'FileExistsError': (PythonIdentity.BUILTIN_FILEEXISTSERROR, PythonMember.BUILTINS_FILEEXISTSERROR),
+        'FileNotFoundError': (PythonIdentity.BUILTIN_FILENOTFOUNDERROR, PythonMember.BUILTINS_FILENOTFOUNDERROR),
+        'FloatingPointError': (PythonIdentity.BUILTIN_FLOATINGPOINTERROR, PythonMember.BUILTINS_FLOATINGPOINTERROR),
+        'FutureWarning': (PythonIdentity.BUILTIN_FUTUREWARNING, PythonMember.BUILTINS_FUTUREWARNING),
+        'GeneratorExit': (PythonIdentity.BUILTIN_GENERATOREXIT, PythonMember.BUILTINS_GENERATOREXIT),
+        'IOError': (PythonIdentity.BUILTIN_IOERROR, PythonMember.BUILTINS_IOERROR),
+        'ImportError': (PythonIdentity.BUILTIN_IMPORTERROR, PythonMember.BUILTINS_IMPORTERROR),
+        'ImportWarning': (PythonIdentity.BUILTIN_IMPORTWARNING, PythonMember.BUILTINS_IMPORTWARNING),
+        'IndentationError': (PythonIdentity.BUILTIN_INDENTATIONERROR, PythonMember.BUILTINS_INDENTATIONERROR),
+        'IndexError': (PythonIdentity.BUILTIN_INDEXERROR, PythonMember.BUILTINS_INDEXERROR),
+        'InterruptedError': (PythonIdentity.BUILTIN_INTERRUPTEDERROR, PythonMember.BUILTINS_INTERRUPTEDERROR),
+        'IsADirectoryError': (PythonIdentity.BUILTIN_ISADIRECTORYERROR, PythonMember.BUILTINS_ISADIRECTORYERROR),
+        'KeyError': (PythonIdentity.BUILTIN_KEYERROR, PythonMember.BUILTINS_KEYERROR),
+        'KeyboardInterrupt': (PythonIdentity.BUILTIN_KEYBOARDINTERRUPT, PythonMember.BUILTINS_KEYBOARDINTERRUPT),
+        'LookupError': (PythonIdentity.BUILTIN_LOOKUPERROR, PythonMember.BUILTINS_LOOKUPERROR),
+        'MemoryError': (PythonIdentity.BUILTIN_MEMORYERROR, PythonMember.BUILTINS_MEMORYERROR),
+        'ModuleNotFoundError': (PythonIdentity.BUILTIN_MODULENOTFOUNDERROR, PythonMember.BUILTINS_MODULENOTFOUNDERROR),
+        'NameError': (PythonIdentity.BUILTIN_NAMEERROR, PythonMember.BUILTINS_NAMEERROR),
+        'NotADirectoryError': (PythonIdentity.BUILTIN_NOTADIRECTORYERROR, PythonMember.BUILTINS_NOTADIRECTORYERROR),
+        'NotImplementedError': (PythonIdentity.BUILTIN_NOTIMPLEMENTEDERROR, PythonMember.BUILTINS_NOTIMPLEMENTEDERROR),
+        'OSError': (PythonIdentity.BUILTIN_OSERROR, PythonMember.BUILTINS_OSERROR),
+        'OverflowError': (PythonIdentity.BUILTIN_OVERFLOWERROR, PythonMember.BUILTINS_OVERFLOWERROR),
+        'PendingDeprecationWarning': (PythonIdentity.BUILTIN_PENDINGDEPRECATIONWARNING, PythonMember.BUILTINS_PENDINGDEPRECATIONWARNING),
+        'PermissionError': (PythonIdentity.BUILTIN_PERMISSIONERROR, PythonMember.BUILTINS_PERMISSIONERROR),
+        'ProcessLookupError': (PythonIdentity.BUILTIN_PROCESSLOOKUPERROR, PythonMember.BUILTINS_PROCESSLOOKUPERROR),
+        'RecursionError': (PythonIdentity.BUILTIN_RECURSIONERROR, PythonMember.BUILTINS_RECURSIONERROR),
+        'ReferenceError': (PythonIdentity.BUILTIN_REFERENCEERROR, PythonMember.BUILTINS_REFERENCEERROR),
+        'ResourceWarning': (PythonIdentity.BUILTIN_RESOURCEWARNING, PythonMember.BUILTINS_RESOURCEWARNING),
+        'RuntimeError': (PythonIdentity.BUILTIN_RUNTIMEERROR, PythonMember.BUILTINS_RUNTIMEERROR),
+        'RuntimeWarning': (PythonIdentity.BUILTIN_RUNTIMEWARNING, PythonMember.BUILTINS_RUNTIMEWARNING),
+        'StopAsyncIteration': (PythonIdentity.BUILTIN_STOPASYNCITERATION, PythonMember.BUILTINS_STOPASYNCITERATION),
+        'StopIteration': (PythonIdentity.BUILTIN_STOPITERATION, PythonMember.BUILTINS_STOPITERATION),
+        'SyntaxError': (PythonIdentity.BUILTIN_SYNTAXERROR, PythonMember.BUILTINS_SYNTAXERROR),
+        'SyntaxWarning': (PythonIdentity.BUILTIN_SYNTAXWARNING, PythonMember.BUILTINS_SYNTAXWARNING),
+        'SystemError': (PythonIdentity.BUILTIN_SYSTEMERROR, PythonMember.BUILTINS_SYSTEMERROR),
+        'SystemExit': (PythonIdentity.BUILTIN_SYSTEMEXIT, PythonMember.BUILTINS_SYSTEMEXIT),
+        'TabError': (PythonIdentity.BUILTIN_TABERROR, PythonMember.BUILTINS_TABERROR),
+        'TimeoutError': (PythonIdentity.BUILTIN_TIMEOUTERROR, PythonMember.BUILTINS_TIMEOUTERROR),
+        'TypeError': (PythonIdentity.BUILTIN_TYPEERROR, PythonMember.BUILTINS_TYPEERROR),
+        'UnboundLocalError': (PythonIdentity.BUILTIN_UNBOUNDLOCALERROR, PythonMember.BUILTINS_UNBOUNDLOCALERROR),
+        'UnicodeDecodeError': (PythonIdentity.BUILTIN_UNICODEDECODEERROR, PythonMember.BUILTINS_UNICODEDECODEERROR),
+        'UnicodeEncodeError': (PythonIdentity.BUILTIN_UNICODEENCODEERROR, PythonMember.BUILTINS_UNICODEENCODEERROR),
+        'UnicodeError': (PythonIdentity.BUILTIN_UNICODEERROR, PythonMember.BUILTINS_UNICODEERROR),
+        'UnicodeTranslateError': (PythonIdentity.BUILTIN_UNICODETRANSLATEERROR, PythonMember.BUILTINS_UNICODETRANSLATEERROR),
+        'UnicodeWarning': (PythonIdentity.BUILTIN_UNICODEWARNING, PythonMember.BUILTINS_UNICODEWARNING),
+        'UserWarning': (PythonIdentity.BUILTIN_USERWARNING, PythonMember.BUILTINS_USERWARNING),
+        'ValueError': (PythonIdentity.BUILTIN_VALUEERROR, PythonMember.BUILTINS_VALUEERROR),
+        'Warning': (PythonIdentity.BUILTIN_WARNING, PythonMember.BUILTINS_WARNING),
+        'ZeroDivisionError': (PythonIdentity.BUILTIN_ZERODIVISIONERROR, PythonMember.BUILTINS_ZERODIVISIONERROR),
     }
 )
 
@@ -602,6 +809,75 @@ BUILTIN_NAMES_BY_IDENTITY: Final[Mapping[IdentityMask, str]] = MappingProxyType(
         int(PythonIdentity.BUILTIN_ZIP): 'zip',
         int(PythonIdentity.BUILTIN_ELLIPSIS): 'Ellipsis',
         int(PythonIdentity.BUILTIN_NOTIMPLEMENTED): 'NotImplemented',
+        int(PythonIdentity.BUILTIN_ARITHMETICERROR): 'ArithmeticError',
+        int(PythonIdentity.BUILTIN_ASSERTIONERROR): 'AssertionError',
+        int(PythonIdentity.BUILTIN_ATTRIBUTEERROR): 'AttributeError',
+        int(PythonIdentity.BUILTIN_BASEEXCEPTION): 'BaseException',
+        int(PythonIdentity.BUILTIN_BASEEXCEPTIONGROUP): 'BaseExceptionGroup',
+        int(PythonIdentity.BUILTIN_BLOCKINGIOERROR): 'BlockingIOError',
+        int(PythonIdentity.BUILTIN_BROKENPIPEERROR): 'BrokenPipeError',
+        int(PythonIdentity.BUILTIN_BUFFERERROR): 'BufferError',
+        int(PythonIdentity.BUILTIN_BYTESWARNING): 'BytesWarning',
+        int(PythonIdentity.BUILTIN_CHILDPROCESSERROR): 'ChildProcessError',
+        int(PythonIdentity.BUILTIN_CONNECTIONABORTEDERROR): 'ConnectionAbortedError',
+        int(PythonIdentity.BUILTIN_CONNECTIONERROR): 'ConnectionError',
+        int(PythonIdentity.BUILTIN_CONNECTIONREFUSEDERROR): 'ConnectionRefusedError',
+        int(PythonIdentity.BUILTIN_CONNECTIONRESETERROR): 'ConnectionResetError',
+        int(PythonIdentity.BUILTIN_DEPRECATIONWARNING): 'DeprecationWarning',
+        int(PythonIdentity.BUILTIN_EOFERROR): 'EOFError',
+        int(PythonIdentity.BUILTIN_ENCODINGWARNING): 'EncodingWarning',
+        int(PythonIdentity.BUILTIN_ENVIRONMENTERROR): 'EnvironmentError',
+        int(PythonIdentity.BUILTIN_EXCEPTION): 'Exception',
+        int(PythonIdentity.BUILTIN_EXCEPTIONGROUP): 'ExceptionGroup',
+        int(PythonIdentity.BUILTIN_FILEEXISTSERROR): 'FileExistsError',
+        int(PythonIdentity.BUILTIN_FILENOTFOUNDERROR): 'FileNotFoundError',
+        int(PythonIdentity.BUILTIN_FLOATINGPOINTERROR): 'FloatingPointError',
+        int(PythonIdentity.BUILTIN_FUTUREWARNING): 'FutureWarning',
+        int(PythonIdentity.BUILTIN_GENERATOREXIT): 'GeneratorExit',
+        int(PythonIdentity.BUILTIN_IOERROR): 'IOError',
+        int(PythonIdentity.BUILTIN_IMPORTERROR): 'ImportError',
+        int(PythonIdentity.BUILTIN_IMPORTWARNING): 'ImportWarning',
+        int(PythonIdentity.BUILTIN_INDENTATIONERROR): 'IndentationError',
+        int(PythonIdentity.BUILTIN_INDEXERROR): 'IndexError',
+        int(PythonIdentity.BUILTIN_INTERRUPTEDERROR): 'InterruptedError',
+        int(PythonIdentity.BUILTIN_ISADIRECTORYERROR): 'IsADirectoryError',
+        int(PythonIdentity.BUILTIN_KEYERROR): 'KeyError',
+        int(PythonIdentity.BUILTIN_KEYBOARDINTERRUPT): 'KeyboardInterrupt',
+        int(PythonIdentity.BUILTIN_LOOKUPERROR): 'LookupError',
+        int(PythonIdentity.BUILTIN_MEMORYERROR): 'MemoryError',
+        int(PythonIdentity.BUILTIN_MODULENOTFOUNDERROR): 'ModuleNotFoundError',
+        int(PythonIdentity.BUILTIN_NAMEERROR): 'NameError',
+        int(PythonIdentity.BUILTIN_NOTADIRECTORYERROR): 'NotADirectoryError',
+        int(PythonIdentity.BUILTIN_NOTIMPLEMENTEDERROR): 'NotImplementedError',
+        int(PythonIdentity.BUILTIN_OSERROR): 'OSError',
+        int(PythonIdentity.BUILTIN_OVERFLOWERROR): 'OverflowError',
+        int(PythonIdentity.BUILTIN_PENDINGDEPRECATIONWARNING): 'PendingDeprecationWarning',
+        int(PythonIdentity.BUILTIN_PERMISSIONERROR): 'PermissionError',
+        int(PythonIdentity.BUILTIN_PROCESSLOOKUPERROR): 'ProcessLookupError',
+        int(PythonIdentity.BUILTIN_RECURSIONERROR): 'RecursionError',
+        int(PythonIdentity.BUILTIN_REFERENCEERROR): 'ReferenceError',
+        int(PythonIdentity.BUILTIN_RESOURCEWARNING): 'ResourceWarning',
+        int(PythonIdentity.BUILTIN_RUNTIMEERROR): 'RuntimeError',
+        int(PythonIdentity.BUILTIN_RUNTIMEWARNING): 'RuntimeWarning',
+        int(PythonIdentity.BUILTIN_STOPASYNCITERATION): 'StopAsyncIteration',
+        int(PythonIdentity.BUILTIN_STOPITERATION): 'StopIteration',
+        int(PythonIdentity.BUILTIN_SYNTAXERROR): 'SyntaxError',
+        int(PythonIdentity.BUILTIN_SYNTAXWARNING): 'SyntaxWarning',
+        int(PythonIdentity.BUILTIN_SYSTEMERROR): 'SystemError',
+        int(PythonIdentity.BUILTIN_SYSTEMEXIT): 'SystemExit',
+        int(PythonIdentity.BUILTIN_TABERROR): 'TabError',
+        int(PythonIdentity.BUILTIN_TIMEOUTERROR): 'TimeoutError',
+        int(PythonIdentity.BUILTIN_TYPEERROR): 'TypeError',
+        int(PythonIdentity.BUILTIN_UNBOUNDLOCALERROR): 'UnboundLocalError',
+        int(PythonIdentity.BUILTIN_UNICODEDECODEERROR): 'UnicodeDecodeError',
+        int(PythonIdentity.BUILTIN_UNICODEENCODEERROR): 'UnicodeEncodeError',
+        int(PythonIdentity.BUILTIN_UNICODEERROR): 'UnicodeError',
+        int(PythonIdentity.BUILTIN_UNICODETRANSLATEERROR): 'UnicodeTranslateError',
+        int(PythonIdentity.BUILTIN_UNICODEWARNING): 'UnicodeWarning',
+        int(PythonIdentity.BUILTIN_USERWARNING): 'UserWarning',
+        int(PythonIdentity.BUILTIN_VALUEERROR): 'ValueError',
+        int(PythonIdentity.BUILTIN_WARNING): 'Warning',
+        int(PythonIdentity.BUILTIN_ZERODIVISIONERROR): 'ZeroDivisionError',
     }
 )
 
@@ -757,6 +1033,75 @@ CANONICAL_FROM_IMPORT_IDENTITIES: Final[Mapping[tuple[str, str], tuple[PythonIde
         ('builtins', 'zip'): (PythonIdentity.BUILTIN_ZIP, PythonMember.BUILTINS_ZIP),
         ('builtins', 'Ellipsis'): (PythonIdentity.BUILTIN_ELLIPSIS, PythonMember.BUILTINS_ELLIPSIS),
         ('builtins', 'NotImplemented'): (PythonIdentity.BUILTIN_NOTIMPLEMENTED, PythonMember.BUILTINS_NOTIMPLEMENTED),
+        ('builtins', 'ArithmeticError'): (PythonIdentity.BUILTIN_ARITHMETICERROR, PythonMember.BUILTINS_ARITHMETICERROR),
+        ('builtins', 'AssertionError'): (PythonIdentity.BUILTIN_ASSERTIONERROR, PythonMember.BUILTINS_ASSERTIONERROR),
+        ('builtins', 'AttributeError'): (PythonIdentity.BUILTIN_ATTRIBUTEERROR, PythonMember.BUILTINS_ATTRIBUTEERROR),
+        ('builtins', 'BaseException'): (PythonIdentity.BUILTIN_BASEEXCEPTION, PythonMember.BUILTINS_BASEEXCEPTION),
+        ('builtins', 'BaseExceptionGroup'): (PythonIdentity.BUILTIN_BASEEXCEPTIONGROUP, PythonMember.BUILTINS_BASEEXCEPTIONGROUP),
+        ('builtins', 'BlockingIOError'): (PythonIdentity.BUILTIN_BLOCKINGIOERROR, PythonMember.BUILTINS_BLOCKINGIOERROR),
+        ('builtins', 'BrokenPipeError'): (PythonIdentity.BUILTIN_BROKENPIPEERROR, PythonMember.BUILTINS_BROKENPIPEERROR),
+        ('builtins', 'BufferError'): (PythonIdentity.BUILTIN_BUFFERERROR, PythonMember.BUILTINS_BUFFERERROR),
+        ('builtins', 'BytesWarning'): (PythonIdentity.BUILTIN_BYTESWARNING, PythonMember.BUILTINS_BYTESWARNING),
+        ('builtins', 'ChildProcessError'): (PythonIdentity.BUILTIN_CHILDPROCESSERROR, PythonMember.BUILTINS_CHILDPROCESSERROR),
+        ('builtins', 'ConnectionAbortedError'): (PythonIdentity.BUILTIN_CONNECTIONABORTEDERROR, PythonMember.BUILTINS_CONNECTIONABORTEDERROR),
+        ('builtins', 'ConnectionError'): (PythonIdentity.BUILTIN_CONNECTIONERROR, PythonMember.BUILTINS_CONNECTIONERROR),
+        ('builtins', 'ConnectionRefusedError'): (PythonIdentity.BUILTIN_CONNECTIONREFUSEDERROR, PythonMember.BUILTINS_CONNECTIONREFUSEDERROR),
+        ('builtins', 'ConnectionResetError'): (PythonIdentity.BUILTIN_CONNECTIONRESETERROR, PythonMember.BUILTINS_CONNECTIONRESETERROR),
+        ('builtins', 'DeprecationWarning'): (PythonIdentity.BUILTIN_DEPRECATIONWARNING, PythonMember.BUILTINS_DEPRECATIONWARNING),
+        ('builtins', 'EOFError'): (PythonIdentity.BUILTIN_EOFERROR, PythonMember.BUILTINS_EOFERROR),
+        ('builtins', 'EncodingWarning'): (PythonIdentity.BUILTIN_ENCODINGWARNING, PythonMember.BUILTINS_ENCODINGWARNING),
+        ('builtins', 'EnvironmentError'): (PythonIdentity.BUILTIN_ENVIRONMENTERROR, PythonMember.BUILTINS_ENVIRONMENTERROR),
+        ('builtins', 'Exception'): (PythonIdentity.BUILTIN_EXCEPTION, PythonMember.BUILTINS_EXCEPTION),
+        ('builtins', 'ExceptionGroup'): (PythonIdentity.BUILTIN_EXCEPTIONGROUP, PythonMember.BUILTINS_EXCEPTIONGROUP),
+        ('builtins', 'FileExistsError'): (PythonIdentity.BUILTIN_FILEEXISTSERROR, PythonMember.BUILTINS_FILEEXISTSERROR),
+        ('builtins', 'FileNotFoundError'): (PythonIdentity.BUILTIN_FILENOTFOUNDERROR, PythonMember.BUILTINS_FILENOTFOUNDERROR),
+        ('builtins', 'FloatingPointError'): (PythonIdentity.BUILTIN_FLOATINGPOINTERROR, PythonMember.BUILTINS_FLOATINGPOINTERROR),
+        ('builtins', 'FutureWarning'): (PythonIdentity.BUILTIN_FUTUREWARNING, PythonMember.BUILTINS_FUTUREWARNING),
+        ('builtins', 'GeneratorExit'): (PythonIdentity.BUILTIN_GENERATOREXIT, PythonMember.BUILTINS_GENERATOREXIT),
+        ('builtins', 'IOError'): (PythonIdentity.BUILTIN_IOERROR, PythonMember.BUILTINS_IOERROR),
+        ('builtins', 'ImportError'): (PythonIdentity.BUILTIN_IMPORTERROR, PythonMember.BUILTINS_IMPORTERROR),
+        ('builtins', 'ImportWarning'): (PythonIdentity.BUILTIN_IMPORTWARNING, PythonMember.BUILTINS_IMPORTWARNING),
+        ('builtins', 'IndentationError'): (PythonIdentity.BUILTIN_INDENTATIONERROR, PythonMember.BUILTINS_INDENTATIONERROR),
+        ('builtins', 'IndexError'): (PythonIdentity.BUILTIN_INDEXERROR, PythonMember.BUILTINS_INDEXERROR),
+        ('builtins', 'InterruptedError'): (PythonIdentity.BUILTIN_INTERRUPTEDERROR, PythonMember.BUILTINS_INTERRUPTEDERROR),
+        ('builtins', 'IsADirectoryError'): (PythonIdentity.BUILTIN_ISADIRECTORYERROR, PythonMember.BUILTINS_ISADIRECTORYERROR),
+        ('builtins', 'KeyError'): (PythonIdentity.BUILTIN_KEYERROR, PythonMember.BUILTINS_KEYERROR),
+        ('builtins', 'KeyboardInterrupt'): (PythonIdentity.BUILTIN_KEYBOARDINTERRUPT, PythonMember.BUILTINS_KEYBOARDINTERRUPT),
+        ('builtins', 'LookupError'): (PythonIdentity.BUILTIN_LOOKUPERROR, PythonMember.BUILTINS_LOOKUPERROR),
+        ('builtins', 'MemoryError'): (PythonIdentity.BUILTIN_MEMORYERROR, PythonMember.BUILTINS_MEMORYERROR),
+        ('builtins', 'ModuleNotFoundError'): (PythonIdentity.BUILTIN_MODULENOTFOUNDERROR, PythonMember.BUILTINS_MODULENOTFOUNDERROR),
+        ('builtins', 'NameError'): (PythonIdentity.BUILTIN_NAMEERROR, PythonMember.BUILTINS_NAMEERROR),
+        ('builtins', 'NotADirectoryError'): (PythonIdentity.BUILTIN_NOTADIRECTORYERROR, PythonMember.BUILTINS_NOTADIRECTORYERROR),
+        ('builtins', 'NotImplementedError'): (PythonIdentity.BUILTIN_NOTIMPLEMENTEDERROR, PythonMember.BUILTINS_NOTIMPLEMENTEDERROR),
+        ('builtins', 'OSError'): (PythonIdentity.BUILTIN_OSERROR, PythonMember.BUILTINS_OSERROR),
+        ('builtins', 'OverflowError'): (PythonIdentity.BUILTIN_OVERFLOWERROR, PythonMember.BUILTINS_OVERFLOWERROR),
+        ('builtins', 'PendingDeprecationWarning'): (PythonIdentity.BUILTIN_PENDINGDEPRECATIONWARNING, PythonMember.BUILTINS_PENDINGDEPRECATIONWARNING),
+        ('builtins', 'PermissionError'): (PythonIdentity.BUILTIN_PERMISSIONERROR, PythonMember.BUILTINS_PERMISSIONERROR),
+        ('builtins', 'ProcessLookupError'): (PythonIdentity.BUILTIN_PROCESSLOOKUPERROR, PythonMember.BUILTINS_PROCESSLOOKUPERROR),
+        ('builtins', 'RecursionError'): (PythonIdentity.BUILTIN_RECURSIONERROR, PythonMember.BUILTINS_RECURSIONERROR),
+        ('builtins', 'ReferenceError'): (PythonIdentity.BUILTIN_REFERENCEERROR, PythonMember.BUILTINS_REFERENCEERROR),
+        ('builtins', 'ResourceWarning'): (PythonIdentity.BUILTIN_RESOURCEWARNING, PythonMember.BUILTINS_RESOURCEWARNING),
+        ('builtins', 'RuntimeError'): (PythonIdentity.BUILTIN_RUNTIMEERROR, PythonMember.BUILTINS_RUNTIMEERROR),
+        ('builtins', 'RuntimeWarning'): (PythonIdentity.BUILTIN_RUNTIMEWARNING, PythonMember.BUILTINS_RUNTIMEWARNING),
+        ('builtins', 'StopAsyncIteration'): (PythonIdentity.BUILTIN_STOPASYNCITERATION, PythonMember.BUILTINS_STOPASYNCITERATION),
+        ('builtins', 'StopIteration'): (PythonIdentity.BUILTIN_STOPITERATION, PythonMember.BUILTINS_STOPITERATION),
+        ('builtins', 'SyntaxError'): (PythonIdentity.BUILTIN_SYNTAXERROR, PythonMember.BUILTINS_SYNTAXERROR),
+        ('builtins', 'SyntaxWarning'): (PythonIdentity.BUILTIN_SYNTAXWARNING, PythonMember.BUILTINS_SYNTAXWARNING),
+        ('builtins', 'SystemError'): (PythonIdentity.BUILTIN_SYSTEMERROR, PythonMember.BUILTINS_SYSTEMERROR),
+        ('builtins', 'SystemExit'): (PythonIdentity.BUILTIN_SYSTEMEXIT, PythonMember.BUILTINS_SYSTEMEXIT),
+        ('builtins', 'TabError'): (PythonIdentity.BUILTIN_TABERROR, PythonMember.BUILTINS_TABERROR),
+        ('builtins', 'TimeoutError'): (PythonIdentity.BUILTIN_TIMEOUTERROR, PythonMember.BUILTINS_TIMEOUTERROR),
+        ('builtins', 'TypeError'): (PythonIdentity.BUILTIN_TYPEERROR, PythonMember.BUILTINS_TYPEERROR),
+        ('builtins', 'UnboundLocalError'): (PythonIdentity.BUILTIN_UNBOUNDLOCALERROR, PythonMember.BUILTINS_UNBOUNDLOCALERROR),
+        ('builtins', 'UnicodeDecodeError'): (PythonIdentity.BUILTIN_UNICODEDECODEERROR, PythonMember.BUILTINS_UNICODEDECODEERROR),
+        ('builtins', 'UnicodeEncodeError'): (PythonIdentity.BUILTIN_UNICODEENCODEERROR, PythonMember.BUILTINS_UNICODEENCODEERROR),
+        ('builtins', 'UnicodeError'): (PythonIdentity.BUILTIN_UNICODEERROR, PythonMember.BUILTINS_UNICODEERROR),
+        ('builtins', 'UnicodeTranslateError'): (PythonIdentity.BUILTIN_UNICODETRANSLATEERROR, PythonMember.BUILTINS_UNICODETRANSLATEERROR),
+        ('builtins', 'UnicodeWarning'): (PythonIdentity.BUILTIN_UNICODEWARNING, PythonMember.BUILTINS_UNICODEWARNING),
+        ('builtins', 'UserWarning'): (PythonIdentity.BUILTIN_USERWARNING, PythonMember.BUILTINS_USERWARNING),
+        ('builtins', 'ValueError'): (PythonIdentity.BUILTIN_VALUEERROR, PythonMember.BUILTINS_VALUEERROR),
+        ('builtins', 'Warning'): (PythonIdentity.BUILTIN_WARNING, PythonMember.BUILTINS_WARNING),
+        ('builtins', 'ZeroDivisionError'): (PythonIdentity.BUILTIN_ZERODIVISIONERROR, PythonMember.BUILTINS_ZERODIVISIONERROR),
     }
 )
 
@@ -849,6 +1194,75 @@ CANONICAL_MEMBER_IDENTITIES: Final[Mapping[str, tuple[tuple[PythonIdentity, Pyth
         'zip': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ZIP, PythonMember.BUILTINS_ZIP),),
         'Ellipsis': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ELLIPSIS, PythonMember.BUILTINS_ELLIPSIS),),
         'NotImplemented': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_NOTIMPLEMENTED, PythonMember.BUILTINS_NOTIMPLEMENTED),),
+        'ArithmeticError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ARITHMETICERROR, PythonMember.BUILTINS_ARITHMETICERROR),),
+        'AssertionError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ASSERTIONERROR, PythonMember.BUILTINS_ASSERTIONERROR),),
+        'AttributeError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ATTRIBUTEERROR, PythonMember.BUILTINS_ATTRIBUTEERROR),),
+        'BaseException': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_BASEEXCEPTION, PythonMember.BUILTINS_BASEEXCEPTION),),
+        'BaseExceptionGroup': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_BASEEXCEPTIONGROUP, PythonMember.BUILTINS_BASEEXCEPTIONGROUP),),
+        'BlockingIOError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_BLOCKINGIOERROR, PythonMember.BUILTINS_BLOCKINGIOERROR),),
+        'BrokenPipeError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_BROKENPIPEERROR, PythonMember.BUILTINS_BROKENPIPEERROR),),
+        'BufferError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_BUFFERERROR, PythonMember.BUILTINS_BUFFERERROR),),
+        'BytesWarning': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_BYTESWARNING, PythonMember.BUILTINS_BYTESWARNING),),
+        'ChildProcessError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_CHILDPROCESSERROR, PythonMember.BUILTINS_CHILDPROCESSERROR),),
+        'ConnectionAbortedError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_CONNECTIONABORTEDERROR, PythonMember.BUILTINS_CONNECTIONABORTEDERROR),),
+        'ConnectionError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_CONNECTIONERROR, PythonMember.BUILTINS_CONNECTIONERROR),),
+        'ConnectionRefusedError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_CONNECTIONREFUSEDERROR, PythonMember.BUILTINS_CONNECTIONREFUSEDERROR),),
+        'ConnectionResetError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_CONNECTIONRESETERROR, PythonMember.BUILTINS_CONNECTIONRESETERROR),),
+        'DeprecationWarning': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_DEPRECATIONWARNING, PythonMember.BUILTINS_DEPRECATIONWARNING),),
+        'EOFError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_EOFERROR, PythonMember.BUILTINS_EOFERROR),),
+        'EncodingWarning': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ENCODINGWARNING, PythonMember.BUILTINS_ENCODINGWARNING),),
+        'EnvironmentError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ENVIRONMENTERROR, PythonMember.BUILTINS_ENVIRONMENTERROR),),
+        'Exception': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_EXCEPTION, PythonMember.BUILTINS_EXCEPTION),),
+        'ExceptionGroup': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_EXCEPTIONGROUP, PythonMember.BUILTINS_EXCEPTIONGROUP),),
+        'FileExistsError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_FILEEXISTSERROR, PythonMember.BUILTINS_FILEEXISTSERROR),),
+        'FileNotFoundError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_FILENOTFOUNDERROR, PythonMember.BUILTINS_FILENOTFOUNDERROR),),
+        'FloatingPointError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_FLOATINGPOINTERROR, PythonMember.BUILTINS_FLOATINGPOINTERROR),),
+        'FutureWarning': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_FUTUREWARNING, PythonMember.BUILTINS_FUTUREWARNING),),
+        'GeneratorExit': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_GENERATOREXIT, PythonMember.BUILTINS_GENERATOREXIT),),
+        'IOError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_IOERROR, PythonMember.BUILTINS_IOERROR),),
+        'ImportError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_IMPORTERROR, PythonMember.BUILTINS_IMPORTERROR),),
+        'ImportWarning': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_IMPORTWARNING, PythonMember.BUILTINS_IMPORTWARNING),),
+        'IndentationError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_INDENTATIONERROR, PythonMember.BUILTINS_INDENTATIONERROR),),
+        'IndexError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_INDEXERROR, PythonMember.BUILTINS_INDEXERROR),),
+        'InterruptedError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_INTERRUPTEDERROR, PythonMember.BUILTINS_INTERRUPTEDERROR),),
+        'IsADirectoryError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ISADIRECTORYERROR, PythonMember.BUILTINS_ISADIRECTORYERROR),),
+        'KeyError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_KEYERROR, PythonMember.BUILTINS_KEYERROR),),
+        'KeyboardInterrupt': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_KEYBOARDINTERRUPT, PythonMember.BUILTINS_KEYBOARDINTERRUPT),),
+        'LookupError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_LOOKUPERROR, PythonMember.BUILTINS_LOOKUPERROR),),
+        'MemoryError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_MEMORYERROR, PythonMember.BUILTINS_MEMORYERROR),),
+        'ModuleNotFoundError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_MODULENOTFOUNDERROR, PythonMember.BUILTINS_MODULENOTFOUNDERROR),),
+        'NameError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_NAMEERROR, PythonMember.BUILTINS_NAMEERROR),),
+        'NotADirectoryError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_NOTADIRECTORYERROR, PythonMember.BUILTINS_NOTADIRECTORYERROR),),
+        'NotImplementedError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_NOTIMPLEMENTEDERROR, PythonMember.BUILTINS_NOTIMPLEMENTEDERROR),),
+        'OSError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_OSERROR, PythonMember.BUILTINS_OSERROR),),
+        'OverflowError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_OVERFLOWERROR, PythonMember.BUILTINS_OVERFLOWERROR),),
+        'PendingDeprecationWarning': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_PENDINGDEPRECATIONWARNING, PythonMember.BUILTINS_PENDINGDEPRECATIONWARNING),),
+        'PermissionError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_PERMISSIONERROR, PythonMember.BUILTINS_PERMISSIONERROR),),
+        'ProcessLookupError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_PROCESSLOOKUPERROR, PythonMember.BUILTINS_PROCESSLOOKUPERROR),),
+        'RecursionError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_RECURSIONERROR, PythonMember.BUILTINS_RECURSIONERROR),),
+        'ReferenceError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_REFERENCEERROR, PythonMember.BUILTINS_REFERENCEERROR),),
+        'ResourceWarning': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_RESOURCEWARNING, PythonMember.BUILTINS_RESOURCEWARNING),),
+        'RuntimeError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_RUNTIMEERROR, PythonMember.BUILTINS_RUNTIMEERROR),),
+        'RuntimeWarning': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_RUNTIMEWARNING, PythonMember.BUILTINS_RUNTIMEWARNING),),
+        'StopAsyncIteration': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_STOPASYNCITERATION, PythonMember.BUILTINS_STOPASYNCITERATION),),
+        'StopIteration': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_STOPITERATION, PythonMember.BUILTINS_STOPITERATION),),
+        'SyntaxError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_SYNTAXERROR, PythonMember.BUILTINS_SYNTAXERROR),),
+        'SyntaxWarning': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_SYNTAXWARNING, PythonMember.BUILTINS_SYNTAXWARNING),),
+        'SystemError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_SYSTEMERROR, PythonMember.BUILTINS_SYSTEMERROR),),
+        'SystemExit': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_SYSTEMEXIT, PythonMember.BUILTINS_SYSTEMEXIT),),
+        'TabError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_TABERROR, PythonMember.BUILTINS_TABERROR),),
+        'TimeoutError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_TIMEOUTERROR, PythonMember.BUILTINS_TIMEOUTERROR),),
+        'TypeError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_TYPEERROR, PythonMember.BUILTINS_TYPEERROR),),
+        'UnboundLocalError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_UNBOUNDLOCALERROR, PythonMember.BUILTINS_UNBOUNDLOCALERROR),),
+        'UnicodeDecodeError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_UNICODEDECODEERROR, PythonMember.BUILTINS_UNICODEDECODEERROR),),
+        'UnicodeEncodeError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_UNICODEENCODEERROR, PythonMember.BUILTINS_UNICODEENCODEERROR),),
+        'UnicodeError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_UNICODEERROR, PythonMember.BUILTINS_UNICODEERROR),),
+        'UnicodeTranslateError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_UNICODETRANSLATEERROR, PythonMember.BUILTINS_UNICODETRANSLATEERROR),),
+        'UnicodeWarning': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_UNICODEWARNING, PythonMember.BUILTINS_UNICODEWARNING),),
+        'UserWarning': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_USERWARNING, PythonMember.BUILTINS_USERWARNING),),
+        'ValueError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_VALUEERROR, PythonMember.BUILTINS_VALUEERROR),),
+        'Warning': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_WARNING, PythonMember.BUILTINS_WARNING),),
+        'ZeroDivisionError': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ZERODIVISIONERROR, PythonMember.BUILTINS_ZERODIVISIONERROR),),
     }
 )
 
@@ -941,6 +1355,75 @@ CANONICAL_MEMBER_WRITES: Final[Mapping[str, tuple[tuple[PythonIdentity, MemberMa
         'zip': ((PythonIdentity.BUILTINS_MODULE, 38685626227668133590597632),),
         'Ellipsis': ((PythonIdentity.BUILTINS_MODULE, 77371252455336267181195264),),
         'NotImplemented': ((PythonIdentity.BUILTINS_MODULE, 154742504910672534362390528),),
+        'ArithmeticError': ((PythonIdentity.BUILTINS_MODULE, 309485009821345068724781056),),
+        'AssertionError': ((PythonIdentity.BUILTINS_MODULE, 618970019642690137449562112),),
+        'AttributeError': ((PythonIdentity.BUILTINS_MODULE, 1237940039285380274899124224),),
+        'BaseException': ((PythonIdentity.BUILTINS_MODULE, 2475880078570760549798248448),),
+        'BaseExceptionGroup': ((PythonIdentity.BUILTINS_MODULE, 4951760157141521099596496896),),
+        'BlockingIOError': ((PythonIdentity.BUILTINS_MODULE, 9903520314283042199192993792),),
+        'BrokenPipeError': ((PythonIdentity.BUILTINS_MODULE, 19807040628566084398385987584),),
+        'BufferError': ((PythonIdentity.BUILTINS_MODULE, 39614081257132168796771975168),),
+        'BytesWarning': ((PythonIdentity.BUILTINS_MODULE, 79228162514264337593543950336),),
+        'ChildProcessError': ((PythonIdentity.BUILTINS_MODULE, 158456325028528675187087900672),),
+        'ConnectionAbortedError': ((PythonIdentity.BUILTINS_MODULE, 316912650057057350374175801344),),
+        'ConnectionError': ((PythonIdentity.BUILTINS_MODULE, 633825300114114700748351602688),),
+        'ConnectionRefusedError': ((PythonIdentity.BUILTINS_MODULE, 1267650600228229401496703205376),),
+        'ConnectionResetError': ((PythonIdentity.BUILTINS_MODULE, 2535301200456458802993406410752),),
+        'DeprecationWarning': ((PythonIdentity.BUILTINS_MODULE, 5070602400912917605986812821504),),
+        'EOFError': ((PythonIdentity.BUILTINS_MODULE, 10141204801825835211973625643008),),
+        'EncodingWarning': ((PythonIdentity.BUILTINS_MODULE, 20282409603651670423947251286016),),
+        'EnvironmentError': ((PythonIdentity.BUILTINS_MODULE, 40564819207303340847894502572032),),
+        'Exception': ((PythonIdentity.BUILTINS_MODULE, 81129638414606681695789005144064),),
+        'ExceptionGroup': ((PythonIdentity.BUILTINS_MODULE, 162259276829213363391578010288128),),
+        'FileExistsError': ((PythonIdentity.BUILTINS_MODULE, 324518553658426726783156020576256),),
+        'FileNotFoundError': ((PythonIdentity.BUILTINS_MODULE, 649037107316853453566312041152512),),
+        'FloatingPointError': ((PythonIdentity.BUILTINS_MODULE, 1298074214633706907132624082305024),),
+        'FutureWarning': ((PythonIdentity.BUILTINS_MODULE, 2596148429267413814265248164610048),),
+        'GeneratorExit': ((PythonIdentity.BUILTINS_MODULE, 5192296858534827628530496329220096),),
+        'IOError': ((PythonIdentity.BUILTINS_MODULE, 10384593717069655257060992658440192),),
+        'ImportError': ((PythonIdentity.BUILTINS_MODULE, 20769187434139310514121985316880384),),
+        'ImportWarning': ((PythonIdentity.BUILTINS_MODULE, 41538374868278621028243970633760768),),
+        'IndentationError': ((PythonIdentity.BUILTINS_MODULE, 83076749736557242056487941267521536),),
+        'IndexError': ((PythonIdentity.BUILTINS_MODULE, 166153499473114484112975882535043072),),
+        'InterruptedError': ((PythonIdentity.BUILTINS_MODULE, 332306998946228968225951765070086144),),
+        'IsADirectoryError': ((PythonIdentity.BUILTINS_MODULE, 664613997892457936451903530140172288),),
+        'KeyError': ((PythonIdentity.BUILTINS_MODULE, 1329227995784915872903807060280344576),),
+        'KeyboardInterrupt': ((PythonIdentity.BUILTINS_MODULE, 2658455991569831745807614120560689152),),
+        'LookupError': ((PythonIdentity.BUILTINS_MODULE, 5316911983139663491615228241121378304),),
+        'MemoryError': ((PythonIdentity.BUILTINS_MODULE, 10633823966279326983230456482242756608),),
+        'ModuleNotFoundError': ((PythonIdentity.BUILTINS_MODULE, 21267647932558653966460912964485513216),),
+        'NameError': ((PythonIdentity.BUILTINS_MODULE, 42535295865117307932921825928971026432),),
+        'NotADirectoryError': ((PythonIdentity.BUILTINS_MODULE, 85070591730234615865843651857942052864),),
+        'NotImplementedError': ((PythonIdentity.BUILTINS_MODULE, 170141183460469231731687303715884105728),),
+        'OSError': ((PythonIdentity.BUILTINS_MODULE, 340282366920938463463374607431768211456),),
+        'OverflowError': ((PythonIdentity.BUILTINS_MODULE, 680564733841876926926749214863536422912),),
+        'PendingDeprecationWarning': ((PythonIdentity.BUILTINS_MODULE, 1361129467683753853853498429727072845824),),
+        'PermissionError': ((PythonIdentity.BUILTINS_MODULE, 2722258935367507707706996859454145691648),),
+        'ProcessLookupError': ((PythonIdentity.BUILTINS_MODULE, 5444517870735015415413993718908291383296),),
+        'RecursionError': ((PythonIdentity.BUILTINS_MODULE, 10889035741470030830827987437816582766592),),
+        'ReferenceError': ((PythonIdentity.BUILTINS_MODULE, 21778071482940061661655974875633165533184),),
+        'ResourceWarning': ((PythonIdentity.BUILTINS_MODULE, 43556142965880123323311949751266331066368),),
+        'RuntimeError': ((PythonIdentity.BUILTINS_MODULE, 87112285931760246646623899502532662132736),),
+        'RuntimeWarning': ((PythonIdentity.BUILTINS_MODULE, 174224571863520493293247799005065324265472),),
+        'StopAsyncIteration': ((PythonIdentity.BUILTINS_MODULE, 348449143727040986586495598010130648530944),),
+        'StopIteration': ((PythonIdentity.BUILTINS_MODULE, 696898287454081973172991196020261297061888),),
+        'SyntaxError': ((PythonIdentity.BUILTINS_MODULE, 1393796574908163946345982392040522594123776),),
+        'SyntaxWarning': ((PythonIdentity.BUILTINS_MODULE, 2787593149816327892691964784081045188247552),),
+        'SystemError': ((PythonIdentity.BUILTINS_MODULE, 5575186299632655785383929568162090376495104),),
+        'SystemExit': ((PythonIdentity.BUILTINS_MODULE, 11150372599265311570767859136324180752990208),),
+        'TabError': ((PythonIdentity.BUILTINS_MODULE, 22300745198530623141535718272648361505980416),),
+        'TimeoutError': ((PythonIdentity.BUILTINS_MODULE, 44601490397061246283071436545296723011960832),),
+        'TypeError': ((PythonIdentity.BUILTINS_MODULE, 89202980794122492566142873090593446023921664),),
+        'UnboundLocalError': ((PythonIdentity.BUILTINS_MODULE, 178405961588244985132285746181186892047843328),),
+        'UnicodeDecodeError': ((PythonIdentity.BUILTINS_MODULE, 356811923176489970264571492362373784095686656),),
+        'UnicodeEncodeError': ((PythonIdentity.BUILTINS_MODULE, 713623846352979940529142984724747568191373312),),
+        'UnicodeError': ((PythonIdentity.BUILTINS_MODULE, 1427247692705959881058285969449495136382746624),),
+        'UnicodeTranslateError': ((PythonIdentity.BUILTINS_MODULE, 2854495385411919762116571938898990272765493248),),
+        'UnicodeWarning': ((PythonIdentity.BUILTINS_MODULE, 5708990770823839524233143877797980545530986496),),
+        'UserWarning': ((PythonIdentity.BUILTINS_MODULE, 11417981541647679048466287755595961091061972992),),
+        'ValueError': ((PythonIdentity.BUILTINS_MODULE, 22835963083295358096932575511191922182123945984),),
+        'Warning': ((PythonIdentity.BUILTINS_MODULE, 45671926166590716193865151022383844364247891968),),
+        'ZeroDivisionError': ((PythonIdentity.BUILTINS_MODULE, 91343852333181432387730302044767688728495783936),),
         'meta_path': ((PythonIdentity.SYS_MODULE, 128),),
         'path_hooks': ((PythonIdentity.SYS_MODULE, 128),),
         'path_importer_cache': ((PythonIdentity.SYS_MODULE, 128),),
