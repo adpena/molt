@@ -1031,3 +1031,23 @@ findings were accepted and resolved in the design:
 The automatic-GC-freeze boundary remains an explicit semantic decision. The
 constant-table design requires a concrete execution-context connection before
 implementation; a partial ABI migration is not landable.
+
+### Per-row release measurements
+
+macOS arm64, release guest/compiler and release-output micro runtime. Each A/B
+uses preserved binaries with matching inputs apart from the row; 21 interleaved
+runs, medians from `/usr/bin/time -l`. RSS is bytes, sizes are bytes. First launch
+is warmed separately; these are repeated-run instruction/RSS observations.
+
+| Row | Workload | Instructions before → after | Delta | Peak RSS before → after | Binary bytes before → after |
+| --- | --- | --- | --- | --- | --- |
+| HF-748 | hello world | 189,826,165 → 158,813,153 | -31,013,012 (-16.34%) | 16,400,384 → 16,498,688 | 13,505,480 → 13,571,552 |
+| HF-748 | import tiny | 195,288,848 → 163,784,321 | -31,504,527 (-16.13%) | 17,039,360 → 16,957,440 | 32,236,728 → 32,302,776 |
+
+HF-748 reduces executed work, with approximately flat RSS and about 66 KB extra
+code. The implementation also preserves all 64 bits of boxed scratch keys on
+wasm32; truncating through `usize` would collapse high-word-only inputs. Registry
+address mixing and scratch word mixing share one folded-multiply authority.
+Membership tests cover typed domains, duplicate insertion and high-word spread.
+The full differential/profile matrix remains required for qualification; these
+measurements alone do not claim semantic acceptance or a Linux result.
