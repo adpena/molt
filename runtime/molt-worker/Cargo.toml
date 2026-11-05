@@ -18,7 +18,7 @@ fallible-iterator-02 = { package = "fallible-iterator", version = "0.2" }
 molt-db = { path = "../molt-db", features = ["sqlite", "async", "postgres"] }
 postgres-protocol = "0.6.12"
 rmp-serde = "1"
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_bytes = "0.11"
 serde_json = { workspace = true }
