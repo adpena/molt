@@ -706,3 +706,82 @@ batches and bisection, which replaces every private landing wrapper.
 3. Linux and Windows cells on the farm.
 4. Rollups and bisection are implemented. Result reuse remains deferred under
    the observed-input design.
+
+## Executor-owned landing budget and stall evidence (HF-623, HF-779, HF-780)
+
+The 2026-11-05 host sample found 15 stalled-child failures in 174 landing
+try runs: nine managed-Python commands at 120 seconds, five fresh executable
+launches at 10/60 seconds and one guardian acknowledgement at 30 seconds.
+Four pytest gates each sizing against all 18 host CPUs could start 72 workers.
+The operator cap of three avoided that oversubscription, but a capped try run
+took 1423 seconds against its 900-second deadline. These are the motivating
+measurements, not qualification of the changes below.
+
+The proof executor owns one CPU budget for its batch, using the existing
+`molt.host_capacity` authority: affinity/quota, with performance cores first
+on macOS. It divides that budget among the possible concurrent pytest gates
+within their resource limits. Every pytest gate reserves at least one CPU,
+including serial `-n 0`; a one-CPU host serializes pytest sessions. The runner
+bounds each share by its existing memory slice and declared per-worker memory,
+then passes an explicit `-n`. Receipts retain declared and executed argv,
+worker count, wall duration and child CPU usage from the guard's sole reaper.
+No operator worker override or cross-process jobserver owns this allocation.
+Non-pytest build commands retain their existing toolchain resource policies.
+
+Keep deadlines, not a progress-based hang detector: CPU silence cannot tell
+blocked I/O from a hang. Managed-Python consumers reuse the existing 900-second
+identity-probe bound, rather than imposing an outer 120-second deadline.
+Fresh native launches and guardian handoffs use their owning named bounds,
+with the measured scan/host-wait cause beside each definition. The try-run
+budget accommodates the observed 1423-second capped run; its enclosing
+cancellation still wins over a child deadline or retry. Diagnostic and cleanup
+grace remain bounded. This budget does not promise admission against foreign
+processes or prove that Gatekeeper caused a particular wait.
+
+D1's `flaky(OpenFindingId)` quarantine is distinct from strict expected failures:
+collection validates the open identity, presubmit skips with its finding reason,
+and postsubmit passes `--run-flaky` and executes normally. A slow test is not a
+flake; no current test is quarantined without evidence. `ci_triage` owns the
+exhaustive infrastructure-retry classification. Only a typed pre-birth resource
+failure (EAGAIN or ENOMEM) can receive one retry: it has no child effects to
+repeat. Source drift, cancellation, product failures, timeout alone and unresolved
+custody do not qualify. Both attempts retain separate streams and classified
+records; they share the enclosing try-run bound. There is no retry ladder.
+
+For a timed-out direct Python child, enable CPython's `-X faulthandler` and use
+its fatal SIGABRT dump before the existing tree termination. This is a timeout
+termination signal, not a harmless diagnostic request. Send only to the owned
+root under the sole reaper's signal lock; do not signal arbitrary descendants.
+An exec, disabled handler or interpreter not yet initialized can leave the dump
+unavailable. Windows has no POSIX signal dump. Output tails stay attached to the
+timeout exception and its diagnostic; incident profiles follow the run's durable
+evidence directory, outside reclaimable scratch. Never let diagnostic collection
+block the guard's independent deadline backstop.
+
+`molt doctor` reports a fresh directly executed shebang script's first and warm
+launch durations on macOS, along with the limited read-only Developer Tools
+policy observation available on that host. Timing indicates first-exec overhead,
+not proof of a native Gatekeeper scan; per-app permission may remain unknown.
+It links the owner instructions and never changes security settings.
+
+The implementation must migrate executor callbacks, both command runners,
+receipt projections, timeout readers and test witnesses together. Unsupported
+shell pytest programs refuse before spawn; recognized argv wrappers use the
+one proof-command parser. Independent tests observe simultaneous allocations
+on 1/2/6/18-CPU hosts, actual child argv, memory pressure, serial mode,
+retry refusal/attempt retention, a real timeout's named blocked frame, and
+flaky collection versus postsubmit execution. Native/WASM program semantics
+are unaffected. Worker precheck is distinct from parent-owned landing under
+worker load.
+
+Design review, 2026-11-05: two sequential isolated read-only Goldfish reviews
+(design and implementation readiness). The first identified seven gaps;
+dispositions tightened diagnostic signal custody, pre-birth retry eligibility,
+enclosing-budget precedence, serial/memory floors, supported wrapper parsing,
+probe interpretation and evidence required to quarantine a test. The second
+identified a shell-budget escape; unsupported shell pytest now must refuse.
+No design finding remains unresolved. Full design and review records belong
+in the lane's external evidence, not tracked per-run logs. Primary precedents:
+[pytest-xdist explicit workers](https://pytest-xdist.readthedocs.io/en/stable/distribution.html),
+[Ninja job pools](https://cmake.org/cmake/help/latest/prop_gbl/JOB_POOLS.html), and
+[CPython faulthandler](https://docs.python.org/3/library/faulthandler.html).
