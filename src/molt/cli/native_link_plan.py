@@ -273,7 +273,11 @@ def native_link_policy_flags(
             return ("/link", *flags)
         return tuple(f"-Wl,{flag}" for flag in flags)
     if target.object_format is NativeObjectFormat.MACHO:
-        flags = ["-Wl,-dead_strip"] if dead_strip else []
+        # Symbol retention and dependency retention are separate obligations:
+        # a whole-runtime image retains its code but needs no unused dylibs.
+        flags = ["-Wl,-dead_strip_dylibs"]
+        if dead_strip:
+            flags.append("-Wl,-dead_strip")
         if capabilities.explicit_no_icf_flag:
             flags.append(capabilities.explicit_no_icf_flag)
         return tuple(flags)

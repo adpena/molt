@@ -1045,6 +1045,8 @@ is warmed separately; these are repeated-run instruction/RSS observations.
 | HF-748 | import tiny | 195,288,848 → 163,784,321 | -31,504,527 (-16.13%) | 17,039,360 → 16,957,440 | 32,236,728 → 32,302,776 |
 | HF-749 | hello world | 159,547,202 → 120,967,247 | -38,579,955 (-24.18%) | 16,498,688 → 16,318,464 | 13,571,552 → 13,555,024 |
 | HF-749 | import tiny | 163,552,032 → 124,921,295 | -38,630,737 (-23.62%) | 16,957,440 → 16,695,296 | 32,302,776 → 32,286,272 |
+| HF-751 | hello world | 120,967,247 → 109,787,610 | -11,179,637 (-9.24%) | 16,318,464 → 12,025,856 | 13,555,024 → 13,555,024 |
+| HF-751 | import tiny | 124,921,295 → 114,026,299 | -10,894,996 (-8.72%) | 16,695,296 → 12,419,072 | 32,286,272 → 32,286,272 |
 
 HF-748 reduces executed work, with approximately flat RSS and about 66 KB extra
 code. The implementation also preserves all 64 bits of boxed scratch keys on
@@ -1105,3 +1107,23 @@ owned HF-749 change (and the new probe) fails with the same missing-body
 ImportError. This is an existing catalog-loader consumer gap, not a successful
 extension parity result or permission to add a missing-body fallback. The
 integrator owns its typed C create/exec versus private source-body connection.
+
+### HF-751 implementation and dependency intent
+
+The shared Mach-O link policy emits `-dead_strip_dylibs` for application and
+whole-runtime image links. The runtime image keeps all archive code and records
+`dead_strip = false` in its plan; dependency stripping is a distinct obligation.
+Both measured workloads now directly load only libSystem. ELF application links
+already use `--as-needed` after explicit extension dependencies; preserving that
+ordering retains their declared default load semantics.
+
+An explicit source-extension default dependency can exist for its initializer,
+even without a referenced symbol. Its typed Mach-O projection therefore uses
+`-needed_framework` or `-needed-l`, preserving that existing contract while
+unreferenced runtime system dependencies can disappear. This follows the
+[LLD dependency-retention distinction](https://llvm.googlesource.com/llvm-project/%2B/refs/tags/llvmorg-14.0.0-rc2/lld/test/MachO/dead-strip-dylibs.s).
+Real system-linker and LLVM Mach-O controls retain a referenced Security
+framework, drop unreferenced runtime libraries, and execute an initializer-only
+explicit dylib while retaining an explicit framework. Zig's existing real
+cross-format strip test also accepts the complete policy flags. These checks
+do not claim Linux execution or a production runtime-image launch.
