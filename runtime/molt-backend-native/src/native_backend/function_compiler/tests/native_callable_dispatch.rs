@@ -318,6 +318,10 @@ pub extern "C" fn molt_int_from_i64(value: i64) -> u64 {{ value as u64 }}
 pub extern "C" fn molt_async_work_poll_and_exception_pending() -> u64 {{ 0 }}
 #[no_mangle]
 pub extern "C" fn {SYMBOL}(_: u64) -> u64 {{ {SENTINEL}u64 }}
+
+// This isolated provider has no runtime execution attachment or lease.
+#[no_mangle]
+pub extern "C" fn molt_refcount_admission() -> u64 {{ 0 }}
 "#,
         generated_object_abi_symbol = molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL,
     );
@@ -445,14 +449,14 @@ pub unsafe extern "C" fn molt_tuple_from_values(address: u64, len: u64) -> u64 {
         return @BOXED_NONE@;
     }
     let words = unsafe { core::slice::from_raw_parts(address as *const u64, len as usize) };
-    if *words == [101u64, 102] {
+    if *words == [0x7ffc000000000065u64, 0x7ffc000000000066u64] {
         CONSTRUCTED.fetch_add(1, Ordering::SeqCst);
     }
-    0x200
+    0x7ffc000000000200
 }
 #[no_mangle]
 pub extern "C" fn molt_inc_ref_obj(value: u64) {
-    if value == 101 || value == 102 {
+    if value == 0x7ffc000000000065u64 || value == 0x7ffc000000000066u64 {
         WORD_RETAINS.fetch_add(1, Ordering::SeqCst);
     }
 }
@@ -478,6 +482,10 @@ pub extern "C" fn scalarized_fail(fail: u64) { FAIL.store(fail, Ordering::SeqCst
 pub extern "C" fn scalarized_constructed() -> u64 { CONSTRUCTED.load(Ordering::SeqCst) }
 #[no_mangle]
 pub extern "C" fn scalarized_word_retains() -> u64 { WORD_RETAINS.load(Ordering::SeqCst) }
+
+// This isolated provider has no runtime execution attachment or lease.
+#[no_mangle]
+pub extern "C" fn molt_refcount_admission() -> u64 { 0 }
 "#
     .replace(
         "@GENERATED_OBJECT_ABI_SYMBOL@",
@@ -500,14 +508,14 @@ extern "C" {
 
 fn main() {
     unsafe {
-        assert_eq!(scalarized_tuple_head(101, 102), 101, "constant index reads the first word");
+        assert_eq!(scalarized_tuple_head(0x7ffc000000000065u64, 0x7ffc000000000066u64), 0x7ffc000000000065u64, "constant index reads the first word");
         assert_eq!(scalarized_constructed(), 1, "the constructor received both borrowed words");
         let success_retains = scalarized_word_retains();
         assert!(success_retains >= 1, "the bound element must own one retain");
         assert_eq!(molt_exception_pending_fast(), 0);
 
         scalarized_fail(1);
-        assert_eq!(scalarized_tuple_head(101, 102), BOXED_NONE, "a failed tuple has no element");
+        assert_eq!(scalarized_tuple_head(0x7ffc000000000065u64, 0x7ffc000000000066u64), BOXED_NONE, "a failed tuple has no element");
         assert_eq!(
             scalarized_word_retains() - success_retains,
             success_retains - 1,
@@ -1957,6 +1965,10 @@ fn integer_value(bits: u64) -> i64 {
         }
     }
 }
+
+// This isolated provider has no runtime execution attachment or lease.
+#[no_mangle]
+pub extern "C" fn molt_refcount_admission() -> u64 { 0 }
 "#
     .replace(
         "@GENERATED_OBJECT_ABI_SYMBOL@",
@@ -2612,6 +2624,10 @@ pub extern "C" fn pyinit_probe_count(index: u64) -> u64 {{
         _ => FAILURE.load(Ordering::SeqCst),
     }}
 }}
+
+// This isolated provider has no runtime execution attachment or lease.
+#[no_mangle]
+pub extern "C" fn molt_refcount_admission() -> u64 {{ 0 }}
 "#,
         generated_object_abi_symbol = molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL,
     );
@@ -2820,18 +2836,18 @@ static RESULT_SECOND: AtomicU64 = AtomicU64::new(0);
     if FAIL.load(SeqCst) == attempt { unsafe {PENDING_RECORD.pending = 1;} return NONE; }
     assert!(attempt <= 2, "one materialization per distinct value");
     if attempt == 1 {FIRST.store(1, SeqCst)} else {SECOND.store(1, SeqCst)}
-    0x100 + attempt
+    0x7ffc000000000100 + attempt
 }
 #[no_mangle] pub extern "C" fn molt_inc_ref_obj(value: u64) {
-    let refs = match value {0x101 => &FIRST, 0x102 => &SECOND, 0x200 => &RESULT, _ => return};
+    let refs = match value {0x7ffc000000000101 => &FIRST, 0x7ffc000000000102 => &SECOND, 0x7ffc000000000200 => &RESULT, _ => return};
     assert!(refs.fetch_add(1, SeqCst) > 0, "retain after free");
 }
 #[no_mangle] pub extern "C" fn molt_dec_ref_obj(value: u64) {
-    let refs = match value {0x101 => &FIRST, 0x102 => &SECOND, 0x200 => &RESULT, _ => return};
+    let refs = match value {0x7ffc000000000101 => &FIRST, 0x7ffc000000000102 => &SECOND, 0x7ffc000000000200 => &RESULT, _ => return};
     let old = refs.fetch_sub(1, SeqCst); assert!(old > 0, "duplicate release");
-    if value == 0x200 && old == 1 {
-        for _ in 0..RESULT_FIRST.load(SeqCst) {molt_dec_ref_obj(0x101)}
-        for _ in 0..RESULT_SECOND.load(SeqCst) {molt_dec_ref_obj(0x102)}
+    if value == 0x7ffc000000000200 && old == 1 {
+        for _ in 0..RESULT_FIRST.load(SeqCst) {molt_dec_ref_obj(0x7ffc000000000101)}
+        for _ in 0..RESULT_SECOND.load(SeqCst) {molt_dec_ref_obj(0x7ffc000000000102)}
     }
 }
 #[no_mangle] pub extern "C" fn molt_dec_ref(value: u64) {molt_dec_ref_obj(value)}
@@ -2841,12 +2857,12 @@ unsafe fn construct(address: u64, len: u64) -> u64 {
 }
 fn construct_words(values: &[u64]) -> u64 {
     CALLS.fetch_add(1, SeqCst); assert_eq!(molt_exception_pending_fast(), 0);
-    assert_eq!(values, &[0x101, 0x101, 0x102], "preserve repeated operand identity and order");
+    assert_eq!(values, &[0x7ffc000000000101, 0x7ffc000000000101, 0x7ffc000000000102], "preserve repeated operand identity and order");
     assert_eq!(FIRST.load(SeqCst), 1); assert_eq!(SECOND.load(SeqCst), 1);
     if CTOR_FAIL.load(SeqCst) != 0 {unsafe {PENDING_RECORD.pending = 1;} return NONE;}
     for &value in values {molt_inc_ref_obj(value)}
     RESULT_FIRST.store(2,SeqCst); RESULT_SECOND.store(1,SeqCst);
-    RESULT.store(1, SeqCst); 0x200
+    RESULT.store(1, SeqCst); 0x7ffc000000000200
 }
 #[no_mangle] pub unsafe extern "C" fn molt_tuple_from_values(address: u64, len: u64) -> u64 {unsafe {construct(address,len)}}
 #[no_mangle] pub unsafe extern "C" fn molt_list_from_values(address: u64, len: u64) -> u64 {unsafe {construct(address,len)}}
@@ -2861,43 +2877,43 @@ fn subscript_words(values:&[u64], expected:&[u64]) -> bool {
     CALLS.fetch_add(1,SeqCst); assert_eq!(molt_exception_pending_fast(),0);
     assert_eq!(values,expected,"borrow each distinct operand once, in order");
     for &value in values {
-        let refs = match value {0x101 => &FIRST, 0x102 => &SECOND, _ => continue};
+        let refs = match value {0x7ffc000000000101 => &FIRST, 0x7ffc000000000102 => &SECOND, _ => continue};
         assert!(refs.load(SeqCst) > 0, "borrowed a released temporary box");
     }
     if CTOR_FAIL.load(SeqCst) != 0 {unsafe {PENDING_RECORD.pending=1;} return false;}
     true
 }
 #[no_mangle] pub extern "C" fn molt_operator_index(value:u64)->u64 {
-    if !subscript_words(&[value],&[0x101]) {return NONE;}
+    if !subscript_words(&[value],&[0x7ffc000000000101]) {return NONE;}
     RESULT_FIRST.store(0,SeqCst); RESULT_SECOND.store(0,SeqCst);
-    RESULT.store(1,SeqCst); 0x200
+    RESULT.store(1,SeqCst); 0x7ffc000000000200
 }
 #[no_mangle] pub extern "C" fn molt_index(obj:u64,key:u64)->u64 {
-    if !subscript_words(&[obj,key],&[0x101,0x102]) {return NONE;}
+    if !subscript_words(&[obj,key],&[0x7ffc000000000101,0x7ffc000000000102]) {return NONE;}
     molt_inc_ref_obj(key); key
 }
 #[no_mangle] pub extern "C" fn molt_list_getitem_int_fast(obj:u64,key:u64)->u64 {molt_index(obj,key)}
 #[no_mangle] pub extern "C" fn molt_store_index(obj:u64,key:u64,value:u64)->u64 {
-    if subscript_words(&[obj,key,value],&[0x101,0x101,0x102]) {obj} else {NONE}
+    if subscript_words(&[obj,key,value],&[0x7ffc000000000101,0x7ffc000000000101,0x7ffc000000000102]) {obj} else {NONE}
 }
 #[no_mangle] pub extern "C" fn molt_dict_set(obj:u64,key:u64,value:u64)->u64 {
     DICT_SETS.fetch_add(1,SeqCst);
     // Direct dict mutation borrows its operands and returns the borrowed dict;
     // it must not dispatch through the general __setitem__ provider.
-    if subscript_words(&[obj,key,value],&[0x101,0x101,0x102]) {obj} else {NONE}
+    if subscript_words(&[obj,key,value],&[0x7ffc000000000101,0x7ffc000000000101,0x7ffc000000000102]) {obj} else {NONE}
 }
 #[no_mangle] pub extern "C" fn molt_del_index(obj:u64,key:u64)->u64 {
-    if subscript_words(&[obj,key],&[0x101,0x101]) {obj} else {NONE}
+    if subscript_words(&[obj,key],&[0x7ffc000000000101,0x7ffc000000000101]) {obj} else {NONE}
 }
 #[no_mangle] pub extern "C" fn molt_dict_update_missing(obj:u64,key:u64,value:u64)->u64 {
     molt_store_index(obj,key,value)
 }
 #[no_mangle] pub extern "C" fn molt_dict_get(obj:u64,key:u64,default:u64)->u64 {
-    if !subscript_words(&[obj,key,default],&[0x101,0x101,0x102]) {return NONE;}
+    if !subscript_words(&[obj,key,default],&[0x7ffc000000000101,0x7ffc000000000101,0x7ffc000000000102]) {return NONE;}
     molt_inc_ref_obj(default); default
 }
 #[no_mangle] pub extern "C" fn molt_set_add(obj:u64,key:u64)->u64 {
-    subscript_words(&[obj,key],&[0x101,0x102]); NONE
+    subscript_words(&[obj,key],&[0x7ffc000000000101,0x7ffc000000000102]); NONE
 }
 #[no_mangle] pub unsafe extern "C" fn molt_guarded_class_def(name:u64,bases:u64,nbases:u64,attrs:u64,nattrs:u64,size:u64,version:u64,flags:u64)->u64 {
     assert_eq!(name,NONE); assert_eq!([nbases,nattrs,size,version,flags],[1,1,16,7,3]);
@@ -2916,6 +2932,10 @@ fn subscript_words(values:&[u64], expected:&[u64]) -> bool {
 #[no_mangle] pub extern "C" fn fixed_attempts()->u64 {ATTEMPTS.load(SeqCst)}
 #[no_mangle] pub extern "C" fn fixed_calls()->u64 {CALLS.load(SeqCst)}
 #[no_mangle] pub extern "C" fn fixed_dict_set_calls()->u64 {DICT_SETS.load(SeqCst)}
+
+// This isolated provider has no runtime execution attachment or lease.
+#[no_mangle]
+pub extern "C" fn molt_refcount_admission() -> u64 { 0 }
 "#.replace("@ABI@", molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL)
       .replace("@NONE@", &(molt_codegen_abi::box_none_bits() as u64).to_string());
     let harness = r#"
@@ -2943,7 +2963,7 @@ fn main() {unsafe {
   for (failure,ctor_failure) in [(0,0),(1,0),(2,0),(0,1)] {
    fixed_reset(failure,ctor_failure); let result=run();
    let success=failure==0 && ctor_failure==0;
-   assert_eq!(result,if success {0x200} else {NONE});
+   assert_eq!(result,if success {0x7ffc000000000200} else {NONE});
    assert_eq!(fixed_attempts(),if failure==1 {1} else {2});
    assert_eq!(fixed_calls(),u64::from(failure==0));
    assert_eq!(fixed_live(),if success {4} else {0});
@@ -2963,7 +2983,7 @@ fn main() {unsafe {
  for (failure,consumer_failure) in [(0,0),(1,0),(0,1)] {
   let success=failure==0 && consumer_failure==0;
   fixed_reset(failure,consumer_failure); let result=fixed_operator_index();
-  assert_eq!(result,if success {0x200} else {NONE});
+  assert_eq!(result,if success {0x7ffc000000000200} else {NONE});
   assert_eq!(fixed_attempts(),1); assert_eq!(fixed_calls(),u64::from(failure==0));
   assert_eq!(fixed_live(),u64::from(success));
   assert_eq!(molt_exception_pending_fast(),u64::from(!success));
@@ -2979,7 +2999,7 @@ fn main() {unsafe {
  for (failure,consumer_failure) in [(0,0),(1,0),(2,0),(0,1)] {
   let success=failure==0 && consumer_failure==0;
   fixed_reset(failure,consumer_failure); let result=run();
-  assert_eq!(result,if success {0x102} else {NONE});
+  assert_eq!(result,if success {0x7ffc000000000102} else {NONE});
   assert_eq!(fixed_attempts(),if failure==1 {1} else {2});
   assert_eq!(fixed_calls(),u64::from(failure==0));
   assert_eq!(fixed_live(),u64::from(success));

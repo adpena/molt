@@ -30,7 +30,7 @@ fn boxed_or_retains_selected_operand_result() {
     let ir = llvm_fn.print_to_string().to_string();
     assert!(ir.contains("molt_is_truthy"), "{ir}");
     assert!(
-        ir.contains("call void @molt_inc_ref_obj(i64 %bool_or)"),
+        ir.contains("call void @__molt_inline_retain(i64 %bool_or, i64 %rc_admission)"),
         "{ir}"
     );
 }

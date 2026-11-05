@@ -17,6 +17,7 @@ pub(in crate::wasm) struct WasmFrameLocals {
     slots: BTreeMap<String, u32>,
     name_kinds: BTreeMap<String, WasmFrameLocalKind>,
     anonymous_kinds: BTreeMap<u32, WasmFrameAnonymousLocal>,
+    refcount: Option<crate::wasm::refcount::WasmRefcountScratch>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +55,30 @@ impl<'a> WasmNamedFrameLocal<'a> {
 }
 
 impl WasmFrameLocals {
+    pub(in crate::wasm) fn allocate_refcount_scratch(
+        &mut self,
+        local_types: &mut Vec<ValType>,
+        local_count: &mut u32,
+    ) {
+        assert!(self.refcount.is_none());
+        self.refcount = Some(crate::wasm::refcount::WasmRefcountScratch::allocate(|ty| {
+            self.allocate_anonymous(
+                if ty == ValType::I32 {
+                    WasmFrameAnonymousLocal::RefcountPredicate
+                } else {
+                    WasmFrameAnonymousLocal::RefcountWord
+                },
+                local_types,
+                local_count,
+            )
+        }));
+    }
+
+    pub(in crate::wasm) fn refcount(&self) -> crate::wasm::refcount::WasmRefcountScratch {
+        self.refcount
+            .expect("refcount without its invocation scratch")
+    }
+
     pub(in crate::wasm) const NONE_NAME: &'static str = "none";
     pub(in crate::wasm) const SELF_PARAM_NAME: &'static str = "self_param";
 
@@ -189,6 +214,7 @@ impl From<BTreeMap<String, u32>> for WasmFrameLocals {
             slots,
             name_kinds,
             anonymous_kinds: BTreeMap::new(),
+            refcount: None,
         }
     }
 }

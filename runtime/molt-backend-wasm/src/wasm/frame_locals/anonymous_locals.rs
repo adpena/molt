@@ -3,6 +3,8 @@ use wasm_encoder::ValType;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::wasm) enum WasmFrameAnonymousLocal {
+    RefcountWord,
+    RefcountPredicate,
     DispatchSelfPtr,
     DispatchState,
     DispatchResumeState,
@@ -25,7 +27,7 @@ impl WasmFrameAnonymousLocal {
     fn val_type(self) -> ValType {
         match self {
             // Scope selectors shift and mask a block index in i32 arithmetic.
-            Self::DispatchRoute => ValType::I32,
+            Self::DispatchRoute | Self::RefcountPredicate => ValType::I32,
             _ => ValType::I64,
         }
     }

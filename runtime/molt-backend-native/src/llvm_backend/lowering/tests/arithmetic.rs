@@ -280,7 +280,7 @@ fn plain_trampoline_adopted_raw_inputs_use_canonical_release() {
         "{ir}"
     );
     assert!(ir.contains("alloca i64, i64 2"), "{ir}");
-    assert!(!ir.contains("@molt_dec_ref_obj"), "{ir}");
+    assert!(!ir.contains("@__molt_inline_release"), "{ir}");
 }
 
 #[test]

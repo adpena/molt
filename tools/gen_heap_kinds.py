@@ -357,6 +357,23 @@ def render_constants(kinds: list[dict[str, object]], visibility: str = "pub") ->
         + ", ".join(f"TYPE_ID_{row['name']}" for row in kinds)
         + "];\n"
     )
+    if visibility == "pub":
+        dense_ids = [int(row["id"]) for row in kinds if row["name"] != "OBJECT"]
+        base = min(dense_ids)
+        span = max(dense_ids) - base + 1
+        if span > 64:
+            raise ValueError(
+                "inline heap membership needs a multiword projection above 64 ids"
+            )
+        mask = sum(1 << (value - base) for value in dense_ids)
+        lines.append(f"pub const HEAP_TYPE_ID_SPAN: u64 = {span};\n")
+        lines.append(f"pub const HEAP_TYPE_ID_VALID_MASK: u64 = 0x{mask:016x};\n")
+        lines.append(
+            "#[inline(always)]\npub const fn is_valid_heap_type_id(type_id: u32) -> bool {\n"
+            "    let index = type_id.wrapping_sub(MIN_HEAP_TYPE_ID);\n"
+            "    type_id == TYPE_ID_OBJECT || (index < HEAP_TYPE_ID_SPAN as u32\n"
+            "        && (HEAP_TYPE_ID_VALID_MASK >> (index & 63)) & 1 != 0)\n}\n"
+        )
     return "".join(lines)
 
 
@@ -541,7 +558,7 @@ def render_runtime(kinds: list[dict[str, object]]) -> str:
         "}\n\n"
         "#[inline(always)]\n"
         "pub(crate) const fn is_valid_heap_type_id(type_id: u32) -> bool {\n"
-        "    heap_kind_descriptor(type_id).is_some()\n"
+        "    molt_codegen_abi::is_valid_heap_type_id(type_id)\n"
         "}\n"
     )
     lines.append(

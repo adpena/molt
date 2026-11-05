@@ -46,6 +46,7 @@ fn fixture(opcode: OpCode, args: &[LirRepr], operands: &[u32], result: LirRepr) 
     };
     LirFunction {
         container_storage: std::collections::HashMap::new(),
+        inline_i64_values: Default::default(),
         name: format!("owned_{opcode:?}"),
         param_names: (0..args.len()).map(|i| format!("arg{i}")).collect(),
         param_types: block.args.iter().map(|v| v.ty.clone()).collect(),
@@ -147,7 +148,7 @@ let refs, children, integers, next, attempts, calls, pending, failAt, truthFail,
 let memory = null, scratch = null, scratchFail = false;
 let literalCase = null, literalResult = null, literalOut = null;
 function reset(fail = 0) {
-  refs = new Map(); children = new Map(); integers = new Map(); next = 0x700000000000n; attempts = calls = mutations = unboxes = 0;
+  refs = new Map(); children = new Map(); integers = new Map(); next = 0x7ffc700000000000n; attempts = calls = mutations = unboxes = 0;
   pending = ''; failAt = fail; truthFail = constructorFail = scratchFail = false; mutationFailAt = 0; scratch = null;
   literalCase = literalResult = literalOut = null;
 }
@@ -155,7 +156,7 @@ function allocate() { const id = ++next; refs.set(id, 1); return id; }
 function live(value) { assert.ok(refs.has(value), 'using dead box ' + value); }
 function inc(value) { if (refs.has(value)) refs.set(value, refs.get(value) + 1); }
 function dec(value) {
-  if (value > 0x700000000000n && value <= next) {
+  if (value > 0x7ffc700000000000n && value <= next) {
     live(value); const rc = refs.get(value) - 1;
     if (rc) refs.set(value, rc);
     else {
@@ -204,6 +205,8 @@ function literal(kind, ptr, len, out) {
   return 0x1234;
 }
 const hooks = {
+  refcount_admission: () => 0n, // isolated image: no runtime execution custody
+
   string_from_bytes(ptr, len, out) { return literal('string', ptr, len, out); },
   bytes_from_bytes(ptr, len, out) { return literal('bytes', ptr, len, out); },
   bigint_from_bytes(ptr, len) { return literal('bigint', ptr, len); },

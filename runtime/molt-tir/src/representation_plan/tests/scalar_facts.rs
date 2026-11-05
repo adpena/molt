@@ -42,6 +42,114 @@ fn const_float(out: &str, value: f64) -> OpIR {
 }
 
 #[test]
+fn refcount_elision_uses_producer_carriers_and_never_parameter_annotations() {
+    for annotation in ["int", "float", "bool", "None"] {
+        let f = function(
+            "annotated_rc_identity",
+            &["value"],
+            Some(vec![annotation]),
+            vec![
+                op(
+                    molt_ir::OpKind::BindingAlias,
+                    Some("alias"),
+                    None,
+                    &["value"],
+                ),
+                op(molt_ir::OpKind::Borrow, Some("borrowed"), None, &["alias"]),
+                op(molt_ir::OpKind::Box, Some("boxed"), None, &["borrowed"]),
+                op(molt_ir::OpKind::Ret, None, None, &["boxed"]),
+            ],
+        );
+        let plan = native_representation_plan(&f);
+        for name in ["value", "alias", "borrowed", "boxed"] {
+            assert!(!plan.carrier_refcount_is_noop(name), "{annotation}: {name}");
+            assert!(!plan.boxed_refcount_is_noop(name), "{annotation}: {name}");
+        }
+    }
+    let f = function(
+        "producer_rc",
+        &[],
+        None,
+        vec![
+            op(molt_ir::OpKind::ConstNone, Some("none_value"), None, &[]),
+            op(
+                molt_ir::OpKind::BindingAlias,
+                Some("none_alias"),
+                None,
+                &["none_value"],
+            ),
+            op(
+                molt_ir::OpKind::Box,
+                Some("none_boxed"),
+                None,
+                &["none_alias"],
+            ),
+            const_int("integer", 7),
+            const_bool("boolean", true),
+            const_float("floating", 1.25),
+            op(
+                molt_ir::OpKind::BindingAlias,
+                Some("integer_alias"),
+                None,
+                &["integer"],
+            ),
+            op(
+                molt_ir::OpKind::Box,
+                Some("integer_boxed"),
+                None,
+                &["integer_alias"],
+            ),
+            op(
+                molt_ir::OpKind::Box,
+                Some("boolean_boxed"),
+                None,
+                &["boolean"],
+            ),
+            op(
+                molt_ir::OpKind::Box,
+                Some("floating_boxed"),
+                None,
+                &["floating"],
+            ),
+            op(
+                molt_ir::OpKind::TupleNew,
+                Some("tuple"),
+                None,
+                &["none_alias", "integer", "boolean", "floating"],
+            ),
+            op(molt_ir::OpKind::Ret, None, None, &["tuple"]),
+        ],
+    );
+    let plan = native_representation_plan(&f);
+    for name in [
+        "none_value",
+        "none_alias",
+        "none_boxed",
+        "integer_alias",
+        "integer_boxed",
+        "boolean_boxed",
+        "floating_boxed",
+        "integer",
+        "boolean",
+        "floating",
+    ] {
+        assert!(plan.carrier_refcount_is_noop(name), "{name}");
+        assert!(plan.boxed_refcount_is_noop(name), "{name}");
+    }
+    assert!(
+        plan.is_inline_safe_int_name("integer_alias"),
+        "owned aliases must preserve the existing raw fast path"
+    );
+    assert!(!plan.carrier_refcount_is_noop("tuple"));
+    assert!(!Repr::Never.carrier_refcount_is_noop());
+    assert!(Repr::RawI64FullDeopt.carrier_refcount_is_noop());
+    assert!(
+        !Repr::RawI64FullDeopt.boxed_refcount_is_noop(),
+        "boxing may mint a heap BigInt"
+    );
+}
+
+#[test]
 fn canonical_block_arg_names_have_bounded_table_comparisons() {
     use std::cell::Cell;
     use std::hash::{Hash, Hasher};
@@ -3054,4 +3162,26 @@ fn final_projection_keeps_checked_value_flag_and_owned_alias_carriers_distinct()
         None,
         "canonical ValueId fallback cannot classify an unrelated ABI parameter"
     );
+}
+
+#[test]
+fn producer_carrier_plan_refcount_obligations_require_a_value_proof() {
+    let plan = ProducerCarrierPlan {
+        repr_by_value: HashMap::from([
+            (ValueId(0), Repr::RawI64FullDeopt),
+            (ValueId(1), Repr::BoxedImmortal),
+            (ValueId(2), Repr::DynBox),
+        ]),
+    };
+    assert!(plan.carrier_refcount_is_noop(ValueId(0)));
+    assert!(
+        !plan.boxed_refcount_is_noop(ValueId(0)),
+        "boxing may allocate a BigInt"
+    );
+    assert!(plan.carrier_refcount_is_noop(ValueId(1)));
+    assert!(plan.boxed_refcount_is_noop(ValueId(1)));
+    for value in [ValueId(2), ValueId(3)] {
+        assert!(!plan.carrier_refcount_is_noop(value));
+        assert!(!plan.boxed_refcount_is_noop(value));
+    }
 }

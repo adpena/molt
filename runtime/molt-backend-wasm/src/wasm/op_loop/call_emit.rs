@@ -85,7 +85,13 @@ pub(super) fn emit_op_loop_runtime_call(
             func.instruction(&Instruction::LocalSet(out));
         }
     } else if call.discard_result {
-        discard_runtime_result(func, context.import_ids, context.reloc_enabled, call.import);
+        discard_runtime_result(
+            func,
+            context.import_ids,
+            context.reloc_enabled,
+            call.import,
+            context.locals.refcount(),
+        );
     } else {
         store_runtime_result(
             func,

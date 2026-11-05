@@ -226,7 +226,7 @@ fn trace_decref_zero_function_all() -> bool {
 /// those canonical knobs so each inlined `inc_ref_ptr`/`dec_ref_ptr` edge pays
 /// one cached branch; the outlined tracers still apply every knob's own filter.
 #[inline]
-fn rc_transition_trace_enabled() -> bool {
+pub(crate) fn rc_transition_trace_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         trace_exception_rc()
@@ -592,9 +592,40 @@ const fn flag_transition_is_synchronized(changed: u32) -> bool {
     changed & HEADER_FLAG_SYNCHRONIZED_STATE_MASK != 0
 }
 
+const HEADER_FLAGS_REFCOUNT_CUSTODY: u32 = molt_codegen_abi::HEADER_FLAGS_REFCOUNT_CUSTODY;
+
 impl MoltHeader {
+    /// Sole producer of the count word's runtime-custody bit. A transition
+    /// that publishes a custody flag places the count word under custody
+    /// before and after the flag publication; a transition that retires the
+    /// last custody flag returns it to plain custody and re-checks, so racing
+    /// publishers converge on "custody flag present => custody bit present".
+    /// Every call site passes constant masks, so non-custody flags fold away.
+    #[inline(always)]
+    fn refcount_custody_before(&self, set: u32) {
+        if set & HEADER_FLAGS_REFCOUNT_CUSTODY != 0 {
+            self.ref_count.enter_runtime_custody();
+        }
+    }
+
+    #[inline(always)]
+    fn refcount_custody_after(&self, set: u32, previous: u32, current: u32) {
+        if set & HEADER_FLAGS_REFCOUNT_CUSTODY != 0 {
+            self.ref_count.enter_runtime_custody();
+        }
+        if previous & !current & HEADER_FLAGS_REFCOUNT_CUSTODY != 0
+            && current & HEADER_FLAGS_REFCOUNT_CUSTODY == 0
+        {
+            self.ref_count.leave_runtime_custody();
+            if self.load_synchronized_flags() & HEADER_FLAGS_REFCOUNT_CUSTODY != 0 {
+                self.ref_count.enter_runtime_custody();
+            }
+        }
+    }
+
     /// Construct the flag word before an object is published. This pointer API
     /// deliberately avoids creating a reference to uninitialized atomic state.
+    /// The refcount word must already be initialized.
     #[inline(always)]
     pub(crate) unsafe fn initialize_flags_before_publication(header: *mut Self, value: u32) {
         unsafe {
@@ -602,11 +633,15 @@ impl MoltHeader {
                 std::ptr::addr_of_mut!((*header).flags),
                 MoltFlags::new(value),
             );
+            if value & HEADER_FLAGS_REFCOUNT_CUSTODY != 0 {
+                (*header).ref_count.enter_runtime_custody();
+            }
         }
     }
 
     /// Construct an unpublished collector state directly, without any
-    /// intermediate published flag word.
+    /// intermediate published flag word. The refcount word must already be
+    /// initialized.
     #[inline(always)]
     pub(crate) unsafe fn initialize_flags_gc_unpublished(header: *mut Self, value: u32) {
         unsafe {
@@ -614,6 +649,9 @@ impl MoltHeader {
                 std::ptr::addr_of_mut!((*header).flags),
                 MoltFlags::new_unpublished(value),
             );
+            if value & HEADER_FLAGS_REFCOUNT_CUSTODY != 0 {
+                (*header).ref_count.enter_runtime_custody();
+            }
         }
     }
 
@@ -640,26 +678,34 @@ impl MoltHeader {
     #[inline(always)]
     #[cfg(test)]
     pub(crate) fn store_flags(&self, value: u32) {
+        self.refcount_custody_before(value);
+        let previous = self.flags.load(AtomicOrdering::Acquire);
         self.flags.store(value, AtomicOrdering::Release);
+        self.refcount_custody_after(value, previous, value);
     }
 
     #[inline(always)]
     pub(crate) fn fetch_or_flags(&self, value: u32) -> u32 {
-        if flag_transition_is_synchronized(value) {
+        self.refcount_custody_before(value);
+        let previous = if flag_transition_is_synchronized(value) {
             self.flags.update_synchronized(value, 0)
         } else {
             self.flags.update_relaxed(value, 0)
-        }
+        };
+        self.refcount_custody_after(value, previous, previous | value);
+        previous
     }
 
     #[inline(always)]
     pub(crate) fn fetch_and_flags(&self, value: u32) -> u32 {
         let clear = !value;
-        if flag_transition_is_synchronized(clear) {
+        let previous = if flag_transition_is_synchronized(clear) {
             self.flags.update_synchronized(0, clear)
         } else {
             self.flags.update_relaxed(0, clear)
-        }
+        };
+        self.refcount_custody_after(0, previous, previous & value);
+        previous
     }
 
     #[inline(always)]
@@ -668,12 +714,21 @@ impl MoltHeader {
         current: u32,
         new: u32,
     ) -> Result<u32, u32> {
-        self.flags.compare_exchange(
+        let set = new & !current;
+        self.refcount_custody_before(set);
+        let result = self.flags.compare_exchange(
             current,
             new,
             AtomicOrdering::AcqRel,
             AtomicOrdering::Acquire,
-        )
+        );
+        match result {
+            Ok(previous) => self.refcount_custody_after(set, previous, new),
+            // A failed publication may have entered custody for a flag that
+            // never appeared: settle against the observed word.
+            Err(observed) => self.refcount_custody_after(0, set | observed, observed),
+        }
+        result
     }
 
     /// Atomically apply one coherent flag-state transition. Callers that move
@@ -682,11 +737,14 @@ impl MoltHeader {
     /// a torn intermediate state.
     #[inline(always)]
     pub(crate) fn update_flags(&self, set: u32, clear: u32) -> u32 {
-        if flag_transition_is_synchronized(set | clear) {
+        self.refcount_custody_before(set);
+        let previous = if flag_transition_is_synchronized(set | clear) {
             self.flags.update_synchronized(set, clear)
         } else {
             self.flags.update_relaxed(set, clear)
-        }
+        };
+        self.refcount_custody_after(set, previous, (previous | set) & !clear);
+        previous
     }
 
     /// Clear and return the selected bits as one indivisible consume action.
@@ -1179,7 +1237,7 @@ pub(crate) const HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE: u32 = 1 << 26;
 pub(crate) const HEADER_FLAG_GC_COLLECTING: u32 = 1 << 25;
 /// A canonical CPython ABI view exists for this heap object. This is the
 /// lock-free negative membership authority for ordinary runtime RC/GC paths.
-pub(crate) const HEADER_FLAG_HAS_ABI_VIEW: u32 = 1 << 27;
+pub(crate) use molt_codegen_abi::HEADER_FLAG_HAS_ABI_VIEW;
 /// This object is itself a registered weakref and owns its callback edge in
 /// the runtime registry. The Python shim carries no duplicate lifetime state.
 /// Transient cycle-collector pin for an ABI-rooted candidate.
@@ -1187,7 +1245,7 @@ pub(crate) const HEADER_FLAG_GC_PINNED: u32 = 1 << 28;
 pub(crate) const HEADER_FLAG_GC_UNPUBLISHED: u32 = molt_codegen_abi::HEADER_FLAG_GC_UNPUBLISHED;
 /// Terminal lifetime state: the object is untracked and every externally
 /// discoverable sidecar is being detached before any child edge is released.
-pub(crate) const HEADER_FLAG_DEALLOCATING: u32 = 1 << 30;
+pub(crate) use molt_codegen_abi::HEADER_FLAG_DEALLOCATING;
 
 /// Lifetime-boundary bit: this object has had at least one weakref registered.
 /// It gates the finalizer resurrection window and subsequent weakref detach.
@@ -5367,6 +5425,7 @@ mod tests {
         let mut header = std::mem::MaybeUninit::<super::MoltHeader>::zeroed();
         let header = header.as_mut_ptr();
         unsafe {
+            super::MoltHeader::initialize_refcount_before_publication(header, 1);
             super::MoltHeader::initialize_flags_before_publication(
                 header,
                 super::HEADER_FLAG_TASK_QUEUED | super::HEADER_FLAG_CANCEL_PENDING,
@@ -5406,6 +5465,7 @@ mod tests {
         let mut header = std::mem::MaybeUninit::<super::MoltHeader>::zeroed();
         let header = header.as_mut_ptr();
         unsafe {
+            super::MoltHeader::initialize_refcount_before_publication(header, 1);
             super::MoltHeader::initialize_flags_gc_unpublished(
                 header,
                 super::HEADER_FLAG_CONTAINS_REFS,
@@ -5419,14 +5479,16 @@ mod tests {
     }
 
     fn refcount_header(count: u32, flags: u32) -> super::MoltHeader {
-        super::MoltHeader {
+        let header = super::MoltHeader {
             type_id: 0,
             ref_count: molt_codegen_abi::MoltRefCount::new(count),
-            flags: molt_codegen_abi::MoltFlags::new(flags),
+            flags: molt_codegen_abi::MoltFlags::new(0),
             size_class: 0,
             aux_kind: 0,
             aux: super::MoltAuxWord::new(0),
-        }
+        };
+        header.fetch_or_flags(flags);
+        header
     }
 
     #[test]

@@ -63,6 +63,7 @@ pub(super) fn emit_exception_runtime_op(
                     import_ids,
                     reloc_enabled,
                     crate::wasm_abi_generated::WasmRuntimeImport::Raise,
+                    context.locals.refcount(),
                 );
                 // An enclosing authored handler may catch this. If it leaves
                 // the function, the function's unwind scope owns cleanup.

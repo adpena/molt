@@ -1332,7 +1332,7 @@ pub(crate) const fn heap_kind_descriptor(type_id: u32) -> Option<&'static HeapKi
 
 #[inline(always)]
 pub(crate) const fn is_valid_heap_type_id(type_id: u32) -> bool {
-    heap_kind_descriptor(type_id).is_some()
+    molt_codegen_abi::is_valid_heap_type_id(type_id)
 }
 
 #[inline(always)]

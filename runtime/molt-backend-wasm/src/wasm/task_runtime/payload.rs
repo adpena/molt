@@ -48,6 +48,7 @@ pub(in crate::wasm) fn emit_store_task_payload_local(
     base_local: u32,
     offset: i32,
     value_local: u32,
+    refcount: Option<crate::wasm::refcount::WasmRefcountScratch>,
 ) {
     func.instruction(&Instruction::LocalGet(base_local));
     func.instruction(&Instruction::I32Const(offset));
@@ -58,10 +59,15 @@ pub(in crate::wasm) fn emit_store_task_payload_local(
         offset: 0,
         memory_index: 0,
     }));
+    let Some(refcount) = refcount else {
+        return;
+    };
     func.instruction(&Instruction::LocalGet(value_local));
-    emit_call(
+    crate::wasm::refcount::emit_refcount(
         func,
         reloc_enabled,
-        import_ids[WasmRuntimeImport::IncRefObj],
+        import_ids,
+        refcount,
+        molt_codegen_abi::inline_refcount::RefcountOperation::Retain,
     );
 }

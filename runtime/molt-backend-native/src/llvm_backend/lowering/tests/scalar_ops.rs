@@ -33,12 +33,12 @@ fn none_annotation_cannot_replace_a_borrowed_boxed_word() {
     backend.module.verify().unwrap();
     let ir = function.print_to_string().to_string();
     assert!(
-        ir.contains("call void @molt_inc_ref_obj(i64 %0)"),
-        "must retain the actual word: {ir}"
+        ir.contains("@__molt_inline_retain(i64 %0,"),
+        "annotation must retain the actual word: {ir}"
     );
     assert!(
         ir.contains("ret i64 %0"),
-        "must preserve the actual word: {ir}"
+        "annotation must preserve the actual word: {ir}"
     );
 }
 
@@ -91,8 +91,8 @@ fn annotation_only_unbox_preserves_a_boxed_owner_and_its_refcounts() {
         backend.module.verify().unwrap();
         let ir = llvm_fn.print_to_string().to_string();
         assert!(ir.contains("ret i64 %0"), "object bits must survive: {ir}");
-        assert!(ir.contains("call void @molt_inc_ref_obj(i64 %0)"), "{ir}");
-        assert!(ir.contains("call void @molt_dec_ref_obj(i64 %0)"), "{ir}");
+        assert!(ir.contains("@__molt_inline_retain(i64 %0,"), "{ir}");
+        assert!(ir.contains("@__molt_inline_release(i64 %0,"), "{ir}");
         assert!(!ir.contains("bitcast i64"), "{ir}");
         assert!(!ir.contains("trunc i64"), "{ir}");
         assert!(!ir.contains("@molt_int_from_i64"), "{ir}");
@@ -153,7 +153,11 @@ fn refcount_uses_lowered_carriers_without_boxing() {
         } else {
             0
         };
-        assert_eq!(ir.matches("call ").count(), expected, "{ty:?}: {ir}");
+        assert_eq!(
+            ir.matches("call void @__molt_inline_").count(),
+            expected,
+            "{ty:?}: {ir}"
+        );
         assert!(
             !ir.contains("@molt_int_from_i64"),
             "RC must never allocate: {ir}"
@@ -205,7 +209,11 @@ fn box_and_reference_unbox_each_mint_their_own_heap_owner() {
         .unwrap();
     backend.module.verify().unwrap();
     let ir = llvm_fn.print_to_string().to_string();
-    assert_eq!(ir.matches("call void @molt_inc_ref_obj").count(), 2, "{ir}");
+    assert_eq!(
+        ir.matches("call void @__molt_inline_retain").count(),
+        2,
+        "{ir}"
+    );
 }
 
 #[test]
@@ -265,11 +273,11 @@ fn discarded_representation_results_preserve_only_boxing_allocation_effects() {
             "{ir}"
         );
         assert_eq!(
-            ir.matches("call void @molt_dec_ref_obj").count(),
+            ir.matches("call void @__molt_inline_release").count(),
             usize::from(allocates),
             "{ir}"
         );
-        assert!(!ir.contains("call void @molt_inc_ref_obj"), "{ir}");
+        assert!(!ir.contains("call void @__molt_inline_retain"), "{ir}");
         assert!(!ir.contains("call i64 @molt_int_as_i64"), "{ir}");
     }
 }
@@ -410,14 +418,17 @@ fn heap_literals_materialize_an_owned_result_after_an_equal_result_is_dropped() 
         assert!(lowering.diagnostics.borrow().is_empty());
         backend.module.verify().expect("literal module verifies");
         let ir = llvm_fn.print_to_string().to_string();
-        let calls: Vec<_> = ir.lines().filter(|line| line.contains("call ")).collect();
+        let calls: Vec<_> = ir
+            .lines()
+            .filter(|line| line.contains("call ") && !line.contains("@molt_refcount_admission("))
+            .collect();
         assert_eq!(
             calls.len(),
             3,
             "one owned call per result and one drop: {ir}"
         );
         assert!(calls[0].contains(&format!("@{runtime_name}(")), "{ir}");
-        assert!(calls[1].contains("@molt_dec_ref_obj("), "{ir}");
+        assert!(calls[1].contains("@__molt_inline_release("), "{ir}");
         assert!(calls[2].contains(&format!("@{runtime_name}(")), "{ir}");
         let materializer = backend.module.get_function(runtime_name).unwrap();
         let ptr_ty = ctx.ptr_type(inkwell::AddressSpace::default());
@@ -475,7 +486,7 @@ fn repeated_attribute_name_literals_use_owned_string_materialization() {
         .expect("name literal module verifies");
     let ir = llvm_fn.print_to_string().to_string();
     assert_eq!(ir.matches("@molt_string_from_bytes(").count(), 2, "{ir}");
-    assert_eq!(ir.matches("@molt_dec_ref_obj(").count(), 2, "{ir}");
+    assert_eq!(ir.matches("@__molt_inline_release(").count(), 2, "{ir}");
     assert_eq!(ir.matches("icmp eq i32").count(), 2, "{ir}");
     assert!(!ir.contains("@molt_bytes_from_bytes("), "{ir}");
 }
@@ -590,16 +601,17 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
             "{ir}"
         );
         assert!(!source.contains(&format!("@{runtime}(")), "{ir}");
-        assert!(!source.contains("@molt_dec_ref_obj("), "{ir}");
+        assert!(!source.contains("@__molt_inline_release("), "{ir}");
         assert_eq!(success.matches(&format!("@{runtime}(")).count(), 1, "{ir}");
         assert_eq!(
-            ir.matches("@molt_dec_ref_obj(i64 %str_bits)").count(),
+            ir.matches("@__molt_inline_release(i64 %str_bits, i64 %rc_admission)")
+                .count(),
             1,
             "{ir}"
         );
         assert!(
             success.find(&format!("@{runtime}(")).unwrap()
-                < success.find("@molt_dec_ref_obj(").unwrap(),
+                < success.find("@__molt_inline_release(").unwrap(),
             "{ir}"
         );
         assert!(!success.contains("ret "), "{ir}");
@@ -635,10 +647,10 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
             );
             assert!(destination.contains("ret i64"), "{ir}");
             assert!(!destination.contains(&format!("@{runtime}(")), "{ir}");
-            assert!(!destination.contains("@molt_dec_ref_obj("), "{ir}");
+            assert!(!destination.contains("@__molt_inline_release("), "{ir}");
         }
         assert!(
-            !merge.contains("@molt_dec_ref_obj(") && !merge.contains("ptr_unbox"),
+            !merge.contains("@__molt_inline_release(") && !merge.contains("ptr_unbox"),
             "{ir}"
         );
         if opcode == OpCode::CallBuiltin {
@@ -813,7 +825,7 @@ fn binary_runtime_fallbacks_share_one_box_for_a_repeated_raw_operand() {
     backend.module.verify().expect("boxed binary fallback");
     let ir = llvm_fn.print_to_string().to_string();
     let call = "call i64 @molt_add(i64 %boxed_int, i64 %boxed_int)";
-    let release = "call void @molt_dec_ref_obj(i64 %binary_owner_bits)";
+    let release = "call void @__molt_inline_release(i64 %binary_owner_bits, i64 %rc_admission)";
     assert!(ir.contains(call), "both positions carry one box: {ir}");
     assert_eq!(
         ir.matches("call i64 @molt_int_from_i64(").count(),
@@ -887,17 +899,17 @@ fn boolean_selection_owns_exactly_the_selected_operand() {
     );
     let object_edge = block_text("bool_or_false");
     assert!(
-        object_edge.contains("call void @molt_inc_ref_obj(i64 %0)")
+        object_edge.contains("call void @__molt_inline_retain(i64 %0, i64 %rc_admission)")
             && !object_edge.contains("@molt_int_from_i64("),
         "the selected object is retained and the unselected integer is not boxed: {ir}"
     );
     assert_eq!(
-        ir.matches("call void @molt_inc_ref_obj(").count(),
+        ir.matches("call void @__molt_inline_retain(").count(),
         1,
         "{ir}"
     );
     assert!(
-        !ir.contains("@molt_dec_ref_obj("),
+        !ir.contains("@__molt_inline_release("),
         "a minted box is the selected result's owner: {ir}"
     );
     assert!(ir.contains("%bool_or = phi i64"), "{ir}");
@@ -938,7 +950,7 @@ fn not_in_releases_the_owned_membership_result() {
         .find("call i64 @molt_is_truthy(i64 %molt_contains)")
         .unwrap_or_else(|| panic!("{ir}"));
     let release = ir
-        .find("call void @molt_dec_ref_obj(i64 %molt_contains)")
+        .find("call void @__molt_inline_release(i64 %molt_contains, i64 %rc_admission)")
         .unwrap_or_else(|| panic!("only its truthiness escapes: {ir}"));
     assert!(contains < truthy && truthy < release, "{ir}");
 }
@@ -1308,4 +1320,52 @@ fn lower_codegen_partition_emits_real_llvm_noinline_attribute() {
             partitioned
         );
     }
+}
+
+#[test]
+fn proven_none_boxing_aliases_and_refcounts_emit_no_transition() {
+    let ctx = Context::create();
+    let mut backend = make_backend(&ctx);
+    let mut func = TirFunction::new(
+        "proven_immortal_rc".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let none = func.fresh_value();
+    let boxed = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(const_none_def(none));
+    entry.ops.push(TirOp {
+        origin: None,
+        dialect: Dialect::Molt,
+        opcode: OpCode::BoxVal,
+        operands: vec![none],
+        results: vec![boxed],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    for opcode in [OpCode::IncRef, OpCode::DecRef] {
+        entry.ops.push(TirOp {
+            origin: None,
+            dialect: Dialect::Molt,
+            opcode,
+            operands: vec![boxed],
+            results: vec![],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+    }
+    entry.terminator = Terminator::Return { values: vec![] };
+    backend.function_repr_facts.insert(
+        func.name.clone(),
+        crate::representation_plan::ProducerCarrierPlan::build(&func),
+    );
+    let function = lower_tir_to_llvm(&func, &backend);
+    backend.module.verify().unwrap();
+    let ir = function.print_to_string().to_string();
+    assert!(
+        !ir.contains("__molt_inline_") && !ir.contains("molt_refcount_admission"),
+        "producer-proven None has no heap operation: {ir}"
+    );
 }

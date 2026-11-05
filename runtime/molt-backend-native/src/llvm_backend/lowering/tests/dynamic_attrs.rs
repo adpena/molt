@@ -169,7 +169,7 @@ fn typed_field_inline_access_checks_receiver_before_dereferencing() {
                 "runtime resolves backing and returns one owner: {ir}"
             );
             assert!(
-                !ir.contains("call void @molt_inc_ref_obj"),
+                !ir.contains("call void @__molt_inline_retain"),
                 "admitted immediate values need no retain: {ir}"
             );
             let payload = llvm_fn
@@ -286,7 +286,7 @@ fn lower_generic_get_attr_trusts_runtime_owned_result() {
     let ir = llvm_fn.print_to_string().to_string();
     assert!(ir.contains("molt_get_attr_object_ic"), "{ir}");
     assert!(!ir.contains("get_attr_object_ic_inc_ref"), "{ir}");
-    assert!(!ir.contains("call void @molt_inc_ref_obj"), "{ir}");
+    assert!(!ir.contains("call void @__molt_inline_retain"), "{ir}");
 }
 
 #[test]
@@ -601,7 +601,7 @@ fn call_bind_consumes_its_builder_when_the_callable_box_fails() {
         "the builder is released only where the consuming call is skipped: {ir}"
     );
     assert!(
-        !ir.contains("call void @molt_dec_ref_obj(i64 %0)"),
+        !ir.contains("call void @__molt_inline_release(i64 %0, i64 %rc_admission)"),
         "builder retirement must use the shared exception-preserving release: {ir}"
     );
     let call = ir

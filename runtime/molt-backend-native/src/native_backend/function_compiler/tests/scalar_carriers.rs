@@ -54,7 +54,7 @@ fn native_representation_results_keep_discarded_box_effects_and_independent_owne
                 sig.params.push(AbiParam::new(types::I64));
                 let mut func = Function::with_name_signature(UserFuncName::user(0, 0), sig);
                 let mut context = FunctionBuilderContext::new();
-                let mut refs = BTreeMap::new();
+                let mut refs = NativeFunctionImports::default();
                 let (retain, release);
                 {
                     let mut builder = FunctionBuilder::new(&mut func, &mut context);
@@ -87,6 +87,11 @@ fn native_representation_results_keep_discarded_box_effects_and_independent_owne
                         &[types::I64],
                         &[],
                     );
+                    let retain =
+                        detached_refcount_site(&mut builder, retain, RefcountOperation::Retain);
+                    let release =
+                        detached_refcount_site(&mut builder, release, RefcountOperation::Release);
+                    refs.set_refcount_admission(retain.admission);
                     let aliases = BTreeMap::new();
                     let mut cleanup = NativeCleanupRoots::new(
                         &mut builder,
@@ -212,7 +217,7 @@ fn captured_scalar_transport_preserves_raw_outputs_and_shares_one_box() {
             }
             let mut func = Function::with_name_signature(UserFuncName::user(0, 0), sig);
             let mut context = FunctionBuilderContext::new();
-            let mut refs = BTreeMap::new();
+            let mut refs = NativeFunctionImports::default();
             {
                 let mut builder = FunctionBuilder::new(&mut func, &mut context);
                 let entry = builder.create_block();
@@ -401,7 +406,7 @@ fn lower_unary_numeric_carrier_with_plan(
             builder.ins().iconst(types::I64, source_bits as i64)
         };
         builder.def_var(vars[source], raw);
-        let mut refs = BTreeMap::new();
+        let mut refs = NativeFunctionImports::default();
         let inc_ref = import_func_ref(
             &mut backend.module,
             &mut backend.import_ids,
@@ -411,6 +416,8 @@ fn lower_unary_numeric_carrier_with_plan(
             &[types::I64],
             &[],
         );
+        let inc_ref = detached_refcount_site(&mut builder, inc_ref, RefcountOperation::Retain);
+        refs.set_refcount_admission(inc_ref.admission);
         let op = OpIR {
             args: Some(vec![source.to_string()]),
             out: Some(out.to_string()),
@@ -900,7 +907,7 @@ fn native_int_boxing_constants_materialized_at_site() {
         int_tag_needle = format!("iconst.i64 {:#x}", nbc.qnan_tag_int);
 
         let raw_zero = builder.ins().iconst(types::I64, 0);
-        let mut import_refs = BTreeMap::new();
+        let mut import_refs = detached_imports(&mut builder);
         let mut sealed_blocks = BTreeSet::from([entry]);
         let boxed = box_raw_i64_value_overflow_safe(
             &mut backend.module,
@@ -950,7 +957,7 @@ fn boxed_transport_defines_scalar_primary_homes() {
         vars.insert("int_home".to_string(), int_var);
 
         let representation_plan = scalar_transport_plan_for_boxed_transport_homes();
-        let mut import_refs = BTreeMap::new();
+        let mut import_refs = detached_imports(&mut builder);
         let nbc = crate::NanBoxConsts::new();
 
         let boxed_float = builder.ins().iconst(types::I64, 1.25f64.to_bits() as i64);
@@ -1021,7 +1028,7 @@ fn numeric_result_binding_converts_boxed_call_result_for_float_primary_home() {
         vars.insert("float_home".to_string(), float_var);
 
         let representation_plan = scalar_transport_plan_for_float_home();
-        let mut import_refs = BTreeMap::new();
+        let mut import_refs = detached_imports(&mut builder);
         let nbc = crate::NanBoxConsts::new();
 
         let boxed_float = builder.ins().iconst(types::I64, 1.25f64.to_bits() as i64);

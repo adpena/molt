@@ -75,7 +75,7 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
                 vars.insert(name, builder.declare_var(types::I64));
             }
         }
-        let mut refs = BTreeMap::new();
+        let mut refs = NativeFunctionImports::default();
         retain = import_func_ref(
             &mut backend.module,
             &mut backend.import_ids,
@@ -94,6 +94,10 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
             &[types::I64],
             &[],
         );
+        let retain_site = detached_refcount_site(&mut builder, retain, RefcountOperation::Retain);
+        let release_site =
+            detached_refcount_site(&mut builder, release, RefcountOperation::Release);
+        refs.set_refcount_admission(retain_site.admission);
         let pointer_type = crate::test_support::host_frontend_config().pointer_type();
         let (hoists, materialization) =
             prepare_heap_literals(&input, &mut builder, pointer_type, &plan);
@@ -142,7 +146,7 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
                 &vars,
                 &plan,
                 &hoists,
-                retain,
+                retain_site,
             );
             // Explicit IR drops can release every earlier output, even when
             // another operation later produces the identical immutable value.
@@ -155,7 +159,7 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
         jump_block(&mut builder, exit, &[result]);
         switch_to_block_materialized(&mut builder, exit);
         seal_block_once(&mut builder, &mut sealed_blocks, exit);
-        hoists.release_anchors(&mut builder, pointer_type, release);
+        hoists.release_anchors(&mut builder, pointer_type, release_site);
         let result = builder.block_params(exit)[0];
         builder.ins().return_(&[result]);
         builder.finalize(crate::test_support::host_frontend_config());

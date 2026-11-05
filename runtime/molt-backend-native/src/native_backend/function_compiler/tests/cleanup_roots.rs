@@ -69,33 +69,39 @@ fn cleanup_tokens_release_sibling_paths_without_cross_branch_dedup() {
                 &mut backend.module,
                 &mut backend.import_ids,
                 &mut builder,
-                &mut BTreeMap::new(),
+                &mut NativeFunctionImports::default(),
                 "molt_dec_ref_obj",
                 &[types::I64],
                 &[],
             );
-            roots.acquire(&mut builder, release, "owner", params[1]);
+            let release_site =
+                detached_refcount_site(&mut builder, release, RefcountOperation::Release);
+            roots.acquire(&mut builder, release_site, "owner", params[1]);
             if release_in_predecessor {
-                roots.release(&mut builder, release, "alias");
+                roots.release(&mut builder, release_site, "alias");
             }
             builder.ins().brif(params[0], left, &[], right, &[]);
             for block in [left, right] {
                 builder.switch_to_block(block);
                 builder.seal_block(block);
-                roots.release(&mut builder, release, "alias");
-                roots.release(&mut builder, release, "owner");
+                roots.release(&mut builder, release_site, "alias");
+                roots.release(&mut builder, release_site, "owner");
                 builder.ins().jump(merge, &[]);
             }
             builder.switch_to_block(merge);
             builder.seal_block(merge);
-            roots.release_all(&mut builder, release);
+            roots.release_all(&mut builder, release_site);
             builder.ins().return_(&[]);
             builder.finalize(crate::test_support::host_frontend_config());
         }
-        let calls = |block| {
-            function.layout.block_insts(block).filter(|&inst| matches!(
-            function.dfg.insts[inst], InstructionData::Call { func_ref, .. } if func_ref == release
-        )).count()
+        let cfg = cranelift_codegen::flowgraph::ControlFlowGraph::with_function(&function);
+        let dominators =
+            cranelift_codegen::dominator_tree::DominatorTree::with_function(&function, &cfg);
+        let calls = |branch| {
+            function.layout.blocks().flat_map(|block| function.layout.block_insts(block))
+                .filter(|&inst| matches!(function.dfg.insts[inst], InstructionData::Call { func_ref, .. } if func_ref == release)
+                    && dominators.dominates(branch, inst, &function.layout))
+                .count()
         };
         assert_eq!(
             calls(left),
@@ -146,17 +152,19 @@ fn cleanup_tokens_rearm_and_transfer_on_the_executing_path() {
             &mut backend.module,
             &mut backend.import_ids,
             &mut builder,
-            &mut BTreeMap::new(),
+            &mut NativeFunctionImports::default(),
             "molt_dec_ref_obj",
             &[types::I64],
             &[],
         );
-        roots.acquire(&mut builder, release, "owner", values[0]);
-        roots.acquire(&mut builder, release, "owner", values[1]); // displaced owner
+        let release_site =
+            detached_refcount_site(&mut builder, release, RefcountOperation::Release);
+        roots.acquire(&mut builder, release_site, "owner", values[0]);
+        roots.acquire(&mut builder, release_site, "owner", values[1]); // displaced owner
         roots.transfer(&mut builder, "alias");
-        roots.release_all(&mut builder, release); // transferred: no release
-        roots.acquire(&mut builder, release, "owner", values[0]);
-        roots.release_all(&mut builder, release); // reacquired: one release
+        roots.release_all(&mut builder, release_site); // transferred: no release
+        roots.acquire(&mut builder, release_site, "owner", values[0]);
+        roots.release_all(&mut builder, release_site); // reacquired: one release
         builder.ins().return_(&[]);
         builder.finalize(crate::test_support::host_frontend_config());
     }
@@ -183,6 +191,83 @@ fn tir_drop_insertion_declares_no_native_owner_tokens() {
     );
     assert!(!roots.contains("owner"));
     assert!(!roots.contains("alias"));
+}
+
+#[test]
+fn cleanup_of_proven_boxed_immediates_emits_no_reference_transitions() {
+    let input = FunctionIR {
+        ops: vec![
+            OpIR {
+                out: Some("literal".into()),
+                value: Some(19),
+                ..OpIR::new(OpKind::ConstInt)
+            },
+            OpIR {
+                args: Some(vec!["literal".into()]),
+                out: Some("owner".into()),
+                ..OpIR::new(OpKind::Box)
+            },
+            OpIR {
+                args: Some(vec!["owner".into()]),
+                out: Some("alias".into()),
+                ..OpIR::new(OpKind::Copy)
+            },
+            OpIR {
+                args: Some(vec!["owner".into()]),
+                ..OpIR::new(OpKind::IncRef)
+            },
+        ],
+        ..FunctionIR::default()
+    };
+    let plan = representation_plan_for_ops(&input.ops);
+    assert!(plan.boxed_refcount_is_noop("owner"));
+    assert!(plan.boxed_refcount_is_noop("alias"));
+    let analysis = preanalyze_for_test(&input);
+    let mut backend = SimpleBackend::new();
+    let mut function =
+        Function::with_name_signature(UserFuncName::user(0, 0), Signature::new(CallConv::SystemV));
+    let mut context = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut function, &mut context);
+        let mut roots = NativeCleanupRoots::new(
+            &mut builder,
+            &input,
+            &analysis.alias_roots,
+            &plan,
+            NativeRcAuthority::NativeValueTracking,
+        );
+        let entry = builder.create_block();
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+        roots.initialize(&mut builder);
+        let release = import_func_ref(
+            &mut backend.module,
+            &mut backend.import_ids,
+            &mut builder,
+            &mut NativeFunctionImports::default(),
+            "molt_dec_ref_obj",
+            &[types::I64],
+            &[],
+        );
+        let site = detached_refcount_site(&mut builder, release, RefcountOperation::Release);
+        let value = builder.ins().iconst(
+            types::I64,
+            (molt_codegen_abi::QNAN | molt_codegen_abi::TAG_INT | 19) as i64,
+        );
+        roots.acquire(&mut builder, site, "owner", value);
+        roots.retain_explicit(&mut builder, "owner");
+        roots.release_all(&mut builder, site);
+        builder.ins().return_(&[]);
+        builder.finalize(crate::test_support::host_frontend_config());
+    }
+    let calls = function
+        .layout
+        .blocks()
+        .flat_map(|block| function.layout.block_insts(block))
+        .filter(|&inst| function.dfg.insts[inst].opcode().is_call())
+        .count();
+    assert_eq!(calls, 0, "{}", function.display());
+    verify_function(&function, &settings::Flags::new(settings::builder())).unwrap();
 }
 
 #[test]
@@ -217,19 +302,21 @@ fn cleanup_token_reassignment_is_carried_over_a_real_backedge() {
             &mut backend.module,
             &mut backend.import_ids,
             &mut builder,
-            &mut BTreeMap::new(),
+            &mut NativeFunctionImports::default(),
             "molt_dec_ref_obj",
             &[types::I64],
             &[],
         );
+        let release_site =
+            detached_refcount_site(&mut builder, release, RefcountOperation::Release);
         builder.ins().jump(header, &[]);
         builder.switch_to_block(header);
-        roots.acquire(&mut builder, release, "owner", inputs[1]);
+        roots.acquire(&mut builder, release_site, "owner", inputs[1]);
         builder.ins().brif(inputs[0], header, &[], exit, &[]);
         builder.seal_block(header);
         builder.switch_to_block(exit);
         builder.seal_block(exit);
-        roots.release_all(&mut builder, release);
+        roots.release_all(&mut builder, release_site);
         builder.ins().return_(&[]);
         builder.finalize(crate::test_support::host_frontend_config());
     }

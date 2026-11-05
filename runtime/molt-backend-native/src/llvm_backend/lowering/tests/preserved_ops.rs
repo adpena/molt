@@ -90,7 +90,7 @@ fn named_builtin_llvm_lowering_never_drops_the_first_argument() {
         );
         assert!(ir.contains("@molt_call_builtin("), "{ir}");
         assert_eq!(
-            ir.matches("@molt_dec_ref_obj(").count(),
+            ir.matches("@__molt_inline_release(").count(),
             usize::from(named),
             "only synthesized names are temporary owners; dynamic names remain borrowed: {ir}"
         );
@@ -124,9 +124,9 @@ fn lower_preserved_passthrough_class_routes_to_runtime() {
             Some("__class__"),
             "molt_get_attr_special",
         ),
-        (OpKind::Borrow, 1, true, None, "molt_inc_ref_obj"),
-        (OpKind::BindingAlias, 1, true, None, "molt_inc_ref_obj"),
-        (OpKind::Release, 1, true, None, "molt_dec_ref_obj"),
+        (OpKind::Borrow, 1, true, None, "__molt_inline_retain"),
+        (OpKind::BindingAlias, 1, true, None, "__molt_inline_retain"),
+        (OpKind::Release, 1, true, None, "__molt_inline_release"),
         (OpKind::GuardTag, 2, false, None, "molt_guard_type"),
         (OpKind::GuardTag, 2, true, None, "molt_guard_type"),
         (OpKind::GuardType, 2, false, None, "molt_guard_type"),
@@ -341,12 +341,12 @@ fn callable_constructors_release_only_discarded_owned_results() {
             };
             assert!(ir.contains(&format!("call i64 @{symbol}(")), "{ir}");
             assert_eq!(
-                ir.matches("call void @molt_dec_ref_obj(").count(),
+                ir.matches("call void @__molt_inline_release(").count(),
                 usize::from(!bound),
                 "{kind}, bound={bound}: {ir}"
             );
             assert!(
-                !ir.contains("call void @molt_inc_ref_obj("),
+                !ir.contains("call void @__molt_inline_retain("),
                 "owned constructor result is transferred, not retained: {ir}"
             );
         }
@@ -430,7 +430,7 @@ fn descriptor_constructors_share_boxed_admission_and_argument_materialization() 
             .unwrap_or_else(|| panic!("missing descriptor call: {ir}"));
         assert_eq!(call.matches("i64 %boxed_int").count(), arity, "{ir}");
         assert_eq!(
-            ir.matches("call void @molt_dec_ref_obj(i64 %boxed_call_owner_bits")
+            ir.matches("call void @__molt_inline_release(i64 %boxed_call_owner_bits")
                 .count(),
             1,
             "repeated descriptor operands share one materialized owner: {ir}"
@@ -500,14 +500,16 @@ fn dedicated_runtime_results_preserve_borrowed_and_owned_custody() {
                 );
                 if !keep_result {
                     assert!(
-                        ir.contains("call void @molt_dec_ref_obj(i64 %class_initialized)"),
+                        ir.contains("call void @__molt_inline_release(i64 %class_initialized, i64 %rc_admission)"),
                         "{ir}"
                     );
                 }
             }
             if kind == OpKind::AsyncgenNew && !keep_result {
                 assert!(
-                    ir.contains("call void @molt_dec_ref_obj(i64 %asyncgen_new)"),
+                    ir.contains(
+                        "call void @__molt_inline_release(i64 %asyncgen_new, i64 %rc_admission)"
+                    ),
                     "{ir}"
                 );
             }
@@ -521,18 +523,18 @@ fn dedicated_runtime_results_preserve_borrowed_and_owned_custody() {
             }
             let borrowed = kind == OpKind::FunctionClosureBits;
             assert_eq!(
-                ir.matches("call void @molt_inc_ref_obj(").count(),
+                ir.matches("call void @__molt_inline_retain(").count(),
                 usize::from(borrowed && keep_result),
                 "only binding a borrowed closure acquires an owner: {ir}"
             );
             assert_eq!(
-                ir.matches("call void @molt_dec_ref_obj(").count(),
+                ir.matches("call void @__molt_inline_release(").count(),
                 usize::from(!borrowed && !keep_result),
                 "only discarding an owned result retires an owner: {ir}"
             );
             if borrowed && keep_result {
                 assert!(
-                    ir.contains("call void @molt_inc_ref_obj(i64 %function_closure_bits)"),
+                    ir.contains("call void @__molt_inline_retain(i64 %function_closure_bits, i64 %rc_admission)"),
                     "{ir}"
                 );
             }
@@ -606,7 +608,8 @@ fn retired_exact_runtime_kinds_take_the_admitted_boxed_route() {
                 1,
                 "{kind}: {ir}"
             );
-            let release = "call void @molt_dec_ref_obj(i64 %boxed_call_owner_bits)";
+            let release =
+                "call void @__molt_inline_release(i64 %boxed_call_owner_bits, i64 %rc_admission)";
             assert_eq!(ir.matches(release).count(), 1, "{kind}: {ir}");
             assert!(
                 ir.find(call).unwrap() < ir.find(release).unwrap(),
@@ -725,7 +728,8 @@ fn dedicated_object_abi_arms_box_raw_operands_and_keep_raw_words() {
             .verify()
             .unwrap_or_else(|error| panic!("{kind}: {error}"));
         let call = format!("call i64 @{symbol}{arguments}");
-        let release = format!("call void @molt_dec_ref_obj(i64 %{kind}_owner_bits)");
+        let release =
+            format!("call void @__molt_inline_release(i64 %{kind}_owner_bits, i64 %rc_admission)");
         assert!(
             ir.contains(&call),
             "{kind}: object operands are boxed and raw ABI words stay raw: {ir}"
@@ -774,11 +778,12 @@ fn dedicated_object_abi_arms_box_raw_operands_and_keep_raw_words() {
         .to_string();
     backend.module.verify().expect("module store ownership");
     let call = "call i64 @molt_module_set_attr(i64 %boxed_int, i64 %boxed_int, i64 %boxed_int)";
-    let release = "call void @molt_dec_ref_obj(i64 %module_call_owner_bits)";
+    let release =
+        "call void @__molt_inline_release(i64 %module_call_owner_bits, i64 %rc_admission)";
     assert!(ir.contains(call), "{ir}");
     assert!(ir.find(call).unwrap() < ir.find(release).unwrap(), "{ir}");
     assert!(
-        ir.contains("call void @molt_dec_ref_obj(i64 %module_call_result)"),
+        ir.contains("call void @__molt_inline_release(i64 %module_call_result, i64 %rc_admission)"),
         "a discarded owned module result is released: {ir}"
     );
 }
@@ -836,12 +841,12 @@ fn direct_and_preserved_boxed_calls_share_result_custody() {
                 let call_abi = if shape == "void" { "void" } else { "i64" };
                 assert!(ir.contains(&format!("call {call_abi} @{symbol}(")), "{ir}");
                 assert_eq!(
-                    ir.matches("call void @molt_inc_ref_obj(").count(),
+                    ir.matches("call void @__molt_inline_retain(").count(),
                     usize::from(shape == "borrowed" && with_result),
                     "only a bound borrowed result acquires ownership: {ir}"
                 );
                 assert_eq!(
-                    ir.matches("call void @molt_dec_ref_obj(").count(),
+                    ir.matches("call void @__molt_inline_release(").count(),
                     usize::from(shape == "owned" && !with_result),
                     "only an unbound owned result is disposed: {ir}"
                 );
@@ -881,7 +886,7 @@ fn preserved_vector_reductions_reject_wrong_arity_before_materialization() {
                 "{kind}/{arity}: {ir}"
             );
             assert!(
-                !ir.contains("call void @molt_dec_ref_obj("),
+                !ir.contains("call void @__molt_inline_release("),
                 "{kind}/{arity}: {ir}"
             );
         }
@@ -912,16 +917,16 @@ fn direct_and_preserved_borrowed_calls_box_raw_arguments_before_cleanup() {
             "the same raw value in three positions must keep one object identity: {ir}"
         );
         assert_eq!(
-            ir.matches("call void @molt_dec_ref_obj(i64 %boxed_call_owner_bits")
+            ir.matches("call void @__molt_inline_release(i64 %boxed_call_owner_bits")
                 .count(),
             1,
             "the single materialized owner must be retired exactly once: {ir}"
         );
         let retain = ir
-            .find("call void @molt_inc_ref_obj(i64 %molt_dict_set)")
+            .find("call void @__molt_inline_retain(i64 %molt_dict_set, i64 %rc_admission)")
             .unwrap_or_else(|| panic!("bound borrowed result was not retained: {ir}"));
         let cleanup = ir
-            .find("call void @molt_dec_ref_obj(i64 %boxed_call_owner_bits")
+            .find("call void @__molt_inline_release(i64 %boxed_call_owner_bits")
             .unwrap_or_else(|| panic!("temporary argument owner was not retired: {ir}"));
         assert!(
             retain < cleanup,
@@ -961,8 +966,8 @@ fn direct_and_preserved_boxed_calls_require_runtime_symbol_admission() {
                 assert!(backend.module.get_function(symbol).is_none());
                 let ir = backend.module.print_to_string().to_string();
                 assert!(!ir.contains("call i64 @molt_int_from_i64("), "{ir}");
-                assert!(!ir.contains("call void @molt_inc_ref_obj("), "{ir}");
-                assert!(!ir.contains("call void @molt_dec_ref_obj("), "{ir}");
+                assert!(!ir.contains("call void @__molt_inline_retain("), "{ir}");
+                assert!(!ir.contains("call void @__molt_inline_release("), "{ir}");
             }
         }
     }
@@ -1024,7 +1029,7 @@ fn stateful_locals_registration_preserves_mixed_abi() {
         let poll_fn = backend.module.get_function("poll_fn").unwrap();
         assert_eq!(poll_fn.count_params(), 1, "{ir}");
         assert!(!ir.contains("@molt_int_from_i64("), "{ir}");
-        assert!(!ir.contains("call void @molt_dec_ref_obj("), "{ir}");
+        assert!(!ir.contains("call void @__molt_inline_release("), "{ir}");
     }
 }
 
@@ -1166,7 +1171,7 @@ fn lower_special_get_attr_trusts_runtime_owned_result() {
     .expect("special getattr must lower");
     assert!(ir.contains("molt_get_attr_special"), "{ir}");
     assert!(!ir.contains("get_attr_special_inc_ref"), "{ir}");
-    assert!(!ir.contains("call void @molt_inc_ref_obj"), "{ir}");
+    assert!(!ir.contains("call void @__molt_inline_retain"), "{ir}");
 }
 
 /// Repr-identity preserved ops (`cast`, `widen`, `store_var`, `copy_var`, and
@@ -1490,7 +1495,7 @@ fn custom_container_calls_retire_discarded_owned_returns() {
     let ir = llvm_fn.print_to_string().to_string();
     for result in ["molt_len", "molt_iter_checked", "unpack_sequence"] {
         assert!(
-            ir.contains(&format!("call void @molt_dec_ref_obj(i64 %{result}")),
+            ir.contains(&format!("call void @__molt_inline_release(i64 %{result}")),
             "custom result {result} must be retired through its provider-backed ownership contract: {ir}"
         );
     }
@@ -1536,7 +1541,8 @@ fn custom_container_calls_box_and_retire_raw_inputs() {
             .unwrap_or_else(|error| panic!("{kind}: {error}"));
         let ir = llvm_fn.print_to_string().to_string();
         let call = format!("call i64 @{symbol}(i64 %boxed_int)");
-        let input_release = "call void @molt_dec_ref_obj(i64 %boxed_call_owner_bits)";
+        let input_release =
+            "call void @__molt_inline_release(i64 %boxed_call_owner_bits, i64 %rc_admission)";
         assert!(
             ir.contains(&call),
             "raw preserved {kind} input must be boxed: {ir}"
@@ -1550,7 +1556,9 @@ fn custom_container_calls_box_and_retire_raw_inputs() {
             "{ir}"
         );
         assert!(
-            ir.contains("call void @molt_dec_ref_obj(i64 %boxed_call_result)"),
+            ir.contains(
+                "call void @__molt_inline_release(i64 %boxed_call_result, i64 %rc_admission)"
+            ),
             "discarded preserved {kind} result must be retired: {ir}"
         );
     }
@@ -1587,7 +1595,8 @@ fn custom_container_calls_box_and_retire_raw_inputs() {
         .expect("raw preserved unpack input ownership");
     let ir = llvm_fn.print_to_string().to_string();
     let call = "call i64 @molt_unpack_sequence(i64 %boxed_int, i64 1, i64 %unpack_out_ptr)";
-    let input_release = "call void @molt_dec_ref_obj(i64 %unpack_owner_bits)";
+    let input_release =
+        "call void @__molt_inline_release(i64 %unpack_owner_bits, i64 %rc_admission)";
     assert!(
         ir.contains(call),
         "unpack must keep its boxed/raw/raw mixed ABI: {ir}"
@@ -1601,7 +1610,7 @@ fn custom_container_calls_box_and_retire_raw_inputs() {
         "{ir}"
     );
     assert!(
-        ir.contains("call void @molt_dec_ref_obj(i64 %unpack_sequence)"),
+        ir.contains("call void @__molt_inline_release(i64 %unpack_sequence, i64 %rc_admission)"),
         "unpack status owner must remain independently retired: {ir}"
     );
     assert!(
@@ -1670,7 +1679,7 @@ fn lower_del_boundary_calls_dec_ref_runtime() {
 
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("molt_dec_ref_obj"), "{ir}");
+    assert!(ir.contains("__molt_inline_release"), "{ir}");
 }
 
 #[test]
@@ -2087,7 +2096,7 @@ fn shared_boxed_text_calls_use_owned_abi_and_exact_arity() {
                 "{ir}"
             );
             assert_eq!(
-                ir.matches("call void @molt_dec_ref_obj(").count(),
+                ir.matches("call void @__molt_inline_release(").count(),
                 usize::from(!bound),
                 "{ir}"
             );

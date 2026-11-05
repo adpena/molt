@@ -61,7 +61,7 @@ pub(in crate::native_backend::function_compiler) fn import_func_ref(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder,
-    local_refs: &mut BTreeMap<&'static str, FuncRef>,
+    local_refs: &mut NativeFunctionImports,
     name: &'static str,
     params: &[types::Type],
     returns: &[types::Type],
@@ -80,7 +80,7 @@ pub(in crate::native_backend::function_compiler) fn import_runtime_func_ref(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder,
-    local_refs: &mut BTreeMap<&'static str, FuncRef>,
+    local_refs: &mut NativeFunctionImports,
     signature: crate::runtime_import_abi::RuntimeImportSignature,
 ) -> FuncRef {
     let func_id = SimpleBackend::import_runtime_func_id_split(module, import_ids, signature);
@@ -126,7 +126,7 @@ pub(in crate::native_backend::function_compiler) fn emit_guarded_object_field_ge
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     obj_bits: Value,
     offset_bytes: i64,

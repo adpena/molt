@@ -107,6 +107,7 @@ impl WasmConstAnchorRegion {
         func: &mut Function,
         imports: &TrackedImportIds,
         reloc_enabled: bool,
+        refcount: crate::wasm::refcount::WasmRefcountScratch,
     ) {
         func.instruction(&Instruction::LocalGet(self.base));
         func.instruction(&Instruction::I64Eqz);
@@ -122,7 +123,13 @@ impl WasmConstAnchorRegion {
         self.emit_cursor_address(func);
         emit_boxed_none(func);
         func.instruction(&Instruction::I64Store(word_memarg()));
-        emit_call(func, reloc_enabled, imports[WasmRuntimeImport::DecRefObj]);
+        crate::wasm::refcount::emit_refcount(
+            func,
+            reloc_enabled,
+            imports,
+            refcount,
+            molt_codegen_abi::inline_refcount::RefcountOperation::Release,
+        );
         self.emit_reverse_loop_end(func);
         // ScratchFree has no Python callback. Transfer allocation custody
         // before freeing; a later TraceExit unwind must not free it again.

@@ -8,6 +8,7 @@ use crate::runtime_import_abi::{
 };
 use inkwell::builder::Builder;
 use inkwell::values::{IntValue, PointerValue};
+use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_tir::trampolines::{TaskCompletion, TaskConstructorLayout};
 
 enum CompletionImports<'ctx> {
@@ -43,7 +44,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             },
             TaskCompletion::WrapAsyncGen => CompletionImports::Wrap {
                 wrap: self.ensure_runtime_import(MOLT_ASYNCGEN_NEW),
-                release: self.ensure_runtime_import(MOLT_DEC_REF_OBJ),
+                release: self.ensure_refcount_helper(RefcountOperation::Release),
             },
         };
         TaskConstructorImports {
@@ -61,6 +62,7 @@ pub(super) struct TaskConstruction<'ctx> {
     pub initialized: BasicBlock<'ctx>,
     pub continuation: BasicBlock<'ctx>,
     completion: CompletionImports<'ctx>,
+    refcount_admission: IntValue<'ctx>,
 }
 
 impl<'ctx> TaskConstruction<'ctx> {
@@ -72,6 +74,7 @@ impl<'ctx> TaskConstruction<'ctx> {
         imports: TaskConstructorImports<'ctx>,
         closure_size: i64,
         names: (&str, &str, &str),
+        refcount_admission: IntValue<'ctx>,
     ) -> Self {
         let i64_ty = backend.context.i64_type();
         let object = builder
@@ -124,6 +127,7 @@ impl<'ctx> TaskConstruction<'ctx> {
             initialized,
             continuation,
             completion: imports.completion,
+            refcount_admission,
         }
     }
 
@@ -166,7 +170,11 @@ impl<'ctx> TaskConstruction<'ctx> {
                     .unwrap_basic()
                     .into_int_value();
                 builder
-                    .build_call(release, &[self.object.into()], "")
+                    .build_call(
+                        release,
+                        &[self.object.into(), self.refcount_admission.into()],
+                        "",
+                    )
                     .unwrap();
                 wrapped
             }

@@ -109,7 +109,7 @@ fn record_value(
     match repr {
         LirRepr::I64 | LirRepr::F64 | LirRepr::Bool1 => stats.scalar_values += 1,
         LirRepr::Ref64 => stats.reference_values += 1,
-        LirRepr::DynBox => {
+        LirRepr::DynBox | LirRepr::Immortal64 => {
             stats.reference_values += 1;
             stats.boxed_values += 1;
         }

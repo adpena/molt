@@ -21,7 +21,11 @@ fn lir_repr_from_source(repr: &HashMap<ValueId, Repr>, id: ValueId, ty: &TirType
     let proven = repr.get(&id).unwrap_or_else(|| {
         panic!("repr_by_value missing ValueId {id:?} while lowering {ty:?} to LIR")
     });
-    LirRepr::for_type(&proven.carrier_type(ty))
+    if *proven == Repr::BoxedImmortal {
+        LirRepr::Immortal64
+    } else {
+        LirRepr::for_type(&proven.carrier_type(ty))
+    }
 }
 
 pub fn lower_function_to_lir(func: &TirFunction) -> LirFunction {
@@ -103,8 +107,13 @@ fn lower_prepared_function_to_lir(
 
     let label_id_map = refined.label_id_map.clone();
     let container_storage = crate::representation_plan::tir_container_storage_facts(&refined, repr);
+    let inline_i64_values = repr
+        .iter()
+        .filter_map(|(&id, &repr)| (repr == Repr::RawI64Safe).then_some(id))
+        .collect();
     LirFunction {
         container_storage,
+        inline_i64_values,
         name: refined.name,
         param_names,
         param_types: entry_param_types,
@@ -256,7 +265,7 @@ fn lower_op(
         }
     }
     if op.opcode == OpCode::BoxVal {
-        return lower_box_op(op, type_map);
+        return lower_box_op(op, type_map, repr);
     }
     if op.opcode == OpCode::UnboxVal {
         return lower_unbox_op(op, type_map, repr);
@@ -355,7 +364,11 @@ fn lower_object_new_bound_op(op: &TirOp, type_map: &HashMap<ValueId, TirType>) -
     }
 }
 
-fn lower_box_op(op: &TirOp, type_map: &HashMap<ValueId, TirType>) -> LirOp {
+fn lower_box_op(
+    op: &TirOp,
+    type_map: &HashMap<ValueId, TirType>,
+    repr: &HashMap<ValueId, Repr>,
+) -> LirOp {
     let operand_ty = op
         .operands
         .first()
@@ -373,7 +386,10 @@ fn lower_box_op(op: &TirOp, type_map: &HashMap<ValueId, TirType>) -> LirOp {
                     .get(&id)
                     .cloned()
                     .unwrap_or_else(|| TirType::Box(Box::new(operand_ty.clone()))),
-                repr: LirRepr::DynBox,
+                repr: match repr {
+                    map if map.get(&id) == Some(&Repr::BoxedImmortal) => LirRepr::Immortal64,
+                    _ => LirRepr::DynBox,
+                },
             })
             .collect(),
     }
@@ -615,7 +631,9 @@ fn materialize_value_for_type(
     if expected_repr == actual_repr {
         return value_id;
     }
-    if expected_repr == LirRepr::DynBox && actual_repr != LirRepr::DynBox {
+    if matches!(expected_repr, LirRepr::DynBox | LirRepr::Immortal64)
+        && !matches!(actual_repr, LirRepr::DynBox | LirRepr::Immortal64)
+    {
         let boxed_id = allocator.fresh();
         ops.push(LirOp {
             tir_op: TirOp {
@@ -630,7 +648,7 @@ fn materialize_value_for_type(
             result_values: vec![LirValue {
                 id: boxed_id,
                 ty: expected_ty,
-                repr: LirRepr::DynBox,
+                repr: expected_repr,
             }],
         });
         return boxed_id;
@@ -859,13 +877,36 @@ mod tests {
     }
 
     #[test]
+    fn box_result_requires_its_own_immortal_proof() {
+        let source = ValueId(0);
+        let result = ValueId(1);
+        let types = HashMap::from([(source, TirType::I64), (result, TirType::DynBox)]);
+        let op = make_op(OpCode::BoxVal, vec![source], vec![result]);
+        for (proof, expected) in [
+            (
+                HashMap::from([(result, Repr::BoxedImmortal)]),
+                LirRepr::Immortal64,
+            ),
+            (HashMap::from([(result, Repr::DynBox)]), LirRepr::DynBox),
+            (
+                HashMap::from([(source, Repr::BoxedImmortal)]),
+                LirRepr::DynBox,
+            ),
+        ] {
+            let lir = lower_box_op(&op, &types, &proof);
+            assert_eq!(lir.result_values[0].repr, expected);
+            assert_eq!(lir.tir_op.operands, [source]);
+        }
+    }
+
+    #[test]
     fn discarded_box_and_unbox_preserve_the_operation_without_inventing_results() {
         for ty in [TirType::I64, TirType::F64, TirType::Bool, TirType::DynBox] {
             let types = HashMap::from([(ValueId(0), ty)]);
             for opcode in [OpCode::BoxVal, OpCode::UnboxVal] {
                 let op = make_op(opcode, vec![ValueId(0)], vec![]);
                 let lir = if opcode == OpCode::BoxVal {
-                    lower_box_op(&op, &types)
+                    lower_box_op(&op, &types, &HashMap::new())
                 } else {
                     lower_unbox_op(&op, &types, &HashMap::new())
                 };

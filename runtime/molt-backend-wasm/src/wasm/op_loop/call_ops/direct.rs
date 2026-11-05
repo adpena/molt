@@ -80,6 +80,8 @@ fn emit_call_async(
                 base_local,
                 layout.payload_base_offset() + (idx as i32) * 8,
                 arg_val,
+                (!call_ctx.frame.scalar_plan().boxed_refcount_is_noop(arg))
+                    .then(|| call_ctx.locals.refcount()),
             );
         }
         func.instruction(&Instruction::End);
@@ -125,7 +127,13 @@ fn emit_plain_call(
 
     let live_object_locals =
         collect_live_object_locals_for_call(locals, call_liveness, call_live_idx, op.out.as_ref());
-    retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+    retain_live_object_locals(
+        func,
+        import_ids,
+        reloc_enabled,
+        &live_object_locals,
+        call_ctx.locals.refcount(),
+    );
     push_call_args(func, locals, args_names);
     emit_call(func, reloc_enabled, func_idx);
     if let Some(import) = runtime_import {
@@ -134,7 +142,13 @@ fn emit_plain_call(
         let abi_returns_value = call_site_abi.function_abi_returns_value(target_name);
         finish_direct_call_result(call_ctx, func, op, abi_returns_value);
     }
-    release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+    release_live_object_locals(
+        func,
+        import_ids,
+        reloc_enabled,
+        &live_object_locals,
+        call_ctx.locals.refcount(),
+    );
     CallOpEmission::Handled
 }
 
@@ -161,7 +175,13 @@ fn emit_internal_call(
     let abi_returns_value = call_site_abi.function_abi_returns_value(target_name);
     let live_object_locals =
         collect_live_object_locals_for_call(locals, call_liveness, call_live_idx, op.out.as_ref());
-    retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+    retain_live_object_locals(
+        func,
+        import_ids,
+        reloc_enabled,
+        &live_object_locals,
+        call_ctx.locals.refcount(),
+    );
     let func_idx = call_site_abi.function_index(target_name, molt_ir::OpKind::CallInternal);
     let is_tail_call = abi_returns_value
         && locals.bound_op_result_slot(op).is_some()
@@ -181,7 +201,13 @@ fn emit_internal_call(
     push_call_args(func, locals, args_names);
     emit_call(func, reloc_enabled, func_idx);
     finish_direct_call_result(call_ctx, func, op, abi_returns_value);
-    release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
+    release_live_object_locals(
+        func,
+        import_ids,
+        reloc_enabled,
+        &live_object_locals,
+        call_ctx.locals.refcount(),
+    );
     CallOpEmission::Handled
 }
 

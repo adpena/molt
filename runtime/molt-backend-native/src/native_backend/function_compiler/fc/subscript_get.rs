@@ -19,7 +19,7 @@ fn bind_index_result(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
@@ -36,7 +36,15 @@ fn bind_index_result(
             out,
             result,
         ),
-        None => bind_owned_runtime_result_name(None, result, module, import_ids, builder, vars),
+        None => bind_owned_runtime_result_name(
+            None,
+            result,
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            vars,
+        ),
     }
 }
 
@@ -50,7 +58,7 @@ fn proven_list_container(
     name: &str,
 ) -> crate::VarValue {
     debug_assert!(
-        !representation_plan.name_is_non_heap_scalar(name),
+        !representation_plan.carrier_refcount_is_noop(name),
         "proven list container {name} has a scalar carrier"
     );
     var_get(builder, vars, name).expect("Obj not found")
@@ -69,14 +77,14 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     scalarized_tuples: &BTreeMap<String, Vec<Value>>,
     representation_plan: &ScalarRepresentationPlan,
     list_index_fast_paths: &mut ListIndexFastPathState,
     scalar_fast_paths_enabled: bool,
-    local_inc_ref_obj: FuncRef,
+    local_inc_ref_obj: NativeRefcountSite,
     nbc: &crate::NanBoxConsts,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
@@ -106,7 +114,9 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
         // The constructor published this borrowed view only on success (None
         // on failure). Retain it only for an observable index result owner.
         if let Some(out__) = out {
-            emit_inc_ref_obj(&mut *builder, elem_val, local_inc_ref_obj);
+            if !representation_plan.boxed_refcount_is_noop(out__) {
+                emit_refcount(&mut *builder, elem_val, local_inc_ref_obj);
+            }
             bind_index_result(
                 Some(out__),
                 elem_val,
@@ -385,7 +395,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                 // storage authority. Boxed elements keep their original owner.
                 let boxed_int = box_int_value(builder, word, nbc);
                 let boxed = builder.ins().select(storage.is_int, boxed_int, word);
-                emit_inc_ref_obj(builder, boxed, local_inc_ref_obj);
+                emit_refcount(builder, boxed, local_inc_ref_obj);
                 jump_block(builder, merge_block, &[boxed, boxed]);
 
                 if let Some(slow) = slow_block {

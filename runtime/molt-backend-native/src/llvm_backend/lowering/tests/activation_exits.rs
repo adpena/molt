@@ -191,9 +191,9 @@ fn activation_ops_save_state_test_the_exact_sentinel_and_register_the_frame() {
         "{ir}"
     );
     // Both exits transfer the poll owner and release the payload-loaded future.
-    assert!(!ir.contains("@molt_inc_ref_obj("), "{ir}");
+    assert!(!ir.contains("@__molt_inline_retain("), "{ir}");
     assert_eq!(
-        ir.matches("call void @molt_dec_ref_obj(i64 %closure_load)")
+        ir.matches("call void @__molt_inline_release(i64 %closure_load, i64 %rc_admission)")
             .count(),
         2,
         "{ir}"
@@ -239,8 +239,8 @@ fn first_class_calls_use_only_their_canonical_runtime_row() {
             );
             // The owned poll word is the returned value itself.
             assert!(ir.contains(&format!("ret i64 %{symbol}\n")), "{ir}");
-            assert!(!ir.contains("@molt_inc_ref_obj("), "{ir}");
-            assert!(!ir.contains("@molt_dec_ref_obj("), "{ir}");
+            assert!(!ir.contains("@__molt_inline_retain("), "{ir}");
+            assert!(!ir.contains("@__molt_inline_release("), "{ir}");
         } else {
             let err = lowered.expect_err("an unclassified first-class call must fail closed");
             assert_lowering_error_contains(&err, "has no exact native linkage ABI");
@@ -280,9 +280,9 @@ fn normalized_wait_polls_through_the_canonical_poll_row() {
         )),
         "{ir}"
     );
-    assert!(!ir.contains("@molt_inc_ref_obj("), "{ir}");
+    assert!(!ir.contains("@__molt_inline_retain("), "{ir}");
     assert_eq!(
-        ir.matches("call void @molt_dec_ref_obj(i64 %closure_load)")
+        ir.matches("call void @__molt_inline_release(i64 %closure_load, i64 %rc_admission)")
             .count(),
         2,
         "{ir}"

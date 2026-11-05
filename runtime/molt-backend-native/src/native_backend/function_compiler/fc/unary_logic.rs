@@ -35,11 +35,11 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
-    local_inc_ref_obj: FuncRef,
+    local_inc_ref_obj: NativeRefcountSite,
     scalar_fast_paths_enabled: bool,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
@@ -69,7 +69,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
         (cranelift_module::FuncId, ImportSignatureShape),
     >,
                                        builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
@@ -850,7 +850,9 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 // NaN-boxed bits).  The generated result-ownership table
                 // classifies boxed `and` as minting a new owned selected
                 // operand, so retain exactly when an output name is bound.
-                emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj);
+                if !representation_plan.boxed_refcount_is_noop(out__) {
+                    emit_refcount(&mut *builder, res, local_inc_ref_obj);
+                }
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
@@ -928,7 +930,9 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     )
                 );
                 // Same selected-alias ownership contract as `and`.
-                emit_inc_ref_obj(&mut *builder, res, local_inc_ref_obj);
+                if !representation_plan.boxed_refcount_is_noop(out__) {
+                    emit_refcount(&mut *builder, res, local_inc_ref_obj);
+                }
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }

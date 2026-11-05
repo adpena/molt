@@ -130,10 +130,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             // -- Refcount --
-            OpCode::IncRef => self.emit_refcount(op, MOLT_INC_REF_OBJ),
+            OpCode::IncRef => self.emit_refcount(
+                op,
+                molt_codegen_abi::inline_refcount::RefcountOperation::Retain,
+            ),
             // Surviving Python lifetime boundaries share terminal release
             // with inserted drops. Raw carriers have no runtime heap owner.
-            OpCode::DelBoundary | OpCode::DecRef => self.emit_refcount(op, MOLT_DEC_REF_OBJ),
+            OpCode::DelBoundary | OpCode::DecRef => self.emit_refcount(
+                op,
+                molt_codegen_abi::inline_refcount::RefcountOperation::Release,
+            ),
 
             // -- Memory / Attribute / Index --
             OpCode::LoadAttr => self.emit_load_attr(op),

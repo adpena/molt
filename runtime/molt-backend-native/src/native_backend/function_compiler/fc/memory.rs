@@ -54,7 +54,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -71,8 +71,8 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
     local_profile_struct: Option<FuncRef>,
     profile_enabled_val: Option<Value>,
     guard_profile_only: bool,
-    local_inc_ref_obj: FuncRef,
-    local_dec_ref_obj: FuncRef,
+    local_inc_ref_obj: NativeRefcountSite,
+    local_dec_ref_obj: NativeRefcountSite,
     rc_authority: NativeRcAuthority,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
@@ -82,7 +82,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
         (cranelift_module::FuncId, ImportSignatureShape),
     >,
                                        builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
@@ -231,7 +231,9 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     builder
                         .ins()
                         .store(MemFlagsData::trusted(), *arg_val, obj_ptr, offset);
-                    emit_inc_ref_obj(&mut *builder, *arg_val, local_inc_ref_obj);
+                    if !representation_plan.boxed_refcount_is_noop(name) {
+                        emit_refcount(&mut *builder, *arg_val, local_inc_ref_obj);
+                    }
                 }
             }
             if layout.completion() == TaskCompletion::RegisterCancelToken {

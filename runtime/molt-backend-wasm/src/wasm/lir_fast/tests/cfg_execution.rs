@@ -81,6 +81,7 @@ fn cfg(name: &str, result: TirType, blocks: Vec<LirBlock>) -> LirFunction {
     let entry = &blocks[0];
     LirFunction {
         container_storage: std::collections::HashMap::new(),
+        inline_i64_values: Default::default(),
         name: name.into(),
         param_names: entry.args.iter().map(|v| format!("v{}", v.id.0)).collect(),
         param_types: entry.args.iter().map(|v| v.ty.clone()).collect(),
@@ -291,6 +292,8 @@ const files = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
 let events = [], stopAt = 0;
 const sentinel = new Error('bounded self-loop observed');
 const hooks = {
+  refcount_admission: () => 0n, // isolated image: no runtime execution custody
+
   is_truthy(value) {
     events.push(Number(value & ((1n << 47n) - 1n)));
     if (stopAt && events.length === stopAt) throw sentinel;

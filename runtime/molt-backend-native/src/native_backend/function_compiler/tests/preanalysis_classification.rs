@@ -11,7 +11,7 @@ fn import_func_ref_validates_signature_before_local_reuse() {
     builder.switch_to_block(entry_block);
     builder.seal_block(entry_block);
 
-    let mut import_refs = BTreeMap::new();
+    let mut import_refs = NativeFunctionImports::default();
     import_func_ref(
         &mut backend.module,
         &mut backend.import_ids,

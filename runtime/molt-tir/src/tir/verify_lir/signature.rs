@@ -83,7 +83,7 @@ pub(super) fn signature_type_accepts_type(expected_ty: &TirType, actual_ty: &Tir
 
 pub(super) fn signature_value_accepts_repr(expected_ty: &TirType, actual: &LirValue) -> bool {
     let expected_repr = LirRepr::for_type(expected_ty);
-    if actual.repr == expected_repr {
+    if expected_repr.accepts(actual.repr) {
         return true;
     }
     if matches!(expected_ty, TirType::DynBox)

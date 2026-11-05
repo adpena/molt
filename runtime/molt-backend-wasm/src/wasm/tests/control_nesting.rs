@@ -341,6 +341,8 @@ for (const test of config.cases) {
   const module = new WebAssembly.Module(fs.readFileSync(test.path));
   let lines, polls, failAt, savedState = 0n;
   const hooks = {
+  refcount_admission: () => 0n, // isolated image: no runtime execution custody
+
     trace_set_line(line) { lines.push(Number(line)); return none; },
     exception_pending() { return ++polls === failAt ? 1n : 0n; },
     obj_get_state(task) { assert.equal(task, 64n); return savedState; },

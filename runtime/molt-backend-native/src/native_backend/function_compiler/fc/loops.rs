@@ -81,7 +81,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
@@ -104,7 +104,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
     maybe_debug_seal: &dyn Fn(&str, usize, Block),
     local_exc_pending_fast: FuncRef,
     exc_flag_ptr_slot: Option<cranelift_codegen::ir::StackSlot>,
-    local_dec_ref_obj: FuncRef,
+    local_dec_ref_obj: NativeRefcountSite,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
     let ops = &func_ir.ops;
@@ -118,7 +118,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
         (cranelift_module::FuncId, ImportSignatureShape),
     >,
                                        builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       import_refs: &mut NativeFunctionImports,
                                        sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,

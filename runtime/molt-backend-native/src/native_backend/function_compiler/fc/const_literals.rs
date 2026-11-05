@@ -122,7 +122,7 @@ impl HeapLiteralHoists {
         &self,
         builder: &mut FunctionBuilder<'_>,
         pointer_type: types::Type,
-        local_dec_ref_obj: FuncRef,
+        local_dec_ref_obj: NativeRefcountSite,
     ) {
         for &slot in self
             .const_str_slots
@@ -131,7 +131,7 @@ impl HeapLiteralHoists {
             .chain(self.const_bigint_slots.values())
         {
             let value = builder.ins().stack_load(pointer_type, types::I64, slot, 0);
-            builder.ins().call(local_dec_ref_obj, &[value]);
+            emit_refcount(builder, value, local_dec_ref_obj);
         }
     }
 }
@@ -143,10 +143,10 @@ fn load_owned_literal(
     builder: &mut FunctionBuilder<'_>,
     pointer_type: types::Type,
     slot: cranelift_codegen::ir::StackSlot,
-    local_inc_ref_obj: FuncRef,
+    local_inc_ref_obj: NativeRefcountSite,
 ) -> Value {
     let value = builder.ins().stack_load(pointer_type, types::I64, slot, 0);
-    emit_inc_ref_obj(builder, value, local_inc_ref_obj);
+    emit_refcount(builder, value, local_inc_ref_obj);
     value
 }
 
@@ -461,7 +461,7 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     hoists: &HeapLiteralHoists,
-    local_inc_ref_obj: FuncRef,
+    local_inc_ref_obj: NativeRefcountSite,
 ) -> OpFlow {
     match literal_kind(op.kind) {
         OpKind::Const => {

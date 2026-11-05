@@ -634,14 +634,14 @@ static OTHER:AtomicU64=AtomicU64::new(0);
 static RESULT:AtomicU64=AtomicU64::new(0);
 static PREFIX_PUSHES:AtomicU64=AtomicU64::new(0);
 static PREFIX_FAIL:AtomicU64=AtomicU64::new(0);
-fn refs(word:u64)->Option<&'static AtomicU64>{match word{0x101=>Some(&FIRST),0x102=>Some(&SECOND),0x501=>Some(&EXISTING),0x502=>Some(&OTHER),0x200=>Some(&RESULT),_=>None}}
+fn refs(word:u64)->Option<&'static AtomicU64>{match word{0x7ffc000000000101=>Some(&FIRST),0x7ffc000000000102=>Some(&SECOND),0x7ffc000000000501=>Some(&EXISTING),0x7ffc000000000502=>Some(&OTHER),0x7ffc000000000200=>Some(&RESULT),_=>None}}
 #[no_mangle] pub extern "C" fn molt_inc_ref_obj(word:u64){if let Some(refs)=refs(word){assert!(refs.fetch_add(1,SeqCst)>0,"retain after release");}}
-#[no_mangle] pub extern "C" fn molt_dec_ref_obj(word:u64){assert_ne!(word,METHOD_NULL,"null receiver crossed RC boundary");if let Some(refs)=refs(word){let old=refs.fetch_sub(1,SeqCst);assert!(old>0,"duplicate release");if old==1&&matches!(word,0x501|0x502)&&ERROR.load(SeqCst)!=0&&PREFIX_FAIL.load(SeqCst)==0{ERROR.store(0xd00d,SeqCst);}}}
+#[no_mangle] pub extern "C" fn molt_dec_ref_obj(word:u64){assert_ne!(word,METHOD_NULL,"null receiver crossed RC boundary");if let Some(refs)=refs(word){let old=refs.fetch_sub(1,SeqCst);assert!(old>0,"duplicate release");if old==1&&matches!(word,0x7ffc000000000501|0x7ffc000000000502)&&ERROR.load(SeqCst)!=0&&PREFIX_FAIL.load(SeqCst)==0{ERROR.store(0xd00d,SeqCst);}}}
 #[no_mangle] pub extern "C" fn molt_dec_ref(word:u64){molt_dec_ref_obj(word)}
 #[no_mangle] pub extern "C" fn molt_int_from_i64(raw:i64)->u64{
  assert_eq!(ERROR.load(SeqCst),0,"later box after first failure");let attempt=ATTEMPTS.fetch_add(1,SeqCst)+1;
  if FAIL.load(SeqCst)==attempt{ERROR.store(0xb000+attempt,SeqCst);unsafe{PENDING_RECORD.pending=1;}return NONE;}
- let (word,owner)=if raw==(1_i64<<62){(0x101,&FIRST)}else{assert_eq!(raw,(1_i64<<62)+(1_i64<<31));(0x102,&SECOND)};
+ let (word,owner)=if raw==(1_i64<<62){(0x7ffc000000000101,&FIRST)}else{assert_eq!(raw,(1_i64<<62)+(1_i64<<31));(0x7ffc000000000102,&SECOND)};
  assert_eq!(owner.swap(1,SeqCst),0,"repeated value rematerialized");word
 }
 #[no_mangle] pub extern "C" fn molt_exception_pending_fast()->u64{u64::from(ERROR.load(SeqCst)!=0)}
@@ -656,15 +656,15 @@ fn refs(word:u64)->Option<&'static AtomicU64>{match word{0x101=>Some(&FIRST),0x1
 #[no_mangle] pub extern "C" fn molt_handle_resolve(_:u64)->u64{panic!("ineligible callable must not be resolved")}
 unsafe fn words<'a>(p:u64,n:u64)->&'a[u64]{if n==0{&[]}else{unsafe{core::slice::from_raw_parts(p as *const u64,n as usize)}}}
 fn release(words:&[u64]){for &word in words{molt_dec_ref_obj(word);}}
-fn result()->u64{CALLS.fetch_add(1,SeqCst);assert_eq!(RESULT.swap(1,SeqCst),0);0x200}
+fn result()->u64{CALLS.fetch_add(1,SeqCst);assert_eq!(RESULT.swap(1,SeqCst),0);0x7ffc000000000200}
 fn enter(first:u64,second:u64){assert_eq!(ERROR.load(SeqCst),0,"consumer after failed mint");assert_eq!(FIRST.load(SeqCst),first);assert_eq!(SECOND.load(SeqCst),second);assert_eq!(EXISTING.load(SeqCst),2);assert_eq!(OTHER.load(SeqCst),1);}
 #[no_mangle] pub extern "C" fn custody_target(borrow:u64,a:u64,b:u64,c:u64,existing:u64,again:u64,other:u64,later:u64)->u64{
- assert_eq!((borrow,a,b,c,later),(0x101,0x101,0x101,0x102,0x102));assert_eq!((existing,again,other),(0x501,0x501,0x502));enter(3,2);
+ assert_eq!((borrow,a,b,c,later),(0x7ffc000000000101,0x7ffc000000000101,0x7ffc000000000101,0x7ffc000000000102,0x7ffc000000000102));assert_eq!((existing,again,other),(0x7ffc000000000501,0x7ffc000000000501,0x7ffc000000000502));enter(3,2);
  release(&[a,b,c,existing,again,other]);assert_eq!(FIRST.load(SeqCst),1);assert_eq!(SECOND.load(SeqCst),1);result()
 }
 #[no_mangle] pub extern "C" fn custody_guard_target(_:u64,_:u64,_:u64,_:u64,_:u64)->u64{panic!("fixture forces guarded fallback")}
 #[no_mangle] pub extern "C" fn custody_loop_target(borrow:u64,a:u64,b:u64,c:u64,later:u64)->u64{
- assert_eq!((borrow,a,b,c,later),(0x101,0x101,0x101,0x102,0x102));assert_eq!(ERROR.load(SeqCst),0);assert_eq!(FIRST.load(SeqCst),3);assert_eq!(SECOND.load(SeqCst),2);
+ assert_eq!((borrow,a,b,c,later),(0x7ffc000000000101,0x7ffc000000000101,0x7ffc000000000101,0x7ffc000000000102,0x7ffc000000000102));assert_eq!(ERROR.load(SeqCst),0);assert_eq!(FIRST.load(SeqCst),3);assert_eq!(SECOND.load(SeqCst),2);
  release(&[a,b,c]);assert_eq!(FIRST.load(SeqCst),1);assert_eq!(SECOND.load(SeqCst),1);result()
 }
 #[no_mangle] pub extern "C" fn custody_loop_continue()->u64{
@@ -672,31 +672,31 @@ fn enter(first:u64,second:u64){assert_eq!(ERROR.load(SeqCst),0,"consumer after f
  if ERROR.load(SeqCst)==0&&CALLS.load(SeqCst)<2{TRUE}else{FALSE}
 }
 #[no_mangle] pub extern "C" fn molt_call_func_owned(callable:u64,p:u64,n:u64,_:u64)->u64{
- assert_eq!(callable,0x501);let args=unsafe{words(p,n)};assert_eq!(args,&[0x101,0x101,0x102,0x501,0x502]);enter(2,1);release(args);molt_dec_ref_obj(callable);result()
+ assert_eq!(callable,0x7ffc000000000501);let args=unsafe{words(p,n)};assert_eq!(args,&[0x7ffc000000000101,0x7ffc000000000101,0x7ffc000000000102,0x7ffc000000000501,0x7ffc000000000502]);enter(2,1);release(args);molt_dec_ref_obj(callable);result()
 }
 #[no_mangle] pub extern "C" fn molt_call_loaded_method4(callable:u64,self_or_null:u64,a:u64,b:u64,c:u64,d:u64)->u64{
- assert_eq!(callable,0x501);let args=[self_or_null,a,b,c,d];assert_eq!(args,[0x101,0x101,0x102,0x501,0x502]);enter(2,1);release(&args);molt_dec_ref_obj(callable);result()
+ assert_eq!(callable,0x7ffc000000000501);let args=[self_or_null,a,b,c,d];assert_eq!(args,[0x7ffc000000000101,0x7ffc000000000101,0x7ffc000000000102,0x7ffc000000000501,0x7ffc000000000502]);enter(2,1);release(&args);molt_dec_ref_obj(callable);result()
 }
-fn bind(callable:u64,builder:u64,owned:bool)->u64{assert_eq!(ERROR.load(SeqCst),0);assert_eq!(callable,0x101);assert_eq!(builder,0x501);assert_eq!(FIRST.load(SeqCst),1);assert_eq!(EXISTING.load(SeqCst),1);molt_dec_ref_obj(builder);if owned{molt_dec_ref_obj(callable);}result()}
+fn bind(callable:u64,builder:u64,owned:bool)->u64{assert_eq!(ERROR.load(SeqCst),0);assert_eq!(callable,0x7ffc000000000101);assert_eq!(builder,0x7ffc000000000501);assert_eq!(FIRST.load(SeqCst),1);assert_eq!(EXISTING.load(SeqCst),1);molt_dec_ref_obj(builder);if owned{molt_dec_ref_obj(callable);}result()}
 #[no_mangle] pub extern "C" fn molt_call_bind_ic_owned(_:u64,c:u64,b:u64)->u64{bind(c,b,true)}
 #[no_mangle] pub extern "C" fn molt_call_bind_ic(_:u64,c:u64,b:u64)->u64{bind(c,b,false)}
 #[no_mangle] pub extern "C" fn molt_call_indirect_ic(_:u64,c:u64,b:u64)->u64{bind(c,b,false)}
 #[no_mangle] pub extern "C" fn molt_call_inputs_release(callable:u64,p:u64,n:u64){
  let args=unsafe{words(p,n)};let error=ERROR.load(SeqCst);assert_ne!(error,0);ABORTS.fetch_add(1,SeqCst);
- if error<0xc000{let mode=MODE.load(SeqCst);if mode==1{assert_eq!(callable,0x501);assert_eq!(args,&[0x501,0x502]);}else if mode==2{assert_eq!(callable,0);assert_eq!(args,&[0x501]);}else{assert_eq!(callable,0);assert_eq!(args,&[0x501,0x501,0x502]);}}
+ if error<0xc000{let mode=MODE.load(SeqCst);if mode==1{assert_eq!(callable,0x7ffc000000000501);assert_eq!(args,&[0x7ffc000000000501,0x7ffc000000000502]);}else if mode==2{assert_eq!(callable,0);assert_eq!(args,&[0x7ffc000000000501]);}else{assert_eq!(callable,0);assert_eq!(args,&[0x7ffc000000000501,0x7ffc000000000501,0x7ffc000000000502]);}}
  release(args);molt_dec_ref_obj(callable);ERROR.store(error,SeqCst);
 }
 #[no_mangle] pub extern "C" fn custody_reset(mode:u64,fail:u64,guard:u64){for value in [&ATTEMPTS,&CALLS,&ERROR,&ABORTS,&FIRST,&SECOND,&RESULT]{value.store(0,SeqCst);}unsafe{PENDING_RECORD.pending=0;}EXISTING.store(u64::from(mode!=3),SeqCst);OTHER.store(u64::from(mode<2),SeqCst);MODE.store(mode,SeqCst);FAIL.store(fail,SeqCst);GUARD_FAIL.store(guard,SeqCst);}
 #[no_mangle] pub extern "C" fn custody_check(fail:u64,boxes:u64,guard:u64){let failed=fail!=0||guard!=0;assert_eq!(CALLS.load(SeqCst),u64::from(!failed));assert_eq!(ATTEMPTS.load(SeqCst),if fail!=0{fail}else{boxes});assert_eq!(ERROR.load(SeqCst),if fail!=0{0xb000+fail}else if guard!=0{0xc000}else{0});assert_eq!(ABORTS.load(SeqCst),u64::from(failed));for count in [&FIRST,&SECOND,&EXISTING,&OTHER,&RESULT]{assert_eq!(count.load(SeqCst),0,"owner escaped operation");}}
 #[no_mangle] pub extern "C" fn custody_prefix_reset(present:u64,fail:u64){PREFIX_PUSHES.store(0,SeqCst);PREFIX_FAIL.store(fail,SeqCst);EXISTING.store(present,SeqCst);ERROR.store(0,SeqCst);unsafe{PENDING_RECORD.pending=0;}}
 #[no_mangle] pub extern "C" fn molt_callargs_push_pos(builder:u64,receiver:u64)->u64{
- assert_eq!((builder,receiver),(0x777,0x501));assert_eq!(PREFIX_PUSHES.fetch_add(1,SeqCst),0);assert_eq!(EXISTING.load(SeqCst),1);
+ assert_eq!((builder,receiver),(0x777,0x7ffc000000000501));assert_eq!(PREFIX_PUSHES.fetch_add(1,SeqCst),0);assert_eq!(EXISTING.load(SeqCst),1);
  if PREFIX_FAIL.load(SeqCst)!=0{ERROR.store(0xbad,SeqCst);unsafe{PENDING_RECORD.pending=1;}}else{molt_inc_ref_obj(receiver);}NONE
 }
 #[no_mangle] pub extern "C" fn custody_prefix_check(present:u64,fail:u64){
  assert_eq!(PREFIX_PUSHES.load(SeqCst),present);assert_eq!(ERROR.load(SeqCst),if present!=0&&fail!=0{0xbad}else{0});
  assert_eq!(EXISTING.load(SeqCst),u64::from(present!=0&&fail==0),"builder is the sole remaining receiver owner");
- if present!=0&&fail==0{molt_dec_ref_obj(0x501);}assert_eq!(EXISTING.load(SeqCst),0);PREFIX_FAIL.store(0,SeqCst);
+ if present!=0&&fail==0{molt_dec_ref_obj(0x7ffc000000000501);}assert_eq!(EXISTING.load(SeqCst),0);PREFIX_FAIL.store(0,SeqCst);
 }
 #[no_mangle] pub extern "C" fn custody_loop_check(fail:u64){assert_eq!(CALLS.load(SeqCst),if fail==0{2}else{(fail-1)/2});assert_eq!(ATTEMPTS.load(SeqCst),if fail==0{4}else{fail});assert_eq!(ERROR.load(SeqCst),if fail==0{0}else{0xb000+fail});assert_eq!(ABORTS.load(SeqCst),0);for count in [&FIRST,&SECOND,&EXISTING,&OTHER,&RESULT]{assert_eq!(count.load(SeqCst),0,"loop owner escaped");}}
 
@@ -733,7 +733,7 @@ pub extern "C" fn molt_frame_home_load(home: u64) -> u64 {
 pub extern "C" fn custody_home_success(view: u64) -> u64 {
     assert_eq!(ERROR.load(SeqCst), 0, "store failure crossed the authored exception edge");
     assert_eq!(HOME_SUCCESSES.fetch_add(1, SeqCst), 0);
-    assert_eq!((view, home_pair()), (0x101, (HOME_PLAIN, 0x101)));
+    assert_eq!((view, home_pair()), (0x7ffc000000000101, (HOME_PLAIN, 0x7ffc000000000101)));
     assert_eq!(FIRST.load(SeqCst), 1, "home owns the persistent box");
     NONE
 }
@@ -779,12 +779,12 @@ pub extern "C" fn custody_home_numeric_bad() -> u64 {
 pub extern "C" fn custody_home_observed_numeric_ok() -> u64 {
     assert_eq!(ATTEMPTS.load(SeqCst), 1);
     assert_eq!(HOME_SUCCESSES.load(SeqCst), 1);
-    assert_eq!(home_pair(), (HOME_PLAIN, 0x101));
+    assert_eq!(home_pair(), (HOME_PLAIN, 0x7ffc000000000101));
     NONE
 }
 #[no_mangle]
 pub extern "C" fn molt_bit_and(lhs: u64, rhs: u64) -> u64 {
-    assert_eq!(lhs, 0x101, "the persistent binding's exact object");
+    assert_eq!(lhs, 0x7ffc000000000101, "the persistent binding's exact object");
     assert_eq!(rhs, @INT_TAG@ | (1_u64 << 31));
     @INT_TAG@ // (2**62 & 2**31) == 0, as a boxed inline integer.
 }
@@ -795,7 +795,7 @@ pub extern "C" fn molt_eq(lhs: u64, rhs: u64) -> u64 {
 }
 #[no_mangle]
 pub extern "C" fn molt_not(value: u64) -> u64 {
-    assert_eq!(value, 0x101);
+    assert_eq!(value, 0x7ffc000000000101);
     assert_eq!(home_pair(), (HOME_PLAIN, value));
     FALSE
 }
@@ -810,6 +810,10 @@ pub extern "C" fn custody_home_numeric_finish() {
         assert_eq!(count.load(SeqCst), 0, "numeric-only publication retained a box");
     }
 }
+
+// This isolated provider has no runtime execution attachment or lease.
+#[no_mangle]
+pub extern "C" fn molt_refcount_admission() -> u64 { 0 }
 "#;
 
 const HARNESS: &str = r#"
@@ -832,16 +836,16 @@ extern "C" {
 }
 fn main(){unsafe{
  for (mode,run) in [(0,custody_direct as unsafe extern "C" fn(u64,u64)->u64),(0,custody_internal),(1,custody_guarded),(1,custody_dynamic),(1,custody_method),(1,custody_loaded_method)]{
-  for _ in 0..2{for fail in [0,1,2]{custody_reset(mode,fail,0);let word=run(0x501,0x502);assert_eq!(word,if fail==0{0x200}else{NONE});molt_dec_ref_obj(word);custody_check(fail,2,0);}}
+  for _ in 0..2{for fail in [0,1,2]{custody_reset(mode,fail,0);let word=run(0x7ffc000000000501,0x7ffc000000000502);assert_eq!(word,if fail==0{0x7ffc000000000200}else{NONE});molt_dec_ref_obj(word);custody_check(fail,2,0);}}
  }
- for run in [custody_bind as unsafe extern "C" fn(u64)->u64,custody_indirect]{for fail in [0,1]{custody_reset(2,fail,0);let word=run(0x501);assert_eq!(word,if fail==0{0x200}else{NONE});molt_dec_ref_obj(word);custody_check(fail,1,0);}}
- custody_reset(0,0,1);assert_eq!(custody_direct(0x501,0x502),NONE);custody_check(0,2,1);
+ for run in [custody_bind as unsafe extern "C" fn(u64)->u64,custody_indirect]{for fail in [0,1]{custody_reset(2,fail,0);let word=run(0x7ffc000000000501);assert_eq!(word,if fail==0{0x7ffc000000000200}else{NONE});molt_dec_ref_obj(word);custody_check(fail,1,0);}}
+ custody_reset(0,0,1);assert_eq!(custody_direct(0x7ffc000000000501,0x7ffc000000000502),NONE);custody_check(0,2,1);
  for fail in 0..=4{custody_reset(3,fail,0);assert_eq!(custody_loop(),NONE);custody_loop_check(fail);}
  for fail in [0,1]{custody_home_reset(fail);custody_home_store();custody_home_finish(fail);}
  for fail in [0,1]{custody_home_reset(fail);custody_home_store_alias();custody_home_finish(fail);}
  custody_home_reset(0);custody_home_numeric();custody_home_numeric_finish();
  custody_home_reset(0);custody_home_bitwise_raw();custody_home_numeric_finish();
  for fail in [0,1]{custody_home_reset(fail);custody_home_bitwise_observed();custody_home_finish(fail);}
- for present in [0,1]{for fail in [0,1]{custody_prefix_reset(present,fail);assert_eq!(custody_method_receiver(0x777,if present==0{METHOD_NULL}else{0x501}),NONE);custody_prefix_check(present,fail);}}
+ for present in [0,1]{for fail in [0,1]{custody_prefix_reset(present,fail);assert_eq!(custody_method_receiver(0x777,if present==0{METHOD_NULL}else{0x7ffc000000000501}),NONE);custody_prefix_check(present,fail);}}
 }}
 "#;

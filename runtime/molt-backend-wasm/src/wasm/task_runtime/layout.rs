@@ -95,6 +95,7 @@ impl WasmTaskRuntimeLayout {
         reloc_enabled: bool,
         task_local: u32,
         result_local: u32,
+        refcount: crate::wasm::refcount::WasmRefcountScratch,
     ) {
         match self.completion {
             TaskCompletion::ReturnTask => {
@@ -113,10 +114,12 @@ impl WasmTaskRuntimeLayout {
                 );
                 func.instruction(&Instruction::LocalSet(result_local));
                 func.instruction(&Instruction::LocalGet(task_local));
-                emit_call(
+                crate::wasm::refcount::emit_refcount(
                     func,
                     reloc_enabled,
-                    import_ids[WasmRuntimeImport::DecRefObj],
+                    import_ids,
+                    refcount,
+                    molt_codegen_abi::inline_refcount::RefcountOperation::Release,
                 );
                 func.instruction(&Instruction::LocalGet(result_local));
             }
