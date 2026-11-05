@@ -140,12 +140,14 @@ class LocalBindingMixin(GeneratorMixinBase):
 
     def _specializable_builtin_name(self, node: ast.AST) -> str | None:
         """Shared identity/lifetime authorization for call and fused consumers."""
-        if isinstance(node, ast.Call) and self._builtin_guard_covers(node.func):
-            # The enclosing guard proved the binding where Python loads it, and
-            # a builtin callable's lifetime is unobservable (HF-79).
-            assert isinstance(node.func, ast.Name)
-            name = node.func.id
-            return name if name in BUILTIN_SHAPE_NAMES else None
+        if (
+            isinstance(node, ast.Call)
+            and self._builtin_read_replaces_guard(node.func) is not None
+        ):
+            # A closed-world proof or the enclosing guard proved the binding
+            # where Python loads it, and a builtin callable's lifetime is
+            # unobservable (HF-79). The call fact proves the argument shape.
+            return self._proven_shape_builtin_call(node)
         if not isinstance(node, ast.Call) or self.python_binding_index is None:
             return None
         fact = self.python_binding_index.call_fact(node)
@@ -163,7 +165,7 @@ class LocalBindingMixin(GeneratorMixinBase):
         """
         while isinstance(node, ast.Attribute):
             node = node.value
-        if self._builtin_guard_covers(node):
+        if self._builtin_binding_proven(node):
             return False
         if not isinstance(node, ast.Name) or self.python_binding_index is None:
             return None

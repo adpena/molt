@@ -813,6 +813,15 @@ def render_python(schema: Schema) -> str:
             for name, identity, guard, _shape in schema.builtins
         ],
     )
+    mapping(
+        "BUILTIN_NAMES_BY_IDENTITY",
+        "IdentityMask",
+        "str",
+        [
+            (f"int(PythonIdentity.{identity})", repr(name))
+            for name, identity, _guard, _shape in schema.builtins
+        ],
+    )
     shape = [row for row in schema.builtins if row[3]]
     lines.append(
         f"BUILTIN_SHAPE_NAMES: Final[frozenset[str]] = frozenset({tuple(row[0] for row in shape)!r})\n\n"

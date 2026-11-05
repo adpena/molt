@@ -467,7 +467,7 @@ The baseline has two related defects, found by mechanism:
 | `PythonExpressionFact.exact_builtin_name`, `BUILTIN_NAMES_BY_IDENTITY` projection | Reuse, rewritten | Same typed query; the projection moves into the generator with the other identity tables, and the query requires a global lookup. |
 | `_builtin_binding_name`/`_builtin_binding_proven` replacing `_builtin_guard_covers` | Reuse, rewritten | One authority for "this read selects the builtin": the flow's proof or the guard's fast arm. |
 | Exact reads get no guard bit | Reuse | A proved read needs no guard. |
-| Proved value read lowers to `BUILTIN_TYPE`/`BUILTIN_FUNC` | Reuse, narrowed | Frame-reflective builtins (`globals`, `locals`, `vars`, `eval`, `exec`, `__import__`) keep their frame-aware lowering. |
+| Proved value read lowers to `BUILTIN_TYPE`/`BUILTIN_FUNC` | Reuse, narrowed | Types only. `BUILTIN_FUNC` resolves the published name again (`molt_func_new_builtin_named`, `lookup_builtin_name`), so a function value gains nothing and keeps the live read. |
 | `__builtins__` writer excludes proofs | Reuse, moved | The bundle checked it only in its callable projection. Here it sits in the builtin fallback of `_resolve_name` (`_builtins_mapping_rebindable`), the one place that produces builtin identity. |
 | `builtin_specializations` call-shape mask | Reuse | A value proof does not prove invocation shape; see the `len()` defect above. The flow's `builtin_call_shape` is the shape authority. |
 | `isinstance`/`issubclass` identities | Reuse, narrowed | Only these two are needed to remove the guard from the `isinstance` loop. The bundle added 29 builtins at once. A catalog identity turns an `OTHER` read into an exact one, which changes call effects, operand escape and source demand wherever the builtin appears, so every new identity needs its own census. |
@@ -496,7 +496,12 @@ The baseline has two related defects, found by mechanism:
 4. **One frontend authority.** `_proven_builtin_name(node)` returns the builtin
    when the fact is exact (`exact_builtin_name`: not invalidated, global
    lookup, identity is exactly one catalog builtin) or when the enclosing
-   guard's fast arm covers the read. The runtime guard admits only when the
+   guard's fast arm covers the read. `_builtin_read_replaces_guard(node)` is
+   the subset with the fast arm's specialization policy: a covered read, or an
+   exact read in a Python function activation, where the guard model applies.
+   Only that subset lowers a shape call without retaining the live callable
+   across argument evaluation; module code keeps the call fact's own elision
+   proof (`callee_elision_safe`), as on main. The runtime guard admits only when the
    frame's builtins dictionary is the sealed builtins namespace
    (`binding_guards.rs`, `active_frame_admits`), so a fast arm also excludes a
    replaced `__builtins__` mapping. Every former `_builtin_guard_covers`
@@ -512,8 +517,8 @@ The baseline has two related defects, found by mechanism:
    identity keep today's lowering (see "Open siblings").
 7. **Value lowering.** `_load_name_expression` calls
    `_emit_proven_builtin_value`, which emits `BUILTIN_TYPE(tag)` for a proved
-   type and `BUILTIN_FUNC` for a proved manifest function. Both materialize the
-   runtime's canonical object, which is the object `builtins` publishes.
+   type: the runtime's canonical type object, which is the object `builtins`
+   publishes. A proved function value keeps the live read.
 
 Module-scope reads use the same facts: before any callback, and under a closed
 premise after callbacks, an exact module-scope read lowers the same way. In a
@@ -543,8 +548,8 @@ counted loop; the frontend already emitted these operations before this change.
 
 Compile time: one fact lookup per name read and one `builtin_call_shape` query
 per call whose callee may be a shape builtin, both inside existing passes.
-Emitted code: per proved read, one `BUILTIN_TYPE` call replaces one guard call
-and up to two dictionary lookups; a proved `range` loop is emitted once instead
+Emitted code: per proved type read, one `BUILTIN_TYPE` call replaces up to two
+dictionary lookups, and a proved callee needs no guard call; a proved `range` loop is emitted once instead
 of twice. No runtime state, allocation or synchronization is added. An
 unproved catalogued call in a guard's slow arm becomes a dynamic call; it runs
 only after its guard fails.
@@ -635,6 +640,15 @@ loops, the catalogued-only invariant, the user-visible consequence of the open
 siblings, and results recorded below. Not adopted: removing helper names and
 prior art (round 1 asked for exact code names; the prior art carries the
 design decision).
+
+Implementation changes after review, both narrowing: function values keep the
+live read (`BUILTIN_FUNC` is itself a name lookup), and the fast arm's forced
+callee elision applies only to activation reads. The existing module-scope
+tests (`tests/test_frontend_builtin_shape_authority.py`) showed that module code
+relies on the call fact's elision proof: a proved `str(source)` there would
+otherwise lower to `STR_FROM_OBJ` typed exact `str`, although `__str__` may
+return a subclass. The guard's fast arm has that typing on main; it is an open
+sibling of this mechanism.
 
 ### Results of this lane
 

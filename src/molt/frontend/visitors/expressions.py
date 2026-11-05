@@ -73,6 +73,9 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
 
     def _load_name_expression(self, node: ast.Name) -> Any:
         if isinstance(node.ctx, ast.Load):
+            proven = self._emit_proven_builtin_value(node)
+            if proven is not None:
+                return proven
             binding_invalidated = self._expression_has_invalidated_binding(node)
             if (
                 self.in_annotation

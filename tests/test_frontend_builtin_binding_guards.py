@@ -16,8 +16,12 @@ from pathlib import Path
 from molt.compiler_analysis.builtin_binding_guards_generated import (
     BUILTIN_BINDING_GUARD_BITS,
 )
+import pytest
+
 from molt.compiler_analysis.python_binding_flow import analyze_python_source_bindings
-from molt.frontend import compile_to_tir
+from molt.compiler_analysis.python_identity_catalog_generated import PythonMember
+from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+from molt.frontend import SimpleTIRGenerator, compile_to_tir
 
 GUARD = "molt_guard_builtin_bindings"
 MATRIX_SUPPORT = (
@@ -29,6 +33,31 @@ def _ops(source: str, suffix: str) -> list[dict]:
     ir = compile_to_tir(source)
     (function,) = [f for f in ir["functions"] if f["name"].endswith(suffix)]
     return function["ops"]
+
+
+# The premise a closed graph supplies when no module writes this one, no code
+# writes a canonical member and no source body escapes into another activation.
+CLOSED = PythonNamespacePremise((), 0, 0, (), ())
+
+
+def _premise_ops(
+    source: str, suffix: str, premise: PythonNamespacePremise = CLOSED
+) -> list[dict]:
+    generator = SimpleTIRGenerator(module_name="mod", namespace_premise=premise)
+    generator.visit(ast.parse(source))
+    (function,) = [
+        f for f in generator.to_json()["functions"] if f["name"].endswith(suffix)
+    ]
+    return function["ops"]
+
+
+def _global_reads(ops: list[dict]) -> list[str]:
+    names = {op["out"]: op.get("s_value") for op in ops if op["kind"] == "const_str"}
+    return [
+        names.get(op["args"][1])
+        for op in ops
+        if op["kind"] == "module_get_global"
+    ]
 
 
 def _guards(ops: list[dict]) -> list[dict]:
@@ -205,3 +234,94 @@ def test_shadowing_matrix_probes_compile_behind_guards() -> None:
             ops = _ops(source, f"__{prefix}{name}")
             (guard,) = _guards(ops)
             assert _guard_mask(ops, guard) == mask, (module, name)
+
+
+COUNT_STRINGS = """
+def run(objs, n):
+    count = 0
+    for i in range(n):
+        if isinstance(objs[i & 63], str):
+            count += 1
+    return count
+"""
+
+
+def test_closed_premise_proves_builtins_without_guard_or_lookup() -> None:
+    """HF-226: the flow's exact identity replaces the runtime guard."""
+    ops = _premise_ops(COUNT_STRINGS, "run")
+    assert not _guards(ops)
+    assert _global_reads(ops) == []
+    kinds = _kinds(ops)
+    # One counted loop, not a guarded fast arm plus a dynamic slow arm.
+    assert kinds.count("loop_start") == 1 and "loop_index_start" in kinds
+    assert {"builtin_type", "isinstance"} <= set(kinds)
+    # Standalone compilation has no graph premise and keeps both guards.
+    standalone = _ops(COUNT_STRINGS, "run")
+    assert len(_guards(standalone)) == 2
+    assert "str" in _global_reads(standalone)
+
+
+@pytest.mark.parametrize(
+    "prefix,premise",
+    [
+        ("def rebind():\n    global str\n    str = int\n", CLOSED),
+        ("__builtins__ = {}\n", CLOSED),
+        ("", PythonNamespacePremise(("str",), 0, 0, (), ())),
+        (
+            "",
+            PythonNamespacePremise(
+                (), int(PythonMember.BUILTINS_STR), int(PythonMember.BUILTINS_STR), (), ()
+            ),
+        ),
+    ],
+    ids=["global-writer", "builtins-mapping-writer", "foreign-writer", "member-writer"],
+)
+def test_any_writer_keeps_the_live_read(
+    prefix: str, premise: PythonNamespacePremise
+) -> None:
+    ops = _premise_ops(prefix + COUNT_STRINGS, "run", premise)
+    assert "str" in _global_reads(ops)
+    assert "builtin_type" not in _kinds(ops)
+
+
+def test_mapping_writer_withdraws_every_builtin_proof() -> None:
+    ops = _premise_ops("__builtins__ = {}\n" + COUNT_STRINGS, "run")
+    # range keeps its guard; the loop is the guarded fast/slow pair again.
+    assert _guard_mask(ops, _guards(ops)[0]) & _bit("range")
+
+
+def test_builtin_call_shape_is_proved_separately_from_the_callee() -> None:
+    """`len()` reaches the builtin, which raises; it is no LEN operation.
+
+    Main crashed the frontend here: the guard's fast arm trusted the binding
+    as a proof of the call's shape.
+    """
+    source = "def f():\n    return len()\n\nlen()\n"
+    for ops in (_premise_ops(source, "f"), _ops(source, "f")):
+        assert "len" not in _kinds(ops)
+        assert "call_func" in _kinds(ops)
+    module = _premise_ops(source, "molt_main")
+    assert "len" not in _kinds(module)
+
+
+def test_frame_reflective_builtins_keep_their_lowering() -> None:
+    ops = _premise_ops("def f():\n    return globals\n", "f")
+    assert "globals" in _global_reads(ops)
+    assert "builtin_func" not in _kinds(ops)
+
+
+def test_unproved_catalogued_builtin_calls_its_live_binding() -> None:
+    """A guard's slow arm calls whatever the frame's namespaces select.
+
+    Main lowered `isinstance` to its operation in both arms, so a member or
+    `__builtins__` writer could not replace it (CPython calls the writer's
+    object). The typed identity now requires a proof for the named lowering.
+    """
+    source = "__builtins__ = {}\ndef check(value):\n    return isinstance(value, int)\n"
+    for ops in (_premise_ops(source, "check"), _ops(source, "check")):
+        (guard,) = _guards(ops)
+        fast, slow = _arms(ops, guard)
+        assert "isinstance" in _kinds(fast)
+        assert "isinstance" not in _kinds(slow)
+        assert "isinstance" in _global_reads(slow)
+        assert "call_func" in _kinds(slow)
