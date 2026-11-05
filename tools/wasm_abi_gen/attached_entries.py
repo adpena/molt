@@ -14,7 +14,7 @@ BODY_SUFFIX = "_attached_body"
 def exported_macro_symbols(root: Path) -> set[str]:
     """Literal link identities at invocations of actual C-export producers."""
     sources = [
-        p.read_text()
+        p.read_text(encoding="utf-8")
         for p in root.glob("runtime/*/src/**/*.rs")
         if "attached_exports_generated" not in p.parts
         and "test" not in p.stem
@@ -145,7 +145,7 @@ def typed_bodies(root: Path):
             or "tests" in path.parts
         ):
             continue
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         for f in functions(text):
             if f.name.endswith(BODY_SUFFIX):
                 yield path, text, f
@@ -155,7 +155,10 @@ def render_attached_entries(data: dict, root: Path) -> dict[Path, str]:
     from tools.wasm_abi_gen.execution_context import context_suffix
 
     public = set(
-        re.findall(r"\b(molt_\w+)\s*\(", (root / "include/molt/molt.h").read_text())
+        re.findall(
+            r"\b(molt_\w+)\s*\(",
+            (root / "include/molt/molt.h").read_text(encoding="utf-8"),
+        )
     )
     outputs = {}
     grouped = {}

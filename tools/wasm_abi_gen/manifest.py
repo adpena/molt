@@ -1434,7 +1434,7 @@ def _runtime_host_export_signatures(
 
 @lru_cache(maxsize=1)
 def _public_c_api_signatures() -> dict[str, tuple[tuple[str, ...], tuple[str, ...]]]:
-    header = (ROOT / "include/molt/molt.h").read_text()
+    header = (ROOT / "include/molt/molt.h").read_text(encoding="utf-8")
     declarations = set(
         re.findall(r"(?m)^[A-Za-z_][\w\s*]*\b(molt_\w+)\s*\([^;{}]*\)\s*;", header)
     )

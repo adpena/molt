@@ -1446,7 +1446,7 @@ def _render_public_type_getters() -> dict[Path, str]:
                 continue
             lines.extend(
                 [
-                    f"pub fn {runtime}_attached_body(_py: &{token_type}) -> u64 {{\n",
+                    f"{'pub(crate)' if token_type.startswith('crate::') else 'pub'} fn {runtime}_attached_body(_py: &{token_type}) -> u64 {{\n",
                     f"    {macro}(_py, py, {{\n",
                     f"        let class = {identity.class_factory}(py);\n",
                     "        if class == 0 || obj_from_bits(class).as_ptr().is_none() || exception_pending(py) { return MoltObject::none().bits(); }\n",

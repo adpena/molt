@@ -163,8 +163,10 @@ impl CompatibilityError<'_> {
     }
 }
 
-
-pub(crate) fn molt_compatibility_error_attached_body(_py: &crate::PyToken<'_>, outcome_bits: u64) -> u64 {
+pub(crate) fn molt_compatibility_error_attached_body(
+    _py: &crate::PyToken<'_>,
+    outcome_bits: u64,
+) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
         let outcome = match obj_from_bits(outcome_bits).as_int() {
             Some(1) => CompatibilityError::CounterFromkeys,
@@ -306,4 +308,7 @@ mod tests {
     }
 }
 
-include!("../attached_exports_generated/builtins/compatibility_error.rs");
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/attached_exports_generated/builtins/compatibility_error.rs"
+));

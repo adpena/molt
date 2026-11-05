@@ -406,9 +406,11 @@ impl CompatibilityError<'_> {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_compatibility_error(outcome_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_compatibility_error_attached_body(
+    _py: &crate::PyToken<'_>,
+    outcome_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let outcome = match obj_from_bits(outcome_bits).as_int() {
 __ARMS__
             _ => {
@@ -529,6 +531,11 @@ mod tests {
         });
     }
 }
+
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/attached_exports_generated/builtins/compatibility_error.rs"
+));
 """.replace(
         "__RAW_IO_VERSIONS__",
         _version_pattern(OUTCOMES["RawIoBaseReadinto"].versions),
