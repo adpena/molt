@@ -307,7 +307,7 @@ def test_builtin_call_shape_is_proved_separately_from_the_callee() -> None:
     assert "len" not in _kinds(module)
 
 
-def test_frame_reflective_builtins_keep_their_lowering() -> None:
+def test_builtin_function_values_keep_their_live_read() -> None:
     ops = _premise_ops("def f():\n    return globals\n", "f")
     assert "globals" in _global_reads(ops)
     assert "builtin_func" not in _kinds(ops)
@@ -335,14 +335,16 @@ def test_star_import_source_origins_withdraw_the_builtin_proof() -> None:
 
     The flow publishes star exports as source origins of later global reads,
     not as identity bits, so the identity alone still reads BUILTIN_LEN.
+    `__import__` carries its own read as an origin too (import provenance);
+    the star lookup, not that origin, withdraws its proof (HF-776).
     """
     source = (
-        "def measure(xs):\n    return len(xs)\n\n"
+        "def measure(xs):\n    return len(xs), __import__(xs)\n\n"
         "measure([1])\nfrom support import *\nmeasure([1])\n"
     )
     ops = _premise_ops(source, "measure")
-    assert "len" in _global_reads(ops)
-    assert "len" not in _kinds(ops)
+    assert {"len", "__import__"} <= set(_global_reads(ops))
+    assert not {"len", "builtin_func"} & set(_kinds(ops))
 
 
 # HF-776: one call or value per family of named builtin lowering, with the
@@ -360,6 +362,8 @@ NAMED_LOWERINGS = [
     ("KeyError", "KeyError", "exception_class"),
     ("NotImplemented", "NotImplemented", "const_not_implemented"),
     ("Ellipsis", "Ellipsis", "const_ellipsis"),
+    # Its read is also its own import provenance origin.
+    ("__import__", "__import__(x)", "builtin_func"),
 ]
 
 
