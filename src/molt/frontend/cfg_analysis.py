@@ -250,9 +250,9 @@ class CFGGraph:
             for member in path:
                 resolved[member] = edges
         result: list[tuple[tuple[int, int], ...]] = []
-        for edges in resolved:
-            assert edges is not None
-            result.append(edges)
+        for resolved_edges in resolved:
+            assert resolved_edges is not None
+            result.append(resolved_edges)
         return tuple(result)
 
     # Dominance is derived on first use: most graphs a pass round builds are
