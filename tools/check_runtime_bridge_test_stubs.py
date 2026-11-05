@@ -22,7 +22,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
-from tools.generator_io import generator_main  # noqa: E402
+from tools.generator_io import generator_main, rustfmt_source  # noqa: E402
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -136,7 +136,7 @@ def rendered_stub(symbols: list[str]) -> str:
         "",
     ]
     lines.extend(f"aborting_bridge_stub!({symbol});" for symbol in symbols)
-    return "\n".join(lines) + "\n"
+    return rustfmt_source("\n".join(lines) + "\n", label="bridge_test_stubs.rs")
 
 
 def generated_outputs() -> dict[Path, str]:
