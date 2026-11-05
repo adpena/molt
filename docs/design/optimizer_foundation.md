@@ -47,6 +47,26 @@ Authored `LOOP_INDEX_START`/`LOOP_INDEX_NEXT` are explicit pre-SSA loop carriers
 an update requires its own loop's unique dominating start. They do not admit
 ordinary repeated SSA definitions or flow-insensitive literal facts.
 
+Optimized stdlib functions are products of the existing source-qualified
+module-lowering record, together with function metadata and original coverage
+receipts. Serial and parallel readers consult that product before constructing
+the frontend generator. Its identity must include module bytes, semantic
+compiler identity, target Python/platform, source-body selection, dependency
+facts, profile/PGO and every mid-end policy setting. Reusing the product executes
+no mid-end passes; restored pass timings describe its original production,
+identified by the existing cache-hit worker mode. There is no separate stdlib
+optimization cache. Cold compile cost and warm product reuse are distinct
+measurements; backend artifact reuse is another boundary.
+
+Frontend dominance queries use intervals and retained tree storage is linear.
+The CHK construction itself has a quadratic worst case: a chain whose final
+node has edges back to every earlier non-entry node makes repeated intersections
+walk long parent paths. A macOS arm64 / slot Python 3.12.15 measurement on
+2026-11-05 took 0.056/0.213/0.827/1.283 seconds at 4k/8k/16k/20k nodes
+(2N-3 edges), with a 155.9 MiB process high-water RSS at 20k including Python
+and imports. This bounds that measured case only; arbitrary graph construction
+is not claimed to be near-linear. Required passes still admit every function.
+
 PHI operands belong to incoming merge edges, including normal continuations
 through exception checks after a structured merge. One linear CFG edge table
 feeds liveness, SCCP, trimming and verification.
