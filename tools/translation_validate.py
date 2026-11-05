@@ -146,15 +146,22 @@ class RunResult:
     returncode: int
     elapsed_ms: float
     mode: str  # "cpython", "molt"
+    # Set when the run produced no observable: a timeout, a missing binary or a
+    # launcher failure. Such a file is an error (inconclusive), never a mismatch.
+    harness_error: str | None = None
 
     @property
     def ok(self) -> bool:
-        return self.returncode == 0
+        return self.harness_error is None and self.returncode == 0
 
     @property
     def output_key(self) -> tuple[str, str, int]:
-        """Normalized semantic observable used for cross-runtime comparison."""
-        return (self.stdout.rstrip(), self.stderr.rstrip(), self.returncode)
+        """The exact semantic observable compared across runtimes.
+
+        Trailing whitespace and the final newline are program output, so no
+        normalization applies.
+        """
+        return (self.stdout, self.stderr, self.returncode)
 
 
 @dataclass
@@ -225,8 +232,12 @@ def _run_subprocess(
     timeout: int,
     env: dict[str, str] | None = None,
     cwd: Path | str | None = None,
-) -> tuple[str, str, int]:
-    """Run a subprocess safely with timeout. Returns (stdout, stderr, rc)."""
+) -> tuple[str, str, int, str | None]:
+    """Run a subprocess under the conformance guard.
+
+    Returns (stdout, stderr, rc, harness_error); harness_error names a timeout or
+    a launcher failure, which leaves no observable to compare.
+    """
     limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE", env)
     try:
         proc = harness_memory_guard.guarded_completed_process(
@@ -239,11 +250,11 @@ def _run_subprocess(
             cwd=cwd,
             limits=limits,
         )
-        return proc.stdout, proc.stderr, proc.returncode
+        return proc.stdout, proc.stderr, proc.returncode, None
     except subprocess.TimeoutExpired:
-        return "", "TIMEOUT", -1
+        return "", "", -1, f"timed out after {timeout}s: {cmd[0]}"
     except Exception as exc:
-        return "", str(exc), -1
+        return "", "", -1, f"launch failed: {type(exc).__name__}: {exc}"
 
 
 def _run_cpython(
@@ -256,7 +267,7 @@ def _run_cpython(
     t0 = time.perf_counter()
     env = os.environ.copy()
     env["PYTHONHASHSEED"] = "0"
-    stdout, stderr, rc = _run_subprocess(
+    stdout, stderr, rc, harness_error = _run_subprocess(
         [*_target_python_command(target_python), source_path],
         timeout=timeout,
         env=env,
@@ -269,6 +280,7 @@ def _run_cpython(
         returncode=rc,
         elapsed_ms=round(elapsed, 3),
         mode="cpython",
+        harness_error=harness_error,
     )
 
 
@@ -311,13 +323,13 @@ def _run_molt(
             "--output",
             output_binary,
         ]
-        build_stdout, build_stderr, build_rc = _run_subprocess(
+        build_stdout, build_stderr, build_rc, build_harness_error = _run_subprocess(
             build_cmd,
             timeout=timeout,
             env=env,
             cwd=_REPO_ROOT,
         )
-        if build_rc != 0:
+        if build_harness_error is not None or build_rc != 0:
             elapsed = (time.perf_counter() - t0) * 1000.0
             return RunResult(
                 stdout="",
@@ -325,6 +337,11 @@ def _run_molt(
                 returncode=build_rc,
                 elapsed_ms=round(elapsed, 3),
                 mode=mode,
+                harness_error=(
+                    None
+                    if build_harness_error is None
+                    else f"build {build_harness_error}"
+                ),
             )
 
         # Find the actual binary (might have platform suffix)
@@ -338,14 +355,15 @@ def _run_molt(
                 elapsed = (time.perf_counter() - t0) * 1000.0
                 return RunResult(
                     stdout="",
-                    stderr=f"Binary not found at {output_binary}",
+                    stderr="",
                     returncode=-1,
                     elapsed_ms=round(elapsed, 3),
                     mode=mode,
+                    harness_error=f"binary not found at {output_binary}",
                 )
 
         # Run
-        run_stdout, run_stderr, run_rc = _run_subprocess(
+        run_stdout, run_stderr, run_rc, run_harness_error = _run_subprocess(
             [str(binary)],
             timeout=timeout,
             env=env,
@@ -358,16 +376,18 @@ def _run_molt(
             returncode=run_rc,
             elapsed_ms=round(elapsed, 3),
             mode=mode,
+            harness_error=run_harness_error,
         )
 
     except Exception as exc:
         elapsed = (time.perf_counter() - t0) * 1000.0
         return RunResult(
             stdout="",
-            stderr=str(exc),
+            stderr="",
             returncode=-1,
             elapsed_ms=round(elapsed, 3),
             mode=mode,
+            harness_error=f"molt runner failed: {type(exc).__name__}: {exc}",
         )
 
 
@@ -428,6 +448,17 @@ def validate_file(
             build_profile=build_profile,
             target_python=target_python,
         )
+
+        # A run without an observable leaves nothing to compare: the file is an
+        # error (exit 2), never a semantic mismatch (exit 1).
+        harness_errors = [
+            f"{run.mode}: {run.harness_error}"
+            for run in (result.cpython, result.molt)
+            if run is not None and run.harness_error is not None
+        ]
+        if harness_errors:
+            result.error = "; ".join(harness_errors)
+            return result
 
         # Compare outputs
         if include_cpython and result.cpython:
@@ -818,10 +849,19 @@ def main(argv: list[str] | None = None) -> int:
         print(memory_guard_status)
         print_summary(all_summary, verbose=args.verbose)
 
+    return summary_exit_code(all_summary)
+
+
+def summary_exit_code(summary: ValidationSummary) -> int:
+    """0 only when at least one file executed and every file matched.
+
+    1 marks an executed mismatch. 2 marks an incomplete run: any error, any
+    skip, or nothing executed, even when other files passed.
+    """
     return fail_closed_proof_exit_code(
-        executed=all_summary.passed + all_summary.mismatches,
-        failed=all_summary.mismatches,
-        errors=all_summary.errors + all_summary.skipped,
+        executed=summary.passed + summary.mismatches,
+        failed=summary.mismatches,
+        errors=summary.errors + summary.skipped,
     )
 
 

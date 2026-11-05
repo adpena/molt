@@ -404,7 +404,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `memory-graph` | 4 | 1 |
 | `native-toolchain-transfer` | 39 | 0 |
 | `proof-plan-tests` | 1 | 0 |
-| `ci-wiring` | 53 | 0 |
+| `ci-wiring` | 54 | 0 |
 | `apparatus-hooks` | 11 | 2 |
 | `apparatus-learning-protection` | 6 | 1 |
 | `performance-measurement` | 39 | 1 |

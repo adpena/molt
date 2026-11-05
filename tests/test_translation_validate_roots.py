@@ -187,7 +187,7 @@ def test_run_cpython_uses_verified_target_python_command(monkeypatch) -> None:
 
     def fake_run_subprocess(cmd, **kwargs):
         calls.append(cmd)
-        return "ok\n", "", 0
+        return "ok\n", "", 0, None
 
     monkeypatch.setattr(translation_validate, "_run_subprocess", fake_run_subprocess)
 
@@ -224,8 +224,8 @@ def test_run_molt_build_stamps_target_python(
             build_cmds.append(cmd)
             output = Path(cmd[cmd.index("--output") + 1])
             output.write_text("#!/bin/sh\n", encoding="utf-8")
-            return "", "", 0
-        return "ok\n", "", 0
+            return "", "", 0, None
+        return "ok\n", "", 0, None
 
     monkeypatch.setattr(translation_validate, "_run_subprocess", fake_run_subprocess)
 
