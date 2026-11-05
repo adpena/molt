@@ -1394,13 +1394,56 @@ def provision(record: dict, stage: Path) -> dict[str, str]:
     return env
 
 
-def worker(record_path: Path) -> int:
-    stage = record_path.parent
-    # Redirect native file descriptors before loading repository authorities.
-    # No PowerShell redirection (which writes UTF-16) and no inherited SSH pipe.
-    with (stage / "worker.log").open("ab", buffering=0) as log:
+_WINDOWS_STD_HANDLES = ((-10, 0), (-11, 1), (-12, 2))  # STD_INPUT/OUTPUT/ERROR
+
+
+def bind_standard_streams(
+    log_path: Path, *, set_std_handle=None, get_osfhandle=None
+) -> None:
+    """Give the worker real standard streams: stdin from the null device, output to the log.
+
+    A CIM-created Windows process starts with invalid standard handles. dup2
+    rebinds only the C runtime descriptors, so `subprocess` children without
+    explicit stdio still duplicate the invalid OS handles and fail with
+    WinError 6 (the 2026-11-04 bat00 run lost sys.stderr this way). On Windows
+    the OS standard handles are pointed at the same descriptors, which is what
+    the POSIX launchers already get from `exec </dev/null >>worker.log 2>&1`.
+    """
+    null = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(null, 0)
+    os.close(null)
+    with log_path.open("ab", buffering=0) as log:
         os.dup2(log.fileno(), 1)
         os.dup2(log.fileno(), 2)
+    if os.name == "nt" or set_std_handle is not None:
+        if set_std_handle is None:
+            import ctypes
+            import msvcrt
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+            def set_std_handle(which: int, handle: int) -> None:
+                if not kernel32.SetStdHandle(which, handle):
+                    raise ctypes.WinError(ctypes.get_last_error())
+
+            get_osfhandle = msvcrt.get_osfhandle
+        for which, fd in _WINDOWS_STD_HANDLES:
+            set_std_handle(which, get_osfhandle(fd))
+    # Python's stream objects were built from the startup handles; rebuild them.
+    sys.stdin = open(0, encoding="utf-8", closefd=False)
+    sys.stdout = open(
+        1, "w", encoding="utf-8", errors="backslashreplace", buffering=1, closefd=False
+    )
+    sys.stderr = open(
+        2, "w", encoding="utf-8", errors="backslashreplace", buffering=1, closefd=False
+    )
+
+
+def worker(record_path: Path) -> int:
+    stage = record_path.parent
+    # Bind standard streams before loading repository authorities. No
+    # PowerShell redirection (which writes UTF-16) and no inherited SSH pipe.
+    bind_standard_streams(stage / "worker.log")
     authorities()
     record = json.loads(record_path.read_text(encoding="utf-8"))
     transfer_for_record(record)
