@@ -4,6 +4,7 @@ from dataclasses import replace
 import io
 import json
 import os
+from pathlib import Path, PureWindowsPath, PurePosixPath
 import subprocess
 import tarfile
 from types import SimpleNamespace
@@ -62,21 +63,56 @@ def test_provision_transport_runs_documented_workflow_twice(name, monkeypatch):
             assert timeout == 1800
             return '{"ok":true}'
 
+    commit = "cccccccccccccccccccccccccccccccccccccccc"
     monkeypatch.setattr(
-        trunk_loop, "checked", lambda _argv: "https://github.com/adpena/molt.git"
+        trunk_loop,
+        "checked",
+        lambda argv: (
+            commit if "rev-parse" in argv else "https://github.com/adpena/molt.git"
+        ),
     )
-    args = SimpleNamespace(inventory=cross_run.DEFAULT_INVENTORY, host=name)
+    args = SimpleNamespace(
+        inventory=cross_run.DEFAULT_INVENTORY, host=name, commit="origin/main"
+    )
     first = trunk_loop.provision_host(args, transport=Transport())
     second = trunk_loop.provision_host(args, transport=Transport())
     assert first == second
-    installs = [script for script in scripts if "uv sync --locked" in script]
+    host = next(
+        h
+        for h in cross_run.parse_inventory(cross_run.DEFAULT_INVENTORY)
+        if h.name == name
+    )
+    uv = trunk_loop.host_uv(host)
+    assert first["commit"] == commit and first["uv"] == uv
+    installs = [script for script in scripts if "sync --locked --group dev" in script]
     assert len(installs) == 2
     install = installs[0]
-    assert "uv sync --locked --group dev" in install
-    assert "uv run --locked molt doctor --json --strict" in install
+    # Doctor and the lock run at the provisioned commit, with the pinned uv.
+    assert install.index(f"checkout --quiet --detach {commit}") < install.index(
+        "sync --locked --group dev"
+    )
+    assert "run --locked molt doctor --json --strict" in install
+    assert uv in install
+    # Doctor and everything uv sync spawns resolve the pinned uv first.
+    uv_dir = (PureWindowsPath if host.is_windows else PurePosixPath)(uv).parent
+    head = (
+        f"$env:PATH={trunk_loop.ps(str(uv_dir) + ';')}"
+        if host.is_windows
+        else trunk_loop.posix_path_head(host)
+    )
+    assert head in install
+    # Every farm shell resolves the pinned uv, never the user's ~/.local/bin.
+    assert not any(".local" in script for script in scripts)
+    (retention,) = {script for script in scripts if "cache_retention" in script}
+    path_type = PureWindowsPath if host.is_windows else PurePosixPath
+    assert str(path_type(uv).parent) in retention and uv in retention
     assert "--default-toolchain none" in install
     assert "rustup show active-toolchain" in install
-    assert "git clone --" in install and "fetch origin" in install
+    # The exact commit from the public URL: never the checkout's own origin,
+    # whose SSH key may prompt; a prompt fails instead of hanging.
+    assert "git clone --" in install
+    assert "fetch --no-tags -- " in install and commit in install
+    assert "fetch origin" not in install and "GIT_TERMINAL_PROMPT" in install
     assert installs[0] == installs[1]
     assert "envs/molt-dx-py312" not in install
     if name == "molt-gate":
@@ -606,6 +642,24 @@ def test_inventory_rejects_retired_python_contract(tmp_path):
         cross_run.parse_inventory(inventory)
 
 
+def _fake_tool(path: Path, body: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _user_uv(root: Path) -> Path:
+    """The user's own uv, which another project on the host runs: provisioning
+    must neither run nor replace it (bat00, 2026-11-04)."""
+    user_uv = root / ".local/bin/uv"
+    _fake_tool(
+        user_uv,
+        '[ "$*" = "--version" ] && { echo "uv 0.10.9 (user)"; exit 0; }\n'
+        'printf "%s\\n" "user-uv $*" >> "$HOME/calls"\nexit 97\n',
+    )
+    return user_uv
+
+
 @pytest.mark.parametrize("name", ["macmini", "molt-gate"])
 @pytest.mark.parametrize("doctor_error", [False, True])
 @pytest.mark.skipif(os.name == "nt", reason="POSIX bootstrap script execution")
@@ -615,42 +669,40 @@ def test_existing_posix_install_does_no_bootstrap_work(tmp_path, name, doctor_er
     root = tmp_path / "host"
     checkout = root / "molt-src"
     checkout.mkdir(parents=True)
-    bin_dir = root / ".local/bin"
-    bin_dir.mkdir(parents=True)
-    log = root / "calls"
-    for command in ("uv", "rustup", "git", "curl", "cc", "cmake", "xcode-select"):
-        executable = bin_dir / command
-        if command == "xcode-select":
-            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-            executable.chmod(0o755)
-            continue
-        executable.write_text(
-            "#!/bin/sh\n"
-            '[ -z "${UV_PROJECT_ENVIRONMENT:-}${VIRTUAL_ENV:-}${MOLT_VENV:-}" ] || exit 93\n'
-            + (
-                '[ "$*" = "--version" ] && { echo "uv 0.13.5 (test)"; exit 0; }\n'
-                if command == "uv"
-                else ""
-            )
-            + f'printf "%s\\n" "{command} $*" >> "$HOME/calls"\n'
-            + (
-                'case "$*" in\n'
-                ' "run --locked molt doctor --json --strict") exit 7;;\n'
-                ' "run --locked molt doctor --json") echo \'{"status":"error"}\';;\n'
-                "esac\n"
-                if command == "uv" and doctor_error
-                else ""
-            ),
-            encoding="utf-8",
-        )
-        executable.chmod(0o755)
     host = replace(host_named(name), custody_root=str(root), checkout=str(checkout))
+    uv = Path(trunk_loop.host_uv(host))
+    version = uv.parent.name
+    commit = "c" * 40
+    log = root / "calls"
+    user_uv = _user_uv(root)
+    for command in ("rustup", "git", "curl", "cc", "clang", "xcode-select"):
+        _fake_tool(
+            root / ".cargo/bin" / command,
+            "exit 0\n"
+            if command == "xcode-select"
+            else f'printf "%s\\n" "{command} $*" >> "$HOME/calls"\n',
+        )
+    _fake_tool(
+        uv,
+        '[ -z "${UV_PROJECT_ENVIRONMENT:-}${VIRTUAL_ENV:-}${MOLT_VENV:-}" ] || exit 93\n'
+        f'[ "$*" = "--version" ] && {{ echo "uv {version} (pinned)"; exit 0; }}\n'
+        'printf "%s\\n" "uv $*" >> "$HOME/calls"\n'
+        + (
+            'if [ "$*" = "run --locked molt doctor --json --strict" ]; then exit 7; fi\n'
+            if doctor_error
+            else ""
+        ),
+    )
     script = trunk_loop.provision_script(
-        host, repository="https://example.test/repo.git", uv_version="0.13.5"
+        host,
+        repository="https://example.test/repo.git",
+        commit=commit,
     )
     env = dict(
         os.environ,
         HOME=str(root),
+        # The user's shell finds their own uv first.
+        PATH=f"{user_uv.parent}:{os.environ['PATH']}",
         UV_PROJECT_ENVIRONMENT="/foreign-image",
         VIRTUAL_ENV="/handmade",
         MOLT_VENV="/handmade",
@@ -664,7 +716,9 @@ def test_existing_posix_install_does_no_bootstrap_work(tmp_path, name, doctor_er
     assert (
         calls
         == [
-            f"git -C {checkout} fetch origin",
+            f"git -C {checkout} fetch --no-tags -- https://example.test/repo.git {commit}",
+            f"git -C {checkout} status --porcelain --untracked-files=no",
+            f"git -C {checkout} checkout --quiet --detach {commit}",
             "rustup show active-toolchain",
             "uv sync --locked --group dev",
             "uv run --locked molt doctor --json --strict",
@@ -680,39 +734,41 @@ def test_macos_provision_needs_no_package_manager_and_pins_uv(
 ):
     """2026-11-04: the Intel Mac mini has no Homebrew bottles (Tier 3) and ran
     uv 0.10.9. No proof cell needs CMake, so provision needs only the Command
-    Line Tools, then installs the pinned uv."""
+    Line Tools, then installs the pinned uv in its own directory, beside the
+    user's uv and never over it."""
     from tests.process_guard_common import run_custody_subject_process
 
     root = tmp_path / "host"
     checkout = root / "molt-src"
     checkout.mkdir(parents=True)
-    bin_dir = root / ".local/bin"
-    bin_dir.mkdir(parents=True)
+    host = replace(
+        host_named("macmini"), custody_root=str(root), checkout=str(checkout)
+    )
+    uv = Path(trunk_loop.host_uv(host))
+    version = uv.parent.name
     log = root / "calls"
-    for command in ("uv", "rustup", "git", "curl", "cc", "sh", "xcode-select"):
-        executable = bin_dir / command
+    user_uv = _user_uv(root)
+    before = user_uv.read_bytes()
+    for command in ("rustup", "git", "curl", "cc", "sh", "xcode-select"):
         body = f'printf "%s\\n" "{command} $*" >> "$HOME/calls"\n'
-        if command == "uv":
-            body = (
-                '[ "$*" = "--version" ] && { echo "uv 0.10.9 (old)"; exit 0; }\n' + body
-            )
         if command == "curl":
             body += 'for a; do last=$a; done; : > "$last"\n'
         if command == "xcode-select":
             body = "exit 0\n" if has_command_line_tools else "exit 2\n"
         if command == "sh":
-            # The installer replaces uv with the pinned release.
+            # The official installer, unmanaged: it writes only its directory.
             body += (
-                "printf '#!/bin/sh\\necho \"uv 0.13.6 (pinned)\"\\n' "
-                '> "$HOME/.local/bin/uv"\n'
+                'printf "%s\\n" "installer into $UV_UNMANAGED_INSTALL" >> "$HOME/calls"\n'
+                'mkdir -p "$UV_UNMANAGED_INSTALL"\n'
+                f"printf '#!/bin/sh\\necho \"uv {version} (pinned)\"\\n' "
+                '> "$UV_UNMANAGED_INSTALL/uv"\n'
+                'chmod +x "$UV_UNMANAGED_INSTALL/uv"\n'
             )
-        executable.write_text("#!/bin/sh\n" + body, encoding="utf-8")
-        executable.chmod(0o755)
-    host = replace(
-        host_named("macmini"), custody_root=str(root), checkout=str(checkout)
-    )
+        _fake_tool(root / ".cargo/bin" / command, body)
     script = trunk_loop.provision_script(
-        host, repository="https://example.test/repo.git", uv_version="0.13.6"
+        host,
+        repository="https://example.test/repo.git",
+        commit="c" * 40,
     )
     assert "brew" not in script and "cmake" not in script
     result = run_custody_subject_process(
@@ -720,20 +776,163 @@ def test_macos_provision_needs_no_package_manager_and_pins_uv(
         input=script,
         text=True,
         capture_output=True,
-        env=dict(os.environ, HOME=str(root), PATH=f"{bin_dir}:/usr/bin:/bin"),
+        env=dict(os.environ, HOME=str(root), PATH=f"{user_uv.parent}:/usr/bin:/bin"),
     )
     calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    assert not any(call.startswith("user-uv") for call in calls)
+    assert user_uv.read_bytes() == before
     if not has_command_line_tools:
         assert result.returncode == 2
         assert "cc: run xcode-select --install" in result.stderr
         assert not any(call.startswith("curl ") for call in calls)
         return
     assert result.returncode == 0, result.stderr
-    # The installed uv is not the pinned one, so the pinned installer runs.
+    # No pinned uv yet, so the pinned official installer runs, into its directory.
     assert any(
-        call.startswith("curl ") and "astral.sh/uv/0.13.6/install.sh" in call
+        call.startswith("curl ") and f"astral.sh/uv/{version}/install.sh" in call
         for call in calls
     )
+    assert f"installer into {uv.parent}" in calls
+    assert uv.is_file()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX bootstrap script execution")
+def test_provision_refuses_tracked_edits_before_checkout(tmp_path):
+    """Doctor must judge the provisioned commit, never local edits carried
+    across a checkout; provision never discards them either."""
+    from tests.process_guard_common import run_custody_subject_process
+
+    root = tmp_path / "host"
+    checkout = root / "molt-src"
+    checkout.mkdir(parents=True)
+    host = replace(
+        host_named("molt-gate"), custody_root=str(root), checkout=str(checkout)
+    )
+    uv = Path(trunk_loop.host_uv(host))
+    _fake_tool(uv, f'echo "uv {uv.parent.name} (pinned)"\n')
+    for command in ("rustup", "curl", "clang"):
+        _fake_tool(root / ".cargo/bin" / command, "exit 0\n")
+    _fake_tool(
+        root / ".cargo/bin/git",
+        'printf "%s\\n" "git $*" >> "$HOME/calls"\n'
+        'case "$*" in *"status --porcelain"*) echo " M src/molt/cli/doctor.py";; esac\n',
+    )
+    script = trunk_loop.provision_script(
+        host, repository="https://example.test/repo.git", commit="c" * 40
+    )
+    result = run_custody_subject_process(
+        ["/bin/sh"],
+        input=script,
+        text=True,
+        capture_output=True,
+        env=dict(os.environ, HOME=str(root)),
+    )
+    assert result.returncode == 2
+    assert "has tracked edits; provision never discards them" in result.stderr
+    calls = (root / "calls").read_text(encoding="utf-8")
+    assert "checkout --quiet --detach" not in calls
+
+
+def test_provision_refuses_a_commit_origin_does_not_have(monkeypatch):
+    class Transport:
+        def shell_command(self, script, **_kwargs):
+            if script.startswith(("df -Pk", "p=")):
+                return str(30 * 1024**2)
+            raise AssertionError("provision reached the host: " + script[:80])
+
+    monkeypatch.setattr(
+        trunk_loop,
+        "checked",
+        lambda argv: (
+            ""
+            if "for-each-ref" in argv
+            else "c" * 40
+            if "rev-parse" in argv
+            else "https://github.com/adpena/molt.git"
+        ),
+    )
+    with pytest.raises(ValueError, match="on no origin branch"):
+        trunk_loop.provision_host(
+            SimpleNamespace(
+                inventory=cross_run.DEFAULT_INVENTORY, host="macmini", commit="HEAD"
+            ),
+            transport=Transport(),
+        )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable bits")
+def test_worker_refuses_a_path_that_selects_another_uv(tmp_path):
+    pinned = tmp_path / "bootstrap/uv/0.0.0/uv"
+    user = tmp_path / ".local/bin/uv"
+    for executable in (pinned, user):
+        _fake_tool(executable, "exit 0\n")
+    trunk_loop.require_pinned_uv(
+        f"{pinned.parent}{os.pathsep}{user.parent}", str(pinned), "macmini"
+    )
+    for path in (f"{user.parent}{os.pathsep}{pinned.parent}", str(tmp_path)):
+        with pytest.raises(RuntimeError, match="not the pinned"):
+            trunk_loop.require_pinned_uv(path, str(pinned), "macmini")
+
+
+def test_run_ships_no_bundle_when_the_host_has_both_commits(tmp_path):
+    """Provision checks out the commit it provisions, so the host often holds
+    the run's subject and controller already; git refuses an empty bundle
+    (macmini, 2026-11-04)."""
+    from tests.process_guard_common import run_custody_subject_process
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+    run_custody_subject_process([*git, "init", "-q"], check=True)
+    commits = []
+    for message in ("first", "second"):
+        run_custody_subject_process(
+            [*git, "commit", "-q", "--allow-empty", "-m", message], check=True
+        )
+        commits.append(
+            run_custody_subject_process(
+                [*git, "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            ).stdout.strip()
+        )
+    first, second = commits
+    assert trunk_loop.is_ancestor(first, second, repo)
+    assert trunk_loop.is_ancestor(second, second, repo)
+    assert not trunk_loop.is_ancestor(second, first, repo)
+
+    host = host_named("macmini")
+
+    class Transport:
+        def __init__(self):
+            self.pushed, self.commands = [], []
+
+        def push(self, paths):
+            self.pushed.extend(paths)
+
+        def remote_path(self, name):
+            return "/stage/" + name
+
+        def shell_command(self, script, *, timeout=60):
+            self.commands.append(script)
+            return ""
+
+    without = Transport()
+    trunk_loop.prepare_checkouts(host, without, None, second, second, "/w/s", "/w/c")
+    assert without.pushed == []
+    assert not any("bundle" in command for command in without.commands)
+    assert len(without.commands) == 2  # the subject and controller worktrees
+    bundle = tmp_path / "source.bundle"
+    shipped = Transport()
+    trunk_loop.prepare_checkouts(host, shipped, bundle, second, second, "/w/s", "/w/c")
+    assert shipped.pushed == [bundle]
+    assert [c for c in shipped.commands if "bundle" in c] == [
+        c for c in shipped.commands[:2]
+    ]
+    assert "bundle verify" in shipped.commands[0]
+    assert "bundle unbundle" in shipped.commands[1]
 
 
 def test_farm_hosts_run_no_command_that_needs_a_runner_image_toolchain():
