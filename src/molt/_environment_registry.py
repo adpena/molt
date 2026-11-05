@@ -4250,6 +4250,16 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
+      "audience": "internal",
+      "default": "",
+      "kind": "string",
+      "name": "MOLT_IO_HOOK_RETURN_CUSTODY_CHILD",
+      "output_neutral": false,
+      "owner": "runtime/molt-runtime/src/async_rt/channels/stream.rs",
+      "summary": "The IO return-custody unit test selects the transport, operation and restore mode in its owned child process.",
+      "values": []
+    },
+    {
       "audience": "user",
       "default": "real",
       "kind": "enum",
