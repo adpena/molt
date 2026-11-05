@@ -18,6 +18,7 @@ from typing import Any, cast
 
 from molt.frontend import MoltValue, SimpleTIRGenerator
 from molt.frontend import BoundMethodHint, ClassId, ClassInfo, DeclaredClass
+from molt.frontend.dataclass_init import DataclassInitField
 from molt.frontend.module_publication import (
     parse_function_metadata,
     inspect_source_module_publication,
@@ -32,6 +33,7 @@ from molt.cli.cache_fingerprints import (
     _source_tree_fingerprint_transaction,
 )
 from molt.cli.cache_keys import (
+    _DATACLASS_INIT_FIELD_TAG,
     _cache_json_value,
     _decode_class_identity,
     _encode_class_identity,
@@ -1022,6 +1024,20 @@ def _decode_cached_json_value_inner(value: Any) -> Any:
                     raise ValueError("duplicate cached dictionary key")
                 result[key] = child
             return result
+        if _DATACLASS_INIT_FIELD_TAG in value:
+            fields = value[_DATACLASS_INIT_FIELD_TAG]
+            if not (
+                len(value) == 1
+                and isinstance(fields, list)
+                and len(fields) == 5
+                and isinstance(fields[0], str)
+                and fields[0].isidentifier()
+                and all(type(flag) is bool for flag in fields[1:4])
+                and type(fields[4]) is int
+                and fields[4] in (0, 1, 2)
+            ):
+                raise ValueError("invalid cached dataclass initializer field")
+            return DataclassInitField(*fields)
         if "__integer_bytes__" in value and len(value) == 1:
             raw = value["__integer_bytes__"]
             if not isinstance(raw, list) or not all(

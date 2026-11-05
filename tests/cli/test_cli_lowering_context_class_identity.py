@@ -25,7 +25,10 @@ import dataclasses
 import importlib
 import json
 
+import pytest
+
 from molt.frontend import BuiltinClass, ClassId, MoltValue, SimpleTIRGenerator
+from molt.frontend.dataclass_init import project_initializer_fields
 
 CK = importlib.import_module("molt.cli.cache_keys")
 MC = importlib.import_module("molt.cli.module_cache")
@@ -146,3 +149,91 @@ def test_lowering_a_dependent_module_leaves_known_class_info_frozen() -> None:
     assert consumer._exception_subclass_memo
     assert _snapshot(known) == before, "a dependent module mutated a shared ClassInfo"
     assert _digest(known) == digest_before
+
+
+@pytest.mark.parametrize(
+    "last_field",
+    [
+        "factory: list = field(init=False, kw_only=True, default_factory=list)",
+        "transient: InitVar[int] = 4",
+    ],
+)
+def test_dataclass_projection_survives_cache_and_inherited_projection(
+    last_field,
+) -> None:
+    source = (
+        """from dataclasses import dataclass, field, InitVar
+@dataclass
+class Base:
+    required: int
+    ordinary: int = 3
+"""
+        + f"    {last_field}\n"
+    )
+    namespace = {"__name__": __name__}
+    exec(compile(source, "dataclass-oracle", "exec", dont_inherit=True), namespace)
+
+    def expected(cls):
+        return tuple(
+            (
+                field.name,
+                field.init,
+                field.kw_only,
+                isinstance(field.type, dataclasses.InitVar),
+                2
+                if field.default_factory is not dataclasses.MISSING
+                else 1
+                if field.default is not dataclasses.MISSING
+                else 0,
+            )
+            for field in cls.__dataclass_fields__.values()
+        )
+
+    # Keep the only helper call last: a callback can expire binding facts
+    # for subsequent fields, whose projection is deliberately conservative.
+    _generator, classes = _lowered_classes("pkg.base", source)
+    projection = classes[ClassId("pkg.base", "Base")]["dataclass_init_projection"]
+    assert projection is not None
+    assert tuple(field.schema() for field in projection) == expected(namespace["Base"])
+    hydrated = _round_trip(classes)
+    assert _digest(hydrated) == _digest(classes)
+    child_source = """from dataclasses import dataclass
+@dataclass
+class Child(Base):
+    extra: int = 9
+"""
+    exec(compile(child_source, "child-oracle", "exec", dont_inherit=True), namespace)
+    child_definition = ast.parse(child_source).body[-1]
+    assert isinstance(child_definition, ast.ClassDef)
+    for known in (classes, hydrated):
+        inherited = known[ClassId("pkg.base", "Base")]["dataclass_init_projection"]
+        child = project_initializer_fields(child_definition, (inherited,), False, None)
+        assert child is not None
+        assert tuple(field.schema() for field in child) == expected(namespace["Child"])
+
+
+def test_dataclass_cache_tag_does_not_capture_a_metadata_name() -> None:
+    name_map = {CK._DATACLASS_INIT_FIELD_TAG: ["field", True, False, False, 0]}
+    assert _round_trip(name_map) == name_map
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        None,
+        [],
+        ["field", True, False, False],
+        ["field", True, False, False, 0, 1],
+        ["not a field", True, False, False, 0],
+        [17, True, False, False, 0],
+        ["field", 1, False, False, 0],
+        ["field", True, 0, False, 0],
+        ["field", True, False, None, 0],
+        ["field", True, False, False, True],
+        ["field", True, False, False, -1],
+        ["field", True, False, False, 3],
+    ],
+)
+def test_dataclass_cache_projection_rejects_malformed_fields(fields) -> None:
+    with pytest.raises(ValueError, match="dataclass initializer field"):
+        MC._decode_cached_json_value({CK._DATACLASS_INIT_FIELD_TAG: fields})
