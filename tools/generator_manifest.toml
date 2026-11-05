@@ -277,7 +277,10 @@ discovery_only = false
 
 [[generator]]
 tool = "tools/gen_python_identity_catalog.py"
-outputs = ["src/molt/compiler_analysis/python_identity_catalog_generated.py"]
+outputs = [
+  "src/molt/compiler_analysis/python_identity_catalog_generated.py",
+  "runtime/molt-runtime/src/builtins/types/dataclasses/initializer_spec_generated.rs",
+]
 source = "src/molt/compiler_analysis/python_identity_catalog.toml + runtime/molt-runtime/src/intrinsics/manifest.pyi + tools/intrinsic_manifest.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_python_identity_catalog.py --check"

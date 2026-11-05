@@ -107,6 +107,31 @@ class PythonSourceCall(NamedTuple):
         tuple[int | str | None, frozenset[PythonSourceKey], frozenset[PythonSourceKey]],
         ...,
     ]
+    argument_strings: tuple[str | None, ...] = ()
+
+
+class PythonNativeInitializerSource(NamedTuple):
+    """A native plan's receiver, captured values and retained function metadata."""
+
+    owner: PythonSourceKey
+    receiver: frozenset[PythonSourceKey]
+    captures: frozenset[PythonSourceKey]
+    attributes: tuple[tuple[str, frozenset[PythonSourceKey]], ...]
+    parameters: tuple[str, ...] | None = None
+    capture_values: (
+        tuple[tuple[frozenset[PythonSourceKey], frozenset[PythonSourceKey]], ...] | None
+    ) = None
+    stores: (
+        tuple[tuple[str | None, int | None, int | None, int | None, bool | None], ...]
+        | None
+    ) = None
+    post_inputs: tuple[tuple[str | None, int | None], ...] | None = None
+
+
+class PythonSourceClass(NamedTuple):
+    owner: PythonSourceKey
+    plain_metaclass: bool
+    plain_attributes: tuple[str, ...]
 
 
 class PythonSourceParameters(NamedTuple):
@@ -134,6 +159,7 @@ class PythonSourceElement(NamedTuple):
     owner: PythonSourceKey
     protocol: PythonElementProtocol
     origins: frozenset[PythonSourceKey]
+    key: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -814,6 +840,8 @@ class PythonBindingFacts:
     callbacks_rewrite_metadata: bool
     source_elements: tuple[PythonSourceElement, ...]
     source_calls: tuple[PythonSourceCall, ...]
+    source_native_initializers: tuple[PythonNativeInitializerSource, ...]
+    source_classes: tuple[PythonSourceClass, ...]
     source_completions: tuple[tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...]
     source_parameters: tuple[PythonSourceParameters, ...]
     source_callables: tuple[tuple[PythonSourceKey, IdentityMask], ...]
@@ -856,6 +884,8 @@ class PythonBindingFacts:
         callbacks_rewrite_metadata: bool = True,
         source_elements: tuple[PythonSourceElement, ...] = (),
         source_calls: tuple[PythonSourceCall, ...] = (),
+        source_native_initializers: tuple[PythonNativeInitializerSource, ...] = (),
+        source_classes: tuple[PythonSourceClass, ...] = (),
         source_callables: tuple[tuple[PythonSourceKey, IdentityMask], ...] = (),
         source_completions: tuple[
             tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...
@@ -882,6 +912,8 @@ class PythonBindingFacts:
             callbacks_rewrite_metadata=callbacks_rewrite_metadata,
             source_elements=source_elements,
             source_calls=source_calls,
+            source_native_initializers=source_native_initializers,
+            source_classes=source_classes,
             source_callables=source_callables,
             source_completions=source_completions,
             source_parameters=source_parameters,

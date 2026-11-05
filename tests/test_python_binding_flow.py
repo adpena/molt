@@ -6058,6 +6058,57 @@ def test_literal_getattr_selection_transports_callable_and_fallback_sources():
     )
 
 
+def test_immutable_tuple_keeps_positions_while_callback_expires_mutable_descendants():
+    source = (
+        "def run(callback):\n"
+        "    values = [1]\n"
+        "    pair = (values, 'stable')\n"
+        "    callback(values)\n"
+        "    marker = pair[1]\n"
+        "    element = pair[0][0]\n"
+        "    return marker, element\n"
+    )
+    tree = ast.parse(source)
+    facts = analyze_python_source_bindings(source)
+    marker = tree.body[0].body[3].value
+    element = tree.body[0].body[4].value
+    assert facts.static_value(marker) == "stable"
+    assert not facts.expression_result(element).value_known
+    namespace = {}
+    exec(compile(source, "<tuple-mutation-oracle>", "exec"), namespace)
+    assert namespace["run"](lambda values: values.__setitem__(0, 99)) == ("stable", 99)
+
+
+@pytest.mark.parametrize("callee", ["read", "alias"])
+def test_native_attribute_reader_identity_tracks_alias_and_rebinding(callee):
+    source = (
+        "from _intrinsics import require_intrinsic\n"
+        "read = require_intrinsic('molt_dataclasses_init_globals')\n"
+        "alias = read\nimport provider\n" + f"{callee}(provider)\n"
+    )
+    tree = ast.parse(source)
+    policy = PythonBindingPolicy(
+        foreign_namespace_writes=(),
+        callback_member_writes=0,
+        opaque_activation_sources=(),
+    )
+    facts = analyze_python_source_bindings(source, policy=policy)
+    assert facts.expression_is(
+        tree.body[-1].value.func, PythonIdentity.INTRINSIC_DATACLASSES_INIT_GLOBALS
+    )
+    assert any(name == "__dict__" for _, name, _ in facts.source_attributes)
+    replaced = (
+        source.rsplit(f"{callee}(provider)", 1)[0]
+        + f"{callee} = unknown\n{callee}(provider)\n"
+    )
+    facts = analyze_python_source_bindings(replaced, policy=policy)
+    call = ast.parse(replaced).body[-1].value
+    assert not facts.expression_is(
+        call.func, PythonIdentity.INTRINSIC_DATACLASSES_INIT_GLOBALS
+    )
+    assert not facts.source_attributes
+
+
 @pytest.mark.parametrize("call", ["getattr", "hasattr", "delattr", "foreign"])
 def test_unknown_attribute_selector_or_callee_keeps_module_exposure(call):
     source = f"import provider\nmember = selector\n{call}(provider, member)\n"
@@ -6107,3 +6158,49 @@ def test_function_attribute_mutation_invalidates_closed_source_activation(
     engine.drain()
     victim = python_node_source_key(ast.parse(source).body[0])
     assert victim in engine.opaque_activation_sources("entry")
+
+
+def test_exposed_namespace_tracks_late_callable_publication(tmp_path):
+    from molt.compiler_analysis.python_source_demands import (
+        PythonSourceDemands,
+        PythonNamespaceOwnership,
+        SourceCandidate,
+    )
+    from molt.stdlib_intrinsic_policy import stdlib_module_intrinsic_facts
+    from molt.target_python import TargetPythonVersion
+
+    namespace = {}
+    view = namespace
+    source = "def callback(): return 42\n"
+    exec(compile(source, "<late-namespace-oracle>", "exec"), namespace)
+    assert view["callback"]() == 42
+    bodies = []
+    engine = PythonSourceDemands(
+        require_runtime_import_protocol=lambda module: None,
+        admit_imports=lambda *args: None,
+        queue_body=lambda module, owner, arguments: bodies.append(owner),
+    )
+
+    def scan(text):
+        return stdlib_module_intrinsic_facts(
+            "api",
+            tmp_path / "api.py",
+            source=text,
+            target_python=TargetPythonVersion(3, 12, 0),
+        ).import_evidence.source_scan
+
+    engine.accept("api", scan("pass\n"))
+    engine.activate(
+        SourceCandidate(
+            "api",
+            None,
+            "namespace",
+            namespace_ownership=PythonNamespaceOwnership.BORROWED,
+        ),
+        "expose",
+    )
+    engine.drain()
+    assert not bodies
+    engine.accept("api", scan(source))
+    engine.drain()
+    assert python_node_source_key(ast.parse(source).body[0]) in bodies

@@ -16,6 +16,8 @@ if TYPE_CHECKING:
         PythonSourceElement,
         PythonSourceCall,
         PythonSourceParameters,
+        PythonNativeInitializerSource,
+        PythonSourceClass,
     )
     from molt.compiler_analysis.python_namespace_writes import PythonNamespaceSummary
 
@@ -2594,6 +2596,8 @@ class _SourceValueSummary(NamedTuple):
         ],
         ...,
     ] = ()
+    native_initializers: tuple[PythonNativeInitializerSource, ...] = ()
+    classes: tuple[PythonSourceClass, ...] = ()
 
 
 class _ImportScanRequests(NamedTuple):

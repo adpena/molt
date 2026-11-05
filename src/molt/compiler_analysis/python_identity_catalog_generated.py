@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from enum import Enum, IntFlag
+from enum import Enum, IntEnum, IntFlag
 from types import MappingProxyType
 from typing import Final, Mapping, NamedTuple, TypeAlias
 
@@ -89,6 +89,8 @@ class PythonIdentity(IntFlag):
     BUILTIN_GETATTR = 1 << 75
     BUILTIN_HASATTR = 1 << 76
     BUILTIN_DELATTR = 1 << 77
+    INTRINSIC_DATACLASSES_INIT_GLOBALS = 1 << 78
+    INTRINSIC_DATACLASSES_INIT = 1 << 79
 
 
 class PythonMember(IntFlag):
@@ -147,6 +149,27 @@ class PythonTargetProperty(Enum):
     SYS_PLATFORM = 'sys_platform'
     OS_NAME = 'os_name'
     SYS_VERSION_INFO = 'sys_version_info'
+
+
+class PythonNativeInitializer(Enum):
+    DATACLASS = 'dataclass'
+
+
+class DataclassInitSpecField(IntEnum):
+    PARAMETERS = 0
+    POSITIONAL = 1
+    DEFAULTS = 2
+    KWDEFAULTS = 3
+    CAPTURE_NAMES = 4
+    CAPTURES = 5
+    STORES = 6
+    POST_INIT_INPUTS = 7
+    FACTORY_MARKER = 8
+    FROZEN_OBJECT = 9
+    ANNOTATIONS = 10
+    GLOBALS = 11
+    MODULE = 12
+    BUILTINS = 13
 
 
 class PythonImportBehavior(Enum):
@@ -219,6 +242,8 @@ PUBLIC_RUNTIME_IMPORT_IDENTITIES: Final[IdentityMask] = (
 INTRINSIC_CALLABLE_IDENTITIES: Final[Mapping[str, PythonIdentity]] = MappingProxyType(
     {
         'molt_sys_platform': PythonIdentity.INTRINSIC_SYS_PLATFORM,
+        'molt_dataclasses_init_globals': PythonIdentity.INTRINSIC_DATACLASSES_INIT_GLOBALS,
+        'molt_dataclasses_init': PythonIdentity.INTRINSIC_DATACLASSES_INIT,
         'molt_os_name': PythonIdentity.INTRINSIC_OS_NAME,
         'molt_module_import': PythonIdentity.INTRINSIC_MODULE_IMPORT,
         'molt_importlib_import_module': PythonIdentity.INTRINSIC_IMPORTLIB_IMPORT_MODULE,
@@ -256,6 +281,18 @@ INTRINSIC_TARGET_PROPERTIES: Final[Mapping[IdentityMask, PythonTargetProperty]] 
         int(PythonIdentity.INTRINSIC_SYS_PLATFORM): PythonTargetProperty.SYS_PLATFORM,
         int(PythonIdentity.INTRINSIC_OS_NAME): PythonTargetProperty.OS_NAME,
         int(PythonIdentity.INTRINSIC_SYS_VERSION_INFO): PythonTargetProperty.SYS_VERSION_INFO,
+    }
+)
+
+INTRINSIC_ATTRIBUTE_READS: Final[Mapping[IdentityMask, tuple[int, str]]] = MappingProxyType(
+    {
+        int(PythonIdentity.INTRINSIC_DATACLASSES_INIT_GLOBALS): (0, '__dict__'),
+    }
+)
+
+INTRINSIC_NATIVE_INITIALIZERS: Final[Mapping[IdentityMask, PythonNativeInitializer]] = MappingProxyType(
+    {
+        int(PythonIdentity.INTRINSIC_DATACLASSES_INIT): PythonNativeInitializer.DATACLASS,
     }
 )
 
@@ -318,6 +355,8 @@ INTRINSIC_RUNTIME_IMPORT_MIN_ARGUMENT_MASKS: Final[tuple[IdentityMask, ...]] = (
 
 ALL_INTRINSIC_CALLABLE_IDENTITIES: Final[IdentityMask] = (
     int(PythonIdentity.INTRINSIC_SYS_PLATFORM) |
+    int(PythonIdentity.INTRINSIC_DATACLASSES_INIT_GLOBALS) |
+    int(PythonIdentity.INTRINSIC_DATACLASSES_INIT) |
     int(PythonIdentity.INTRINSIC_OS_NAME) |
     int(PythonIdentity.INTRINSIC_MODULE_IMPORT) |
     int(PythonIdentity.INTRINSIC_IMPORTLIB_IMPORT_MODULE) |

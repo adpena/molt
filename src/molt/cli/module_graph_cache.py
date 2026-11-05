@@ -11,6 +11,8 @@ from molt.compiler_analysis.python_binding_facts import (
     PythonSourceCall,
     PythonSourceParameters,
     PythonSourceElement,
+    PythonNativeInitializerSource,
+    PythonSourceClass,
 )
 
 import functools
@@ -41,6 +43,7 @@ from molt.cli.cache_fingerprints import (
 )
 from molt.cli import module_source as _module_source
 from molt.compiler_analysis.python_source_keys import (
+    PythonSourceProjection,
     PythonSourceKey,
     decode_python_source_key,
 )
@@ -113,6 +116,24 @@ def _source_cache_strings(value: Any) -> tuple[str, ...]:
     if not isinstance(value, list) or any(type(item) is not str for item in value):
         raise ValueError("invalid intrinsic source string sequence")
     return tuple(value)
+
+
+def _source_cache_optional_string(value: Any) -> str | None:
+    if value is not None and type(value) is not str:
+        raise ValueError("invalid source selector")
+    return value
+
+
+def _source_native_slot(value: Any) -> int | None:
+    if value is None or type(value) is int and value >= -1:
+        return value
+    raise ValueError("invalid native initializer input index")
+
+
+def _source_cache_optional_strings(value: Any) -> tuple[str | None, ...]:
+    if not isinstance(value, list):
+        raise ValueError("invalid source selector sequence")
+    return tuple(_source_cache_optional_string(item) for item in value)
 
 
 def _source_cache_sorted_strings(value: Any) -> tuple[str, ...]:
@@ -803,7 +824,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 41
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 42
 
 
 def _import_scan_cache_key(
@@ -1133,6 +1154,8 @@ def _read_persisted_import_scan_record(
                 "call_imports",
                 "cache_writes",
                 "cache_reads",
+                "native_initializers",
+                "classes",
             },
         )
         values = _SourceValueSummary(
@@ -1164,9 +1187,10 @@ def _read_persisted_import_scan_record(
                     decode_python_source_key(source),
                     PythonElementProtocol(protocol),
                     _source_cache_origins(origins),
+                    _source_cache_optional_string(key),
                 )
-                for source, protocol, origins in _source_cache_rows(
-                    raw_values["elements"], 3
+                for source, protocol, origins, key in _source_cache_rows(
+                    raw_values["elements"], 4
                 )
             ),
             tuple(
@@ -1182,9 +1206,10 @@ def _read_persisted_import_scan_record(
                         )
                         for name, direct, exposed in _source_cache_rows(arguments, 3)
                     ),
+                    _source_cache_optional_strings(strings),
                 )
-                for source, origins, intrinsic_result, arguments in _source_cache_rows(
-                    raw_values["calls"], 4
+                for source, origins, intrinsic_result, arguments, strings in _source_cache_rows(
+                    raw_values["calls"], 5
                 )
             ),
             tuple(
@@ -1265,7 +1290,75 @@ def _read_persisted_import_scan_record(
                     raw_values["cache_reads"], 5
                 )
             ),
+            tuple(
+                PythonNativeInitializerSource(
+                    decode_python_source_key(owner),
+                    _source_cache_origins(receiver),
+                    _source_cache_origins(captures),
+                    tuple(
+                        (name, _source_cache_origins(origins))
+                        for name, origins in _source_cache_rows(attributes, 2)
+                    ),
+                    None if parameters is None else _source_cache_strings(parameters),
+                    None
+                    if capture_values is None
+                    else tuple(
+                        (_source_cache_origins(direct), _source_cache_origins(exposed))
+                        for direct, exposed in _source_cache_rows(capture_values, 2)
+                    ),
+                    None
+                    if stores is None
+                    else tuple(
+                        (
+                            _source_cache_optional_string(name),
+                            _source_native_slot(supplied),
+                            _source_native_slot(argument),
+                            _source_native_slot(capture),
+                            None if factory is None else _source_cache_bool(factory),
+                        )
+                        for name, supplied, argument, capture, factory in _source_cache_rows(
+                            stores, 5
+                        )
+                    ),
+                    None
+                    if post is None
+                    else tuple(
+                        (_source_cache_optional_string(name), _source_native_slot(slot))
+                        for name, slot in _source_cache_rows(post, 2)
+                    ),
+                )
+                for owner, receiver, captures, attributes, parameters, capture_values, stores, post in _source_cache_rows(
+                    raw_values["native_initializers"], 8
+                )
+            ),
+            tuple(
+                PythonSourceClass(
+                    decode_python_source_key(owner),
+                    _source_cache_bool(plain),
+                    _source_cache_sorted_strings(attributes),
+                )
+                for owner, plain, attributes in _source_cache_rows(
+                    raw_values["classes"], 3
+                )
+            ),
         )
+        if any(
+            len(call.argument_strings) not in {0, len(call.arguments)}
+            or any(
+                name is not None and not isinstance(name, str)
+                for name in call.argument_strings
+            )
+            for call in values.calls
+        ):
+            return None
+        if any(
+            item.owner[-1] != PythonSourceProjection.CALL_NATIVE_INITIALIZER.value
+            or any(not isinstance(name, str) for name, _ in item.attributes)
+            for item in values.native_initializers
+        ) or len({item.owner for item in values.native_initializers}) != len(
+            values.native_initializers
+        ):
+            return None
         if any(owner[-1] != "ClassDef" for owner, _ in values.bases) or len(
             {owner for owner, _ in values.bases}
         ) != len(values.bases):
@@ -1461,7 +1554,7 @@ def _write_persisted_import_scan(
                 for owner, name, origins in scan.source_values.attributes
             ],
             "elements": [
-                (item.owner, item.protocol, sorted(item.origins))
+                (item.owner, item.protocol, sorted(item.origins), item.key)
                 for item in scan.source_values.elements
             ],
             "calls": [
@@ -1473,6 +1566,7 @@ def _write_persisted_import_scan(
                         (name, sorted(direct), sorted(exposed))
                         for name, direct, exposed in item.arguments
                     ],
+                    item.argument_strings,
                 )
                 for item in scan.source_values.calls
             ],
@@ -1509,6 +1603,25 @@ def _write_persisted_import_scan(
             "cache_writes": [
                 (source, keys, sorted(origins), sorted(contents))
                 for source, keys, origins, contents in scan.source_values.cache_writes
+            ],
+            "classes": scan.source_values.classes,
+            "native_initializers": [
+                (
+                    item.owner,
+                    sorted(item.receiver),
+                    sorted(item.captures),
+                    [(name, sorted(origins)) for name, origins in item.attributes],
+                    item.parameters,
+                    None
+                    if item.capture_values is None
+                    else [
+                        (sorted(direct), sorted(exposed))
+                        for direct, exposed in item.capture_values
+                    ],
+                    item.stores,
+                    item.post_inputs,
+                )
+                for item in scan.source_values.native_initializers
             ],
             "cache_reads": [
                 (source, keys, sorted(defaults), sorted(contents), contained)

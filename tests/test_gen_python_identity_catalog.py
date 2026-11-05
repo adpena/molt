@@ -300,7 +300,7 @@ def test_existing_identity_and_member_bits_remain_stable() -> None:
     [
         (("BUILTIN_OPEN = 48", "BUILTIN_OPEN = 47"), "duplicate identity bit"),
         (("IMPORTLIB_MODULE = 0", "IMPORTLIB_MODULE = true"), "bit must be"),
-        (("schema_version = 2", "schema_version = 2\nunknown = 1"), "top-level keys"),
+        (("schema_version = 3", "schema_version = 3\nunknown = 1"), "top-level keys"),
         (('guard = "BUILTINS_IMPORT"', 'guard = "MISSING"'), "unknown builtin guard"),
         (
             ('owner = "IMPORTLIB_MODULE"', 'owner = "MISSING"'),
