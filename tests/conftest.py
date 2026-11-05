@@ -65,9 +65,37 @@ def _storage_write_authority(
     with storage_write_check(
         ROOT,
         os.environ,
-        outputs=(StorageWriteClaim("temporary", tmp_path_factory.getbasetemp()),),
+        outputs=(
+            StorageWriteClaim("temporary", tmp_path_factory.getbasetemp()),
+            *declared_proof_fixture_roots(os.environ),
+        ),
     ):
         yield
+
+
+# Explicit fixture placement roots a proof owner declares for real queue and
+# native supervisor tests (tests/proof_queue_owned_roots.py); the trunk loop's
+# worker selects them per run from its host record (trunk_loop.fixture_roots).
+PROOF_FIXTURE_ROOT_VARIABLES = (
+    "MOLT_PROOF_TEST_METADATA_ROOT",
+    "MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT",
+)
+
+
+def declared_proof_fixture_roots(environ: Mapping[str, str]) -> tuple:
+    """Grant the owner-declared roots as the explicit outputs they are.
+
+    They lie outside the artifact root when a host declares them (bat00,
+    2026-11-04: 45 refused writes under C:\\Molt\\trunk-metadata). An unset or
+    empty variable grants nothing.
+    """
+    from molt.dx import StorageWriteClaim
+
+    return tuple(
+        StorageWriteClaim("temporary", Path(environ[name]).resolve(strict=False))
+        for name in PROOF_FIXTURE_ROOT_VARIABLES
+        if environ.get(name)
+    )
 
 
 @pytest.fixture(autouse=True)

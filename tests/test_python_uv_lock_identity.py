@@ -58,11 +58,12 @@ def test_selected_target_wheel_is_independent_of_reader_tags(
         ],
     }
     assert _locked_artifact(row, [f"cp313-{abi}-{platform}"]) == {
+        "kind": "wheel",
         "filename": expected,
         "sha256": "c" * 64,
         "size": 123,
     }
-    with pytest.raises(PythonEnvironmentIdentityError, match="no wheel"):
+    with pytest.raises(PythonEnvironmentIdentityError, match="neither a wheel"):
         _locked_artifact(row, ["cp314-cp314t-win_arm64"])
 
 
@@ -209,6 +210,7 @@ def test_locked_compressed_platform_tie_retains_uv_lock_order(monkeypatch, rever
         ["py3-none-macosx_11_0_arm64"],
     )
     assert artifact == {
+        "kind": "wheel",
         "filename": names[1 if reverse else 0],
         "size": 123,
         "sha256": ("b" if reverse else "a") * 64,
@@ -556,3 +558,204 @@ def test_repository_lock_revision_is_supported_and_unknown_ones_fail_closed(
     )
     with pytest.raises(identity.PythonEnvironmentIdentityError, match="schema"):
         _select(tmp_path, requirements)
+
+
+# HF-771: uv installs the locked sdist when no locked wheel matches the target
+# (Package::to_dist); the identity records that file (python_lock_identity.md).
+
+
+def _sdist(name: str, version: str = "1.0", digest: str = "d") -> dict[str, object]:
+    return {
+        "url": f"https://example.invalid/{name}-{version}.tar.gz",
+        "hash": f"sha256:{digest * 64}",
+        "size": 456,
+    }
+
+
+@pytest.mark.parametrize("sdist_only_row", [True, False])
+def test_locked_sdist_is_the_artifact_when_no_wheel_matches(sdist_only_row):
+    """cbor2 6.1.5 publishes no macOS x86_64 wheel; uv builds its sdist."""
+    row: dict[str, object] = {
+        "name": "cbor2",
+        "version": "6.1.5",
+        "sdist": _sdist("cbor2", "6.1.5"),
+    }
+    if not sdist_only_row:  # uv omits `wheels` from an sdist-only row.
+        row["wheels"] = [_wheel("cbor2-6.1.5-cp312-cp312-macosx_11_0_arm64.whl")]
+    intel_mac = ["cp312-cp312-macosx_15_0_x86_64", "py3-none-any"]
+    assert _locked_artifact(row, intel_mac) == {
+        "kind": "sdist",
+        "filename": "cbor2-6.1.5.tar.gz",
+        "size": 456,
+        "sha256": "d" * 64,
+    }
+    # A matching wheel always wins over the sdist.
+    row["wheels"] = [_wheel("cbor2-6.1.5-cp312-cp312-macosx_11_0_arm64.whl")]
+    assert _locked_artifact(row, ["cp312-cp312-macosx_11_0_arm64"])["kind"] == "wheel"
+
+
+@pytest.mark.parametrize(
+    "row,message",
+    [
+        ({"name": "alpha", "version": "1.0"}, "neither a wheel"),
+        (
+            {"name": "alpha", "version": "1.0", "sdist": _sdist("alpha", "2.0")},
+            "sdist differs",
+        ),
+        (
+            {"name": "alpha", "version": "1.0", "sdist": _sdist("beta")},
+            "sdist differs",
+        ),
+        (
+            {
+                "name": "alpha",
+                "version": "1.0",
+                "sdist": {**_sdist("alpha"), "hash": "md5:" + "0" * 32},
+            },
+            "sdist identity is invalid",
+        ),
+        (
+            {
+                "name": "alpha",
+                "version": "1.0",
+                "sdist": {**_sdist("alpha"), "url": "https://example.invalid/x.whl"},
+            },
+            "sdist identity is invalid",
+        ),
+    ],
+)
+def test_locked_sdist_must_be_the_rows_own_file(row, message):
+    with pytest.raises(PythonEnvironmentIdentityError, match=message):
+        _locked_artifact(row, ["py3-none-any"])
+
+
+def _sdist_package(name: str) -> str:
+    return (
+        f"\n[[package]]\nname = {json.dumps(name)}\nversion = '1.0'\n"
+        "source = { registry = 'https://example.invalid/simple' }\n"
+        "dependencies = []\n"
+        f"sdist = {{ url = 'https://example.invalid/{name}-1.0.tar.gz', "
+        f"hash = 'sha256:{'d' * 64}', size = 456 }}\n"
+    )
+
+
+def test_sdist_closure_validates_and_matches_a_wheel_built_for_the_target(tmp_path):
+    closure = _select(tmp_path, _project(tmp_path, packages=_sdist_package("alpha")))
+    assert closure["packages"][0]["artifact"] == {
+        "kind": "sdist",
+        "filename": "alpha-1.0.tar.gz",
+        "size": 456,
+        "sha256": "d" * 64,
+    }
+    actual = {
+        "runtime": {
+            "runtime_closure_sha256": closure["wheel_target"]["runtime_closure_sha256"]
+        },
+        "distributions": [
+            {
+                "name": "alpha",
+                "version": "1.0",
+                "wheel": {"tags": ["py3-none-any"], "build": None},
+            }
+        ],
+    }
+    assert environment_matches_lock_closure(actual, closure)
+    wheel = actual["distributions"][0]["wheel"]
+    for tags, build in (
+        (["cp312-cp312-macosx_15_0_x86_64"], None),  # not a target tag
+        (["py3-none-any", "cp312-cp312-win_amd64"], None),  # one is not
+        ([], None),  # no tags
+        (["py3-none-any"], "1"),  # uv's own build carries no build tag
+    ):
+        wheel.update(tags=tags, build=build)
+        assert not environment_matches_lock_closure(actual, closure)
+
+
+@pytest.mark.parametrize(
+    "packages,mutate",
+    [
+        (None, {"kind": "sdist"}),  # a wheel filename recorded as an sdist
+        ("sdist", {"kind": "wheel"}),  # an sdist filename recorded as a wheel
+        (None, {"kind": "egg"}),
+        (None, {"kind": None}),
+        ("sdist", {"filename": "beta-1.0.tar.gz"}),
+    ],
+)
+def test_validator_checks_artifact_kind_before_its_filename(tmp_path, packages, mutate):
+    closure = _select(
+        tmp_path,
+        _project(
+            tmp_path, packages=_sdist_package("alpha") if packages == "sdist" else None
+        ),
+    )
+    artifact = closure["packages"][0]["artifact"]
+    for key, value in mutate.items():
+        if value is None:
+            del artifact[key]
+        else:
+            artifact[key] = value
+    _reseal(closure)
+    with pytest.raises(PythonEnvironmentIdentityError):
+        validate_uv_lock_group_closure(closure)
+
+
+@pytest.mark.parametrize(
+    "setting",
+    [
+        "no-build = true",
+        "no-build-package = ['alpha']",
+        "no-binary = true",
+        "no-binary-package = ['alpha']",
+        "uv.toml",
+    ],
+)
+def test_unmodeled_uv_build_selection_refuses(tmp_path, setting):
+    requirements = _project(tmp_path)
+    if setting == "uv.toml":
+        (tmp_path / "uv.toml").write_text("", encoding="utf-8")
+    else:
+        with (tmp_path / "pyproject.toml").open("a", encoding="utf-8") as stream:
+            stream.write(f"[tool.uv]\n{setting}\n")
+    with pytest.raises(PythonEnvironmentIdentityError, match="does not model"):
+        _select(tmp_path, requirements)
+
+
+def test_repository_dev_closure_on_intel_macos_builds_only_cbor2_from_source():
+    """The real uv.lock on the macmini's target: cbor2 is the only package
+    without a macOS x86_64 wheel (2026-11-04 farm evidence)."""
+    from packaging.tags import compatible_tags, cpython_tags, mac_platforms
+
+    root = Path(__file__).resolve().parents[1]
+    platforms = list(mac_platforms((15, 0), "x86_64"))
+    tags = [
+        str(tag)
+        for tag in (
+            *cpython_tags((3, 12), ["cp312"], platforms),
+            *compatible_tags((3, 12), "cp312", platforms),
+        )
+    ]
+    target = {**wheel_target_manifest(), "tags": tags}
+    environment = {
+        "implementation_name": "cpython",
+        "implementation_version": "3.12.15",
+        "os_name": "posix",
+        "platform_machine": "x86_64",
+        "platform_python_implementation": "CPython",
+        "platform_release": "24.6.0",
+        "platform_system": "Darwin",
+        "platform_version": "Darwin Kernel Version 24.6.0",
+        "python_full_version": "3.12.15",
+        "python_version": "3.12",
+        "sys_platform": "darwin",
+    }
+    pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    closure = selected_uv_lock_group_closure(
+        root,
+        "dev",
+        tuple(pyproject["dependency-groups"]["dev"]),
+        wheel_target=target,
+        marker_environment=environment,
+    )
+    kinds = {row["name"]: row["artifact"]["kind"] for row in closure["packages"]}
+    assert kinds["cbor2"] == "sdist"
+    assert {name for name, kind in kinds.items() if kind == "sdist"} == {"cbor2"}
