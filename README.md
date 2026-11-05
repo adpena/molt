@@ -10,17 +10,13 @@ incomplete implementation does not narrow that contract. Language,
 stdlib, third-party package support, and native/WASM parity remain incomplete;
 see [current status](docs/spec/STATUS.md) before choosing a workload.
 
-The first public release is numbered `v0.0.1` and must meet the full v1.0
-quality standard; the version number does not lower the bar. It does not imply
-Python or ecosystem compatibility beyond its verified subset. See the
-[release milestone](ROADMAP.md#first-release-milestone).
-Release readiness also requires the declared workload and resource budgets in
-the [performance authority](tools/PERF_AUTHORITY.md#v10-acceptance-scope).
-Every release, including `v0.0.1`, requires the complete same-source E1-E4
-exit bundle: the native/WASM NumPy/SciPy witness, native/LLVM performance,
-verified-subset compatibility and structural gates, with no open finding and an
-authenticated H0 phase exit. See the [release contract](packaging/PACKAGING.md).
-These gates do not imply that the remaining release matrix has passed.
+The first public release is v0.1. It makes a narrow claim: two flagship
+witnesses, Django offload on native and Falcon OCR on Cloudflare Workers, in
+four Tier 1 cells, with a known-issues list generated from the findings ledger.
+See [the v0.1 claim](docs/spec/PUBLIC_CLAIM_V0_1.md). What holds a release is
+stated once, in the
+[public contract](docs/spec/PUBLIC_CONTRACT_V1.md#versioning-and-release-gating);
+the [release contract](packaging/PACKAGING.md) owns the evidence bundle.
 The [Pact acceptance lanes](docs/agent/PROOF_QUEUE.md#named-pact-witness-lanes)
 bind native/WASM execution and oracle parity to portable, source-pinned receipts;
 package seals or successful builds alone do not establish acceptance.
@@ -46,16 +42,18 @@ defines test selection, source-change checks, and the exact cross-target pass la
   version policy does not certify every feature on that version. The Python
   running the CLI must be at least the selected target minor; see
   [frontend selection](packaging/INSTALL.md#requirements).
-  Python 3.15 support across the release matrix is a required v1.0 exit
-  obligation; its implementation and qualification remain open in the
+  Python 3.15 is part of every v0.1 Tier 1 cell; its target admission remains
+  open in the
   [release ledger](docs/agent/V1_HANDOFF_FINDINGS.md#open-release-requirements).
 - Compiled artifacts must work without a host Python installation.
 - CPython module names retain their standard-library role. Molt-specific
   helpers live under `moltlib`, including `moltlib.io.stream` for bounded file
   iteration; they are not extensions to CPython's `io` namespace.
 - Support is specific to Python version, OS, architecture, backend, runtime
-  profile, and capabilities. Windows, macOS, Linux, and WASM are in scope;
-  unverified cells are not implied by a pass on another configuration.
+  profile, and capabilities. Tier 1 cells are listed once, in
+  `config/release_targets.toml`; every other cell, Windows included, is Tier 2:
+  tested, not release-blocking. Unverified cells are not implied by a pass on
+  another configuration.
 - Dynamic execution and reflection follow the
   [dynamic-semantics policy](docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md).
   Scoped mutation and introspection are not a promise of arbitrary runtime

@@ -1771,6 +1771,51 @@ class Selection:
 _REPOSITORY_SOURCE_ROOTS = ("examples", "formal", "src", "tests", "tools")
 
 
+ACCEPTANCE_MATRIX = Path("config/release_acceptance_matrix.toml")
+
+
+@functools.cache
+def excluded_backends(root: Path = ROOT) -> frozenset[str]:
+    """The experimental backends: the release acceptance matrix's exclusions."""
+    document = tomllib.loads((root / ACCEPTANCE_MATRIX).read_text(encoding="utf-8"))
+    return frozenset(str(item["backend"]) for item in document["excluded_backend"])
+
+
+def experimental_backend_selection(
+    argv: Sequence[object], cwd: object, excluded: frozenset[str]
+) -> str | None:
+    """The argv token or cwd that runs an excluded backend, or None.
+
+    The owner approved (2026-11-05) that the experimental backends run in no
+    presubmit or postsubmit cell; the schedule may still run them. A selection
+    is `molt build --target <backend>`, the Cargo package
+    `molt-backend-<backend>`, a `<backend>-backend` feature or a `cwd` in that
+    crate. A whole-workspace lint with those features off compiles their code
+    but runs none of it, and stays.
+    """
+    crates = {f"molt-backend-{name}" for name in excluded}
+    features = {f"{name}-backend" for name in excluded}
+    tokens = [str(token) for token in argv]
+    for index, token in enumerate(tokens):
+        flag, equals, inline = token.partition("=")
+        value = (
+            inline if equals else (tokens[index + 1] if index + 1 < len(tokens) else "")
+        )
+        if flag == "--target" and value in excluded:
+            return f"--target {value}"
+        if flag in ("-p", "--package") and value in crates:
+            return f"{flag} {value}"
+        if flag in ("-F", "--features") and any(
+            item.rsplit("/", 1)[-1] in features for item in value.split(",")
+        ):
+            return f"{flag} {value}"
+    if isinstance(cwd, str) and any(
+        PurePosixPath(cwd).parts[:2] == ("runtime", crate) for crate in crates
+    ):
+        return f"cwd {cwd}"
+    return None
+
+
 def argv_repository_paths(argv: Iterable[object]) -> tuple[str, ...]:
     """The repository paths that an argv names, read from their spelling.
 
@@ -2189,6 +2234,35 @@ class ProofPlan:
         # One directory listing per checkout directory for every declared target.
         listings: dict[Path, frozenset[str]] = {}
         self._validate_named_lanes(errors, listings)
+        excluded = excluded_backends()
+        # The schedule may run an experimental backend; presubmit (pre-push,
+        # pr, landing rules, named lanes) and postsubmit (main) may not.
+        selections = [
+            (f"command {command.id}", command.argv, command.data.get("cwd"))
+            for command in self.commands
+            if set(command.data.get("tiers") or ()) - {"scheduled"}
+        ]
+        selections += [
+            (f"named lane {lane.id}", lane.argv, lane.data.get("cwd"))
+            for lane in self.named_lanes
+        ]
+        selections += [
+            (
+                f"rule {rule.get('name')}",
+                shlex.split(gate) if isinstance(gate, str) else list(gate),
+                None,
+            )
+            for rule in self.local_rules
+            for gate in rule.get("gates", ())
+        ]
+        for owner, argv, cwd in selections:
+            selected = experimental_backend_selection(argv, cwd, excluded)
+            if selected is not None:
+                errors.append(
+                    f"{owner} runs an experimental backend ({selected}); the "
+                    "excluded backends of config/release_acceptance_matrix.toml run "
+                    "in no presubmit or postsubmit cell"
+                )
         if self.executor_max_workers <= 0:
             errors.append("executor_max_workers must be positive")
         if not 1 <= self.inventory_hash_workers <= 32:

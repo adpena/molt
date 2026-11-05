@@ -47,8 +47,20 @@ def test_generated_tier1_cells_are_the_owner_decision() -> None:
     assert claimed == {
         ("falcon-ocr-workers", "macos-arm64", "3.12", "wasm", "wasm32-wasip1"),
         ("falcon-ocr-workers", "macos-arm64", "3.15", "wasm", "wasm32-wasip1"),
-        ("django-offload", "linux-x86_64", "3.12", "native", "x86_64-unknown-linux-gnu"),
-        ("django-offload", "linux-x86_64", "3.15", "native", "x86_64-unknown-linux-gnu"),
+        (
+            "django-offload",
+            "linux-x86_64",
+            "3.12",
+            "native",
+            "x86_64-unknown-linux-gnu",
+        ),
+        (
+            "django-offload",
+            "linux-x86_64",
+            "3.15",
+            "native",
+            "x86_64-unknown-linux-gnu",
+        ),
     }
     for cell in TIER1_CELLS:
         assert cell.guest_profile == "release"

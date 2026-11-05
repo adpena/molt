@@ -1079,7 +1079,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 342,
+      "timeout_minutes": 334,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -4402,94 +4402,6 @@
         "-m",
         "molt.cli",
         "build",
-        "examples/hello.py",
-        "--build-profile",
-        "dev",
-        "--target",
-        "luau",
-        "--output",
-        "/tmp/test_hello.luau"
-      ],
-      "cache_domain": "cargo-workspace",
-      "cell": "linux-x86_64-py312-wasm-dev",
-      "dependencies": [
-        "wasm.build.backend"
-      ],
-      "env": {
-        "MOLT_BACKEND_DAEMON": "0"
-      },
-      "family": "wasm",
-      "id": "luau.compile.hello",
-      "resource_class": "compiler-build-resource",
-      "tiers": [
-        "pr",
-        "main"
-      ],
-      "timeout_budget": "warm",
-      "timeout_env": [
-        "MOLT_CARGO_TIMEOUT",
-        "MOLT_WASM_TEST_TIMEOUT_SEC"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv",
-        "rustc",
-        "cargo"
-      ]
-    },
-    {
-      "argv": [
-        "python3",
-        "tools/venv_exec.py",
-        "python3",
-        "-m",
-        "molt.cli",
-        "build",
-        "examples/string_comprehension.py",
-        "--build-profile",
-        "dev",
-        "--target",
-        "luau",
-        "--output",
-        "/tmp/test_string_comprehension.luau"
-      ],
-      "cache_domain": "cargo-workspace",
-      "cell": "linux-x86_64-py312-wasm-dev",
-      "dependencies": [
-        "wasm.build.backend"
-      ],
-      "env": {
-        "MOLT_BACKEND_DAEMON": "0"
-      },
-      "family": "wasm",
-      "id": "luau.compile.comprehension",
-      "resource_class": "compiler-build-resource",
-      "tiers": [
-        "pr",
-        "main"
-      ],
-      "timeout_budget": "warm",
-      "timeout_env": [
-        "MOLT_CARGO_TIMEOUT",
-        "MOLT_WASM_TEST_TIMEOUT_SEC"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv",
-        "rustc",
-        "cargo"
-      ]
-    },
-    {
-      "argv": [
-        "python3",
-        "tools/venv_exec.py",
-        "python3",
-        "-m",
-        "molt.cli",
-        "build",
         "examples/sieve_bench.py",
         "--build-profile",
         "dev",
@@ -5019,7 +4931,7 @@
         "-q"
       ],
       "cache_domain": "cargo-workspace",
-      "cell": "linux-x86_64-py312-wasm-dev",
+      "cell": "linux-x86_64-py312-wasm-release",
       "dependencies": [
         "wasm.build.backend"
       ],
@@ -7869,8 +7781,6 @@
         "--test",
         "native_extern_linkage",
         "--test",
-        "rust_transpiler_preview",
-        "--test",
         "wasm_link_facts_cli",
         "--test",
         "host_diagnostics",
@@ -7901,14 +7811,10 @@
         "-p",
         "molt-backend-native",
         "-p",
-        "molt-backend-luau",
-        "-p",
-        "molt-backend-rust",
-        "-p",
         "molt-wasm-host",
         "--no-default-features",
         "--features",
-        "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor,molt-wasm-facts/host-tool",
+        "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/cbor,molt-wasm-facts/host-tool",
         "--",
         "--include-ignored",
         "--skip",
@@ -7951,7 +7857,6 @@
       "toolchains": [
         "rustc",
         "cargo",
-        "lune",
         "node",
         "wasm-ld"
       ]
@@ -8460,70 +8365,6 @@
     {
       "argv": [
         "cargo",
-        "clippy",
-        "--config",
-        "build.warnings=\"deny\"",
-        "--locked",
-        "-p",
-        "molt-backend",
-        "--no-default-features",
-        "--features",
-        "luau-backend",
-        "--all-targets"
-      ],
-      "cache_domain": "cargo-workspace",
-      "cell": "linux-x86_64-rust-native-dev",
-      "dependencies": [],
-      "family": "rust",
-      "id": "rust.clippy.backend-luau-only",
-      "resource_class": "compiler-build-resource",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_budget": "cross-check",
-      "timeout_seconds": 240,
-      "toolchains": [
-        "rustc",
-        "cargo"
-      ]
-    },
-    {
-      "argv": [
-        "cargo",
-        "clippy",
-        "--config",
-        "build.warnings=\"deny\"",
-        "--locked",
-        "-p",
-        "molt-backend",
-        "--no-default-features",
-        "--features",
-        "rust-backend",
-        "--all-targets"
-      ],
-      "cache_domain": "cargo-workspace",
-      "cell": "linux-x86_64-rust-native-dev",
-      "dependencies": [],
-      "family": "rust",
-      "id": "rust.clippy.backend-rust-only",
-      "resource_class": "compiler-build-resource",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_budget": "cross-check",
-      "timeout_seconds": 240,
-      "toolchains": [
-        "rustc",
-        "cargo"
-      ]
-    },
-    {
-      "argv": [
-        "cargo",
         "build",
         "--locked",
         "--profile",
@@ -8557,6 +8398,41 @@
         "cargo",
         "clang",
         "llvm-config"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--all-targets",
+        "--no-fail-fast"
+      ],
+      "cache_domain": "mlir-cargo",
+      "cargo_native_units": {
+        "host": [
+          "c++"
+        ]
+      },
+      "cell": "linux-x86_64-py312-mlir-dev",
+      "cwd": "runtime/molt-backend-mlir",
+      "dependencies": [
+        "llvm.build.backend"
+      ],
+      "family": "llvm",
+      "id": "mlir.test.backend",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "scheduled"
+      ],
+      "timeout_budget": "warm",
+      "timeout_seconds": 300,
+      "toolchains": [
+        "rustc",
+        "cargo",
+        "clang",
+        "llvm-config",
+        "mlir-opt"
       ]
     },
     {
@@ -8692,44 +8568,6 @@
         "cargo",
         "clang",
         "llvm-config"
-      ]
-    },
-    {
-      "argv": [
-        "cargo",
-        "test",
-        "--locked",
-        "--all-targets",
-        "--no-fail-fast"
-      ],
-      "cache_domain": "mlir-cargo",
-      "cargo_native_units": {
-        "host": [
-          "c++"
-        ]
-      },
-      "cell": "linux-x86_64-py312-mlir-dev",
-      "cwd": "runtime/molt-backend-mlir",
-      "dependencies": [
-        "llvm.build.backend"
-      ],
-      "family": "llvm",
-      "id": "mlir.test.backend",
-      "resource_class": "compiler-build-resource",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main",
-        "scheduled"
-      ],
-      "timeout_budget": "warm",
-      "timeout_seconds": 300,
-      "toolchains": [
-        "rustc",
-        "cargo",
-        "clang",
-        "llvm-config",
-        "mlir-opt"
       ]
     },
     {
@@ -9365,14 +9203,14 @@
         }
       },
       "rust": {
-        "budget_seconds": 20520,
+        "budget_seconds": 20040,
         "critical_path_seconds": 9000,
         "headroom_seconds": 0,
         "job_reserve_seconds": 240,
-        "projected_makespan_seconds": 20280,
-        "required_job_seconds": 20520,
+        "projected_makespan_seconds": 19800,
+        "required_job_seconds": 20040,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 20280
+          "compiler-build-resource": 19800
         }
       },
       "rust_security": {
@@ -9389,12 +9227,12 @@
       "wasm": {
         "budget_seconds": 19980,
         "critical_path_seconds": 2400,
-        "headroom_seconds": 0,
+        "headroom_seconds": 600,
         "job_reserve_seconds": 180,
-        "projected_makespan_seconds": 19800,
-        "required_job_seconds": 19980,
+        "projected_makespan_seconds": 19200,
+        "required_job_seconds": 19380,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 19800,
+          "compiler-build-resource": 19200,
           "python-tests": 480,
           "wasm-runtime": 450
         }
@@ -9751,9 +9589,7 @@
       "local.backend-environment-contract.pytest-select-0": "none",
       "local.backend-ir-framing.0": "shared",
       "local.backend-llvm.0": "shared",
-      "local.backend-luau.0": "shared",
       "local.backend-native.0": "shared",
-      "local.backend-rust.0": "shared",
       "local.browser-loader-deployment.pytest": "none",
       "local.browser-loader-deployment.pytest-select-0": "none",
       "local.browser-simd.pytest": "shared",
@@ -9909,16 +9745,14 @@
       "local.apparatus-hooks.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/tools/test_hooks_session_digest.py tests/tools/test_hooks_fail_open.py tests/tools/test_check_gate_flips.py tests/tools/test_check_gate_liveness.py",
       "local.apparatus-learning-protection.0": "python tools/apparatus_agent_safety.py --check",
       "local.apparatus-learning-protection.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_apparatus_agent_safety.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
-      "local.backend-daemon-cache.0": "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend -- daemon backend_process::input::tests backend_process::cli_args::parse::tests --test-threads=1",
-      "local.backend-daemon-cache.1": "cargo test --locked --no-fail-fast --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend -p molt-backend-rust --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --test daemon_server --test native_batch_worker_spawn --test rust_transpiler_preview -- --test-threads=1",
+      "local.backend-daemon-cache.0": "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/cbor --bin molt-backend -- daemon backend_process::input::tests backend_process::cli_args::parse::tests --test-threads=1",
+      "local.backend-daemon-cache.1": "cargo test --locked --no-fail-fast --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/cbor --test daemon_server --test native_batch_worker_spawn -- --test-threads=1",
       "local.backend-daemon-custody.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_backend_daemon_custody.py tests/test_backend_daemon_argv.py tests/test_backend_daemon_suite_custody.py tests/test_molt_diff_daemon_pruning.py tests/test_bench_individual_tool.py",
       "local.backend-environment-contract.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/cli/test_backend_environment_contract.py tests/cli/test_llvm_wasi_tools.py tests/cli/test_cli_wasm_codegen_layout.py tests/cli/test_cli_shared_stdlib_cache.py tests/cli/test_cli_runtime_callable_symbols_authority.py tests/cli/test_native_codegen_identity.py tests/cli/test_cli_backend_prewarm.py",
       "local.backend-environment-contract.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=6.25 -k 'backend_codegen or backend_daemon or backend_cache_setup or backend_setup or backend_compile or backend_pipeline or backend_dispatch or codegen_selection or fingerprint_env' tests/cli/test_cli_import_collection.py",
-      "local.backend-ir-framing.0": "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend -- daemon backend_process::input::tests backend_process::cli_args::parse::tests --test-threads=1",
+      "local.backend-ir-framing.0": "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/cbor --bin molt-backend -- daemon backend_process::input::tests backend_process::cli_args::parse::tests --test-threads=1",
       "local.backend-llvm.0": "cargo test --locked --profile release-fast -p molt-backend-native -p molt-backend --features molt-backend/native-backend,molt-backend/llvm --lib --test ir_contract_validation --no-fail-fast",
-      "local.backend-luau.0": "cargo test --locked --profile dev-fast -p molt-backend-luau --features luau-backend --lib --no-fail-fast",
       "local.backend-native.0": "cargo test --locked --profile release-fast -p molt-backend -p molt-backend-native -p molt-artifact-publish --features molt-backend/native-backend,molt-backend/wasm-backend --lib --bins --no-fail-fast",
-      "local.backend-rust.0": "cargo test --locked --profile dev-fast -p molt-backend-rust --features rust-backend --test rust_transpiler_preview --no-fail-fast",
       "local.browser-loader-deployment.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_driver_layout.py tests/test_browser_asset_closure.py tests/test_driver_cloudflare_verify.py tests/test_driver_cloudflare_worker.py tests/test_falcon_ocr_prompt_contract.py",
       "local.browser-loader-deployment.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -k 'not (test_falcon_browser_driver_init_and_ocr_tokens_roundtrip or test_falcon_browser_driver_reuses_cached_weights_on_second_init or test_falcon_browser_driver_init_from_manifest_roundtrip)' tests/test_falcon_driver_scaffold.py",
       "local.browser-simd.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_build_browser_simd.py tests/e2e/test_simd_differential.py tests/test_browser_compute_backend_semantics.py",
@@ -12500,8 +12334,8 @@
         ],
         "description": "Exercise daemon identity, worker processes and shared-stdlib reuse on one compiler-authorities feature graph.",
         "gates": [
-          "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend -- daemon backend_process::input::tests backend_process::cli_args::parse::tests --test-threads=1",
-          "cargo test --locked --no-fail-fast --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend -p molt-backend-rust --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --test daemon_server --test native_batch_worker_spawn --test rust_transpiler_preview -- --test-threads=1"
+          "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/cbor --bin molt-backend -- daemon backend_process::input::tests backend_process::cli_args::parse::tests --test-threads=1",
+          "cargo test --locked --no-fail-fast --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/cbor --test daemon_server --test native_batch_worker_spawn -- --test-threads=1"
         ],
         "globs": [
           "runtime/molt-backend/Cargo.toml",
@@ -12530,7 +12364,7 @@
         ],
         "description": "Share the daemon correctness binary for input framing; the native binary family also proves disabled-feature refusal.",
         "gates": [
-          "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend,molt-backend/cbor --bin molt-backend -- daemon backend_process::input::tests backend_process::cli_args::parse::tests --test-threads=1"
+          "cargo test --locked --profile dev-fast --config profile.dev-fast.package.cranelift-codegen.opt-level=0 -p molt-backend --no-default-features --features molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/cbor --bin molt-backend -- daemon backend_process::input::tests backend_process::cli_args::parse::tests --test-threads=1"
         ],
         "globs": [
           "runtime/molt-backend/Cargo.toml",
@@ -12620,46 +12454,6 @@
           "rustc",
           "cargo",
           "node"
-        ]
-      },
-      {
-        "command_ids": [
-          "local.backend-luau.0"
-        ],
-        "description": "Exercise Luau lowering and capability admission in its small owning crate, without compiling a native code generator.",
-        "gates": [
-          "cargo test --locked --profile dev-fast -p molt-backend-luau --features luau-backend --lib --no-fail-fast"
-        ],
-        "globs": [
-          "runtime/molt-backend-luau/**/*.rs",
-          "runtime/molt-backend-luau/Cargo.toml",
-          "runtime/molt-ir/src/tir/op_kinds.toml"
-        ],
-        "name": "backend-luau",
-        "toolchains": [
-          "python",
-          "rustc",
-          "cargo",
-          "lune"
-        ]
-      },
-      {
-        "command_ids": [
-          "local.backend-rust.0"
-        ],
-        "description": "Execute emitted Rust source in its owning crate, without building a native code generator.",
-        "gates": [
-          "cargo test --locked --profile dev-fast -p molt-backend-rust --features rust-backend --test rust_transpiler_preview --no-fail-fast"
-        ],
-        "globs": [
-          "runtime/molt-backend-rust/**/*.rs",
-          "runtime/molt-backend-rust/Cargo.toml"
-        ],
-        "name": "backend-rust",
-        "toolchains": [
-          "python",
-          "rustc",
-          "cargo"
         ]
       },
       {
@@ -13440,20 +13234,7 @@
         "git",
         "llvm-sdk"
       ],
-      "local.backend-luau.0": [
-        "python",
-        "rustc",
-        "cargo",
-        "git",
-        "lune"
-      ],
       "local.backend-native.0": [
-        "python",
-        "rustc",
-        "cargo",
-        "git"
-      ],
-      "local.backend-rust.0": [
         "python",
         "rustc",
         "cargo",
@@ -14060,6 +13841,16 @@
       "id": "linux-x86_64-py312-wasm-dev",
       "os": "linux",
       "profile": "dev-fast",
+      "python": "3.12",
+      "runner": "ubuntu-latest",
+      "target": "wasm32-wasip1"
+    },
+    {
+      "arch": "x86_64",
+      "backend": "wasm",
+      "id": "linux-x86_64-py312-wasm-release",
+      "os": "linux",
+      "profile": "wasm-release",
       "python": "3.12",
       "runner": "ubuntu-latest",
       "target": "wasm32-wasip1"
@@ -14839,20 +14630,6 @@
       "version_pattern": "^rustc 1\\.99\\.1\\b"
     },
     {
-      "executable": "lune",
-      "name": "lune",
-      "projection": "tool-release",
-      "setup_evidence": [
-        "config/tool_releases.toml::version = \"0.11.1\"",
-        ".github/workflows/ci.yml::python3 -m molt.tool_releases provision lune"
-      ],
-      "setup_value": "0.11.1",
-      "version_args": [
-        "--version"
-      ],
-      "version_pattern": "^lune 0\\.11\\.1$"
-    },
-    {
       "content_path_command": [
         "rustup",
         "which",
@@ -15005,6 +14782,19 @@
       "version_pattern": "^22\\.1\\.8$"
     },
     {
+      "executable": "mlir-opt",
+      "name": "mlir-opt",
+      "projection": "llvm-sdk",
+      "setup_evidence": [
+        "config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""
+      ],
+      "setup_value": "22.1.8",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "version 22\\.1\\.8\\b"
+    },
+    {
       "compiler_tool_selector": "llvm-sdk",
       "executable": "llvm-config",
       "name": "llvm-sdk",
@@ -15017,19 +14807,6 @@
         "--version"
       ],
       "version_pattern": "^22\\.1\\.8$"
-    },
-    {
-      "executable": "mlir-opt",
-      "name": "mlir-opt",
-      "projection": "llvm-sdk",
-      "setup_evidence": [
-        "config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""
-      ],
-      "setup_value": "22.1.8",
-      "version_args": [
-        "--version"
-      ],
-      "version_pattern": "version 22\\.1\\.8\\b"
     },
     {
       "executable": "ld.lld",

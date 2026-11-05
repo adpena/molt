@@ -72,7 +72,12 @@ def render(
     lines = ledger_text.splitlines()
     rows = {row.key: row.line for row in status.rows}
     classes = status.v01_classes
-    groups: dict[str, list[str]] = {"blocking": [], "unclassified": [], "tier2": [], "later": []}
+    groups: dict[str, list[str]] = {
+        "blocking": [],
+        "unclassified": [],
+        "tier2": [],
+        "later": [],
+    }
     for key in status.open_keys:
         value = classes.get(key)
         group = {
@@ -142,7 +147,8 @@ def render(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
-        "--source-sha", help="read the ledger blob at this commit, as the release gate does"
+        "--source-sha",
+        help="read the ledger blob at this commit, as the release gate does",
     )
     parser.add_argument("--output", type=Path, help="write here instead of stdout")
     args = parser.parse_args(argv)

@@ -145,9 +145,7 @@ def open_row(text: str, args: argparse.Namespace) -> str:
     opened = "\n".join(lines)
     if args.v01_class is None:
         return opened
-    return _set_v01_classes(
-        opened, {args.key: finding_status.V01Class(args.v01_class)}
-    )
+    return _set_v01_classes(opened, {args.key: finding_status.V01Class(args.v01_class)})
 
 
 def _remove_membership(text: str, key: str) -> str:
@@ -169,9 +167,7 @@ def _remove_membership(text: str, key: str) -> str:
 V01_DATA_SCHEMA = "molt.v01-classification.v1"
 
 
-def _set_v01_classes(
-    text: str, classes: dict[str, finding_status.V01Class]
-) -> str:
+def _set_v01_classes(text: str, classes: dict[str, finding_status.V01Class]) -> str:
     """Add or restate the v0.1 class of each open row, in one rewrite."""
     status = finding_status.project(text)
     open_keys = set(status.open_keys)
@@ -195,9 +191,7 @@ def _set_v01_classes(
         # Keep the table in canonical finding order: merge, then rewrite it.
         first = min(entry.line for entry in current.values()) - 1
         last = max(entry.line for entry in current.values())
-        existing = {
-            finding_status.cells(line)[0]: line for line in lines[first:last]
-        }
+        existing = {finding_status.cells(line)[0]: line for line in lines[first:last]}
         existing.update(zip(new_rows, rendered, strict=True))
         lines[first:last] = [
             existing[key]

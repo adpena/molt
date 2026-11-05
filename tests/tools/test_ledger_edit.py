@@ -584,9 +584,7 @@ def test_merge_of_an_unclassified_row_holds_like_blocking(tmp_path: Path) -> Non
     root = _root(tmp_path)
     assert ledger_edit.main(["v01", "set", "HF-2", "post_v0_1"], root=root) == 0
     assert ledger_edit.main(["merge", "HF-1", "--into", "HF-2"], root=root) == 0
-    assert _status(root).v01_classes == {
-        "HF-2": finding_status.V01Class.V0_1_BLOCKING
-    }
+    assert _status(root).v01_classes == {"HF-2": finding_status.V01Class.V0_1_BLOCKING}
 
 
 def test_open_accepts_a_v01_class(tmp_path: Path) -> None:

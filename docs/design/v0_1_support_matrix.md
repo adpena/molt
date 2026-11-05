@@ -170,11 +170,16 @@ The CI changes in this lane:
 - D4: the Falcon driver command builds release with `wasm-release` and Binaryen `Oz`, but sits in the
   `dev-fast` cell whose other commands build dev. It moves to a new cell
   `linux-x86_64-py312-wasm-release` (profile `wasm-release`).
-- Experimental backends leave every presubmit and postsubmit tier: the `mlir-dev` cell and
-  `mlir.test.backend`, `luau.compile.*`, `rust.clippy.backend-luau-only`, and the Luau and Rust-emitter
-  packages, features and tests inside `rust.test.compiler-authorities`. Proof-plan validation refuses a
-  command whose argv selects an excluded backend (`--target luau|rust|mlir`, a Cargo `-p` of
-  `molt-backend-luau`, `molt-backend-rust` or `molt-backend-mlir`, or their backend features). The
+- Experimental backends leave every presubmit and postsubmit tier. Deleted: `luau.compile.*`,
+  `rust.clippy.backend-luau-only`, `rust.clippy.backend-rust-only`, the `backend-luau` and
+  `backend-rust` landing rules, the `lune` toolchain and its CI provisioning, and the Luau and
+  Rust-emitter packages, features and tests inside `rust.test.compiler-authorities`, the backend
+  daemon gates and the `runtime.function-module-contract` lane. `mlir.test.backend` keeps its cell
+  but runs on the schedule only: it is the plan's one host-C++ build, which the toolchain-capture
+  tests use. Proof-plan validation refuses a command outside the schedule, a landing rule or a named
+  lane whose argv selects an excluded backend (`--target luau|rust|mlir`, a Cargo `-p` of
+  `molt-backend-luau`, `molt-backend-rust` or `molt-backend-mlir`, their backend features, or a `cwd`
+  in those crates). The exclusions are read from `config/release_acceptance_matrix.toml`. The
   proof-plan backend value `rust` (the Cargo workspace) is a different axis and stays.
 
 ### 4.6 Public claim
@@ -191,7 +196,7 @@ and the known-issues command, and links the version rule. `README.md` and
 4. `pre-1.0` releases: held by `v0_1_blocking` and unclassified rows and by Tier 1 E3 coordinates; never by
    Tier 2 rows or cells. Invariants 3, 4 and 6 are the release-line slice's (section 11); until it lands,
    every version keeps the 1.x hold.
-5. No presubmit or postsubmit cell runs an experimental backend.
+5. No presubmit or postsubmit cell runs an experimental backend; the schedule may.
 6. A Tier 1 Python that Molt does not admit fails the gate; it is never silently skipped.
 
 ## 6. Costs
