@@ -367,6 +367,9 @@ class LocalBindingMixin(GeneratorMixinBase):
         return CompilerLocalHome(self.next_var(), type_hint)
 
     def _store_compiler_local(self, home: CompilerLocalHome, value: MoltValue) -> None:
+        # This SSA transport does not own the source frame binding. Capture
+        # its borrowed view before a branch or frame cleanup can release it.
+        value = self._capture_expression_reference(value)
         self.emit(
             MoltOp(
                 kind="STORE_VAR",

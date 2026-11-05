@@ -57,6 +57,8 @@ backend attachment contract.
 Suspended values use explicit
 local homes, fresh SSA results on reload, and the existing backend SSA
 construction. Checked producers publish into a home only on the success path.
+Branch transport captures borrowed frame views before storing them in compiler
+locals, so a returned selection survives the source frame exit.
 Branch transport uses the same typed local homes; the retired frontend `COPY`
 identity has no remaining producer or consumer. The backend wire `copy` remains
 part of its own SSA lowering contract. Heap-read CSE invalidates available reads at effects and joins

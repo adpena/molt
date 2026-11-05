@@ -4771,6 +4771,37 @@ def f(value, seq):
     assert producers[ops[ret_index]["args"][0]].get("kind") == "binding_alias"
 
 
+@pytest.mark.parametrize("enable_phi", [False, True])
+@pytest.mark.parametrize(
+    "expression", ["left if flag else right", "left and right", "left or right"]
+)
+def test_branch_returns_capture_the_selected_frame_binding(
+    enable_phi: bool, expression: str
+) -> None:
+    ops = _lowered_function(
+        f"def choose(flag, left, right):\n    return {expression}\n",
+        "__choose",
+        enable_phi=enable_phi,
+    )["ops"]
+    producers = {op["out"]: op for op in ops if "out" in op}
+    ret_index = next(i for i, op in enumerate(ops) if op["kind"] == "ret")
+    assert ops[ret_index - 1]["kind"] == "trace_exit"
+    result = producers[ops[ret_index]["args"][0]]
+    if result["kind"] == "binding_alias":
+        captures = [result]
+    else:
+        assert result["kind"] == "load_var"
+        stores = [
+            op for op in ops if op["kind"] == "store_var" and op["var"] == result["var"]
+        ]
+        assert stores
+        captures = [producers[op["args"][0]] for op in stores]
+    # A merge may capture on each incoming edge or after its PHI. Every
+    # selected binding needs an independent owner before the frame releases it.
+    assert all(op["kind"] == "binding_alias" for op in captures)
+    assert all(ops.index(op) < ret_index - 1 for op in captures)
+
+
 def test_sync_frame_entries_adopt_their_python_arguments() -> None:
     source = """
 def f(a, b):
@@ -7090,3 +7121,7 @@ def test_general_dictionary_update_keeps_pair_iterable_primitive() -> None:
     )
     assert any(op["kind"] == "dict_update" for op in function["ops"])
     assert not any(op["kind"] == "dict_unpack" for op in function["ops"])
+    outputs = [
+        op["out"] for op in function["ops"] if "out" in op and op["out"] != "none"
+    ]
+    assert len(outputs) == len(set(outputs)), "one producer for every SSA result"

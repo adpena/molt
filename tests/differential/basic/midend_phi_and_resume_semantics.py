@@ -28,3 +28,18 @@ print(list(values()))
 iterator = values()
 print(next(iterator))
 iterator.close()
+
+
+for flag in (False, True):
+    selected = select(flag, ["left"], ["right"])
+    selected.append("alive")
+    print(selected)
+
+
+target = {}
+print(target.update([("x", 1)]), target)
+print(target.update(), target)
+try:
+    target.update([("bad",)])
+except ValueError as error:
+    print(type(error).__name__, target)
