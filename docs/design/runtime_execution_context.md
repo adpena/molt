@@ -532,6 +532,11 @@ Application-resolved WASM foreign declarations use their generated physical `lin
 without a host import-module annotation. Rust otherwise emits an opaque linker symbol
 despite a correct wire import field. Actual-object/link tests cover every indirect arity
 and isolate import; genuine host-owned imports retain their namespace annotations.
+The shared runtime's final Cargo link admits unresolved app symbols through an exact
+content-addressed allowlist projected from the generated indirect-call and app-export
+families. Its direct file selector belongs to final-link resource custody and identity;
+export response files cannot introduce nested resources. Host declarations occupy a
+separate extern block, so their namespace annotations cannot affect app linker identity.
 Preserve `pending_work_ptr` and its Arc lifetime;
 do not impose a RuntimeState prefix, duplicate that word or reinterpret a state address as it.
 The runtime-state binding publishes that word's address together with the resolved state for

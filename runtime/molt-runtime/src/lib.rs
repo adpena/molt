@@ -1155,6 +1155,11 @@ unsafe extern "C" {
         arg11: u64,
         arg12: u64,
     ) -> i64;
+}
+
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "env")]
+unsafe extern "C" {
     #[link_name = "molt_db_query_host"]
     fn molt_db_query_host(req_bits: u64, len_bits: u64, out_bits: u64, token_id: u64) -> i32;
     #[link_name = "molt_db_exec_host"]

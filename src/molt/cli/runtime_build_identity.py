@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.cli.wasm_link_args import wasm_undefined_allowlist_path
+
 import hashlib
 import os
 import re
@@ -648,10 +650,15 @@ class _RuntimeFlagProjection:
     def token(self, token: str) -> str:
         if token in self._literal_tokens:
             return token
-        if "@" in token:
+        allowlist = wasm_undefined_allowlist_path(
+            token.removeprefix("-Clink-arg=").removeprefix("link-arg=")
+        )
+        if "@" in token or allowlist is not None:
             if self.cargo_plan is None:
                 raise ValueError(
                     "runtime response argument requires captured Cargo plan custody"
+                    if "@" in token
+                    else "runtime undefined-symbol allowlist requires captured Cargo plan custody"
                 )
             return self.cargo_plan.project_link_arguments((token,))[0]
         for prefix in (

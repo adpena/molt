@@ -816,6 +816,44 @@ def test_reloc_and_shared_specs_share_compile_but_differ_in_fingerprint() -> Non
     assert reloc.link_flags == reloc.runtime_exports
 
 
+def test_app_import_allowlist_has_live_link_only_custody(tmp_path: Path) -> None:
+    from molt.cli.runtime_build_identity import _RuntimeFlagProjection
+    from molt.cli.cargo_resource_custody import CargoResourceCustody
+    from molt.cli.wasm_link_args import runtime_link_response_arguments
+
+    shared, _reloc = _specs(tmp_path)
+    plan = shared.cargo_plan
+    assert plan is not None
+    arguments = [
+        arg
+        for arg in plan.command
+        if arg.startswith("link-arg=--allow-undefined-file=")
+    ]
+    assert len(arguments) == 1
+    argument = arguments[0]
+    path = Path(argument.partition("--allow-undefined-file=")[2])
+    captured = [item for item in plan.link_resources.files if item.entrypoint == path]
+    assert len(captured) == 1
+    assert all(item.entrypoint != path for item in plan.rust_resources.files)
+    projection = _RuntimeFlagProjection.capture(plan.logical_paths, cargo_plan=plan)
+    projected = projection.rustflags(("-C", argument))
+    assert str(path) not in json.dumps(projected)
+    assert captured[0].identity.sha256 in json.dumps(projected)
+    with pytest.raises(
+        ValueError, match="unsupported or requires explicit resource custody"
+    ):
+        runtime_link_response_arguments(
+            (argument.removeprefix("link-arg=") + "\n").encode()
+        )
+    before = plan.link_resources.content_identity()
+    original = path.read_text()
+    path.write_text("\n".join(original.splitlines()[1:]) + "\n")
+    with pytest.raises(ValueError):
+        plan.link_resources.verify()
+    current = CargoResourceCustody.capture(plan.link_resources.roots)
+    assert current.content_identity() != before
+
+
 def test_explicit_sdk_verify_rejects_changed_linker(
     runtime_fixture_root, readonly_wasi_sdk
 ):

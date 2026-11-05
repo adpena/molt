@@ -21,6 +21,7 @@ def test_app_resolved_runtime_declarations_have_physical_linker_identities(
         runtime_execution_abi,
     )
     from molt.llvm_toolchain import resolve_wasi_sdk_tool
+    from molt.cli.runtime_wasm_build_spec import _runtime_wasm_app_import_link_argument
     from molt.wasm_artifact import read_wasm_imports
     from molt.wasm_linking_symbols import (
         FLAG_UNDEFINED,
@@ -124,6 +125,52 @@ def test_app_resolved_runtime_declarations_have_physical_linker_identities(
         assert bindings[0].name == item.name
         assert bindings[0].flags & FLAG_UNDEFINED
         assert bindings[0].flags & SYMBOL_BINDING_MASK == 0
+    linker = str(resolve_wasi_sdk_tool(ROOT, "wasm-ld"))
+    allowlist_argument = _runtime_wasm_app_import_link_argument(ROOT)
+    shared = tmp_path / "shared.wasm"
+    run_guarded_test_process(
+        [
+            linker,
+            "--no-entry",
+            "--export=witness",
+            allowlist_argument,
+            str(runtime),
+            "-o",
+            str(shared),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    assert expected <= {item.name for item in read_wasm_imports(shared)}
+    restricted = tmp_path / "restricted.txt"
+    allowed_path = Path(allowlist_argument.partition("=")[2])
+    omitted = next(iter(sorted(expected)))
+    restricted.write_text(
+        "\n".join(
+            name for name in allowed_path.read_text().splitlines() if name != omitted
+        )
+        + "\n",
+        encoding="ascii",
+    )
+    rejected = run_guarded_test_process(
+        [
+            linker,
+            "--no-entry",
+            "--export=witness",
+            f"--allow-undefined-file={restricted}",
+            str(runtime),
+            "-o",
+            str(tmp_path / "rejected.wasm"),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert rejected.returncode != 0 and omitted in rejected.stderr
     app_source = tmp_path / "app.rs"
     app_source.write_text("#![no_std]\n" + "\n".join(definitions), encoding="utf-8")
     app = tmp_path / "app.o"
@@ -138,7 +185,7 @@ def test_app_resolved_runtime_declarations_have_physical_linker_identities(
     linked = tmp_path / "linked.wasm"
     result = run_guarded_test_process(
         [
-            str(resolve_wasi_sdk_tool(ROOT, "wasm-ld")),
+            linker,
             "--no-entry",
             "--export=witness",
             str(runtime),
