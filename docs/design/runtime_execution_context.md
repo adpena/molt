@@ -528,6 +528,10 @@ Split-WASM admission compares the application's required schema with the runtime
 before any application initializer executes. Function admission uses the split-runtime ABI
 signature authority for physical exports, including the leading attached context and the distinct
 public C prototypes; direct inspection and cached artifact facts share that decision.
+Application-resolved WASM foreign declarations use their generated physical `link_name`
+without a host import-module annotation. Rust otherwise emits an opaque linker symbol
+despite a correct wire import field. Actual-object/link tests cover every indirect arity
+and isolate import; genuine host-owned imports retain their namespace annotations.
 Preserve `pending_work_ptr` and its Arc lifetime;
 do not impose a RuntimeState prefix, duplicate that word or reinterpret a state address as it.
 The runtime-state binding publishes that word's address together with the resolved state for

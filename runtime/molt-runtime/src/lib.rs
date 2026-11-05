@@ -1002,8 +1002,9 @@ pub(crate) use crate::state::{
 };
 pub(crate) use crate::utils::usize_from_bits;
 
+// These are resolved by the application at static link time. An explicit
+// wasm_import_module makes rustc retain an opaque Rust linker name instead.
 #[cfg(target_arch = "wasm32")]
-#[link(wasm_import_module = "env")]
 unsafe extern "C" {
     #[link_name = molt_codegen_abi::attached_symbol!("molt_call_indirect0")]
     pub(crate) fn molt_call_indirect0(__context: u64, func_idx: u64) -> i64;

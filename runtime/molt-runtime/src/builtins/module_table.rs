@@ -59,8 +59,9 @@ const MODULE_FLAG_KNOWN_MASK: u8 = MODULE_FLAG_REINIT_RESURRECT
     | MODULE_FLAG_HAS_LOCATION
     | MODULE_FLAG_STDLIB_PROVIDER;
 
+// The application supplies this physical definition at static link time;
+// this is not a separately namespaced host import.
 #[cfg(target_arch = "wasm32")]
-#[link(wasm_import_module = "env")]
 unsafe extern "C" {
     #[link_name = molt_codegen_abi::attached_symbol!("molt_isolate_import")]
     fn molt_isolate_import(context: u64, module_id: u64) -> u64;

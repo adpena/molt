@@ -9,6 +9,153 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize("family", ["dispatch", "isolate"])
+def test_app_resolved_runtime_declarations_have_physical_linker_identities(
+    tmp_path: Path, family: str
+) -> None:
+    import json
+    import shutil
+
+    from molt._wasm_abi_generated import (
+        WASM_CALL_INDIRECT_IMPORTS,
+        runtime_execution_abi,
+    )
+    from molt.llvm_toolchain import resolve_wasi_sdk_tool
+    from molt.wasm_artifact import read_wasm_imports
+    from molt.wasm_linking_symbols import (
+        FLAG_UNDEFINED,
+        SYMBOL_BINDING_MASK,
+        read_wasm_linking_symbols,
+    )
+    from tests.process_guard_common import run_guarded_test_process
+
+    rustc = shutil.which("rustc")
+    assert rustc is not None, "WASM declaration proof requires admitted rustc"
+    declarations = (
+        [(name, arity + 2) for arity, name in enumerate(WASM_CALL_INDIRECT_IMPORTS)]
+        if family == "dispatch"
+        else [("molt_isolate_import", 2)]
+    )
+    owner = (
+        ROOT
+        / "runtime/molt-runtime/src"
+        / ("lib.rs" if family == "dispatch" else "builtins/module_table.rs")
+    )
+    text = owner.read_text(encoding="utf-8")
+    first = text.index("fn " + declarations[0][0] + "(")
+    start = text.rindex('#[cfg(target_arch = "wasm32")]', 0, first)
+    end = text.index("\n}", first) + 2
+    block = text[start:end]
+    abi = tmp_path / "libmolt_codegen_abi.rlib"
+    common = [rustc, "--edition=2024", "--target", "wasm32-wasip1"]
+    run_guarded_test_process(
+        [
+            *common,
+            "--crate-name",
+            "molt_codegen_abi",
+            "--crate-type",
+            "rlib",
+            str(ROOT / "runtime/molt-codegen-abi/src/lib.rs"),
+            "-o",
+            str(abi),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    calls = "\n".join(
+        f"out ^= {name}({', '.join(['0_u64'] * arity)}) as u64;"
+        for name, arity in declarations
+    )
+    source = tmp_path / "runtime_declarations.rs"
+    source.write_text(
+        "#![no_std]\nextern crate molt_codegen_abi;\n"
+        + block
+        + '\n#[unsafe(no_mangle)]\npub unsafe extern "C" fn witness() -> u64 {\n'
+        + "unsafe { let mut out = 0_u64;\n"
+        + calls
+        + "\nout } }\n",
+        encoding="utf-8",
+    )
+    runtime = tmp_path / "runtime.o"
+    compile_object = [
+        *common,
+        "--crate-type",
+        "lib",
+        "--emit",
+        "obj",
+        "--extern",
+        f"molt_codegen_abi={abi}",
+    ]
+    run_guarded_test_process(
+        [*compile_object, str(source), "-o", str(runtime)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    imports = read_wasm_imports(runtime)
+    symbols = read_wasm_linking_symbols(runtime, wasm_imports=imports).function_symbols
+    expected = set()
+    definitions = []
+    for ordinal, (name, arity) in enumerate(declarations):
+        execution = runtime_execution_abi(name)
+        assert execution is not None and execution.context == "Attached"
+        physical = execution.physical_symbol
+        expected.add(physical)
+        parameters = ", ".join(f"_arg{i}: u64" for i in range(arity))
+        definitions.append(
+            f"#[unsafe(export_name = {json.dumps(physical)})]\n"
+            f'pub extern "C" fn app_{ordinal}({parameters}) -> u64 {{ 0 }}\n'
+        )
+    selected = [
+        (index, item)
+        for index, item in enumerate(item for item in imports if item.kind == 0)
+        if item.name in expected
+    ]
+    assert {item.name for _, item in selected} == expected
+    for index, item in selected:
+        assert item.module == "env"
+        bindings = [symbol for symbol in symbols if symbol.index == index]
+        assert len(bindings) == 1
+        assert bindings[0].name == item.name
+        assert bindings[0].flags & FLAG_UNDEFINED
+        assert bindings[0].flags & SYMBOL_BINDING_MASK == 0
+    app_source = tmp_path / "app.rs"
+    app_source.write_text("#![no_std]\n" + "\n".join(definitions), encoding="utf-8")
+    app = tmp_path / "app.o"
+    run_guarded_test_process(
+        [*compile_object, str(app_source), "-o", str(app)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    linked = tmp_path / "linked.wasm"
+    result = run_guarded_test_process(
+        [
+            str(resolve_wasi_sdk_tool(ROOT, "wasm-ld")),
+            "--no-entry",
+            "--export=witness",
+            str(runtime),
+            str(app),
+            "-o",
+            str(linked),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    assert "function signature mismatch:" not in result.stderr
+    assert linked.read_bytes().startswith(b"\0asm\x01\0\0\0")
+
+
 def _source(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
