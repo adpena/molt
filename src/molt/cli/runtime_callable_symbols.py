@@ -9,6 +9,7 @@ from pathlib import Path
 from molt._wasm_abi_generated import (
     RUNTIME_EXECUTION_ABIS,
     WASM_NON_RUNTIME_CALLABLE_INTRINSICS,
+    WASM_PUBLIC_C_API_FUNCTION_SIGNATURES,
 )
 from molt.file_publication import atomic_write_bytes
 from molt.cli import native_symbol_inspection
@@ -90,7 +91,9 @@ def _runtime_callable_symbols_file(
             legacy = sorted(
                 name
                 for name, abi in RUNTIME_EXECUTION_ABIS.items()
-                if abi.context == "Attached" and name in facts.defined_functions
+                if abi.context == "Attached"
+                and name in facts.defined_functions
+                and name not in WASM_PUBLIC_C_API_FUNCTION_SIGNATURES
             )
             if legacy:
                 raise ValueError(

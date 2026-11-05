@@ -322,6 +322,27 @@ def test_callable_projection_rejects_legacy_attached_runtime_export(tmp_path):
     )
 
 
+@pytest.mark.parametrize("attached", [False, True])
+def test_public_c_boundary_does_not_substitute_for_attached_callable(
+    tmp_path, attached
+):
+    from molt.cli import runtime_callable_symbols
+
+    name = "molt_builtin_class_lookup"
+    artifact = tmp_path / "runtime.a"
+    symbols = [name] + ([compiled_execution_symbol(name)] if attached else [])
+    artifact.write_bytes(_archive(*symbols))
+    projection, failure = runtime_callable_symbols._runtime_callable_symbols_file(
+        artifact,
+        identity=native_symbol_inspection._native_symbol_artifact_identity(artifact),
+    )
+    if attached:
+        assert failure is None and projection is not None
+        assert projection.identity.path.read_bytes() == b"molt_builtin_class_lookup\n"
+    else:
+        assert projection is None and failure is not None
+
+
 @pytest.fixture(autouse=True)
 def isolated_symbol_cache(
     monkeypatch: pytest.MonkeyPatch, request, tmp_path_factory
