@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Final, Literal, Mapping, NamedTuple, TypeAlias
 
 from molt.compiler_analysis.literal_identity import literal_identity_key
 from molt.compiler_analysis.python_identity_catalog_generated import (
+    BUILTIN_NAMES_BY_IDENTITY,
     BUILTIN_SHAPE_NAMES_BY_IDENTITY,
     IdentityMask,
     MemberMask,
@@ -411,6 +412,24 @@ class PythonExpressionFact:
     def binding_global_lookup(self) -> bool:
         return self.name_lookup == "global"
 
+    def exact_builtin_name(self) -> str | None:
+        """The builtin this global read selects on every execution, if proved.
+
+        Exactness is the flow's closed-world value identity: no writer in the
+        graph can bind the name in this namespace or replace the builtins
+        member before this read. An invalidated read proves nothing, and
+        neither does a read that a source value can reach: a star import
+        publishes its exports as source origins of later global reads, not
+        as identity bits (``tests/differential/basic/builtin_binding_guards_star.py``).
+        """
+        if (
+            self.binding_invalidated
+            or self.name_lookup != "global"
+            or self.result.source_origins
+        ):
+            return None
+        return BUILTIN_NAMES_BY_IDENTITY.get(self.identities)
+
 
 _LOOP_FIXPOINT_STEPS: Final = 8
 
@@ -737,6 +756,10 @@ class PythonCallSiteFact:
     definitely_invalidated_members_after: MemberMask
     # Snapshot after all arguments/expansions, before invocation and cleanup.
     module_metadata_at_invocation: PythonModuleMetadataProof = NO_MODULE_METADATA_PROOF
+    # Shape builtins whose specialized lowering is valid for this call's
+    # arguments. A binding proof selects the callee; it does not prove the
+    # invocation shape (``len()`` must reach the builtin's own TypeError).
+    builtin_specializations: IdentityMask = 0
 
     def callee_is(self, identity: PythonIdentity) -> bool:
         return identity_fact_is_exact(self.callee_identities, identity)
@@ -746,6 +769,9 @@ class PythonCallSiteFact:
 
     def exact_builtin_name(self) -> str | None:
         return BUILTIN_SHAPE_NAMES_BY_IDENTITY.get(self.callee_identities)
+
+    def builtin_shape_valid(self, identity: PythonIdentity) -> bool:
+        return bool(self.builtin_specializations & int(identity))
 
     def possible_import_call_kinds(self) -> tuple[PythonImportCallKind, ...]:
         kinds: list[PythonImportCallKind] = []

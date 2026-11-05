@@ -25,7 +25,12 @@ from tests.process_guard_common import run_guarded_test_process
 HOOKS_DIR = Path(__file__).resolve().parents[2] / ".githooks"
 COMMIT_MSG_HOOK = HOOKS_DIR / "commit-msg"
 LAUNCH = HOOKS_DIR / "molt-hook-launch.sh"
-PRE_PUSH = next(hook for hook in ig.HOOKS if hook.name == "pre-push")
+RETIRED_PRE_PUSH = next(
+    hook for hook in ig.HOOKS if hook.name == "pre-push" and hook.retired
+)
+PRE_PUSH = next(
+    hook for hook in ig.HOOKS if hook.name == "pre-push" and not hook.retired
+)
 COMMIT_MSG = next(hook for hook in ig.HOOKS if hook.name == "commit-msg")
 _HOOK_RUNNER = r"""
 case "$OSTYPE" in
@@ -531,7 +536,7 @@ def test_retirement_restores_foreign_hook_and_allows_real_push(tmp_path, foreign
             check=True,
             uninstall=False,
             repo_root=repo,
-            hooks=(PRE_PUSH,),
+            hooks=(RETIRED_PRE_PUSH,),
             merge_drivers=(),
         )
         == 1
@@ -542,7 +547,7 @@ def test_retirement_restores_foreign_hook_and_allows_real_push(tmp_path, foreign
             check=False,
             uninstall=False,
             repo_root=repo,
-            hooks=(PRE_PUSH,),
+            hooks=(RETIRED_PRE_PUSH,),
             merge_drivers=(),
         )
         == 0
@@ -558,7 +563,7 @@ def test_retirement_restores_foreign_hook_and_allows_real_push(tmp_path, foreign
             check=False,
             uninstall=False,
             repo_root=repo,
-            hooks=(PRE_PUSH,),
+            hooks=(RETIRED_PRE_PUSH,),
             merge_drivers=(),
         )
         == 0
@@ -568,12 +573,13 @@ def test_retirement_restores_foreign_hook_and_allows_real_push(tmp_path, foreign
             check=True,
             uninstall=False,
             repo_root=repo,
-            hooks=(PRE_PUSH,),
+            hooks=(RETIRED_PRE_PUSH,),
             merge_drivers=(),
         )
         == 0
     )
-    assert not PRE_PUSH.source.exists()
+    # Retirement keys on its own marker, never on a source file.
+    assert RETIRED_PRE_PUSH.marker not in PRE_PUSH.source.read_text(encoding="utf-8")
 
     remote = tmp_path / "remote.git"
     run_guarded_test_process(["git", "init", "--bare", "-q", str(remote)], check=True)
@@ -629,14 +635,18 @@ def test_retirement_preserves_independent_foreign_and_orphaned_local(
     if active_foreign:
         target.write_bytes(current)
     assert ig.install(
-        check=True, uninstall=False, repo_root=repo, hooks=(PRE_PUSH,), merge_drivers=()
+        check=True,
+        uninstall=False,
+        repo_root=repo,
+        hooks=(RETIRED_PRE_PUSH,),
+        merge_drivers=(),
     ) == (0 if active_foreign else 1)
     assert (
         ig.install(
             check=False,
             uninstall=False,
             repo_root=repo,
-            hooks=(PRE_PUSH,),
+            hooks=(RETIRED_PRE_PUSH,),
             merge_drivers=(),
         )
         == 0
@@ -679,7 +689,7 @@ def test_retirement_from_linked_worktree_uses_common_hook_directory(tmp_path):
             check=True,
             uninstall=False,
             repo_root=linked,
-            hooks=(PRE_PUSH,),
+            hooks=(RETIRED_PRE_PUSH,),
             merge_drivers=(),
         )
         == 1
@@ -690,7 +700,7 @@ def test_retirement_from_linked_worktree_uses_common_hook_directory(tmp_path):
             check=False,
             uninstall=False,
             repo_root=linked,
-            hooks=(PRE_PUSH,),
+            hooks=(RETIRED_PRE_PUSH,),
             merge_drivers=(),
         )
         == 0
@@ -701,7 +711,7 @@ def test_retirement_from_linked_worktree_uses_common_hook_directory(tmp_path):
             check=True,
             uninstall=False,
             repo_root=repo,
-            hooks=(PRE_PUSH,),
+            hooks=(RETIRED_PRE_PUSH,),
             merge_drivers=(),
         )
         == 0
@@ -883,3 +893,49 @@ def test_the_ledger_wrapper_merges_as_text_without_the_driver(tmp_path, monkeypa
     assert "<<<<<<< ours" in text and ">>>>>>> theirs" in text
     assert "| HF-10 |" in text and "| HF-11 |" in text
     assert "merging as text" in picked.stderr
+
+
+def test_retired_drift_hook_gives_way_to_the_landing_receipt_hook(
+    tmp_path, monkeypatch
+):
+    """The retired entry runs first and removes only its own marker; the active
+    landing-receipt hook then installs, and later runs keep it."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_init(repo)
+    monkeypatch.setattr(ig, "HOOKS_SOURCE_DIR", _fake_sources(tmp_path))
+    target = repo / ".git" / "hooks" / "pre-push"
+    _write_executable(target, "#!/bin/sh\n# molt-drift-gate-hook v2\nexit 97\n")
+    assert ig.install(check=True, uninstall=False, repo_root=repo) == 1
+    assert ig.install(check=False, uninstall=False, repo_root=repo) == 0
+    installed = target.read_text(encoding="utf-8")
+    assert ig._is_molt_hook(installed, PRE_PUSH)
+    assert RETIRED_PRE_PUSH.marker not in installed
+    assert not (target.parent / "pre-push.local").exists()
+    assert ig.install(check=False, uninstall=False, repo_root=repo) == 0
+    assert ig.install(check=True, uninstall=False, repo_root=repo) == 0
+    assert target.read_text(encoding="utf-8") == installed
+
+
+def test_chained_pre_push_gives_each_hook_the_whole_stdin(tmp_path):
+    """Git feeds pre-push its refs on stdin; a chained foreign hook must not
+    consume the copy the landing-receipt check reads."""
+    if os.name == "nt":
+        pytest.skip("POSIX shell hook execution")
+    source = (
+        "#!/usr/bin/env bash\n# molt-landing-receipt-hook v1\n"
+        f'cat > "{tmp_path}/ours.txt"\n'
+    )
+    wrapper = ig._chained_wrapper(source, PRE_PUSH)
+    hooks = tmp_path / "hooks"
+    _write_executable(hooks / "pre-push", wrapper)
+    _write_executable(
+        hooks / "pre-push.local",
+        f'#!/bin/sh\ncat > "{tmp_path}/foreign.txt"\n',
+    )
+    refs = "refs/heads/x 1111 refs/heads/main 2222\nrefs/heads/y 3333 refs/heads/y 4444"
+    run_guarded_test_process(
+        [str(hooks / "pre-push"), "origin", "url"], input=refs, text=True, check=True
+    )
+    for name in ("foreign.txt", "ours.txt"):
+        assert (tmp_path / name).read_text(encoding="utf-8").strip() == refs

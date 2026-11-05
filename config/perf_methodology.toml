@@ -19,8 +19,13 @@ schema = "molt-perf-methodology-v1"
 # workload declarations and the release-performance acceptance scope are unchanged.
 # The HF-198 primitive ratio/noise calibration (nested runtime entries borrow
 # their custody) changes diagnostic verdicts the same way.
-version = 29
-content_sha256 = "def8ca50325091b950941ac571fc74a7f6042e1245cc40e2c84472923951ccdb"
+# v30: family B lowers proven builtin reads with no guard or lookup (91e970a03e,
+# 30e3bb6b87), and binding flow keeps owned display strings and expires mutable
+# descendant facts at callbacks (deb45c66df, 67236970f1, 6caf9faa68), so
+# instruction counts and admitted workload modules can move. These landed on
+# main without the lock (HF-601). Earlier reports retain their recorded class.
+version = 30
+content_sha256 = "0997310507aae32ac8c0592ef5def76702c8cf3deb860d42daeb13c21746a7f0"
 
 [[methodology]]
 path = "tools/safe_run.py"

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# molt-landing-receipt-hook v1  (managed by tools/install_git_hooks.py — do not rename this marker)
+# Main advances only to a tree that passed its landing gates (HF-701). A push
+# that updates refs/heads/main needs a landing receipt for the pushed commit's
+# tree on the main it replaces; `molt_dev.py land --fast` and `integrate`
+# write them. Other refs pass. tools/landing_receipt.py owns the check;
+# docs/design/landing_queue.md, section 9, owns the design.
+set -uo pipefail
+
+refs="$(cat)"
+case "$refs" in
+  *" refs/heads/main "*) ;;
+  *) exit 0 ;; # no main update in this push
+esac
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  echo "pre-push: refused a main update: cannot resolve the checkout" >&2
+  exit 1
+}
+checker="$repo_root/tools/landing_receipt.py"
+launch="$repo_root/.githooks/molt-hook-launch.sh"
+if [ ! -f "$checker" ] || [ ! -f "$launch" ]; then
+  echo "pre-push: refused a main update: this checkout has no tools/landing_receipt.py;" >&2
+  echo "pre-push: merge origin/main and land through molt_dev.py land --fast" >&2
+  exit 1
+fi
+# shellcheck source=molt-hook-launch.sh
+. "$launch" || exit 1
+printf '%s\n' "$refs" | molt_hook_uv_python pre-push "$checker" check-push "$@"
