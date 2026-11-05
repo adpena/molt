@@ -477,10 +477,12 @@ fn collect_state_resume_stacks_once(
         let pos = ExceptionOpPosition { block, op_index };
         match state_id(op, const_int_values) {
             Ok(Some(resume_state)) => {
-                observed
-                    .entry(resume_state)
-                    .or_default()
-                    .insert(state.clone());
+                // Suspension saves region custody, never a pending event: a
+                // resumed activation starts with nothing pending, and a thrown
+                // value enters as its own Origin at the resume point.
+                let mut saved = state.clone();
+                saved.pending_source = PendingSource::Clear;
+                observed.entry(resume_state).or_default().insert(saved);
             }
             Ok(None) => {}
             Err(reason) => {

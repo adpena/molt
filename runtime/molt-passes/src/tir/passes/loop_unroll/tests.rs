@@ -542,6 +542,12 @@ fn unrolls_with_check_exception_observation_in_body() {
             attrs: {
                 let mut m = AttrDict::new();
                 m.insert("value".into(), AttrValue::Int(99));
+                m.insert(
+                    "exception_edge".into(),
+                    AttrValue::Int(
+                        crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin as i64,
+                    ),
+                );
                 m
             },
             source_span: None,
@@ -582,7 +588,15 @@ fn unroll_rejects_external_label_and_loop_metadata_obligations_before_mutation()
                     opcode: OpCode::CheckException,
                     operands: vec![],
                     results: vec![],
-                    attrs: AttrDict::from([("value".into(), AttrValue::Int(99))]),
+                    attrs: AttrDict::from([
+                        ("value".into(), AttrValue::Int(99)),
+                        (
+                            "exception_edge".into(),
+                            AttrValue::Int(
+                                crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin as i64,
+                            ),
+                        ),
+                    ]),
                     source_span: None,
                 });
             func.has_exception_handling = true;
@@ -1041,6 +1055,7 @@ fn counted_side_exit_ranges_do_not_authorize_final_carried_state_rewrite() {
     check.opcode = OpCode::CheckException;
     check.results.clear();
     check.attrs.insert("value".into(), AttrValue::Int(991));
+    check.set_exception_edge_kind(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin);
     crate::tir::verify::verify_function(&func).expect("valid explicit exceptional side exit");
     let info = counted_loop::recognize_counted_loop(&func, header).unwrap();
     assert!(info.has_side_exits);
@@ -1080,6 +1095,8 @@ fn counted_paths_reject_side_entry_and_unmodeled_argument_transport() {
             observation
                 .attrs
                 .insert("value".into(), AttrValue::Int(992));
+            observation
+                .set_exception_edge_kind(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin);
             func.blocks
                 .get_mut(&func.entry_block)
                 .unwrap()

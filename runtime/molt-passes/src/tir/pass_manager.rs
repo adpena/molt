@@ -1092,7 +1092,16 @@ mod tests {
                     opcode: OpCode::CheckException,
                     operands: vec![],
                     results: vec![],
-                    attrs: AttrDict::from([("value".into(), AttrValue::Int(90))]),
+                    // The latch observation is the loop's poll site: Origin.
+                    attrs: AttrDict::from([
+                        ("value".into(), AttrValue::Int(90)),
+                        (
+                            "exception_edge".into(),
+                            AttrValue::Int(
+                                crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin as i64,
+                            ),
+                        ),
+                    ]),
                     source_span: None,
                 }],
                 terminator: Terminator::Branch {
@@ -1129,12 +1138,12 @@ mod tests {
             "the unknown input must retain the loop branch through optimization"
         );
 
-        // The drop pipeline runs its two passes under the same verify guard.
+        // The drop pipeline runs its passes under the same verify guard.
         // (This trivial loop carries no heap-allocated values, so drop_insertion
-        // inserts nothing; both passes still RUN and report stats.)
+        // inserts nothing; every pass still RUNS and reports stats.)
         let dp = build_drop_pipeline(TargetInfo::native_release_fast());
         let dstats = dp.run_inner(&mut func, true);
-        assert_eq!(dstats.len(), 3);
+        assert_eq!(dstats.len(), 4);
     }
 
     fn exception_match_ref_without_reachable_pop_function() -> TirFunction {

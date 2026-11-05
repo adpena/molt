@@ -1051,13 +1051,23 @@ mod tests {
                     attrs: Default::default(),
                     source_span: None,
                 },
+                // Raise captures its own Origin; its transport check forwards.
                 TirOp {
                     origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::CheckException,
                     operands: vec![],
                     results: vec![],
-                    attrs: [("value".into(), AttrValue::Int(9))].into(),
+                    attrs: [
+                        ("value".into(), AttrValue::Int(9)),
+                        (
+                            "exception_edge".into(),
+                            AttrValue::Int(
+                                crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind as i64,
+                            ),
+                        ),
+                    ]
+                    .into(),
                     source_span: None,
                 },
             ];
@@ -1331,12 +1341,18 @@ mod tests {
                 attrs,
                 source_span: None,
             };
-            let check = |label, args| {
+            // A constructor's check observes its own failure (Origin); Raise
+            // captures its own Origin and its transport check forwards (Unwind).
+            let check = |label, args, edge: crate::tir::op_kinds_generated::ExceptionEdgeKind| {
                 operation(
                     OpCode::CheckException,
                     args,
                     vec![],
-                    [("value".into(), AttrValue::Int(label))].into(),
+                    [
+                        ("value".into(), AttrValue::Int(label)),
+                        ("exception_edge".into(), AttrValue::Int(edge as i64)),
+                    ]
+                    .into(),
                 )
             };
             let raised = function.blocks[&raise_block].args[0].id;
@@ -1347,7 +1363,11 @@ mod tests {
             };
             function.blocks.get_mut(&raise_block).unwrap().ops = vec![
                 operation(OpCode::Raise, vec![raised], vec![], Default::default()),
-                check(if wide_entry { 9 } else { 10 }, exit_args.clone()),
+                check(
+                    if wide_entry { 9 } else { 10 },
+                    exit_args.clone(),
+                    crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind,
+                ),
             ];
             function.blocks.get_mut(&raise_block).unwrap().terminator = Terminator::Branch {
                 target: if wide_entry {
@@ -1387,7 +1407,11 @@ mod tests {
                                 [("value".into(), AttrValue::Int(5))].into(),
                             )
                             .with_origin(molt_ir::OpKind::ExceptionNewBuiltinEmpty),
-                            check(9, vec![]),
+                            check(
+                                9,
+                                vec![],
+                                crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin,
+                            ),
                         ],
                         terminator: Terminator::Branch {
                             target: if wide_entry {

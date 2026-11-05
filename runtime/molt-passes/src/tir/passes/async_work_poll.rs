@@ -641,8 +641,12 @@ mod tests {
         op
     }
 
+    /// The frontend's operation-local check: it observes the preceding
+    /// operation's own failure, so its exceptional edge is Origin.
     fn check(label: i64) -> TirOp {
-        labeled_op(OpCode::CheckException, label)
+        let mut check = labeled_op(OpCode::CheckException, label);
+        check.set_exception_edge_kind(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin);
+        check
     }
 
     fn call() -> TirOp {

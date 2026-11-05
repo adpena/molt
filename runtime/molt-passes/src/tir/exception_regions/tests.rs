@@ -52,6 +52,13 @@ fn check_exception(label: i64) -> TirOp {
     op
 }
 
+/// `Raise` captures its own Origin; its transport check forwards (Unwind).
+fn raise_transport_check(label: i64) -> TirOp {
+    let mut op = check_exception(label);
+    op.set_exception_edge_kind(crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind);
+    op
+}
+
 #[test]
 fn exceptional_check_rejects_mixed_origin_and_unwind_predecessors() {
     let mut func = TirFunction::new(
@@ -458,7 +465,7 @@ fn forced_raise_check_exception_handler_branch_function() -> (TirFunction, Value
     let exc = func.fresh_value();
 
     func.blocks.get_mut(&func.entry_block).unwrap().ops =
-        vec![try_start(57), op(OpCode::Raise), check_exception(57)];
+        vec![try_start(57), op(OpCode::Raise), raise_transport_check(57)];
     func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
         target: handler,
         args: vec![],
@@ -1790,7 +1797,7 @@ fn assert_nested_region_pop_order(inner_phase: ExceptionRegionPhase, suspended: 
         ExceptionRegionPhase::Active => {}
         ExceptionRegionPhase::NormalClosure => nested_ops.push(try_end(20)),
         ExceptionRegionPhase::Handler => {
-            nested_ops.extend([op(OpCode::Raise), check_exception(20)]);
+            nested_ops.extend([op(OpCode::Raise), raise_transport_check(20)]);
         }
     }
     func.blocks.insert(
@@ -2752,6 +2759,10 @@ fn dead_return_cleanup_repoll_does_not_gain_dispatch_custody_after_target_optimi
                 {"kind": "try_end", "value": 94},
                 {"kind": "label", "value": 95},
                 {"kind": "exception_last_pending", "out": "observed"},
+                // The frontend takes the pending exception into a value and
+                // clears it before authored finally code, so a fresh Origin
+                // never joins the forwarded Unwind.
+                {"kind": "exception_clear"},
                 {"kind": "call", "s_value": "consume", "args": ["observed"], "out": "consumed"},
                 {"kind": "exception_pop"},
                 {"kind": "ret_void"},

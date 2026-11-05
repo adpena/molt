@@ -289,6 +289,11 @@ fn splice_binds_parameters_by_custody_and_clears_them_at_every_exit() {
         call.set_argument_custody(&[custody]);
         let mut check_attrs = AttrDict::new();
         check_attrs.insert("value".into(), AttrValue::Int(90));
+        // The post-call observation of `obs`: the call's failure is Origin.
+        check_attrs.insert(
+            "exception_edge".into(),
+            AttrValue::Int(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin as i64),
+        );
         let entry = caller.entry_block;
         let block = caller.blocks.get_mut(&entry).unwrap();
         block.ops = vec![

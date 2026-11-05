@@ -260,6 +260,13 @@ mod tests {
             op_out_args(molt_ir::OpKind::TupleNew, "emsg", &["msg"]),
             op_out_args(molt_ir::OpKind::ExceptionNew, "exc", &["etype", "emsg"]),
             op_args(molt_ir::OpKind::Raise, &["exc"]),
+            // Raise captures its own Origin; the frontend follows it with an
+            // Unwind transport check to the function's exception exit.
+            OpIR {
+                value: Some(99),
+                exception_edge: Some(molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Unwind),
+                ..OpIR::new(molt_ir::OpKind::CheckException)
+            },
             op(molt_ir::OpKind::EndIf),
             int_literal("idx0", 0),
             int_literal("idx1", 1),
@@ -302,6 +309,11 @@ mod tests {
                 args: Some(vec!["ret_false".to_string()]),
                 ..OpIR::new(molt_ir::OpKind::Ret)
             },
+            OpIR {
+                value: Some(99),
+                ..OpIR::new(molt_ir::OpKind::Label)
+            },
+            op(molt_ir::OpKind::RetVoid),
         ];
         let ir = FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,

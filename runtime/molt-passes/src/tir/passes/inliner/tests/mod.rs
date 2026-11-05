@@ -323,6 +323,11 @@ fn observation_callee_with_type(name: &str, exc_label: i64, ty: TirType) -> TirF
     {
         let mut ce_attrs = AttrDict::new();
         ce_attrs.insert("value".into(), AttrValue::Int(exc_label));
+        // An operation-local observation: its exceptional edge is Origin.
+        ce_attrs.insert(
+            "exception_edge".into(),
+            AttrValue::Int(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin as i64),
+        );
         let block = f.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
             origin: None,
@@ -400,6 +405,11 @@ fn caller_calling_obs_with_label_and_type(
         call_attrs.insert("s_value".into(), AttrValue::Str(callee_name.to_string()));
         let mut ce_attrs = AttrDict::new();
         ce_attrs.insert("value".into(), AttrValue::Int(caller_label));
+        // The caller's post-call observation: the callee's failure is Origin.
+        ce_attrs.insert(
+            "exception_edge".into(),
+            AttrValue::Int(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin as i64),
+        );
         let block = c.blocks.get_mut(&entry).unwrap();
         block.ops.push(dead_placeholder_const_for_type(&ty, arg));
         block.ops.push(TirOp {
