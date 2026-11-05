@@ -79,6 +79,20 @@ _CONTROL_WIRE = frozenset(
     for kind in FRONTEND_EFFECT_CONTROL_KINDS
     if kind in FRONTEND_WIRE_KIND
 )
+# Operations that neither raise, call nor suspend, so no frame location is
+# observable at them. The exception-region markers delimit a handler region and
+# execute nothing; a store before them would only split the landing/try_end and
+# try_start/body adjacency that region analysis relies on. Being control
+# operations, they reset the known location, so the next operation that can
+# observe one publishes its own.
+_NO_LOCATION_OBSERVER = frozenset(
+    {
+        WireKinds.LINE,
+        WireKinds.CHECK_EXCEPTION,
+        WireKinds.TRY_START,
+        WireKinds.TRY_END,
+    }
+)
 
 
 def publish_frame_locations(
@@ -162,7 +176,7 @@ def publish_frame_locations(
                 and entered
                 and position is not None
                 and kind not in _PURE_WIRE
-                and kind not in {WireKinds.LINE, WireKinds.CHECK_EXCEPTION}
+                and kind not in _NO_LOCATION_OBSERVER
                 and not (
                     kind in {WireKinds.RET, WireKinds.RET_VOID}
                     and rewritten
