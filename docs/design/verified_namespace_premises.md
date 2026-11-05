@@ -688,6 +688,10 @@ builds with symbols kept, CPython 3.12.16 as oracle and denominator.
   `after (True, 3)` where CPython prints `after ('custom', -1)`.
 - **Discovery.** `test_public_stdlib_deferred_demand_graph` passes all eight
   programs, including the dataclass program.
+- **Census.** Module-graph discovery of the 144 census programs (CLBG
+  kernels, bench programs and a differential sample) admits the same modules
+  on main and on this lane: 2,226 admissions each, no program gains or loses
+  a module, no refusals.
 
 ## Tests
 
