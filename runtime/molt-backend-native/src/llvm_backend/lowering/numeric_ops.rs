@@ -798,25 +798,42 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     pub(super) fn emit_identity(&mut self, op: &crate::tir::ops::TirOp) {
         let result_id = op.results[0];
-        let lhs = self.resolve(op.operands[0]);
-        let rhs = self.resolve(op.operands[1]);
-        let lhs_i64 = self.ensure_i64(lhs);
-        let rhs_i64 = self.ensure_i64(rhs);
-        let cmp = self
+        let invert = op.opcode == OpCode::IsNot;
+        let i64_ty = self.backend.context.i64_type();
+        // Identity consumes object words, not raw register payloads: a boxed
+        // False and a raw i1 zero denote the same singleton. The shared operand
+        // custody also boxes each full-width integer once and retires its owner.
+        let word = self
+            .with_borrowed_boxed_operands(&op.operands, "identity", |this, words, name| {
+                let cmp = this
+                    .backend
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::EQ, words[0], words[1], "is")
+                    .unwrap();
+                let flag = if invert {
+                    this.backend.builder.build_not(cmp, "is_not").unwrap()
+                } else {
+                    cmp
+                };
+                this.backend
+                    .builder
+                    .build_int_z_extend(flag, i64_ty, name)
+                    .unwrap()
+            })
+            .into_int_value();
+        // Failed materialization returns None with the first error pending.
+        // Only a committed machine 1 is true, including for `is not`.
+        let val = self
             .backend
             .builder
-            .build_int_compare(inkwell::IntPredicate::EQ, lhs_i64, rhs_i64, "is")
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                word,
+                i64_ty.const_int(1, false),
+                "identity_bool",
+            )
             .unwrap();
-        let val: BasicValueEnum<'ctx> = if op.opcode == OpCode::IsNot {
-            self.backend
-                .builder
-                .build_not(cmp, "is_not")
-                .unwrap()
-                .into()
-        } else {
-            cmp.into()
-        };
-        self.values.insert(result_id, val);
+        self.values.insert(result_id, val.into());
         self.value_types.insert(result_id, TirType::Bool);
     }
 

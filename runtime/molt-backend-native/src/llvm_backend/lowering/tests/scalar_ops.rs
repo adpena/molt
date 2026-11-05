@@ -1453,3 +1453,110 @@ fn proven_none_boxing_aliases_and_refcounts_emit_no_transition() {
         "producer-proven None has no heap operation: {ir}"
     );
 }
+
+#[test]
+fn identity_uses_canonical_object_words() {
+    // Each pair denotes the same Python singleton/object in two physical
+    // carriers, or distinct boolean/integer/float singleton classes. Expected
+    // identity follows canonical object words, independently of LLVM lowering.
+    let boxed_false = nanbox::QNAN | nanbox::TAG_BOOL;
+    let boxed_true = boxed_false | 1;
+    let none = nanbox::QNAN | nanbox::TAG_NONE;
+    let cases = [
+        (TirType::DynBox, boxed_false, TirType::Bool, 0, true),
+        (TirType::DynBox, boxed_true, TirType::Bool, 1, true),
+        (TirType::DynBox, boxed_true, TirType::Bool, 0, false),
+        (TirType::Bool, 0, TirType::I64, 0, false),
+        (TirType::Bool, 1, TirType::I64, 1, false),
+        (
+            TirType::DynBox,
+            nanbox::QNAN | nanbox::TAG_INT | 1,
+            TirType::I64,
+            1,
+            true,
+        ),
+        (
+            TirType::DynBox,
+            1.25_f64.to_bits(),
+            TirType::F64,
+            1.25_f64.to_bits(),
+            true,
+        ),
+        (TirType::DynBox, none, TirType::None, none, true),
+        (TirType::DynBox, boxed_false, TirType::None, none, false),
+    ];
+    for (left_ty, left_bits, right_ty, right_bits, expected_same) in cases {
+        for swapped in [false, true] {
+            for opcode in [OpCode::Is, OpCode::IsNot] {
+                let ctx = Context::create();
+                let backend = make_backend(&ctx);
+                let func = TirFunction::new(
+                    "identity_words".into(),
+                    vec![],
+                    TirType::Bool,
+                    molt_ir::FunctionReturnAbi::Value,
+                );
+                let llvm_fn = backend.module.add_compiled_function(
+                    "identity_words",
+                    ctx.i64_type().fn_type(&[], false),
+                    None,
+                );
+                backend
+                    .builder
+                    .position_at_end(ctx.append_basic_block(llvm_fn, "entry"));
+                let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
+                for (id, ty, bits) in [
+                    (ValueId(0), left_ty.clone(), left_bits),
+                    (ValueId(1), right_ty.clone(), right_bits),
+                ] {
+                    let value: BasicValueEnum<'_> = match ty {
+                        TirType::Bool => ctx.bool_type().const_int(bits, false).into(),
+                        TirType::F64 => ctx.f64_type().const_float(f64::from_bits(bits)).into(),
+                        _ => ctx.i64_type().const_int(bits, false).into(),
+                    };
+                    if ty == TirType::I64 {
+                        lowering
+                            .repr_facts
+                            .repr_by_value
+                            .insert(id, crate::Repr::RawI64Safe);
+                    }
+                    lowering.values.insert(id, value);
+                    lowering.value_types.insert(id, ty);
+                }
+                let result = ValueId(2);
+                lowering.lower_op(
+                    func.entry_block,
+                    &TirOp {
+                        origin: None,
+                        dialect: Dialect::Molt,
+                        opcode,
+                        operands: if swapped {
+                            vec![ValueId(1), ValueId(0)]
+                        } else {
+                            vec![ValueId(0), ValueId(1)]
+                        },
+                        results: vec![result],
+                        attrs: AttrDict::new(),
+                        source_span: None,
+                    },
+                );
+                assert!(lowering.diagnostics.borrow().is_empty());
+                assert_eq!(lowering.value_types[&result], TirType::Bool);
+                let actual = lowering.values[&result]
+                    .into_int_value()
+                    .get_zero_extended_constant();
+                let expected = expected_same ^ (opcode == OpCode::IsNot);
+                assert_eq!(
+                    actual,
+                    Some(u64::from(expected)),
+                    "{left_ty:?}/{right_ty:?} {opcode:?} swapped={swapped}"
+                );
+                backend
+                    .builder
+                    .build_return(Some(&lowering.ensure_i64(lowering.values[&result])))
+                    .unwrap();
+                backend.module.verify().unwrap();
+            }
+        }
+    }
+}
