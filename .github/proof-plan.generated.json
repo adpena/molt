@@ -1150,7 +1150,7 @@
         "main",
         "scheduled"
       ],
-      "timeout_minutes": 75,
+      "timeout_minutes": 77,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -8441,6 +8441,37 @@
         "test",
         "--locked",
         "--profile",
+        "dev-fast",
+        "-p",
+        "molt-backend-rust",
+        "--features",
+        "rust-backend",
+        "--test",
+        "rust_transpiler_preview",
+        "--no-fail-fast"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-rust-native-dev",
+      "dependencies": [],
+      "family": "llvm",
+      "id": "rust.test.rust-emitter-preview",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "scheduled"
+      ],
+      "timeout_budget": "warm",
+      "timeout_seconds": 300,
+      "toolchains": [
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--profile",
         "release-fast",
         "-p",
         "molt-backend-native",
@@ -9146,14 +9177,14 @@
         }
       },
       "llvm": {
-        "budget_seconds": 4500,
+        "budget_seconds": 4620,
         "critical_path_seconds": 3300,
-        "headroom_seconds": 180,
+        "headroom_seconds": 0,
         "job_reserve_seconds": 120,
-        "projected_makespan_seconds": 4200,
-        "required_job_seconds": 4320,
+        "projected_makespan_seconds": 4500,
+        "required_job_seconds": 4620,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 4200,
+          "compiler-build-resource": 4500,
           "python-tests": 60
         }
       },

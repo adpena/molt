@@ -53,7 +53,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | `native_integration` | pre-push, pr, main | yes | `github-job` | 63 min | 3600 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 39 |
 | `browser_simd` | pre-push, pr, main | yes | `github-job` | 10 min | 480 s | 120 s | 0 s | `compiler-build-resource` | none | `browser-simd` needs `classify-changes` | 13 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 334 min | 19800 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 23 |
-| `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 120 s | 180 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 46 |
+| `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 77 min | 4500 s | 120 s | 0 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 46 |
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 60 s | 240 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, scheduled | yes | `github-job` | 21 min | 900 s | 360 s | 0 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 9 |
 | `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
@@ -329,6 +329,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `rust.clippy.backend-wasm-only` | `rust` | `linux-x86_64-rust-native-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
 | `llvm.build.backend` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `mlir.test.backend` | `llvm` | `linux-x86_64-py312-mlir-dev` | `warm` | 300 s | `compiler-build-resource` | 1 |
+| `rust.test.rust-emitter-preview` | `llvm` | `linux-x86_64-rust-native-dev` | `warm` | 300 s | `compiler-build-resource` | 0 |
 | `llvm.test.lowering` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | `warm` | 300 s | `compiler-build-resource` | 1 |
 | `linker.test.generated-object-admission` | `llvm` | `linux-x86_64-py312-linker-release-fast` | `warm` | 300 s | `compiler-build-resource` | 1 |
 | `llvm.clippy.backend` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | `warm` | 300 s | `compiler-build-resource` | 1 |

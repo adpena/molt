@@ -176,7 +176,9 @@ The CI changes in this lane:
   Rust-emitter packages, features and tests inside `rust.test.compiler-authorities`, the backend
   daemon gates and the `runtime.function-module-contract` lane. `mlir.test.backend` keeps its cell
   but runs on the schedule only: it is the plan's one host-C++ build, which the toolchain-capture
-  tests use. Proof-plan validation refuses a command outside the schedule, a landing rule or a named
+  tests use. The Rust emitter's feature-gated `rust_transpiler_preview` target likewise runs on the
+  schedule only (`rust.test.rust-emitter-preview`), so every Cargo test target keeps one runner
+  (`tools/check_cargo_test_truth.py`); the `llvm` job budget grows from 75 to 77 minutes to hold it. Proof-plan validation refuses a command outside the schedule, a landing rule or a named
   lane whose argv selects an excluded backend (`--target luau|rust|mlir`, a Cargo `-p` of
   `molt-backend-luau`, `molt-backend-rust` or `molt-backend-mlir`, their backend features, or a `cwd`
   in those crates). The exclusions are read from `config/release_acceptance_matrix.toml`. The

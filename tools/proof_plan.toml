@@ -1436,7 +1436,7 @@ admission_job = "llvm-backend"
 admission_needs = ["classify-changes"]
 tiers = ["pre-push", "pr", "main", "scheduled"]
 required = true
-timeout_minutes = 75
+timeout_minutes = 77
 # Observed setup/post-proof total 116s, rounded up to whole minutes.
 job_reserve_seconds = 120
 resource_class = "compiler-build-resource"
@@ -3949,6 +3949,21 @@ dependencies = ["llvm.build.backend"]
 cwd = "runtime/molt-backend-mlir"
 argv = ["cargo", "test", "--locked", "--all-targets", "--no-fail-fast"]
 toolchains = ["rustc", "cargo", "clang", "llvm-config", "mlir-opt"]
+
+[[command]]
+id = "rust.test.rust-emitter-preview"
+family = "llvm"
+cell = "linux-x86_64-rust-native-dev"
+# The Rust source emitter is experimental: its feature-gated preview target
+# runs on the schedule only, in no presubmit or postsubmit cell (owner
+# decision 2026-11-05, HF-620), and still has one runner (HF-565).
+tiers = ["scheduled"]
+resource_class = "compiler-build-resource"
+timeout_budget = "warm"
+cache_domain = "cargo-workspace"
+dependencies = []
+argv = ["cargo", "test", "--locked", "--profile", "dev-fast", "-p", "molt-backend-rust", "--features", "rust-backend", "--test", "rust_transpiler_preview", "--no-fail-fast"]
+toolchains = ["rustc", "cargo"]
 
 [[command]]
 id = "llvm.test.lowering"
