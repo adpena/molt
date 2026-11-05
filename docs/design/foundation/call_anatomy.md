@@ -771,18 +771,84 @@ remaining cost is the format plan and the wrapper, both cacheable). Closes the H
 
 Native exception classes without the C-API detour; lazy tracebacks; class-handle matching (4.4).
 Target: raise loop ≤ 1,500 instructions per iteration (CPython 2,038); `type(ValueError.__init__)`
-prints `wrapper_descriptor`. Closes HF-561; completes HF-207's raise side. New ledger row needed:
-builtin exception construction routes through the CPython-ABI bridge and `type()` of its `__init__`
-is wrong. Independent of stages 1-4 except for the traceback buffer, which uses the stage 1 record
-fields `(code, location)`; before stage 1 it can use the existing frame entry.
+prints `wrapper_descriptor`. These are the accepted stage targets, not current
+qualification. HF-589 records the descriptor defect from the historical anatomy;
+the refresh below distinguishes the current constructor from that old profile.
+Independent of stages 1-4 except for the traceback buffer, which uses the stage 1
+record fields `(code, location)`; before stage 1 it can use the existing frame entry.
 
-Lead for the worker: `construct_exception_from_args` (`runtime/molt-runtime/src/call/class_init.rs`)
-has a fast path for `molt_exception_init` (`tuple_init`). It never fires for `ValueError`, because
-`class_attr_lookup` for `__init__` returns a CPython-ABI descriptor, so the call takes
-`call_bind_with_arguments` → `call_foreign_with_arguments`. Find which publication installs that
-descriptor on the builtin exception classes (candidates under
-`runtime/molt-cpython-abi/src/api/typeobj/`), make the native slot the class's `__init__`, and let C
-code see a `wrapper_descriptor` view of it only when C code asks.
+#### HF-561 refresh and first implementation slice (2026-11-05)
+
+At source `5bdef368edd3`, macOS arm64, logical release with the release-output
+runtime, one million runtime-supplied user raises return the exact catch count
+in 1.04 s real (0.96 user), against CPython 3.12.16's 0.08 s (0.06 user).
+Native instructions are 23,744.456 per operation after subtracting N=0; the
+loop/control work remains included. These are single baseline observations,
+not a five-pair qualification or an improvement attributed to this slice.
+The old C-API-constructor anatomy above is historical: emitted code now calls
+`molt_exception_new_builtin_one`. Native exception descriptors already exist.
+
+A five-second wall sample has 3,499 self samples. Structural managed subtype
+queries contain 1,191 (34.04%); 889 (25.41% of the total) are descendants of ABI
+owner-add/release inside those queries. These overlapping inclusive counts must
+not be added. The constructor has 206 inclusive samples, traceback-prefix
+capture 316, and frame-column calls 200. A cold first launch spent 93.09 s at
+`_dyld_start`; retain that as startup evidence and do not subtract its wall time
+from a warm run. It does not explain the steady-state exception gap.
+
+The first change removes temporary tuple ownership from the canonical
+`object/class_layout.rs::managed_subtype_relation`. A managed class owns its
+immutable MRO. Under the supplied `PyToken` and with no callbacks, use the
+existing scoped `seq_access::with_immutable_tuple_slice` to return the scalar
+membership result. Exact class handles short-circuit. Nonclass and mixed/native
+pairs keep the existing structural type authority and incoming-error behavior.
+An unpublished MRO keeps the existing bootstrap traversal; no replacement
+hierarchy, cache, native ownership protocol or corruption policy is introduced.
+The duplicate metaclass membership scan in `attributes/mutation.rs` migrates to
+this same relation. Native, LLVM and WASM consume the shared runtime algorithm.
+
+The borrow cannot escape, allocate, call Python, or release an owner. A live
+receiver, descriptor, constructor transaction or builtin table owns each class
+through the query; `PyToken` carries current-thread GIL custody. The direct
+entries are `try_is_real_subtype` and `is_real_subtype`; their instance-relation,
+exception, descriptor, metaclass-construction, constructor, IO and mapping
+callers preserve that ownership. Debug builds assert GIL custody. Remaining
+MRO-view users compute different facts (first owner, protocol/field policy,
+finalizer eligibility, layout sealing, hash or attribute declarations); retain
+their existing pins, especially across callbacks. This is not a wholesale
+replacement of callback-safe MRO views with borrowed views.
+
+Two sequential independent read-only Goldfish reviews preceded implementation.
+The design review found three medium gaps: transient-owner evidence, bootstrap
+oracles and wall-cost methodology. The readiness review required closing the
+caller/sibling lifetime audit. Responses: audit the actual symbolized scalar
+machine-code path and retained sample ancestry for ownership work; net reference
+counts prove lifetime balance only. Exercise the same independently specified
+class graph before and after MRO publication, including a published C view,
+positive/negative/exact/nonclass relations and pending-error identity. The
+caller audit above closes the borrow prerequisite. Add no new event counter,
+guard or receipt mechanism. The complete private design and review responses
+remain in the lane evidence, outside tracked source.
+
+Add `raise_user` and `raise_runtime` (`int("abc")`) to the primitive declaration
+and its existing independent CPython output oracle. Preserve old workload bytes
+and normalization. Expanded base/head boards must use identical workload identity
+and an explicitly selected scratch ratchet, not the old fourteen-row identity.
+Run five canonical pairs, with no axis regressing. Separately measure wall slopes
+at N=0/K/2K, K=1,000,000, after one retained N=0 warm-up, in five alternating-order
+target/CPython pairs. Require positive adjacent slopes agreeing within 10% and
+median target/CPython ratios <=3 for both native and the canonical WASM runner;
+retain all samples and runner identities. Fixed launch/JIT costs stay separate.
+
+Semantic qualification uses exact CPython 3.12.16 on native, LLVM and WASM:
+traceback text/lines, context/cause/finally, nested and bare/explicit reraises,
+exception groups/except-star, generators and coroutines. Run direct readers,
+whole touched-crate/reverse-dependency library cells in their declared profiles
+and features, and one final plain-environment landing precheck. The first slice
+alone does not establish the <=3x outcome. Reprofile its changed source before
+choosing the next cost. Frame locations and traceback origin/propagation remain
+HF-764's reserved authority until it lands; then merge it from main and reuse its
+`LocationId`. Do not copy that implementation or create a second location table.
 
 ### Stage 6: scalar loops and observation-point locals
 
