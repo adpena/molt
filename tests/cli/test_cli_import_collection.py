@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt._wasm_abi_generated import compiled_execution_symbol
+
 from molt.cli.build_output_layout import _runtime_facts_target
 from molt.compilation_target import TargetKind
 from molt.compiler_analysis.python_import_scan import SourceImportPurpose
@@ -12829,7 +12831,11 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
     output_binary = tmp_path / "app"
     stdlib_obj = tmp_path / "stdlib.a"
     stdlib_obj.write_bytes(
-        static_archive_bytes(native_relocatable_object(symbols=("molt_init_sys",)))
+        static_archive_bytes(
+            native_relocatable_object(
+                symbols=(compiled_execution_symbol("molt_init_sys"),)
+            )
+        )
     )
     stdlib_manifest = _write_shared_stdlib_test_contract(stdlib_obj, "stdlib-key")
     captured_inputs: list[Path] = []
@@ -12896,7 +12902,11 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
     output_binary = tmp_path / "app"
     stdlib_obj = tmp_path / "stdlib.a"
     stdlib_obj.write_bytes(
-        static_archive_bytes(native_relocatable_object(symbols=("molt_init_sys",)))
+        static_archive_bytes(
+            native_relocatable_object(
+                symbols=(compiled_execution_symbol("molt_init_sys"),)
+            )
+        )
     )
     stdlib_manifest = _write_shared_stdlib_test_contract(stdlib_obj, "stdlib-key")
     artifacts_root = tmp_path / "artifacts"
@@ -12938,7 +12948,10 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
     stdlib_obj.write_bytes(
         static_archive_bytes(
             native_relocatable_object(
-                symbols=("molt_init_sys", "molt_second_generation")
+                symbols=(
+                    compiled_execution_symbol("molt_init_sys"),
+                    compiled_execution_symbol("molt_second_generation"),
+                )
             )
         )
     )
@@ -12981,7 +12994,11 @@ def test_prepare_native_link_uses_owned_stdlib_object_for_link_command(
     output_binary = tmp_path / "app"
     stdlib_obj = tmp_path / "stdlib.a"
     stdlib_obj.write_bytes(
-        static_archive_bytes(native_relocatable_object(symbols=("molt_init_sys",)))
+        static_archive_bytes(
+            native_relocatable_object(
+                symbols=(compiled_execution_symbol("molt_init_sys"),)
+            )
+        )
     )
     stdlib_manifest = _write_shared_stdlib_test_contract(stdlib_obj, "stdlib-key")
     artifacts_root = tmp_path / "artifacts"
@@ -31058,7 +31075,11 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
     stdlib_object_path = tmp_path / "cache" / "main.stdlib.a"
     stdlib_object_path.parent.mkdir(parents=True)
     stdlib_object_path.write_bytes(
-        static_archive_bytes(native_relocatable_object(symbols=("molt_init_sys",)))
+        static_archive_bytes(
+            native_relocatable_object(
+                symbols=(compiled_execution_symbol("molt_init_sys"),)
+            )
+        )
     )
     stdlib_manifest = _write_shared_stdlib_test_contract(
         stdlib_object_path, "stdlib-cache-key"
@@ -33394,7 +33415,11 @@ def test_try_cached_backend_candidates_promoted_native_function_hit_marks_contex
     cache_path = tmp_path / "cache" / "module.stdlib-current.o"
     stdlib_object = tmp_path / "cache" / "stdlib_shared_current.o"
     stdlib_object.write_bytes(
-        static_archive_bytes(native_relocatable_object(symbols=("molt_init_sys",)))
+        static_archive_bytes(
+            native_relocatable_object(
+                symbols=(compiled_execution_symbol("molt_init_sys"),)
+            )
+        )
     )
     stdlib_manifest = _write_shared_stdlib_test_contract(stdlib_object, "stdlib-key")
     warnings: list[str] = []
@@ -33824,11 +33849,11 @@ def test_shared_stdlib_cache_rejects_unresolved_stdlib_module_reference(
     stdlib_object = _compile_c_object(
         tmp_path,
         "stdlib_shared",
-        """
-        extern void copy__copy(void);
-        void collections__UserDict_copy(void) {
-            copy__copy();
-        }
+        f"""
+        extern void {compiled_execution_symbol("copy__copy")}(void);
+        void {compiled_execution_symbol("collections__UserDict_copy")}(void) {{
+            {compiled_execution_symbol("copy__copy")}();
+        }}
         """,
     )
     stdlib_object.write_bytes(static_archive_bytes(stdlib_object.read_bytes()))

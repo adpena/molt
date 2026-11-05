@@ -7,6 +7,8 @@ ladder; those tests fabricate its output, without invoking a compiler or nm.
 
 from __future__ import annotations
 
+from molt._wasm_abi_generated import compiled_execution_symbol
+
 import hashlib
 import json
 import os
@@ -324,6 +326,36 @@ _BITCODE = LLVM_BITCODE_STAND_IN
 def _archive(*functions: str, **kwargs) -> bytes:
     """One real relocatable object with these functions, framed as an archive."""
     return static_archive_bytes(native_relocatable_object(symbols=functions, **kwargs))
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("physical", [False, True])
+def test_partition_admission_projects_logical_functions_to_physical_abi(
+    tmp_path, legacy, physical
+):
+    logical = "molt_init_sys"
+    symbols = ([logical] if legacy else []) + (
+        [compiled_execution_symbol(logical)] if physical else []
+    )
+    artifact = tmp_path / "stdlib.a"
+    artifact.write_bytes(_archive(*symbols, target_triple="x86_64-unknown-linux-gnu"))
+    issue = cache._shared_stdlib_native_symbol_closure_issue(
+        artifact,
+        target_triple="x86_64-unknown-linux-gnu",
+        stdlib_module_symbols={"sys"},
+        partition_functions=frozenset({logical}),
+    )
+    if physical and not legacy:
+        assert issue is None
+    else:
+        assert issue is not None
+        if legacy:
+            assert "legacy partition definitions: molt_init_sys" in issue
+        if not physical:
+            assert (
+                "missing partition definitions: " + compiled_execution_symbol(logical)
+                in issue
+            )
 
 
 def _bitcode_tool(monkeypatch, *, code=0, stdout="", stderr=""):
@@ -836,7 +868,8 @@ def _shared_metadata(path, *, target_triple="x86_64-unknown-linux-gnu", payload=
     if payload is None:
         payload = static_archive_bytes(
             native_relocatable_object(
-                target_triple=target_triple, symbols=("molt_init_sys",)
+                target_triple=target_triple,
+                symbols=(compiled_execution_symbol("molt_init_sys"),),
             )
         )
     path.write_bytes(payload)
@@ -910,7 +943,7 @@ def test_shared_stdlib_shape_cannot_be_authorized_by_symbol_or_generation_receip
             if malformed == "wrong-target-archive"
             else target
         ),
-        symbols=("molt_init_sys",),
+        symbols=(compiled_execution_symbol("molt_init_sys"),),
     )
     if malformed == "wrong-target-archive":
         payload = static_archive_bytes(payload)

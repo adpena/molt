@@ -512,6 +512,9 @@ Every independently compiled artifact requires its own schema. Bind physical com
 and attached runtime imports/exports to that generated schema and extend the existing per-object
 link witness facts. Retain no old-signature aliases. A witness contributed by another current
 object cannot qualify a stale object, including one selected from an archive under dead stripping.
+Shared-stdlib partition manifests retain logical IR function identities. Native archive admission
+projects those identities through the generated physical symbol formatter before checking member
+closure, rejects unsuffixed definitions, and versions its derived symbol-validation receipts.
 Split-WASM admission compares the application's required schema with the runtime's offered schema
 before any application initializer executes. Preserve `pending_work_ptr` and its Arc lifetime;
 do not impose a RuntimeState prefix, duplicate that word or reinterpret a state address as it.
