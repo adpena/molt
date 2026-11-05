@@ -57,6 +57,7 @@ class SourceCandidate(NamedTuple):
         "namespace",
         "namespace_get",
         "namespace_remove",
+        "namespace_popitem",
         "namespace_clear",
         "namespace_copy_method",
         "namespace_values_method",
@@ -568,8 +569,10 @@ class PythonSourceDemands:
         if owner.kind == "namespace":
             if name in {"get", "__getitem__", "setdefault"}:
                 return {owner._replace(kind="namespace_get")}
-            if name in {"pop", "popitem"}:
+            if name == "pop":
                 return {owner._replace(kind="namespace_remove")}
+            if name == "popitem":
+                return {owner._replace(kind="namespace_popitem")}
             if name in {"clear", "__delitem__"}:
                 return {owner._replace(kind="namespace_clear")}
             if name == "copy":
@@ -652,7 +655,7 @@ class PythonSourceDemands:
                 result.add(
                     SourceCandidate(
                         initializer[0],
-                        initializer[1],
+                        self.native_initializers[initializer].owner,
                         "bound_native_initializer"
                         if binding_owner.kind == "instance"
                         else "native_initializer",
@@ -831,6 +834,7 @@ class PythonSourceDemands:
             elif phase == "call" and origin.kind in {
                 "namespace_clear",
                 "namespace_remove",
+                "namespace_popitem",
             }:
                 self.demand(origin.value, "release_contents")
             elif (
@@ -1684,6 +1688,12 @@ class PythonSourceDemands:
     def _returned_values(
         self, callee: SourceCandidate, user: SourceValue
     ) -> set[SourceCandidate]:
+        if callee.kind == "namespace_popitem":
+            # Removal returns (key, value), not the value returned by pop().
+            return {
+                candidate._replace(contained=True)
+                for candidate in self._namespace_values(callee, user)
+            }
         if callee.kind in {"namespace_get", "namespace_remove"}:
             call = self.calls.get(user)
             key = (

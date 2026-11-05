@@ -2634,6 +2634,24 @@ def test_full_runtime_owner_promotion_retires_prior_partial_body_jobs(
             {"live_leaf"},
             {"dead_leaf"},
         ),
+        (
+            "def __post_init__(self, callback): callback()",
+            "()",
+            "()",
+            "(('callback', 1),)",
+            "Point()",
+            {"live_leaf"},
+            {"dead_leaf"},
+        ),
+        (
+            "def __post_init__(self, callback): callback()",
+            "()",
+            "()",
+            "(('builtin_callback', -1),)",
+            "Point()",
+            {"builtin_leaf"},
+            {"live_leaf", "dead_leaf"},
+        ),
     ],
 )
 def test_native_initializer_uses_plan_selected_callbacks(
@@ -2661,6 +2679,14 @@ def test_native_initializer_uses_plan_selected_callbacks(
             value: object = lambda: observed.append("dead_leaf")
 
         Oracle()
+    elif "builtin_callback" in inputs:
+        namespace = {
+            "__builtins__": {
+                "builtin_callback": lambda: observed.append("builtin_leaf")
+            }
+        }
+        exec("def oracle(): builtin_callback()", namespace)
+        namespace["oracle"]()
     else:
         Oracle = dataclasses.make_dataclass(
             "Oracle",
@@ -2678,25 +2704,28 @@ def test_native_initializer_uses_plan_selected_callbacks(
     )
     parameters = ("self", "callback") if " 1)" in inputs else ("self",)
     schema = ((), False, post != "pass", False, False)
+    defaults = "(callback,)" if len(parameters) == 2 and invoke == "Point()" else "()"
     sources = {
-        "entry": "from _intrinsics import require_intrinsic\nimport api\n"
+        "entry": "from _intrinsics import require_intrinsic\nimport api, builtin_api\n"
         "make = require_intrinsic('molt_dataclasses_init')\n"
         "def callback():\n    import live_leaf\n"
         "def unused():\n    import dead_leaf\n"
         "class Point:\n    "
         + post
         + "\n"
-        + f"spec = ({parameters!r}, {len(parameters)}, (), {{}}, {capture_names!r}, "
+        + f"spec = ({parameters!r}, {len(parameters)}, {defaults}, {{}}, {capture_names!r}, "
         + capture
         + ", "
         + stores
         + ", "
         + inputs
-        + ", (-1, -1), (-1, -1), {}, api.__dict__, 'entry', api)\n"
+        + ", (-1, -1), (-1, -1), {}, api.__dict__, 'entry', builtin_api)\n"
         + f"Point.__init__ = make(Point, {schema!r}, spec)\n"
         + invoke
         + "\n",
         "api": "def callback():\n    import live_leaf\n",
+        "builtin_api": "def builtin_callback():\n    import builtin_leaf\n",
+        "builtin_leaf": "pass\n",
         "live_leaf": "pass\n",
         "dead_leaf": "pass\n",
     }
@@ -2766,3 +2795,54 @@ def test_namespace_clear_preserves_contained_destructor(tmp_path, monkeypatch):
         full_scan_roots=True,
     )
     assert "cleanup_leaf" in result.graph
+
+
+@pytest.mark.usefixtures("isolated_molt_cache")
+@pytest.mark.parametrize(
+    "selection",
+    [
+        "api.__dict__.popitem()[1]()",
+        "key, callback = api.__dict__.popitem(); callback()",
+    ],
+)
+def test_namespace_popitem_keeps_returned_tuple_value(tmp_path, monkeypatch, selection):
+    import sys
+
+    for name, source in {
+        "entry": "import api\n" + selection + "\n",
+        "api": "def callback():\n    import live_leaf\n",
+        "live_leaf": "pass\n",
+    }.items():
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    observed = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); import entry; assert 'live_leaf' in sys.modules",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert observed.returncode == 0
+    monkeypatch.setattr(
+        module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "namespace-popitem",
+    )
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    for _ in range(2):
+        result = module_graph_discovery._discover_module_graph_from_paths(
+            (tmp_path / "entry.py",),
+            [tmp_path],
+            [tmp_path],
+            stdlib,
+            tmp_path,
+            set(),
+            full_scan_roots=True,
+        )
+        assert "live_leaf" in result.graph
