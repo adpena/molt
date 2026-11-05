@@ -733,9 +733,15 @@ blocked I/O from a hang. Managed-Python consumers reuse the existing 900-second
 identity-probe bound, rather than imposing an outer 120-second deadline.
 Fresh native launches and guardian handoffs use their owning named bounds,
 with the measured scan/host-wait cause beside each definition. The try-run
-budget accommodates the observed 1423-second capped run; its enclosing
-cancellation still wins over a child deadline or retry. Diagnostic and cleanup
-grace remain bounded. This budget does not promise admission against foreign
+budget follows the owner's 2026-11-05 19:50Z correction: a 600-second presubmit
+p90 target, met by selecting actual readers rather than allowing longer runs.
+Failure history prioritizes readers without admitting unrelated failures.
+The enclosing cancellation still wins over a child deadline or retry. Diagnostic
+and cleanup grace remain bounded. This target is not yet qualified for shared
+pytest-harness changes, whose direct readers still include every consumer,
+or shared test-helper data roots that statically over-select consumers;
+the next selection slice must refine those contracts and qualify the full
+presubmit wall time from receipts. It does not promise admission against foreign
 processes or prove that Gatekeeper caused a particular wait.
 
 D1's `flaky(OpenFindingId)` quarantine is distinct from strict expected failures:

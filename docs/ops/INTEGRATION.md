@@ -639,13 +639,23 @@ readers) and the gates of `precheck = true` rules (changed-crate Clippy).
 Other Cargo builds and the rules' curated pytest cohorts wait for the batch. A
 failing gate stops `land` before it queues anything. The static gates run to
 their verdict with no deadline. `PRECHECK_BUDGET` (`tools/molt_dev_policy.py`,
-30 minutes; HF-623's capped run measured 1423 seconds) bounds the try run
+10 minutes, following the owner's 2026-11-05 correction) bounds the try run
 alone, from its first gate: at the limit the
 guards cancel running gates, later gates never start, and `land` names each
 refused gate, then queues; the batch runs every selected gate. A try run that
 the disk-capacity check refuses is named and queued the same way. It then writes one request under
 `<git-common-dir>/molt/landing-queue/requests/` and returns; the request pins
 the commit.
+
+The approved whole-presubmit target is 600 seconds at p90, reached by selecting
+actual readers rather than increasing this bound. Recent postsubmit failures
+prioritize those readers; they do not add unrelated tests to a lane's presubmit.
+The approved selection policy puts property, mutation, e2e, Cloudflare and
+image-building provisioning consumers in postsubmit unless the change reaches
+their direct inputs. The static graph can still over-select through shared
+test-helper data roots or pytest harness edits; that precision work and
+whole-presubmit p90 qualification remain pending. Per-gate wall/child CPU and
+executor duration are retained in the existing receipts; one run is not p90 proof.
 
 Immediately before it writes the request (after the repair and the precheck,
 and also with `--no-precheck`), `land` classifies the lane from Git. A ledger

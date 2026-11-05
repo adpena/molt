@@ -1902,18 +1902,24 @@ def graph_selection(
     changed = tuple(changed)
     match mode:
         case LandingMode.PRESUBMIT:
-            recent = (
+            recent = {
                 target.partition("::")[0]
                 for target in recent_failures
                 if target.partition("::")[0] in graph.tests
-            )
+            }
             selected = tuple(
                 dict.fromkeys(
                     (
-                        *recent,
                         *(path for path in changed if path in graph.tests),
                         *graph.direct_readers(changed, observations=observations),
                     )
+                )
+            )
+            # Failure history orders actual readers; an unrelated failure
+            # belongs to postsubmit triage, not every later lane's presubmit.
+            selected = tuple(
+                sorted(
+                    selected, key=lambda target: target.partition("::")[0] not in recent
                 )
             )
         case LandingMode.POSTSUBMIT:
@@ -1930,8 +1936,8 @@ def graph_selection(
         owner = _owned_by(test.partition("::")[0], envelopes)
         if owner is not None:
             envelope = envelopes[owner]
-            # Every presubmit graph target is a changed test, direct reader or
-            # recent failure. Exercise slow probes too at this direct boundary.
+            # Every presubmit graph target is a changed test or direct reader.
+            # Exercise slow probes too at this direct boundary.
             selector = () if mode is LandingMode.PRESUBMIT else envelope.select
             run[test] = LandingEnvelope(
                 (test,) if owner != test else envelope.targets,

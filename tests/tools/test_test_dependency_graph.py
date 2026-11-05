@@ -203,8 +203,9 @@ def test_observed_refinement_preserves_source_edits_postsubmit_and_node_envelope
         observations=observed,
         recent_failures=["tests/test_assets.py::test_left"],
     )
-    assert "tests/test_assets.py" in recent.selected
-    assert "tests/test_assets.py::test_left" not in recent.selected
+    assert "tests/test_assets.py" not in recent.selected
+    assert "tests/test_assets.py::test_left" in recent.selected
+    assert "tests/test_assets.py::test_right" not in recent.selected
     postsubmit = graph_selection(
         graph,
         ["config/data.toml"],
@@ -923,7 +924,7 @@ def test_presubmit_direct_readers_include_imports_inside_test_functions(
     assert graph.direct_readers(["src/pkg/hub.py"]) == ("tests/test_local.py",)
 
 
-def test_presubmit_recent_failures_then_changed_tests_then_direct_readers(
+def test_presubmit_prioritizes_recent_readers_without_adding_unrelated_failures(
     landing_graph,
 ):
     commands = _landing_commands(landing_graph)
@@ -931,12 +932,15 @@ def test_presubmit_recent_failures_then_changed_tests_then_direct_readers(
         landing_graph,
         ["src/pkg/hub.py", "tests/test_changed.py"],
         commands,
-        recent_failures=("tests/test_recent.py::test_recent", "tests/deleted.py"),
+        recent_failures=(
+            "tests/test_direct.py",
+            "tests/test_recent.py::test_recent",
+            "tests/deleted.py",
+        ),
     )
     assert selected.selected == (
-        "tests/test_recent.py",
-        "tests/test_changed.py",
         "tests/test_direct.py",
+        "tests/test_changed.py",
     )
     assert list(selected.run) == list(selected.selected)
 
@@ -950,7 +954,7 @@ def test_graph_pytest_is_failure_first_and_maxfail_one(landing_graph):
     )
     gates, _ = config.select(
         ["src/pkg/hub.py", "tests/test_changed.py"],
-        recent_failures=("tests/test_recent.py::test_recent",),
+        recent_failures=("tests/test_direct.py", "tests/test_recent.py::test_recent"),
     )
     assert all("--maxfail=1" in gate.command for gate in gates)
     assert [
@@ -958,7 +962,7 @@ def test_graph_pytest_is_failure_first_and_maxfail_one(landing_graph):
         for gate in gates
         for argument in gate.command
         if argument.startswith("tests/")
-    ] == ["tests/test_recent.py", "tests/test_changed.py", "tests/test_direct.py"]
+    ] == ["tests/test_direct.py", "tests/test_changed.py"]
 
 
 def test_presubmit_graph_cohorts_are_the_lane_try_run(landing_graph):
@@ -1013,7 +1017,7 @@ def test_postsubmit_observes_only_the_qualified_command_cohort(
     assert all("--molt-observed-context" not in gate.command for gate in pre)
 
 
-def test_a_changed_test_runs_its_slow_cases_and_recent_failure_needs_no_path_change(
+def test_a_changed_test_runs_slow_cases_and_unrelated_failure_adds_no_work(
     landing_graph,
 ):
     commands = _landing_commands(landing_graph)[:1]
@@ -1027,7 +1031,8 @@ def test_a_changed_test_runs_its_slow_cases_and_recent_failure_needs_no_path_cha
     assert changed.run["tests/test_changed.py"].select == ()
     recent = config.graph_selection([], recent_failures=("tests/test_recent.py",))
     assert recent is not None
-    assert recent.selected == ("tests/test_recent.py",)
+    assert recent.selected == ()
+    assert recent.run == {}
 
 
 def test_changed_slow_only_test_uses_its_declared_non_build_owner(landing_graph):

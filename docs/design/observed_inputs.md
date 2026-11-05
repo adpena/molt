@@ -216,7 +216,7 @@ the copy it replaces.
 | Stage | Change | Measured or expected effect |
 | --- | --- | --- |
 | 0 | A cancelled gate is recorded as `cancelled`. The runner decides by `failure_trigger` first and bisects every candidate failure (HF-605). | -7,428 s per day (8 identical-tree reruns) |
-| 1 | Fast presubmit: changed tests and first-hop readers, recent postsubmit failures first, with `--maxfail=1`. Rule-owned commands retain their scope; expensive real-process probes run in their slow cell except at a direct changed input. | Historical replay caught 24 of 31 failed blocks with a median 212 files; live before/after wall time remains required |
+| 1 | Fast presubmit: changed tests and first-hop readers, recent postsubmit failures first among those readers, with `--maxfail=1`. Failure history adds no unrelated tests. Rule-owned commands retain their scope; expensive real-process probes run in their slow cell except at a direct changed input. | Historical replay before the 2026-11-05 selection correction caught 24 of 31 failed blocks with a median 212 files; live before/after wall time remains required |
 | 2 | One CPU budget per host that knows performance cores. Receipts record `-n` and CPU time. | Not yet measured |
 | 3 | A typed layer table: `src/molt` never imports `tools`. Break the 38-file import cycle. Shrink the harness kernel. | 983 to 340 files per batch |
 | 4 | Deferred by the owner: `molt.file_hashing` becomes the only content identity, keyed by durable file identity; delete private copies. | One hash per file per host |
