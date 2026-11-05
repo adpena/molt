@@ -266,7 +266,13 @@ fn root_foreign_callouts_reject_missing_restore_before_return_cleanup() {
             0
         }
         unsafe extern "C" fn invalid_view(_: usize, view: *mut crate::MoltBufferView) -> i32 {
-            unsafe { *view = crate::MoltBufferView::default() };
+            unsafe {
+                *view = crate::MoltBufferView::default();
+                // The default is a valid empty byte view. A zero item size
+                // violates the public descriptor contract and must release
+                // the rejected export before returning to its caller.
+                (*view).itemsize = 0;
+            }
             0
         }
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
