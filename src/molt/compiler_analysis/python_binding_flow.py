@@ -2270,6 +2270,17 @@ def _operand_dispatch_deferred(
     return legacy | sources
 
 
+def _owned_iterable_display(iterable: ast.expr) -> bool:
+    """A list, tuple or set display in a loop or comprehension header.
+
+    The header builds it fresh and holds the only reference, so no body write
+    can change which elements it yields; a write can still change a mutable
+    element's contents, which expression_result_without_mutable_contents
+    expires. Any other iterable may alias what the body writes.
+    """
+    return isinstance(iterable, (ast.List, ast.Tuple, ast.Set))
+
+
 def _result_after_retained_boundary(
     result: StaticExpressionResult, boundary: EffectMask
 ) -> StaticExpressionResult:
@@ -6114,11 +6125,11 @@ class _Analyzer:
                 if iteration.empty:
                     return current, header_flow.without_normal()
                 strings, element = iteration.element_strings, iteration.element_result
-                if (
-                    self.states.get(current).taint_epoch != entry_epoch
-                    or retained_boundary & WRITES_OBJECT_STATE
-                ):
-                    if iteration.mutable:
+                tainted = self.states.get(current).taint_epoch != entry_epoch
+                if tainted or retained_boundary & WRITES_OBJECT_STATE:
+                    if iteration.mutable and (
+                        tainted or not _owned_iterable_display(generator.iter)
+                    ):
                         strings = None
                         element = expression_result_without_value_facts(element)
                     else:
@@ -7935,11 +7946,11 @@ class _Analyzer:
                 assert iteration is not None
                 strings = iteration.element_strings
                 element_result = iteration.element_result
-                if (
-                    self.states.get(body_entry).taint_epoch != entry_epoch
-                    or retained_boundary & WRITES_OBJECT_STATE
-                ):
-                    if iteration.mutable:
+                tainted = self.states.get(body_entry).taint_epoch != entry_epoch
+                if tainted or retained_boundary & WRITES_OBJECT_STATE:
+                    if iteration.mutable and (
+                        tainted or not _owned_iterable_display(node.iter)
+                    ):
                         strings = None
                         element_result = expression_result_without_value_facts(
                             element_result
