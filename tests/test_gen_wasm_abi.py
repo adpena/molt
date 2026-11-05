@@ -4030,7 +4030,9 @@ def test_host_test_deny_launch_is_projected_from_the_python_authority():
 def test_manifest_registers_every_runtime_abi_projection() -> None:
     import tomllib
 
-    manifest = tomllib.loads((ROOT / "tools/generator_manifest.toml").read_text())
+    manifest = tomllib.loads(
+        (ROOT / "tools/generator_manifest.toml").read_text(encoding="utf-8")
+    )
     producer = next(
         row for row in manifest["generator"] if row["tool"] == "tools/gen_wasm_abi.py"
     )
