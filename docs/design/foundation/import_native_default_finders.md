@@ -611,3 +611,15 @@ qualification is the whole shape suite, affected binding readers, the supplied
 144-program no-gain census, the four selected native/LLVM/WASM differentials and
 static gates. Earlier cost evidence and the parent-owned landing gate remain
 separate facts; this correction makes no new instruction-cost claim.
+
+## 13. Family W startup premise reconciliation (2026-11-05)
+
+The native default finder migration now implements sections 3–4: bootstrap
+publishes all default finders and hooks before user code, and the ordered
+meta-path walk no longer calls `importlib_complete_initial_defaults`. Therefore
+HF-737's earlier suggestion to complete Python defaults on a catalog miss is
+superseded by this implementation. Keep the existing catalog-hit, catalog-miss,
+pre-import observation and mutation differentials as the semantic authority.
+Any remaining execution of `importlib.machinery` must be traced to an actual
+consumer, not assigned the old completion cost. Family W's measurement and
+runtime-init plan lives in [startup design section 10](62_startup_cold_start.md#10-runtime-startup-work-family-w-2026-11-05).

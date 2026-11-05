@@ -11,6 +11,16 @@
 
 # 62 — Instant Cold Start: Make the Startup Tax a Function of Bytes-Paged, Not a Phantom
 
+> **2026-11-05 measurement correction (family W).** The June decomposition
+> below is historical, not a reason to exclude runtime work. The November 2
+> macOS arm64 release profile measured hello world at 188.54M retired
+> instructions and 15.11 MB peak RSS, with about 89M instructions in teardown.
+> `import tiny` measured 235.60M and 17.71 MB. Runtime setup, module bodies,
+> teardown and dylib initializers all belong to the user-visible startup cost.
+> The measured implementation plan in section 10 supersedes earlier statements
+> that runtime initialization is irrelevant or that the artifact is already at
+> the OS floor. Historical measurements from different revisions are not an A/B.
+
 > **One-line thesis.** molt's cold start is already at the OS floor for a trivial
 > program (≈18 ms same-path, *identical to a no-op C binary* — see
 > `docs/perf/COLD_START.md`), and runtime-init is a measured 0.127 ms — so the
@@ -884,3 +894,140 @@ residual — cold-start dominance that *stays* dominant as molt grows.
 
 Native size attribution, comparison capabilities and regular-artifact inspection
 use the canonical [binary size inspection contract](61_binary_size_and_output_optimization.md).
+
+## 10. Runtime startup work (family W, 2026-11-05)
+
+These changes address measured work, preserving deterministic Python semantics
+and runtime ownership. The [V1 ledger](../../agent/V1_HANDOFF_FINDINGS.md) owns
+qualification and burndown. Per-run source/toolchain identities and raw receipts
+stay in lane artifacts. November 2 numbers below are historical attribution;
+current before/after measurements must use matching release inputs.
+
+### HF-748: scratch membership hashing
+
+The GC uses SipHash for its transient node index and API membership sets.
+Prototype D replaces those hashers with a word mixer using the existing GC
+registry's folded address multiply. Keys are addresses, typed discriminants and
+boxed words, not program-controlled strings. Candidate order remains sorted by
+allocation ordinal; scratch maps are inserted, queried and cleared, never
+iterated to choose traversal, weakref or finalizer order. The same index type
+flows into the deduction workspace. Collisions must preserve exact membership.
+The historical prototype saved 29.1M instructions on hello world and 32.1M on
+`import tiny`; these are not measurements on the current revision.
+
+### HF-747: finalization collections and startup heap
+
+The owner fixed point runs a full collection before pending callbacks and
+again while retiring module, class and thread-state roots. A zero-retired
+collection is not evidence that later root release cannot expose a cycle.
+Preserve resurrection and weakref-before-finalizer ordering, and retain every
+owner phase. A no-progress optimization needs an invalidation fact covering
+subsequent edge/root release and callbacks; a hard two-pass cap is insufficient.
+Automatic permanent-generation freezing also needs a public semantic boundary:
+`gc.get_freeze_count`, `gc.get_objects`, explicit unfreeze, and user mutation of
+startup objects can observe it. The existing public `freeze()` mechanism does
+not establish that every bootstrap object is safe to freeze automatically.
+Resolve that boundary before implementing it. Historical teardown attribution
+was 89M instructions before the hasher change, 53.2M after it.
+
+### HF-737: already-native import defaults
+
+The [native finder design](import_native_default_finders.md) now supplies
+`BuiltinImporter`, `FrozenImporter`, `PathFinder` and path hooks at bootstrap.
+The old completion call and epoch cancellation are gone. Do not restore a late
+completion trigger: it loses defaults after user mutation and corrupts the
+3.13+ copied meta-path walk. Trace any remaining Python machinery body to its
+actual consumer; a catalog hit must not execute it just to populate defaults.
+Prove a catalog hit, miss and meta-path observation before the first import.
+Historical Python finder admission added 45.8M instructions; that historical
+trigger no longer describes the implementation.
+
+### HF-749: physical C type readiness on demand
+
+Hook registration currently readies every C builtin and exception shell, even
+when no extension reaches one. Retain process shell identities and publish hooks
+before a readiness callback, but materialize dict/MRO/descriptors only at the
+canonical bridge entry reaching the type. Preserve parent recursion, errors,
+reentrant publication, direct C data-symbol readers and new-runtime reopening
+after retirement. The existing typed readiness lifecycle owns admission; no
+second registry or name-keyed gate. Historical profile attribution was about
+30M instructions, not a direct A/B. Measure both an extension-free program and
+an actual compiled extension, including failed first readiness.
+
+### HF-751: unused dynamic dependencies
+
+Darwin final links should use `-dead_strip_dylibs` in the canonical link policy,
+shared by system/custom drivers and framework-bearing links. This drops unused
+load commands while preserving referenced dylibs, frameworks, singleton exports
+and source extensions. ELF final links already use `--as-needed`; migrate any
+other reached ELF producer instead of duplicating that flag. Do not discard a
+library deliberately loaded for its initializers. Verify real unused and live
+system-library witnesses, binary dependencies and execution. Historical prototype
+L reduced hello world by 10.9M instructions and RSS from 15.11 to 10.76 MB.
+
+### HF-750: fixed sys struct-sequence declarations
+
+`sys.py` now calls the native direct-tuple struct-sequence factory; the old
+Python tuple subclass implementation is gone. Remaining startup work executes
+Python field/doc declarations and builds each native class. Move fixed schemas
+to the existing native owner, built once per runtime, and bind Python facades to
+those types. Include flags and asyncgen hooks in the census. Preserve hidden
+fields, constructor policies, docs, version-specific layouts and isolated-runtime
+identity; public and C-ABI consumers share one sealed declaration. Historical
+profile attribution was 16.5M instructions, not a direct measurement.
+
+### HF-507: literals owned by the execution domain
+
+Native function prologues materialize heap literals on every call and generator
+resume, even for a cold error branch. Emit immutable byte descriptors and dense
+typed slots; materialize a literal at module initialization or its actual first
+use, then load it at the operation's use site. The owning runtime retains used
+literal values until every callback-capable shutdown phase finishes. Module
+removal/reload cannot invalidate escaped functions or suspended generators.
+Isolated runtimes own distinct boxed values; executable data contains no shared
+mutable boxed owner. After execution closes, callback-free retirement releases
+the immutable values. This policy retains used literals for the runtime lifetime;
+measure that cost as well as allocation and instruction savings. Migrate native,
+LLVM and WASM producers, failure edges, ABI manifests and retirement consumers
+before deleting the replaced 32-slot direct-mapped cache. The historical native
+eight-cold-error function cost 27,693 instructions/call versus 3,940 without them.
+
+### Measurement and proof obligations
+
+For each implemented row record release hello-world and `import tiny` retired
+instructions, peak RSS and binary bytes. Interleave repeated runs of preserved
+before/after binaries. The integrator owns the methodology lock; changed counts
+require reporting, not silently reseeding it. Linux x86_64 requires a real host.
+GC/finalizer/weakref order is a native/LLVM/WASM differential against exact
+CPython 3.12.16. Imports include pre-import state and mutation. Literal tests
+include module removal, suspended resumption after GC, recursion, cold branches
+and allocation failure. Run changed direct readers and touched/reverse-dependent
+Rust whole libraries in the profiles/features declared by the proof plan,
+including dev and release-fast. Landing precheck runs once in the plain runner
+environment. Missing prerequisites and pre-existing failures remain explicit.
+
+### Design review record (2026-11-05)
+
+Two independent sequential Goldfish reviews (Codex gpt-6.1-sol/high, read-only,
+design input only) accepted the GC hashing and dylib mechanisms. Three major
+findings were accepted and resolved in the design:
+
+- Escaped functions/suspended generators retain access to literals after module
+  removal: use runtime ownership through the last callback-capable shutdown phase.
+- First-use publication must tolerate reentry/failure: construct under a local
+  owner while the slot stays empty, publish only a complete rooted value, and
+  prefer an already-published value if a callback populated it. Failure preserves
+  the original exception and an empty slot. No blocking initializing sentinel.
+  Execution-domain custody serializes publication; never hold a lock across a
+  constructor callback. Actual first use preserves cold-branch laziness. Permit
+  initialization during callback-capable teardown, then close admission before
+  callback-free retirement. Free-threaded qualification remains a separate cell.
+- A bridge-only C readiness gate misses direct data-symbol reads: ready the
+  public static cohort before invoking an extension initializer/module execution,
+  and ready individually reached types/parents before other physical pointer
+  exposure. Existing READYING/retirement logic remains authoritative. A compiled
+  extension must directly inspect dict/MRO/base/exception fields in the proof.
+
+The automatic-GC-freeze boundary remains an explicit semantic decision. The
+constant-table design requires a concrete execution-context connection before
+implementation; a partial ABI migration is not landable.
