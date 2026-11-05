@@ -208,7 +208,7 @@ pub(crate) fn compiled_loader_frozen_class(py: &PyToken<'_>) -> u64 {
     compiled_loader_derived_class(py, true)
 }
 
-pub fn molt_importlib_frozen_importer_find_spec_attached_body(
+pub(crate) fn molt_importlib_frozen_importer_find_spec_attached_body(
     _py: &crate::PyToken<'_>,
     _class_bits: u64,
     _fullname_bits: u64,
