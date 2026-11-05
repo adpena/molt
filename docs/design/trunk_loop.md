@@ -25,9 +25,13 @@ No task is a shell command supplied by an operator: the selected commit's
 Commands run serially on a host; a failed cell retains its result and does not
 authorize changing workers, deadlines or selecting another workload.
 
-The canonical checkout is a Git object donor, never reset or moved. A new
-detached worktree is allocated under its custody root for each run, using a
-controller-created bundle and bounded Git-transfer semantics. Staging and
+The canonical checkout is a Git object donor: a run never resets or moves it.
+Only provision moves it, to the commit it provisions, and never over tracked
+edits ([Provision before testing](#provision-before-testing)). A new detached
+worktree is allocated under its custody root for each run. A controller-created
+bundle carries the commits the host lacks, with bounded Git-transfer semantics.
+When the checkout already contains the subject and the controller, no bundle is
+made; git refuses an empty one. Staging and
 worktree identities are retained in a local run record before launch. No source,
 toolchain, environment or seal is placed on bat00's exFAT volume. Existing
 `E:\\Molt\\trunk` and the hand-written scratch runner are donors for evidence only;
@@ -38,8 +42,12 @@ the integrator reconciles and retires them after landing.
 `tools/trunk_loop.py provision --host NAME --commit COMMIT` automates the
 [documented local install](../getting-started.md#local-repo-workflow) at
 `COMMIT`. The controller resolves `COMMIT` to a full id and refuses it unless an
-`origin` branch contains it, since the host fetches from origin. The host then
-fetches and checks out that commit before `uv sync` and doctor. A fetch alone
+`origin` branch contains it. The host fetches that exact commit from the
+controller's `origin` URL, the public repository, and checks it out before
+`uv sync` and doctor. It never fetches from the farm checkout's own `origin`:
+on 2026-11-04 bat00's was an SSH URL, and the fetch waited forever on the
+user's key. `GIT_TERMINAL_PROMPT=0` and SSH `BatchMode=yes` make any prompt fail
+instead of hanging. A fetch alone
 leaves the checkout at whatever commit it held: on 2026-11-04 the macmini's
 doctor judged pre-fix code and reported an error that main had already removed.
 The farm checkout is tool-owned. Provision refuses a checkout with tracked edits

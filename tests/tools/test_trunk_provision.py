@@ -108,7 +108,11 @@ def test_provision_transport_runs_documented_workflow_twice(name, monkeypatch):
     assert str(path_type(uv).parent) in retention and uv in retention
     assert "--default-toolchain none" in install
     assert "rustup show active-toolchain" in install
-    assert "git clone --" in install and "fetch origin" in install
+    # The exact commit from the public URL: never the checkout's own origin,
+    # whose SSH key may prompt; a prompt fails instead of hanging.
+    assert "git clone --" in install
+    assert "fetch --no-tags -- " in install and commit in install
+    assert "fetch origin" not in install and "GIT_TERMINAL_PROMPT" in install
     assert installs[0] == installs[1]
     assert "envs/molt-dx-py312" not in install
     if name == "molt-gate":
@@ -712,7 +716,7 @@ def test_existing_posix_install_does_no_bootstrap_work(tmp_path, name, doctor_er
     assert (
         calls
         == [
-            f"git -C {checkout} fetch origin",
+            f"git -C {checkout} fetch --no-tags -- https://example.test/repo.git {commit}",
             f"git -C {checkout} status --porcelain --untracked-files=no",
             f"git -C {checkout} checkout --quiet --detach {commit}",
             "rustup show active-toolchain",
@@ -868,6 +872,67 @@ def test_worker_refuses_a_path_that_selects_another_uv(tmp_path):
     for path in (f"{user.parent}{os.pathsep}{pinned.parent}", str(tmp_path)):
         with pytest.raises(RuntimeError, match="not the pinned"):
             trunk_loop.require_pinned_uv(path, str(pinned), "macmini")
+
+
+def test_run_ships_no_bundle_when_the_host_has_both_commits(tmp_path):
+    """Provision checks out the commit it provisions, so the host often holds
+    the run's subject and controller already; git refuses an empty bundle
+    (macmini, 2026-11-04)."""
+    from tests.process_guard_common import run_custody_subject_process
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+    run_custody_subject_process([*git, "init", "-q"], check=True)
+    commits = []
+    for message in ("first", "second"):
+        run_custody_subject_process(
+            [*git, "commit", "-q", "--allow-empty", "-m", message], check=True
+        )
+        commits.append(
+            run_custody_subject_process(
+                [*git, "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            ).stdout.strip()
+        )
+    first, second = commits
+    assert trunk_loop.is_ancestor(first, second, repo)
+    assert trunk_loop.is_ancestor(second, second, repo)
+    assert not trunk_loop.is_ancestor(second, first, repo)
+
+    host = host_named("macmini")
+
+    class Transport:
+        def __init__(self):
+            self.pushed, self.commands = [], []
+
+        def push(self, paths):
+            self.pushed.extend(paths)
+
+        def remote_path(self, name):
+            return "/stage/" + name
+
+        def shell_command(self, script, *, timeout=60):
+            self.commands.append(script)
+            return ""
+
+    without = Transport()
+    trunk_loop.prepare_checkouts(host, without, None, second, second, "/w/s", "/w/c")
+    assert without.pushed == []
+    assert not any("bundle" in command for command in without.commands)
+    assert len(without.commands) == 2  # the subject and controller worktrees
+    bundle = tmp_path / "source.bundle"
+    shipped = Transport()
+    trunk_loop.prepare_checkouts(host, shipped, bundle, second, second, "/w/s", "/w/c")
+    assert shipped.pushed == [bundle]
+    assert [c for c in shipped.commands if "bundle" in c] == [
+        c for c in shipped.commands[:2]
+    ]
+    assert "bundle verify" in shipped.commands[0]
+    assert "bundle unbundle" in shipped.commands[1]
 
 
 def test_farm_hosts_run_no_command_that_needs_a_runner_image_toolchain():
