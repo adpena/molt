@@ -1785,8 +1785,15 @@ def test_digest_cache_contention_is_a_miss_not_a_build_failure(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows never consults the cache")
+@pytest.mark.parametrize(
+    ("message", "result_code"),
+    [
+        ("database is locked", sqlite3.SQLITE_BUSY),
+        ("database is locked", sqlite3.SQLITE_BUSY_SNAPSHOT),
+    ],
+)
 def test_digest_cache_contention_at_flush_keeps_the_hashes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, message: str, result_code: int
 ) -> None:
     monkeypatch.setattr(identity, "DIGEST_RACY_WINDOW_NS", 0)
     data = b"flushed header"
@@ -1797,9 +1804,7 @@ def test_digest_cache_contention_at_flush_keeps_the_hashes(
     )
 
     def busy() -> sqlite3.Connection:
-        raise _sqlite_error(
-            sqlite3.OperationalError, "database is locked", sqlite3.SQLITE_BUSY
-        )
+        raise _sqlite_error(sqlite3.OperationalError, message, result_code)
 
     monkeypatch.setattr(cache, "_connect", busy)
     cache.flush()
