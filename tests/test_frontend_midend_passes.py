@@ -6913,6 +6913,7 @@ def _reloads_before_their_store(ops: list[MoltOp]) -> list[int]:
 
 
 _RESUME_IN_LOOP_SOURCES = {
+    "yield_from": "def f(iterable):\n    return (yield from iterable)\n",
     # HF-104: an outer synchronous comprehension around an awaiting one.
     "nested_comprehension": (
         "async def f(agen, inc):\n"
@@ -6935,6 +6936,20 @@ _RESUME_IN_LOOP_SOURCES = {
         "        yield [await inc(base + i) for i in range(3)]\n"
     ),
 }
+
+
+def test_yield_from_send_and_throw_results_have_distinct_ssa_definitions() -> None:
+    polls = _stateful_polls("def f(iterable):\n    return (yield from iterable)\n")
+    assert polls
+    for name, ops in polls.items():
+        definitions = [op.result.name for op in ops if op.result.name != "none"]
+        assert len(definitions) == len(set(definitions))
+        gen = SimpleTIRGenerator()
+        gen.map_ops_to_json(ops, function_name=name)
+        assert (
+            gen.midend_policy_outcomes_by_function[name]["coverage"]["status"] == "full"
+        )
+        assert gen.midend_stats.get("midend_verifier_rejections", 0) == 0
 
 
 @pytest.mark.parametrize(

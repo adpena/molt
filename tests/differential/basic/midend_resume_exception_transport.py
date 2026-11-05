@@ -41,3 +41,37 @@ for raise_now in (False, True):
     else:
         flag = False
     print("flag", flag)
+
+
+def delegated():
+    try:
+        sent = yield "ready"
+        print("sent", sent)
+        yield "again"
+    except ValueError as error:
+        yield "caught " + str(error)
+    finally:
+        print("delegated cleanup")
+    return "returned"
+
+
+def delegating():
+    result = yield from delegated()
+    print("result", result)
+
+
+for action in ("next", "send", "throw", "close"):
+    iterator = delegating()
+    print(action, next(iterator))
+    try:
+        if action == "send":
+            print(iterator.send(5))
+        elif action == "throw":
+            print(iterator.throw(ValueError("injected")))
+        elif action == "close":
+            print(iterator.close())
+        else:
+            print(next(iterator))
+        print(list(iterator))
+    except StopIteration:
+        print("finished")

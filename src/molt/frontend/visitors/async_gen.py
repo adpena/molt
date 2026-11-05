@@ -698,6 +698,11 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             raise FrontendRejection(
                 Diagnostic.CONTROL_FLOW, "yield from outside of generator"
             )
+        if not self.is_async():
+            raise FrontendRejection(
+                Diagnostic.INTERNAL_INVARIANT,
+                "yield from requires its generator's stateful frame plan",
+            )
         iterable = self.visit(node.value)
         if iterable is None:
             raise FrontendRejection(
@@ -715,61 +720,38 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 result=MoltValue("none"),
             )
         )
-        iter_slot = None
-        is_gen_slot = None
-        pair_slot = None
-        if self.is_async():
-            iter_slot = self._new_async_internal_slot()
-            is_gen_slot = self._new_async_internal_slot()
-            pair_slot = self._new_async_internal_slot()
+        iter_slot = self._new_async_internal_slot()
+        is_gen_slot = self._new_async_internal_slot()
+        pair_slot = self._new_async_internal_slot()
+
+        def store_slot(slot: int, value: MoltValue) -> None:
             self.emit(
                 MoltOp(
                     kind="STORE_CLOSURE",
-                    args=["self", iter_slot, iter_obj],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", is_gen_slot, is_gen],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", pair_slot, pair],
+                    args=["self", slot, value],
                     result=MoltValue("none"),
                 )
             )
 
+        def load_slot(slot: int, hint: TypeHint) -> MoltValue:
+            value = MoltValue(self.next_var(), type_hint=hint)
+            self.emit(
+                MoltOp(
+                    kind="LOAD_CLOSURE",
+                    args=["self", slot],
+                    result=value,
+                )
+            )
+            return value
+
+        store_slot(iter_slot, iter_obj)
+        store_slot(is_gen_slot, is_gen)
+        store_slot(pair_slot, pair)
+
         self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-        if iter_slot is not None:
-            iter_obj = MoltValue(self.next_var(), type_hint="iter")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", iter_slot],
-                    result=iter_obj,
-                )
-            )
-            is_gen = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", is_gen_slot],
-                    result=is_gen,
-                )
-            )
-            pair = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", pair_slot],
-                    result=pair,
-                )
-            )
+        iter_obj = load_slot(iter_slot, "iter")
+        is_gen = load_slot(is_gen_slot, "bool")
+        pair = load_slot(pair_slot, "tuple")
         zero = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[0], result=zero))
         one = MoltValue(self.next_var(), type_hint="int")
@@ -791,31 +773,8 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             )
         )
         self._emit_state_yield_resume_entry(resume_state)
-        if iter_slot is not None:
-            iter_obj = MoltValue(self.next_var(), type_hint="iter")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", iter_slot],
-                    result=iter_obj,
-                )
-            )
-            is_gen = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", is_gen_slot],
-                    result=is_gen,
-                )
-            )
-            pair = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", pair_slot],
-                    result=pair,
-                )
-            )
+        iter_obj = load_slot(iter_slot, "iter")
+        is_gen = load_slot(is_gen_slot, "bool")
         none_val = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
         pending_throw = MoltValue(self.next_var(), type_hint="exception")
@@ -840,17 +799,11 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 result=MoltValue("none"),
             )
         )
+        thrown_pair = MoltValue(self.next_var(), type_hint="tuple")
         self._emit_intrinsic_call(
-            "molt_iterator_throw", [iter_obj, pending_throw], result=pair
+            "molt_iterator_throw", [iter_obj, pending_throw], result=thrown_pair
         )
-        if pair_slot is not None:
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", pair_slot, pair],
-                    result=MoltValue("none"),
-                )
-            )
+        store_slot(pair_slot, thrown_pair)
         self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
@@ -873,25 +826,14 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind="IS", args=[pending_send, none_val], result=send_is_none))
         self.emit(MoltOp(kind="IF", args=[send_is_none], result=MoltValue("none")))
         pair = self._emit_iter_next_checked(iter_obj)
-        if pair_slot is not None:
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", pair_slot, pair],
-                    result=MoltValue("none"),
-                )
-            )
+        store_slot(pair_slot, pair)
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="IF", args=[is_gen], result=MoltValue("none")))
-        self.emit(MoltOp(kind="GEN_SEND", args=[iter_obj, pending_send], result=pair))
-        if pair_slot is not None:
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", pair_slot, pair],
-                    result=MoltValue("none"),
-                )
-            )
+        sent_pair = MoltValue(self.next_var(), type_hint="tuple")
+        self.emit(
+            MoltOp(kind="GEN_SEND", args=[iter_obj, pending_send], result=sent_pair)
+        )
+        store_slot(pair_slot, sent_pair)
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         err_val = self._emit_exception_new(
             "TypeError", "can't send non-None to a non-generator iterator"
@@ -911,15 +853,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 result=MoltValue("none"),
             )
         )
-        if pair_slot is not None:
-            pair = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", pair_slot],
-                    result=pair,
-                )
-            )
+        pair = load_slot(pair_slot, "tuple")
         zero = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[0], result=zero))
         result = MoltValue(self.next_var(), type_hint="Any")
