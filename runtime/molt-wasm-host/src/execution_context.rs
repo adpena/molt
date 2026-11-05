@@ -15,10 +15,25 @@ pub(super) fn validate_application_context_source(
     application: &ModuleSource,
     runtime: Option<&ModuleSource>,
 ) -> Result<()> {
-    validate_context_section(application.bytes())?;
+    validate_context_section(application.bytes()).with_context(|| {
+        format!(
+            "validate application context schema {}",
+            application.path().display()
+        )
+    })?;
     if let Some(runtime) = runtime {
-        require_imported_context_memory(application.bytes(), "application")?;
-        require_imported_context_memory(runtime.bytes(), "runtime")?;
+        require_imported_context_memory(application.bytes(), "application").with_context(|| {
+            format!(
+                "validate application context memory {}",
+                application.path().display()
+            )
+        })?;
+        require_imported_context_memory(runtime.bytes(), "runtime").with_context(|| {
+            format!(
+                "validate runtime context memory {}",
+                runtime.path().display()
+            )
+        })?;
     }
     Ok(())
 }

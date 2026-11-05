@@ -1613,8 +1613,6 @@ fn execute_split_import_fixture(
         engine,
         crate::execution_fixture::render(format!(
             r#"(module
-          (import "env" "memory" (memory 1))
-          (import "env" "memory" (memory 1))
                 {runtime_fields}
                 {core_start}
                 (func (export "molt_runtime_execution_enter") (result i64) i64.const 41)
@@ -1644,8 +1642,6 @@ fn execute_split_import_fixture(
         engine,
         crate::execution_fixture::render(format!(
             r#"(module
-          (import "env" "memory" (memory 1))
-          (import "env" "memory" (memory 1))
                 (import "molt_runtime" "exception_pending"
                     (func $fixture_exception_pending (param i64) (result i64)))
                 {application_fields}
@@ -1786,11 +1782,15 @@ fn split_runtime_import_plan_preserves_subtypes_and_duplicate_imports() {
                (import "molt_runtime" "exception_last" (func $second (type $derived) (param i64) (result i64)))"#,
         ),
     ] {
+        // Successful split fixtures explicitly share the context's memory.
+        let runtime_fields = format!("(import \"env\" \"memory\" (memory 1))\n{runtime_fields}");
+        let application_fields =
+            format!("(import \"env\" \"memory\" (memory 1))\n{application_fields}");
         assert_eq!(
             execute_split_import_fixture(
                 &engine,
-                runtime_fields,
-                application_fields,
+                &runtime_fields,
+                &application_fields,
                 "local.get $context call $first i64.const 42 i64.ne if unreachable end
                  local.get $context call $second i64.const 42 i64.ne if unreachable end i64.const 0",
                 false,
@@ -2057,7 +2057,7 @@ fn app_startup_reports_and_consumes_pending_runtime_failure() {
         call_test_app_startup(&mut store, &instance, &instance).unwrap(),
         GuestTermination::ApplicationExit(7)
     );
-    for (name, expected) in [("molt_exception_pending", 0), ("reports", 1)] {
+    for (name, expected) in [("molt_exception_pending_detached", 0), ("reports", 1)] {
         let observed = instance
             .get_typed_func::<(), i64>(&mut store, name)
             .unwrap();

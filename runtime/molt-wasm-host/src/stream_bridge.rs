@@ -282,11 +282,9 @@ mod tests {
                 (func (export "molt_stream_send@CONTEXT_SUFFIX@") (param $context i64) (param i64 i32 i64) (result i64)
             local.get $context i64.const 32768 i64.ne if unreachable end
  i64.const 0)
-                (func (export "molt_scratch_alloc@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
-            local.get $context i64.const 32768 i64.ne if unreachable end
+                (func (export "molt_scratch_alloc") (param i64) (result i64)
  i64.const 0)
-                (func (export "molt_scratch_free@CONTEXT_SUFFIX@") (param $context i64) (param i64 i64)
-            local.get $context i64.const 32768 i64.ne if unreachable end
+                (func (export "molt_scratch_free") (param i64 i64)
 )
                 (func (export "run") (result i64) call $new_stream)
                 (func (export "boxes") (result i32) global.get $boxes)
@@ -388,16 +386,12 @@ mod tests {
                 local.get 2 global.set $sent_ptr
                 local.get 3 global.set $sent_len
                 i64.const 0)
-            (func (export "molt_scratch_alloc@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
-            local.get $context i64.const 32768 i64.ne if unreachable end
-
-                local.get 1 global.set $alloc_size
+            (func (export "molt_scratch_alloc") (param i64) (result i64)
+                local.get 0 global.set $alloc_size
                 i64.const 1024)
-            (func (export "molt_scratch_free@CONTEXT_SUFFIX@") (param $context i64) (param i64 i64)
-            local.get $context i64.const 32768 i64.ne if unreachable end
-
-                local.get 1 global.set $freed_ptr
-                local.get 2 global.set $freed_size)
+            (func (export "molt_scratch_free") (param i64 i64)
+                local.get 0 global.set $freed_ptr
+                local.get 1 global.set $freed_size)
             (func (export "run") call $send)
             (func (export "alloc_size") (result i64) global.get $alloc_size)
             (func (export "sent_ptr") (result i32) global.get $sent_ptr)

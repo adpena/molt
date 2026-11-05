@@ -544,7 +544,10 @@ mod tests {
     #[test]
     fn split_preparation_failure_preserves_both_existing_containers() {
         let fixture = Fixture::new();
-        let main = fixture.source("app.wat", b"(module)");
+        let main_bytes = crate::execution_fixture::application_bytes(
+            "(module (import \"env\" \"memory\" (memory 1)))",
+        );
+        let main = fixture.source("app.wasm", &main_bytes);
         let runtime = fixture.source("runtime.wat", b"invalid module");
         for name in ["app.molt.cwasm", "runtime.molt.cwasm"] {
             fs::write(fixture.path().join(name), b"retained generation").unwrap();
@@ -573,11 +576,13 @@ mod tests {
     #[test]
     fn split_producer_publishes_both_members_and_receipt_matches_exact_bytes() {
         let fixture = Fixture::new();
-        let main = fixture.source(
-            "app.wat",
-            b"(module (func (export \"answer\") (result i32) i32.const 42))",
+        let main_bytes = crate::execution_fixture::application_bytes(
+            "(module (import \"env\" \"memory\" (memory 1)) (func (export \"answer\") (result i32) i32.const 42))",
         );
-        let runtime = fixture.source("runtime.wat", b"(module)");
+        let runtime_bytes =
+            wat::parse_str("(module (import \"env\" \"memory\" (memory 1)))").unwrap();
+        let main = fixture.source("app.wasm", &main_bytes);
+        let runtime = fixture.source("runtime.wasm", &runtime_bytes);
         let execution = ResolvedExecution::MoltApplication(ResolvedExecutionModules {
             manifest_path: fixture.path().join("manifest.json"),
             launch_environment: Vec::new(),
