@@ -65,19 +65,18 @@ def uv_python(*argv: str) -> list[str]:
 
 
 # The apt packages the documented Linux workflow needs (docs/getting-started.md).
+# No farm cell declares system CMake (proof-plan toolchains): Cargo builds take
+# AWS-LC's cc builder (molt.cargo_execution_policy refuses its CMake builder), and
+# only LLVM source bootstrap uses system CMake, checking at the point of use.
 LINUX_SYSTEM_PACKAGES = (
     "git",
     "curl",
     "clang",
     "lld",
-    "cmake",
     "build-essential",
     "valgrind",
 )
 # A WSL gate guest also runs systemd and udev for root UUID admission (HF-761).
-# Homebrew formulae a macOS farm host needs; the C toolchain comes from the
-# Command Line Tools, which only the host's owner can accept (GUI consent).
-MACOS_BREW_PACKAGES = ("cmake",)
 WSL_GUEST_PACKAGES = (*LINUX_SYSTEM_PACKAGES, "systemd", "systemd-sysv", "udev")
 
 
@@ -88,16 +87,23 @@ def provision_script(host, *, repository: str, uv_version: str) -> str:
     Never import Molt before uv has resolved the project's dependencies.
     """
     checkout = host.checkout
+    if host.is_windows and not (host.target or "").startswith("x86_64-"):
+        # The vswhere query below names the x64 MSVC component; an ARM64 host
+        # needs config/llvm_toolchain_arches.toml's ARM64 component.
+        raise ValueError(f"{host.name}: Windows farm hosts are x86_64 only")
     if host.is_windows:
         return f"""$ErrorActionPreference='Stop'
 $env:UV_PROJECT_ENVIRONMENT=$null
 $env:VIRTUAL_ENV=$null
 $env:MOLT_VENV=$null
 $env:PATH="$env:USERPROFILE\\.local\\bin;$env:USERPROFILE\\.cargo\\bin;$env:PATH"
-foreach ($tool in @('git','cl.exe','link.exe')) {{
- if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {{
-  throw 'Missing system toolchain; run: winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"; then use its developer shell'
- }}
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {{ throw 'Missing system prerequisite git; run: winget install --id Git.Git' }}
+# Builds select MSVC through vswhere and build their own environment
+# (molt.platform_toolchain.visual_studio_installation); no developer shell is
+# needed. This mirrors that query because Molt is not importable before uv sync.
+$vswhere=Join-Path ${{env:ProgramFiles(x86)}} 'Microsoft Visual Studio\\Installer\\vswhere.exe'
+if (-not (Test-Path -LiteralPath $vswhere) -or @(& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Count -ne 1) {{
+ throw 'Missing MSVC Build Tools; run: winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"'
 }}
 # The pinned uv, not whichever one is installed (the toolchain contract pins it).
 if (-not (Get-Command uv -ErrorAction SilentlyContinue) -or ((& uv --version) -split ' ')[1] -ne {ps(uv_version)}) {{
@@ -137,12 +143,11 @@ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
     # install the host already has.
     fixes = (
         {"cc": "xcode-select --install", "git": "xcode-select --install"}
-        | {tool: "brew install " + tool for tool in ("curl", *MACOS_BREW_PACKAGES)}
         if macos
         else {
             tool: "sudo apt-get update && sudo apt-get install "
             + " ".join(LINUX_SYSTEM_PACKAGES)
-            for tool in ("git", "curl", "cc", "cmake")
+            for tool in ("git", "curl", "clang")
         }
     )
     checks = "\n".join(
@@ -157,25 +162,10 @@ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}
         for tool, fix in fixes.items()
     )
     # The owner approves package installation per host (its inventory record).
-    # Install only the missing formulae: no Homebrew self-update, no upgrade of
-    # unrelated formulae, no prompts. A host without Homebrew falls through to
-    # the precise prerequisite report below.
-    brew = (
-        'brew=""\nfor candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do '
-        'test -x "$candidate" && { brew=$candidate; break; }; done\n'
-        "export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_UPGRADE=1 NONINTERACTIVE=1\n"
-        + "\n".join(
-            f'command -v {package} >/dev/null || {{ test -z "$brew" || "$brew" install {package} >&2; }}'
-            for package in MACOS_BREW_PACKAGES
-        )
-        + "\n"
-        if macos and host.install_system_packages
-        else ""
-    )
     return f"""set -eu
 unset UV_PROJECT_ENVIRONMENT VIRTUAL_ENV MOLT_VENV
-export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-{brew}missing=""
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+missing=""
 missing_fix() {{ missing="$missing
  $1"; }}
 {checks}

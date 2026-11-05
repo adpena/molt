@@ -41,32 +41,47 @@ uv owns bootstrap Python and dependencies; the inventory cannot select a
 hand-made interpreter. Host-side Python entry points use
 `uv run --locked python -B` in the selected checkout. The existing immutable
 development-image publisher still owns proof environments and their admission.
-Provisioning requires CMake among its system prerequisites and runs
+Provisioning requires only what the farm cells need. The commands farm hosts run
+(`portability.queue.*`, `portability.cargo-custody.*`) declare Python, uv, Rust
+and Node; none declares system CMake. Cargo builds AWS-LC with its `cc` builder:
+`molt.cargo_execution_policy` refuses AWS-LC's CMake builder and the controls that
+would need it. Commands that need the GitHub runner image's toolchains
+(`hosted-cmake`, `hosted-clang-cl`, as `portability.headers.windows` does) run on
+hosted runners, never on the farm; a test refuses any farm assignment that
+declares a `hosted-*` toolchain. So the host prerequisites are git, curl and
+clang (the compiler doctor requires). Provision then runs
 `molt doctor --json --strict`: a JSON error report cannot count as a successful
-install merely because the report-only doctor mode exits zero.
-System packages stay an operator step, except on a host whose inventory record
-carries `install_system_packages = true`, the owner's per-host approval. Two kinds
-of host may carry it, and the inventory refuses it elsewhere:
-- A WSL gate guest (molt-gate, 2026-11-04). Provision installs the missing packages
-  of `trunk_loop.WSL_GUEST_PACKAGES` as root inside the guest
-  (`wsl.exe --user root`) before the user-level install, and reports what it
-  installed.
-- A macOS host (macmini, 2026-11-04: "You should be able to do that provisioning
-  on the Mac Mini yourself"). Provision runs Homebrew, which needs no `sudo`, for
-  each missing formula in `trunk_loop.MACOS_BREW_PACKAGES`, with
-  `HOMEBREW_NO_AUTO_UPDATE`, `HOMEBREW_NO_INSTALL_UPGRADE` and `NONINTERACTIVE`
-  set: it installs those formulae and nothing else. A host without Homebrew
-  stays an operator step. So do the Command Line Tools, whose installer needs the
-  owner's GUI consent. Their presence test is `xcode-select -p`, because
-  `/usr/bin/cc` and `/usr/bin/git` are shims that exist without them.
+install merely because the report-only doctor mode exits zero. Doctor reports
+system CMake and Ninja as warnings, not errors. Only building LLVM from source
+(`tools/bootstrap_llvm.py`) uses them, and it refuses at the point of use with
+the fix. Doctor's `native` backend readiness needs Cargo and a C compiler, not
+CMake. Source-built extensions use the environment's attested Ninja
+(`source_extension_producer`, pinned through `uv.lock`), not a system one.
 
-Either way a second run installs nothing. On POSIX hosts, a prerequisite that is
-still missing is named with its own fix, and provision exits 2. It never prints a
-blanket command list that asks for an install the host already has (the macmini
-report once asked for `xcode-select --install` on a host that had the tools). The
-Windows branch still checks `git`, `cl.exe` and `link.exe` and names one Visual
-Studio Build Tools fix, which provides all three. Checking CMake there, and per-tool
-fixes, is a follow-up.
+On 2026-11-04 the Intel Mac mini showed why a package manager is the wrong
+dependency here. Homebrew made Intel macOS a Tier 3 configuration with no
+prebuilt bottles, so `brew install cmake` could not succeed, and nothing needed
+CMake anyway.
+
+System packages stay an operator step, except on a WSL gate guest whose
+inventory record carries `install_system_packages = true`, the owner's per-host
+approval (molt-gate, 2026-11-04). There provision installs the missing packages
+of `trunk_loop.WSL_GUEST_PACKAGES` as root inside the guest
+(`wsl.exe --user root`) before the user-level install, and reports what it
+installed. A second run installs nothing.
+
+On POSIX hosts, a prerequisite that is still missing is named with its own fix,
+and provision exits 2. It never prints a blanket list that asks for an install
+the host already has. On macOS the Command Line Tools provide the compiler and
+git. Their presence test is `xcode-select -p`, because `/usr/bin/cc` and
+`/usr/bin/git` are shims that exist without them. Their installer needs the
+owner's GUI consent, so it stays an operator step. On Windows provision checks
+git and the MSVC Build Tools through the same vswhere query that builds use
+(`molt.platform_toolchain.visual_studio_installation`), and like it requires
+exactly one selected installation. Builds construct their own MSVC environment,
+so no developer shell and no `cl.exe` on `PATH` is needed. Windows farm hosts are
+x86_64 only: the query names the x64 component, and an ARM64 host would need the
+ARM64 component in `config/llvm_toolchain_arches.toml`, so provision refuses it.
 
 Provision installs the pinned uv (`tool_releases` `uv.version`) whenever the
 installed uv differs, not only when uv is absent, on POSIX and Windows alike. The
@@ -337,8 +352,9 @@ Provisioning tests use fake transports for each inventoried OS, reject settings
 drift and insufficient physical headroom before installation, and execute the
 POSIX script twice against fake tools to check that an existing installation
 does not reinstall prerequisites or clone another checkout. Fake-tool runs cover
-the macOS approval with and without Homebrew, the unapproved host's per-tool
-report, and pinned-uv replacement with its convergence check. A child-process
+the macOS host with and without the Command Line Tools (no package manager, no
+CMake), the per-tool report, and pinned-uv replacement with its convergence
+check. A doctor test proves missing CMake and Ninja are warnings, not errors. A child-process
 test proves the standard-stream contract on POSIX: the worker's and a
 default-stdio grandchild's output reach `worker.log`, and stdin reads EOF. The
 Windows `SetStdHandle` path is covered only for call order by an injected fake.
