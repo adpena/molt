@@ -81,10 +81,10 @@ from molt.cargo_execution_policy import (  # noqa: E402
     normalize_cargo_environment,
 )
 
-from tools.proof_executor import (
+from tools.proof_executor import (  # noqa: E402
     CommandAllocation,
     execute_commands as _execute_commands,
-)  # noqa: E402
+)
 
 from tools import proof_plan_cli as _proof_plan_cli  # type: ignore  # noqa: E402
 
