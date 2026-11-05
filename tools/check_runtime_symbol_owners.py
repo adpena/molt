@@ -76,6 +76,19 @@ def _export_identity(attrs: tuple[str, ...], name: str) -> str | None:
         if tokens == ["no_mangle"]:
             unmangled = True
         elif tokens[:2] == ["export_name", "="]:
+            attached = re.fullmatch(
+                r'molt_codegen_abi::attached_symbol!\(("(?:[^"\\]|\\.)*")\)',
+                "".join(tokens[2:]),
+            )
+            if attached is not None:
+                from molt._wasm_abi_generated import runtime_execution_abi
+
+                logical = json.loads(attached[1])
+                execution = runtime_execution_abi(logical)
+                if execution is None or execution.context != "Attached":
+                    raise ValueError(f"unclassified attached export on {name}: {attr}")
+                physical = execution.physical_symbol
+                continue
             if len(tokens) != 3:
                 raise ValueError(f"nonliteral export_name on {name}: {attr}")
             literal = tokens[2]

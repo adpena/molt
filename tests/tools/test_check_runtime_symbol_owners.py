@@ -229,3 +229,24 @@ mod tests { crate::declare_provider!(); }
 """,
     )
     assert check_runtime_symbol_owners.collect_symbol_owners(runtime) == {}
+
+
+def test_generated_attached_symbol_macro_owns_its_physical_identity() -> None:
+    from molt._wasm_abi_generated import runtime_execution_abi
+
+    execution = runtime_execution_abi("molt_add")
+    assert execution is not None
+    attr = '#[unsafe(export_name = molt_codegen_abi::attached_symbol!("molt_add"))]'
+    assert (
+        check_runtime_symbol_owners._export_identity((attr,), "private_name")
+        == execution.physical_symbol
+    )
+
+
+@pytest.mark.parametrize("logical", ["unregistered_export", "molt_runtime_init"])
+def test_attached_symbol_macro_rejects_unclassified_and_boundary_exports(
+    logical: str,
+) -> None:
+    attr = f'#[unsafe(export_name = molt_codegen_abi::attached_symbol!("{logical}"))]'
+    with pytest.raises(ValueError, match="unclassified attached export"):
+        check_runtime_symbol_owners._export_identity((attr,), "private_name")
