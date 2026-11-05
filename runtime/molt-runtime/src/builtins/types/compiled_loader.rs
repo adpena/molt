@@ -29,7 +29,7 @@ fn set_wrapped_function(
     fn_ptr: u64,
     signature: crate::intrinsics::public_objects_generated::PublicSignatureSpec,
     defaults: &[u64],
-    wrap: extern "C" fn(u64) -> u64,
+    wrap: fn(&PyToken<'_>, u64) -> u64,
 ) -> bool {
     let function = crate::builtins::methods::alloc_builtin_function_with_signature(
         py,
@@ -48,7 +48,7 @@ fn set_wrapped_function(
         }
         return false;
     }
-    let wrapper = wrap(function);
+    let wrapper = wrap(py, function);
     dec_ref_bits(py, function);
     if exception_pending(py) || obj_from_bits(wrapper).is_none() {
         return false;
@@ -174,7 +174,7 @@ fn compiled_loader_derived_class(py: &PyToken<'_>, frozen: bool) -> u64 {
                     ),
                     FIND_SPEC_SIGNATURE,
                     &[none, none],
-                    crate::molt_classmethod_new,
+                    crate::molt_classmethod_new_attached_body,
                 );
             }
             let method = crate::builtins::methods::builtin_func_bits_with_signature(
@@ -252,7 +252,7 @@ pub(crate) fn path_finder_class(py: &PyToken<'_>) -> u64 {
                     ),
                     FIND_SPEC_SIGNATURE,
                     &[none, none],
-                    crate::molt_classmethod_new,
+                    crate::molt_classmethod_new_attached_body,
                 )
                 && set_wrapped_function(
                     py,
@@ -265,7 +265,7 @@ pub(crate) fn path_finder_class(py: &PyToken<'_>) -> u64 {
                     ),
                     FIND_SPEC_SIGNATURE,
                     &[none],
-                    crate::molt_classmethod_new,
+                    crate::molt_classmethod_new_attached_body,
                 )
                 && set_wrapped_function(
                     py,
@@ -287,7 +287,7 @@ pub(crate) fn path_finder_class(py: &PyToken<'_>) -> u64 {
                         kwdefaults: &[],
                     },
                     &[],
-                    crate::molt_staticmethod_new,
+                    crate::molt_staticmethod_new_attached_body,
                 )
         },
     )
@@ -380,7 +380,7 @@ pub(crate) fn file_finder_class(py: &PyToken<'_>) -> u64 {
                         kwdefaults: &[],
                     },
                     &[],
-                    crate::molt_classmethod_new,
+                    crate::molt_classmethod_new_attached_body,
                 )
         },
     )

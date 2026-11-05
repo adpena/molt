@@ -297,7 +297,7 @@ pub fn molt_importlib_path_finder_types_attached_body(_py: &crate::PyToken<'_>) 
 fn current_directory<'a, 'py>(
     py: &'a PyToken<'py>,
 ) -> Result<Option<ExceptionValue<'a, 'py>>, u64> {
-    let bits = crate::molt_os_getcwd_attached_body(py);
+    let bits = crate::molt_os_getcwd_attached_body(py.core_token());
     if exception_pending(py) {
         if !is_none(bits) {
             dec_ref_bits(py, bits);
