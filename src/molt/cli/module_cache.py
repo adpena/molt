@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from molt.frontend import MoltValue, SimpleTIRGenerator
+from molt.frontend.dataclass_init import DataclassInitField
 from molt.frontend import BoundMethodHint, ClassId, ClassInfo, DeclaredClass
 from molt.frontend.module_publication import (
     parse_function_metadata,
@@ -1056,6 +1057,17 @@ def _decode_cached_json_value_inner(value: Any) -> Any:
         class_identity = _decode_class_identity(value)
         if class_identity is not None:
             return class_identity
+        if "__dataclass_init_field__" in value and isinstance(
+            value["__dataclass_init_field__"], list
+        ):
+            schema = value["__dataclass_init_field__"]
+            if (
+                len(schema) == 5
+                and isinstance(schema[0], str)
+                and all(isinstance(flag, bool) for flag in schema[1:4])
+                and type(schema[4]) is int
+            ):
+                return DataclassInitField(*schema)
         if "__molt_value__" in value and isinstance(value["__molt_value__"], dict):
             payload = value["__molt_value__"]
             name = payload.get("name")
