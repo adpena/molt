@@ -143,7 +143,7 @@ macro_rules! with_raw_gil_entry_nopanic {
 #[macro_export]
 macro_rules! with_attached_entry {
     ($context:expr, $py:ident, $body:block) => {{
-        #[allow(clippy::redundant_locals, reason = "callers may pass the binding they rebind")] let $py = $context;
+        let $py: &$crate::PyToken<'_> = $context;
 
         // Profile-conditional FFI-boundary dispatch lives in molt-runtime-core
         // (`with_gil_entry_body!`) so every catching GIL-entry macro shares one
@@ -169,6 +169,12 @@ macro_rules! with_attached_entry {
 
 #[macro_export]
 macro_rules! with_attached_entry_nopanic {
-    ($context:expr, $py:ident, { $($body:tt)* }) => {{ #[allow(clippy::redundant_locals, reason = "callers may pass the binding they rebind")] let $py = $context; $($body)* }};
-    ($context:expr, $py:ident, $body:expr) => {{ #[allow(clippy::redundant_locals, reason = "callers may pass the binding they rebind")] let $py = $context; $body }};
+    ($context:expr, $py:ident, { $($body:tt)* }) => {{
+        let $py: &$crate::PyToken<'_> = $context;
+        $($body)*
+    }};
+    ($context:expr, $py:ident, $body:expr) => {{
+        let $py: &$crate::PyToken<'_> = $context;
+        $body
+    }};
 }
