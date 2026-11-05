@@ -1,9 +1,9 @@
 use super::{WasmBody, WasmBodyOp, WasmCallTarget};
 use crate::wasm::WasmBackend;
 use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_data::DataSegmentRef;
-use wasm_encoder::Function;
 
 impl WasmBody {
     pub(crate) fn emit_into(

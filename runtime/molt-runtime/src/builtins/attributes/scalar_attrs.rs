@@ -29,7 +29,7 @@ pub(crate) fn numeric_publish_members(py: &PyToken<'_>) -> bool {
         let Some(getter_ptr) = obj_from_bits(getter).as_ptr() else {
             return false;
         };
-        let _getter = PtrDropGuard::new(getter_ptr);
+        let _getter = PtrDropGuard::new(py, getter_ptr);
         let builtins = builtin_classes(py);
         type MemberDefinition = (crate::NameId, NumericMember, &'static str);
         let definitions: [(u64, NativeDescriptorFlavor, &[MemberDefinition]); 3] = [
@@ -102,11 +102,11 @@ pub(crate) fn numeric_publish_members(py: &PyToken<'_>) -> bool {
             let class = obj_from_bits(owner).as_ptr().unwrap();
             let dictionary = class_dict_bits(class);
             let live = obj_from_bits(dictionary).as_ptr().unwrap();
-            let staged = crate::object::ops_dict::molt_dict_copy(dictionary);
+            let staged = crate::object::ops_dict::molt_dict_copy_attached_body(py, dictionary);
             let Some(staged) = obj_from_bits(staged).as_ptr() else {
                 return false;
             };
-            owners[index] = Some(PtrDropGuard::new(staged));
+            owners[index] = Some(PtrDropGuard::new(py, staged));
             if exception_pending(py) {
                 return false;
             }
@@ -114,12 +114,12 @@ pub(crate) fn numeric_publish_members(py: &PyToken<'_>) -> bool {
                 let Some(name) = name.owned_bits(py) else {
                     return false;
                 };
-                let _name = PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());
+                let _name = PtrDropGuard::new(py, obj_from_bits(name).as_ptr().unwrap());
                 let doc = alloc_string(py, doc.as_bytes());
                 if doc.is_null() {
                     return false;
                 }
-                let _doc = PtrDropGuard::new(doc);
+                let _doc = PtrDropGuard::new(py, doc);
                 let descriptor = crate::builtins::types::alloc_native_descriptor(
                     py,
                     NativeDescriptorSpec {
@@ -136,7 +136,7 @@ pub(crate) fn numeric_publish_members(py: &PyToken<'_>) -> bool {
                 let Some(descriptor_ptr) = obj_from_bits(descriptor).as_ptr() else {
                     return false;
                 };
-                let _descriptor = PtrDropGuard::new(descriptor_ptr);
+                let _descriptor = PtrDropGuard::new(py, descriptor_ptr);
                 if exception_pending(py) {
                     return false;
                 }
@@ -157,8 +157,11 @@ pub(crate) fn numeric_publish_members(py: &PyToken<'_>) -> bool {
     }
 }
 
-extern "C" fn numeric_member_get(descriptor: u64, receiver: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn numeric_member_get(__context: u64, descriptor: u64, receiver: u64) -> u64 {
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         let Some(descriptor) = obj_from_bits(descriptor).as_ptr() else {
             return raise_exception(
                 py,
@@ -234,7 +237,7 @@ extern "C" fn numeric_member_get(descriptor: u64, receiver: u64) -> u64 {
                 "invalid numeric descriptor operation",
             ),
         }
-    })
+    }
 }
 
 /// Which builtin numeric scalar class a receiver belongs to, for
@@ -402,14 +405,22 @@ pub(crate) fn resolve_scalar_attr_with_mode(
 mod numeric_member_tests {
     use super::*;
 
-    extern "C" fn forbidden_conversion(_receiver: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn forbidden_conversion(__context: u64, _receiver: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             raise_exception(
                 py,
                 BuiltinExc::RuntimeError,
                 "numeric member dispatched conversion",
             )
-        })
+        }
     }
 
     fn name(py: &PyToken<'_>, value: &str) -> u64 {
@@ -430,9 +441,9 @@ mod numeric_member_tests {
 
     fn subclass(py: &PyToken<'_>, base: u64, conversion: &str) -> u64 {
         let label = name(py, "NumericMemberChild");
-        let class = crate::molt_class_new(label);
+        let class = crate::molt_class_new_attached_body(py, label);
         dec_ref_bits(py, label);
-        let result = crate::molt_class_set_base(class, base);
+        let result = crate::molt_class_set_base_attached_body(py, class, base);
         dec_ref_bits(py, result);
         let method = crate::builtins::functions::alloc_runtime_function_obj(
             py,
@@ -445,7 +456,7 @@ mod numeric_member_tests {
         assert!(!method.is_null());
         let method = MoltObject::from_ptr(method).bits();
         let conversion = name(py, conversion);
-        let result = crate::molt_set_attr_name(class, conversion, method);
+        let result = crate::molt_set_attr_name_attached_body(py, class, conversion, method);
         for bits in [result, conversion, method] {
             dec_ref_bits(py, bits);
         }
@@ -536,14 +547,14 @@ mod numeric_member_tests {
                 }
                 dec_ref_bits(py, result);
                 let attr = name(py, "real");
-                let ordinary = crate::molt_get_attr_name(instance, attr);
+                let ordinary = crate::molt_get_attr_name_attached_body(py, instance, attr);
                 assert!(!exception_pending(py));
                 assert_eq!(type_of_bits(py, ordinary), base);
                 dec_ref_bits(py, ordinary);
                 let shadow = MoltObject::from_int(91).bits();
-                let changed = crate::molt_set_attr_name(class, attr, shadow);
+                let changed = crate::molt_set_attr_name_attached_body(py, class, attr, shadow);
                 dec_ref_bits(py, changed);
-                let ordinary = crate::molt_get_attr_name(instance, attr);
+                let ordinary = crate::molt_get_attr_name_attached_body(py, instance, attr);
                 assert_eq!(
                     ordinary, shadow,
                     "subclass declaration precedes inherited getset"

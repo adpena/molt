@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.wasm_execution_manifest import wasm_execution_launch
+from tests.wasm_execution_manifest import wasm_execution_launch, execution_abi_metadata
 
 from tests.wasm_execution_manifest import split_wasm_execution_manifest
 
@@ -19,12 +19,18 @@ from pathlib import Path
 import pytest
 
 from molt._wasm_abi_generated import (
-    WASM_IMPORT_SIGNATURE_BY_NAME,
     WASM_RESERVED_RUNTIME_CALLABLE_BASE,
     WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME,
     WASM_RESERVED_RUNTIME_CALLABLES,
-    WASM_RUNTIME_EXPORT_BY_IMPORT,
+    compiled_execution_symbol,
+    ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT,
+    runtime_execution_abi,
 )
+from molt._wasm_runtime_exports import (
+    wasm_split_runtime_import_signature,
+    wasm_runtime_lifetime_export_names,
+)
+from molt.cli.wasm import _runtime_export_name_for_import_from_manifest
 from tests.wasm_callable_table_fixtures import attested_empty_callable_table
 from molt.dx import scratch_dir, session_artifact_component
 from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
@@ -142,14 +148,15 @@ def test_all_hosts_bind_exact_runtime_exports_once(tmp_path: Path) -> None:
         "dict_getitem": 2,
         "tuple_getitem": 2,
     }
-    types = [_wasm_func_type([0x7E] * arity, [0x7E]) for arity in names.values()]
+    types = [_wasm_func_type([0x7E] * (arity + 1), [0x7E]) for arity in names.values()]
     declarations = _wasm_vec([_wasm_u32(i) for i in range(len(names))])
     runtime_bodies = []
     app_bodies = []
     for index, arity in enumerate(names.values()):
-        body = b"\x00" + _wasm_i64_const(101 + index) + b"\x0b"
+        context_check = b"\x20\x00" + _wasm_i64_const(32768) + b"\x52\x04\x40\x00\x0b"
+        body = b"\x00" + context_check + _wasm_i64_const(101 + index) + b"\x0b"
         runtime_bodies.append(_wasm_u32(len(body)) + body)
-        args = b"".join(b"\x20" + _wasm_u32(i) for i in range(arity))
+        args = b"".join(b"\x20" + _wasm_u32(i) for i in range(arity + 1))
         body = b"\x00" + args + b"\x10" + _wasm_u32(index) + b"\x0b"
         app_bodies.append(_wasm_u32(len(body)) + body)
     header = b"\x00asm\x01\x00\x00\x00" + _wasm_section(1, _wasm_vec(types))
@@ -169,7 +176,7 @@ def test_all_hosts_bind_exact_runtime_exports_once(tmp_path: Path) -> None:
             7,
             _wasm_vec(
                 [
-                    _wasm_export(name, 0, len(names) + index)
+                    _wasm_export(compiled_execution_symbol(name), 0, len(names) + index)
                     for index, name in enumerate(names)
                 ]
             ),
@@ -190,12 +197,22 @@ def test_all_hosts_bind_exact_runtime_exports_once(tmp_path: Path) -> None:
             ],
         ),
     ):
+        physical_exports = []
+        for name in exports:
+            execution = runtime_execution_abi(name)
+            assert execution is not None
+            physical_exports.append(execution.physical_symbol)
         (tmp_path / f"{filename}.wasm").write_bytes(
             header
             + _wasm_section(3, declarations)
             + _wasm_section(
                 7,
-                _wasm_vec([_wasm_export(name, 0, i) for i, name in enumerate(exports)]),
+                _wasm_vec(
+                    [
+                        _wasm_export(name, 0, i)
+                        for i, name in enumerate(physical_exports)
+                    ]
+                ),
             )
             + _wasm_section(10, _wasm_vec(runtime_bodies))
         )
@@ -232,9 +249,11 @@ const exact = new WebAssembly.Instance(new WebAssembly.Module(
   fs.readFileSync(path.join(__dirname, 'exact.wasm'))));
 const substitutes = new WebAssembly.Instance(new WebAssembly.Module(
   fs.readFileSync(path.join(__dirname, 'substitutes.wasm'))));
-const exportNames = Object.fromEntries(Object.keys(names).map(name => [name, `molt_${name}`]));
+const generated = require(path.join(root, 'wasm/wasm_abi_generated.json'));
+const exportNames = Object.fromEntries(Object.keys(names).map(name => [name,
+  generated.runtime_execution_abis[`molt_${name}`].physical_symbol]));
 const signatures = Object.fromEntries(Object.entries(names).map(([name, arity]) =>
-  [name, { params: Array(arity).fill('i64'), result: 'i64' }]));
+  [name, { params: Array(arity + 1).fill('i64'), result: 'i64' }]));
 const resultKinds = Object.fromEntries(Object.keys(names).map(name => [name, 'i64']));
 const abi = { names: Object.keys(names), signatures, export_names: exportNames,
   runtime_export_signatures: signatures, result_kinds: resultKinds };
@@ -275,7 +294,7 @@ for (const [host, filename, start, end, call] of sources) {
   const instance = new WebAssembly.Instance(app, {molt_runtime: imports});
   for (let repeat = 0; repeat < 3; repeat += 1) {
     Object.entries(names).forEach(([name, arity], index) => {
-      assert.equal(instance.exports[name](...Array(arity).fill(1n)), BigInt(101 + index),
+      assert.equal(instance.exports[bridge.compiledExecutionSymbol(name)](32768n, ...Array(arity).fill(1n)), BigInt(101 + index),
         `${host} canonical identity for ${name}`);
     });
   }
@@ -300,10 +319,14 @@ console.log('four hosts: exact identity, startup binding, complete missing-expor
 
 
 _LIFETIME_IMPORTS = (
-    "exception_pending",
-    "runtime_execution_enter",
-    "runtime_execution_leave",
-    "runtime_shutdown",
+    "molt_exception_pending_detached",
+    "molt_runtime_execution_enter",
+    "molt_runtime_execution_leave",
+    "molt_runtime_shutdown",
+    "molt_attached_context",
+    "molt_compiled_execution_enter",
+    "molt_compiled_execution_leave",
+    "molt_attached_context_abi_fingerprint",
 )
 
 
@@ -314,19 +337,32 @@ def _runtime_lifetime_wasm(
     exports = []
     bodies = []
     for index, name in enumerate(_LIFETIME_IMPORTS):
-        params, results = WASM_IMPORT_SIGNATURE_BY_NAME[name]
+        signature = wasm_split_runtime_import_signature(name)
+        assert signature is not None
+        params, results = signature
         assert all(value == "i64" for value in (*params, *results))
         types.append(_wasm_func_type([0x7E] * len(params), [0x7E] * len(results)))
+        physical = _runtime_export_name_for_import_from_manifest(name)
+        assert physical is not None
         exports.append(
             _wasm_export(
-                WASM_RUNTIME_EXPORT_BY_IMPORT[name],
+                physical,
                 0,
                 index + (2 if environment_probe else 0),
             )
         )
-        value = (
-            _wasm_i64_const(0 if name == "exception_pending" else 1) if results else b""
+        result = (
+            0
+            if name == "molt_exception_pending_detached"
+            else 32768
+            if name == "molt_attached_context"
+            else 1
         )
+        if name == "molt_attached_context_abi_fingerprint":
+            result = ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT
+            if result >= 1 << 63:
+                result -= 1 << 64
+        value = _wasm_i64_const(result) if results else b""
         body = _wasm_u32(0) + value + b"\x0b"
         bodies.append(_wasm_u32(len(body)) + body)
     defined_types = [_wasm_u32(i) for i in range(len(types))]
@@ -339,8 +375,6 @@ def _runtime_lifetime_wasm(
             imports.append(
                 _wasm_import_func("wasi_snapshot_preview1", name, preview1_type)
             )
-        if not own_memory:
-            imports.append(_wasm_import_memory("env", "memory", 1))
         for name, left, right, callee in (
             ("sizes", 0, 4, 0),
             ("environment", 16, 4096, 1),
@@ -356,7 +390,9 @@ def _runtime_lifetime_wasm(
                 + b"\x0b"
             )
             bodies.append(_wasm_u32(len(body)) + body)
-        exports.append(_wasm_export("memory", 2, 0))
+    if not own_memory:
+        imports.append(_wasm_import_memory("env", "memory", 1))
+    exports.append(_wasm_export("memory", 2, 0))
     return attested_empty_callable_table(
         b"\x00asm\x01\x00\x00\x00"
         + _wasm_section(1, _wasm_vec(types))
@@ -388,7 +424,9 @@ def _webgpu_embed_manifest(app_wasm: bytes, runtime_wasm: bytes) -> dict[str, ob
         "wasm_table_base": None,
         "abi": {
             "browser_embed": {
-                "call_indirect_imports": ["molt_call_indirect0"],
+                "call_indirect_imports": [
+                    compiled_execution_symbol("molt_call_indirect0")
+                ],
                 "reserved_runtime_callables": [],
                 "table_layout": {
                     "default_app_table_base": 256,
@@ -397,6 +435,7 @@ def _webgpu_embed_manifest(app_wasm: bytes, runtime_wasm: bytes) -> dict[str, ob
                 },
             },
             "runtime_imports": {
+                **execution_abi_metadata(),
                 "module": "molt_runtime",
                 "names": list(_LIFETIME_IMPORTS),
                 "signatures": _runtime_import_signatures_from_manifest(
@@ -405,9 +444,10 @@ def _webgpu_embed_manifest(app_wasm: bytes, runtime_wasm: bytes) -> dict[str, ob
                 "result_kinds": _runtime_import_result_kinds_from_manifest(
                     _LIFETIME_IMPORTS
                 ),
-                "export_names": _runtime_import_export_names_from_manifest(
-                    _LIFETIME_IMPORTS
-                ),
+                "export_names": {
+                    **_runtime_import_export_names_from_manifest(_LIFETIME_IMPORTS),
+                    **wasm_runtime_lifetime_export_names(),
+                },
                 "runtime_export_signatures": {},
             },
             "callable_table": {
@@ -1523,13 +1563,13 @@ try {{
 def test_browser_embed_delivers_manifest_policy_to_both_wasi_memories(
     tmp_path: Path, grant: str
 ) -> None:
-    """Read real preview1 pointers from distinct app/runtime guest memories."""
+    """Read preview1 pointers from both host contexts sharing compiled memory."""
     if shutil.which("node") is None:
         pytest.skip("node is required for browser embed WASI environment")
     from molt.capability_manifest import CapabilityManifest
 
     root = Path(__file__).resolve().parents[1]
-    app = _runtime_lifetime_wasm(environment_probe=True, own_memory=True)
+    app = _runtime_lifetime_wasm(environment_probe=True)
     runtime = _runtime_lifetime_wasm(environment_probe=True)
     policy = CapabilityManifest(allow=[grant] if grant else []).resolve()
     manifest = _webgpu_embed_manifest(app, runtime)
@@ -1580,16 +1620,13 @@ def test_browser_embed_delivers_manifest_policy_to_both_wasi_memories(
 try {
   const runtime = embed.runtimeInstance.exports;
   const app = embed.appInstance.exports;
-  assert.notEqual(runtime.memory, app.memory, 'fixture must have separate WASI owners');
-  function inspect(exports, other) {
-    const otherBytes = new Uint8Array(other.memory.buffer);
-    otherBytes.fill(0xa5, 0, 8192);
+  assert.notEqual(runtime, app, 'fixture must have separate WASI instances');
+  assert.equal(runtime.memory, app.memory, 'compiled runtime and app share memory zero');
+  function inspect(exports) {
     embed.execute(() => {
       assert.equal(exports.sizes(), 0);
       assert.equal(exports.environment(), 0);
     });
-    assert.ok(otherBytes.subarray(0, 8192).every(byte => byte === 0xa5),
-      'environment calls must only write their owning memory');
     const bytes = new Uint8Array(exports.memory.buffer);
     const view = new DataView(exports.memory.buffer);
     const count = view.getUint32(0, true);
@@ -1611,8 +1648,8 @@ try {
     assert.equal(view.getUint32(4, true), size, 'size counts UTF8 bytes including NULs');
     assert.deepEqual(Object.fromEntries(entries), expected);
   }
-  inspect(runtime, app);
-  inspect(app, runtime);
+  inspect(runtime);
+  inspect(app);
 } finally { embed.dispose(); }
 """,
             encoding="utf-8",

@@ -63,15 +63,19 @@ fn alloc_context_manager(
     ptr
 }
 
-extern "C" fn context_null_enter(payload_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn context_null_enter(__context: u64, payload_bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, _py, {
         inc_ref_bits(_py, payload_bits);
         payload_bits
     })
 }
 
-extern "C" fn context_null_exit(_payload_bits: u64, _exc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(false).bits() })
+extern "C" fn context_null_exit(__context: u64, _payload_bits: u64, _exc_bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, _py, { MoltObject::from_bool(false).bits() })
 }
 
 fn context_stack_push(_py: &PyToken<'_>, ctx_bits: u64) {
@@ -166,11 +170,11 @@ unsafe fn context_exit_unchecked(_py: &PyToken<'_>, ctx_bits: u64, exc_bits: u64
             // SAFETY: exit_fn_addr was stored by alloc_context_manager from a
             // function pointer provided by the caller of molt_context_new. That
             // caller (compiled Python `with` statement lowering) guarantees the
-            // pointer is a valid `extern "C" fn(u64, u64) -> u64`. The null check
+            // pointer is a valid `extern "C" fn(u64, u64, u64) -> u64`. The null check
             // above rules out zero. A dangling pointer here causes a segfault.
             let exit_fn =
-                std::mem::transmute::<*const (), extern "C" fn(u64, u64) -> u64>(exit_fn_addr);
-            exit_fn(context_payload_bits(ptr), exc_bits);
+                std::mem::transmute::<*const (), extern "C" fn(u64, u64, u64) -> u64>(exit_fn_addr);
+            exit_fn(_py.attached_context(), context_payload_bits(ptr), exc_bits);
             return;
         }
         let exit_name_bits = crate::NameId::DunderExit;
@@ -221,13 +225,13 @@ pub(crate) fn context_stack_unwind(_py: &PyToken<'_>, exc_bits: u64) {
     context_stack_unwind_to(_py, 0, exc_bits);
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_context_new(
+pub(crate) fn molt_context_new_attached_body(
+    _py: &crate::PyToken<'_>,
     enter_fn: *const (),
     exit_fn: *const (),
     payload_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if enter_fn.is_null() || exit_fn.is_null() {
             return raise_exception::<_>(
                 _py,
@@ -244,9 +248,8 @@ pub extern "C" fn molt_context_new(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_context_enter_attached_body(_py: &crate::PyToken<'_>, ctx_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let ctx_obj = obj_from_bits(ctx_bits);
         let Some(ptr) = ctx_obj.as_ptr() else {
             return raise_exception::<_>(
@@ -269,11 +272,12 @@ pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
                     }
                     // SAFETY: enter_fn_addr was stored by alloc_context_manager from
                     // a function pointer provided by molt_context_new. The caller
-                    // guarantees it is a valid `extern "C" fn(u64) -> u64`. The null
+                    // guarantees it is a valid `extern "C" fn(u64, u64) -> u64`. The null
                     // check above rules out zero. Dangling pointer causes a segfault.
-                    let enter_fn =
-                        std::mem::transmute::<*const (), extern "C" fn(u64) -> u64>(enter_fn_addr);
-                    let res = enter_fn(context_payload_bits(ptr));
+                    let enter_fn = std::mem::transmute::<*const (), extern "C" fn(u64, u64) -> u64>(
+                        enter_fn_addr,
+                    );
+                    let res = enter_fn(_py.attached_context(), context_payload_bits(ptr));
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
                     }
@@ -314,9 +318,12 @@ pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_context_exit_attached_body(
+    _py: &crate::PyToken<'_>,
+    ctx_bits: u64,
+    exc_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let ctx_obj = obj_from_bits(ctx_bits);
         let Some(ptr) = ctx_obj.as_ptr() else {
             return raise_exception::<_>(
@@ -339,14 +346,15 @@ pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
                     }
                     // SAFETY: exit_fn_addr was stored by alloc_context_manager
                     // from a function pointer provided by molt_context_new. The
-                    // caller guarantees it is a valid `extern "C" fn(u64, u64) -> u64`.
+                    // caller guarantees it is a valid `extern "C" fn(u64, u64, u64) -> u64`.
                     // The null check above rules out zero. Dangling pointer causes
                     // a segfault.
-                    let exit_fn = std::mem::transmute::<*const (), extern "C" fn(u64, u64) -> u64>(
-                        exit_fn_addr,
-                    );
+                    let exit_fn = std::mem::transmute::<
+                        *const (),
+                        extern "C" fn(u64, u64, u64) -> u64,
+                    >(exit_fn_addr);
                     context_stack_pop(_py, ctx_bits);
-                    exit_fn(context_payload_bits(ptr), exc_bits)
+                    exit_fn(_py.attached_context(), context_payload_bits(ptr), exc_bits)
                 }
                 _ => {
                     let exit_name_bits = crate::NameId::DunderExit;
@@ -377,24 +385,25 @@ pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_context_unwind(exc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_context_unwind_attached_body(_py: &crate::PyToken<'_>, exc_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         context_stack_unwind(_py, exc_bits);
         MoltObject::none().bits()
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_context_depth() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_context_depth_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         MoltObject::from_int(context_stack_depth() as i64).bits()
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_context_unwind_to(depth_bits: u64, exc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_context_unwind_to_attached_body(
+    _py: &crate::PyToken<'_>,
+    depth_bits: u64,
+    exc_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let depth = match to_i64(obj_from_bits(depth_bits)) {
             Some(val) if val >= 0 => val as usize,
             _ => {
@@ -410,9 +419,8 @@ pub extern "C" fn molt_context_unwind_to(depth_bits: u64, exc_bits: u64) -> u64 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_context_null(payload_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_context_null_attached_body(_py: &crate::PyToken<'_>, payload_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let enter_fn = context_null_enter as *const ();
         let exit_fn = context_null_exit as *const ();
         let ptr = alloc_context_manager(_py, enter_fn, exit_fn, payload_bits);
@@ -424,10 +432,12 @@ pub extern "C" fn molt_context_null(payload_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_context_closing(payload_bits: u64) -> u64 {
+pub(crate) fn molt_context_closing_attached_body(
+    _py: &crate::PyToken<'_>,
+    payload_bits: u64,
+) -> u64 {
     // Keep legacy lowering wired to contextlib semantics.
-    crate::molt_contextlib_closing(payload_bits)
+    crate::molt_contextlib_closing_attached_body(_py, payload_bits)
 }
 
 #[cfg(test)]
@@ -437,10 +447,14 @@ mod tests {
 
     static EXIT_CALLS: AtomicUsize = AtomicUsize::new(0);
 
-    extern "C" fn enter(_payload: u64) -> u64 {
+    extern "C" fn enter(__context: u64, _payload: u64) -> u64 {
+        let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         MoltObject::none().bits()
     }
-    extern "C" fn exit(_payload: u64, _exception: u64) -> u64 {
+    extern "C" fn exit(__context: u64, _payload: u64, _exception: u64) -> u64 {
+        let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         EXIT_CALLS.fetch_add(1, Ordering::SeqCst);
         MoltObject::from_bool(false).bits()
     }
@@ -467,8 +481,8 @@ mod tests {
                     MoltObject::none().bits(),
                 ))
                 .bits();
-                molt_context_enter(outer);
-                molt_context_enter(inner);
+                molt_context_enter_attached_body(py, outer);
+                molt_context_enter_attached_body(py, inner);
                 assert!(!exception_pending(py));
                 let exception = ExceptionValue::adopt(
                     py,
@@ -479,9 +493,10 @@ mod tests {
                     ))
                     .bits(),
                 );
-                crate::builtins::exceptions::molt_raise(exception.bits());
+                crate::builtins::exceptions::molt_raise_attached_body(py, exception.bits());
                 assert!(exception_pending(py));
-                let pending = ExceptionValue::adopt(py, crate::molt_exception_last_pending());
+                let pending =
+                    ExceptionValue::adopt(py, crate::molt_exception_last_pending_attached_body(py));
                 assert_eq!(
                     pending.bits(),
                     exception.bits(),
@@ -500,7 +515,7 @@ mod tests {
                 crate::clear_exception(py);
                 match policy {
                     0 => {
-                        molt_context_exit(inner, MoltObject::none().bits());
+                        molt_context_exit_attached_body(py, inner, MoltObject::none().bits());
                     }
                     1 => context_stack_unwind_to(py, 1, exception.bits()),
                     _ => context_stack_unwind(py, exception.bits()),
@@ -513,7 +528,7 @@ mod tests {
                         "lexical cleanup cannot unwind its caller"
                     );
                     assert_eq!(EXIT_CALLS.load(Ordering::SeqCst), 1);
-                    molt_context_exit(outer, MoltObject::none().bits());
+                    molt_context_exit_attached_body(py, outer, MoltObject::none().bits());
                 }
                 assert!(!exception_pending(py));
                 assert_eq!(context_stack_depth(), 0);
@@ -528,3 +543,5 @@ mod tests {
         });
     }
 }
+
+include!("../attached_exports_generated/builtins/context.rs");

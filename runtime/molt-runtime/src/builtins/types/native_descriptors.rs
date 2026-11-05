@@ -80,7 +80,7 @@ fn build_descriptor_class(py: &PyToken<'_>, flavor: NativeDescriptorFlavor, name
     } {
         return runtime_class_init_failed(py, class, flavor.type_name());
     }
-    let base_result = molt_class_set_base(class, builtins.object);
+    let base_result = molt_class_set_base_attached_body(py, class, builtins.object);
     dec_ref_bits(py, base_result);
     if exception_pending(py) {
         return runtime_class_init_failed(py, class, flavor.type_name());
@@ -941,42 +941,62 @@ fn native_descriptor_method(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_native_descriptor_new(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_native_descriptor_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         native_descriptor_method(py, NativeDescriptorOperation::New, args, kwargs)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_native_descriptor_get(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_native_descriptor_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         native_descriptor_method(py, NativeDescriptorOperation::Get, args, kwargs)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_native_descriptor_set(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_native_descriptor_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         native_descriptor_method(py, NativeDescriptorOperation::Set, args, kwargs)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_native_descriptor_delete(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_native_descriptor_delete_attached_body(
+    _py: &crate::PyToken<'_>,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         native_descriptor_method(py, NativeDescriptorOperation::Delete, args, kwargs)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_native_descriptor_repr(descriptor: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { unsafe { native_descriptor_repr(py, descriptor) } })
+pub(crate) fn molt_native_descriptor_repr_attached_body(
+    _py: &crate::PyToken<'_>,
+    descriptor: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        unsafe { native_descriptor_repr(py, descriptor) }
+    })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_native_descriptor_reduce(descriptor: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { unsafe { native_descriptor_reduce(py, descriptor) } })
+pub(crate) fn molt_native_descriptor_reduce_attached_body(
+    _py: &crate::PyToken<'_>,
+    descriptor: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        unsafe { native_descriptor_reduce(py, descriptor) }
+    })
 }
 
 #[cfg(test)]
@@ -984,11 +1004,19 @@ mod tests {
     use super::*;
     use crate::TYPE_ID_NATIVE_DESCRIPTOR;
 
-    extern "C" fn return_instance(_descriptor: u64, instance: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn return_instance(__context: u64, _descriptor: u64, instance: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             inc_ref_bits(py, instance);
             instance
-        })
+        }
     }
 
     fn string_bits(py: &PyToken<'_>, value: &[u8]) -> u64 {
@@ -1194,7 +1222,7 @@ mod tests {
                 );
                 errors::PyErr_Clear();
                 assert!(!exception_pending(py));
-                crate::molt_class_set_base(owner, builtins.object);
+                crate::molt_class_set_base_attached_body(py, owner, builtins.object);
                 crate::object::class_finish_definition(py, owner_ptr).unwrap();
                 assert!(!GLOBAL_BRIDGE.type_has_projection(owner));
 
@@ -1797,3 +1825,5 @@ mod tests {
         });
     }
 }
+
+include!("../../attached_exports_generated/builtins/types/native_descriptors.rs");

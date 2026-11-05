@@ -1,3 +1,5 @@
+#[cfg(test)]
+pub(crate) use specialized_list::molt_list_int_getitem_raw_checked_attached_body;
 // Re-export iter impl functions for backward compatibility with crate::object::ops::* paths
 use crate::BuiltinExc;
 use crate::object::{ClassEdgeOwnership, object_replace_class_edge};
@@ -45,28 +47,6 @@ mod subscript;
 #[cfg(target_os = "windows")]
 pub use super::ops_sys::molt_set_argv_utf16;
 pub(crate) use super::ops_sys::parse_codec_arg;
-pub use super::ops_sys::{
-    molt_chr, molt_ellipsis, molt_gc_callbacks, molt_gc_collect, molt_gc_disable, molt_gc_enable,
-    molt_gc_freeze, molt_gc_garbage, molt_gc_get_count, molt_gc_get_debug,
-    molt_gc_get_freeze_count, molt_gc_get_objects, molt_gc_get_referents, molt_gc_get_referrers,
-    molt_gc_get_stats, molt_gc_get_threshold, molt_gc_is_finalized, molt_gc_is_tracked,
-    molt_gc_isenabled, molt_gc_set_debug, molt_gc_set_threshold, molt_gc_unfreeze, molt_getargv,
-    molt_getrecursionlimit, molt_hash_builtin, molt_id, molt_int_from_bytes, molt_int_to_bytes,
-    molt_len, molt_len_dict, molt_len_list, molt_len_set, molt_len_str, molt_len_tuple,
-    molt_missing, molt_not_implemented, molt_object_hash, molt_ord, molt_pending,
-    molt_raise_recursion_error, molt_recursion_enter_fast, molt_recursion_exit_fast, molt_set_argv,
-    molt_setrecursionlimit, molt_sys_abiflags, molt_sys_api_version, molt_sys_executable,
-    molt_sys_flags_payload, molt_sys_hexversion, molt_sys_implementation_payload,
-    molt_sys_set_version_info, molt_sys_version, molt_sys_version_info, molt_time_altzone,
-    molt_time_asctime, molt_time_daylight, molt_time_get_clock_info, molt_time_gmtime,
-    molt_time_localtime, molt_time_mktime, molt_time_monotonic, molt_time_monotonic_ns,
-    molt_time_perf_counter, molt_time_perf_counter_ns, molt_time_process_time,
-    molt_time_process_time_ns, molt_time_sleep, molt_time_strftime, molt_time_time,
-    molt_time_time_ns, molt_time_timegm, molt_time_timezone, molt_time_tzname,
-    molt_traceback_exception_chain_payload, molt_traceback_extract_tb, molt_traceback_format_exc,
-    molt_traceback_format_exception, molt_traceback_format_exception_only,
-    molt_traceback_format_stack, molt_traceback_format_tb, molt_traceback_payload,
-};
 pub(crate) use ascii_bytes::{
     bytes_ascii_capitalize, bytes_ascii_lower, bytes_ascii_swapcase, bytes_ascii_title,
     bytes_ascii_upper, simd_has_any_ascii_lower, simd_has_any_ascii_upper, simd_is_all_ascii_alnum,
@@ -93,28 +73,102 @@ pub(crate) use dict_set_tables::{
     set_pop_owned, set_publish_staged,
 };
 pub(super) use dict_set_tables::{concat_bytes_like, fill_repeated_bytes, simd_bytes_eq};
-pub use dict_set_tables::{molt_string_split_sep_dict_inc, molt_string_split_ws_dict_inc};
 pub(super) use equality::{
     call_binary_dunder, call_inplace_dunder, call_numeric_dunder, call_numeric_dunder_sides,
     call_sequence_dunder, eq_bool_from_bits,
 };
-pub use fast_compare::{molt_compare_int_fast, molt_string_eq_fast};
-pub use specialized_list::{
-    molt_list_bool_getitem, molt_list_bool_setitem, molt_list_fill_new, molt_list_getitem_int_fast,
-    molt_list_getitem_raw_idx, molt_list_getitem_unchecked, molt_list_int_data,
-    molt_list_int_getitem, molt_list_int_getitem_raw, molt_list_int_getitem_raw_checked,
-    molt_list_int_getitem_truthy, molt_list_int_len, molt_list_int_len_raw, molt_list_int_new,
-    molt_list_int_setitem,
-};
 pub(crate) use subscript::{index_impl, value_supports_mp_subscript};
-pub use subscript::{
-    molt_contains, molt_del_index, molt_delitem_method, molt_getitem_method,
-    molt_getitem_unchecked, molt_index, molt_list_contains, molt_ord_at, molt_setitem_method,
-    molt_store_index, molt_str_contains,
-};
 pub(crate) use subscript::{
-    molt_contains_builtin, molt_delitem_builtin, molt_delitem_builtin_method, molt_getitem_builtin,
-    molt_sequence_item_builtin, molt_setitem_builtin, molt_setitem_builtin_method,
+    molt_contains_builtin, molt_contains_builtin_attached_body, molt_delitem_builtin_attached_body,
+    molt_delitem_builtin_method, molt_getitem_builtin, molt_getitem_builtin_attached_body,
+    molt_sequence_item_builtin, molt_setitem_builtin_attached_body, molt_setitem_builtin_method,
+};
+pub use {
+    super::ops_sys::molt_chr, super::ops_sys::molt_ellipsis, super::ops_sys::molt_gc_callbacks,
+    super::ops_sys::molt_gc_collect, super::ops_sys::molt_gc_disable,
+    super::ops_sys::molt_gc_enable, super::ops_sys::molt_gc_freeze,
+    super::ops_sys::molt_gc_garbage, super::ops_sys::molt_gc_get_count,
+    super::ops_sys::molt_gc_get_debug, super::ops_sys::molt_gc_get_freeze_count,
+    super::ops_sys::molt_gc_get_objects, super::ops_sys::molt_gc_get_referents,
+    super::ops_sys::molt_gc_get_referrers, super::ops_sys::molt_gc_get_stats,
+    super::ops_sys::molt_gc_get_threshold, super::ops_sys::molt_gc_is_finalized,
+    super::ops_sys::molt_gc_is_tracked, super::ops_sys::molt_gc_isenabled,
+    super::ops_sys::molt_gc_set_debug, super::ops_sys::molt_gc_set_threshold,
+    super::ops_sys::molt_gc_unfreeze, super::ops_sys::molt_getargv,
+    super::ops_sys::molt_getrecursionlimit, super::ops_sys::molt_hash_builtin,
+    super::ops_sys::molt_id, super::ops_sys::molt_int_from_bytes,
+    super::ops_sys::molt_int_to_bytes, super::ops_sys::molt_len, super::ops_sys::molt_len_dict,
+    super::ops_sys::molt_len_list, super::ops_sys::molt_len_set, super::ops_sys::molt_len_str,
+    super::ops_sys::molt_len_tuple, super::ops_sys::molt_missing,
+    super::ops_sys::molt_not_implemented, super::ops_sys::molt_object_hash,
+    super::ops_sys::molt_ord, super::ops_sys::molt_pending,
+    super::ops_sys::molt_raise_recursion_error, super::ops_sys::molt_recursion_enter_fast,
+    super::ops_sys::molt_recursion_exit_fast, super::ops_sys::molt_set_argv,
+    super::ops_sys::molt_setrecursionlimit, super::ops_sys::molt_sys_abiflags,
+    super::ops_sys::molt_sys_api_version, super::ops_sys::molt_sys_executable,
+    super::ops_sys::molt_sys_flags_payload, super::ops_sys::molt_sys_hexversion,
+    super::ops_sys::molt_sys_implementation_payload, super::ops_sys::molt_sys_set_version_info,
+    super::ops_sys::molt_sys_version, super::ops_sys::molt_sys_version_info,
+    super::ops_sys::molt_time_altzone, super::ops_sys::molt_time_asctime,
+    super::ops_sys::molt_time_daylight, super::ops_sys::molt_time_get_clock_info,
+    super::ops_sys::molt_time_gmtime, super::ops_sys::molt_time_localtime,
+    super::ops_sys::molt_time_mktime, super::ops_sys::molt_time_monotonic,
+    super::ops_sys::molt_time_monotonic_ns, super::ops_sys::molt_time_perf_counter,
+    super::ops_sys::molt_time_perf_counter_ns, super::ops_sys::molt_time_process_time,
+    super::ops_sys::molt_time_process_time_ns, super::ops_sys::molt_time_sleep,
+    super::ops_sys::molt_time_strftime, super::ops_sys::molt_time_time,
+    super::ops_sys::molt_time_time_ns, super::ops_sys::molt_time_timegm,
+    super::ops_sys::molt_time_timezone, super::ops_sys::molt_time_tzname,
+    super::ops_sys::molt_traceback_exception_chain_payload,
+    super::ops_sys::molt_traceback_extract_tb, super::ops_sys::molt_traceback_format_exc,
+    super::ops_sys::molt_traceback_format_exception,
+    super::ops_sys::molt_traceback_format_exception_only,
+    super::ops_sys::molt_traceback_format_stack, super::ops_sys::molt_traceback_format_tb,
+    super::ops_sys::molt_traceback_payload,
+};
+pub(crate) use {
+    super::ops_sys::molt_hash_builtin_attached_body, super::ops_sys::molt_id_attached_body,
+    super::ops_sys::molt_int_from_bytes_attached_body,
+    super::ops_sys::molt_int_to_bytes_attached_body, super::ops_sys::molt_len_attached_body,
+    super::ops_sys::molt_not_implemented_attached_body,
+    super::ops_sys::molt_object_hash_attached_body,
+    super::ops_sys::molt_sys_abiflags_attached_body,
+    super::ops_sys::molt_sys_api_version_attached_body,
+    super::ops_sys::molt_sys_hexversion_attached_body,
+    super::ops_sys::molt_sys_implementation_payload_attached_body,
+    super::ops_sys::molt_sys_version_attached_body,
+    super::ops_sys::molt_sys_version_info_attached_body,
+};
+pub use {
+    dict_set_tables::molt_string_split_sep_dict_inc, dict_set_tables::molt_string_split_ws_dict_inc,
+};
+pub use {fast_compare::molt_compare_int_fast, fast_compare::molt_string_eq_fast};
+pub use {
+    specialized_list::molt_list_bool_getitem, specialized_list::molt_list_bool_setitem,
+    specialized_list::molt_list_fill_new, specialized_list::molt_list_getitem_int_fast,
+    specialized_list::molt_list_getitem_raw_idx, specialized_list::molt_list_getitem_unchecked,
+    specialized_list::molt_list_int_data, specialized_list::molt_list_int_getitem,
+    specialized_list::molt_list_int_getitem_raw,
+    specialized_list::molt_list_int_getitem_raw_checked,
+    specialized_list::molt_list_int_getitem_truthy, specialized_list::molt_list_int_len,
+    specialized_list::molt_list_int_len_raw, specialized_list::molt_list_int_new,
+    specialized_list::molt_list_int_setitem,
+};
+pub(crate) use {
+    specialized_list::molt_list_bool_setitem_attached_body,
+    specialized_list::molt_list_int_setitem_attached_body,
+};
+pub use {
+    subscript::molt_contains, subscript::molt_del_index, subscript::molt_delitem_method,
+    subscript::molt_getitem_method, subscript::molt_getitem_unchecked, subscript::molt_index,
+    subscript::molt_list_contains, subscript::molt_ord_at, subscript::molt_setitem_method,
+    subscript::molt_store_index, subscript::molt_str_contains,
+};
+pub(crate) use {
+    subscript::molt_contains_attached_body, subscript::molt_del_index_attached_body,
+    subscript::molt_delitem_method_attached_body, subscript::molt_getitem_method_attached_body,
+    subscript::molt_index_attached_body, subscript::molt_setitem_method_attached_body,
+    subscript::molt_store_index_attached_body,
 };
 
 use crate::object::layout::{range_start_bits, range_step_bits, range_stop_bits};
@@ -349,7 +403,7 @@ pub(super) fn range_lookup_candidate(_py: &PyToken<'_>, val_bits: u64) -> Option
     );
     let candidate = index_bigint_from_obj(_py, val_bits, &type_err);
     if candidate.is_none() && exception_pending(_py) {
-        molt_exception_clear();
+        molt_exception_clear_attached_body(_py);
     }
     candidate
 }
@@ -444,9 +498,9 @@ pub(super) fn alloc_range_from_bigints(
 ///
 /// # Safety
 /// Caller must hold the GIL.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_alloc_heap_float(value: f64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { alloc_heap_float(_py, value) })
+
+pub(crate) fn molt_alloc_heap_float_attached_body(_py: &crate::PyToken<'_>, value: f64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { alloc_heap_float(_py, value) })
 }
 
 /// Internal helper: allocate a heap float, returning NaN-boxed pointer bits.
@@ -718,9 +772,8 @@ pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
     maybe_emit_runtime_feedback_file(_py, &payload);
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_profile_dump() {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_profile_dump_attached_body(_py: &crate::PyToken<'_>) {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         profile_dump_with_gil(_py);
     })
 }
@@ -887,9 +940,12 @@ fn runtime_profile_epoch_delta_payload(
 
 /// Reset the process-wide measurement epoch to a fresh baseline without
 /// mutating the monotonic lifetime counters used by leak diagnostics.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_profile_epoch_reset(label_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_profile_epoch_reset_attached_body(
+    _py: &crate::PyToken<'_>,
+    label_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if !profile_enabled(_py) {
             return MoltObject::from_bool(false).bits();
         }
@@ -936,9 +992,9 @@ pub extern "C" fn molt_profile_epoch_reset(label_bits: u64) -> u64 {
 /// End and consume the active measurement epoch, emitting a delta schema on
 /// the diagnostics channel. Snapshotting precedes JSON construction, so the
 /// reporting path cannot contaminate the measured Molt allocation counters.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_profile_epoch_dump() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_profile_epoch_dump_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if !profile_enabled(_py) {
             return MoltObject::from_bool(false).bits();
         }
@@ -1281,7 +1337,7 @@ pub(crate) unsafe fn list_from_iter_bits(_py: &PyToken<'_>, other_bits: u64) -> 
         return None;
     }
     let list_bits = MoltObject::from_ptr(list_ptr).bits();
-    let _ = molt_list_extend(list_bits, other_bits);
+    let _ = molt_list_extend_attached_body(_py, list_bits, other_bits);
     if exception_pending(_py) {
         dec_ref_bits(_py, list_bits);
         return None;
@@ -1301,7 +1357,7 @@ pub(crate) unsafe fn tuple_from_iter_bits(_py: &PyToken<'_>, other_bits: u64) ->
                 return Some(other_bits);
             }
             if type_id == TYPE_ID_LIST {
-                let tuple_bits = molt_tuple_from_list(other_bits);
+                let tuple_bits = molt_tuple_from_list_attached_body(_py, other_bits);
                 if obj_from_bits(tuple_bits).is_none() {
                     return None;
                 }
@@ -1328,7 +1384,7 @@ pub(crate) unsafe fn frozenset_from_iter_bits(py: &PyToken<'_>, source: u64) -> 
             inc_ref_bits(py, source);
             return Some(source);
         }
-        let bits = molt_frozenset_new(0);
+        let bits = molt_frozenset_new_attached_body(py, 0);
         let ptr = obj_from_bits(bits).as_ptr()?;
         if super::ops_set::set_update_iterable(py, ptr, source, HashContext::SetElement).is_err() {
             dec_ref_bits(py, bits);
@@ -1337,14 +1393,14 @@ pub(crate) unsafe fn frozenset_from_iter_bits(py: &PyToken<'_>, source: u64) -> 
         Some(bits)
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inc_ref_obj(bits: u64) {
+
+pub(crate) fn molt_inc_ref_obj_attached_body(_py: &crate::PyToken<'_>, bits: u64) {
     // Fast path: skip GIL for non-pointer values (ints, floats, bools, none).
     let obj = obj_from_bits(bits);
     let Some(ptr) = obj.as_ptr() else {
         return;
     };
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe { crate::object::inc_ref_ptr(_py, ptr) };
     })
 }
@@ -1357,18 +1413,19 @@ pub extern "C" fn __molt_runtime_release_protected_value(bits: u64) {
         return;
     }
     crate::with_gil_entry_nopanic!(_py, {
-        molt_cpython_abi::api::errors::with_preserved_error(|| molt_dec_ref_obj(bits));
+        molt_cpython_abi::api::errors::with_preserved_error(|| {
+            molt_dec_ref_obj_attached_body(_py, bits)
+        });
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dec_ref_obj(bits: u64) {
+pub(crate) fn molt_dec_ref_obj_attached_body(_py: &crate::PyToken<'_>, bits: u64) {
     // Fast path: skip GIL for non-pointer values (ints, floats, bools, none).
     let obj = obj_from_bits(bits);
     if !obj.is_ptr() {
         return;
     }
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *const MoltHeader;
@@ -1402,15 +1459,15 @@ pub extern "C" fn molt_dec_ref_obj(bits: u64) {
 
 /// Batched `inc_ref`: apply one checked typed transition for `count` retained
 /// references. Returns the input bits unchanged (convenience for chaining).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inc_ref_n(bits: u64, count: u32) -> u64 {
+
+pub(crate) fn molt_inc_ref_n_attached_body(_py: &crate::PyToken<'_>, bits: u64, count: u32) -> u64 {
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return bits;
     };
     if count == 0 {
         return bits;
     }
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe { crate::object::inc_ref_n_ptr(_py, ptr, count) };
     });
     bits
@@ -1418,15 +1475,15 @@ pub extern "C" fn molt_inc_ref_n(bits: u64, count: u32) -> u64 {
 
 /// Batched `dec_ref`: apply the typed release transition `count` times. Each
 /// release is separate because any one of them may cross the terminal edge.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dec_ref_n(bits: u64, count: u32) {
+
+pub(crate) fn molt_dec_ref_n_attached_body(_py: &crate::PyToken<'_>, bits: u64, count: u32) {
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return;
     };
     if count == 0 {
         return;
     }
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe {
             let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *const MoltHeader;
             let type_id = (*header_ptr).type_id;
@@ -1474,13 +1531,14 @@ fn unpack_non_iterable_message(_py: &PyToken<'_>, seq_bits: u64) -> String {
 /// `expected_count` `u64` elements. A null pointer with a nonzero count is the
 /// allocation-failure signal used by pointer-width backends and raises
 /// `MemoryError` before any source iteration.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_unpack_sequence(
+
+pub(crate) unsafe fn molt_unpack_sequence_attached_body(
+    _py: &crate::PyToken<'_>,
     seq_bits: u64,
     expected_count: u64,
     output_ptr_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Ok(expected) = usize::try_from(expected_count) else {
             crate::record_memory_error_without_allocation(_py);
             return MoltObject::none().bits();
@@ -1571,7 +1629,7 @@ pub unsafe extern "C" fn molt_unpack_sequence(
                 }
             } else {
                 // Generic iterable: materialize via iter/next.
-                let iter_bits = molt_iter(seq_bits);
+                let iter_bits = molt_iter_attached_body(_py, seq_bits);
                 if obj_from_bits(iter_bits).is_none() {
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
@@ -1583,7 +1641,8 @@ pub unsafe extern "C" fn molt_unpack_sequence(
                 let mut count = 0usize;
                 loop {
                     let mut value_bits = no_value;
-                    let done_bits = crate::molt_iter_next_unboxed(
+                    let done_bits = crate::molt_iter_next_unboxed_attached_body(
+                        _py,
                         iter_bits,
                         crate::provenance::abi::expose_address(&raw mut value_bits),
                     );
@@ -2124,8 +2183,9 @@ unsafe fn install_guarded_class_namespace(
 ///
 /// `bases_ptr_bits` must encode `nbases` entries when `nbases > 0`, and
 /// `attrs_ptr_bits` must encode `nattrs * 2` entries when `nattrs > 0`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_guarded_class_def(
+
+pub(crate) unsafe fn molt_guarded_class_def_attached_body(
+    _py: &crate::PyToken<'_>,
     name_bits: u64,
     bases_ptr_bits: u64,
     nbases: u64,
@@ -2135,12 +2195,15 @@ pub unsafe extern "C" fn molt_guarded_class_def(
     layout_version: i64,
     flags: u64,
 ) -> u64 {
-    use crate::builtins::types::{molt_class_apply_set_name, molt_class_new, molt_class_set_base};
+    use crate::builtins::types::{
+        molt_class_apply_set_name_attached_body, molt_class_new_attached_body,
+        molt_class_set_base_attached_body,
+    };
     use molt_obj_model::MoltObject;
 
     let none = MoltObject::none().bits();
     let Ok(nb) = usize::try_from(nbases) else {
-        return crate::with_gil_entry_nopanic!(_py, {
+        return crate::with_attached_entry_nopanic!(_py, _py, {
             {
                 crate::record_memory_error_without_allocation(_py);
                 MoltObject::none().bits()
@@ -2148,7 +2211,7 @@ pub unsafe extern "C" fn molt_guarded_class_def(
         });
     };
     let Ok(na) = usize::try_from(nattrs) else {
-        return crate::with_gil_entry_nopanic!(_py, {
+        return crate::with_attached_entry_nopanic!(_py, _py, {
             {
                 crate::record_memory_error_without_allocation(_py);
                 MoltObject::none().bits()
@@ -2156,7 +2219,7 @@ pub unsafe extern "C" fn molt_guarded_class_def(
         });
     };
     let Some(attr_slots) = na.checked_mul(2) else {
-        return crate::with_gil_entry_nopanic!(_py, {
+        return crate::with_attached_entry_nopanic!(_py, _py, {
             {
                 crate::record_memory_error_without_allocation(_py);
                 MoltObject::none().bits()
@@ -2167,7 +2230,7 @@ pub unsafe extern "C" fn molt_guarded_class_def(
         std::ptr::null()
     } else {
         let Some(ptr) = crate::provenance::abi::const_ptr::<u64>(bases_ptr_bits) else {
-            return crate::with_gil_entry_nopanic!(_py, {
+            return crate::with_attached_entry_nopanic!(_py, _py, {
                 {
                     crate::record_memory_error_without_allocation(_py);
                     MoltObject::none().bits()
@@ -2175,7 +2238,7 @@ pub unsafe extern "C" fn molt_guarded_class_def(
             });
         };
         if ptr.is_null() {
-            return crate::with_gil_entry_nopanic!(_py, {
+            return crate::with_attached_entry_nopanic!(_py, _py, {
                 raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "class base pointer is null")
             });
         }
@@ -2185,7 +2248,7 @@ pub unsafe extern "C" fn molt_guarded_class_def(
         std::ptr::null()
     } else {
         let Some(ptr) = crate::provenance::abi::const_ptr::<u64>(attrs_ptr_bits) else {
-            return crate::with_gil_entry_nopanic!(_py, {
+            return crate::with_attached_entry_nopanic!(_py, _py, {
                 {
                     crate::record_memory_error_without_allocation(_py);
                     MoltObject::none().bits()
@@ -2193,7 +2256,7 @@ pub unsafe extern "C" fn molt_guarded_class_def(
             });
         };
         if ptr.is_null() {
-            return crate::with_gil_entry_nopanic!(_py, {
+            return crate::with_attached_entry_nopanic!(_py, _py, {
                 raise_exception::<u64>(
                     _py,
                     BuiltinExc::RuntimeError,
@@ -2204,7 +2267,7 @@ pub unsafe extern "C" fn molt_guarded_class_def(
         ptr
     };
     let Some(bases) = (unsafe { crate::provenance::abi::slice(bases_ptr, nbases) }) else {
-        return crate::with_gil_entry_nopanic!(_py, {
+        return crate::with_attached_entry_nopanic!(_py, _py, {
             raise_exception::<u64>(
                 _py,
                 BuiltinExc::RuntimeError,
@@ -2215,7 +2278,7 @@ pub unsafe extern "C" fn molt_guarded_class_def(
     let attr_slots_bits =
         u64::try_from(attr_slots).expect("usize is no wider than Molt's u64 runtime ABI word");
     let Some(attrs) = (unsafe { crate::provenance::abi::slice(attrs_ptr, attr_slots_bits) }) else {
-        return crate::with_gil_entry_nopanic!(_py, {
+        return crate::with_attached_entry_nopanic!(_py, _py, {
             raise_exception::<u64>(
                 _py,
                 BuiltinExc::RuntimeError,
@@ -2226,30 +2289,30 @@ pub unsafe extern "C" fn molt_guarded_class_def(
     let bases_vec = bases.to_vec();
     let attrs_vec = attrs.to_vec();
     let debug_class_def = runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_CLASS_DEF);
-    let class_bits = molt_class_new(name_bits);
+    let class_bits = molt_class_new_attached_body(_py, name_bits);
     if class_bits == none {
         return class_bits;
     }
     let class_ptr = obj_from_bits(class_bits)
         .as_ptr()
         .expect("class allocator returns a class");
-    let mut class_owner = crate::PtrDropGuard::new(class_ptr);
+    let mut class_owner = crate::PtrDropGuard::new(_py, class_ptr);
     if (flags & 1) != 0 && nb > 0 {
         if nb == 1 {
-            molt_class_set_base(class_bits, bases_vec[0]);
+            molt_class_set_base_attached_body(_py, class_bits, bases_vec[0]);
         } else {
-            crate::with_gil_entry_nopanic!(_py, {
+            crate::with_attached_entry_nopanic!(_py, _py, {
                 let tuple_ptr = crate::object::builders::alloc_tuple(_py, &bases_vec);
                 if !tuple_ptr.is_null() {
                     let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
-                    molt_class_set_base(class_bits, tuple_bits);
+                    molt_class_set_base_attached_body(_py, class_bits, tuple_bits);
                     crate::dec_ref_bits(_py, tuple_bits);
                 }
             });
         }
     }
 
-    let namespace_ok = crate::with_gil_entry_nopanic!(_py, {
+    let namespace_ok = crate::with_attached_entry_nopanic!(_py, _py, {
         !exception_pending(_py)
             && unsafe {
                 install_guarded_class_namespace(_py, class_bits, name_bits, &attrs_vec, layout_size)
@@ -2259,7 +2322,7 @@ pub unsafe extern "C" fn molt_guarded_class_def(
         return MoltObject::none().bits();
     }
 
-    let sealed = crate::with_gil_entry_nopanic!(_py, {
+    let sealed = crate::with_attached_entry_nopanic!(_py, _py, {
         obj_from_bits(class_bits)
             .as_ptr()
             .is_some_and(|class_ptr| unsafe {
@@ -2272,8 +2335,8 @@ pub unsafe extern "C" fn molt_guarded_class_def(
     if debug_class_def {
         eprintln!("molt class_def before apply_set_name");
     }
-    molt_class_apply_set_name(class_bits);
-    if crate::with_gil_entry_nopanic!(_py, { exception_pending(_py) }) {
+    molt_class_apply_set_name_attached_body(_py, class_bits);
+    if crate::with_attached_entry_nopanic!(_py, _py, { exception_pending(_py) }) {
         return none;
     }
     if debug_class_def {
@@ -2281,7 +2344,7 @@ pub unsafe extern "C" fn molt_guarded_class_def(
     }
 
     if nb > 0 {
-        let init_subclass_ok = crate::with_gil_entry_nopanic!(_py, {
+        let init_subclass_ok = crate::with_attached_entry_nopanic!(_py, _py, {
             if debug_class_def {
                 let class_name = string_obj_to_owned(obj_from_bits(name_bits))
                     .unwrap_or_else(|| "<class>".to_string());
@@ -2314,7 +2377,7 @@ pub unsafe extern "C" fn molt_guarded_class_def(
         }
     }
 
-    let version_initialized = crate::with_gil_entry_nopanic!(_py, {
+    let version_initialized = crate::with_attached_entry_nopanic!(_py, _py, {
         if layout_version < 0 {
             let _ =
                 raise_exception::<u64>(_py, BuiltinExc::TypeError, "layout version must be int");
@@ -2340,10 +2403,14 @@ pub unsafe extern "C" fn molt_guarded_class_def(
 ///
 /// This consolidates the multi-op f-string assembly (N const_str + N string_format
 /// + tuple_new + string_join) into a single runtime call.
-#[unsafe(no_mangle)]
+
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn molt_fstring_build(parts_ptr: *const u64, n_parts: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_fstring_build_attached_body(
+    _py: &crate::PyToken<'_>,
+    parts_ptr: *const u64,
+    n_parts: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(n) = crate::provenance::abi::address(n_parts) else {
             return {
                 crate::record_memory_error_without_allocation(_py);
@@ -2402,7 +2469,7 @@ pub extern "C" fn molt_fstring_build(parts_ptr: *const u64, n_parts: u64) -> u64
                 (value_bits, false)
             } else {
                 // Value — convert via str().
-                let converted = molt_str_from_obj(value_bits);
+                let converted = molt_str_from_obj_attached_body(_py, value_bits);
                 if obj_from_bits(converted).is_none() && exception_pending(_py) {
                     // Clean up previously owned parts.
                     for &(bits, owned) in &parts {
@@ -2492,9 +2559,13 @@ pub extern "C" fn molt_fstring_build(parts_ptr: *const u64, n_parts: u64) -> u64
 /// Returns a list element WITHOUT incrementing the refcount.
 /// The list holds the element alive. This mirrors CPython's
 /// `PyList_GetItem()` borrowed-reference semantics.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_getitem_borrowed(list_bits: u64, index_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_list_getitem_borrowed_attached_body(
+    _py: &crate::PyToken<'_>,
+    list_bits: u64,
+    index_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(list_bits);
         let Some(ptr) = obj.as_ptr() else {
             return 0;
@@ -2524,9 +2595,13 @@ pub extern "C" fn molt_list_getitem_borrowed(list_bits: u64, index_bits: u64) ->
 /// Returns a tuple element WITHOUT incrementing the refcount.
 /// The tuple holds the element alive. This mirrors CPython's
 /// `PyTuple_GetItem()` borrowed-reference semantics.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tuple_getitem_borrowed(tuple_bits: u64, index_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_tuple_getitem_borrowed_attached_body(
+    _py: &crate::PyToken<'_>,
+    tuple_bits: u64,
+    index_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(tuple_bits);
         let Some(ptr) = obj.as_ptr() else {
             return 0;
@@ -2554,3 +2629,5 @@ pub extern "C" fn molt_tuple_getitem_borrowed(tuple_bits: u64, index_bits: u64) 
         }
     })
 }
+
+include!("../attached_exports_generated/object/ops.rs");

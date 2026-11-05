@@ -2,6 +2,7 @@ use super::add_reloc_sections;
 use super::symbols::is_manifest_call_indirect_import_name;
 use crate::wasm::test_execution::wasm_ld_path;
 use crate::wasm_abi::{NATIVE_CALLABLE_IMPORT_MODULE, RUNTIME_IMPORT_MODULE};
+use crate::wasm_binary::Function;
 use crate::wasm_binary::{emit_call_indirect, encode_u32_leb128_padded, strip_unused_imports};
 use crate::wasm_data::WasmDataSegments;
 use crate::wasm_table::{
@@ -12,10 +13,11 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::fs;
 use std::process::Command;
+use wasm_encoder::FunctionSection;
 use wasm_encoder::{
     CodeSection, ConstExpr, CustomSection, ElementMode, ElementSection, ElementSegment, Elements,
-    Encode, EntityType, ExportKind, ExportSection, Function, FunctionSection, ImportSection,
-    Instruction, Module, RawSection, RefType, TableType, TypeSection,
+    Encode, EntityType, ExportKind, ExportSection, ImportSection, Instruction, Module, RawSection,
+    RefType, TableType, TypeSection,
 };
 use wasmparser::{Parser, Payload};
 
@@ -136,26 +138,33 @@ fn call_indirect_symbol_preservation_uses_manifest_membership() {
 #[test]
 fn reloc_symbol_table_preserves_native_callable_import_symbols() {
     let mut types = TypeSection::new();
-    types.ty().function([], []);
+    types.ty().function([wasm_encoder::ValType::I64], []);
+    types
+        .ty()
+        .function([wasm_encoder::ValType::I64], [wasm_encoder::ValType::I64]);
+    types.ty().function([], [wasm_encoder::ValType::I32]);
 
     let mut imports = ImportSection::new();
     imports.import(
         RUNTIME_IMPORT_MODULE,
         "types_bootstrap",
-        EntityType::Function(0),
+        EntityType::Function(1),
     );
     imports.import(
         NATIVE_CALLABLE_IMPORT_MODULE,
         "PyInit__nd_image",
-        EntityType::Function(0),
+        EntityType::Function(2),
     );
 
     let mut funcs = FunctionSection::new();
     funcs.function(0);
 
     let mut body = Function::new([]);
+    body.instruction(&Instruction::LocalGet(0));
     body.instruction(&Instruction::Call(0));
+    body.instruction(&Instruction::Drop);
     body.instruction(&Instruction::Call(1));
+    body.instruction(&Instruction::Drop);
     body.instruction(&Instruction::End);
     let mut codes = CodeSection::new();
     codes.function(&body);
@@ -167,6 +176,12 @@ fn reloc_symbol_table_preserves_native_callable_import_symbols() {
     module.section(&codes);
 
     let relocated = add_reloc_sections(module.finish(), &[], &[], &[]);
+    assert!(bytes_contain_ascii(
+        &relocated,
+        crate::wasm_abi_generated::WasmRuntimeImport::TypesBootstrap
+            .execution_abi()
+            .physical_symbol
+    ));
     assert!(
         bytes_contain_ascii(&relocated, "PyInit__nd_image"),
         "native callable import symbol must be preserved for object-closure linking"
@@ -176,15 +191,18 @@ fn reloc_symbol_table_preserves_native_callable_import_symbols() {
 #[test]
 fn reloc_symbol_table_preserves_user_function_import_symbols() {
     let mut types = TypeSection::new();
-    types.ty().function([], []);
+    types.ty().function([wasm_encoder::ValType::I64], []);
 
     let mut imports = ImportSection::new();
-    imports.import("env", "stdlib_external", EntityType::Function(0));
+    let physical =
+        molt_ir::runtime_callable_abi_generated::compiled_execution_symbol("stdlib_external");
+    imports.import("env", &physical, EntityType::Function(0));
 
     let mut funcs = FunctionSection::new();
     funcs.function(0);
 
     let mut body = Function::new([]);
+    body.instruction(&Instruction::LocalGet(0));
     body.instruction(&Instruction::Call(0));
     body.instruction(&Instruction::End);
     let mut codes = CodeSection::new();
@@ -198,7 +216,7 @@ fn reloc_symbol_table_preserves_user_function_import_symbols() {
 
     let relocated = add_reloc_sections(module.finish(), &[], &[], &[]);
     assert!(
-        bytes_contain_ascii(&relocated, "stdlib_external"),
+        bytes_contain_ascii(&relocated, &physical),
         "canonical env user-function import symbol must survive relocatable emission"
     );
 }

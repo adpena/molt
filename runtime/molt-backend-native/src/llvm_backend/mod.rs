@@ -6,6 +6,8 @@
 //! slower compilation. Use Cranelift backend for development iteration.
 
 mod app_resolver;
+#[cfg(feature = "llvm")]
+mod execution_abi;
 pub mod lowering;
 mod module_registry;
 mod program_slots;

@@ -50,7 +50,8 @@ fn c_and_runtime_slices_share_list_get_set_delete_and_physical_fields() {
         crate::dec_ref_bits(&py, list);
 
         // The opposite crossing must expose the same actual slice, not Other.
-        let key_bits = crate::molt_slice_new(
+        let key_bits = crate::molt_slice_new_attached_body(
+            py,
             MoltObject::none().bits(),
             MoltObject::none().bits(),
             MoltObject::from_int(-2).bits(),
@@ -83,36 +84,61 @@ thread_local! {
     static INDEX_ERROR: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-extern "C" fn echo_key(_receiver: u64, key: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn echo_key(__context: u64, _receiver: u64, key: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         OBSERVED_KEYS.with(|keys| keys.borrow_mut().push(key));
         crate::inc_ref_bits(py, key);
         key
-    })
+    }
 }
-extern "C" fn set_key(receiver: u64, key: u64, _value: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
-        let result = echo_key(receiver, key);
+extern "C" fn set_key(__context: u64, receiver: u64, key: u64, _value: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        let result = echo_key(__context, receiver, key);
         crate::dec_ref_bits(py, result);
         MoltObject::none().bits()
-    })
+    }
 }
-extern "C" fn index_error(_receiver: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn index_error(__context: u64, _receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         INDEX_CALLS.with(|calls| calls.set(calls.get() + 1));
         let error = INDEX_ERROR.with(|error| error.get());
         crate::record_exception(py, crate::obj_from_bits(error).as_ptr().unwrap());
         MoltObject::none().bits()
-    })
+    }
 }
 
 fn callback_instance(py: &crate::PyToken<'_>, methods: &[(&[u8], *const (), u64)]) -> (u64, u64) {
     use crate::builtins::exceptions::ExceptionValue;
     let name = crate::dynamic_attr_name_bits(py, b"SliceCallbackProbe").unwrap();
-    let class = crate::molt_class_new(name);
+    let class = crate::molt_class_new_attached_body(py, name);
     let class_owner = ExceptionValue::adopt(py, class);
     crate::dec_ref_bits(py, name);
-    let result = crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+    let result =
+        crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).object);
     crate::dec_ref_bits(py, result);
     for &(name, target, arity) in methods {
         let name = crate::dynamic_attr_name_bits(py, name).unwrap();
@@ -124,7 +150,7 @@ fn callback_instance(py: &crate::PyToken<'_>, methods: &[(&[u8], *const (), u64)
         );
         assert!(!function.is_null());
         let function = MoltObject::from_ptr(function).bits();
-        let result = crate::molt_set_attr_name(class, name, function);
+        let result = crate::molt_set_attr_name_attached_body(py, class, name, function);
         for value in [function, result] {
             crate::dec_ref_bits(py, value);
         }

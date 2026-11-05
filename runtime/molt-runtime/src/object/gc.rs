@@ -3661,8 +3661,8 @@ mod tests {
                     dec_ref_bits(py, MoltObject::from_ptr(referrers).bits());
                     dec_ref_bits(py, MoltObject::from_ptr(targets).bits());
 
-                    let view = crate::molt_dict_items(hidden_bits);
-                    let iterator = crate::molt_iter(view);
+                    let view = crate::molt_dict_items_attached_body(py, hidden_bits);
+                    let iterator = crate::molt_iter_attached_body(py, view);
                     assert!(!exception_pending(py));
                     // Drop the root just as the platform's terminal swap does.
                     // The view/iterator now supply all remaining root ownership.
@@ -3754,7 +3754,7 @@ mod tests {
                     );
                 }
                 state.set_debug_flags(0);
-                crate::molt_list_clear(garbage);
+                crate::molt_list_clear_attached_body(py, garbage);
                 let reclaimed = unsafe { collect_cycles(py) };
                 assert_eq!(reclaimed.status, GcCollectStatus::Completed);
                 assert_eq!(reclaimed.retired, if public_peer { 2 } else { 1 });
@@ -4023,7 +4023,7 @@ mod tests {
                     allocation_count + i64::from(already_promoted),
                     "{family}",
                 );
-                crate::molt_list_append(bits, bits);
+                crate::molt_list_append_attached_body(py, bits, bits);
                 assert!(!exception_pending(py));
                 assert_eq!(unsafe { object_type_id(ptr) }, TYPE_ID_LIST);
                 assert!(unsafe { gc_is_tracked(ptr) }, "{family}");
@@ -4456,8 +4456,8 @@ mod tests {
             let right = alloc_list(_py, &[]);
             let left_bits = MoltObject::from_ptr(left).bits();
             let right_bits = MoltObject::from_ptr(right).bits();
-            crate::molt_list_append(left_bits, right_bits);
-            crate::molt_list_append(right_bits, left_bits);
+            crate::molt_list_append_attached_body(_py, left_bits, right_bits);
+            crate::molt_list_append_attached_body(_py, right_bits, left_bits);
 
             let left_before = unsafe { header_refcount(left) };
             let right_before = unsafe { header_refcount(right) };
@@ -4555,7 +4555,7 @@ mod tests {
             let empty_dict = alloc_dict_with_pairs(_py, &[]);
             assert_eq!(gc_is_tracked(empty_dict), always_track_dicts);
 
-            let direct_dict_bits = crate::molt_dict_new(16);
+            let direct_dict_bits = crate::molt_dict_new_attached_body(_py, 16);
             let direct_dict = obj_from_bits(direct_dict_bits)
                 .as_ptr()
                 .expect("direct dict allocation");
@@ -4611,7 +4611,8 @@ mod tests {
                         assert!(crate::object::ops::dict_del_in_place(_py, mapping, key).unwrap());
                     }
                     2 => {
-                        let value = crate::object::ops_dict::molt_dict_pop(
+                        let value = crate::object::ops_dict::molt_dict_pop_attached_body(
+                            _py,
                             bits,
                             key,
                             MoltObject::none().bits(),
@@ -4621,7 +4622,8 @@ mod tests {
                         dec_ref_bits(_py, value);
                     }
                     3 => {
-                        let pair = crate::object::ops_dict::molt_dict_popitem(bits);
+                        let pair =
+                            crate::object::ops_dict::molt_dict_popitem_attached_body(_py, bits);
                         assert!(obj_from_bits(pair).as_ptr().is_some());
                         dec_ref_bits(_py, pair);
                     }
@@ -5251,8 +5253,8 @@ mod tests {
             let b_bits = MoltObject::from_ptr(b_ptr).bits();
 
             // a.append(b); b.append(a)  (molt_list_append inc_refs the element).
-            crate::molt_list_append(a_bits, b_bits);
-            crate::molt_list_append(b_bits, a_bits);
+            crate::molt_list_append_attached_body(_py, a_bits, b_bits);
+            crate::molt_list_append_attached_body(_py, b_bits, a_bits);
 
             // Both must be tracked (cycle-capable containers registered at alloc).
             assert!(unsafe { gc_is_tracked(a_ptr) }, "list a should be tracked");
@@ -5300,7 +5302,7 @@ mod tests {
             let list_bits = MoltObject::from_ptr(list).bits();
             let tuple = alloc_tuple(_py, &[list_bits]);
             let tuple_bits = MoltObject::from_ptr(tuple).bits();
-            crate::molt_list_append(list_bits, tuple_bits);
+            crate::molt_list_append_attached_body(_py, list_bits, tuple_bits);
 
             assert!(unsafe { gc_is_tracked(list) });
             assert!(unsafe { gc_is_tracked(tuple) });
@@ -5324,7 +5326,7 @@ mod tests {
             state.set_debug_flags(DEBUG_SAVEALL);
             let list = alloc_list(py, &[]);
             let bits = MoltObject::from_ptr(list).bits();
-            crate::molt_list_append(bits, bits);
+            crate::molt_list_append_attached_body(py, bits, bits);
             dec_ref_bits(py, bits);
             let stats = unsafe { collect_cycles(py) };
             assert_eq!(stats.status, GcCollectStatus::Completed);
@@ -5335,7 +5337,7 @@ mod tests {
             );
             assert!(unsafe { gc_is_tracked(list) });
             state.set_debug_flags(0);
-            crate::molt_list_clear(garbage);
+            crate::molt_list_clear_attached_body(py, garbage);
             dec_ref_bits(py, garbage);
             let stats = unsafe { collect_cycles(py) };
             assert_eq!((stats.collected, stats.retired), (1, 1));
@@ -5359,9 +5361,9 @@ mod tests {
             let b_bits = MoltObject::from_ptr(b_ptr).bits();
             let outer_bits = MoltObject::from_ptr(outer_ptr).bits();
 
-            crate::molt_list_append(a_bits, b_bits); // a -> b
-            crate::molt_list_append(b_bits, a_bits); // b -> a (cycle)
-            crate::molt_list_append(outer_bits, a_bits); // outer -> a (external root)
+            crate::molt_list_append_attached_body(_py, a_bits, b_bits); // a -> b
+            crate::molt_list_append_attached_body(_py, b_bits, a_bits); // b -> a (cycle)
+            crate::molt_list_append_attached_body(_py, outer_bits, a_bits); // outer -> a (external root)
 
             // Drop the a/b stack roots; `outer` (still held) keeps the cycle alive.
             dec_ref_bits(_py, a_bits);
@@ -5551,7 +5553,12 @@ mod tests {
             let ptr = crate::object::builders::alloc_set_with_entries(_py, &[]);
             let bits = MoltObject::from_ptr(ptr).bits();
             assert_eq!(
-                crate::molt_weakref_register(weak, bits, MoltObject::none().bits()),
+                crate::molt_weakref_register_attached_body(
+                    _py,
+                    weak,
+                    bits,
+                    MoltObject::none().bits()
+                ),
                 MoltObject::from_bool(true).bits(),
             );
             let bridge = &molt_cpython_abi::bridge::GLOBAL_BRIDGE;
@@ -5596,8 +5603,8 @@ mod tests {
             let b_ptr = alloc_list(_py, &[]);
             let a_bits = MoltObject::from_ptr(a_ptr).bits();
             let b_bits = MoltObject::from_ptr(b_ptr).bits();
-            crate::molt_list_append(a_bits, b_bits);
-            crate::molt_list_append(b_bits, a_bits);
+            crate::molt_list_append_attached_body(_py, a_bits, b_bits);
+            crate::molt_list_append_attached_body(_py, b_bits, a_bits);
             let view =
                 unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(a_bits) };
             assert!(!view.is_null());
@@ -5617,8 +5624,8 @@ mod tests {
             let b_ptr = alloc_list(_py, &[]);
             let a_bits = MoltObject::from_ptr(a_ptr).bits();
             let b_bits = MoltObject::from_ptr(b_ptr).bits();
-            crate::molt_list_append(a_bits, b_bits);
-            crate::molt_list_append(b_bits, a_bits);
+            crate::molt_list_append_attached_body(_py, a_bits, b_bits);
+            crate::molt_list_append_attached_body(_py, b_bits, a_bits);
             let view =
                 unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(a_bits) };
             assert!(!view.is_null());

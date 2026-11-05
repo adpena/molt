@@ -3,17 +3,19 @@
 //! Keep this file limited to ABI translation.  GPU algorithms, backend policy,
 //! tensor semantics, and data transforms belong in the satellite crate.
 
-use crate::BuiltinExc;
+use crate::{BuiltinExc, PyToken};
 /// Translate the Python launch tuple into the executor's owned call builder.
 /// The executor borrows this builder; each per-thread clone is consumed by bind.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_kernel_launch_python(
+
+pub(crate) fn molt_gpu_kernel_launch_python_attached_body(
+    _py: &PyToken<'_>,
     callable_bits: u64,
     grid_bits: u64,
     threads_bits: u64,
     args_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         if crate::exception_pending(_py) {
             return crate::MoltObject::none().bits();
         }
@@ -32,7 +34,7 @@ pub extern "C" fn molt_gpu_kernel_launch_python(
             );
         }
         let zero = crate::MoltObject::from_int(0).bits();
-        let builder = crate::call::bind::molt_callargs_new_expanded(zero, zero);
+        let builder = crate::call::bind::molt_callargs_new_expanded_attached_body(_py, zero, zero);
         if crate::exception_pending(_py) {
             return crate::MoltObject::none().bits();
         }
@@ -43,42 +45,57 @@ pub extern "C" fn molt_gpu_kernel_launch_python(
                 "GPU launch builder allocation failed",
             );
         };
-        let _builder_owner = crate::PtrDropGuard::new(builder_ptr);
-        let expanded = unsafe { crate::molt_callargs_expand_star(builder, args_bits) };
+        let _builder_owner = crate::PtrDropGuard::new(_py, builder_ptr);
+        let expanded =
+            unsafe { crate::molt_callargs_expand_star_attached_body(_py, builder, args_bits) };
         if crate::exception_pending(_py) {
             return expanded;
         }
         crate::dec_ref_bits(_py, expanded);
-        molt_gpu_runtime::molt_gpu_kernel_launch(callable_bits, grid_bits, threads_bits, builder)
-    })
+        molt_gpu_runtime::molt_gpu_kernel_launch_attached_body(
+            _py.core_token(),
+            callable_bits,
+            grid_bits,
+            threads_bits,
+            builder,
+        )
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_raise_exception"))]
 pub extern "C" fn __molt_gpu_raise_exception(
+    __molt_context: u64,
     kind_code: u16,
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let msg = unsafe { std::slice::from_raw_parts(msg_ptr, msg_len) };
         crate::builtins::exceptions::raise_exception_code_bytes(_py, kind_code, msg)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_object_type_id(ptr: *mut u8) -> u32 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_object_type_id"))]
+pub extern "C" fn __molt_gpu_object_type_id(__molt_context: u64, ptr: *mut u8) -> u32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         if ptr.is_null() {
             0
         } else {
             unsafe { crate::object_type_id(ptr) }
         }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_alloc_bytearray(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_alloc_bytearray"))]
+pub extern "C" fn __molt_gpu_alloc_bytearray(
+    __molt_context: u64,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let data = if data_len == 0 {
             &[]
         } else if data_ptr.is_null() {
@@ -87,16 +104,18 @@ pub extern "C" fn __molt_gpu_alloc_bytearray(data_ptr: *const u8, data_len: usiz
             unsafe { std::slice::from_raw_parts(data_ptr, data_len) }
         };
         crate::alloc_bytearray(_py, data)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_bytes_view"))]
 pub extern "C" fn __molt_gpu_bytes_view(
+    __molt_context: u64,
     ptr: *mut u8,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         if ptr.is_null() || out_ptr.is_null() || out_len.is_null() {
             return 0;
         }
@@ -109,15 +128,16 @@ pub extern "C" fn __molt_gpu_bytes_view(
             *out_len = crate::bytes_len(ptr);
         }
         1
-    })
+    }
 }
 
 /// Classify protocol-free scalar carriers using the canonical semantic class.
 /// Storage TYPE_ID alone is insufficient: int/float subclasses use those too.
 /// -1 refuses subclass protocols; 0 leaves nonnumeric Buffer admission to its owner.
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_exact_scalar_kind(bits: u64) -> i32 {
-    crate::with_gil_entry_nopanic!(py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_exact_scalar_kind"))]
+pub extern "C" fn __molt_gpu_exact_scalar_kind(__molt_context: u64, bits: u64) -> i32 {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let obj = crate::obj_from_bits(bits);
         if obj.is_bool() {
             return 3;
@@ -147,12 +167,13 @@ pub extern "C" fn __molt_gpu_exact_scalar_kind(bits: u64) -> i32 {
             return -1;
         }
         0
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_to_i64(bits: u64, out: *mut i64) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_to_i64"))]
+pub extern "C" fn __molt_gpu_to_i64(__molt_context: u64, bits: u64, out: *mut i64) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         if out.is_null() {
             return 0;
         }
@@ -163,12 +184,13 @@ pub extern "C" fn __molt_gpu_to_i64(bits: u64, out: *mut i64) -> i32 {
             }
             None => 0,
         }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_to_f64(bits: u64, out: *mut f64) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_to_f64"))]
+pub extern "C" fn __molt_gpu_to_f64(__molt_context: u64, bits: u64, out: *mut f64) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         if out.is_null() {
             return 0;
         }
@@ -179,12 +201,17 @@ pub extern "C" fn __molt_gpu_to_f64(bits: u64, out: *mut f64) -> i32 {
             }
             None => 0,
         }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_attr_name_bits(data_ptr: *const u8, data_len: usize) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_attr_name_bits"))]
+pub extern "C" fn __molt_gpu_attr_name_bits(
+    __molt_context: u64,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         if data_ptr.is_null() && data_len != 0 {
             return crate::MoltObject::none().bits();
         }
@@ -194,18 +221,20 @@ pub extern "C" fn __molt_gpu_attr_name_bits(data_ptr: *const u8, data_len: usize
             unsafe { std::slice::from_raw_parts(data_ptr, data_len) }
         };
         crate::dynamic_attr_name_bits(_py, data).unwrap_or_else(|| crate::MoltObject::none().bits())
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_object_setattr_raw"))]
 pub extern "C" fn __molt_gpu_object_setattr_raw(
+    __molt_context: u64,
     obj_ptr: *mut u8,
     name_bits: u64,
     name_ptr: *const u8,
     name_len: usize,
     value_bits: u64,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         if obj_ptr.is_null() || (name_ptr.is_null() && name_len != 0) {
             crate::raise_exception::<()>(
                 _py,
@@ -235,66 +264,79 @@ pub extern "C" fn __molt_gpu_object_setattr_raw(
             Ok(()) => 0,
             Err(()) => -1,
         }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_alloc_instance_for_class(class_ptr: *mut u8) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_alloc_instance_for_class"))]
+pub extern "C" fn __molt_gpu_alloc_instance_for_class(
+    __molt_context: u64,
+    class_ptr: *mut u8,
+) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         if class_ptr.is_null() {
             return crate::MoltObject::none().bits();
         }
         unsafe { crate::alloc_instance_for_class(_py, class_ptr) }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_builtin_float() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { crate::builtin_classes(_py).float })
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_builtin_float"))]
+pub extern "C" fn __molt_gpu_builtin_float(__molt_context: u64) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        crate::builtin_classes(_py).float
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_object_class_bits(ptr: *mut u8) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_object_class_bits"))]
+pub extern "C" fn __molt_gpu_object_class_bits(__molt_context: u64, ptr: *mut u8) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         if ptr.is_null() {
             0
         } else {
             unsafe { crate::object_class_bits(ptr) }
         }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_seq_len(ptr: *mut u8) -> usize {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_seq_len"))]
+pub extern "C" fn __molt_gpu_seq_len(__molt_context: u64, ptr: *mut u8) -> usize {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         if ptr.is_null() {
             0
         } else {
             unsafe { crate::object::seq_access::len(ptr) }
         }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_seq_snapshot"))]
 pub extern "C" fn __molt_gpu_seq_snapshot(
+    __molt_context: u64,
     ptr: *mut u8,
     _message_ptr: *const u8,
     _message_len: usize,
     out_ptr: *mut *const u64,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         unsafe { crate::seq_snapshot_bridge::export(_py, ptr, out_ptr, out_len) }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_seq_visit"))]
 pub extern "C" fn __molt_gpu_seq_visit(
+    __molt_context: u64,
     ptr: *mut u8,
     visitor: unsafe extern "C" fn(*const u64, usize, *mut std::ffi::c_void),
     context: *mut std::ffi::c_void,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         if ptr.is_null() || context.is_null() {
             return 0;
         }
@@ -304,26 +346,34 @@ pub extern "C" fn __molt_gpu_seq_visit(
                 1
             })
         }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_seq_pin_item(ptr: *mut u8, index: usize, out: *mut u64) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_seq_pin_item"))]
+pub extern "C" fn __molt_gpu_seq_pin_item(
+    __molt_context: u64,
+    ptr: *mut u8,
+    index: usize,
+    out: *mut u64,
+) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         if ptr.is_null() || out.is_null() {
             return 0;
         }
-        crate::object::seq_access::read_item_owned(ptr, index, out)
-    })
+        crate::object::seq_access::read_item_owned(_py, ptr, index, out)
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_alloc_list_owned"))]
 pub extern "C" fn __molt_gpu_alloc_list_owned(
+    __molt_context: u64,
     elems_ptr: *const u64,
     elems_len: usize,
     capacity: usize,
 ) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         if elems_ptr.is_null() && elems_len != 0 {
             return std::ptr::null_mut();
         }
@@ -333,12 +383,17 @@ pub extern "C" fn __molt_gpu_alloc_list_owned(
             unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) }
         };
         crate::object::builders::alloc_list_with_capacity_owned(_py, elems, capacity)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_clone_callargs_builder(builder_bits: u64, out: *mut u64) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_clone_callargs_builder"))]
+pub extern "C" fn __molt_gpu_clone_callargs_builder(
+    __molt_context: u64,
+    builder_bits: u64,
+    out: *mut u64,
+) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         if out.is_null() {
             return 0;
         }
@@ -352,24 +407,39 @@ pub extern "C" fn __molt_gpu_clone_callargs_builder(builder_bits: u64, out: *mut
                 0
             }
         }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_missing_bits() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { crate::missing_bits(_py) })
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_missing_bits"))]
+pub extern "C" fn __molt_gpu_missing_bits(__molt_context: u64) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        crate::missing_bits(_py)
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_call_callable1(call_bits: u64, arg_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_call_callable1"))]
+pub extern "C" fn __molt_gpu_call_callable1(
+    __molt_context: u64,
+    call_bits: u64,
+    arg_bits: u64,
+) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         unsafe { crate::call::dispatch::call_callable1(_py, call_bits, arg_bits) }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_lookup_attribute(object: u64, name: u64) -> crate::AttributeLookup {
-    crate::with_gil_entry_nopanic!(py, { crate::lookup_attribute(py, object, name) })
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_lookup_attribute"))]
+pub extern "C" fn __molt_gpu_lookup_attribute(
+    __molt_context: u64,
+    object: u64,
+    name: u64,
+) -> crate::AttributeLookup {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        crate::lookup_attribute(py, object, name)
+    }
 }
 
 /// Compiler-only publication into the immutable code owner. This direct ABI
@@ -377,9 +447,14 @@ pub extern "C" fn __molt_gpu_lookup_attribute(object: u64, name: u64) -> crate::
 /// Python attributes cannot publish certificates. As with compiler-generated
 /// code itself, arbitrary native/foreign ABI callers are trusted, not a sandbox.
 /// Generic function attributes are never consulted.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_kernel_descriptor_set(callable: u64, descriptor: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_gpu_kernel_descriptor_set_attached_body(
+    _py: &PyToken<'_>,
+    callable: u64,
+    descriptor: u64,
+) -> u64 {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         let Some(function) = crate::obj_from_bits(callable).as_ptr() else {
             return crate::raise_exception::<u64>(
                 py,
@@ -413,12 +488,13 @@ pub extern "C" fn molt_gpu_kernel_descriptor_set(callable: u64, descriptor: u64)
             crate::object::layout::code_publish_gpu_descriptor(py, code, descriptor);
         }
         crate::MoltObject::none().bits()
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_kernel_descriptor(callable: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_kernel_descriptor"))]
+pub extern "C" fn __molt_gpu_kernel_descriptor(__molt_context: u64, callable: u64) -> u64 {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let Some(function) = crate::obj_from_bits(callable).as_ptr() else {
             return crate::MoltObject::none().bits();
         };
@@ -440,12 +516,17 @@ pub extern "C" fn __molt_gpu_kernel_descriptor(callable: u64) -> u64 {
             crate::inc_ref_bits(py, descriptor);
             descriptor
         }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_descriptor_is_current(callable: u64, descriptor: u64) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_descriptor_is_current"))]
+pub extern "C" fn __molt_gpu_descriptor_is_current(
+    __molt_context: u64,
+    callable: u64,
+    descriptor: u64,
+) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let Some(function) = crate::obj_from_bits(callable).as_ptr() else {
             return 0;
         };
@@ -465,7 +546,7 @@ pub extern "C" fn __molt_gpu_descriptor_is_current(callable: u64, descriptor: u6
                     && crate::object::layout::code_frame_slot_id(code).is_some(),
             )
         }
-    })
+    }
 }
 
 /// Read the exact namespace entry without descriptors, __getattr__, equality
@@ -534,9 +615,15 @@ unsafe fn gpu_class_binding(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_class_binding(object: u64, name: *const u8, len: usize) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_class_binding"))]
+pub extern "C" fn __molt_gpu_class_binding(
+    __molt_context: u64,
+    object: u64,
+    name: *const u8,
+    len: usize,
+) -> u64 {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let selected = if name.is_null() {
             None
         } else {
@@ -558,15 +645,21 @@ pub extern "C" fn __molt_gpu_class_binding(object: u64, name: *const u8, len: us
                 "GPU buffer method binding is unavailable",
             )
         }
-    })
+    }
 }
 
 /// A final instance-field read after callback-capable argument extraction.
 /// Only the existing inferred-field/dictionary owner with ordinary attribute
 /// access is supported. No property, descriptor or guest equality runs here.
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_default_field(object: u64, name: *const u8, len: usize) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_default_field"))]
+pub extern "C" fn __molt_gpu_default_field(
+    __molt_context: u64,
+    object: u64,
+    name: *const u8,
+    len: usize,
+) -> u64 {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let refused = || {
             crate::raise_exception::<u64>(
                 py,
@@ -649,14 +742,20 @@ pub extern "C" fn __molt_gpu_default_field(object: u64, name: *const u8, len: us
                 refused()
             }
         }
-    })
+    }
 }
 
 /// Resolve the selected Python body's own globals/builtins, never the active
 /// launcher's frame. The default builtin namespace can be an exact module.
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_function_binding(function: u64, name: *const u8, len: usize) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_function_binding"))]
+pub extern "C" fn __molt_gpu_function_binding(
+    __molt_context: u64,
+    function: u64,
+    name: *const u8,
+    len: usize,
+) -> u64 {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let refused = || {
             crate::raise_exception::<u64>(
                 py,
@@ -692,12 +791,18 @@ pub extern "C" fn __molt_gpu_function_binding(function: u64, name: *const u8, le
             }
             gpu_namespace_value(py, builtins, name)
         }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_kernel_global(callable: u64, name: *const u8, len: usize) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_kernel_global"))]
+pub extern "C" fn __molt_gpu_kernel_global(
+    __molt_context: u64,
+    callable: u64,
+    name: *const u8,
+    len: usize,
+) -> u64 {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         if name.is_null() {
             return crate::MoltObject::none().bits();
         }
@@ -714,12 +819,18 @@ pub extern "C" fn __molt_gpu_kernel_global(callable: u64, name: *const u8, len: 
                 std::slice::from_raw_parts(name, len),
             )
         }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_module_binding(module: u64, name: *const u8, len: usize) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_module_binding"))]
+pub extern "C" fn __molt_gpu_module_binding(
+    __molt_context: u64,
+    module: u64,
+    name: *const u8,
+    len: usize,
+) -> u64 {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let Some(module) = crate::obj_from_bits(module).as_ptr() else {
             return crate::raise_exception::<u64>(
                 py,
@@ -744,12 +855,18 @@ pub extern "C" fn __molt_gpu_module_binding(module: u64, name: *const u8, len: u
                 std::slice::from_raw_parts(name, len),
             )
         }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_intrinsic_matches(bits: u64, name: *const u8, len: usize) -> i32 {
-    crate::with_gil_entry_nopanic!(py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_intrinsic_matches"))]
+pub extern "C" fn __molt_gpu_intrinsic_matches(
+    __molt_context: u64,
+    bits: u64,
+    name: *const u8,
+    len: usize,
+) -> i32 {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         if name.is_null() {
             return 0;
         }
@@ -757,27 +874,33 @@ pub extern "C" fn __molt_gpu_intrinsic_matches(bits: u64, name: *const u8, len: 
             return 0;
         };
         i32::from(crate::intrinsics::registry::is_named_runtime_materialization(py, bits, name))
-    })
+    }
 }
 
 /// Return the canonical binder's owned ABI-slot tuple, without invoking a body.
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_bind_kernel_arguments(callable: u64, builder: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_bind_kernel_arguments"))]
+pub extern "C" fn __molt_gpu_bind_kernel_arguments(
+    __molt_context: u64,
+    callable: u64,
+    builder: u64,
+) -> u64 {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let arguments =
             match unsafe { crate::call::bind::callargs_positional_snapshot(py, builder) } {
                 Ok(arguments) => arguments,
                 Err(error) => return error,
             };
         unsafe { crate::call::bind::bind_python_frame_tuple(py, callable, &arguments) }
-    })
+    }
 }
 
 /// Compare the selected Python callable with a compiler-admitted body carried
 /// by the kernel's immutable code descriptor. This bridge never materializes a
 /// function, executes an attribute lookup, or hashes source in the guest.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_compiled_body_matches"))]
 pub extern "C" fn __molt_gpu_compiled_body_matches(
+    __molt_context: u64,
     bits: u64,
     symbol: *const u8,
     symbol_len: usize,
@@ -785,7 +908,8 @@ pub extern "C" fn __molt_gpu_compiled_body_matches(
     defaults: *const u64,
     defaults_len: usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         if symbol.is_null() || (defaults.is_null() && defaults_len != 0) {
             return 0;
         }
@@ -804,14 +928,20 @@ pub extern "C" fn __molt_gpu_compiled_body_matches(
                 py, bits, symbol, arity, defaults,
             ),
         )
-    })
+    }
 }
 
 /// Compare public class/builtin dependencies with the existing builtin owners.
 /// Names here select an owner to compare, never a mutable module spelling.
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_builtin_matches(bits: u64, name: *const u8, len: usize) -> i32 {
-    crate::with_gil_entry_nopanic!(py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_builtin_matches"))]
+pub extern "C" fn __molt_gpu_builtin_matches(
+    __molt_context: u64,
+    bits: u64,
+    name: *const u8,
+    len: usize,
+) -> i32 {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         if name.is_null() {
             return 0;
         }
@@ -831,20 +961,22 @@ pub extern "C" fn __molt_gpu_builtin_matches(bits: u64, name: *const u8, len: us
             || crate::intrinsics::registry::is_named_python_builtin_materialization(py, bits, name),
             |class| bits == class,
         ))
-    })
+    }
 }
 
 /// Stage/fill an owned bytearray through the shared mutation/export authority.
 /// `same_size` is required at publication; preparation may reserve before the
 /// final callback-free admission boundary and before device execution.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_bytearray_copy"))]
 pub extern "C" fn __molt_gpu_bytearray_copy(
+    __molt_context: u64,
     bits: u64,
     bytes: *const u8,
     len: usize,
     same_size: i32,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let Some(ptr) = crate::obj_from_bits(bits).as_ptr() else {
             return 0;
         };
@@ -870,16 +1002,22 @@ pub extern "C" fn __molt_gpu_bytearray_copy(
                 .is_some(),
             )
         }
-    })
+    }
 }
 
 /// Publish one preallocated COW destination. Current metadata/namespace and
 /// binding owners were admitted and pinned before dispatch. This operation
 /// replaces an existing inferred field; it cannot allocate an attribute name,
 /// grow a dictionary, invoke a descriptor, or call guest equality/setattr.
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_gpu_commit_buffer_data(object: u64, old: u64, new: u64) -> i32 {
-    crate::with_gil_entry_nopanic!(py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_commit_buffer_data"))]
+pub extern "C" fn __molt_gpu_commit_buffer_data(
+    __molt_context: u64,
+    object: u64,
+    old: u64,
+    new: u64,
+) -> i32 {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let Some(object) = crate::obj_from_bits(object).as_ptr() else {
             return 0;
         };
@@ -944,5 +1082,10 @@ pub extern "C" fn __molt_gpu_commit_buffer_data(object: u64, old: u64, new: u64)
                 crate::object::accessors::object_field_set_ptr_raw(py, object, offset, new).is_ok(),
             )
         }
-    })
+    }
 }
+
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/attached_exports_generated/gpu_bridge.rs"
+));

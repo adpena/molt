@@ -1,5 +1,6 @@
 use super::*;
 use molt_ir::OpKind;
+use molt_ir::runtime_callable_abi_generated::compiled_execution_symbol;
 
 #[test]
 fn object_context_closes_indirect_callable_task_and_partition_dependencies() {
@@ -288,11 +289,15 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
         .module
         .declarations()
         .get_functions()
-        .find_map(|(_, decl)| (decl.name.as_deref() == Some("stdlib_value_helper")).then_some(decl))
+        .find_map(|(_, decl)| {
+            (decl.name.as_deref()
+                == Some(compiled_execution_symbol("stdlib_value_helper").as_str()))
+            .then_some(decl)
+        })
         .expect("stdlib_value_helper import declaration");
 
     assert_eq!(declaration.linkage, cranelift_module::Linkage::Import);
-    assert_eq!(declaration.signature.params.len(), 0);
+    assert_eq!(declaration.signature.params.len(), 1);
     assert_eq!(declaration.signature.returns.len(), 1);
     assert_eq!(declaration.signature.returns[0].value_type, types::I64);
 }

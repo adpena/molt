@@ -171,7 +171,7 @@ pub(crate) fn copy_context(py: &PyToken<'_>, source: u64) -> Option<u64> {
         let c = context(source);
         (owned(py, c.root), c.len)
     };
-    let _pin = (root != 0).then(|| PtrDropGuard::new(obj_from_bits(root).as_ptr().unwrap()));
+    let _pin = (root != 0).then(|| PtrDropGuard::new(py, obj_from_bits(root).as_ptr().unwrap()));
     let out = alloc(
         py,
         context_class(py),
@@ -272,7 +272,7 @@ pub(crate) fn new_variable(py: &PyToken<'_>, name: u64, default: Option<u64>) ->
     // native shape valid and locally pinned across a str-subclass hash call.
     let p = alloc_unpublished::<Variable>(py, class)?;
     let bits = MoltObject::from_ptr(p).bits();
-    let mut pin = PtrDropGuard::preserving(p);
+    let mut pin = PtrDropGuard::preserving(py, p);
     let hash = crate::object::ops_hash::hash_bits_signed(py, name);
     if hash == -1 {
         return None;
@@ -315,10 +315,12 @@ pub(crate) fn set_variable(py: &PyToken<'_>, var: u64, value: u64) -> Option<u64
     let ctx = current(py)?;
     let old = trie::lookup(unsafe { context(ctx).root }, var, var_hash(var));
     owned(py, ctx);
-    let _context_pin = PtrDropGuard::new(obj_from_bits(ctx).as_ptr().unwrap());
+    let _context_pin = PtrDropGuard::new(py, obj_from_bits(ctx).as_ptr().unwrap());
     let _old_pin = old.and_then(|bits| {
         owned(py, bits);
-        obj_from_bits(bits).as_ptr().map(PtrDropGuard::new)
+        obj_from_bits(bits)
+            .as_ptr()
+            .map(|__ptr| PtrDropGuard::new(py, __ptr))
     });
     // Token construction MUST succeed before association. It holds the actual
     // Context identity and the old value independently of later reset/GC.
@@ -332,7 +334,7 @@ pub(crate) fn set_variable(py: &PyToken<'_>, var: u64, value: u64) -> Option<u64
             flags: 0,
         },
     )?;
-    let mut pin = PtrDropGuard::new(obj_from_bits(token).as_ptr().unwrap());
+    let mut pin = PtrDropGuard::new(py, obj_from_bits(token).as_ptr().unwrap());
     unsafe {
         let t = &mut *obj_from_bits(token).as_ptr().unwrap().cast::<Token>();
         t.context = owned(py, ctx);

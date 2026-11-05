@@ -1,6 +1,7 @@
 use crate::OpIR;
 use crate::wasm::frame_locals::WasmDispatchFrameLocals;
-use wasm_encoder::{BlockType, Function, Instruction};
+use crate::wasm_binary::Function;
+use wasm_encoder::{BlockType, Instruction};
 
 pub(super) fn build_dispatch_blocks(ops: &[OpIR]) -> (Vec<usize>, Vec<usize>) {
     let op_count = ops.len();

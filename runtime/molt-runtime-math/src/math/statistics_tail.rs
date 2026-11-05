@@ -136,7 +136,7 @@ fn statistics_seed_bigint(_py: &PyToken, seed_bits: u64) -> Option<BigInt> {
         return Some(unsafe { bigint_ref(ptr) }.abs());
     }
     if as_float_extended(seed_obj).is_some() {
-        let hash_bits = molt_hash_builtin(seed_bits);
+        let hash_bits = molt_hash_builtin(_py, seed_bits);
         if exception_pending(_py) {
             return None;
         }
@@ -228,7 +228,7 @@ fn statistics_normal_dist_samples_mode(
         if object_type_id(seed_ptr) != TYPE_ID_TUPLE {
             None
         } else {
-            let elems = seq_snapshot(seed_ptr)?;
+            let elems = seq_snapshot(_py, seed_ptr)?;
             if elems.len() == 2 {
                 Some((elems[0], elems[1]))
             } else {
@@ -442,9 +442,8 @@ fn statistics_normal_dist_cdf_raw(x: f64, mu: f64, sigma: f64) -> f64 {
     0.5 * (1.0 + math_erf((x - mu) / (sigma * core::f64::consts::SQRT_2)))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_mean(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(py, {
+pub fn molt_statistics_mean_attached_body(_py: &molt_runtime_core::PyToken, data_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, py, {
         statistics_builtin_reduction(
             py,
             data_bits,
@@ -454,9 +453,12 @@ pub extern "C" fn molt_statistics_mean(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_stdev(data_bits: u64, center_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(py, {
+pub fn molt_statistics_stdev_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+    center_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, py, {
         statistics_builtin_reduction(
             py,
             data_bits,
@@ -469,9 +471,12 @@ pub extern "C" fn molt_statistics_stdev(data_bits: u64, center_bits: u64) -> u64
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_variance(data_bits: u64, center_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(py, {
+pub fn molt_statistics_variance_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+    center_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, py, {
         statistics_builtin_reduction(
             py,
             data_bits,
@@ -484,9 +489,12 @@ pub extern "C" fn molt_statistics_variance(data_bits: u64, center_bits: u64) -> 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_pvariance(data_bits: u64, center_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(py, {
+pub fn molt_statistics_pvariance_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+    center_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, py, {
         statistics_builtin_reduction(
             py,
             data_bits,
@@ -499,9 +507,12 @@ pub extern "C" fn molt_statistics_pvariance(data_bits: u64, center_bits: u64) ->
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_pstdev(data_bits: u64, center_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(py, {
+pub fn molt_statistics_pstdev_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+    center_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, py, {
         statistics_builtin_reduction(
             py,
             data_bits,
@@ -514,9 +525,11 @@ pub extern "C" fn molt_statistics_pstdev(data_bits: u64, center_bits: u64) -> u6
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_fmean(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_statistics_fmean_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(values) = collect_real_vec(_py, data_bits) else {
             return MoltObject::none().bits();
         };
@@ -531,15 +544,17 @@ pub extern "C" fn molt_statistics_fmean(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_median(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(py, {
+pub fn molt_statistics_median_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, py, {
         let Some(sorted_bits) = statistics_sorted_values(py, data_bits) else {
             return MoltObject::none().bits();
         };
         let sorted = unsafe { OwnedRuntimeValue::from_owned_bits(py, sorted_bits) };
         let Some(values) =
-            (unsafe { seq_snapshot(obj_from_bits(sorted.bits()).as_ptr().unwrap()) })
+            (unsafe { seq_snapshot(py, obj_from_bits(sorted.bits()).as_ptr().unwrap()) })
         else {
             return MoltObject::none().bits();
         };
@@ -565,9 +580,11 @@ pub extern "C" fn molt_statistics_median(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_median_low(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_statistics_median_low_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(sorted_bits) = statistics_sorted_values(_py, data_bits) else {
             return MoltObject::none().bits();
         };
@@ -586,7 +603,7 @@ pub extern "C" fn molt_statistics_median_low(data_bits: u64) -> u64 {
                     "median_low expected sorted list payload",
                 );
             }
-            let Some(elems) = seq_snapshot(sorted_ptr) else {
+            let Some(elems) = seq_snapshot(_py, sorted_ptr) else {
                 dec_ref_bits(_py, sorted_bits);
                 return MoltObject::none().bits();
             };
@@ -611,9 +628,11 @@ pub extern "C" fn molt_statistics_median_low(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_median_high(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_statistics_median_high_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(sorted_bits) = statistics_sorted_values(_py, data_bits) else {
             return MoltObject::none().bits();
         };
@@ -632,7 +651,7 @@ pub extern "C" fn molt_statistics_median_high(data_bits: u64) -> u64 {
                     "median_high expected sorted list payload",
                 );
             }
-            let Some(elems) = seq_snapshot(sorted_ptr) else {
+            let Some(elems) = seq_snapshot(_py, sorted_ptr) else {
                 dec_ref_bits(_py, sorted_bits);
                 return MoltObject::none().bits();
             };
@@ -657,9 +676,12 @@ pub extern "C" fn molt_statistics_median_high(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_median_grouped(data_bits: u64, interval_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_statistics_median_grouped_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+    interval_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(values) = statistics_collect_sorted_real(_py, data_bits, "median_grouped") else {
             return MoltObject::none().bits();
         };
@@ -690,9 +712,8 @@ pub extern "C" fn molt_statistics_median_grouped(data_bits: u64, interval_bits: 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_mode(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_statistics_mode_attached_body(_py: &molt_runtime_core::PyToken, data_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(bits) = statistics_mode_value(_py, data_bits) else {
             return MoltObject::none().bits();
         };
@@ -700,9 +721,11 @@ pub extern "C" fn molt_statistics_mode(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_multimode(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_statistics_multimode_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(bits) = statistics_multimode_value(_py, data_bits) else {
             return MoltObject::none().bits();
         };
@@ -710,13 +733,13 @@ pub extern "C" fn molt_statistics_multimode(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_quantiles(
+pub fn molt_statistics_quantiles_attached_body(
+    _py: &molt_runtime_core::PyToken,
     data_bits: u64,
     n_bits: u64,
     inclusive_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(bits) = statistics_quantiles_value(_py, data_bits, n_bits, inclusive_bits) else {
             return MoltObject::none().bits();
         };
@@ -724,9 +747,11 @@ pub extern "C" fn molt_statistics_quantiles(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_harmonic_mean(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_statistics_harmonic_mean_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(value) = statistics_harmonic_mean_value(_py, data_bits) else {
             return MoltObject::none().bits();
         };
@@ -734,9 +759,11 @@ pub extern "C" fn molt_statistics_harmonic_mean(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_geometric_mean(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_statistics_geometric_mean_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(value) = statistics_geometric_mean_value(_py, data_bits) else {
             return MoltObject::none().bits();
         };
@@ -744,9 +771,12 @@ pub extern "C" fn molt_statistics_geometric_mean(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_covariance(x_bits: u64, y_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_statistics_covariance_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    x_bits: u64,
+    y_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(value) = statistics_covariance_value(_py, x_bits, y_bits) else {
             return MoltObject::none().bits();
         };
@@ -754,9 +784,12 @@ pub extern "C" fn molt_statistics_covariance(x_bits: u64, y_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_correlation(x_bits: u64, y_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_statistics_correlation_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    x_bits: u64,
+    y_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(value) = statistics_correlation_value(_py, x_bits, y_bits) else {
             return MoltObject::none().bits();
         };
@@ -764,13 +797,13 @@ pub extern "C" fn molt_statistics_correlation(x_bits: u64, y_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_linear_regression(
+pub fn molt_statistics_linear_regression_attached_body(
+    _py: &molt_runtime_core::PyToken,
     x_bits: u64,
     y_bits: u64,
     proportional_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some((slope, intercept)) =
             statistics_linear_regression_value(_py, x_bits, y_bits, proportional_bits)
         else {
@@ -790,9 +823,12 @@ pub extern "C" fn molt_statistics_linear_regression(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_normal_dist_new(mu_bits: u64, sigma_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_statistics_normal_dist_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    mu_bits: u64,
+    sigma_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some((mu, sigma)) = statistics_normal_dist_params(_py, mu_bits, sigma_bits) else {
             return MoltObject::none().bits();
         };
@@ -810,15 +846,15 @@ pub extern "C" fn molt_statistics_normal_dist_new(mu_bits: u64, sigma_bits: u64)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_normal_dist_samples(
+pub fn molt_statistics_normal_dist_samples_attached_body(
+    _py: &molt_runtime_core::PyToken,
     mu_bits: u64,
     sigma_bits: u64,
     n_bits: u64,
     seed_bits: u64,
     random_fn_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(value) = statistics_normal_dist_samples_value(
             _py,
             mu_bits,
@@ -833,13 +869,13 @@ pub extern "C" fn molt_statistics_normal_dist_samples(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_normal_dist_inv_cdf(
+pub fn molt_statistics_normal_dist_inv_cdf_attached_body(
+    _py: &molt_runtime_core::PyToken,
     p_bits: u64,
     mu_bits: u64,
     sigma_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some((mu, sigma)) = statistics_normal_dist_params(_py, mu_bits, sigma_bits) else {
             return MoltObject::none().bits();
         };
@@ -857,13 +893,13 @@ pub extern "C" fn molt_statistics_normal_dist_inv_cdf(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_normal_dist_pdf(
+pub fn molt_statistics_normal_dist_pdf_attached_body(
+    _py: &molt_runtime_core::PyToken,
     mu_bits: u64,
     sigma_bits: u64,
     x_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some((mu, sigma)) = statistics_normal_dist_params(_py, mu_bits, sigma_bits) else {
             return MoltObject::none().bits();
         };
@@ -885,13 +921,13 @@ pub extern "C" fn molt_statistics_normal_dist_pdf(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_normal_dist_cdf(
+pub fn molt_statistics_normal_dist_cdf_attached_body(
+    _py: &molt_runtime_core::PyToken,
     mu_bits: u64,
     sigma_bits: u64,
     x_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some((mu, sigma)) = statistics_normal_dist_params(_py, mu_bits, sigma_bits) else {
             return MoltObject::none().bits();
         };
@@ -909,13 +945,13 @@ pub extern "C" fn molt_statistics_normal_dist_cdf(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_normal_dist_zscore(
+pub fn molt_statistics_normal_dist_zscore_attached_body(
+    _py: &molt_runtime_core::PyToken,
     mu_bits: u64,
     sigma_bits: u64,
     x_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some((mu, sigma)) = statistics_normal_dist_params(_py, mu_bits, sigma_bits) else {
             return MoltObject::none().bits();
         };
@@ -933,14 +969,14 @@ pub extern "C" fn molt_statistics_normal_dist_zscore(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_statistics_normal_dist_overlap(
+pub fn molt_statistics_normal_dist_overlap_attached_body(
+    _py: &molt_runtime_core::PyToken,
     mu_a_bits: u64,
     sigma_a_bits: u64,
     mu_b_bits: u64,
     sigma_b_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some((mut mu_x, mut sigma_x)) =
             statistics_normal_dist_params(_py, mu_a_bits, sigma_a_bits)
         else {
@@ -991,3 +1027,5 @@ pub extern "C" fn molt_statistics_normal_dist_overlap(
         MoltObject::from_float(1.0 - (delta1 + delta2)).bits()
     })
 }
+
+include!("../attached_exports_generated/math/statistics_tail.rs");

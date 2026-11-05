@@ -230,13 +230,13 @@ fn ensure_registry_memory_error(py: &PyToken<'_>, message: &'static str) {
     }
 }
 
-struct OwnedExactDict {
+struct OwnedExactDict<'guard> {
     ptr: *mut u8,
-    _owner: crate::PtrDropGuard,
+    _owner: crate::PtrDropGuard<'guard>,
 }
 
-impl OwnedExactDict {
-    fn empty(py: &PyToken<'_>) -> Option<Self> {
+impl<'guard> OwnedExactDict<'guard> {
+    fn empty(py: &'guard PyToken<'guard>) -> Option<Self> {
         let ptr = alloc_dict_with_pairs(py, &[]);
         if ptr.is_null() {
             ensure_registry_memory_error(py, "intrinsic registry dictionary allocation failed");
@@ -244,21 +244,23 @@ impl OwnedExactDict {
         }
         Some(Self {
             ptr,
-            _owner: crate::PtrDropGuard::new(ptr),
+            _owner: crate::PtrDropGuard::new(py, ptr),
         })
     }
 
-    fn copy(py: &PyToken<'_>, live: *mut u8) -> Option<Self> {
+    fn copy(py: &'guard PyToken<'guard>, live: *mut u8) -> Option<Self> {
         if exception_pending(py) {
             return None;
         }
-        let staged_bits =
-            crate::object::ops_dict::molt_dict_copy(MoltObject::from_ptr(live).bits());
+        let staged_bits = crate::object::ops_dict::molt_dict_copy_attached_body(
+            py,
+            MoltObject::from_ptr(live).bits(),
+        );
         let Some(ptr) = obj_from_bits(staged_bits).as_ptr() else {
             ensure_registry_memory_error(py, "intrinsic registry dictionary copy failed");
             return None;
         };
-        let owner = crate::PtrDropGuard::new(ptr);
+        let owner = crate::PtrDropGuard::new(py, ptr);
         if unsafe { object_type_id(ptr) } != TYPE_ID_DICT || exception_pending(py) {
             if !exception_pending(py) {
                 raise_exception::<()>(
@@ -273,11 +275,11 @@ impl OwnedExactDict {
     }
 
     /// Retain a live dictionary for the duration of one transition.
-    fn retain(py: &PyToken<'_>, live: *mut u8) -> Self {
+    fn retain(py: &'guard PyToken<'guard>, live: *mut u8) -> Self {
         inc_ref_bits(py, MoltObject::from_ptr(live).bits());
         Self {
             ptr: live,
-            _owner: crate::PtrDropGuard::new(live),
+            _owner: crate::PtrDropGuard::new(py, live),
         }
     }
 }
@@ -285,13 +287,13 @@ impl OwnedExactDict {
 /// Whole-namespace staging, reserved for the unbounded seeding of the `builtins`
 /// namespace. Bounded registry and namespace bindings never copy a live
 /// namespace: they commit through one `dict_bind_string_entries` transition.
-struct StagedDictPublication {
+struct StagedDictPublication<'guard> {
     live: *mut u8,
-    staged: OwnedExactDict,
+    staged: OwnedExactDict<'guard>,
 }
 
-impl StagedDictPublication {
-    fn prepare(py: &PyToken<'_>, live: *mut u8) -> Option<Self> {
+impl<'guard> StagedDictPublication<'guard> {
+    fn prepare(py: &'guard PyToken<'guard>, live: *mut u8) -> Option<Self> {
         Some(Self {
             live,
             staged: OwnedExactDict::copy(py, live)?,
@@ -302,7 +304,7 @@ impl StagedDictPublication {
         self.staged.ptr
     }
 
-    unsafe fn publish(&self, py: &PyToken<'_>) {
+    unsafe fn publish(&self, py: &'guard PyToken<'guard>) {
         unsafe { crate::object::ops::dict_publish_staged(py, self.live, self.staged.ptr) };
     }
 }
@@ -481,7 +483,7 @@ pub(crate) fn publish_python_builtin_aliases(py: &PyToken<'_>, module_bits: u64)
         let provider = crate::builtins::module_table::module_ensure(py, id);
         let _provider_owner = obj_from_bits(provider)
             .as_ptr()
-            .map(crate::PtrDropGuard::new);
+            .map(|__ptr| crate::PtrDropGuard::new(py, __ptr));
         if exception_pending(py) {
             return false;
         }
@@ -570,7 +572,9 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
         return;
     };
     #[cfg(not(target_arch = "wasm32"))]
-    let _lookup_owner = obj_from_bits(lookup).as_ptr().map(crate::PtrDropGuard::new);
+    let _lookup_owner = obj_from_bits(lookup)
+        .as_ptr()
+        .map(|__ptr| crate::PtrDropGuard::new(_py, __ptr));
     #[cfg(not(target_arch = "wasm32"))]
     let bindings = [
         (REGISTRY_NAME, registry_bits),
@@ -603,7 +607,7 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
 
 /// Materialize the runtime registry for the first module namespace. The
 /// dictionary stays private until a namespace binds it.
-fn new_runtime_registry(_py: &PyToken<'_>) -> Option<OwnedExactDict> {
+fn new_runtime_registry<'guard>(_py: &'guard PyToken<'guard>) -> Option<OwnedExactDict<'guard>> {
     let registry = OwnedExactDict::empty(_py)?;
 
     // The Python intrinsic-loader interface on wasm32 reads this dictionary;
@@ -702,7 +706,7 @@ fn bind_names<'a, 'py>(
         );
         return None;
     }
-    let mut key_owners: [Option<crate::PtrDropGuard>; DICT_STRING_BINDING_LIMIT] =
+    let mut key_owners: [Option<crate::PtrDropGuard<'_>>; DICT_STRING_BINDING_LIMIT] =
         Default::default();
     let mut entries = [(0, 0); DICT_STRING_BINDING_LIMIT];
     for ((entry, owner), &(name, value)) in entries.iter_mut().zip(&mut key_owners).zip(bindings) {
@@ -711,7 +715,7 @@ fn bind_names<'a, 'py>(
             ensure_registry_memory_error(_py, "intrinsic registry key allocation failed");
             return None;
         }
-        *owner = Some(crate::PtrDropGuard::new(key));
+        *owner = Some(crate::PtrDropGuard::new(_py, key));
         *entry = (MoltObject::from_ptr(key).bits(), value);
     }
     match unsafe { dict_bind_string_entries(_py, namespace, &entries[..bindings.len()]) } {
@@ -731,9 +735,12 @@ fn bind_names<'a, 'py>(
 ///
 /// Called from Python-side `_intrinsics.py` as a fallback when a dict
 /// lookup on the registry misses.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_intrinsic_resolve(name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_intrinsic_resolve_attached_body(
+    _py: &crate::PyToken<'_>,
+    name_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let trace = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_REQUIRE_INTRINSIC);
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
@@ -755,7 +762,7 @@ pub extern "C" fn molt_intrinsic_resolve(name_bits: u64) -> u64 {
         }
 
         inc_ref_bits(_py, name_bits);
-        let _name_owner = crate::PtrDropGuard::new(name_ptr);
+        let _name_owner = crate::PtrDropGuard::new(_py, name_ptr);
         // Extract the name as a &str.
         let name_str = unsafe {
             let len = string_len(name_ptr);
@@ -819,7 +826,7 @@ fn install_intrinsics_module_exports(_py: &PyToken<'_>, module_ptr: *mut u8) -> 
             molt_runtime_active_runtime as *const () as usize as u64,
         ),
     ];
-    let mut owners: [Option<crate::PtrDropGuard>; 3] = Default::default();
+    let mut owners: [Option<crate::PtrDropGuard<'_>>; 3] = Default::default();
     let mut bindings = [("", 0); 3];
     for ((binding, owner), &(name, symbol, fn_ptr)) in
         bindings.iter_mut().zip(&mut owners).zip(&exports)
@@ -828,7 +835,9 @@ fn install_intrinsics_module_exports(_py: &PyToken<'_>, module_ptr: *mut u8) -> 
         let Some(bits) = build_bootstrap_function(_py, fn_ptr, spec) else {
             return false;
         };
-        *owner = obj_from_bits(bits).as_ptr().map(crate::PtrDropGuard::new);
+        *owner = obj_from_bits(bits)
+            .as_ptr()
+            .map(|__ptr| crate::PtrDropGuard::new(_py, __ptr));
         *binding = (name, bits);
     }
     bind_names(_py, namespace, &bindings).is_some()
@@ -1310,7 +1319,9 @@ fn publish_materialization(
         None => build_intrinsic_func(py, fn_ptr, spec.arity, spec.defaults, spec.public)
             .ok_or(IntrinsicResolveError::AllocFailed)?,
     };
-    let mut value_owner = obj_from_bits(value).as_ptr().map(crate::PtrDropGuard::new);
+    let mut value_owner = obj_from_bits(value)
+        .as_ptr()
+        .map(|__ptr| crate::PtrDropGuard::new(py, __ptr));
     let mut bindings = [("", value); 3];
     for (binding, &name) in bindings.iter_mut().zip(names) {
         binding.0 = name;
@@ -1416,7 +1427,8 @@ pub(crate) fn register_intrinsics_module(_py: &PyToken<'_>) {
     }
     let name_bits = MoltObject::from_ptr(name_ptr).bits();
 
-    let existing_bits = crate::builtins::modules::molt_module_cache_get(name_bits);
+    let existing_bits =
+        crate::builtins::modules::molt_module_cache_get_attached_body(_py, name_bits);
     if exception_pending(_py) {
         if !obj_from_bits(existing_bits).is_none() {
             dec_ref_bits(_py, existing_bits);
@@ -1472,7 +1484,8 @@ pub(crate) fn register_intrinsics_module(_py: &PyToken<'_>) {
     }
 
     // Register in module cache
-    let _ = crate::builtins::modules::molt_module_cache_set(name_bits, module_bits);
+    let _ =
+        crate::builtins::modules::molt_module_cache_set_attached_body(_py, name_bits, module_bits);
     dec_ref_bits(_py, module_bits);
     dec_ref_bits(_py, name_bits);
 }
@@ -1512,9 +1525,13 @@ pub(crate) fn test_app_resolver_address() -> &'static AtomicUsize {
 ///
 /// The optional namespace is accepted for API compatibility with
 /// `src/molt/stdlib/_intrinsics.py`; resolution is runtime-global today.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_require_intrinsic_runtime(name_bits: u64, namespace_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_require_intrinsic_runtime_attached_body(
+    _py: &crate::PyToken<'_>,
+    name_bits: u64,
+    namespace_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let _ = namespace_bits;
         let trace = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_REQUIRE_INTRINSIC);
         let name_obj = obj_from_bits(name_bits);
@@ -1529,7 +1546,7 @@ pub extern "C" fn molt_require_intrinsic_runtime(name_bits: u64, namespace_bits:
             );
         };
         inc_ref_bits(_py, name_bits);
-        let _name_owner = crate::PtrDropGuard::new(name_ptr);
+        let _name_owner = crate::PtrDropGuard::new(_py, name_ptr);
         let name = unsafe {
             if object_type_id(name_ptr) != TYPE_ID_STRING {
                 return if trace {
@@ -1591,9 +1608,12 @@ pub extern "C" fn molt_require_intrinsic_runtime(name_bits: u64, namespace_bits:
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_load_intrinsic_runtime(name_bits: u64, namespace_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_load_intrinsic_runtime_attached_body(
+    _py: &crate::PyToken<'_>,
+    name_bits: u64,
+    namespace_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let _ = namespace_bits;
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
@@ -1604,7 +1624,7 @@ pub extern "C" fn molt_load_intrinsic_runtime(name_bits: u64, namespace_bits: u6
             );
         };
         inc_ref_bits(_py, name_bits);
-        let _name_owner = crate::PtrDropGuard::new(name_ptr);
+        let _name_owner = crate::PtrDropGuard::new(_py, name_ptr);
         let name = unsafe {
             if object_type_id(name_ptr) != TYPE_ID_STRING {
                 return raise_exception::<u64>(
@@ -1639,9 +1659,8 @@ pub extern "C" fn molt_load_intrinsic_runtime(name_bits: u64, namespace_bits: u6
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_runtime_active_runtime() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
+pub(crate) fn molt_runtime_active_runtime_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { MoltObject::from_bool(true).bits() })
 }
 
 #[cfg(test)]
@@ -1661,7 +1680,7 @@ mod tests {
         let name_ptr = alloc_string(_py, b"builtins");
         assert!(!name_ptr.is_null());
         let name_bits = MoltObject::from_ptr(name_ptr).bits();
-        let module_bits = crate::builtins::modules::molt_module_new(name_bits);
+        let module_bits = crate::builtins::modules::molt_module_new_attached_body(_py, name_bits);
         dec_ref_bits(_py, name_bits);
         assert!(
             !exception_pending(_py),
@@ -1683,8 +1702,16 @@ mod tests {
     static OBSERVED_ANCHOR: AtomicUsize = AtomicUsize::new(0);
     static OBSERVED_SHARED_REGISTRY: AtomicUsize = AtomicUsize::new(0);
 
-    extern "C" fn observe_anchor_during_reentry(_self: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn observe_anchor_during_reentry(__context: u64, _self: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             let anchor = runtime_state(py)
                 .intrinsic_registry_module
                 .load(Ordering::Acquire);
@@ -1707,7 +1734,7 @@ mod tests {
             dec_ref_bits(py, MoltObject::from_ptr(peer).bits());
             dec_ref_bits(py, name_bits);
             MoltObject::none().bits()
-        })
+        }
     }
 
     #[test]
@@ -1718,8 +1745,12 @@ mod tests {
                 OBSERVED_SHARED_REGISTRY.store(0, Ordering::Release);
                 let name = alloc_string(py, b"RegistryAnchorFinalizer");
                 let name_bits = MoltObject::from_ptr(name).bits();
-                let class = crate::molt_class_new(name_bits);
-                crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+                let class = crate::molt_class_new_attached_body(py, name_bits);
+                crate::molt_class_set_base_attached_body(
+                    py,
+                    class,
+                    crate::builtin_classes(py).object,
+                );
                 let method_name = alloc_string(py, b"__del__");
                 let method_bits = MoltObject::from_ptr(method_name).bits();
                 let function = crate::builtins::functions::alloc_runtime_function_obj(
@@ -1731,7 +1762,7 @@ mod tests {
                     1,
                 );
                 let function_bits = MoltObject::from_ptr(function).bits();
-                crate::molt_set_attr_name(class, method_bits, function_bits);
+                crate::molt_set_attr_name_attached_body(py, class, method_bits, function_bits);
                 let class_ptr = obj_from_bits(class).as_ptr().unwrap();
                 unsafe {
                     crate::object::class_finish_definition(py, class_ptr).unwrap();
@@ -1788,7 +1819,9 @@ mod tests {
                 ] {
                     let name = string_bits(py, symbol);
                     let function =
-                        crate::builtins::functions::molt_func_new_builtin_named(name, 0, 0, 2);
+                        crate::builtins::functions::molt_func_new_builtin_named_attached_body(
+                            py, name, 0, 0, 2,
+                        );
                     assert!(!exception_pending(py));
                     let ptr = obj_from_bits(function).as_ptr().unwrap();
                     unsafe {
@@ -1815,7 +1848,7 @@ mod tests {
                     assert!(!exception_pending(py));
                     assert!(obj_from_bits(resolved).as_ptr().is_some());
                     let defaults_name = string_bits(py, "__defaults__");
-                    crate::molt_get_attr_name(function, defaults_name);
+                    crate::molt_get_attr_name_attached_body(py, function, defaults_name);
                     assert!(exception_pending(py));
                     assert!(crate::builtins::attr::exception_is_attribute_error(
                         py,
@@ -1841,10 +1874,11 @@ mod tests {
                 let bits = MoltObject::from_ptr(name).bits();
                 let owners = unsafe { (*crate::header_from_obj_ptr(name)).ref_count_snapshot() };
                 for resolve in [
-                    molt_require_intrinsic_runtime as extern "C" fn(u64, u64) -> u64,
+                    molt_require_intrinsic_runtime as unsafe extern "C" fn(u64, u64, u64) -> u64,
                     molt_load_intrinsic_runtime,
                 ] {
-                    let function = resolve(bits, MoltObject::none().bits());
+                    let function =
+                        unsafe { resolve(py.attached_context(), bits, MoltObject::none().bits()) };
                     assert!(!exception_pending(py));
                     assert!(obj_from_bits(function).as_ptr().is_some());
                     assert_eq!(
@@ -1853,7 +1887,7 @@ mod tests {
                     );
                     dec_ref_bits(py, function);
                 }
-                let function = molt_intrinsic_resolve(bits);
+                let function = molt_intrinsic_resolve_attached_body(py, bits);
                 assert!(!exception_pending(py));
                 assert!(obj_from_bits(function).as_ptr().is_some());
                 assert_eq!(
@@ -2016,7 +2050,7 @@ mod tests {
                         assert_eq!(function, compiled, "{runtime}/{cache}");
                         for field in ["__name__", "__qualname__"] {
                             let key = string_bits(py, field);
-                            let value = crate::molt_get_attr_name(function, key);
+                            let value = crate::molt_get_attr_name_attached_body(py, function, key);
                             assert_eq!(
                                 crate::string_obj_to_owned(obj_from_bits(value)).as_deref(),
                                 Some(expected),
@@ -2060,7 +2094,7 @@ mod tests {
                     ));
                     let repaired = resolve_intrinsic_func(py, alias, true).unwrap();
                     let key = string_bits(py, "__name__");
-                    let value = crate::molt_get_attr_name(repaired, key);
+                    let value = crate::molt_get_attr_name_attached_body(py, repaired, key);
                     assert_eq!(
                         crate::string_obj_to_owned(obj_from_bits(value)).as_deref(),
                         find_spec(alias)
@@ -2108,11 +2142,15 @@ mod tests {
                     let name_ptr = alloc_string(_py, requested.as_bytes());
                     assert!(!name_ptr.is_null());
                     let name_bits = MoltObject::from_ptr(name_ptr).bits();
-                    let required =
-                        molt_require_intrinsic_runtime(name_bits, MoltObject::none().bits());
+                    let required = molt_require_intrinsic_runtime_attached_body(
+                        _py,
+                        name_bits,
+                        MoltObject::none().bits(),
+                    );
                     assert_eq!(required, MoltObject::none().bits());
                     assert!(exception_pending(_py));
-                    let error = crate::builtins::exceptions::molt_exception_last_pending();
+                    let error =
+                        crate::builtins::exceptions::molt_exception_last_pending_attached_body(_py);
                     assert!(crate::builtins::exceptions::exception_matches_kind(
                         _py,
                         error,
@@ -2121,7 +2159,11 @@ mod tests {
                     crate::clear_exception(_py);
                     dec_ref_bits(_py, error);
 
-                    let loaded = molt_load_intrinsic_runtime(name_bits, MoltObject::none().bits());
+                    let loaded = molt_load_intrinsic_runtime_attached_body(
+                        _py,
+                        name_bits,
+                        MoltObject::none().bits(),
+                    );
                     assert_eq!(loaded, MoltObject::none().bits());
                     assert!(!exception_pending(_py));
                     dec_ref_bits(_py, name_bits);
@@ -2140,8 +2182,8 @@ mod tests {
     #[test]
     fn staged_registry_failure_leaves_live_dictionary_unchanged() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
+            let _ = crate::molt_exception_clear_attached_body(_py);
             let live = OwnedExactDict::empty(_py).expect("live dictionary allocation");
             assert!(checked_dict_insert(
                 _py,
@@ -2168,7 +2210,7 @@ mod tests {
             drop(publication);
 
             assert!(exception_pending(_py));
-            let _ = crate::molt_exception_clear();
+            let _ = crate::molt_exception_clear_attached_body(_py);
             assert_eq!(
                 named_dict_value(_py, live.ptr, b"stable").unwrap(),
                 stable_before
@@ -2234,7 +2276,7 @@ mod tests {
         assert!(!tuple.is_null());
         let tuple = MoltObject::from_ptr(tuple).bits();
         let before = mutation_version(function);
-        let _ = crate::molt_set_attr_name(function, name, tuple);
+        let _ = crate::molt_set_attr_name_attached_body(py, function, name, tuple);
         assert!(exception_pending(py));
         assert!(crate::builtins::attr::exception_is_attribute_error(
             py,
@@ -2507,7 +2549,7 @@ mod tests {
                 drop(denial);
                 assert_eq!(denied, Err(IntrinsicResolveError::AllocFailed));
                 assert!(exception_pending(_py));
-                let _ = crate::molt_exception_clear();
+                let _ = crate::molt_exception_clear_attached_body(_py);
                 assert!(unsafe {
                     crate::dict_live_entries(registry)
                         .flat_map(|row| [row.key, row.value])
@@ -2634,7 +2676,8 @@ mod tests {
                 let registry_bits = MoltObject::from_ptr(registry).bits();
                 let entries = unsafe { crate::dict_len(registry) };
                 let name_bits = string_bits(_py, "registry_consumer");
-                let module_bits = crate::builtins::modules::molt_module_new(name_bits);
+                let module_bits =
+                    crate::builtins::modules::molt_module_new_attached_body(_py, name_bits);
                 assert!(!exception_pending(_py));
                 let module_dict = module_dict_ptr(obj_from_bits(module_bits).as_ptr().unwrap())
                     .expect("consumer namespace");
@@ -2728,14 +2771,17 @@ mod tests {
         // `molt_load_intrinsic_runtime`'s wrapper to early-return None via
         // the GIL macro's exception fast-path; explicitly clear before
         // exercising the resolver to keep this test independent of order.
-        let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
+            let _ = crate::molt_exception_clear_attached_body(_py);
             register_intrinsics_module(_py);
 
             let module_name_ptr = alloc_string(_py, b"_intrinsics");
             assert!(!module_name_ptr.is_null());
             let module_name_bits = MoltObject::from_ptr(module_name_ptr).bits();
-            let module_bits = crate::builtins::modules::molt_module_cache_get(module_name_bits);
+            let module_bits = crate::builtins::modules::molt_module_cache_get_attached_body(
+                _py,
+                module_name_bits,
+            );
             let module_ptr = obj_from_bits(module_bits)
                 .as_ptr()
                 .expect("_intrinsics module should exist");
@@ -2744,19 +2790,23 @@ mod tests {
             let runtime_active_name_ptr = alloc_string(_py, b"runtime_active");
             let runtime_active_name_bits = MoltObject::from_ptr(runtime_active_name_ptr).bits();
             let runtime_active_bits =
-                crate::molt_get_attr_name(module_bits, runtime_active_name_bits);
+                crate::molt_get_attr_name_attached_body(_py, module_bits, runtime_active_name_bits);
             assert!(obj_from_bits(runtime_active_bits).as_ptr().is_some());
-            let runtime_active_out = molt_runtime_active_runtime();
+            let runtime_active_out = molt_runtime_active_runtime_attached_body(_py);
             assert!(crate::is_truthy(_py, obj_from_bits(runtime_active_out)));
 
             let load_name_ptr = alloc_string(_py, b"load_intrinsic");
             let load_name_bits = MoltObject::from_ptr(load_name_ptr).bits();
-            let load_bits = crate::molt_get_attr_name(module_bits, load_name_bits);
+            let load_bits =
+                crate::molt_get_attr_name_attached_body(_py, module_bits, load_name_bits);
             assert!(obj_from_bits(load_bits).as_ptr().is_some());
             let intrinsic_name_ptr = alloc_string(_py, b"molt_capabilities_has");
             let intrinsic_name_bits = MoltObject::from_ptr(intrinsic_name_ptr).bits();
-            let resolved_bits =
-                molt_load_intrinsic_runtime(intrinsic_name_bits, MoltObject::none().bits());
+            let resolved_bits = molt_load_intrinsic_runtime_attached_body(
+                _py,
+                intrinsic_name_bits,
+                MoltObject::none().bits(),
+            );
             let resolved_ptr = obj_from_bits(resolved_bits)
                 .as_ptr()
                 .expect("load_intrinsic should resolve known intrinsics");
@@ -2768,8 +2818,11 @@ mod tests {
             let split_name_ptr =
                 alloc_string(_py, b"molt_gpu_tensor__tensor_linear_split_last_dim");
             let split_name_bits = MoltObject::from_ptr(split_name_ptr).bits();
-            let split_bits =
-                molt_load_intrinsic_runtime(split_name_bits, MoltObject::none().bits());
+            let split_bits = molt_load_intrinsic_runtime_attached_body(
+                _py,
+                split_name_bits,
+                MoltObject::none().bits(),
+            );
             #[cfg(feature = "molt_gpu_primitives")]
             {
                 let split_ptr = obj_from_bits(split_bits)
@@ -2793,8 +2846,11 @@ mod tests {
 
             let missing_name_ptr = alloc_string(_py, b"molt_missing_intrinsic");
             let missing_name_bits = MoltObject::from_ptr(missing_name_ptr).bits();
-            let missing_bits =
-                molt_load_intrinsic_runtime(missing_name_bits, MoltObject::none().bits());
+            let missing_bits = molt_load_intrinsic_runtime_attached_body(
+                _py,
+                missing_name_bits,
+                MoltObject::none().bits(),
+            );
             assert!(obj_from_bits(missing_bits).is_none());
 
             dec_ref_bits(_py, missing_bits);
@@ -2817,15 +2873,19 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     fn register_intrinsics_module_repairs_existing_cache_entry() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        let _ = crate::molt_exception_clear();
         crate::with_gil_entry_nopanic!(_py, {
+            let _ = crate::molt_exception_clear_attached_body(_py);
             let module_name_ptr = alloc_string(_py, b"_intrinsics");
             assert!(!module_name_ptr.is_null());
             let module_name_bits = MoltObject::from_ptr(module_name_ptr).bits();
-            let _ = crate::builtins::modules::molt_module_cache_del(module_name_bits);
-            let _ = crate::molt_exception_clear();
+            let _ = crate::builtins::modules::molt_module_cache_del_attached_body(
+                _py,
+                module_name_bits,
+            );
+            let _ = crate::molt_exception_clear_attached_body(_py);
 
-            let generic_module_bits = crate::builtins::modules::molt_module_new(module_name_bits);
+            let generic_module_bits =
+                crate::builtins::modules::molt_module_new_attached_body(_py, module_name_bits);
             let generic_module_ptr = obj_from_bits(generic_module_bits)
                 .as_ptr()
                 .expect("generic _intrinsics module allocation should succeed");
@@ -2834,7 +2894,8 @@ mod tests {
                 unsafe { object_type_id(generic_module_ptr) },
                 TYPE_ID_MODULE
             );
-            let set_bits = crate::builtins::modules::molt_module_cache_set(
+            let set_bits = crate::builtins::modules::molt_module_cache_set_attached_body(
+                _py,
                 module_name_bits,
                 generic_module_bits,
             );
@@ -2843,7 +2904,10 @@ mod tests {
 
             register_intrinsics_module(_py);
 
-            let cached_bits = crate::builtins::modules::molt_module_cache_get(module_name_bits);
+            let cached_bits = crate::builtins::modules::molt_module_cache_get_attached_body(
+                _py,
+                module_name_bits,
+            );
             assert_eq!(cached_bits, generic_module_bits);
             assert_eq!(
                 unsafe { module_dict_bits(generic_module_ptr) },
@@ -2855,7 +2919,7 @@ mod tests {
             assert!(!runtime_active_name_ptr.is_null());
             let runtime_active_name_bits = MoltObject::from_ptr(runtime_active_name_ptr).bits();
             let runtime_active_bits =
-                crate::molt_get_attr_name(cached_bits, runtime_active_name_bits);
+                crate::molt_get_attr_name_attached_body(_py, cached_bits, runtime_active_name_bits);
             let runtime_active_ptr = obj_from_bits(runtime_active_bits)
                 .as_ptr()
                 .expect("cached _intrinsics module should be repaired in place");
@@ -2886,6 +2950,7 @@ mod tests {
     )]
     fn manifest_one_shot_guard() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
+
         reset_manifest_publication_for_test();
 
         let malformed_len = u64::from(u32::MAX) + 1;
@@ -2921,6 +2986,7 @@ mod tests {
     #[test]
     fn empty_manifest_is_ready_and_distinct_from_unset() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
+
         reset_manifest_publication_for_test();
         assert_eq!(manifest_snapshot(), None);
 
@@ -3032,7 +3098,7 @@ mod tests {
                     function_class,
                     crate::object::ClassEdgeOwnership::Owned,
                 ));
-                let _owner = crate::PtrDropGuard::preserving(function);
+                let _owner = crate::PtrDropGuard::preserving(py, function);
                 let bits = MoltObject::from_ptr(function).bits();
                 let code = obj_from_bits(crate::ensure_function_code_bits(py, function))
                     .as_ptr()
@@ -3081,7 +3147,7 @@ mod tests {
                     function_class,
                     crate::object::ClassEdgeOwnership::Owned,
                 ));
-                let _other_owner = crate::PtrDropGuard::preserving(other);
+                let _other_owner = crate::PtrDropGuard::preserving(py, other);
                 let other_code = obj_from_bits(crate::ensure_function_code_bits(py, other))
                     .as_ptr()
                     .expect("other code");
@@ -3178,3 +3244,5 @@ mod tests {
         test_app_resolver_address().store(0, Ordering::SeqCst);
     }
 }
+
+include!("../attached_exports_generated/intrinsics/registry.rs");

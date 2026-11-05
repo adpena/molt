@@ -2,9 +2,8 @@ use crate::bridge::*;
 use molt_runtime_core::prelude::*;
 use std::collections::HashSet;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zipfile_crc32(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_zipfile_crc32_attached_body(_py: &molt_runtime_core::PyToken, data_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let input = match unsafe { molt_runtime_capi::ByteInput::acquire(_py, data_bits) } {
             Ok(input) => input,
             Err(_) => return MoltObject::none().bits(),
@@ -73,9 +72,8 @@ fn imghdr_detect_kind(header: &[u8]) -> Option<&'static str> {
     None
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_imghdr_detect(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_imghdr_detect_attached_body(_py: &molt_runtime_core::PyToken, data_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
             return raise_exception::<_>(
                 _py,
@@ -584,9 +582,11 @@ fn zipfile_normalize_member_path_impl(member: &str) -> Option<String> {
     Some(normalized)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zipfile_parse_central_directory(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_zipfile_parse_central_directory_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
             return raise_exception::<_>(
                 _py,
@@ -661,13 +661,13 @@ pub extern "C" fn molt_zipfile_parse_central_directory(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zipfile_build_zip64_extra(
+pub fn molt_zipfile_build_zip64_extra_attached_body(
+    _py: &molt_runtime_core::PyToken,
     size_bits: u64,
     comp_size_bits: u64,
     offset_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(size) = to_i64(obj_from_bits(size_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -726,9 +726,11 @@ pub extern "C" fn molt_zipfile_build_zip64_extra(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zipfile_path_implied_dirs(names_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_zipfile_path_implied_dirs_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    names_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let names = match iterable_to_string_vec(_py, names_bits) {
             Ok(items) => items,
             Err(err) => return err,
@@ -753,9 +755,12 @@ pub extern "C" fn molt_zipfile_path_implied_dirs(names_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zipfile_path_resolve_dir(name_bits: u64, names_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_zipfile_path_resolve_dir_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    name_bits: u64,
+    names_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -782,9 +787,12 @@ pub extern "C" fn molt_zipfile_path_resolve_dir(name_bits: u64, names_bits: u64)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zipfile_path_is_child(path_at_bits: u64, parent_at_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_zipfile_path_is_child_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    path_at_bits: u64,
+    parent_at_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(path_at) = string_obj_to_owned(obj_from_bits(path_at_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -810,13 +818,13 @@ pub extern "C" fn molt_zipfile_path_is_child(path_at_bits: u64, parent_at_bits: 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zipfile_path_translate_glob(
+pub fn molt_zipfile_path_translate_glob_attached_body(
+    _py: &molt_runtime_core::PyToken,
     pattern_bits: u64,
     seps_bits: u64,
     py313_plus_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(pattern) = string_obj_to_owned(obj_from_bits(pattern_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -847,9 +855,11 @@ pub extern "C" fn molt_zipfile_path_translate_glob(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zipfile_normalize_member_path(member_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_zipfile_normalize_member_path_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    member_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(member) = string_obj_to_owned(obj_from_bits(member_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -869,9 +879,8 @@ pub extern "C" fn molt_zipfile_normalize_member_path(member_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_imghdr_what(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_imghdr_what_attached_body(_py: &molt_runtime_core::PyToken, data_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
             return raise_exception::<_>(
                 _py,
@@ -898,9 +907,12 @@ pub extern "C" fn molt_imghdr_what(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_imghdr_test(kind_bits: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_imghdr_test_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    kind_bits: u64,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(kind) = string_obj_to_owned(obj_from_bits(kind_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "imghdr kind must be str");
         };
@@ -1054,3 +1066,5 @@ mod zipfile_path_lowering_tests {
         );
     }
 }
+
+include!("attached_exports_generated/zipfile.rs");

@@ -34,35 +34,57 @@ fn assert_linked_program_slots(application: &Path, stdlib: &Path, expected: u64)
 use std::sync::atomic::{{AtomicU64, Ordering}};
 static OBSERVED: AtomicU64 = AtomicU64::new(u64::MAX);
 static EXITS: AtomicU64 = AtomicU64::new(0);
-#[unsafe(no_mangle)] pub extern "C" fn molt_trace_enter_slot(slot: u64) -> u64 {{
+static EXPECTED_CONTEXT: AtomicU64 = AtomicU64::new(0);
+#[repr(C)] struct Record {{ pending: u8, padding: [u8; 7], invocation: u64, work: *const u32 }}
+#[repr(C)] struct Context {{ record: *const Record }}
+fn check_context(context: u64) {{
+    assert_eq!(context, EXPECTED_CONTEXT.load(Ordering::SeqCst), "compiled entry must forward borrowed context");
+}}
+#[unsafe(export_name = "{trace_enter}")] pub extern "C" fn molt_trace_enter_slot(context: u64, slot: u64) -> u64 {{
+    check_context(context);
     OBSERVED.store(slot, Ordering::SeqCst); 0
 }}
-#[unsafe(no_mangle)] pub extern "C" fn molt_trace_exit() -> u64 {{
+#[unsafe(export_name = "{trace_exit}")] pub extern "C" fn molt_trace_exit(context: u64) -> u64 {{
+    check_context(context);
     EXITS.fetch_add(1, Ordering::SeqCst); 0
 }}
-#[unsafe(no_mangle)] pub extern "C" fn molt_exception_pending_fast() -> u64 {{ 0 }}
-static PENDING: u8 = 0;
-#[unsafe(no_mangle)] pub extern "C" fn molt_thread_record() -> u64 {{
-    core::ptr::addr_of!(PENDING) as u64
-}}
-#[unsafe(no_mangle)] pub extern "C" fn molt_async_work_poll_and_exception_pending() -> u64 {{ 0 }}
+#[unsafe(export_name = "{pending_fast}")] pub extern "C" fn molt_exception_pending_fast(context: u64) -> u64 {{ check_context(context); 0 }}
+#[unsafe(export_name = "{work_poll}")] pub extern "C" fn molt_async_work_poll_and_exception_pending(context: u64) -> u64 {{ check_context(context); 0 }}
 #[used] #[unsafe(export_name = "{abi}")] pub static ABI: u8 = 0;
 unsafe extern "C" {{
-    fn molt_init_sys() -> u64;
+    #[link_name = "{init_sys}"] fn molt_init_sys(context: u64) -> u64;
     #[link_name = "{binding}"] static BINDING: u64;
     #[link_name = "{module_binding}"] static MODULE_BINDING: u64;
 }}
 fn main() {{
+    assert_eq!(core::mem::offset_of!(Context, record), {context_record_offset});
+    assert_eq!(core::mem::offset_of!(Record, pending), {exception_offset});
+    assert_eq!(core::mem::offset_of!(Record, invocation), {invocation_offset});
+    assert_eq!(core::mem::offset_of!(Record, work), {work_offset});
+    let work = 0u32;
+    let record = Record {{ pending: 0, padding: [0; 7], invocation: 0, work: &work }};
+    let context = Context {{ record: &record }};
+    let address = core::ptr::addr_of!(context) as u64;
+    EXPECTED_CONTEXT.store(address, Ordering::SeqCst);
     unsafe {{
         assert_eq!(BINDING, {expected});
         assert_eq!(MODULE_BINDING, {expected});
-        assert_eq!(molt_init_sys(), {expected_module}u64);
+        assert_eq!(molt_init_sys(address), {expected_module}u64);
     }}
     assert_eq!(OBSERVED.load(Ordering::SeqCst), {expected});
     assert_eq!(EXITS.load(Ordering::SeqCst), 1);
 }}
 "#,
-            abi = molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL
+            abi = molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL,
+            trace_enter = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_trace_enter_slot").unwrap().physical_symbol,
+            trace_exit = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_trace_exit").unwrap().physical_symbol,
+            pending_fast = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_exception_pending_fast").unwrap().physical_symbol,
+            work_poll = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_async_work_poll_and_exception_pending").unwrap().physical_symbol,
+            init_sys = format!("molt_init_sys{}", molt_codegen_abi::ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX),
+            context_record_offset = molt_codegen_abi::ATTACHED_CONTEXT_THREAD_RECORD_OFFSET,
+            exception_offset = molt_codegen_abi::THREAD_RECORD_EXCEPTION_PENDING_OFFSET,
+            invocation_offset = molt_codegen_abi::THREAD_RECORD_PENDING_INVOCATION_OFFSET,
+            work_offset = molt_codegen_abi::THREAD_RECORD_PENDING_WORK_PTR_OFFSET
         ),
     )
     .unwrap();

@@ -43,39 +43,47 @@ impl Drop for GilGuard {
 /// Proof that this thread holds the GIL for `'gil`, carrying its execution
 /// record. A GIL guard or a runtime execution entry produces it; a nested
 /// entry that borrows its caller's custody produces the same type.
+#[repr(transparent)]
 pub(crate) struct PyToken<'gil> {
-    /// This thread's execution facts. `ExecutionTls` holds `Cell`s, so the
-    /// reference, and the token, cannot leave this thread.
-    record: &'static crate::state::ExecutionTls,
     core: molt_runtime_core::PyToken,
     _custody: std::marker::PhantomData<&'gil ()>,
 }
 
-impl PyToken<'_> {
+impl<'gil> PyToken<'gil> {
     /// # Safety
-    ///
-    /// The calling thread holds the GIL for the token's lifetime, and
-    /// `record` is its own execution record.
+    /// This is the caller's permanent execution record and its GIL custody
+    /// remains live for the complete returned borrow.
     #[inline(always)]
-    pub(crate) unsafe fn with_custody(record: &'static crate::state::ExecutionTls) -> Self {
-        Self {
-            record,
-            // The caller's custody is the runtime's actual GIL boundary.
-            core: unsafe { molt_runtime_core::PyToken::assume_gil_held() },
-            _custody: std::marker::PhantomData,
-        }
+    pub(crate) unsafe fn with_custody(record: &'static crate::state::ExecutionTls) -> &'gil Self {
+        record
+            .attached_context
+            .bind_thread_record(std::ptr::from_ref(record) as u64);
+        let context = std::ptr::from_ref(&record.attached_context) as u64;
+        unsafe { Self::from_attached_context(context) }
     }
 
-    /// Borrow the shared-runtime proof from this live GIL guard's token.
+    /// # Safety
+    /// The generated ABI's caller retains this exact attached context through
+    /// return, including balanced suspension/callback scopes.
+    #[inline(always)]
+    pub(crate) unsafe fn from_attached_context(context: u64) -> &'gil Self {
+        let core = unsafe { molt_runtime_core::PyToken::from_attached_context(context) };
+        unsafe { &*std::ptr::from_ref(core).cast::<Self>() }
+    }
+
     #[inline(always)]
     pub(crate) fn core_token(&self) -> &molt_runtime_core::PyToken {
         &self.core
     }
 
-    /// This thread's execution facts, as its custody read them at entry.
+    #[inline(always)]
+    pub(crate) fn attached_context(&self) -> u64 {
+        self.core.attached_context()
+    }
+
     #[inline(always)]
     pub(crate) fn execution_tls(&self) -> &'static crate::state::ExecutionTls {
-        self.record
+        unsafe { &*std::ptr::with_exposed_provenance(self.core.thread_record_address() as usize) }
     }
 }
 
@@ -95,7 +103,7 @@ impl GilGuard {
     }
 
     #[inline(always)]
-    pub(crate) fn token(&self) -> PyToken<'_> {
+    pub(crate) fn token(&self) -> &PyToken<'_> {
         // SAFETY: this guard is the runtime's actual GIL custody boundary.
         unsafe { PyToken::with_custody(crate::state::execution_tls()) }
     }
@@ -187,7 +195,7 @@ pub(crate) fn touch_gil_tls_lifetime() {
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn with_gil<F, R>(f: F) -> R
 where
-    F: for<'gil> FnOnce(PyToken<'gil>) -> R,
+    F: for<'gil> FnOnce(&'gil PyToken<'gil>) -> R,
 {
     let guard = crate::concurrency::RuntimeExecutionGuard::enter();
     let token = guard.token();
@@ -359,7 +367,7 @@ impl GilGuard {
     }
 
     #[inline(always)]
-    pub(crate) fn token(&self) -> PyToken<'_> {
+    pub(crate) fn token(&self) -> &PyToken<'_> {
         // SAFETY: this guard is the runtime's actual GIL custody boundary.
         unsafe { PyToken::with_custody(self.tls) }
     }
@@ -612,7 +620,7 @@ impl Drop for GilLifetime {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn with_gil<F, R>(f: F) -> R
 where
-    F: for<'gil> FnOnce(PyToken<'gil>) -> R,
+    F: for<'gil> FnOnce(&'gil PyToken<'gil>) -> R,
 {
     let guard = crate::concurrency::RuntimeExecutionGuard::enter();
     let token = guard.token();

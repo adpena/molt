@@ -52,14 +52,18 @@ fn c_thread_publication_reaches_inline_poll_and_omitted_notification_starves_it(
         let state = crate::runtime_state(py);
         // Observe exactly the word the emitted code receives, not an unrelated
         // test flag, and use the real C-API publisher on a thread without a GIL.
-        let record = crate::state::molt_thread_record() as *const u8;
+        let record = (unsafe {
+            crate::PyToken::from_attached_context(crate::state::molt_attached_context())
+        }
+        .execution_tls() as *const crate::state::ExecutionTls as u64)
+            as *const u8;
         let ptr = unsafe {
             *(record.add(molt_codegen_abi::THREAD_RECORD_PENDING_WORK_PTR_OFFSET as usize)
                 as *const u64)
         };
         assert_eq!(ptr, state.pending_work.word_ptr() as u64);
         let word = unsafe { &*(ptr as *const AtomicU32) };
-        crate::builtins::exceptions::molt_async_work_poll_and_exception_pending();
+        crate::builtins::exceptions::molt_async_work_poll_and_exception_pending_attached_body(py);
         assert_eq!(
             word.load(Ordering::Relaxed),
             0,
@@ -90,7 +94,7 @@ fn c_thread_publication_reaches_inline_poll_and_omitted_notification_starves_it(
                 crate::state::run_runtime_worker(origin, || {
                     crate::with_gil_entry_nopanic!(_worker, {
                         let pending =
-                            crate::builtins::exceptions::molt_async_work_poll_and_exception_pending(
+                            crate::builtins::exceptions::molt_async_work_poll_and_exception_pending_attached_body(_worker
                             );
                         (pending, CALLBACKS.load(Ordering::Relaxed))
                     })
@@ -111,7 +115,7 @@ fn c_thread_publication_reaches_inline_poll_and_omitted_notification_starves_it(
         );
         if word.load(Ordering::Relaxed) != 0 {
             assert_eq!(
-                crate::builtins::exceptions::molt_async_work_poll_and_exception_pending(),
+                crate::builtins::exceptions::molt_async_work_poll_and_exception_pending_attached_body(py),
                 0
             );
         }
@@ -126,12 +130,14 @@ fn c_thread_publication_reaches_inline_poll_and_omitted_notification_starves_it(
         // queued work remains, but the inline word gate cannot discover it.
         word.fetch_and(!(PendingWorkKind::PendingCalls as u32), Ordering::AcqRel);
         if word.load(Ordering::Relaxed) != 0 {
-            crate::builtins::exceptions::molt_async_work_poll_and_exception_pending();
+            crate::builtins::exceptions::molt_async_work_poll_and_exception_pending_attached_body(
+                py,
+            );
         }
         assert!(molt_cpython_abi::api::pending_calls::has_pending_calls());
         assert_eq!(CALLBACKS.load(Ordering::Relaxed), 1);
         state.pending_work.request(PendingWorkKind::PendingCalls);
-        crate::builtins::exceptions::molt_async_work_poll_and_exception_pending();
+        crate::builtins::exceptions::molt_async_work_poll_and_exception_pending_attached_body(py);
         assert_eq!(CALLBACKS.load(Ordering::Relaxed), 2);
     });
 }
@@ -151,7 +157,9 @@ fn interrupt_publication_reaches_inline_gate_before_exception_is_raised() {
             0
         );
         assert_eq!(
-            crate::builtins::exceptions::molt_async_work_poll_and_exception_pending(),
+            crate::builtins::exceptions::molt_async_work_poll_and_exception_pending_attached_body(
+                py
+            ),
             1
         );
         assert_eq!(
@@ -160,7 +168,7 @@ fn interrupt_publication_reaches_inline_gate_before_exception_is_raised() {
                 .0,
             "KeyboardInterrupt"
         );
-        crate::builtins::exceptions::molt_exception_clear();
+        crate::builtins::exceptions::molt_exception_clear_attached_body(py);
         assert_eq!(
             state.pending_work.0.load(Ordering::Relaxed) & PendingWorkKind::Signals as u32,
             0
@@ -186,7 +194,7 @@ fn allocation_pressure_notifies_the_inline_gate_and_service_collects_it() {
                 & PendingWorkKind::GarbageCollection as u32,
             0
         );
-        crate::builtins::exceptions::molt_async_work_poll_and_exception_pending();
+        crate::builtins::exceptions::molt_async_work_poll_and_exception_pending_attached_body(py);
         assert_eq!(state.gc.generation_stats()[0].collections, before + 1);
         assert_eq!(
             state.pending_work.0.load(Ordering::Relaxed)

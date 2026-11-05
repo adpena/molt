@@ -9,9 +9,8 @@ use crate::{
     function_closure_bits, maybe_ptr_from_bits, obj_from_bits, object_type_id, raise_exception,
 };
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_is_bound_method(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_is_bound_method_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let is_bound = maybe_ptr_from_bits(obj_bits).is_some_and(|ptr| unsafe {
             object_type_id(ptr) == TYPE_ID_BOUND_METHOD
                 && crate::object_class_bits(ptr) == crate::builtins::types::method_class(_py)
@@ -20,9 +19,8 @@ pub extern "C" fn molt_is_bound_method(obj_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_is_function_obj(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_is_function_obj_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let trace_mode = std::env::var("MOLT_TRACE_IS_FUNCTION").ok();
         let log_all = matches!(trace_mode.as_deref(), Some("all"));
         let log_none = matches!(trace_mode.as_deref(), Some("1"));
@@ -39,9 +37,11 @@ pub extern "C" fn molt_is_function_obj(obj_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_function_is_generator(func_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_function_is_generator_attached_body(
+    _py: &crate::PyToken<'_>,
+    func_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(func_bits);
         let Some(ptr) = obj.as_ptr() else {
             return MoltObject::from_bool(false).bits();
@@ -58,9 +58,11 @@ pub extern "C" fn molt_function_is_generator(func_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_function_is_coroutine(func_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_function_is_coroutine_attached_body(
+    _py: &crate::PyToken<'_>,
+    func_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(func_bits);
         let Some(ptr) = obj.as_ptr() else {
             return MoltObject::from_bool(false).bits();
@@ -114,9 +116,9 @@ unsafe fn is_callable_for_ptr(_py: &crate::PyToken<'_>, ptr: *mut u8) -> bool {
 /// Cross-crate consumers should prefer [`molt_is_callable_bool`] to avoid
 /// re-implementing the bool decode (the bug class that made tkinter `bind`
 /// reject genuine callables: `as_int()` rejects a `TAG_BOOL` value).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_is_callable(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_is_callable_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         MoltObject::from_bool(is_callable_impl(_py, obj_bits)).bits()
     })
 }
@@ -127,22 +129,26 @@ pub extern "C" fn molt_is_callable(obj_bits: u64) -> u64 {
 /// (e.g. `molt-runtime-tk`) so they never have to interpret the NaN-boxed
 /// `bool` object themselves. Backed by the same [`is_callable_impl`] that
 /// powers Python `callable()`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_is_callable_bool(obj_bits: u64) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, { i32::from(is_callable_impl(_py, obj_bits)) })
+
+pub(crate) fn molt_is_callable_bool_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> i32 {
+    crate::with_attached_entry_nopanic!(_py, _py, { i32::from(is_callable_impl(_py, obj_bits)) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_function_default_kind(_func_bits: u64) -> i64 {
+pub(crate) fn molt_function_default_kind_attached_body(
+    _py: &crate::PyToken<'_>,
+    _func_bits: u64,
+) -> i64 {
     // This legacy ABI query has no Rust default-kind field. Runtime binding
     // reads typed defaults and BindKind; BindKind is a different tag space.
     // A valid function dictionary was never an integer default-kind tag.
     0
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_function_closure_bits(func_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_function_closure_bits_attached_body(
+    _py: &crate::PyToken<'_>,
+    func_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(func_bits);
         let Some(ptr) = obj.as_ptr() else {
             return 0;
@@ -156,9 +162,12 @@ pub extern "C" fn molt_function_closure_bits(func_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_call_arity_error(expected: i64, got: i64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_call_arity_error_attached_body(
+    _py: &crate::PyToken<'_>,
+    expected: i64,
+    got: i64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let msg = format!("call arity mismatch (expected {expected}, got {got})");
         raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
     })
@@ -168,9 +177,10 @@ pub extern "C" fn molt_call_arity_error(expected: i64, got: i64) -> u64 {
 mod execution_kind_tests {
     use super::*;
     use crate::builtins::inspect::{
-        molt_inspect_isasyncgenfunction, molt_inspect_iscoroutine,
-        molt_inspect_iscoroutinefunction, molt_inspect_isgeneratorfunction,
-        molt_inspect_isnativeawaitable,
+        molt_inspect_isasyncgenfunction_attached_body, molt_inspect_iscoroutine_attached_body,
+        molt_inspect_iscoroutinefunction_attached_body,
+        molt_inspect_isgeneratorfunction_attached_body,
+        molt_inspect_isnativeawaitable_attached_body,
     };
     use crate::object::layout::{code_publish_execution_kind, function_set_code_bits};
 
@@ -219,7 +229,8 @@ mod execution_kind_tests {
                         b"__molt_is_async_generator__".as_slice(),
                     ] {
                         let key = crate::dynamic_attr_name_bits(py, marker).unwrap();
-                        let result = crate::molt_set_attr_name(
+                        let result = crate::molt_set_attr_name_attached_body(
+                            py,
                             bits,
                             key,
                             MoltObject::from_bool(marker_value).bits(),
@@ -229,11 +240,11 @@ mod execution_kind_tests {
                     }
                     assert!(!crate::exception_pending(py));
                     assert_eq!(
-                        obj_from_bits(molt_function_is_generator(bits)).as_bool(),
+                        obj_from_bits(molt_function_is_generator_attached_body(py, bits)).as_bool(),
                         Some(kind == CodeExecutionKind::Generator),
                     );
                     assert_eq!(
-                        obj_from_bits(molt_function_is_coroutine(bits)).as_bool(),
+                        obj_from_bits(molt_function_is_coroutine_attached_body(py, bits)).as_bool(),
                         Some(kind == CodeExecutionKind::Coroutine),
                     );
                     let bound = crate::alloc_bound_method_obj(py, bits, MoltObject::none().bits());
@@ -241,24 +252,34 @@ mod execution_kind_tests {
                     let bound_bits = MoltObject::from_ptr(bound).bits();
                     for candidate in [bits, bound_bits] {
                         assert_eq!(
-                            obj_from_bits(molt_inspect_isgeneratorfunction(candidate)).as_bool(),
+                            obj_from_bits(molt_inspect_isgeneratorfunction_attached_body(
+                                py, candidate
+                            ))
+                            .as_bool(),
                             Some(kind == CodeExecutionKind::Generator),
                         );
                         assert_eq!(
-                            obj_from_bits(molt_inspect_iscoroutinefunction(candidate)).as_bool(),
+                            obj_from_bits(molt_inspect_iscoroutinefunction_attached_body(
+                                py, candidate
+                            ))
+                            .as_bool(),
                             Some(kind == CodeExecutionKind::Coroutine),
                         );
                         assert_eq!(
-                            obj_from_bits(molt_inspect_isasyncgenfunction(candidate)).as_bool(),
+                            obj_from_bits(molt_inspect_isasyncgenfunction_attached_body(
+                                py, candidate
+                            ))
+                            .as_bool(),
                             Some(kind == CodeExecutionKind::AsyncGenerator),
                         );
                     }
                     assert_eq!(
-                        obj_from_bits(molt_inspect_iscoroutine(bits)).as_bool(),
+                        obj_from_bits(molt_inspect_iscoroutine_attached_body(py, bits)).as_bool(),
                         Some(false)
                     );
                     assert_eq!(
-                        obj_from_bits(molt_inspect_isnativeawaitable(bits)).as_bool(),
+                        obj_from_bits(molt_inspect_isnativeawaitable_attached_body(py, bits))
+                            .as_bool(),
                         Some(false)
                     );
                     crate::dec_ref_bits(py, bound_bits);
@@ -271,3 +292,5 @@ mod execution_kind_tests {
         });
     }
 }
+
+include!("../attached_exports_generated/builtins/callable.rs");

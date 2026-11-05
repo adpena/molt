@@ -1,12 +1,14 @@
 //! One linker/validator for executable LIR test bodies.
 use crate::wasm::WasmBackend;
 use crate::wasm::body::WasmBody;
+use crate::wasm_binary::Function;
 use crate::wasm_data::WasmDataSegments;
 use crate::wasm_function_types::WasmFunctionTypes;
 use std::collections::BTreeMap;
+use wasm_encoder::FunctionSection;
 use wasm_encoder::{
-    CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection, ImportSection,
-    MemorySection, MemoryType, Module,
+    CodeSection, EntityType, ExportKind, ExportSection, ImportSection, MemorySection, MemoryType,
+    Module,
 };
 
 pub(super) fn executable_module(body: &WasmBody) -> Vec<u8> {
@@ -14,12 +16,24 @@ pub(super) fn executable_module(body: &WasmBody) -> Vec<u8> {
     let function_type = types.function(&body.param_types, &body.result_types);
     let mut imports = ImportSection::new();
     let mut import_indices = BTreeMap::new();
+    let mut call_abis = crate::wasm_binary::WasmExecutionCallAbis::default();
     for import in body.runtime_imports() {
         let index = import_indices.len() as u32;
         if let std::collections::btree_map::Entry::Vacant(entry) = import_indices.entry(import) {
             entry.insert(index);
             let (params, results) = import.machine_signature();
-            let import_type = types.function(params, results);
+            let attached = import.execution_abi().context
+                == molt_ir::runtime_callable_abi_generated::RuntimeExecutionContext::Attached;
+            let physical = std::iter::once(wasm_encoder::ValType::I64)
+                .filter(|_| attached)
+                .chain(params.iter().copied())
+                .collect::<Vec<_>>();
+            let import_type = types.function(&physical, results);
+            if attached {
+                call_abis.register_attached(index, params);
+            } else {
+                call_abis.register_boundary(index);
+            }
             imports.import(
                 "molt_runtime",
                 import.name(),
@@ -33,6 +47,7 @@ pub(super) fn executable_module(body: &WasmBody) -> Vec<u8> {
     exports.export("run", ExportKind::Func, import_indices.len() as u32);
     exports.export("memory", ExportKind::Memory, 0);
     let mut function = Function::new(body.locals.iter().map(|&ty| (1, ty)));
+    function.attach_context(body.param_types.len(), std::rc::Rc::new(call_abis));
     let mut backend = WasmBackend::new();
     backend.data_segments = WasmDataSegments::new(64);
     let literal_out = backend.add_data_segment_mutable(false, &[0; 8]);

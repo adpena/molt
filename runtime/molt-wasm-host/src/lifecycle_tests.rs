@@ -5,6 +5,7 @@ fn execute_test_lifetime(
     store: &mut Store<HostState>,
     instance: &Instance,
 ) -> Result<GuestTermination> {
+    set_memory_from_exports(store, instance);
     let mut lifetime = MoltRuntimeLifetime::admit(store, instance)?;
     let result = call_guest_entrypoint(
         store,
@@ -28,17 +29,26 @@ fn lifetime_fixture(
 ) -> (Store<HostState>, Instance, Arc<Mutex<Vec<i32>>>) {
     let module = Module::new(
         engine,
-        format!(
+        crate::execution_fixture::render(format!(
             r#"(module
         (import "test" "mark" (func $mark (param i32)))
         (global $pending (mut i64) (i64.const {pending}))
-        (func (export "molt_exception_pending") (result i64) global.get $pending)
+        (global $next_scope (mut i64) (i64.const 0))
+        (global $active_scope (mut i64) (i64.const 0))
+        (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ global.get $pending)
+(func (export "molt_exception_pending_detached") (result i64)
+ global.get $pending)
         (func (export "molt_main_exit_status") (result i64)
             i32.const 5 call $mark {report_body}
             global.get $pending i64.const 0 i64.ne
             i64.const 0 global.set $pending
             if (result i64) i64.const 7 else i64.const 0 end)
-        (func (export "molt_main") (result i64)
+        (func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+
+            global.get $active_scope i64.eqz if unreachable end
             i32.const 2 call $mark {main_body} i64.const 0)
         (func (export "molt_runtime_execution_enter") (result i64)
             i32.const 1 call $mark {enter_body})
@@ -47,8 +57,23 @@ fn lifetime_fixture(
             i32.const 3 call $mark {leave_body})
         (func (export "molt_runtime_shutdown") (result i64)
             i32.const 4 call $mark
-            i64.const 0 global.set $pending {shutdown_body} i64.const 1))"#
-        ),
+            i64.const 0 global.set $pending {shutdown_body} i64.const 1)
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            global.get $active_scope i64.eqz i32.eqz if unreachable end
+            global.get $next_scope i64.const 1 i64.add global.set $next_scope
+            global.get $next_scope global.set $active_scope
+            i32.const 6 call $mark global.get $active_scope)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope global.get $active_scope i64.ne if unreachable end
+            i32.const 7 call $mark i64.const 0 global.set $active_scope)
+
+        (memory (export "memory") 1)
+)"#
+        )),
     )
     .unwrap();
     let mut store = Store::new(engine, main_tests::test_host_state());
@@ -58,6 +83,7 @@ fn lifetime_fixture(
         observed.lock().unwrap().push(value)
     });
     let instance = Instance::new(&mut store, &module, &[mark.into()]).unwrap();
+    set_memory_from_exports(&mut store, &instance);
     (store, instance, events)
 }
 
@@ -65,14 +91,22 @@ fn lifetime_fixture(
 fn finite_lifetime_releases_then_finalizes_on_return_failure_and_empty_token() {
     let engine = build_engine().unwrap();
     for (main, pending, enter, leave, shutdown, expected, diagnostic) in [
-        ("", 0, "i64.const 41", "", "", vec![1, 2, 5, 3, 4], None),
+        (
+            "",
+            0,
+            "i64.const 41",
+            "",
+            "",
+            vec![1, 6, 2, 5, 7, 3, 4],
+            None,
+        ),
         (
             "",
             0,
             "i64.const 41",
             "",
             "i64.const 0 return",
-            vec![1, 2, 5, 3, 4],
+            vec![1, 6, 2, 5, 7, 3, 4],
             Some("shutdown did not complete"),
         ),
         (
@@ -81,7 +115,7 @@ fn finite_lifetime_releases_then_finalizes_on_return_failure_and_empty_token() {
             "i64.const 41",
             "",
             "i64.const 2 return",
-            vec![1, 2, 5, 3, 4],
+            vec![1, 6, 2, 5, 7, 3, 4],
             Some("shutdown did not complete"),
         ),
         (
@@ -90,7 +124,7 @@ fn finite_lifetime_releases_then_finalizes_on_return_failure_and_empty_token() {
             "i64.const 41",
             "",
             "",
-            vec![1, 2, 3, 4],
+            vec![1, 6, 2, 7, 3, 4],
             Some("call molt_main"),
         ),
         (
@@ -99,7 +133,7 @@ fn finite_lifetime_releases_then_finalizes_on_return_failure_and_empty_token() {
             "i64.const 41",
             "",
             "",
-            vec![1, 3, 4],
+            vec![1, 6, 7, 3, 4],
             Some("before molt_main"),
         ),
         (
@@ -108,7 +142,7 @@ fn finite_lifetime_releases_then_finalizes_on_return_failure_and_empty_token() {
             "i64.const 41",
             "",
             "",
-            vec![1, 3, 4],
+            vec![1, 6, 7, 3, 4],
             Some("malformed molt_exception_pending status"),
         ),
         (
@@ -117,7 +151,7 @@ fn finite_lifetime_releases_then_finalizes_on_return_failure_and_empty_token() {
             "i64.const 41",
             "unreachable",
             "",
-            vec![1, 2, 5, 3, 4],
+            vec![1, 6, 2, 5, 7, 3, 4],
             Some("leave runtime execution"),
         ),
         (
@@ -126,7 +160,7 @@ fn finite_lifetime_releases_then_finalizes_on_return_failure_and_empty_token() {
             "i64.const 41",
             "",
             "unreachable",
-            vec![1, 2, 5, 3, 4],
+            vec![1, 6, 2, 5, 7, 3, 4],
             Some("finalize Molt application"),
         ),
         (
@@ -174,7 +208,7 @@ fn finite_lifetime_preserves_primary_typed_trap_and_both_cleanup_failures() {
         "",
     );
     let error = execute_test_lifetime(&mut store, &instance).unwrap_err();
-    assert_eq!(*events.lock().unwrap(), vec![1, 2, 3, 4]);
+    assert_eq!(*events.lock().unwrap(), vec![1, 6, 2, 7, 3, 4]);
     assert_eq!(
         error.downcast_ref::<wasmtime::Trap>(),
         Some(&wasmtime::Trap::IntegerDivisionByZero)
@@ -256,15 +290,35 @@ fn lifetime_export_admission_precedes_any_guest_start() {
                 .collect::<String>();
             let module = Module::new(
                 &engine,
-                format!(
+                crate::execution_fixture::render(format!(
                     r#"(module
                 (func $start unreachable) (start $start)
-                (func (export "molt_main") (result i64) i64.const 0)
-                (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
-                (func (export "molt_isolate_import") (param i64) (result i64) local.get 0)
-                (func (export "molt_exception_pending") (result i64) i64.const 0)
-                {definitions})"#
-                ),
+                (func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+                (func (export "molt_isolate_bootstrap@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+                (func (export "molt_isolate_import@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ local.get 1)
+                (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+(func (export "molt_exception_pending_detached") (result i64)
+ i64.const 0)
+                {definitions}
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+
+        (memory (export "memory") 1)
+)"#
+                )),
             )
             .unwrap();
             let error = execute_loaded_guest(
@@ -294,21 +348,42 @@ fn finite_lifetime_finalizes_after_linked_and_split_setup_failures() {
     let engine = build_engine().unwrap();
     for (linked, fail_table_setup) in [(true, true), (false, true), (false, false)] {
         let runtime_fields = r#"
-            (func (export "molt_anchor"))
+            (func (export "molt_recursion_exit_fast@CONTEXT_SUFFIX@") (param i64))
             (func (export "molt_main_exit_status") (result i64) i64.const 0)
             (func (export "molt_runtime_execution_enter") (result i64) unreachable)
             (func (export "molt_runtime_execution_leave") (param i64) unreachable)
             (func (export "molt_runtime_shutdown") (result i64) unreachable)
-            (func (export "molt_exception_pending") (result i64) i64.const 0)
+            (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+(func (export "molt_exception_pending_detached") (result i64)
+ i64.const 0)
             (func (export "molt_set_wasm_table_base") (param i64)
                 i32.const 1 i32.const 0 i32.div_s drop)
-        "#;
-        let runtime =
-            (!linked).then(|| Module::new(&engine, format!("(module {runtime_fields})")).unwrap());
+
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+
+
+"#;
+        let runtime = (!linked).then(|| {
+            Module::new(
+                &engine,
+                crate::execution_fixture::render(format!(
+                    "(module (import \"env\" \"memory\" (memory 1)) {runtime_fields})"
+                )),
+            )
+            .unwrap()
+        });
         let app_import = if linked {
             ""
         } else {
-            r#"(import "molt_runtime" "anchor" (func))"#
+            r#"(import "molt_runtime" "recursion_exit_fast" (func (param i64)))"#
         };
         let core_start = if fail_table_setup {
             ""
@@ -318,15 +393,22 @@ fn finite_lifetime_finalizes_after_linked_and_split_setup_failures() {
         let app_runtime_fields = if linked { runtime_fields } else { "" };
         let application = Module::new(
             &engine,
-            format!(
+            crate::execution_fixture::render(format!(
                 r#"(module
+            (import "env" "memory" (memory 1))
             {app_import}
             {app_runtime_fields}
             {core_start}
-            (func (export "molt_main") (result i64) unreachable)
-            (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
-            (func (export "molt_isolate_import") (param i64) (result i64) i64.const 0))"#
-            ),
+            (func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ unreachable)
+            (func (export "molt_isolate_bootstrap@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+            (func (export "molt_isolate_import@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0))"#
+            )),
         )
         .unwrap();
         let error = execute_loaded_guest(
@@ -408,7 +490,7 @@ fn finite_lifetime_reports_exit_once_before_release_and_shutdown() {
             execute_test_lifetime(&mut store, &instance).unwrap(),
             expected
         );
-        assert_eq!(*events.lock().unwrap(), vec![1, 2, 5, 3, 4]);
+        assert_eq!(*events.lock().unwrap(), vec![1, 6, 2, 5, 7, 3, 4]);
     }
 }
 
@@ -442,7 +524,7 @@ fn finite_lifetime_preserves_reporter_failure_and_finalizes_once() {
             body,
         );
         let error = execute_test_lifetime(&mut store, &instance).unwrap_err();
-        assert_eq!(*events.lock().unwrap(), vec![1, 2, 5, 3, 4]);
+        assert_eq!(*events.lock().unwrap(), vec![1, 6, 2, 5, 7, 3, 4]);
         assert!(format!("{error:#}").contains(diagnostic), "{error:#}");
         assert!(format!("{error:#}").contains("pending runtime exception before runtime shutdown"));
         assert_eq!(
@@ -465,6 +547,124 @@ fn finite_lifetime_does_not_report_again_after_leave_publishes_exception() {
         "",
     );
     let error = execute_test_lifetime(&mut store, &instance).unwrap_err();
-    assert_eq!(*events.lock().unwrap(), vec![1, 2, 5, 3, 4]);
+    assert_eq!(*events.lock().unwrap(), vec![1, 6, 2, 5, 7, 3, 4]);
     assert!(format!("{error:#}").contains("pending runtime exception before runtime shutdown"));
+}
+
+#[test]
+fn repeated_host_scopes_return_the_actual_opaque_scope_id() {
+    let engine = build_engine().unwrap();
+    let (mut store, instance, events) =
+        lifetime_fixture(&engine, "", 0, "i64.const 41", "", "", "");
+    let mut lifetime = MoltRuntimeLifetime::admit(&mut store, &instance).unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            call_guest_entrypoint(
+                &mut store,
+                GuestEntrypoint::MoltApplication {
+                    application: &instance,
+                    runtime: &instance,
+                    lifetime: &mut lifetime,
+                }
+            )
+            .unwrap(),
+            GuestTermination::Returned
+        );
+    }
+    lifetime.finish(&mut store, Ok(())).unwrap();
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![1, 6, 2, 5, 7, 3, 1, 6, 2, 5, 7, 3, 4]
+    );
+}
+
+#[test]
+fn rejected_compiled_scope_releases_the_execution_lease_before_shutdown() {
+    let engine = build_engine().unwrap();
+    for enter in ["i64.const 0", "unreachable"] {
+        let module = Module::new(&engine, crate::execution_fixture::render(format!(r#"(module
+            (import "test" "mark" (func $mark (param i32)))
+            (memory (export "memory") 1)
+            (func (export "molt_runtime_execution_enter") (result i64)
+                i32.const 1 call $mark i64.const 41)
+            (func (export "molt_runtime_execution_leave") (param i64)
+                local.get 0 i64.const 41 i64.ne if unreachable end i32.const 2 call $mark)
+            (func (export "molt_runtime_shutdown") (result i64)
+                i32.const 3 call $mark i64.const 1)
+            (func (export "molt_exception_pending_detached") (result i64) i64.const 0)
+            (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+            (func (export "molt_attached_context") (result i64) i64.const 32768)
+            (func (export "molt_compiled_execution_enter") (param i64) (result i64)
+                local.get 0 i64.const 32768 i64.ne if unreachable end {enter})
+            (func (export "molt_compiled_execution_leave") (param i64 i64) unreachable))"#))).unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = events.clone();
+        let mut store = Store::new(&engine, main_tests::test_host_state());
+        let mark = Func::wrap(&mut store, move |value: i32| {
+            observed.lock().unwrap().push(value)
+        });
+        let instance = Instance::new(&mut store, &module, &[mark.into()]).unwrap();
+        set_memory_from_exports(&mut store, &instance);
+        let mut lifetime = MoltRuntimeLifetime::admit(&mut store, &instance).unwrap();
+        let mut reached_application = false;
+        let result = lifetime.execute(&mut store, |_, _| {
+            reached_application = true;
+            Ok(())
+        });
+        let error = lifetime.finish(&mut store, result).unwrap_err();
+        assert!(!reached_application);
+        assert!(format!("{error:#}").contains("compiled execution scope"));
+        assert_eq!(*events.lock().unwrap(), vec![1, 2, 3]);
+    }
+}
+
+#[test]
+fn failed_runtime_schema_offer_keeps_the_published_cleanup_owner() {
+    let engine = build_engine().unwrap();
+    for fingerprint in ["i64.const 0", "unreachable"] {
+        let module = Module::new(&engine, crate::execution_fixture::render(format!(r#"(module
+            (memory (export "memory") 1)
+            (func (export "molt_main@CONTEXT_SUFFIX@") (param i64) (result i64) unreachable)
+            (func (export "molt_isolate_bootstrap@CONTEXT_SUFFIX@") (param i64) (result i64) unreachable)
+            (func (export "molt_isolate_import@CONTEXT_SUFFIX@") (param i64 i64) (result i64) unreachable)
+            (func (export "molt_runtime_execution_enter") (result i64) unreachable)
+            (func (export "molt_runtime_execution_leave") (param i64) unreachable)
+            (func (export "molt_main_exit_status") (result i64) unreachable)
+            (func (export "molt_exception_pending_detached") (result i64) i64.const 0)
+            (func (export "molt_attached_context") (result i64) unreachable)
+            (func (export "molt_attached_context_abi_fingerprint") (result i64) {fingerprint})
+            (func (export "molt_compiled_execution_enter") (param i64) (result i64) unreachable)
+            (func (export "molt_compiled_execution_leave") (param i64 i64) unreachable)
+            (func (export "molt_runtime_shutdown") (result i64) i64.const 2))"#))).unwrap();
+        let error = execute_loaded_guest(
+            &engine,
+            &module,
+            None,
+            LoadedGuestOptions {
+                kind: LoadedGuestKind::MoltApplication { linked: true },
+                launch_environment: &[],
+                vfs_envs: &[],
+                guest_args: &[],
+                wasm_table_admission: WasmTableAdmission::Empty,
+            },
+        )
+        .unwrap_err();
+        let diagnostic = format!("{error:#}");
+        assert!(
+            diagnostic.contains("shutdown did not complete: status=2"),
+            "{diagnostic}"
+        );
+        if fingerprint == "i64.const 0" {
+            assert!(
+                diagnostic.contains("MOLT_ATTACHED_CONTEXT_ABI_MISMATCH"),
+                "{diagnostic}"
+            );
+            assert!(error.downcast_ref::<wasmtime::Trap>().is_none());
+        } else {
+            assert_eq!(
+                error.downcast_ref::<wasmtime::Trap>(),
+                Some(&wasmtime::Trap::UnreachableCodeReached)
+            );
+        }
+    }
 }

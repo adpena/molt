@@ -110,7 +110,7 @@ pub(crate) struct SpecialCache {
 }
 
 pub(crate) type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
-pub(crate) type RuntimeExtensionStateClear = unsafe extern "C" fn(*mut u8);
+pub(crate) type RuntimeExtensionStateClear = unsafe extern "C" fn(u64, *mut u8);
 pub(crate) type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
 
 pub(crate) struct RuntimeExtensionStateSlot {
@@ -712,33 +712,40 @@ pub(crate) fn runtime_extension_state_get_or_init(
     ptr
 }
 
-pub(crate) fn runtime_extension_states_clear_and_drop(state: &RuntimeState) -> bool {
+pub(crate) fn runtime_extension_states_clear_and_drop(
+    py: &PyToken<'_>,
+    state: &RuntimeState,
+) -> bool {
     crate::gil_assert();
     let slots: Vec<RuntimeExtensionStateSlot> = {
         let mut guard = state.extension_states.lock().unwrap();
         guard.drain().map(|(_, slot)| slot).collect()
     };
     let changed = !slots.is_empty();
-    clear_and_drop_extension_slots(slots);
+    clear_and_drop_extension_slots(py, slots);
     changed
 }
 
-pub(crate) fn runtime_extension_state_clear_and_drop_key(state: &RuntimeState, key: &[u8]) -> bool {
+pub(crate) fn runtime_extension_state_clear_and_drop_key(
+    py: &PyToken<'_>,
+    state: &RuntimeState,
+    key: &[u8],
+) -> bool {
     crate::gil_assert();
     let Some(slot) = state.extension_states.lock().unwrap().remove(key) else {
         return false;
     };
-    clear_and_drop_extension_slots(vec![slot]);
+    clear_and_drop_extension_slots(py, vec![slot]);
     true
 }
 
-fn clear_and_drop_extension_slots(slots: Vec<RuntimeExtensionStateSlot>) {
+fn clear_and_drop_extension_slots(py: &PyToken<'_>, slots: Vec<RuntimeExtensionStateSlot>) {
     for slot in slots {
         if slot.ptr.is_null() {
             continue;
         }
         unsafe {
-            (slot.clear)(slot.ptr);
+            (slot.clear)(py.attached_context(), slot.ptr);
             (slot.drop)(slot.ptr);
         }
     }
@@ -1595,10 +1602,16 @@ extern "C" fn __core_gil_is_held() -> bool {
     gil_held()
 }
 
+extern "C" fn __core_gil_context() -> u64 {
+    assert!(gil_held(), "core context requested without GIL custody");
+    unsafe { PyToken::with_custody(crate::state::execution_tls()) }.attached_context()
+}
+
 static CORE_GIL_VT: molt_runtime_core::GilVtable = molt_runtime_core::GilVtable {
     acquire: __core_gil_acquire,
     release: __core_gil_release,
     is_held: __core_gil_is_held,
+    context: __core_gil_context,
 };
 
 #[inline]
@@ -1762,9 +1775,9 @@ fn initialize_runtime_state(
     #[cfg(all(not(target_arch = "wasm32"), feature = "molt_tk_native"))]
     molt_runtime_tk::initialize_library_policy();
     trace_runtime_init("resources");
-    crate::object::ops_sys::molt_runtime_init_audit();
+    crate::object::ops_sys::molt_runtime_init_audit_attached_body(gil.token());
     trace_runtime_init("audit");
-    crate::object::ops_sys::molt_runtime_init_io_mode();
+    crate::object::ops_sys::molt_runtime_init_io_mode_attached_body(gil.token());
     trace_runtime_init("io_mode");
 
     crate::builtins::exceptions::memory_error::initialize(&gil.token());
@@ -2440,7 +2453,7 @@ mod tests {
                 );
                 assert!(!exception.is_null());
                 let bits = MoltObject::from_ptr(exception).bits();
-                crate::builtins::exceptions::molt_raise(bits);
+                crate::builtins::exceptions::molt_raise_attached_body(py, bits);
                 assert_eq!(unsafe { molt_main_exit_status() }, 1);
                 crate::dec_ref_bits(&py, bits);
                 let feedback_path = original.join(feedback.unwrap_or("molt_runtime_feedback.json"));
@@ -2799,7 +2812,13 @@ mod tests {
         Box::into_raw(Box::new(0x5a5a_u64)) as *mut u8
     }
 
-    unsafe extern "C" fn test_extension_clear(ptr: *mut u8) {
+    unsafe extern "C" fn test_extension_clear(__context: u64, ptr: *mut u8) {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "extension cleanup context identity"
+        );
+        let _py = unsafe { crate::PyToken::from_attached_context(__context) };
         assert!(!ptr.is_null());
         unsafe {
             assert_eq!(*(ptr as *const u64), 0x5a5a);
@@ -2852,12 +2871,12 @@ mod tests {
 
         crate::with_gil_entry_nopanic!(_py, {
             let _ = _py;
-            runtime_extension_states_clear_and_drop(&state);
+            runtime_extension_states_clear_and_drop(_py, &state);
             assert!(state.extension_states.lock().unwrap().is_empty());
             assert_eq!(EXT_CLEAR_COUNT.load(Ordering::SeqCst), 1);
             assert_eq!(EXT_DROP_COUNT.load(Ordering::SeqCst), 1);
 
-            runtime_extension_states_clear_and_drop(&state);
+            runtime_extension_states_clear_and_drop(_py, &state);
             assert_eq!(EXT_CLEAR_COUNT.load(Ordering::SeqCst), 1);
             assert_eq!(EXT_DROP_COUNT.load(Ordering::SeqCst), 1);
         });

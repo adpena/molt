@@ -721,9 +721,9 @@ fn local_from_bits(bits: u64) -> Option<Arc<MoltLocal>> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_lock_new() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_lock_new_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let lock = Arc::new(MoltLock::new());
         let raw = Arc::into_raw(lock) as *mut u8;
         opaque_handle_bits(raw)
@@ -731,13 +731,14 @@ pub unsafe extern "C" fn molt_lock_new() -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_lock_acquire(
+
+pub(crate) unsafe fn molt_lock_acquire_attached_body(
+    _py: &crate::PyToken<'_>,
     handle_bits: u64,
     blocking_bits: u64,
     timeout_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(lock) = lock_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid lock handle");
         };
@@ -760,9 +761,12 @@ pub unsafe extern "C" fn molt_lock_acquire(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_lock_release(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_lock_release_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(lock) = lock_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid lock handle");
         };
@@ -774,9 +778,12 @@ pub unsafe extern "C" fn molt_lock_release(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_lock_locked(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_lock_locked_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(lock) = lock_from_bits(handle_bits) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -785,10 +792,13 @@ pub unsafe extern "C" fn molt_lock_locked(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_lock_drop(handle_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_lock_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let ptr = ptr_from_bits(handle_bits);
             if ptr.is_null() {
                 return MoltObject::none().bits();
@@ -801,9 +811,9 @@ pub unsafe extern "C" fn molt_lock_drop(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_rlock_new() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_rlock_new_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let lock = Arc::new(MoltRLock::new());
         let raw = Arc::into_raw(lock) as *mut u8;
         opaque_handle_bits(raw)
@@ -811,13 +821,14 @@ pub unsafe extern "C" fn molt_rlock_new() -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_rlock_acquire(
+
+pub(crate) unsafe fn molt_rlock_acquire_attached_body(
+    _py: &crate::PyToken<'_>,
     handle_bits: u64,
     blocking_bits: u64,
     timeout_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(lock) = rlock_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid rlock handle");
         };
@@ -840,9 +851,12 @@ pub unsafe extern "C" fn molt_rlock_acquire(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_rlock_release(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_rlock_release_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(lock) = rlock_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid rlock handle");
         };
@@ -858,9 +872,12 @@ pub unsafe extern "C" fn molt_rlock_release(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_rlock_locked(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_rlock_locked_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(lock) = rlock_from_bits(handle_bits) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -869,9 +886,12 @@ pub unsafe extern "C" fn molt_rlock_locked(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_rlock_is_owned(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_rlock_is_owned_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(lock) = rlock_from_bits(handle_bits) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -880,9 +900,12 @@ pub unsafe extern "C" fn molt_rlock_is_owned(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_rlock_release_save(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_rlock_release_save_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(lock) = rlock_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid rlock handle");
         };
@@ -898,9 +921,13 @@ pub unsafe extern "C" fn molt_rlock_release_save(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_rlock_acquire_restore(handle_bits: u64, count_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_rlock_acquire_restore_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    count_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(lock) = rlock_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid rlock handle");
         };
@@ -916,10 +943,13 @@ pub unsafe extern "C" fn molt_rlock_acquire_restore(handle_bits: u64, count_bits
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_rlock_drop(handle_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_rlock_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let ptr = ptr_from_bits(handle_bits);
             if ptr.is_null() {
                 return MoltObject::none().bits();
@@ -932,9 +962,9 @@ pub unsafe extern "C" fn molt_rlock_drop(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_condition_new() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_condition_new_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let condition = Arc::new(MoltCondition::new());
         let raw = Arc::into_raw(condition) as *mut u8;
         opaque_handle_bits(raw)
@@ -942,9 +972,13 @@ pub unsafe extern "C" fn molt_condition_new() -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_condition_wait(handle_bits: u64, timeout_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_condition_wait_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    timeout_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(condition) = condition_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid condition handle");
         };
@@ -962,9 +996,13 @@ pub unsafe extern "C" fn molt_condition_wait(handle_bits: u64, timeout_bits: u64
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_condition_notify(handle_bits: u64, count_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_condition_notify_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    count_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(condition) = condition_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid condition handle");
         };
@@ -984,10 +1022,13 @@ pub unsafe extern "C" fn molt_condition_notify(handle_bits: u64, count_bits: u64
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_condition_drop(handle_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_condition_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let ptr = ptr_from_bits(handle_bits);
             if ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1000,9 +1041,9 @@ pub unsafe extern "C" fn molt_condition_drop(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_event_new() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_event_new_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let event = Arc::new(MoltEvent::new());
         let raw = Arc::into_raw(event) as *mut u8;
         opaque_handle_bits(raw)
@@ -1010,9 +1051,12 @@ pub unsafe extern "C" fn molt_event_new() -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_event_set(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_event_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(event) = event_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid event handle");
         };
@@ -1022,9 +1066,12 @@ pub unsafe extern "C" fn molt_event_set(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_event_clear(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_event_clear_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(event) = event_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid event handle");
         };
@@ -1034,9 +1081,12 @@ pub unsafe extern "C" fn molt_event_clear(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_event_is_set(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_event_is_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(event) = event_from_bits(handle_bits) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -1045,9 +1095,13 @@ pub unsafe extern "C" fn molt_event_is_set(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_event_wait(handle_bits: u64, timeout_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_event_wait_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    timeout_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(event) = event_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid event handle");
         };
@@ -1068,10 +1122,13 @@ pub unsafe extern "C" fn molt_event_wait(handle_bits: u64, timeout_bits: u64) ->
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_event_drop(handle_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_event_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let ptr = ptr_from_bits(handle_bits);
             if ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1084,9 +1141,13 @@ pub unsafe extern "C" fn molt_event_drop(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_semaphore_new(value_bits: u64, bounded_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_semaphore_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    value_bits: u64,
+    bounded_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(value) = crate::to_i64(obj_from_bits(value_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -1109,13 +1170,14 @@ pub unsafe extern "C" fn molt_semaphore_new(value_bits: u64, bounded_bits: u64) 
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_semaphore_acquire(
+
+pub(crate) unsafe fn molt_semaphore_acquire_attached_body(
+    _py: &crate::PyToken<'_>,
     handle_bits: u64,
     blocking_bits: u64,
     timeout_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(sem) = semaphore_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid semaphore handle");
         };
@@ -1147,9 +1209,13 @@ pub unsafe extern "C" fn molt_semaphore_acquire(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_semaphore_release(handle_bits: u64, count_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_semaphore_release_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    count_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(sem) = semaphore_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid semaphore handle");
         };
@@ -1175,10 +1241,13 @@ pub unsafe extern "C" fn molt_semaphore_release(handle_bits: u64, count_bits: u6
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_semaphore_drop(handle_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_semaphore_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let ptr = ptr_from_bits(handle_bits);
             if ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1191,9 +1260,13 @@ pub unsafe extern "C" fn molt_semaphore_drop(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_barrier_new(parties_bits: u64, timeout_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_barrier_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    parties_bits: u64,
+    timeout_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(parties) = crate::to_i64(obj_from_bits(parties_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -1220,9 +1293,13 @@ pub unsafe extern "C" fn molt_barrier_new(parties_bits: u64, timeout_bits: u64) 
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_barrier_wait(handle_bits: u64, timeout_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_barrier_wait_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    timeout_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid barrier handle");
         };
@@ -1243,9 +1320,12 @@ pub unsafe extern "C" fn molt_barrier_wait(handle_bits: u64, timeout_bits: u64) 
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_barrier_abort(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_barrier_abort_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid barrier handle");
         };
@@ -1255,9 +1335,12 @@ pub unsafe extern "C" fn molt_barrier_abort(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_barrier_reset(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_barrier_reset_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid barrier handle");
         };
@@ -1267,9 +1350,12 @@ pub unsafe extern "C" fn molt_barrier_reset(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_barrier_parties(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_barrier_parties_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid barrier handle");
         };
@@ -1278,9 +1364,12 @@ pub unsafe extern "C" fn molt_barrier_parties(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_barrier_n_waiting(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_barrier_n_waiting_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid barrier handle");
         };
@@ -1290,9 +1379,12 @@ pub unsafe extern "C" fn molt_barrier_n_waiting(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_barrier_broken(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_barrier_broken_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid barrier handle");
         };
@@ -1302,10 +1394,13 @@ pub unsafe extern "C" fn molt_barrier_broken(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_barrier_drop(handle_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_barrier_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let ptr = ptr_from_bits(handle_bits);
             if ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1318,9 +1413,9 @@ pub unsafe extern "C" fn molt_barrier_drop(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_local_new() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_local_new_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let local = Arc::new(MoltLocal::new());
         let raw = Arc::into_raw(local) as *mut u8;
         opaque_handle_bits(raw)
@@ -1328,9 +1423,12 @@ pub unsafe extern "C" fn molt_local_new() -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_local_get_dict(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_local_get_dict_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(local) = local_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid local handle");
         };
@@ -1340,7 +1438,7 @@ pub unsafe extern "C" fn molt_local_get_dict(handle_bits: u64) -> u64 {
             inc_ref_bits(_py, bits);
             return bits;
         }
-        let dict_bits = crate::molt_dict_new(0);
+        let dict_bits = crate::molt_dict_new_attached_body(_py, 0);
         inc_ref_bits(_py, dict_bits);
         guard.insert(tid, dict_bits);
         drop(guard);
@@ -1356,10 +1454,13 @@ pub unsafe extern "C" fn molt_local_get_dict(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_local_drop(handle_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_local_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let ptr = ptr_from_bits(handle_bits);
             if ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1374,3 +1475,5 @@ pub unsafe extern "C" fn molt_local_drop(handle_bits: u64) -> u64 {
         })
     }
 }
+
+include!("../../attached_exports_generated/concurrency/locks/native.rs");

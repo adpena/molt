@@ -1,4 +1,5 @@
-use wasm_encoder::{Function, Instruction, ValType};
+use crate::wasm_binary::Function;
+use wasm_encoder::{Instruction, ValType};
 
 use crate::TrampolineTaskKind;
 use crate::wasm::WasmBackend;
@@ -9,10 +10,10 @@ use crate::wasm_abi::GEN_CONTROL_SIZE;
 use crate::wasm_table::WasmCallableTableTarget;
 use crate::wasm_values::emit_boxed_none;
 
-const TASK_LOCAL: u32 = 3;
-const BASE_LOCAL: u32 = 4;
-const VAL_LOCAL: u32 = 5;
-const ARGS_BASE_LOCAL: u32 = 6;
+const TASK_LOCAL: u32 = 4;
+const BASE_LOCAL: u32 = 5;
+const VAL_LOCAL: u32 = 6;
+const ARGS_BASE_LOCAL: u32 = 7;
 
 pub(super) fn task_trampoline_local_types(task_kind: TrampolineTaskKind) -> [ValType; 4] {
     WasmTaskRuntimeLayout::for_trampoline_task_kind(task_kind).trampoline_local_types()
@@ -105,7 +106,7 @@ fn emit_payload_slots(
         BASE_LOCAL,
     );
     if arity > 0 {
-        func.instruction(&Instruction::LocalGet(1));
+        func.instruction(&Instruction::LocalGet(2));
         func.instruction(&Instruction::I32WrapI64);
         func.instruction(&Instruction::LocalSet(ARGS_BASE_LOCAL));
     }
@@ -118,7 +119,7 @@ fn emit_payload_slots(
             reloc_enabled,
             BASE_LOCAL,
             offset,
-            0,
+            1,
             Some(refcount),
         );
         offset += 8;

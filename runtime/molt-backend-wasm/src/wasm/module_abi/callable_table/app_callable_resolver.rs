@@ -1,4 +1,5 @@
-use wasm_encoder::{BlockType, Function, Instruction, MemArg, ValType};
+use crate::wasm_binary::Function;
+use wasm_encoder::{BlockType, Instruction, MemArg, ValType};
 
 use super::{WasmAppCallableResolverEntry, WasmCallableTablePlan};
 use crate::wasm::WasmBackend;

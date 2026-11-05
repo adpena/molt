@@ -204,9 +204,12 @@ fn catanh(re: f64, im: f64) -> (f64, f64) {
 // Public intrinsics
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_sqrt(real_bits: u64, imag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_cmath_sqrt_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    real_bits: u64,
+    imag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -220,9 +223,12 @@ pub extern "C" fn molt_cmath_sqrt(real_bits: u64, imag_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_exp(real_bits: u64, imag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_cmath_exp_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    real_bits: u64,
+    imag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -236,9 +242,12 @@ pub extern "C" fn molt_cmath_exp(real_bits: u64, imag_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_log(real_bits: u64, imag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_cmath_log_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    real_bits: u64,
+    imag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -252,9 +261,12 @@ pub extern "C" fn molt_cmath_log(real_bits: u64, imag_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_log10(real_bits: u64, imag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_cmath_log10_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    real_bits: u64,
+    imag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -268,9 +280,12 @@ pub extern "C" fn molt_cmath_log10(real_bits: u64, imag_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_sin(real_bits: u64, imag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_cmath_sin_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    real_bits: u64,
+    imag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -284,9 +299,12 @@ pub extern "C" fn molt_cmath_sin(real_bits: u64, imag_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_cos(real_bits: u64, imag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_cmath_cos_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    real_bits: u64,
+    imag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -300,9 +318,12 @@ pub extern "C" fn molt_cmath_cos(real_bits: u64, imag_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_tan(real_bits: u64, imag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_cmath_tan_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    real_bits: u64,
+    imag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -316,9 +337,12 @@ pub extern "C" fn molt_cmath_tan(real_bits: u64, imag_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_asin(real_bits: u64, imag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_cmath_asin_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    real_bits: u64,
+    imag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -332,9 +356,12 @@ pub extern "C" fn molt_cmath_asin(real_bits: u64, imag_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_acos(real_bits: u64, imag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_cmath_acos_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    real_bits: u64,
+    imag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -348,9 +375,12 @@ pub extern "C" fn molt_cmath_acos(real_bits: u64, imag_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_atan(real_bits: u64, imag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_cmath_atan_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    real_bits: u64,
+    imag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -364,9 +394,12 @@ pub extern "C" fn molt_cmath_atan(real_bits: u64, imag_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_sinh(real_bits: u64, imag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_cmath_sinh_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    real_bits: u64,
+    imag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -380,9 +413,12 @@ pub extern "C" fn molt_cmath_sinh(real_bits: u64, imag_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_cosh(real_bits: u64, imag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_cmath_cosh_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    real_bits: u64,
+    imag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -396,9 +432,12 @@ pub extern "C" fn molt_cmath_cosh(real_bits: u64, imag_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_tanh(real_bits: u64, imag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_cmath_tanh_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    real_bits: u64,
+    imag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -412,9 +451,12 @@ pub extern "C" fn molt_cmath_tanh(real_bits: u64, imag_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_asinh(real_bits: u64, imag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_cmath_asinh_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    real_bits: u64,
+    imag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -428,9 +470,12 @@ pub extern "C" fn molt_cmath_asinh(real_bits: u64, imag_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_acosh(real_bits: u64, imag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_cmath_acosh_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    real_bits: u64,
+    imag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -444,9 +489,12 @@ pub extern "C" fn molt_cmath_acosh(real_bits: u64, imag_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_atanh(real_bits: u64, imag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_cmath_atanh_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    real_bits: u64,
+    imag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -461,9 +509,13 @@ pub extern "C" fn molt_cmath_atanh(real_bits: u64, imag_bits: u64) -> u64 {
 }
 
 /// phase(z) = atan2(imag, real)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_phase(real_bits: u64, imag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_cmath_phase_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    real_bits: u64,
+    imag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -477,9 +529,13 @@ pub extern "C" fn molt_cmath_phase(real_bits: u64, imag_bits: u64) -> u64 {
 }
 
 /// polar(z) -> (r, phi) where r = |z|, phi = phase(z)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_polar(real_bits: u64, imag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_cmath_polar_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    real_bits: u64,
+    imag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -503,9 +559,13 @@ pub extern "C" fn molt_cmath_polar(real_bits: u64, imag_bits: u64) -> u64 {
 }
 
 /// rect(r, phi) -> (r*cos(phi), r*sin(phi))
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_rect(r_bits: u64, phi_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_cmath_rect_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    r_bits: u64,
+    phi_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let r = match float_arg(_py, r_bits, "r") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -518,9 +578,12 @@ pub extern "C" fn molt_cmath_rect(r_bits: u64, phi_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_isfinite(real_bits: u64, imag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_cmath_isfinite_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    real_bits: u64,
+    imag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -533,9 +596,12 @@ pub extern "C" fn molt_cmath_isfinite(real_bits: u64, imag_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_isinf(real_bits: u64, imag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_cmath_isinf_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    real_bits: u64,
+    imag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -548,9 +614,12 @@ pub extern "C" fn molt_cmath_isinf(real_bits: u64, imag_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_isnan(real_bits: u64, imag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_cmath_isnan_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    real_bits: u64,
+    imag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let re = match float_arg(_py, real_bits, "real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -564,9 +633,15 @@ pub extern "C" fn molt_cmath_isnan(real_bits: u64, imag_bits: u64) -> u64 {
 }
 
 /// isclose(a, b, rel_tol=1e-09, abs_tol=0.0)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_isclose(a_real: u64, a_imag: u64, b_real: u64, b_imag: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_cmath_isclose_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    a_real: u64,
+    a_imag: u64,
+    b_real: u64,
+    b_imag: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let are = match float_arg(_py, a_real, "a.real") {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -594,9 +669,9 @@ pub extern "C" fn molt_cmath_isclose(a_real: u64, a_imag: u64, b_real: u64, b_im
 }
 
 /// constants() -> tuple (pi, e, tau, inf, infj_real, infj_imag, nan, nanj_real, nanj_imag)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cmath_constants() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_cmath_constants_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         use std::f64::consts;
         let pi = MoltObject::from_float(consts::PI).bits();
         let e = MoltObject::from_float(consts::E).bits();
@@ -626,3 +701,5 @@ pub extern "C" fn molt_cmath_constants() -> u64 {
         MoltObject::from_ptr(tuple_ptr).bits()
     })
 }
+
+include!("attached_exports_generated/cmath_mod.rs");

@@ -180,13 +180,14 @@ fn parse_layout(
 }
 
 /// Publish the compiler's immutable locals layout for one exact poll target.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_stateful_locals_register(
+
+pub(crate) fn molt_stateful_locals_register_attached_body(
+    _py: &crate::PyToken<'_>,
     fn_ptr: u64,
     names_bits: u64,
     layout_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if fn_ptr == 0 {
             return MoltObject::none().bits();
         }
@@ -875,9 +876,9 @@ pub(crate) unsafe fn activation_frame_clear(
             || (task, None),
             || {
                 let result = if generator {
-                    crate::async_rt::generators::molt_generator_close(task)
+                    crate::async_rt::generators::molt_generator_close_attached_body(py, task)
                 } else {
-                    crate::async_rt::awaitable::molt_coroutine_close_method(task)
+                    crate::async_rt::awaitable::molt_coroutine_close_method_attached_body(py, task)
                 };
                 dec_ref_bits(py, result);
             },
@@ -969,9 +970,9 @@ fn active_locals_layout<'a, 'py>(
 /// reenter Python. Constructor arguments and captured free cells remain intact.
 /// A prefix a frame proxy initialized before the body started (writing a body
 /// local of the created activation) is adopted as it stands.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_locals_begin() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_frame_locals_begin_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some((owner, layout)) = active_locals_layout(py) else {
             return MoltObject::none().bits();
         };
@@ -997,9 +998,13 @@ pub extern "C" fn molt_frame_locals_begin() -> u64 {
 
 /// Atomically publish one prologue cell and its interpretation before releasing
 /// a displaced argument. The immutable ordinal validates publication order.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_cell_publish(offset_bits: u64, cell_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_frame_cell_publish_attached_body(
+    _py: &crate::PyToken<'_>,
+    offset_bits: u64,
+    cell_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some((owner, layout)) = active_locals_layout(py) else {
             return MoltObject::none().bits();
         };
@@ -1043,3 +1048,5 @@ pub extern "C" fn molt_frame_cell_publish(offset_bits: u64, cell_bits: u64) -> u
         MoltObject::none().bits()
     })
 }
+
+include!("../../attached_exports_generated/builtins/frames/activation.rs");

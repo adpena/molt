@@ -1,4 +1,4 @@
-use super::native_object_symbols;
+use super::{native_object_symbols, physical_runtime_symbol};
 use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR, stable_ic_site_id};
 use molt_ir::OpKind;
 use std::collections::BTreeSet;
@@ -43,18 +43,18 @@ fn attr_program(kind: OpKind) -> SimpleIR {
 fn native_attribute_lanes_keep_one_owned_boxed_result_protocol() {
     let direct = SimpleBackend::new().compile(attr_program(OpKind::GetAttr));
     let direct_imports = native_object_symbols(&direct.bytes).undefined;
-    assert!(direct_imports.contains(BOXED_ATTR_SYMBOL));
-    assert!(!direct_imports.contains(BOXED_ATTR_IC_SYMBOL));
+    assert!(direct_imports.contains(physical_runtime_symbol(BOXED_ATTR_SYMBOL)));
+    assert!(!direct_imports.contains(physical_runtime_symbol(BOXED_ATTR_IC_SYMBOL)));
 
     for kind in [OpKind::GetAttrGenericPtr, OpKind::GetAttrGenericObj] {
         let output = SimpleBackend::new().compile(attr_program(kind));
         let imports = native_object_symbols(&output.bytes).undefined;
         assert!(
-            imports.contains(BOXED_ATTR_IC_SYMBOL),
+            imports.contains(physical_runtime_symbol(BOXED_ATTR_IC_SYMBOL)),
             "{kind} must call the canonical boxed attribute entrypoint"
         );
         assert!(
-            !imports.contains(BOXED_ATTR_SYMBOL),
+            !imports.contains(physical_runtime_symbol(BOXED_ATTR_SYMBOL)),
             "{kind} must not retain a parallel non-site lookup"
         );
         assert!(

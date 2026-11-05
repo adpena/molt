@@ -60,7 +60,7 @@ pub(in crate::tk) fn handle_panedwindow_widget_path_command(
                 ));
             }
             let Some(index) =
-                parse_simple_end_or_int_index_bits(args[2], widget.pane_children.len())
+                parse_simple_end_or_int_index_bits(py, args[2], widget.pane_children.len())
             else {
                 return Err(app_tcl_error_locked(
                     py,

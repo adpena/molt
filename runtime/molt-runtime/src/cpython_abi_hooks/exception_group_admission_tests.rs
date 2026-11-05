@@ -286,8 +286,16 @@ fn native_group_allocation_consumes_runtime_admission() {
     });
 }
 
-extern "C" fn derive_native_group(children: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn derive_native_group(__context: u64, children: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         unsafe {
             let message = MoltObject::from_ptr(alloc_string(py, b"derived-native")).bits();
             let args = MoltObject::from_ptr(alloc_tuple(py, &[message, children])).bits();
@@ -303,7 +311,7 @@ extern "C" fn derive_native_group(children: u64) -> u64 {
             refcount::Py_DECREF(native);
             result
         }
-    })
+    }
 }
 
 #[test]
@@ -340,9 +348,10 @@ fn native_group_nodes_use_public_split_binding_and_preserve_leaf_identity() {
             let notes_name = crate::dynamic_attr_name_bits(py, b"__notes__").unwrap();
             let note = MoltObject::from_ptr(alloc_string(py, b"kept")).bits();
             let notes = MoltObject::from_ptr(crate::alloc_list(py, &[note])).bits();
-            let set_result = crate::molt_set_attr_name(group, notes_name, notes);
+            let set_result = crate::molt_set_attr_name_attached_body(py, group, notes_name, notes);
             dec_ref_bits(py, set_result);
-            let callable = crate::molt_get_attr_name(
+            let callable = crate::molt_get_attr_name_attached_body(
+                py,
                 crate::builtin_classes(py).base_exception_group,
                 split_name,
             );
@@ -383,7 +392,8 @@ fn native_group_nodes_use_public_split_binding_and_preserve_leaf_identity() {
             .unwrap();
             assert_eq!(parts.len(), 2);
             for (&part, leaf) in parts.iter().zip([value, other]) {
-                let part_children = crate::molt_get_attr_name(part, exceptions_name);
+                let part_children =
+                    crate::molt_get_attr_name_attached_body(py, part, exceptions_name);
                 assert!(!crate::exception_pending(py));
                 let part_items = crate::object::seq_access::pin_tuple(
                     py,
@@ -395,7 +405,7 @@ fn native_group_nodes_use_public_split_binding_and_preserve_leaf_identity() {
                     &[leaf],
                     "partition keeps exact native and managed leaf identities"
                 );
-                let copied_notes = crate::molt_get_attr_name(part, notes_name);
+                let copied_notes = crate::molt_get_attr_name_attached_body(py, part, notes_name);
                 assert_ne!(copied_notes, notes);
                 assert_eq!(
                     crate::object::seq_access::len(
@@ -445,13 +455,15 @@ fn native_group_nodes_use_public_split_binding_and_preserve_leaf_identity() {
             )
             .unwrap();
             for (&part, leaf) in nested_parts.iter().zip([value, other]) {
-                let branch_items = crate::molt_get_attr_name(part, exceptions_name);
+                let branch_items =
+                    crate::molt_get_attr_name_attached_body(py, part, exceptions_name);
                 let branch = crate::object::seq_access::item(
                     crate::obj_from_bits(branch_items).as_ptr().unwrap(),
                     0,
                 )
                 .unwrap();
-                let leaf_items = crate::molt_get_attr_name(branch, exceptions_name);
+                let leaf_items =
+                    crate::molt_get_attr_name_attached_body(py, branch, exceptions_name);
                 assert!(!crate::exception_pending(py));
                 assert_eq!(
                     crate::object::seq_access::len(
@@ -484,13 +496,14 @@ fn native_group_nodes_use_public_split_binding_and_preserve_leaf_identity() {
                     1,
                 ))
                 .bits();
-            let set_result = crate::molt_set_attr_name(group, derive_name, derive);
+            let set_result =
+                crate::molt_set_attr_name_attached_body(py, group, derive_name, derive);
             dec_ref_bits(py, set_result);
             let context_name = crate::dynamic_attr_name_bits(py, b"__context__").unwrap();
             let cause_name = crate::dynamic_attr_name_bits(py, b"__cause__").unwrap();
             let suppress_name = crate::dynamic_attr_name_bits(py, b"__suppress_context__").unwrap();
             for name in [context_name, cause_name] {
-                let result = crate::molt_set_attr_name(group, name, other);
+                let result = crate::molt_set_attr_name_attached_body(py, group, name, other);
                 dec_ref_bits(py, result);
             }
             assert!(!crate::exception_pending(py));
@@ -510,17 +523,17 @@ fn native_group_nodes_use_public_split_binding_and_preserve_leaf_identity() {
                     crate::TYPE_ID_FOREIGN
                 );
                 for name in [context_name, cause_name] {
-                    let observed = crate::molt_get_attr_name(part, name);
+                    let observed = crate::molt_get_attr_name_attached_body(py, part, name);
                     assert_eq!(
                         observed, other,
                         "native metadata keeps exact exception identity"
                     );
                     dec_ref_bits(py, observed);
                 }
-                let suppressed = crate::molt_get_attr_name(part, suppress_name);
+                let suppressed = crate::molt_get_attr_name_attached_body(py, part, suppress_name);
                 assert!(crate::is_truthy(py, crate::obj_from_bits(suppressed)));
                 dec_ref_bits(py, suppressed);
-                let copied_notes = crate::molt_get_attr_name(part, notes_name);
+                let copied_notes = crate::molt_get_attr_name_attached_body(py, part, notes_name);
                 assert_ne!(copied_notes, notes);
                 assert_eq!(
                     crate::object::seq_access::item(
@@ -529,7 +542,8 @@ fn native_group_nodes_use_public_split_binding_and_preserve_leaf_identity() {
                     ),
                     Some(note)
                 );
-                let part_children = crate::molt_get_attr_name(part, exceptions_name);
+                let part_children =
+                    crate::molt_get_attr_name_attached_body(py, part, exceptions_name);
                 assert_eq!(
                     crate::object::seq_access::item(
                         crate::obj_from_bits(part_children).as_ptr().unwrap(),

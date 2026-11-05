@@ -384,6 +384,9 @@ pub(super) fn precompile_execution(
             (command.module(), None, Some(command.manifest_path()))
         }
     };
+    if matches!(execution, ResolvedExecution::MoltApplication(_)) {
+        validate_application_context_source(main, runtime)?;
+    }
     let mut members = vec![(
         ModuleRole::Main,
         main,

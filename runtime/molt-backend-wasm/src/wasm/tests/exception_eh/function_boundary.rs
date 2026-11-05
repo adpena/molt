@@ -164,25 +164,25 @@ for (const test of config.cases) {
     handle_resolve: bits => { assert.equal(bits,777n); return 128; },
     recursion_enter_fast: () => { recursion++; return 1n; },
     recursion_exit_fast: () => { assert.equal(recursion,1); recursion--; },
-    thread_record: () => BigInt(record),
     inc_ref_obj: bits => { if(bits===777n) owners++; },
     dec_ref_obj: bits => { if(bits===777n) { assert.ok(owners>0); owners--; } },
   };
   for (const entry of WebAssembly.Module.imports(module)) {
     if(entry.kind!=='function') continue;
     imports[entry.module] ??= {};
-    imports[entry.module][entry.name] = hooks[entry.name] ?? (()=>{
+    imports[entry.module][entry.name] = hooks[runtimeImportName(entry.name)] ?? (()=>{
       throw new Error(test.mode+': unexpected runtime call '+entry.name);
     });
   }
-  const app = new WebAssembly.Instance(module,imports).exports;
+  initializeExecutionRecord(imports.env.memory, record);
+  const app = new WebAssembly.Instance(module, attachedImports(imports)).exports;
   const table = imports.env.__indirect_function_table;
   let target = -1;
-  for(let i=0;i<table.length;i++) if(table.get(i)===app.callee) { target=i; break; }
+  for(let i=0;i<table.length;i++) if(table.get(i)===app[compiledSymbol('callee')]) { target=i; break; }
   assert.ok(target>=0,'callee must have its real table identity');
   new DataView(imports.env.memory.buffer).setBigInt64(128,BigInt(target),true);
   new DataView(imports.env.memory.buffer).setBigInt64(handoff,5n,true);
-  assert.equal(test.mode==='stateful' ? app.molt_main(64n,777n) : app.molt_main(777n),none);
+  assert.equal(test.mode==='stateful' ? app[compiledSymbol('molt_main')](executionContext, 64n,777n) : app[compiledSymbol('molt_main')](executionContext, 777n),none);
   assert.deepEqual(lines,[3],test.mode+': failed call must reach its handler');
   assert.equal(pending,true);
   assert.deepEqual([frames,handlers,recursion,owners],[0,0,0,1],test.mode);

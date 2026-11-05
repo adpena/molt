@@ -53,7 +53,7 @@ fn copyreg_reads_foreign_integer_storage_without_losing_range_policy() {
                 (*integer).long_value.lv_tag = if value == 0 { 1 } else { 1 << 3 };
                 (*integer).long_value.ob_digit[0] = value;
                 let bits = GLOBAL_BRIDGE.molt_value_for_pyobj(native.as_ptr()).unwrap();
-                let _owner = crate::PtrDropGuard::preserving(ptr_from_bits(bits));
+                let _owner = crate::PtrDropGuard::preserving(py, ptr_from_bits(bits));
                 assert_eq!(
                     crate::object::object_type_id(ptr_from_bits(bits)),
                     crate::TYPE_ID_FOREIGN
@@ -69,16 +69,17 @@ fn copyreg_reads_foreign_integer_storage_without_losing_range_policy() {
                     let converted = converted.unwrap();
                     let converted_owner = obj_from_bits(converted)
                         .as_ptr()
-                        .map(crate::PtrDropGuard::preserving);
+                        .map(|__ptr| crate::PtrDropGuard::preserving(py, __ptr));
                     assert!(!exception_pending(py));
                     // Public int() retains an exact native integer; range admission
                     // does not require a managed scalar projection.
                     assert_eq!(converted, bits);
                     drop(converted_owner);
-                    let result = molt_copyreg_reduce_ex(MoltObject::none().bits(), bits);
+                    let result =
+                        molt_copyreg_reduce_ex_attached_body(py, MoltObject::none().bits(), bits);
                     let _result_owner = obj_from_bits(result)
                         .as_ptr()
-                        .map(crate::PtrDropGuard::preserving);
+                        .map(|__ptr| crate::PtrDropGuard::preserving(py, __ptr));
                     let error = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
                     assert!(!error.as_ptr().is_null());
                     // Correct extraction reaches the documented proto >= 2 guard.
@@ -100,9 +101,9 @@ fn namespace_del_normalizes_non_key_mapping_failures() {
     crate::with_gil_entry_nopanic!(_py, {
         let key = MoltObject::from_ptr(alloc_string(_py, b"absent")).bits();
         // A TypeError from the receiver is normalized, not just KeyError.
-        let _ = molt_namespace_del(MoltObject::none().bits(), key);
+        let _ = molt_namespace_del_attached_body(_py, MoltObject::none().bits(), key);
         assert!(exception_pending(_py));
-        let error = molt_exception_last_pending();
+        let error = molt_exception_last_pending_attached_body(_py);
         assert!(crate::builtins::exceptions::exception_matches_kind(
             _py,
             error,
@@ -122,27 +123,30 @@ fn namespace_get_preserves_values_absence_and_non_key_errors() {
         let value = MoltObject::from_ptr(alloc_list(_py, &[])).bits();
         let ns = MoltObject::from_ptr(alloc_dict_with_pairs(_py, &[key, value])).bits();
         let missing = crate::missing_bits(_py);
-        let loaded = molt_namespace_get(ns, key, missing);
+        let loaded = molt_namespace_get_attached_body(_py, ns, key, missing);
         assert_eq!(loaded, value);
         assert!(!exception_pending(_py));
         dec_ref_bits(_py, loaded);
 
         let absent = MoltObject::from_ptr(alloc_string(_py, b"absent")).bits();
-        assert_eq!(molt_namespace_get(ns, absent, missing), missing);
+        assert_eq!(
+            molt_namespace_get_attached_body(_py, ns, absent, missing),
+            missing
+        );
         assert!(!exception_pending(_py));
 
         // Only a KeyError from the namespace means fall through. TypeError
         // from a non-mapping (or a bad hash) must remain pending.
-        let _ = molt_namespace_get(MoltObject::none().bits(), key, missing);
+        let _ = molt_namespace_get_attached_body(_py, MoltObject::none().bits(), key, missing);
         assert!(exception_pending(_py));
-        let error = molt_exception_last_pending();
+        let error = molt_exception_last_pending_attached_body(_py);
         assert!(crate::builtins::exceptions::exception_matches_kind(
             _py,
             error,
             crate::BuiltinExc::TypeError
         ));
-        let _ = molt_namespace_get(ns, key, missing);
-        let retained = molt_exception_last_pending();
+        let _ = molt_namespace_get_attached_body(_py, ns, key, missing);
+        let retained = molt_exception_last_pending_attached_body(_py);
         assert_eq!(retained, error, "a pending exception must not be consumed");
         clear_exception(_py);
         dec_ref_bits(_py, retained);
@@ -164,9 +168,9 @@ impl ModuleCacheRestore {
         let name = string_obj_to_owned(obj_from_bits(name_bits)).unwrap();
         let previous_bits = crate::builtins::module_table::module_lookup(_py, &name)
             .expect("snapshot public module membership");
-        let _ = crate::molt_exception_clear();
-        let _ = molt_module_cache_del(name_bits);
-        let _ = crate::molt_exception_clear();
+        let _ = crate::molt_exception_clear_attached_body(_py);
+        let _ = molt_module_cache_del_attached_body(_py, name_bits);
+        let _ = crate::molt_exception_clear_attached_body(_py);
         Self {
             name_bits,
             previous_bits,
@@ -181,9 +185,9 @@ impl ModuleCacheRestore {
 impl Drop for ModuleCacheRestore {
     fn drop(&mut self) {
         crate::with_gil_entry_nopanic!(_py, {
-            let _ = crate::molt_exception_clear();
-            let _ = molt_module_cache_del(self.name_bits);
-            let _ = crate::molt_exception_clear();
+            let _ = crate::molt_exception_clear_attached_body(_py);
+            let _ = molt_module_cache_del_attached_body(_py, self.name_bits);
+            let _ = crate::molt_exception_clear_attached_body(_py);
             let name = string_obj_to_owned(obj_from_bits(self.name_bits)).unwrap();
             // Public membership includes None and arbitrary objects. The
             // compiler namespace publisher deliberately rejects those.
@@ -244,14 +248,14 @@ fn module_cache_restore_preserves_exact_public_membership() {
 
 fn assert_pending_exception_class(_py: &PyToken<'_>, expected: crate::BuiltinExc) {
     assert!(exception_pending(_py));
-    let exc_bits = molt_exception_last_pending();
+    let exc_bits = molt_exception_last_pending_attached_body(_py);
     assert!(!obj_from_bits(exc_bits).is_none());
     assert!(
         crate::builtins::exceptions::exception_matches_kind(_py, exc_bits, expected),
         "expected pending exception to be {expected:?}"
     );
     dec_ref_bits(_py, exc_bits);
-    let _ = crate::molt_exception_clear();
+    let _ = crate::molt_exception_clear_attached_body(_py);
     assert!(!exception_pending(_py));
 }
 
@@ -262,7 +266,7 @@ fn assert_pending_module_not_found_metadata(
     expected_message: &str,
 ) {
     assert!(exception_pending(py));
-    let exception = ExceptionValue::adopt(py, molt_exception_last_pending());
+    let exception = ExceptionValue::adopt(py, molt_exception_last_pending_attached_body(py));
     assert!(crate::builtins::exceptions::exception_matches_kind(
         py,
         exception.bits(),
@@ -399,10 +403,12 @@ fn import_from_publishes_owned_metadata_and_versioned_origin() {
                     ),
                 ] {
                     let attr = string(member);
-                    let result = molt_module_import_from(module.bits(), attr.bits());
+                    let result =
+                        molt_module_import_from_attached_body(py, module.bits(), attr.bits());
                     assert!(obj_from_bits(result).is_none());
                     assert!(exception_pending(py));
-                    let exception = ExceptionValue::adopt(py, molt_exception_last_pending());
+                    let exception =
+                        ExceptionValue::adopt(py, molt_exception_last_pending_attached_body(py));
                     clear_exception(py);
                     let expected_path = if minor == 12 {
                         file.bits()
@@ -417,7 +423,12 @@ fn import_from_publishes_owned_metadata_and_versioned_origin() {
                         let field = string(field);
                         let actual = ExceptionValue::adopt(
                             py,
-                            molt_getattr_builtin(exception.bits(), field.bits(), missing_bits(py)),
+                            molt_getattr_builtin_attached_body(
+                                py,
+                                exception.bits(),
+                                field.bits(),
+                                missing_bits(py),
+                            ),
                         );
                         assert_eq!(
                             actual.bits(),
@@ -446,7 +457,7 @@ fn import_from_publishes_owned_metadata_and_versioned_origin() {
         set(module_ptr, b"first", MoltObject::from_int(73).bits());
         let first = string(b"first");
         assert_eq!(
-            molt_module_import_from(module.bits(), first.bits()),
+            molt_module_import_from_attached_body(py, module.bits(), first.bits()),
             MoltObject::from_int(73).bits()
         );
         assert!(!exception_pending(py));
@@ -489,7 +500,8 @@ fn import_error_allocation_denial_never_publishes_partial_fields() {
             crate::test_support::assert_and_clear_emergency_memory_error(py);
             drop(budget);
             let _ = raise(b"recovered");
-            let recovered = ExceptionValue::adopt(py, molt_exception_last_pending());
+            let recovered =
+                ExceptionValue::adopt(py, molt_exception_last_pending_attached_body(py));
             assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 recovered.bits(),
@@ -528,7 +540,8 @@ fn raw_module_allocation_seeds_public_name_metadata() {
             let missing_key_ptr = alloc_string(_py, b"tolist");
             assert!(!missing_key_ptr.is_null());
             let missing_key_bits = MoltObject::from_ptr(missing_key_ptr).bits();
-            let has_bits = crate::molt_has_attr_name(module_bits, missing_key_bits);
+            let has_bits =
+                crate::molt_has_attr_name_attached_body(_py, module_bits, missing_key_bits);
             assert_eq!(has_bits, MoltObject::from_bool(false).bits());
             assert!(
                 !exception_pending(_py),
@@ -566,7 +579,7 @@ fn generated_native_providers_own_self_and_public_aliases_own_lookup() {
             let open = dict_get_in_place(py, io_dict, open_name)
                 .expect("dictionary lookup succeeds")
                 .unwrap();
-            let owner = crate::molt_get_attr_name(open, self_name);
+            let owner = crate::molt_get_attr_name_attached_body(py, open, self_name);
             assert_eq!(owner, io.bits());
             dec_ref_bits(py, owner);
             // Model the runtime initializer's exact alias publication;
@@ -600,7 +613,8 @@ fn generated_native_providers_own_self_and_public_aliases_own_lookup() {
             );
             // A compiled named materializer cannot use its raw target to
             // refill a deleted known public builtin.
-            let absent = crate::molt_func_new_builtin_named(
+            let absent = crate::molt_func_new_builtin_named_attached_body(
+                py,
                 open_name,
                 fn_addr!(crate::molt_open_builtin),
                 0,
@@ -626,7 +640,7 @@ fn module_get_global_uses_captured_builtins_for_hits_misses_and_suggestions() {
         let cache_restore = ModuleCacheRestore::new(py, builtins_name);
         let cached_module = alloc_module_obj(py, cache_restore.name_bits());
         let cached_bits = MoltObject::from_ptr(cached_module).bits();
-        molt_module_cache_set(cache_restore.name_bits(), cached_bits);
+        molt_module_cache_set_attached_body(py, cache_restore.name_bits(), cached_bits);
         crate::builtins::module_table::publish_interpreter_builtins_for_test(py, cached_bits);
         let cached_dict = unsafe { module_dict_bits(cached_module) };
         let captured_ptr = alloc_dict_with_pairs(py, &[]);
@@ -694,22 +708,29 @@ fn module_get_global_uses_captured_builtins_for_hits_misses_and_suggestions() {
         inc_ref_bits(py, captured);
         crate::builtins::frames::frame_stack_push_owned(py, 0, globals, captured, 0);
         assert_eq!(
-            molt_module_get_global(module, answer),
+            molt_module_get_global_attached_body(py, module, answer),
             MoltObject::from_int(42).bits()
         );
         assert_eq!(
-            molt_module_get_global(module, len),
+            molt_module_get_global_attached_body(py, module, len),
             MoltObject::from_int(11).bits()
         );
         // Explicit module attribute access is not Python LOAD_GLOBAL.
         assert_eq!(
-            molt_module_get_attr(module, answer),
+            molt_module_get_attr_attached_body(py, module, answer),
             MoltObject::from_int(99).bits()
         );
         assert!(unsafe { dict_del_in_place(py, captured_ptr, len).expect("operation succeeds") });
-        assert!(obj_from_bits(molt_module_get_global(module, len)).is_none());
+        assert!(obj_from_bits(molt_module_get_global_attached_body(py, module, len)).is_none());
         assert_pending_exception_class(py, crate::BuiltinExc::NameError);
-        assert!(obj_from_bits(molt_module_get_global(module, runtime_only)).is_none());
+        assert!(
+            obj_from_bits(molt_module_get_global_attached_body(
+                py,
+                module,
+                runtime_only
+            ))
+            .is_none()
+        );
         assert_pending_exception_class(py, crate::BuiltinExc::NameError);
 
         for (typo, expected) in [
@@ -717,9 +738,9 @@ fn module_get_global_uses_captured_builtins_for_hits_misses_and_suggestions() {
             (b"runtime_onl".as_slice(), None),
         ] {
             let typo = string(typo);
-            let missing = molt_module_get_global(module, typo);
+            let missing = molt_module_get_global_attached_body(py, module, typo);
             assert!(obj_from_bits(missing).is_none());
-            let exception = molt_exception_last_pending();
+            let exception = molt_exception_last_pending_attached_body(py);
             let ptr = obj_from_bits(exception).as_ptr().unwrap();
             let message = format_exception_with_traceback(py, ptr);
             match expected {
@@ -735,15 +756,15 @@ fn module_get_global_uses_captured_builtins_for_hits_misses_and_suggestions() {
         assert!(unsafe {
             dict_del_in_place(py, captured_ptr, custom).expect("operation succeeds")
         });
-        assert!(obj_from_bits(molt_module_get_global(module, len)).is_none());
+        assert!(obj_from_bits(molt_module_get_global_attached_body(py, module, len)).is_none());
         assert_pending_exception_class(py, crate::BuiltinExc::NameError);
         crate::builtins::frames::frame_stack_pop(py);
         assert_eq!(
-            molt_module_get_global(module, answer),
+            molt_module_get_global_attached_body(py, module, answer),
             MoltObject::from_int(99).bits()
         );
         assert_eq!(
-            molt_module_get_global(module, len),
+            molt_module_get_global_attached_body(py, module, len),
             MoltObject::from_int(33).bits()
         );
         for bits in [
@@ -775,7 +796,7 @@ fn module_get_global_captured_unavailable_builtins_does_not_switch_to_cache() {
         crate::builtins::frames::frame_stack_push_owned(py, 0, globals, 0, 0);
         let module_ptr = alloc_module_obj(py, cache_restore.name_bits());
         let module = MoltObject::from_ptr(module_ptr).bits();
-        molt_module_cache_set(cache_restore.name_bits(), module);
+        molt_module_cache_set_attached_body(py, cache_restore.name_bits(), module);
         assert!(!exception_pending(py));
         assert_eq!(
             crate::builtins::module_table::interpreter_builtins_dictionary(py),
@@ -805,10 +826,10 @@ fn module_get_global_captured_unavailable_builtins_does_not_switch_to_cache() {
                     MoltObject::from_int(73).bits()
                 ));
             }
-            let found = molt_module_get_global(MoltObject::none().bits(), name);
+            let found = molt_module_get_global_attached_body(py, MoltObject::none().bits(), name);
             assert!(obj_from_bits(found).is_none());
             assert!(exception_pending(py));
-            let exception = molt_exception_last_pending();
+            let exception = molt_exception_last_pending_attached_body(py);
             assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 exception,
@@ -869,7 +890,11 @@ fn module_get_global_respects_present_builtins_dict_miss() {
         let builtins_module_ptr = alloc_module_obj(_py, cache_restore.name_bits());
         assert!(!builtins_module_ptr.is_null());
         let builtins_module_bits = MoltObject::from_ptr(builtins_module_ptr).bits();
-        let set_result = molt_module_cache_set(cache_restore.name_bits(), builtins_module_bits);
+        let set_result = molt_module_cache_set_attached_body(
+            _py,
+            cache_restore.name_bits(),
+            builtins_module_bits,
+        );
         assert!(obj_from_bits(set_result).is_none());
         assert!(!exception_pending(_py));
         crate::builtins::module_table::publish_interpreter_builtins_for_test(
@@ -909,7 +934,7 @@ fn module_get_global_respects_present_builtins_dict_miss() {
             }
             assert!(!exception_pending(_py));
 
-            let loaded_bits = molt_module_get_global(module_bits, name_bits);
+            let loaded_bits = molt_module_get_global_attached_body(_py, module_bits, name_bits);
             assert_eq!(
                 loaded_bits, published_bits,
                 "published builtins.{builtin_name} must win over runtime synthesis"
@@ -922,7 +947,7 @@ fn module_get_global_respects_present_builtins_dict_miss() {
                     .expect("operation succeeds")
             });
             assert!(!exception_pending(_py));
-            let missing_bits = molt_module_get_global(module_bits, name_bits);
+            let missing_bits = molt_module_get_global_attached_body(_py, module_bits, name_bits);
             assert!(
                 obj_from_bits(missing_bits).is_none(),
                 "deleting builtins.{builtin_name} from a published dictionary must be authoritative"
@@ -950,7 +975,7 @@ fn module_cache_publication_preserves_duplicate_and_aliased_owners() {
             let sys_name = MoltObject::from_ptr(alloc_string(py, b"sys")).bits();
             let sys_restore = ModuleCacheRestore::new(py, sys_name);
             let sys_bits = if publish_sys {
-                let bits = molt_module_new(sys_restore.name_bits());
+                let bits = molt_module_new_attached_body(py, sys_restore.name_bits());
                 assert!(!obj_from_bits(bits).is_none());
                 assert!(
                     obj_from_bits(
@@ -981,13 +1006,13 @@ fn module_cache_publication_preserves_duplicate_and_aliased_owners() {
                 1,
                 "fixture has exactly one caller owner"
             );
-            assert!(obj_from_bits(molt_module_cache_set(name, first)).is_none());
+            assert!(obj_from_bits(molt_module_cache_set_attached_body(py, name, first)).is_none());
             assert!(!exception_pending(py));
             let first_owners = refcount(first);
             let duplicate_owners = refcount(duplicate);
 
             for _ in 0..3 {
-                let result = molt_module_cache_set(name, duplicate);
+                let result = molt_module_cache_set_attached_body(py, name, duplicate);
                 assert!(
                     obj_from_bits(result).is_none(),
                     "duplicate publication must not return a borrowed cache owner"
@@ -997,7 +1022,7 @@ fn module_cache_publication_preserves_duplicate_and_aliased_owners() {
                 assert!(!exception_pending(py));
                 assert_eq!(refcount(first), first_owners - 1);
                 assert_eq!(refcount(duplicate), duplicate_owners + 1);
-                let cached = molt_module_cache_get(name);
+                let cached = molt_module_cache_get_attached_body(py, name);
                 assert_eq!(
                     cached, duplicate,
                     "publication installs the exact supplied namespace"
@@ -1007,7 +1032,7 @@ fn module_cache_publication_preserves_duplicate_and_aliased_owners() {
                     let modules =
                         sys_modules_dict_bits(py, sys_bits).expect("published sys.modules");
                     let dict = obj_from_bits(modules).as_ptr().unwrap();
-                    let _modules_owner = crate::PtrDropGuard::new(dict);
+                    let _modules_owner = crate::PtrDropGuard::new(py, dict);
                     assert_eq!(
                         unsafe {
                             dict_get_in_place(py, dict, name).expect("dictionary lookup succeeds")
@@ -1026,7 +1051,7 @@ fn module_cache_publication_preserves_duplicate_and_aliased_owners() {
             // The argument is borrowed from the live cache entry. A
             // release-before-retain replacement would destroy it here.
             for _ in 0..3 {
-                let result = molt_module_cache_set(name, duplicate);
+                let result = molt_module_cache_set_attached_body(py, name, duplicate);
                 assert!(obj_from_bits(result).is_none());
                 dec_ref_bits(py, result);
                 assert!(!exception_pending(py));
@@ -1052,7 +1077,8 @@ fn sys_module_cache_set_does_not_leave_pending_exception() {
         assert!(!module_ptr.is_null());
         let module_bits = MoltObject::from_ptr(module_ptr).bits();
 
-        let result_bits = molt_module_cache_set(cache_restore.name_bits(), module_bits);
+        let result_bits =
+            molt_module_cache_set_attached_body(_py, cache_restore.name_bits(), module_bits);
         // Publication is a mutator, never a borrowed module handoff.
         assert!(obj_from_bits(result_bits).is_none());
         assert!(
@@ -1074,16 +1100,16 @@ fn import_outcome_uses_single_dictionary_before_and_after_sys_bootstrap() {
         let text = "_molt_public_cache_outcome_probe";
         let name = dynamic_attr_name_bits(py, text.as_bytes()).unwrap();
         let _name_restore = ModuleCacheRestore::new(py, name);
-        let bootstrap = molt_module_new(name);
-        molt_module_cache_set(name, bootstrap);
+        let bootstrap = molt_module_new_attached_body(py, name);
+        molt_module_cache_set_attached_body(py, name, bootstrap);
         let before_sys = crate::builtins::module_table::module_dictionary(py).unwrap();
-        let cached = molt_module_cache_get(name);
+        let cached = molt_module_cache_get_attached_body(py, name);
         assert_eq!(
             cached, bootstrap,
             "cache is authoritative before sys publication"
         );
         dec_ref_bits(py, cached);
-        let sys = molt_module_new(sys_name);
+        let sys = molt_module_new_attached_body(py, sys_name);
         crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys);
         let _resolver = crate::test_support::EmptyImportResolver::new(py);
         let modules_bits = sys_modules_dict_bits(py, sys).unwrap();
@@ -1092,12 +1118,12 @@ fn import_outcome_uses_single_dictionary_before_and_after_sys_bootstrap() {
             "sys exposes the existing dictionary"
         );
         let modules = obj_from_bits(modules_bits).as_ptr().unwrap();
-        let _modules_owner = crate::PtrDropGuard::new(modules);
-        let module = molt_module_new(name);
+        let _modules_owner = crate::PtrDropGuard::new(py, modules);
+        let module = molt_module_new_attached_body(py, name);
         let dictionary = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
         for value in [MoltObject::from_int(42).bits(), module, dictionary] {
             unsafe { assert!(dict_set_in_place(py, modules, name, value)) };
-            let cached = molt_module_cache_get(name);
+            let cached = molt_module_cache_get_attached_body(py, name);
             assert_eq!(cached, value);
             dec_ref_bits(py, cached);
             let imported = match module_import_attempt(name).unwrap() {
@@ -1110,10 +1136,10 @@ fn import_outcome_uses_single_dictionary_before_and_after_sys_bootstrap() {
             assert_eq!(stored, Some(value));
             dec_ref_bits(py, stored.unwrap());
             assert!(unsafe { dict_del_in_place(py, modules, name).expect("operation succeeds") });
-            assert!(obj_from_bits(molt_module_cache_get(name)).is_none());
+            assert!(obj_from_bits(molt_module_cache_get_attached_body(py, name)).is_none());
             assert!(matches!(module_import_attempt(name),
                 Ok(ModuleImportOutcome::Missing { diagnostic_name }) if diagnostic_name == text));
-            assert!(obj_from_bits(molt_module_import(name)).is_none());
+            assert!(obj_from_bits(molt_module_import_attached_body(py, name)).is_none());
             assert_pending_module_not_found_metadata(
                 py,
                 text,
@@ -1131,7 +1157,7 @@ fn import_outcome_uses_single_dictionary_before_and_after_sys_bootstrap() {
         };
         let refs_before =
             unsafe { (*crate::header_from_obj_ptr(ptr_from_bits(name))).ref_count_snapshot() };
-        assert!(obj_from_bits(molt_module_import(name)).is_none());
+        assert!(obj_from_bits(molt_module_import_attached_body(py, name)).is_none());
         assert_pending_module_not_found_metadata(
             py,
             text,
@@ -1196,9 +1222,9 @@ fn import_attempt_preserves_pending_failure_even_when_its_text_names_the_target(
             "No module named 'pkg.child'",
         );
         dec_ref_bits(_py, raised);
-        let original = molt_exception_last_pending();
+        let original = molt_exception_last_pending_attached_body(_py);
         assert!(module_import_attempt(name).is_err());
-        let observed = molt_exception_last_pending();
+        let observed = molt_exception_last_pending_attached_body(_py);
         assert_eq!(observed, original);
         assert!(exception_pending(_py));
         dec_ref_bits(_py, observed);

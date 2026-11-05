@@ -367,9 +367,11 @@ fn parse_ipv6_from_bits(_py: &CoreGilToken, addr_bits: u64) -> Result<Ipv6Addr, 
 // IPv4 intrinsics
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v4_new(addr_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v4_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    addr_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         match parse_ipv4_from_bits(_py, addr_bits) {
             Ok(addr) => ipv4_bits(Ipv4Handle { addr }),
             Err(exc) => exc,
@@ -377,9 +379,11 @@ pub extern "C" fn molt_ipaddress_v4_new(addr_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v4_packed(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v4_packed_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -396,9 +400,11 @@ pub extern "C" fn molt_ipaddress_v4_packed(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v4_int(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v4_int_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -410,9 +416,11 @@ pub extern "C" fn molt_ipaddress_v4_int(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v4_str(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v4_str_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -429,9 +437,11 @@ pub extern "C" fn molt_ipaddress_v4_str(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v4_is_private(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v4_is_private_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -443,9 +453,11 @@ pub extern "C" fn molt_ipaddress_v4_is_private(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v4_is_loopback(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v4_is_loopback_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -457,9 +469,11 @@ pub extern "C" fn molt_ipaddress_v4_is_loopback(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v4_is_multicast(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v4_is_multicast_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -471,9 +485,11 @@ pub extern "C" fn molt_ipaddress_v4_is_multicast(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v4_is_reserved(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v4_is_reserved_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -485,9 +501,11 @@ pub extern "C" fn molt_ipaddress_v4_is_reserved(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v4_is_link_local(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v4_is_link_local_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -499,9 +517,11 @@ pub extern "C" fn molt_ipaddress_v4_is_link_local(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v4_is_global(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v4_is_global_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -513,9 +533,11 @@ pub extern "C" fn molt_ipaddress_v4_is_global(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v4_version(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v4_version_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(_h) = ipv4_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -527,9 +549,11 @@ pub extern "C" fn molt_ipaddress_v4_version(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v4_max_prefixlen(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v4_max_prefixlen_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(_h) = ipv4_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -545,9 +569,11 @@ pub extern "C" fn molt_ipaddress_v4_max_prefixlen(handle_bits: u64) -> u64 {
 // IPv6 intrinsics
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v6_new(addr_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v6_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    addr_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         match parse_ipv6_from_bits(_py, addr_bits) {
             Ok(addr) => ipv6_bits(Ipv6Handle { addr }),
             Err(exc) => exc,
@@ -555,9 +581,11 @@ pub extern "C" fn molt_ipaddress_v6_new(addr_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v6_packed(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v6_packed_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -574,9 +602,11 @@ pub extern "C" fn molt_ipaddress_v6_packed(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v6_int(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v6_int_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -590,9 +620,11 @@ pub extern "C" fn molt_ipaddress_v6_int(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v6_str(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v6_str_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -609,9 +641,11 @@ pub extern "C" fn molt_ipaddress_v6_str(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v6_is_private(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v6_is_private_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -623,9 +657,11 @@ pub extern "C" fn molt_ipaddress_v6_is_private(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v6_is_loopback(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v6_is_loopback_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -637,9 +673,11 @@ pub extern "C" fn molt_ipaddress_v6_is_loopback(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v6_is_multicast(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v6_is_multicast_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -651,9 +689,11 @@ pub extern "C" fn molt_ipaddress_v6_is_multicast(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v6_is_link_local(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v6_is_link_local_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -665,9 +705,11 @@ pub extern "C" fn molt_ipaddress_v6_is_link_local(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v6_is_global(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v6_is_global_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -679,9 +721,11 @@ pub extern "C" fn molt_ipaddress_v6_is_global(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v6_version(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v6_version_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(_h) = ipv6_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -697,9 +741,12 @@ pub extern "C" fn molt_ipaddress_v6_version(handle_bits: u64) -> u64 {
 // IPv4 Network intrinsics
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v4_network_new(addr_bits: u64, strict_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v4_network_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    addr_bits: u64,
+    strict_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(s) = string_obj_to_owned(obj_from_bits(addr_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -730,9 +777,11 @@ pub extern "C" fn molt_ipaddress_v4_network_new(addr_bits: u64, strict_bits: u64
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v4_network_hosts(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v4_network_hosts_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(h) = ipv4_network_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -774,9 +823,12 @@ pub extern "C" fn molt_ipaddress_v4_network_hosts(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v4_network_contains(net_bits: u64, addr_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v4_network_contains_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    net_bits: u64,
+    addr_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(net) = ipv4_network_handle_from_bits(net_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -801,9 +853,11 @@ pub extern "C" fn molt_ipaddress_v4_network_contains(net_bits: u64, addr_bits: u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v4_network_prefixlen(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v4_network_prefixlen_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(h) = ipv4_network_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -815,9 +869,11 @@ pub extern "C" fn molt_ipaddress_v4_network_prefixlen(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v4_network_str(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v4_network_str_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(h) = ipv4_network_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -834,9 +890,11 @@ pub extern "C" fn molt_ipaddress_v4_network_str(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v4_network_broadcast(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v4_network_broadcast_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(h) = ipv4_network_handle_from_bits(handle_bits) else {
             return raise_exception::<u64>(
                 _py,
@@ -854,9 +912,11 @@ pub extern "C" fn molt_ipaddress_v4_network_broadcast(handle_bits: u64) -> u64 {
 // caller must call the correct drop for their handle type)
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_drop(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_drop_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(ptr) = opaque_handle_ptr_from_bits(handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -878,9 +938,11 @@ pub extern "C" fn molt_ipaddress_drop(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v6_drop(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v6_drop_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(ptr) = opaque_handle_ptr_from_bits(handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -893,9 +955,11 @@ pub extern "C" fn molt_ipaddress_v6_drop(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ipaddress_v4_network_drop(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_ipaddress_v4_network_drop_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let Some(ptr) = opaque_handle_ptr_from_bits(handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1051,3 +1115,5 @@ mod tests {
         ));
     }
 }
+
+include!("attached_exports_generated/ipaddress.rs");

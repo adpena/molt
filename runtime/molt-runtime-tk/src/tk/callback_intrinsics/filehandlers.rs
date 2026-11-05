@@ -17,15 +17,15 @@ use molt_runtime_core::BuiltinExc;
 use molt_runtime_core::prelude::{MoltObject, obj_from_bits};
 use std::collections::HashMap;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_filehandler_create(
+pub fn molt_tk_filehandler_create_attached_body(
+    _py: &molt_runtime_core::PyToken,
     app_bits: u64,
     fd_bits: u64,
     mask_bits: u64,
     callback_bits: u64,
     file_obj_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::FileHandlerCreate) {
             return bits;
         }
@@ -148,9 +148,13 @@ pub extern "C" fn molt_tk_filehandler_create(
         MoltObject::none().bits()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_filehandler_delete(app_bits: u64, fd_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_filehandler_delete_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    app_bits: u64,
+    fd_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::FileHandlerDelete) {
             return bits;
         }
@@ -178,3 +182,5 @@ pub extern "C" fn molt_tk_filehandler_delete(app_bits: u64, fd_bits: u64) -> u64
         MoltObject::none().bits()
     })
 }
+
+include!("../../attached_exports_generated/tk/callback_intrinsics/filehandlers.rs");

@@ -1079,14 +1079,14 @@ pub(crate) unsafe fn clone_callargs_builder_bits(
         return Err(clone_bits);
     }
     for &value_bits in &args.pos {
-        let pushed = unsafe { molt_callargs_push_pos(clone_bits, value_bits) };
+        let pushed = unsafe { molt_callargs_push_pos_attached_body(_py, clone_bits, value_bits) };
         if exception_pending(_py) {
             dec_ref_bits(_py, clone_bits);
             return Err(pushed);
         }
     }
     if !obj_from_bits(args.keywords).is_none() {
-        let keywords = crate::molt_dict_copy(args.keywords);
+        let keywords = crate::molt_dict_copy_attached_body(_py, args.keywords);
         if exception_pending(_py) || obj_from_bits(keywords).is_none() {
             dec_ref_bits(_py, clone_bits);
             return Err(if exception_pending(_py) {
@@ -1243,18 +1243,26 @@ pub(crate) unsafe fn callargs_detach_owned(
 }
 
 /// The builder of a CALL call site: value-stack arguments.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_callargs_new(pos_capacity_bits: u64, kw_capacity_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_callargs_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    pos_capacity_bits: u64,
+    kw_capacity_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         callargs_new_with_form(_py, pos_capacity_bits, kw_capacity_bits, CallForm::Stack)
     })
 }
 
 /// The builder of a CALL_FUNCTION_EX call site: its storage is that call's
 /// positional tuple and keyword mapping.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_callargs_new_expanded(pos_capacity_bits: u64, kw_capacity_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_callargs_new_expanded_attached_body(
+    _py: &crate::PyToken<'_>,
+    pos_capacity_bits: u64,
+    kw_capacity_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         callargs_new_with_form(_py, pos_capacity_bits, kw_capacity_bits, CallForm::Expanded)
     })
 }
@@ -1345,10 +1353,14 @@ fn callargs_new_with_form(
 /// # Safety
 /// `builder_bits` must be a valid pointer returned by `molt_callargs_new` and
 /// remain owned by the caller for the duration of this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_callargs_push_pos(builder_bits: u64, val: u64) -> u64 {
+
+pub(crate) unsafe fn molt_callargs_push_pos_attached_body(
+    _py: &crate::PyToken<'_>,
+    builder_bits: u64,
+    val: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -1458,14 +1470,15 @@ unsafe fn callargs_push_kw(
 /// # Safety
 /// `builder_bits` must be a valid pointer returned by `molt_callargs_new`.
 /// `name_bits` must reference a Molt string object.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_callargs_push_kw(
+
+pub(crate) unsafe fn molt_callargs_push_kw_attached_body(
+    _py: &crate::PyToken<'_>,
     builder_bits: u64,
     name_bits: u64,
     val_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -1487,10 +1500,14 @@ pub unsafe extern "C" fn molt_callargs_push_kw(
 
 /// # Safety
 /// `builder_bits` must be a valid pointer returned by `molt_callargs_new`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_callargs_expand_star(builder_bits: u64, iterable_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_callargs_expand_star_attached_body(
+    _py: &crate::PyToken<'_>,
+    builder_bits: u64,
+    iterable_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -1569,10 +1586,14 @@ pub unsafe extern "C" fn molt_callargs_expand_star(builder_bits: u64, iterable_b
 
 /// # Safety
 /// `builder_bits` must be a valid pointer returned by `molt_callargs_new`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_callargs_expand_kwstar(builder_bits: u64, mapping_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_callargs_expand_kwstar_attached_body(
+    _py: &crate::PyToken<'_>,
+    builder_bits: u64,
+    mapping_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -1700,3 +1721,5 @@ pub(crate) fn release_stack_arguments(py: &PyToken<'_>, receiver: Option<u64>, a
 #[cfg(test)]
 #[path = "arguments_binding_tests.rs"]
 mod tests;
+
+include!("../../attached_exports_generated/call/bind/arguments.rs");

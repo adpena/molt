@@ -14,7 +14,7 @@ use super::unraisable::sys_attr_bits;
 use super::*;
 use crate::BuiltinExc;
 use crate::runtime_flags::{self, RuntimeFlag};
-use crate::{call_callable1, call_callable3, molt_set_attr_name};
+use crate::{call_callable1, call_callable3, molt_set_attr_name_attached_body};
 
 /// The exit status of a program whose main body has returned: 0 when nothing
 /// is pending; otherwise the pending exception is taken, reported as CPython's
@@ -145,7 +145,7 @@ fn set_sys_attr(py: &PyToken<'_>, name: crate::NameId, value_bits: u64) {
     let Some(name_bits) = name.owned_bits(py) else {
         return;
     };
-    let result = molt_set_attr_name(sys_bits, name_bits, value_bits);
+    let result = molt_set_attr_name_attached_body(py, sys_bits, name_bits, value_bits);
     dec_ref_bits(py, name_bits);
     release(py, result);
     if exception_pending(py) {

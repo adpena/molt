@@ -32,9 +32,9 @@ pub(super) fn with_commondialog_options(
     }
 
     if let Some(dict_ptr) = options_obj.as_ptr()
-        && object_type_id(dict_ptr) == TYPE_ID_DICT
+        && object_type_id(py, dict_ptr) == TYPE_ID_DICT
     {
-        let entries = dict_snapshot(dict_ptr).ok_or_else(|| MoltObject::none().bits())?;
+        let entries = dict_snapshot(py, dict_ptr).ok_or_else(|| MoltObject::none().bits())?;
         let mut options = Vec::with_capacity(entries.len() / 2);
         for pair in entries.chunks(2) {
             if pair.len() != 2 {
@@ -52,7 +52,7 @@ pub(super) fn with_commondialog_options(
 
     let raw_ptr = options_obj.as_ptr().filter(|&ptr| {
         matches!(
-            object_type_id(ptr),
+            object_type_id(py, ptr),
             molt_runtime_core::type_ids::TYPE_ID_LIST | molt_runtime_core::type_ids::TYPE_ID_TUPLE
         )
     });
@@ -63,7 +63,8 @@ pub(super) fn with_commondialog_options(
             "commondialog options must be a dict or list/tuple",
         ));
     };
-    let raw_items = unsafe { seq_snapshot(raw_ptr) }.ok_or_else(|| MoltObject::none().bits())?;
+    let raw_items =
+        unsafe { seq_snapshot(py, raw_ptr) }.ok_or_else(|| MoltObject::none().bits())?;
     if !raw_items.len().is_multiple_of(2) {
         return Err(raise_tcl_for_handle(
             py,

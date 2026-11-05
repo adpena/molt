@@ -229,9 +229,12 @@ pub(super) fn importlib_package_required_error(_py: &PyToken<'_>, name: &str) ->
     )
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_resolve_name(name_bits: u64, package_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_importlib_resolve_name_attached_body(
+    _py: &crate::PyToken<'_>,
+    name_bits: u64,
+    package_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let name = match importlib_resolve_name_arg(_py, name_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -398,9 +401,12 @@ pub(super) fn importlib_import_module_impl(
     out
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_import_module(name_bits: u64, package_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_importlib_import_module_attached_body(
+    _py: &crate::PyToken<'_>,
+    name_bits: u64,
+    package_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         match importlib_import_module_impl(_py, name_bits, package_bits) {
             Ok(bits) => bits,
             Err(err) => err,
@@ -408,9 +414,11 @@ pub extern "C" fn molt_importlib_import_module(name_bits: u64, package_bits: u64
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_import_optional(module_name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_importlib_import_optional_attached_body(
+    _py: &crate::PyToken<'_>,
+    module_name_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -419,7 +427,7 @@ pub extern "C" fn molt_importlib_import_optional(module_name_bits: u64) -> u64 {
             Ok(bits) => bits,
             Err(err) => return err,
         };
-        let imported_bits = crate::molt_module_import(name_bits);
+        let imported_bits = crate::molt_module_import_attached_body(_py, name_bits);
         if !obj_from_bits(name_bits).is_none() {
             dec_ref_bits(_py, name_bits);
         }
@@ -447,12 +455,12 @@ pub extern "C" fn molt_importlib_import_optional(module_name_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_import_or_fallback(
+pub(crate) fn molt_importlib_import_or_fallback_attached_body(
+    _py: &crate::PyToken<'_>,
     module_name_bits: u64,
     fallback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -461,7 +469,7 @@ pub extern "C" fn molt_importlib_import_or_fallback(
             Ok(bits) => bits,
             Err(err) => return err,
         };
-        let imported_bits = crate::molt_module_import(name_bits);
+        let imported_bits = crate::molt_module_import_attached_body(_py, name_bits);
         if !obj_from_bits(name_bits).is_none() {
             dec_ref_bits(_py, name_bits);
         }
@@ -488,9 +496,11 @@ pub extern "C" fn molt_importlib_import_or_fallback(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_import_required(module_name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_importlib_import_required_attached_body(
+    _py: &crate::PyToken<'_>,
+    module_name_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -499,7 +509,7 @@ pub extern "C" fn molt_importlib_import_required(module_name_bits: u64) -> u64 {
             Ok(bits) => bits,
             Err(err) => return err,
         };
-        let imported_bits = crate::molt_module_import(name_bits);
+        let imported_bits = crate::molt_module_import_attached_body(_py, name_bits);
         if !obj_from_bits(name_bits).is_none() {
             dec_ref_bits(_py, name_bits);
         }
@@ -513,12 +523,12 @@ pub extern "C" fn molt_importlib_import_required(module_name_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_export_attrs(
+pub(crate) fn molt_importlib_export_attrs_attached_body(
+    _py: &crate::PyToken<'_>,
     module_name_bits: u64,
     export_names_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -533,7 +543,7 @@ pub extern "C" fn molt_importlib_export_attrs(
             Ok(bits) => bits,
             Err(err) => return err,
         };
-        let module_bits = crate::molt_module_import(name_bits);
+        let module_bits = crate::molt_module_import_attached_body(_py, name_bits);
         if !obj_from_bits(name_bits).is_none() {
             dec_ref_bits(_py, name_bits);
         }
@@ -560,7 +570,8 @@ pub extern "C" fn molt_importlib_export_attrs(
                 }
             };
             // A required lookup: a miss raises the module's own AttributeError.
-            let value_bits = crate::molt_get_attr_name(module_bits, attr_name_bits);
+            let value_bits =
+                crate::molt_get_attr_name_attached_body(_py, module_bits, attr_name_bits);
             if !obj_from_bits(attr_name_bits).is_none() {
                 dec_ref_bits(_py, attr_name_bits);
             }
@@ -611,13 +622,13 @@ pub extern "C" fn molt_importlib_export_attrs(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_load_module_shim(
+pub(crate) fn molt_importlib_load_module_shim_attached_body(
+    _py: &crate::PyToken<'_>,
     bootstrap_bits: u64,
     loader_bits: u64,
     fullname_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let fullname = match string_arg_from_bits(_py, fullname_bits, "fullname") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -830,7 +841,8 @@ pub(super) fn importlib_transaction_package_from_globals(
         && !obj_from_bits(spec_bits).is_none()
     {
         let parent_name = crate::NameId::Parent.bits(_py);
-        let parent_bits = crate::molt_object_getattribute(spec_bits, parent_name);
+        let parent_bits =
+            crate::molt_object_getattribute_attached_body(_py, spec_bits, parent_name);
         if exception_pending(_py) {
             return Err(MoltObject::none().bits());
         }
@@ -1070,19 +1082,19 @@ pub(super) fn importlib_transaction_string_items(
     iterable_bits: u64,
     context: ImportlibTransactionStringItemsContext<'_>,
 ) -> Result<Vec<String>, u64> {
-    let iter_bits = molt_iter(iterable_bits);
+    let iter_bits = molt_iter_attached_body(_py, iterable_bits);
     let _iter_owner = obj_from_bits(iter_bits)
         .as_ptr()
-        .map(crate::PtrDropGuard::new);
+        .map(|__ptr| crate::PtrDropGuard::new(_py, __ptr));
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
     let mut out = Vec::new();
     loop {
-        let pair_bits = molt_iter_next(iter_bits);
+        let pair_bits = molt_iter_next_attached_body(_py, iter_bits);
         let _pair_owner = obj_from_bits(pair_bits)
             .as_ptr()
-            .map(crate::PtrDropGuard::new);
+            .map(|__ptr| crate::PtrDropGuard::new(_py, __ptr));
         if exception_pending(_py) {
             return Err(MoltObject::none().bits());
         }
@@ -1254,7 +1266,7 @@ fn importlib_prepare_package_fromlist(
     // Only AttributeError is a miss. Both public imports and bootstrap bodies
     // use this owner before IMPORT_FROM observes any of the resulting names.
     let path_name = crate::NameId::DunderPath.bits(py);
-    let has_path = molt_has_attr_name(module_bits, path_name);
+    let has_path = molt_has_attr_name_attached_body(py, module_bits, path_name);
     if exception_pending(py) {
         return Err(MoltObject::none().bits());
     }
@@ -1266,13 +1278,14 @@ fn importlib_prepare_package_fromlist(
 
 /// Complete the fromlist stage of a compiler-owned bootstrap import. The raw
 /// module load already happened; public __import__ is not entered recursively.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_prepare_fromlist(
+
+pub(crate) fn molt_importlib_prepare_fromlist_attached_body(
+    _py: &crate::PyToken<'_>,
     name_bits: u64,
     module_bits: u64,
     fromlist_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if exception_pending(py) {
             return MoltObject::none().bits();
         }
@@ -1293,15 +1306,15 @@ pub extern "C" fn molt_importlib_prepare_fromlist(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_import_transaction(
+pub(crate) fn molt_importlib_import_transaction_attached_body(
+    _py: &crate::PyToken<'_>,
     name_bits: u64,
     globals_bits: u64,
     _locals_bits: u64,
     fromlist_bits: u64,
     level_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let name = match string_arg_from_bits(_py, name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1358,3 +1371,5 @@ pub extern "C" fn molt_importlib_import_transaction(
 #[cfg(test)]
 #[path = "import_transaction/tests.rs"]
 mod cached_module_tests;
+
+include!("../../attached_exports_generated/builtins/platform_importlib_ffi/import_transaction.rs");

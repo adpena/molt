@@ -1,8 +1,11 @@
 use super::{
-    molt_operator_attrgetter_type, molt_operator_itemgetter_type, molt_operator_length_hint,
-    molt_operator_methodcaller_type, operator_clear_runtime_state,
+    molt_operator_attrgetter_type, molt_operator_itemgetter_type,
+    molt_operator_length_hint_attached_body, molt_operator_methodcaller_type,
+    operator_clear_runtime_state,
 };
-use crate::builtins::exceptions::{molt_exception_kind, molt_exception_last_pending};
+use crate::builtins::exceptions::{
+    molt_exception_kind_attached_body, molt_exception_last_pending_attached_body,
+};
 use crate::{
     MoltObject, alloc_string, dec_ref_bits, exception_pending, obj_from_bits, runtime_state,
     string_obj_to_owned, to_i64,
@@ -22,7 +25,12 @@ fn operator_type_caches_are_runtime_owned_and_clearable() {
         };
         let attribute = |object, name: &[u8]| {
             let key = text(name);
-            let value = crate::molt_getattr_builtin(object, key, MoltObject::none().bits());
+            let value = crate::molt_getattr_builtin_attached_body(
+                py,
+                object,
+                key,
+                MoltObject::none().bits(),
+            );
             dec_ref_bits(py, key);
             assert!(!exception_pending(py));
             value
@@ -55,12 +63,12 @@ fn operator_type_caches_are_runtime_owned_and_clearable() {
                 descriptor
             })
         };
-        let exports: [extern "C" fn() -> u64; 3] = [
+        let exports: [unsafe extern "C" fn(u64) -> u64; 3] = [
             molt_operator_itemgetter_type,
             molt_operator_attrgetter_type,
             molt_operator_methodcaller_type,
         ];
-        let classes = exports.map(|export| export());
+        let classes = exports.map(|export| unsafe { export(py.attached_context()) });
         let declared = classes.map(descriptors);
         let slots = state.operator.slots();
         for (class, slot) in classes.into_iter().zip(slots) {
@@ -71,7 +79,7 @@ fn operator_type_caches_are_runtime_owned_and_clearable() {
         // callback draining must neither replace them nor require private slots.
         super::operator_clear_runtime_callbacks(py, state);
         for ((export, class), expected) in exports.into_iter().zip(classes).zip(declared) {
-            let repeated = export();
+            let repeated = unsafe { export(py.attached_context()) };
             assert_eq!(repeated, class);
             assert_eq!(descriptors(repeated), expected);
             dec_ref_bits(py, repeated);
@@ -115,12 +123,12 @@ fn operator_type_caches_are_runtime_owned_and_clearable() {
                 };
                 assert!(exception_pending(py));
                 dec_ref_bits(py, invalid);
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(py);
             }
-            let invalid = crate::molt_object_new_bound(class);
+            let invalid = crate::molt_object_new_bound_attached_body(py, class);
             assert!(exception_pending(py));
             dec_ref_bits(py, invalid);
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             let value =
                 unsafe { crate::call::dispatch::call_callable2(py, declared[0], instance, target) };
             assert!(!exception_pending(py));
@@ -163,19 +171,19 @@ fn operator_type_exports_own_results_across_alias_release_gc_and_cold_restart() 
             assert_eq!(crate::state::runtime_state::molt_runtime_init(), 1);
             crate::with_gil_entry_nopanic!(py, {
                 let state = runtime_state(py);
-                let exports: [extern "C" fn() -> u64; 3] = [
+                let exports: [unsafe extern "C" fn(u64) -> u64; 3] = [
                     molt_operator_itemgetter_type,
                     molt_operator_attrgetter_type,
                     molt_operator_methodcaller_type,
                 ];
                 let classes = exports.map(|export| {
-                    let first = export();
+                    let first = unsafe { export(py.attached_context()) };
                     assert!(!exception_pending(py));
                     let ptr = obj_from_bits(first).as_ptr().expect("operator type");
                     let refs =
                         || unsafe { (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot() };
                     let first_refs = refs();
-                    let second = export();
+                    let second = unsafe { export(py.attached_context()) };
                     assert_eq!(second, first);
                     assert_eq!(refs(), first_refs + 1, "each export owns a result");
                     dec_ref_bits(py, second);
@@ -216,7 +224,7 @@ fn operator_type_exports_own_results_across_alias_release_gc_and_cold_restart() 
                     assert!(crate::object::class_storage::is_canonical_runtime_class(
                         py, class
                     ));
-                    let owned = export();
+                    let owned = unsafe { export(py.attached_context()) };
                     assert_eq!(owned, class);
                     dec_ref_bits(py, owned);
                 }
@@ -234,28 +242,36 @@ fn operator_length_hint_validates_default_before_fallback() {
     crate::with_gil_entry_nopanic!(_py, {
         let none_bits = MoltObject::none().bits();
 
-        let negative = molt_operator_length_hint(none_bits, MoltObject::from_int(-1).bits());
+        let negative = molt_operator_length_hint_attached_body(
+            _py,
+            none_bits,
+            MoltObject::from_int(-1).bits(),
+        );
         assert_eq!(to_i64(obj_from_bits(negative)), Some(-1));
 
-        let truthy = molt_operator_length_hint(none_bits, MoltObject::from_bool(true).bits());
+        let truthy = molt_operator_length_hint_attached_body(
+            _py,
+            none_bits,
+            MoltObject::from_bool(true).bits(),
+        );
         assert_eq!(to_i64(obj_from_bits(truthy)), Some(1));
 
         let invalid_ptr = alloc_string(_py, b"x");
         assert!(!invalid_ptr.is_null());
         let invalid_bits = MoltObject::from_ptr(invalid_ptr).bits();
-        let result = molt_operator_length_hint(none_bits, invalid_bits);
+        let result = molt_operator_length_hint_attached_body(_py, none_bits, invalid_bits);
         dec_ref_bits(_py, invalid_bits);
 
         assert!(obj_from_bits(result).is_none());
         assert!(exception_pending(_py));
-        let exc_bits = molt_exception_last_pending();
-        let kind_bits = molt_exception_kind(exc_bits);
+        let exc_bits = molt_exception_last_pending_attached_body(_py);
+        let kind_bits = molt_exception_kind_attached_body(_py, exc_bits);
         assert_eq!(
             string_obj_to_owned(obj_from_bits(kind_bits)).as_deref(),
             Some("TypeError")
         );
         dec_ref_bits(_py, kind_bits);
         dec_ref_bits(_py, exc_bits);
-        crate::molt_exception_clear();
+        crate::molt_exception_clear_attached_body(_py);
     });
 }

@@ -330,10 +330,14 @@ crate::builtins::methods::native_method_table!(range_method_bits, publish_range_
         )),
 });
 
-pub(crate) extern "C" fn type_setattr(receiver: u64, name: u64, value: u64) -> u64 {
+pub(crate) extern "C" fn type_setattr(__context: u64, receiver: u64, name: u64, value: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     crate::builtins::attributes::explicit_type_mutate_attr_name(receiver, name, Some(value))
 }
 
-pub(crate) extern "C" fn type_delattr(receiver: u64, name: u64) -> u64 {
+pub(crate) extern "C" fn type_delattr(__context: u64, receiver: u64, name: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     crate::builtins::attributes::explicit_type_mutate_attr_name(receiver, name, None)
 }

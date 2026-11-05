@@ -146,7 +146,8 @@ fn checked_type_observers_reject_terminal_managed_pins_without_resurrection() {
         assert!(!namespace.is_null());
         let namespace = crate::bits_from_ptr(namespace);
         let none = crate::MoltObject::none().bits();
-        let class = crate::builtins::types::molt_type_new(
+        let class = crate::builtins::types::molt_type_new_attached_body(
+            py,
             crate::builtin_classes(&py).type_obj,
             name,
             none,

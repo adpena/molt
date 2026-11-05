@@ -135,10 +135,6 @@ impl WasmRuntimeSurfacePlan {
         known_imports: &BTreeSet<WasmRuntimeImport>,
     ) {
         let kind = op.kind;
-        if op.is_async_work_poll() {
-            self.required_imports
-                .insert(WasmRuntimeImport::ThreadRecord);
-        }
         // The shared call spill region holds every spilled argument vector.
         // A loaded method call spills its arguments after the loaded pair; a
         // method load's out-parameter uses the region's first word.

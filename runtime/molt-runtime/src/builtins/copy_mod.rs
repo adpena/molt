@@ -36,7 +36,7 @@ impl<'a> DeepCopy<'a, '_> {
     }
 
     fn keep_alive(&self, obj: u64) -> Result<(), u64> {
-        let key = owned(self.py, molt_id(self.memo_bits))?;
+        let key = owned(self.py, molt_id_attached_body(self.py, self.memo_bits))?;
         if let Some(alive) = self.memo_get(key.bits())? {
             if let Some(ptr) = obj_from_bits(alive.bits()).as_ptr()
                 && matches!(
@@ -57,7 +57,12 @@ impl<'a> DeepCopy<'a, '_> {
                 let name = owned(self.py, name)?;
                 let append = owned(
                     self.py,
-                    molt_getattr_builtin(alive.bits(), name.bits(), missing_bits(self.py)),
+                    molt_getattr_builtin_attached_body(
+                        self.py,
+                        alive.bits(),
+                        name.bits(),
+                        missing_bits(self.py),
+                    ),
                 )?;
                 let _result = owned(self.py, unsafe {
                     call_callable1(self.py, append.bits(), obj)
@@ -124,7 +129,7 @@ impl<'a> DeepCopy<'a, '_> {
             });
         }
         // Even atomic objects can have a user-supplied memo entry.
-        let key = owned(self.py, molt_id(obj))?;
+        let key = owned(self.py, molt_id_attached_body(self.py, obj))?;
         if let Some(result) = self
             .memo_get(key.bits())?
             .filter(|result| result.bits() != self.sentinel)
@@ -204,13 +209,14 @@ impl<'a> DeepCopy<'a, '_> {
         }
         let result_owner = owned(self.py, MoltObject::from_ptr(result).bits())?;
         self.memo_put(key, result_owner.bits())?;
-        let items = owned(self.py, molt_dict_items(obj))?;
-        let iterator = owned(self.py, molt_iter(items.bits()))?;
+        let items = owned(self.py, molt_dict_items_attached_body(self.py, obj))?;
+        let iterator = owned(self.py, molt_iter_attached_body(self.py, items.bits()))?;
         loop {
             let mut key = MoltObject::none().bits();
             let mut value = MoltObject::none().bits();
             let done = unsafe {
-                crate::object::ops_iter::molt_iter_next_dict_items(
+                crate::object::ops_iter::molt_iter_next_dict_items_attached_body(
+                    self.py,
                     iterator.bits(),
                     &mut key,
                     &mut value,
@@ -247,7 +253,7 @@ impl<'a> DeepCopy<'a, '_> {
         }
         // A tuple may contain a mutable child that has already reconstructed
         // this tuple during recursion. CPython checks memo AFTER the children.
-        let key = owned(self.py, molt_id(obj))?;
+        let key = owned(self.py, molt_id_attached_body(self.py, obj))?;
         if let Some(result) = self.memo_get(key.bits())? {
             return Ok(result);
         }
@@ -265,9 +271,15 @@ impl<'a> DeepCopy<'a, '_> {
 
 /// Traversal of exact list/tuple/dict objects with Python's actual memo. The
 /// callback handles non-builtin children under the same copy protocol.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_copy_deepcopy(obj: u64, memo: u64, copier: u64, sentinel: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_copy_deepcopy_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj: u64,
+    memo: u64,
+    copier: u64,
+    sentinel: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(ptr) = obj_from_bits(memo).as_ptr() else {
             return raise_exception::<u64>(
                 py,
@@ -309,7 +321,7 @@ pub extern "C" fn molt_copy_deepcopy(obj: u64, memo: u64, copier: u64, sentinel:
                     "copy traversal requires an exact container",
                 ));
             }
-            let key = owned(py, molt_id(obj))?;
+            let key = owned(py, molt_id_attached_body(py, obj))?;
             match unsafe { object_type_id(obj_ptr) } {
                 TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL => {
                     context.list(obj, obj_ptr, key.bits())
@@ -327,3 +339,5 @@ pub extern "C" fn molt_copy_deepcopy(obj: u64, memo: u64, copier: u64, sentinel:
         .unwrap_or_else(|error| error)
     })
 }
+
+include!("../attached_exports_generated/builtins/copy_mod.rs");

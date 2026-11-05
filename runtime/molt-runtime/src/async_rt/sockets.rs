@@ -109,9 +109,15 @@ use wait::would_block_errno;
 #[cfg(molt_net)]
 mod reader;
 #[cfg(molt_net)]
-pub use reader::{
-    molt_socket_reader_at_eof, molt_socket_reader_drop, molt_socket_reader_new,
-    molt_socket_reader_read, molt_socket_reader_readline, molt_socket_reader_readline_limit,
+pub use {
+    reader::molt_socket_reader_at_eof, reader::molt_socket_reader_drop,
+    reader::molt_socket_reader_new, reader::molt_socket_reader_read,
+    reader::molt_socket_reader_readline, reader::molt_socket_reader_readline_limit,
+};
+#[cfg(molt_net)]
+pub(crate) use {
+    reader::molt_socket_reader_read_attached_body,
+    reader::molt_socket_reader_readline_attached_body,
 };
 // --- Sockets ---
 
@@ -319,7 +325,7 @@ pub(crate) fn env_from_bits(
                 "env must be a dict",
             ));
         }
-        let items_bits = crate::molt_dict_items(env_bits);
+        let items_bits = crate::molt_dict_items_attached_body(_py, env_bits);
         let items =
             molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), items_bits);
         if exception_pending(_py) {
@@ -374,14 +380,16 @@ mod iterable_ownership_tests {
         }
     }
 
-    extern "C" fn yield_then_mutate_source() -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn yield_then_mutate_source(__context: u64) -> u64 {
+        let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        crate::with_attached_entry_nopanic!(__attached_py, py, {
             let item = ITEM.load(Ordering::Relaxed);
             if CALLS.fetch_add(1, Ordering::Relaxed) == 0 {
                 inc_ref_bits(py, item);
                 return item;
             }
-            crate::molt_list_clear(SOURCE.load(Ordering::Relaxed));
+            crate::molt_list_clear_attached_body(py, SOURCE.load(Ordering::Relaxed));
             // Local test reference plus the collected item survive the later
             // callback dropping the original source's edge.
             assert!(refcount(item) >= 2);
@@ -419,8 +427,11 @@ mod iterable_ownership_tests {
                     );
                 }
                 let callback = MoltObject::from_ptr(callback).bits();
-                let iterator =
-                    crate::molt_iter_sentinel(callback, MoltObject::from_int(777).bits());
+                let iterator = crate::molt_iter_sentinel_attached_body(
+                    py,
+                    callback,
+                    MoltObject::from_int(777).bits(),
+                );
                 assert!(!exception_pending(py));
                 ITEM.store(item, Ordering::Relaxed);
                 SOURCE.store(source, Ordering::Relaxed);
@@ -444,7 +455,8 @@ mod iterable_ownership_tests {
                 );
                 if fail {
                     assert!(values.is_err());
-                    let error = crate::builtins::exceptions::molt_exception_last_pending();
+                    let error =
+                        crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                     assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         error,
@@ -492,7 +504,7 @@ mod iterable_ownership_tests {
             use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
             let item = MoltObject::from_ptr(alloc_bytearray(py, b"payload")).bits();
             let source = MoltObject::from_ptr(alloc_list(py, &[item])).bits();
-            let iterator = crate::molt_iter(source);
+            let iterator = crate::molt_iter_attached_body(py, source);
             assert!(!exception_pending(py));
             let iterator_refs = refcount(iterator);
             set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
@@ -514,7 +526,7 @@ mod iterable_ownership_tests {
                 2,
                 "failed snapshot releases collected item refs"
             );
-            crate::molt_list_clear(source);
+            crate::molt_list_clear_attached_body(py, source);
             assert_eq!(refcount(item), 1);
             for bits in [iterator, source, item] {
                 dec_ref_bits(py, bits);

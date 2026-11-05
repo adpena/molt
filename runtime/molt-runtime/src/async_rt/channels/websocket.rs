@@ -81,13 +81,14 @@ struct WsPollStream {
 
 /// # Safety
 /// `out_left` and `out_right` must be valid, writable pointers to `u64` slots.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_ws_pair(
+
+pub(crate) unsafe fn molt_ws_pair_attached_body(
+    _py: &crate::PyToken<'_>,
     capacity_bits: u64,
     out_left: *mut u64,
     out_right: *mut u64,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if out_left.is_null() || out_right.is_null() {
             return 2;
         }
@@ -127,16 +128,15 @@ pub unsafe extern "C" fn molt_ws_pair(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ws_pair_obj(capacity_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ws_pair_obj_attached_body(_py: &crate::PyToken<'_>, capacity_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(capacity) = super::capacity_from_object(_py, capacity_bits) else {
             return MoltObject::none().bits();
         };
         let mut left = 0u64;
         let mut right = 0u64;
         // The pointer-output ABI retains its raw capacity/status contract.
-        let rc = unsafe { molt_ws_pair(capacity as u64, &mut left, &mut right) };
+        let rc = unsafe { molt_ws_pair_attached_body(_py, capacity as u64, &mut left, &mut right) };
         if rc != 0 {
             return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "molt_ws_pair failed");
         }
@@ -157,14 +157,14 @@ fn ws_pair_into_tuple(py: &PyToken<'_>, left: u64, right: u64) -> u64 {
     MoltObject::from_ptr(tuple_ptr).bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ws_new_with_hooks(
+pub(crate) fn molt_ws_new_with_hooks_attached_body(
+    _py: &crate::PyToken<'_>,
     send_hook: usize,
     recv_hook: usize,
     close_hook: usize,
     hook_ctx: *mut u8,
 ) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // SAFETY (all three hook transmutes below): Same contract as
         // molt_stream_new_with_io_hooks: the host embedder supplies valid function
         // pointers as usize values. Non-zero means the pointer is a valid
@@ -562,7 +562,7 @@ extern "C" fn ws_close_native_hook(ctx: *mut u8) {
 }
 
 #[cfg(molt_has_net_io)]
-fn ws_connect_native(url_ptr: *const u8, url_len: usize) -> *mut u8 {
+fn ws_connect_native(py: &crate::PyToken<'_>, url_ptr: *const u8, url_len: usize) -> *mut u8 {
     if url_ptr.is_null() && url_len != 0 {
         return std::ptr::null_mut();
     }
@@ -590,7 +590,8 @@ fn ws_connect_native(url_ptr: *const u8, url_len: usize) -> *mut u8 {
         closed: false,
         poll_stream_state: WsPollStreamState::Unregistered,
     }))) as *mut u8;
-    let ws_ptr = molt_ws_new_with_hooks(
+    let ws_ptr = molt_ws_new_with_hooks_attached_body(
+        py,
         ws_send_native_hook as *const () as usize,
         ws_recv_native_hook as *const () as usize,
         ws_close_native_hook as *const () as usize,
@@ -658,9 +659,9 @@ pub(crate) fn ws_wait_release_detached_resource(_py: &PyToken<'_>, ws_bits: u64)
 }
 
 #[cfg(molt_has_net_io)]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ws_set_connect_hook(ptr: usize) {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_ws_set_connect_hook_attached_body(_py: &crate::PyToken<'_>, ptr: usize) {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         WS_CONNECT_HOOK.store(ptr, AtomicOrdering::Release);
     })
 }
@@ -668,13 +669,14 @@ pub extern "C" fn molt_ws_set_connect_hook(ptr: usize) {
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass runtime-encoded values; returned handle is owned by the runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_tls_client_connect_new(
+
+pub(crate) unsafe fn molt_asyncio_tls_client_connect_new_attached_body(
+    _py: &crate::PyToken<'_>,
     host_bits: u64,
     port_bits: u64,
     server_hostname_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if require_net_capability::<u64>(_py, crate::OperationId::SslHandshakeClient).is_err() {
             return MoltObject::none().bits();
         }
@@ -718,13 +720,14 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_connect_new(
 }
 
 #[cfg(molt_wasm_net)]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_tls_client_connect_new(
+
+pub(crate) fn molt_asyncio_tls_client_connect_new_attached_body(
+    _py: &crate::PyToken<'_>,
     _host_bits: u64,
     _port_bits: u64,
     _server_hostname_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_exception::<u64>(
             _py,
             BuiltinExc::RuntimeError,
@@ -736,12 +739,13 @@ pub extern "C" fn molt_asyncio_tls_client_connect_new(
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass a valid socket fd encoded as runtime int bits.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_tls_client_from_fd_new(
+
+pub(crate) unsafe fn molt_asyncio_tls_client_from_fd_new_attached_body(
+    _py: &crate::PyToken<'_>,
     fd_bits: u64,
     server_hostname_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if require_net_capability::<u64>(_py, crate::OperationId::SslHandshakeClient).is_err() {
             return MoltObject::none().bits();
         }
@@ -770,7 +774,7 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_from_fd_new(
             }
             name
         };
-        let stream_ptr = tls_client_from_fd_native(fd_raw, &server_name);
+        let stream_ptr = tls_client_from_fd_native(_py, fd_raw, &server_name);
         if stream_ptr.is_null() {
             return raise_exception::<u64>(
                 _py,
@@ -783,12 +787,13 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_from_fd_new(
 }
 
 #[cfg(molt_wasm_net)]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_tls_client_from_fd_new(
+
+pub(crate) fn molt_asyncio_tls_client_from_fd_new_attached_body(
+    _py: &crate::PyToken<'_>,
     _fd_bits: u64,
     _server_hostname_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_exception::<u64>(
             _py,
             BuiltinExc::RuntimeError,
@@ -798,9 +803,12 @@ pub extern "C" fn molt_asyncio_tls_client_from_fd_new(
 }
 
 #[cfg(molt_has_net_io)]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_tls_server_payload(ssl_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_asyncio_tls_server_payload_attached_body(
+    _py: &crate::PyToken<'_>,
+    ssl_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if require_net_capability::<u64>(_py, crate::OperationId::SslHandshakeServer).is_err() {
             return MoltObject::none().bits();
         }
@@ -861,9 +869,12 @@ pub extern "C" fn molt_asyncio_tls_server_payload(ssl_bits: u64) -> u64 {
 }
 
 #[cfg(molt_wasm_net)]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_tls_server_payload(_ssl_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_asyncio_tls_server_payload_attached_body(
+    _py: &crate::PyToken<'_>,
+    _ssl_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_exception::<u64>(
             _py,
             BuiltinExc::RuntimeError,
@@ -875,13 +886,14 @@ pub extern "C" fn molt_asyncio_tls_server_payload(_ssl_bits: u64) -> u64 {
 #[cfg(molt_has_net_io)]
 /// # Safety
 /// Caller must pass a valid socket fd and certificate/key path string bits.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_tls_server_from_fd_new(
+
+pub(crate) unsafe fn molt_asyncio_tls_server_from_fd_new_attached_body(
+    _py: &crate::PyToken<'_>,
     fd_bits: u64,
     certfile_bits: u64,
     keyfile_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if require_net_capability::<u64>(_py, crate::OperationId::SslHandshakeServer).is_err() {
             return MoltObject::none().bits();
         }
@@ -903,7 +915,7 @@ pub unsafe extern "C" fn molt_asyncio_tls_server_from_fd_new(
         if keyfile.is_empty() {
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, "keyfile cannot be empty");
         }
-        let stream_ptr = tls_server_from_fd_native(fd_raw, &certfile, &keyfile);
+        let stream_ptr = tls_server_from_fd_native(_py, fd_raw, &certfile, &keyfile);
         if stream_ptr.is_null() {
             return raise_exception::<u64>(
                 _py,
@@ -916,13 +928,14 @@ pub unsafe extern "C" fn molt_asyncio_tls_server_from_fd_new(
 }
 
 #[cfg(molt_wasm_net)]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_tls_server_from_fd_new(
+
+pub(crate) fn molt_asyncio_tls_server_from_fd_new_attached_body(
+    _py: &crate::PyToken<'_>,
     _fd_bits: u64,
     _certfile_bits: u64,
     _keyfile_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_exception::<u64>(
             _py,
             BuiltinExc::RuntimeError,
@@ -932,15 +945,16 @@ pub extern "C" fn molt_asyncio_tls_server_from_fd_new(
 }
 
 #[cfg(molt_has_net_io)]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// Caller must ensure `url_ptr` is valid for `url_len` bytes and `out` is writable.
-pub unsafe extern "C" fn molt_ws_connect(
+pub(crate) unsafe fn molt_ws_connect_attached_body(
+    _py: &crate::PyToken<'_>,
     url_ptr: *const u8,
     url_len_bits: u64,
     out: *mut u64,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if out.is_null() {
             return 2;
         }
@@ -960,7 +974,7 @@ pub unsafe extern "C" fn molt_ws_connect(
         }
         let hook_ptr = WS_CONNECT_HOOK.load(AtomicOrdering::Acquire);
         if hook_ptr == 0 {
-            let ws_ptr = ws_connect_native(url_ptr, url_len);
+            let ws_ptr = ws_connect_native(_py, url_ptr, url_len);
             if ws_ptr.is_null() {
                 return 7;
             }
@@ -985,9 +999,9 @@ pub unsafe extern "C" fn molt_ws_connect(
 }
 
 #[cfg(molt_net)]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ws_connect_obj(url_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_ws_connect_obj_attached_body(_py: &crate::PyToken<'_>, url_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let url = match string_obj_to_owned(obj_from_bits(url_bits)) {
             Some(val) => val,
             None => {
@@ -995,8 +1009,14 @@ pub extern "C" fn molt_ws_connect_obj(url_bits: u64) -> u64 {
             }
         };
         let mut handle: u64 = 0;
-        let rc =
-            unsafe { molt_ws_connect(url.as_ptr(), url.len() as u64, &mut handle as *mut u64) };
+        let rc = unsafe {
+            molt_ws_connect_attached_body(
+                _py,
+                url.as_ptr(),
+                url.len() as u64,
+                &mut handle as *mut u64,
+            )
+        };
         if rc != 0 {
             return ws_connect_error(_py, rc);
         }
@@ -1049,16 +1069,17 @@ fn ws_connect_error(_py: &PyToken<'_>, code: i32) -> u64 {
 }
 
 #[cfg(molt_wasm_net)]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// Caller must ensure `url_ptr` is valid for `url_len` bytes and `out` is writable.
-pub unsafe extern "C" fn molt_ws_connect(
+pub(crate) unsafe fn molt_ws_connect_attached_body(
+    _py: &crate::PyToken<'_>,
     url_ptr: *const u8,
     url_len_bits: u64,
     out: *mut u64,
 ) -> i32 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             if out.is_null() {
                 return 2;
             }
@@ -1087,7 +1108,8 @@ pub unsafe extern "C" fn molt_ws_connect(
                 return 7;
             }
             let ctx_ptr = Box::into_raw(Box::new(handle)) as *mut u8;
-            let ws_ptr = molt_ws_new_with_hooks(
+            let ws_ptr = molt_ws_new_with_hooks_attached_body(
+                _py,
                 ws_send_host_hook as *const () as usize,
                 ws_recv_host_hook as *const () as usize,
                 ws_close_host_hook as *const () as usize,
@@ -1107,9 +1129,14 @@ pub unsafe extern "C" fn molt_ws_connect(
 }
 
 #[cfg(molt_has_net_io)]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_ws_wait_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    ws_bits: u64,
+    events_bits: u64,
+    timeout_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if require_net_capability::<u64>(_py, crate::OperationId::NetPoll).is_err() {
             return MoltObject::none().bits();
         }
@@ -1128,7 +1155,8 @@ pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits:
         if events == 0 {
             return raise_exception::<_>(_py, BuiltinExc::ValueError, "events must be non-zero");
         }
-        let obj_bits = crate::molt_future_new(
+        let obj_bits = crate::molt_future_new_attached_body(
+            _py,
             ws_wait_poll_fn_addr(),
             (3 * std::mem::size_of::<u64>()) as u64,
         );
@@ -1149,9 +1177,14 @@ pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits:
 }
 
 #[cfg(molt_wasm_net)]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_ws_wait_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    ws_bits: u64,
+    events_bits: u64,
+    timeout_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if require_net_capability::<u64>(_py, crate::OperationId::NetPoll).is_err() {
             return MoltObject::none().bits();
         }
@@ -1177,7 +1210,8 @@ pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits:
         if events == 0 {
             return raise_exception::<_>(_py, BuiltinExc::ValueError, "events must be non-zero");
         }
-        let obj_bits = crate::molt_future_new(
+        let obj_bits = crate::molt_future_new_attached_body(
+            _py,
             ws_wait_poll_fn_addr(),
             (3 * std::mem::size_of::<u64>()) as u64,
         );
@@ -1198,11 +1232,11 @@ pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits:
 }
 
 #[cfg(molt_has_net_io)]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// Caller must pass a valid ws-wait awaitable object bits value.
-pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_ws_wait_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> i64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj_ptr = ptr_from_bits(obj_bits);
         if obj_ptr.is_null() {
             return MoltObject::none().bits() as i64;
@@ -1317,11 +1351,11 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
 }
 
 #[cfg(molt_wasm_net)]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// Caller must ensure `obj_bits` is a valid WebSocket object pointer.
-pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_ws_wait_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> i64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj_ptr = ptr_from_bits(obj_bits);
         if obj_ptr.is_null() {
             return MoltObject::none().bits() as i64;
@@ -1434,11 +1468,15 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
     })
 }
 
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `ws_bits` is valid; `data_ptr` must be readable for `len_bits` bytes.
-pub unsafe extern "C" fn molt_ws_send(ws_bits: u64, data_ptr: *const u8, len_bits: u64) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_ws_send_attached_body(
+    _py: &crate::PyToken<'_>,
+    ws_bits: u64,
+    data_ptr: *const u8,
+    len_bits: u64,
+) -> i64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let ws_ptr = ptr_from_bits(ws_bits);
         let Some(len) = usize_from_bits(len_bits) else {
             return pending_bits_i64();
@@ -1452,7 +1490,10 @@ pub unsafe extern "C" fn molt_ws_send(ws_bits: u64, data_ptr: *const u8, len_bit
             return MoltObject::none().bits() as i64;
         }
         if let Some(hook) = ws.send_hook {
-            return hook(ws.hook_ctx, data_ptr, len);
+            let custody = molt_cpython_abi::hooks::ForeignExecutionGuard::capture();
+            let result = hook(ws.hook_ctx, data_ptr, len);
+            custody.validate();
+            return result;
         }
         // SAFETY: caller contract guarantees `data_ptr` is readable for `len` bytes.
         let bytes = unsafe { std::slice::from_raw_parts(data_ptr, len) }.to_vec();
@@ -1463,11 +1504,14 @@ pub unsafe extern "C" fn molt_ws_send(ws_bits: u64, data_ptr: *const u8, len_bit
     })
 }
 
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `ws_bits` is valid; `data_bits` must be bytes-like.
-pub unsafe extern "C" fn molt_ws_send_obj(ws_bits: u64, data_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_ws_send_obj_attached_body(
+    _py: &crate::PyToken<'_>,
+    ws_bits: u64,
+    data_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let send_data = match send_data_from_bits(data_bits) {
             Ok(data) => data,
             Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
@@ -1483,16 +1527,15 @@ pub unsafe extern "C" fn molt_ws_send_obj(ws_bits: u64, data_bits: u64) -> u64 {
         let _owned_guard = owned;
         // SAFETY: pointer/length pair comes from validated bytes-like object.
         super::send_result_into_object(_py, unsafe {
-            molt_ws_send(ws_bits, data_ptr, data_len as u64)
+            molt_ws_send_attached_body(_py, ws_bits, data_ptr, data_len as u64)
         })
     })
 }
 
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `ws_bits` is a valid websocket pointer.
-pub unsafe extern "C" fn molt_ws_recv(ws_bits: u64) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_ws_recv_attached_body(_py: &crate::PyToken<'_>, ws_bits: u64) -> i64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let ws_ptr = ptr_from_bits(ws_bits);
         if ws_ptr.is_null() {
             return MoltObject::none().bits() as i64;
@@ -1503,7 +1546,10 @@ pub unsafe extern "C" fn molt_ws_recv(ws_bits: u64) -> i64 {
             return MoltObject::none().bits() as i64;
         }
         if let Some(hook) = ws.recv_hook {
-            return hook(ws.hook_ctx);
+            let custody = molt_cpython_abi::hooks::ForeignExecutionGuard::capture();
+            let result = hook(ws.hook_ctx);
+            custody.validate();
+            return result;
         }
         match ws.receiver.try_recv() {
             Ok(bytes) => {
@@ -1525,11 +1571,10 @@ pub unsafe extern "C" fn molt_ws_recv(ws_bits: u64) -> i64 {
     })
 }
 
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `ws_bits` is a valid websocket pointer.
-pub unsafe extern "C" fn molt_ws_close(ws_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_ws_close_attached_body(_py: &crate::PyToken<'_>, ws_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let ws_ptr = ptr_from_bits(ws_bits);
         if ws_ptr.is_null() {
             return MoltObject::none().bits();
@@ -1552,11 +1597,10 @@ pub unsafe extern "C" fn molt_ws_close(ws_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `ws_bits` is a valid websocket pointer.
-pub unsafe extern "C" fn molt_ws_drop(ws_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_ws_drop_attached_body(_py: &crate::PyToken<'_>, ws_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let ws_ptr = ptr_from_bits(ws_bits);
         if ws_ptr.is_null() {
             return MoltObject::none().bits();
@@ -1585,7 +1629,10 @@ mod host_send_result_tests {
             for has_prior_error in [false, true] {
                 let mut left = 0;
                 let mut right = 0;
-                assert_eq!(unsafe { super::molt_ws_pair(0, &mut left, &mut right) }, 0);
+                assert_eq!(
+                    unsafe { super::molt_ws_pair_attached_body(py, 0, &mut left, &mut right) },
+                    0
+                );
                 assert!(!crate::ptr_from_bits(left).is_null());
                 assert!(!crate::ptr_from_bits(right).is_null());
                 let _prior_error = if has_prior_error {
@@ -1596,7 +1643,7 @@ mod host_send_result_tests {
                     );
                     let prior = crate::builtins::exceptions::ExceptionValue::adopt(
                         py,
-                        crate::builtins::exceptions::molt_exception_last_pending(),
+                        crate::builtins::exceptions::molt_exception_last_pending_attached_body(py),
                     );
                     assert!(crate::obj_from_bits(prior.bits()).as_ptr().is_some());
                     Some(prior)
@@ -1632,7 +1679,8 @@ mod host_send_result_tests {
     fn websocket_send_object_boxes_ready_and_preserves_pending() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let pair = super::molt_ws_pair_obj(crate::MoltObject::from_int(1).bits());
+            let pair =
+                super::molt_ws_pair_obj_attached_body(_py, crate::MoltObject::from_int(1).bits());
             let pair_ptr = crate::obj_from_bits(pair)
                 .as_ptr()
                 .expect("WebSocket pair tuple");
@@ -1647,23 +1695,27 @@ mod host_send_result_tests {
             assert!(!payload.is_null());
             let payload_bits = crate::MoltObject::from_ptr(payload).bits();
 
-            let ready = unsafe { super::molt_ws_send_obj(left, payload_bits) };
+            let ready = unsafe { super::molt_ws_send_obj_attached_body(_py, left, payload_bits) };
             assert_eq!(crate::obj_from_bits(ready).as_int(), Some(0));
-            let pending = unsafe { super::molt_ws_send_obj(left, payload_bits) };
+            let pending = unsafe { super::molt_ws_send_obj_attached_body(_py, left, payload_bits) };
             assert_eq!(pending, crate::pending_bits_i64() as u64);
-            let received = unsafe { super::molt_ws_recv(right) as u64 };
+            let received = unsafe { super::molt_ws_recv_attached_body(_py, right) as u64 };
             crate::dec_ref_bits(_py, received);
-            assert_eq!(unsafe { super::molt_ws_send(left, b"raw".as_ptr(), 3) }, 0);
+            assert_eq!(
+                unsafe { super::molt_ws_send_attached_body(_py, left, b"raw".as_ptr(), 3) },
+                0
+            );
 
-            let invalid =
-                unsafe { super::molt_ws_send_obj(left, crate::MoltObject::none().bits()) };
+            let invalid = unsafe {
+                super::molt_ws_send_obj_attached_body(_py, left, crate::MoltObject::none().bits())
+            };
             assert_eq!(invalid, crate::MoltObject::none().bits());
             assert!(crate::exception_pending(_py));
             crate::clear_exception(_py);
             crate::dec_ref_bits(_py, payload_bits);
             unsafe {
-                super::molt_ws_drop(left);
-                super::molt_ws_drop(right);
+                super::molt_ws_drop_attached_body(_py, left);
+                super::molt_ws_drop_attached_body(_py, right);
             }
         });
     }
@@ -1679,7 +1731,7 @@ mod host_send_result_tests {
             for ctx in [std::ptr::null_mut(), &mut marker as *mut u8] {
                 let hook_addr = super::super::send_hook_result_fixture as *const () as usize;
                 assert_ne!(hook_addr, 0);
-                let ws = super::molt_ws_new_with_hooks(hook_addr, 0, 0, ctx);
+                let ws = super::molt_ws_new_with_hooks_attached_body(_py, hook_addr, 0, 0, ctx);
                 assert!(!ws.is_null());
                 let ws_bits = crate::opaque_handle_bits(ws);
                 assert_eq!(crate::ptr_from_bits(ws_bits), ws);
@@ -1693,10 +1745,12 @@ mod host_send_result_tests {
                 super::super::assert_send_hook_result_paths(
                     _py,
                     ctx,
-                    || unsafe { super::molt_ws_send(ws_bits, b"raw".as_ptr(), 3) },
-                    || unsafe { super::molt_ws_send_obj(ws_bits, payload_bits) },
+                    || unsafe {
+                        super::molt_ws_send_attached_body(_py, ws_bits, b"raw".as_ptr(), 3)
+                    },
+                    || unsafe { super::molt_ws_send_obj_attached_body(_py, ws_bits, payload_bits) },
                 );
-                unsafe { super::molt_ws_drop(ws_bits) };
+                unsafe { super::molt_ws_drop_attached_body(_py, ws_bits) };
             }
             crate::dec_ref_bits(_py, payload_bits);
         });
@@ -1715,3 +1769,5 @@ mod host_send_result_tests {
         );
     }
 }
+
+include!("../../attached_exports_generated/async_rt/channels/websocket.rs");

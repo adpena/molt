@@ -410,8 +410,10 @@ pub(crate) unsafe fn time_fields(py: &PyToken<'_>, object: *mut u8) -> Option<(u
     }
 }
 
-extern "C" fn member_get(descriptor: u64, instance: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn member_get(__context: u64, descriptor: u64, instance: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let descriptor = obj_from_bits(descriptor).as_ptr().unwrap();
         let class = unsafe { crate::object::layout::native_descriptor_owner_bits(descriptor) };
         let Some(spec) = Spec::read(py, class) else {
@@ -441,8 +443,10 @@ fn set_attr(py: &PyToken<'_>, class: *mut u8, name: &[u8], value: u64) -> bool {
     }
 }
 
-extern "C" fn construct(declaring: u64, args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn construct(__context: u64, declaring: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(args) = NativeArguments::read(py, "structseq", args, kwargs) else {
             return MoltObject::none().bits();
         };
@@ -589,8 +593,10 @@ extern "C" fn construct(declaring: u64, args: u64, kwargs: u64) -> u64 {
     })
 }
 
-extern "C" fn repr(instance: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn repr(__context: u64, instance: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let class = type_of_bits(py, instance);
         let Some(spec) = Spec::read(py, class) else {
             return MoltObject::none().bits();
@@ -639,8 +645,10 @@ extern "C" fn repr(instance: u64) -> u64 {
                 let value = unsafe { read_field(py, object, &spec, index) };
                 // The shared writer copies WTF-8 before retiring each callback
                 // string and preserves its pending error if growth fails.
-                output
-                    .append_output(FormatOutput::OwnedString(molt_repr_from_obj(value)), false)?;
+                output.append_output(
+                    FormatOutput::OwnedString(molt_repr_from_obj_attached_body(py, value)),
+                    false,
+                )?;
             }
             output.append_bytes(b")")?;
             Ok(output.finish())
@@ -652,8 +660,10 @@ extern "C" fn repr(instance: u64) -> u64 {
     })
 }
 
-extern "C" fn reduce(instance: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn reduce(__context: u64, instance: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let class = type_of_bits(py, instance);
         let Some(spec) = Spec::read(py, class) else {
             return MoltObject::none().bits();
@@ -687,8 +697,10 @@ extern "C" fn reduce(instance: u64) -> u64 {
     })
 }
 
-extern "C" fn replace(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn replace(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         // METH_VARARGS|METH_KEYWORDS consumes the original keyword dictionary.
         // A binding snapshot would retain popped values beyond CPython's phase.
         let Some(positional) = obj_from_bits(args)
@@ -753,7 +765,8 @@ extern "C" fn replace(args: u64, kwargs: u64) -> u64 {
         for (index, &name) in spec.names.iter().enumerate() {
             let value = owned(
                 py,
-                molt_dict_pop(
+                molt_dict_pop_attached_body(
+                    py,
                     kwargs,
                     name,
                     missing_bits(py),
@@ -798,7 +811,7 @@ extern "C" fn replace(args: u64, kwargs: u64) -> u64 {
                 let mut output = FormatWriter::new(py);
                 output.append_bytes(b"Got unexpected field name(s): ")?;
                 output.append_output(
-                    FormatOutput::OwnedString(molt_repr_from_obj(names.bits())),
+                    FormatOutput::OwnedString(molt_repr_from_obj_attached_body(py, names.bits())),
                     false,
                 )?;
                 output.finish().into_bytes_result(py)
@@ -818,8 +831,9 @@ extern "C" fn replace(args: u64, kwargs: u64) -> u64 {
 
 /// Declaration-only boundary used by sys's one shared factory. Names/docs are
 /// exact immutable tuples; public providers cannot alter the sealed spec later.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_structseq_type(
+
+pub(crate) fn molt_structseq_type_attached_body(
+    _py: &crate::PyToken<'_>,
     name: u64,
     module: u64,
     names: u64,
@@ -829,7 +843,7 @@ pub extern "C" fn molt_structseq_type(
     static_origin: u64,
     doc: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if exact(py, name, TYPE_ID_STRING).is_none()
             || (!obj_from_bits(module).is_none() && exact(py, module, TYPE_ID_STRING).is_none())
             || obj_from_bits(static_origin).as_bool().is_none()
@@ -881,7 +895,7 @@ pub extern "C" fn molt_structseq_type(
         }
         let bits = MoltObject::from_ptr(class).bits();
         let class_owner = owned(py, bits);
-        crate::molt_class_set_base(bits, builtin_classes(py).tuple);
+        crate::molt_class_set_base_attached_body(py, bits, builtin_classes(py).tuple);
         if exception_pending(py)
             || (!obj_from_bits(module).is_none() && !set_attr(py, class, b"__module__", module))
             || !set_attr(py, class, b"__doc__", doc)
@@ -905,7 +919,7 @@ pub extern "C" fn molt_structseq_type(
                 return MoltObject::none().bits();
             }
         }
-        let mut hidden_names = Vec::new();
+        let mut hidden_names = molt_runtime_core::RuntimeValueCollection::new(py.core_token());
         if hidden_names
             .try_reserve_exact(spec.names.len() - spec.visible)
             .is_err()
@@ -920,10 +934,7 @@ pub extern "C" fn molt_structseq_type(
             }
             hidden_names.push(owned(py, MoltObject::from_ptr(pointer).bits()));
         }
-        let slots = owned(
-            py,
-            tuple(py, OwnedRuntimeValue::as_bits_slice(&hidden_names)),
-        );
+        let slots = owned(py, tuple(py, hidden_names.as_bits_slice()));
         if exception_pending(py) {
             return MoltObject::none().bits();
         }
@@ -945,12 +956,12 @@ pub extern "C" fn molt_structseq_type(
         }
         // Native storage keys are not Python members; the public descriptors
         // below are the only namespace projection of the field declaration.
-        for name in &hidden_names {
+        for &name in hidden_names.as_bits_slice() {
             if unsafe {
                 crate::object::ops::dict_del_in_place(
                     py,
                     obj_from_bits(namespace.bits()).as_ptr().unwrap(),
-                    name.bits(),
+                    name,
                 )
             }
             .is_err()
@@ -1095,9 +1106,12 @@ pub extern "C" fn molt_structseq_type(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_structseq_new(class: u64, values: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_structseq_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    class: u64,
+    values: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(values) = exact(py, values, TYPE_ID_TUPLE) else {
             return raise_exception(
                 py,
@@ -1191,8 +1205,8 @@ unsafe fn from_description(
         if exception_pending(py) {
             return MoltObject::none().bits();
         }
-        let mut names = Vec::new();
-        let mut docs = Vec::new();
+        let mut names = molt_runtime_core::RuntimeValueCollection::new(py.core_token());
+        let mut docs = molt_runtime_core::RuntimeValueCollection::new(py.core_token());
         let mut field = (*desc).fields;
         while !(*field).name.is_null() {
             if names.len() == u32::MAX as usize
@@ -1218,15 +1232,16 @@ unsafe fn from_description(
             }
             field = field.add(1);
         }
-        let names = owned(py, tuple(py, OwnedRuntimeValue::as_bits_slice(&names)));
+        let names = owned(py, tuple(py, names.as_bits_slice()));
         if exception_pending(py) {
             return MoltObject::none().bits();
         }
-        let docs = owned(py, tuple(py, OwnedRuntimeValue::as_bits_slice(&docs)));
+        let docs = owned(py, tuple(py, docs.as_bits_slice()));
         if exception_pending(py) {
             return MoltObject::none().bits();
         }
-        molt_structseq_type(
+        molt_structseq_type_attached_body(
+            py,
             name.bits(),
             module.bits(),
             names.bits(),
@@ -1238,3 +1253,5 @@ unsafe fn from_description(
         )
     }
 }
+
+include!("../attached_exports_generated/builtins/structseq.rs");

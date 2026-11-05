@@ -255,15 +255,15 @@ impl WrapperMember {
 /// and metadata lookup; commit cannot fail. Native watchers run only after all
 /// namespaces, runtime epochs and native tags are coherent. Until commit, live
 /// dictionaries, class versions, and the publication receipt remain untouched.
-pub(crate) struct WrapperMembersPublication {
+pub(crate) struct WrapperMembersPublication<'guard> {
     version_key: u64,
-    staged_owners: Vec<PtrDropGuard>,
+    staged_owners: Vec<PtrDropGuard<'guard>>,
     publications: Vec<(Option<*mut u8>, *mut u8, *mut u8)>,
     native_invalidation: molt_cpython_abi::api::typeobj::TypeNamespaceInvalidation,
 }
 
-impl WrapperMembersPublication {
-    pub(crate) fn commit(self, py: &PyToken<'_>) {
+impl<'guard> WrapperMembersPublication<'guard> {
+    pub(crate) fn commit(self, py: &'guard PyToken<'guard>) {
         unsafe {
             crate::gil_assert();
             for &(_, live, staged) in &self.publications {
@@ -289,11 +289,11 @@ impl WrapperMembersPublication {
 
 /// Prepare the projection for a candidate target before the caller publishes
 /// its sys.version_info/sys.version pair. No version parser lives here.
-pub(crate) fn prepare_wrapper_members(
-    py: &PyToken<'_>,
+pub(crate) fn prepare_wrapper_members<'guard>(
+    py: &'guard PyToken<'guard>,
     major: i64,
     minor: i64,
-) -> Option<WrapperMembersPublication> {
+) -> Option<WrapperMembersPublication<'guard>> {
     let result = (|| unsafe {
         crate::gil_assert();
         if exception_pending(py) {
@@ -379,9 +379,9 @@ pub(crate) fn prepare_wrapper_members(
             let class = obj_from_bits(class_bits).as_ptr().unwrap();
             let dictionary = class_dict_bits(class);
             let live = obj_from_bits(dictionary).as_ptr().unwrap();
-            let staged_bits = crate::object::ops_dict::molt_dict_copy(dictionary);
+            let staged_bits = crate::object::ops_dict::molt_dict_copy_attached_body(py, dictionary);
             let staged = obj_from_bits(staged_bits).as_ptr()?;
-            staged_owners.push(PtrDropGuard::new(staged));
+            staged_owners.push(PtrDropGuard::new(py, staged));
             if exception_pending(py) {
                 return None;
             }
@@ -395,7 +395,7 @@ pub(crate) fn prepare_wrapper_members(
                     continue;
                 }
                 let name_bits = member.name.owned_bits(py)?;
-                let _name_owner = PtrDropGuard::new(obj_from_bits(name_bits).as_ptr().unwrap());
+                let _name_owner = PtrDropGuard::new(py, obj_from_bits(name_bits).as_ptr().unwrap());
                 let (getter, setter, deleter) =
                     if matches!(member.operation, MemberOperation::RootMetadata(_)) {
                         let none = MoltObject::none().bits();
@@ -462,7 +462,7 @@ pub(crate) fn prepare_wrapper_members(
                     },
                 );
                 let descriptor_ptr = obj_from_bits(descriptor).as_ptr()?;
-                let _descriptor_owner = PtrDropGuard::new(descriptor_ptr);
+                let _descriptor_owner = PtrDropGuard::new(py, descriptor_ptr);
                 if exception_pending(py) {
                     return None;
                 }
@@ -540,9 +540,10 @@ pub(crate) fn prepare_wrapper_members(
                 {
                     *staged
                 } else {
-                    let staged_bits = crate::object::ops_dict::molt_dict_copy(dictionary);
+                    let staged_bits =
+                        crate::object::ops_dict::molt_dict_copy_attached_body(py, dictionary);
                     let staged = obj_from_bits(staged_bits).as_ptr()?;
-                    staged_owners.push(PtrDropGuard::new(staged));
+                    staged_owners.push(PtrDropGuard::new(py, staged));
                     if exception_pending(py) {
                         return None;
                     }
@@ -711,9 +712,12 @@ unsafe fn coroutine_member_value(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_wrapper_member_get(descriptor: u64, instance: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_wrapper_member_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    descriptor: u64,
+    instance: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         unsafe {
             let Some((operation, object, name)) = callback_member(py, descriptor, instance) else {
                 return raise_exception::<u64>(
@@ -858,7 +862,7 @@ unsafe fn mutate_member(
                 };
                 inc_ref_bits(py, dictionary);
                 let dictionary = obj_from_bits(dictionary).as_ptr().unwrap();
-                let _dictionary_owner = PtrDropGuard::new(dictionary);
+                let _dictionary_owner = PtrDropGuard::new(py, dictionary);
                 match value {
                     Some(value) => {
                         if !dict_set_in_place(py, dictionary, name, value) {
@@ -896,16 +900,23 @@ unsafe fn mutate_member(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_wrapper_member_set(descriptor: u64, instance: u64, value: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_wrapper_member_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    descriptor: u64,
+    instance: u64,
+    value: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         unsafe { mutate_member(py, descriptor, instance, Some(value)) }
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_wrapper_member_delete(descriptor: u64, instance: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_wrapper_member_delete_attached_body(
+    _py: &crate::PyToken<'_>,
+    descriptor: u64,
+    instance: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         unsafe { mutate_member(py, descriptor, instance, None) }
     })
 }
@@ -983,7 +994,7 @@ unsafe fn lazy_wrapped_attribute(py: &PyToken<'_>, object: *mut u8, name: u64) -
             let dictionary = crate::object::field_storage::materialize(py, object).ok_or(())?;
             inc_ref_bits(py, dictionary);
             let dictionary_ptr = obj_from_bits(dictionary).as_ptr().unwrap();
-            let _dictionary_owner = PtrDropGuard::new(dictionary_ptr);
+            let _dictionary_owner = PtrDropGuard::new(py, dictionary_ptr);
             if let Some(value) = dict_get_in_place(py, dictionary_ptr, name)? {
                 inc_ref_bits(py, value);
                 return Ok(value);
@@ -1248,7 +1259,8 @@ mod tests {
                             .wrapper_members_version
                             .load(Ordering::Acquire);
                         let publish = || {
-                            crate::object::ops_sys::molt_sys_set_version_info(
+                            crate::object::ops_sys::molt_sys_set_version_info_attached_body(
+                                py,
                                 MoltObject::from_int(3).bits(),
                                 MoltObject::from_int(minor).bits(),
                                 MoltObject::from_int(0).bits(),
@@ -1275,7 +1287,7 @@ mod tests {
                             );
                             drop(tracker);
                             errors::PyErr_Clear();
-                            molt_exception_clear();
+                            molt_exception_clear_attached_body(py);
                             assert_eq!(
                                 crate::object::ops_sys::runtime_target_python_info(runtime_state(
                                     py
@@ -1396,7 +1408,8 @@ mod tests {
                         );
                         // A rejected startup update cannot publish staged root
                         // descriptors or advance the version receipt.
-                        crate::object::ops_sys::molt_sys_set_version_info(
+                        crate::object::ops_sys::molt_sys_set_version_info_attached_body(
+                            py,
                             MoltObject::from_int(3).bits(),
                             MoltObject::from_int(13).bits(),
                             MoltObject::from_int(0).bits(),
@@ -1404,7 +1417,7 @@ mod tests {
                             MoltObject::from_int(0).bits(),
                         );
                         assert!(exception_pending(py));
-                        molt_exception_clear();
+                        molt_exception_clear_attached_body(py);
                         assert_eq!(class_dict_bits(root), namespace);
                         assert_eq!(class_layout_version_bits(root), epoch);
                         assert_eq!(
@@ -1442,14 +1455,14 @@ mod tests {
                     .unwrap();
                 let object_class_name = dynamic_attr_name_bits(py, b"__objclass__").unwrap();
                 let member_name = dynamic_attr_name_bits(py, b"__name__").unwrap();
-                let read_name = molt_get_attr_name(func, member_name);
-                let read_owner = molt_get_attr_name(func, object_class_name);
+                let read_name = molt_get_attr_name_attached_body(py, func, member_name);
+                let read_owner = molt_get_attr_name_attached_body(py, func, object_class_name);
                 assert!(!exception_pending(py));
                 assert_eq!(read_name, func_name);
                 assert_eq!(read_owner, classes.staticmethod);
                 dec_ref_bits(py, read_name);
                 dec_ref_bits(py, read_owner);
-                molt_set_attr_name(func, member_name, MoltObject::none().bits());
+                molt_set_attr_name_attached_body(py, func, member_name, MoltObject::none().bits());
                 assert!(clear_attribute_error_if_pending(py));
                 let class_read = crate::builtins::types::native_descriptor_get(
                     py,
@@ -1584,7 +1597,8 @@ mod tests {
             let bases = alloc_tuple(py, &[base]);
             assert!(!bases.is_null());
             let bases_bits = MoltObject::from_ptr(bases).bits();
-            let result = crate::builtins::types::molt_type_new(
+            let result = crate::builtins::types::molt_type_new_attached_body(
+                py,
                 builtin_classes(py).type_obj,
                 name,
                 bases_bits,
@@ -1600,34 +1614,63 @@ mod tests {
         }
     }
 
-    extern "C" fn fallback_returns_name(_receiver: u64, name: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn fallback_returns_name(__context: u64, _receiver: u64, name: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             inc_ref_bits(py, name);
             name
-        })
+        }
     }
 
-    extern "C" fn getter_replaces_fallback_then_misses(receiver: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn getter_replaces_fallback_then_misses(__context: u64, receiver: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             let name = dynamic_attr_name_bits(py, b"__getattr__").unwrap();
-            molt_set_attr_name(type_of_bits(py, receiver), name, MoltObject::none().bits());
+            molt_set_attr_name_attached_body(
+                py,
+                type_of_bits(py, receiver),
+                name,
+                MoltObject::none().bits(),
+            );
             dec_ref_bits(py, name);
             raise_exception::<u64>(
                 py,
                 BuiltinExc::AttributeError,
                 "property miss after fallback replacement",
             )
-        })
+        }
     }
 
-    extern "C" fn getter_runtime_error(_receiver: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn getter_runtime_error(__context: u64, _receiver: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             raise_exception::<u64>(
                 py,
                 BuiltinExc::RuntimeError,
                 "non-attribute descriptor failure",
             )
-        })
+        }
     }
 
     #[test]
@@ -1671,24 +1714,24 @@ mod tests {
                 let instance =
                     crate::alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap());
                 let name = dynamic_attr_name_bits(py, b"probe").unwrap();
-                let result = molt_get_attr_name(instance, name);
+                let result = molt_get_attr_name_attached_body(py, instance, name);
                 assert!(!exception_pending(py));
                 assert_eq!(result, name);
                 dec_ref_bits(py, result);
-                crate::molt_object_getattribute(instance, name);
+                crate::molt_object_getattribute_attached_body(py, instance, name);
                 assert!(clear_attribute_error_if_pending(py));
                 let hook_name = dynamic_attr_name_bits(py, b"__getattr__").unwrap();
-                molt_set_attr_name(class, hook_name, fallback);
+                molt_set_attr_name_attached_body(py, class, hook_name, fallback);
                 let failure_name = dynamic_attr_name_bits(py, b"failure").unwrap();
-                molt_get_attr_name(instance, failure_name);
+                molt_get_attr_name_attached_body(py, instance, failure_name);
                 assert!(exception_pending(py));
-                let error = molt_exception_last_pending();
+                let error = molt_exception_last_pending_attached_body(py);
                 assert!(exception_matches_kind(
                     py,
                     error,
                     crate::BuiltinExc::RuntimeError
                 ));
-                molt_exception_clear();
+                molt_exception_clear_attached_body(py);
                 dec_ref_bits(py, error);
                 for bits in [
                     failure_name,
@@ -1760,26 +1803,26 @@ mod tests {
                 );
                 assert_eq!(object_class_bits(instance_ptr), class);
                 let missing = dynamic_attr_name_bits(py, b"probe").unwrap();
-                let result = molt_get_attr_name(instance, missing);
+                let result = molt_get_attr_name_attached_body(py, instance, missing);
                 assert!(!exception_pending(py));
                 assert_eq!(result, missing);
                 dec_ref_bits(py, result);
-                crate::molt_object_getattribute(instance, missing);
+                crate::molt_object_getattribute_attached_body(py, instance, missing);
                 assert!(clear_attribute_error_if_pending(py));
                 let append = dynamic_attr_name_bits(py, b"append").unwrap();
-                molt_get_attr_name(instance, append);
+                molt_get_attr_name_attached_body(py, instance, append);
                 assert!(exception_pending(py));
-                let error = molt_exception_last_pending();
+                let error = molt_exception_last_pending_attached_body(py);
                 assert!(exception_matches_kind(
                     py,
                     error,
                     crate::BuiltinExc::RuntimeError
                 ));
-                molt_exception_clear();
+                molt_exception_clear_attached_body(py);
                 dec_ref_bits(py, error);
                 // An unshadowed builtin member is found before __getattr__.
                 let clear = dynamic_attr_name_bits(py, b"clear").unwrap();
-                let result = molt_get_attr_name(instance, clear);
+                let result = molt_get_attr_name_attached_body(py, instance, clear);
                 assert!(!exception_pending(py));
                 assert_ne!(result, clear);
                 dec_ref_bits(py, result);
@@ -1812,11 +1855,11 @@ mod tests {
                 let instance =
                     crate::alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap());
                 let name = dynamic_attr_name_bits(py, b"__name__").unwrap();
-                let result = molt_get_attr_name(instance, name);
+                let result = molt_get_attr_name_attached_body(py, instance, name);
                 assert!(!exception_pending(py));
                 assert_eq!(result, name);
                 dec_ref_bits(py, result);
-                crate::molt_object_getattribute(instance, name);
+                crate::molt_object_getattribute_attached_body(py, instance, name);
                 assert!(clear_attribute_error_if_pending(py));
                 for bits in [name, instance, class, fallback] {
                     dec_ref_bits(py, bits);
@@ -1837,14 +1880,25 @@ mod tests {
                 assert!(!object.is_null());
                 let doc = dynamic_attr_name_bits(py, b"__doc__").unwrap();
                 let text = dynamic_attr_name_bits(py, b"native property documentation").unwrap();
-                molt_set_attr_name(MoltObject::from_ptr(object).bits(), doc, text);
+                molt_set_attr_name_attached_body(
+                    py,
+                    MoltObject::from_ptr(object).bits(),
+                    doc,
+                    text,
+                );
                 assert!(!exception_pending(py));
-                let actual = molt_get_attr_name(MoltObject::from_ptr(object).bits(), doc);
+                let actual =
+                    molt_get_attr_name_attached_body(py, MoltObject::from_ptr(object).bits(), doc);
                 assert_eq!(actual, text);
                 dec_ref_bits(py, actual);
                 // Assigning None is an actual replacement, never a request to
                 // fall back to a getter's subsequently changed documentation.
-                molt_set_attr_name(MoltObject::from_ptr(object).bits(), doc, none);
+                molt_set_attr_name_attached_body(
+                    py,
+                    MoltObject::from_ptr(object).bits(),
+                    doc,
+                    none,
+                );
                 assert_eq!(layout::property_doc_bits(object), none);
                 assert!(layout::property_replace_name_bits(py, object, none));
                 assert_eq!(property_name_value(py, object), Ok(Some(none)));
@@ -1884,21 +1938,26 @@ mod tests {
                             name_bits,
                             MoltObject::none().bits()
                         ));
-                        let actual =
-                            molt_get_attr_name(MoltObject::from_ptr(object).bits(), name_bits);
+                        let actual = molt_get_attr_name_attached_body(
+                            py,
+                            MoltObject::from_ptr(object).bits(),
+                            name_bits,
+                        );
                         assert_eq!(actual, target);
                         dec_ref_bits(py, actual);
                         for value in [Some(MoltObject::none().bits()), None] {
                             match value {
                                 Some(value) => {
-                                    molt_set_attr_name(
+                                    molt_set_attr_name_attached_body(
+                                        py,
                                         MoltObject::from_ptr(object).bits(),
                                         name_bits,
                                         value,
                                     );
                                 }
                                 None => {
-                                    molt_del_attr_name(
+                                    molt_del_attr_name_attached_body(
+                                        py,
                                         MoltObject::from_ptr(object).bits(),
                                         name_bits,
                                     );
@@ -1916,3 +1975,5 @@ mod tests {
         });
     }
 }
+
+include!("../../attached_exports_generated/builtins/attributes/wrapper_attrs.rs");

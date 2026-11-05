@@ -4,6 +4,7 @@ use crate::wasm::test_execution::{run_node_test_script, wasm_test_temp_dir};
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
+use wasm_encoder::FunctionSection;
 
 // Execute real dispatch conditions: a value-oblivious CFG walker invents
 // impossible state-dispatch paths before entry. Runtime imports are explicit
@@ -40,7 +41,7 @@ function instantiate(path) {
   const hooks = {
   refcount_admission: () => 0n, // isolated image: no runtime execution custody
 
-    thread_record() {
+    initialize_record() {
       const record=256, work=288;
       const view=new DataView(imports.env.memory.buffer);
       // Keep the pending byte armed, as the work word below, so every inline
@@ -326,18 +327,19 @@ function instantiate(path) {
     }
     assert.equal(entry.kind, 'function', 'unexpected import ' + entry.module + '.' + entry.name);
     imports[entry.module] ??= {};
-    imports[entry.module][entry.name] = hooks[entry.name] ?? (() => {
+    imports[entry.module][entry.name] = hooks[runtimeImportName(entry.name)] ?? (() => {
       throw new Error(state.label + ': unexpected runtime call ' + entry.module + '.' + entry.name);
     });
   }
-  return new WebAssembly.Instance(module, imports).exports;
+  initializeExecutionRecord(imports.env.memory, hooks.initialize_record());
+  return new WebAssembly.Instance(module, attachedImports(imports)).exports;
 }
 function verifyOwner(exports, owner, lines, polls, exceptionAt = 0, failEntry = false) {
   // Failed capture must consume only its false attempt marker, even when a
   // caller frame already exists and would otherwise accept line mutations.
   reset(owner + ' exceptionAt=' + exceptionAt + ' failEntry=' + failEntry,
         failEntry, exceptionAt, failEntry);
-  const result = exports[owner]();
+  const result = exports[compiledSymbol(owner)](executionContext);
   ensure(state.depth === state.initialDepth && state.enters === 1 && state.exits === 1
          && state.attempts.length === 0,
          'owner return must enter/pop exactly once');
@@ -353,7 +355,7 @@ const app = instantiate(baseline.module);
 // Unmodified generated chunks: their real status and inherited frame behavior.
 for (const chunk of baseline.chunks) {
   reset('actual inherited chunk ' + chunk.name, true);
-  const status = app[chunk.name]();
+  const status = app[compiledSymbol(chunk.name)](executionContext);
   assert.equal(status, chunk.continues ? boxedTrue : boxedFalse, state.label);
   ensure(state.depth === 1 && state.enters === 0 && state.exits === 0,
          'inherited chunk changed caller frame ownership');
@@ -391,8 +393,8 @@ for (const test of config.return_modules) {
   reset('boxed user-ABI return ' + test.lane);
   const app = instantiate(test.module);
   state.expectsTask = test.stateful;
-  const entry = app[test.export_name ?? 'molt_main'];
-  const result = test.stateful ? entry(64n) : entry();
+  const entry = app[compiledSymbol(test.export_name ?? 'molt_main')];
+  const result = test.stateful ? entry(executionContext, 64n) : entry(executionContext);
   assert.equal(result, BigInt(test.expected), state.label);
   assert.equal(state.taskReads, test.stateful ? 1 : 0, state.label);
   ensure(state.enters === 0 && state.exits === 0, 'frame-free return changed lifecycle');
@@ -405,7 +407,7 @@ for (const test of config.activation_modules) {
     state.activationIndex = index;
     state.expectsTask = test.stateful;
     state.resumeState = resumeState;
-    const result = test.stateful ? app.molt_main(64n) : app.molt_main();
+    const result = test.stateful ? app[compiledSymbol('molt_main')](executionContext, 64n) : app[compiledSymbol('molt_main')](executionContext);
     assert.equal(result, BigInt(expected), state.label);
     ensure(state.depth === state.initialDepth && state.enters === 1 && state.exits === 1
            && state.attempts.length === 0, 'activation leaked or consumed caller frame');
@@ -422,7 +424,7 @@ for (const chooseView of [true,false]) {
   state.mixedAnchorLive = false;
   state.mixedReleased = new Set();
   const app = instantiate(config.mixed_home_module);
-  const result = app.molt_main(chooseView ? boxedTrue : boxedFalse);
+  const result = app[compiledSymbol('molt_main')](executionContext, chooseView ? boxedTrue : boxedFalse);
   assert.equal(state.boxes,2,'one construction per distinct literal; no binding rematerialization');
   assert.equal(state.mixedAnchorChecks,2,'both constructors observed before frame entry');
   assert.equal(state.mixedAnchorAllocations,1,'one invocation-owned literal region');
@@ -451,7 +453,7 @@ for (const test of config.home_modules) {
     state.expectsTask = test.stateful;
     state.resumeState = resume;
     const homeApp = instantiate(test.module);
-    const result = test.stateful ? homeApp.molt_main(64n) : homeApp.molt_main();
+    const result = test.stateful ? homeApp[compiledSymbol('molt_main')](executionContext, 64n) : homeApp[compiledSymbol('molt_main')](executionContext);
     const early = anchorFailure!=='none';
     const failed = failure !== 0 || failEntry || failLend || early;
     assert.equal(result,failed ? boxedNone : 0x7ffc000000000309n,state.label);
@@ -484,14 +486,14 @@ for (const test of config.home_modules) {
 }
 reset('Python exception returns through framed caller ABI', true);
 const unwindApp = instantiate(config.unwind_module);
-assert.equal(unwindApp.molt_main(), boxedNone);
+assert.equal(unwindApp[compiledSymbol('molt_main')](executionContext), boxedNone);
 ensure(state.pending && state.depth === state.initialDepth && state.enters === 1
        && state.exits === 1 && state.attempts.length === 0,
        'callee exception bypassed activation cleanup');
 reset('foreign WASM exception retains identity through activation cleanup', true);
 const foreign = new WebAssembly.Exception(new WebAssembly.Tag({parameters: []}), []);
 state.foreignException = foreign;
-assert.throws(() => unwindApp.molt_main(), error => error === foreign);
+assert.throws(() => unwindApp[compiledSymbol('molt_main')](executionContext), error => error === foreign);
 ensure(!state.pending && state.depth === state.initialDepth && state.enters === 1
        && state.exits === 1, 'foreign exception bypassed activation cleanup');
 console.log('split-frame execution: checked/failed entry, actual chunks, normal/exceptional owner, status edges, negative controls passed');
@@ -562,15 +564,18 @@ fn chunk_case(chunk: &FunctionIR) -> serde_json::Value {
 }
 
 fn malformed_frame_module() -> Vec<u8> {
+    use crate::wasm_binary::Function;
     use wasm_encoder::{
-        CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection,
-        ImportSection, Instruction, Module, TypeSection, ValType,
+        CodeSection, EntityType, ExportKind, ExportSection, ImportSection, Instruction, Module,
+        TypeSection, ValType,
     };
     let mut module = Module::new();
     let mut types = TypeSection::new();
+    types
+        .ty()
+        .function([ValType::I64, ValType::I64], [ValType::I64]);
     types.ty().function([ValType::I64], [ValType::I64]);
-    types.ty().function([], [ValType::I64]);
-    types.ty().function([], []);
+    types.ty().function([ValType::I64], []);
     module.section(&types);
     let mut imports = ImportSection::new();
     imports.import("molt_runtime", "trace_enter_slot", EntityType::Function(0));
@@ -589,9 +594,14 @@ fn malformed_frame_module() -> Vec<u8> {
     .enumerate()
     {
         functions.function(2);
-        exports.export(name, ExportKind::Func, 2 + index as u32);
+        exports.export(
+            &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(name),
+            ExportKind::Func,
+            2 + index as u32,
+        );
         let mut body = Function::new([]);
         for callee in calls {
+            body.instruction(&Instruction::LocalGet(0));
             if callee == 0 {
                 // Keep the observer's admitted owner; each control changes
                 // only frame lifecycle, never code identity.
@@ -1311,9 +1321,10 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
 
 #[test]
 fn exported_body_inspection_counts_import_entries_not_unique_names() {
+    use crate::wasm_binary::Function;
     use wasm_encoder::{
-        CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection,
-        ImportSection, Instruction, Module, TypeSection,
+        CodeSection, EntityType, ExportKind, ExportSection, ImportSection, Instruction, Module,
+        TypeSection,
     };
     let mut module = Module::new();
     let mut types = TypeSection::new();

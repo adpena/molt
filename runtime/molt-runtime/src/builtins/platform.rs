@@ -8,7 +8,6 @@ use std::sync::{Mutex, OnceLock};
 use serde_json::Value as JsonValue;
 
 use crate::audit::{AuditArgs, AuditDecision, AuditEvent, audit_capability_decision, audit_emit};
-use crate::builtins::exceptions::molt_exception_last_pending;
 use crate::builtins::modules::{ExecutionMetadata, execute_compiled_module, sys_modules_dict_bits};
 use crate::object::ops_sys::runtime_target_minor;
 use crate::runtime_flags::{self, RuntimeFlag};
@@ -269,9 +268,8 @@ pub(crate) fn startup_sys_path(py: &PyToken<'_>) -> Vec<String> {
     sys_bootstrap_state_from_module_file(py, None).path
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_startup_entry_is_spawn() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_startup_entry_is_spawn_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         MoltObject::from_bool(
             platform_state(py)
                 .startup_environment
@@ -283,9 +281,8 @@ pub extern "C" fn molt_startup_entry_is_spawn() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_startup_mp_spawn_enabled() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_startup_mp_spawn_enabled_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         MoltObject::from_bool(
             platform_state(py)
                 .startup_environment
@@ -459,7 +456,7 @@ fn pending_exception_matches_any(_py: &PyToken<'_>, kinds: &[crate::BuiltinExc])
     if !exception_pending(_py) {
         return false;
     }
-    let exc_bits = molt_exception_last_pending();
+    let exc_bits = molt_exception_last_pending_attached_body(_py);
     let matches = kinds
         .iter()
         .any(|kind| crate::builtins::exceptions::exception_matches_kind(_py, exc_bits, *kind));
@@ -492,17 +489,21 @@ fn call_callable_positional(
         4 => {}
         _ => {}
     }
-    let builder_bits = molt_callargs_new(args.len() as u64, 0);
+    let builder_bits = molt_callargs_new_attached_body(_py, args.len() as u64, 0);
     if builder_bits == 0 {
         return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
     }
     for &arg in args {
-        let _ = unsafe { molt_callargs_push_pos(builder_bits, arg) };
+        let _ = unsafe { molt_callargs_push_pos_attached_body(_py, builder_bits, arg) };
         if exception_pending(_py) {
             return Err(MoltObject::none().bits());
         }
     }
-    Ok(molt_call_bind(callable_bits, builder_bits))
+    Ok(molt_call_bind_attached_body(
+        _py,
+        callable_bits,
+        builder_bits,
+    ))
 }
 
 fn importlib_extension_exec_unavailable(
@@ -619,7 +620,10 @@ fn source_extension_loader_dlopen(
                 .get(init_symbol.as_bytes())
                 .map_err(|err| format!("missing init symbol {init_symbol}: {err}"))?
         };
-        unsafe { init_fn() }
+        let foreign = molt_cpython_abi::hooks::ForeignExecutionGuard::capture();
+        let result = unsafe { init_fn() };
+        foreign.validate();
+        result
     };
     if exception_pending(_py) {
         clear_exception(_py);
@@ -757,7 +761,7 @@ fn importlib_reader_lookup_callable(
     let Some(attr_bits) = getattr_optional_bits(_py, target_bits, name_bits)? else {
         return Ok(None);
     };
-    let callable_bits = molt_is_callable(attr_bits);
+    let callable_bits = molt_is_callable_attached_body(_py, attr_bits);
     let is_callable = is_truthy(_py, obj_from_bits(callable_bits));
     if !obj_from_bits(callable_bits).is_none() {
         dec_ref_bits(_py, callable_bits);
@@ -1268,8 +1272,10 @@ fn pending_exception_kind_and_message(_py: &PyToken<'_>) -> Option<(String, Stri
     if !exception_pending(_py) {
         return None;
     }
-    let exception =
-        crate::builtins::exceptions::ExceptionValue::adopt(_py, molt_exception_last_pending());
+    let exception = crate::builtins::exceptions::ExceptionValue::adopt(
+        _py,
+        molt_exception_last_pending_attached_body(_py),
+    );
     let exc_ptr = maybe_ptr_from_bits(exception.bits())?;
     let kind = crate::builtins::exceptions::exception_diagnostic_name(exc_ptr);
     let mut message = String::new();
@@ -1323,7 +1329,8 @@ fn importlib_set_attr(
     value_bits: u64,
 ) -> Result<(), u64> {
     let attr_name = name.bits(_py);
-    let result_bits = crate::molt_set_attr_name(target_bits, attr_name, value_bits);
+    let result_bits =
+        crate::molt_set_attr_name_attached_body(_py, target_bits, attr_name, value_bits);
     if !obj_from_bits(result_bits).is_none() {
         dec_ref_bits(_py, result_bits);
     }
@@ -1930,7 +1937,8 @@ fn importlib_import_via_spec(
                 use crate::builtins::exceptions::{
                     ExceptionCleanupPolicy, finish_exception_cleanup, take_raised,
                 };
-                let error = ExceptionValue::adopt(_py, molt_exception_last_pending());
+                let error =
+                    ExceptionValue::adopt(_py, molt_exception_last_pending_attached_body(_py));
                 if !crate::builtins::exceptions::exception_matches_kind(
                     _py,
                     error.bits(),
@@ -1960,7 +1968,10 @@ fn importlib_import_via_spec(
                             &message,
                             resolved_bits,
                         );
-                        let missing = ExceptionValue::adopt(_py, molt_exception_last_pending());
+                        let missing = ExceptionValue::adopt(
+                            _py,
+                            molt_exception_last_pending_attached_body(_py),
+                        );
                         if crate::builtins::exceptions::exception_matches_kind(
                             _py,
                             missing.bits(),
@@ -2480,13 +2491,13 @@ fn importlib_spec_execution_transaction(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_load_module_from_spec(
+pub(crate) fn molt_importlib_load_module_from_spec_attached_body(
+    _py: &crate::PyToken<'_>,
     loader_bits: u64,
     fullname_bits: u64,
     spec_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let fullname = match string_arg_from_bits(_py, fullname_bits, "fullname") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -2601,3 +2612,5 @@ pub use env_ffi::*;
 #[cfg(test)]
 #[path = "platform_tests.rs"]
 mod tests;
+
+include!("../attached_exports_generated/builtins/platform.rs");

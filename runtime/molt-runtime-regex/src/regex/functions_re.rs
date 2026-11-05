@@ -185,7 +185,7 @@ pub(super) unsafe fn string_storage<'a>(
         ));
     }
     // A genuine provider failure retains its pending exception.
-    unsafe { rt_string_as_bytes(bits) }.ok_or(MoltObject::none().bits())
+    unsafe { rt_string_as_bytes(py, bits) }.ok_or(MoltObject::none().bits())
 }
 
 pub(super) fn string_codepoints(
@@ -204,7 +204,7 @@ fn string_name(_py: &CoreGilToken, bits: u64) -> Option<String> {
     // UTF-8 view even though ordinary runtime strings can contain surrogates.
     // SAFETY: the caller holds the core GIL and the dictionary snapshot keeps
     // each key live during this read.
-    let bytes = unsafe { rt_string_as_bytes(bits) }?;
+    let bytes = unsafe { rt_string_as_bytes(_py, bits) }?;
     // Check the strict UTF-8 boundary independently of storage admission.
     std::str::from_utf8(bytes).ok().map(str::to_owned)
 }
@@ -228,8 +228,8 @@ pub(super) fn replacement_error_result(py: &CoreGilToken, error: ReplacementErro
             let name = unsafe {
                 OwnedRuntimeValue::from_owned_bits(py, MoltObject::from_ptr(name_ptr).bits())
             };
-            let repr_bits = rt_repr(name.bits());
-            if rt_exception_pending() {
+            let repr_bits = rt_repr(py, name.bits());
+            if rt_exception_pending(py) {
                 return MoltObject::none().bits();
             }
             let repr = unsafe { OwnedRuntimeValue::from_owned_bits(py, repr_bits) };
@@ -314,7 +314,7 @@ pub(super) fn re_group_spans_from_sequence(
         ));
     }
     let mut out: Vec<Option<(i64, i64)>> = Vec::new();
-    let elems = unsafe { seq_snapshot(groups_ptr) };
+    let elems = unsafe { seq_snapshot(_py, groups_ptr) };
     for &elem_bits in elems.iter() {
         let elem_obj = obj_from_bits(elem_bits);
         if elem_obj.is_none() {
@@ -336,7 +336,7 @@ pub(super) fn re_group_spans_from_sequence(
                 "group span must be tuple[int, int] or None",
             ));
         }
-        let span = unsafe { seq_snapshot(elem_ptr) };
+        let span = unsafe { seq_snapshot(_py, elem_ptr) };
         if span.len() < 2 {
             return Err(raise_exception::<u64>(
                 _py,
@@ -364,20 +364,24 @@ pub(super) fn re_group_spans_from_sequence(
 }
 
 // Runtime regex ABI entrypoints.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_re_group_values(text_bits: u64, groups_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_re_group_values_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    text_bits: u64,
+    groups_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let spans = match re_group_spans_from_sequence(_py, groups_bits) {
             Ok(value) => value,
             Err(err_bits) => return err_bits,
         };
-        let mut values = Vec::with_capacity(spans.len());
+        let mut values = molt_runtime_core::RuntimeValueCollection::with_capacity(_py, spans.len());
         for span in spans {
             let value_bits = if let Some((start, end)) = span {
                 if start < 0 || end < start {
                     return raise_exception::<_>(_py, BuiltinExc::IndexError, "invalid group span");
                 }
-                let bits = subject_slice_to_object(text_bits, start as usize, end as usize);
+                let bits = subject_slice_to_object(_py, text_bits, start as usize, end as usize);
                 if obj_from_bits(bits).is_none() {
                     // The root bridge owns the admission/error authority.
                     // Preserve exporter and allocation failures unchanged.
@@ -394,10 +398,7 @@ pub extern "C" fn molt_re_group_values(text_bits: u64, groups_bits: u64) -> u64 
             };
             values.push(value_bits);
         }
-        let ptr = alloc_tuple(
-            _py,
-            molt_runtime_core::OwnedRuntimeValue::as_bits_slice(&values),
-        );
+        let ptr = alloc_tuple(_py, values.as_bits_slice());
         if ptr.is_null() {
             MoltObject::none().bits()
         } else {
@@ -406,13 +407,13 @@ pub extern "C" fn molt_re_group_values(text_bits: u64, groups_bits: u64) -> u64 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_re_expand_replacement(
+pub fn molt_re_expand_replacement_attached_body(
+    _py: &molt_runtime_core::PyToken,
     repl_bits: u64,
     group_values_bits: u64,
     group_names_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let repl_obj = obj_from_bits(repl_bits);
         let Some(repl_ptr) = repl_obj.as_ptr() else {
             return raise_exception::<_>(
@@ -454,7 +455,7 @@ pub extern "C" fn molt_re_expand_replacement(
             );
         }
         let mut group_values = Vec::new();
-        for &value_bits in unsafe { seq_snapshot(values_ptr) }.iter() {
+        for &value_bits in unsafe { seq_snapshot(_py, values_ptr) }.iter() {
             let value = obj_from_bits(value_bits);
             if value.is_none() {
                 group_values.push(None);
@@ -527,3 +528,5 @@ pub extern "C" fn molt_re_expand_replacement(
         }
     })
 }
+
+include!("../attached_exports_generated/regex/functions_re.rs");

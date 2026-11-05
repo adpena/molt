@@ -258,48 +258,73 @@ unsafe fn dict_commit_insertion(_py: &PyToken<'_>, ptr: *mut u8, key_bits: u64, 
     }
 }
 
-pub(crate) extern "C" fn dict_keys_method(self_bits: u64) -> i64 {
-    molt_dict_keys(self_bits) as i64
+pub(crate) extern "C" fn dict_keys_method(__context: u64, self_bits: u64) -> i64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    molt_dict_keys_attached_body(__attached_py, self_bits) as i64
 }
 
-pub(crate) extern "C" fn dict_values_method(self_bits: u64) -> i64 {
-    molt_dict_values(self_bits) as i64
+pub(crate) extern "C" fn dict_values_method(__context: u64, self_bits: u64) -> i64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    molt_dict_values_attached_body(__attached_py, self_bits) as i64
 }
 
-pub(crate) extern "C" fn dict_items_method(self_bits: u64) -> i64 {
-    molt_dict_items(self_bits) as i64
+pub(crate) extern "C" fn dict_items_method(__context: u64, self_bits: u64) -> i64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    molt_dict_items_attached_body(__attached_py, self_bits) as i64
 }
 
-pub(crate) extern "C" fn dict_get_method(self_bits: u64, key_bits: u64, default_bits: u64) -> i64 {
-    molt_dict_get(self_bits, key_bits, default_bits) as i64
-}
-
-pub(crate) extern "C" fn dict_clear_method(self_bits: u64) -> i64 {
-    crate::object::ops_dict::molt_dict_clear(self_bits) as i64
-}
-
-pub(crate) extern "C" fn dict_copy_method(self_bits: u64) -> i64 {
-    crate::object::ops_dict::molt_dict_copy(self_bits) as i64
-}
-
-pub(crate) extern "C" fn dict_popitem_method(self_bits: u64) -> i64 {
-    crate::object::ops_dict::molt_dict_popitem(self_bits) as i64
-}
-
-pub(crate) extern "C" fn dict_setdefault_method(
+pub(crate) extern "C" fn dict_get_method(
+    __context: u64,
     self_bits: u64,
     key_bits: u64,
     default_bits: u64,
 ) -> i64 {
-    molt_dict_setdefault(self_bits, key_bits, default_bits) as i64
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    molt_dict_get_attached_body(__attached_py, self_bits, key_bits, default_bits) as i64
+}
+
+pub(crate) extern "C" fn dict_clear_method(__context: u64, self_bits: u64) -> i64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::object::ops_dict::molt_dict_clear_attached_body(__attached_py, self_bits) as i64
+}
+
+pub(crate) extern "C" fn dict_copy_method(__context: u64, self_bits: u64) -> i64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::object::ops_dict::molt_dict_copy_attached_body(__attached_py, self_bits) as i64
+}
+
+pub(crate) extern "C" fn dict_popitem_method(__context: u64, self_bits: u64) -> i64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::object::ops_dict::molt_dict_popitem_attached_body(__attached_py, self_bits) as i64
+}
+
+pub(crate) extern "C" fn dict_setdefault_method(
+    __context: u64,
+    self_bits: u64,
+    key_bits: u64,
+    default_bits: u64,
+) -> i64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    molt_dict_setdefault_attached_body(__attached_py, self_bits, key_bits, default_bits) as i64
 }
 
 pub(crate) extern "C" fn dict_fromkeys_method(
+    __context: u64,
     self_bits: u64,
     iterable_bits: u64,
     default_bits: u64,
 ) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, _py, {
         let class_bits = if let Some(ptr) = maybe_ptr_from_bits(self_bits) {
             unsafe {
                 if object_type_id(ptr) == TYPE_ID_TYPE {
@@ -320,7 +345,7 @@ pub(crate) extern "C" fn dict_fromkeys_method(
             );
         }
         let dict_bits = if class_bits == builtins.dict {
-            molt_dict_new(0)
+            molt_dict_new_attached_body(_py, 0)
         } else {
             let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
                 return MoltObject::none().bits() as i64;
@@ -426,12 +451,18 @@ pub(crate) extern "C" fn dict_fromkeys_method(
     })
 }
 
-pub(crate) extern "C" fn dict_update_method(self_bits: u64, other_bits: u64) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) extern "C" fn dict_update_method(
+    __context: u64,
+    self_bits: u64,
+    other_bits: u64,
+) -> i64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, _py, {
         if other_bits == missing_bits(_py) {
             return MoltObject::none().bits() as i64;
         }
-        molt_dict_update(self_bits, other_bits) as i64
+        molt_dict_update_attached_body(_py, self_bits, other_bits) as i64
     })
 }
 
@@ -444,7 +475,7 @@ pub(crate) unsafe fn dict_update_set_via_store(
 ) -> bool {
     crate::gil_assert();
     // StoreIndex returns its borrowed receiver on success and None on failure.
-    let result = molt_store_index(target_bits, key_bits, val_bits);
+    let result = molt_store_index_attached_body(_py, target_bits, key_bits, val_bits);
     result != MoltObject::none().bits() && result == target_bits
 }
 
@@ -504,7 +535,7 @@ pub(crate) unsafe fn dict_inc_in_place(
             let (sum, arithmetic_ok) = match inline_increment_sum(current, delta) {
                 Some(sum) => (sum, true),
                 None => {
-                    let sum = molt_add(current, delta);
+                    let sum = molt_add_attached_body(py, current, delta);
                     (sum, !exception_pending(py))
                 }
             };
@@ -877,28 +908,30 @@ fn split_dict_increment(
 }
 
 /// `for word in line.split(): d[word] = d.get(word, 0) + delta`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_split_ws_dict_inc(
+
+pub(crate) fn molt_string_split_ws_dict_inc_attached_body(
+    _py: &crate::PyToken<'_>,
     line_bits: u64,
     dict_bits: u64,
     delta_bits: u64,
     target_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         split_dict_increment(_py, line_bits, None, dict_bits, delta_bits, target_bits)
     })
 }
 
 /// `for word in line.split(sep): d[word] = d.get(word, 0) + delta`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_split_sep_dict_inc(
+
+pub(crate) fn molt_string_split_sep_dict_inc_attached_body(
+    _py: &crate::PyToken<'_>,
     line_bits: u64,
     sep_bits: u64,
     dict_bits: u64,
     delta_bits: u64,
     target_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         split_dict_increment(
             _py,
             line_bits,
@@ -2772,3 +2805,5 @@ pub(crate) unsafe fn dict_clear_in_place_shutdown(_py: &PyToken<'_>, ptr: *mut u
         bits: unsafe { dict_detach_contents(_py, ptr) },
     });
 }
+
+include!("../../attached_exports_generated/object/ops/dict_set_tables.rs");

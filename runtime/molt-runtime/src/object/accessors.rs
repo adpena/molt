@@ -365,7 +365,11 @@ unsafe fn object_field_load_ptr_raw(py: &PyToken<'_>, object: *mut u8, offset: u
             && let Some(field) = field_storage::field_at_offset(py, object, offset)
         {
             inc_ref_bits(py, field.name);
-            let value = crate::molt_get_attr_name(MoltObject::from_ptr(object).bits(), field.name);
+            let value = crate::molt_get_attr_name_attached_body(
+                py,
+                MoltObject::from_ptr(object).bits(),
+                field.name,
+            );
             dec_ref_bits(py, field.name);
             return value;
         }
@@ -379,7 +383,11 @@ unsafe fn object_field_load_ptr_raw(py: &PyToken<'_>, object: *mut u8, offset: u
         dec_ref_bits(py, value);
         if let Some(field) = field_storage::field_at_offset(py, object, offset) {
             inc_ref_bits(py, field.name);
-            let value = crate::molt_get_attr_name(MoltObject::from_ptr(object).bits(), field.name);
+            let value = crate::molt_get_attr_name_attached_body(
+                py,
+                MoltObject::from_ptr(object).bits(),
+                field.name,
+            );
             dec_ref_bits(py, field.name);
             return value;
         }
@@ -445,10 +453,14 @@ pub(crate) unsafe fn object_field_delete_ptr_raw(
 
 /// # Safety
 /// `obj_ptr_bits` must encode a valid object with enough payload for `offset_bits`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_object_field_get_ptr(obj_ptr_bits: u64, offset_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_object_field_get_ptr_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_ptr_bits: u64,
+    offset_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let obj_ptr =
                 crate::provenance::abi::mut_ptr::<u8>(obj_ptr_bits).unwrap_or(std::ptr::null_mut());
             let Some(offset) = usize_from_bits(offset_bits) else {
@@ -461,14 +473,15 @@ pub unsafe extern "C" fn molt_object_field_get_ptr(obj_ptr_bits: u64, offset_bit
 
 /// # Safety
 /// `obj_ptr_bits` must encode a valid object with enough payload for `offset_bits`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_object_field_set_ptr(
+
+pub(crate) unsafe fn molt_object_field_set_ptr_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_ptr_bits: u64,
     offset_bits: u64,
     val_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let obj_ptr =
                 crate::provenance::abi::mut_ptr::<u8>(obj_ptr_bits).unwrap_or(std::ptr::null_mut());
             let Some(offset) = usize_from_bits(offset_bits) else {
@@ -484,14 +497,15 @@ pub unsafe extern "C" fn molt_object_field_set_ptr(
 /// # Safety
 /// `obj_ptr_bits` must encode a valid object with enough payload for `offset_bits`.
 /// The slot must not own a heap value or belong to an already observed object.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_object_field_init_ptr(
+
+pub(crate) unsafe fn molt_object_field_init_ptr_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_ptr_bits: u64,
     offset_bits: u64,
     val_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let obj_ptr =
                 crate::provenance::abi::mut_ptr::<u8>(obj_ptr_bits).unwrap_or(std::ptr::null_mut());
             let Some(offset) = usize_from_bits(offset_bits) else {
@@ -574,14 +588,15 @@ unsafe fn guard_layout_match(
 /// # Safety
 /// `obj_bits` is a tagged runtime value; `definition_slot` is a raw program
 /// slot. A non-object receiver is a safe guard miss.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_guard_layout(
+
+pub(crate) unsafe fn molt_guard_layout_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     definition_slot: u64,
     expected_version: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let obj_ptr = resolve_obj_ptr(obj_bits).unwrap_or(std::ptr::null_mut());
             let matches = guard_layout_match(_py, obj_ptr, definition_slot, expected_version);
             if !matches {
@@ -599,8 +614,9 @@ pub unsafe extern "C" fn molt_guard_layout(
 /// # Safety
 /// `obj_bits` is a tagged runtime value. `attr_name_ptr_bits` must encode valid
 /// UTF-8 bytes. A matching object must have enough payload for `offset_bits`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_guarded_field_get(
+
+pub(crate) unsafe fn molt_guarded_field_get_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     definition_slot: u64,
     expected_version: u64,
@@ -609,7 +625,7 @@ pub unsafe extern "C" fn molt_guarded_field_get(
     attr_name_len_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(attr_name_ptr) = crate::provenance::abi::const_ptr::<u8>(attr_name_ptr_bits)
             else {
                 return MoltObject::none().bits();
@@ -621,7 +637,12 @@ pub unsafe extern "C" fn molt_guarded_field_get(
                 && guard_layout_match(_py, obj_ptr, definition_slot, expected_version)
             {
                 if instance_dict_bits(obj_ptr) != 0 {
-                    return crate::molt_get_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits);
+                    return crate::molt_get_attr_ptr_attached_body(
+                        _py,
+                        obj_ptr,
+                        attr_name_ptr,
+                        attr_name_len_bits,
+                    );
                 }
                 let bits = match object_field_get_ptr_raw(_py, obj_ptr, offset) {
                     Ok(value) => value,
@@ -629,11 +650,21 @@ pub unsafe extern "C" fn molt_guarded_field_get(
                 };
                 if is_missing_bits(_py, bits) {
                     dec_ref_bits(_py, bits);
-                    return crate::molt_get_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits);
+                    return crate::molt_get_attr_ptr_attached_body(
+                        _py,
+                        obj_ptr,
+                        attr_name_ptr,
+                        attr_name_len_bits,
+                    );
                 }
                 return bits;
             }
-            crate::molt_get_attr_object(obj_bits, attr_name_ptr, attr_name_len_bits)
+            crate::molt_get_attr_object_attached_body(
+                _py,
+                obj_bits,
+                attr_name_ptr,
+                attr_name_len_bits,
+            )
         })
     }
 }
@@ -644,8 +675,9 @@ pub unsafe extern "C" fn molt_guarded_field_get(
 /// # Safety
 /// `obj_bits` is a tagged runtime value. `attr_name_ptr_bits` must encode valid
 /// UTF-8 bytes. A matching object must have enough payload for `offset_bits`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_guarded_field_set(
+
+pub(crate) unsafe fn molt_guarded_field_set_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     definition_slot: u64,
     expected_version: u64,
@@ -655,7 +687,7 @@ pub unsafe extern "C" fn molt_guarded_field_set(
     attr_name_len_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(attr_name_ptr) = crate::provenance::abi::const_ptr::<u8>(attr_name_ptr_bits)
             else {
                 return MoltObject::none().bits();
@@ -669,17 +701,27 @@ pub unsafe extern "C" fn molt_guarded_field_set(
                 let _completed = object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
                 return MoltObject::none().bits();
             }
-            crate::molt_set_attr_object(obj_bits, attr_name_ptr, attr_name_len_bits, val_bits)
+            crate::molt_set_attr_object_attached_body(
+                _py,
+                obj_bits,
+                attr_name_ptr,
+                attr_name_len_bits,
+                val_bits,
+            )
         })
     }
 }
 
 /// # Safety
 /// `obj_bits` must reference a valid object with enough payload for `offset_bits`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_object_field_get(obj_bits: u64, offset_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_object_field_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    offset_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
                 return raise_exception::<_>(
                     _py,
@@ -697,14 +739,15 @@ pub unsafe extern "C" fn molt_object_field_get(obj_bits: u64, offset_bits: u64) 
 
 /// # Safety
 /// `obj_bits` must reference a valid object with enough payload for `offset_bits`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_object_field_set(
+
+pub(crate) unsafe fn molt_object_field_set_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     offset_bits: u64,
     val_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
                 return raise_exception::<_>(
                     _py,
@@ -725,14 +768,15 @@ pub unsafe extern "C" fn molt_object_field_set(
 /// # Safety
 /// `obj_bits` must reference a valid object with enough payload for `offset_bits`.
 /// The slot must not own a heap value or belong to an already observed object.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_object_field_init(
+
+pub(crate) unsafe fn molt_object_field_init_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     offset_bits: u64,
     val_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
                 return raise_exception::<_>(
                     _py,
@@ -752,9 +796,13 @@ pub unsafe extern "C" fn molt_object_field_init(
 
 /// Runtime helper for field load — called from Cranelift codegen.
 /// Reads a NaN-boxed value at `obj_ptr + offset` and inc-refs it.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_object_field_load(obj_ptr: *mut u8, offset: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_object_field_load_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_ptr: *mut u8,
+    offset: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(offset) = usize_from_bits(offset) else {
             return raise_exception::<u64>(
                 _py,
@@ -769,3 +817,5 @@ pub unsafe extern "C" fn molt_object_field_load(obj_ptr: *mut u8, offset: u64) -
 #[cfg(test)]
 #[path = "accessors_tests.rs"]
 mod tests;
+
+include!("../attached_exports_generated/object/accessors.rs");

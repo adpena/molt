@@ -3,9 +3,9 @@ use super::out_param::WasmOutParam;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_abi_generated::op_loop_runtime_call;
+use crate::wasm_binary::Function;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::{FunctionIR, OpIR};
-use wasm_encoder::Function;
 
 #[path = "core_runtime_ops/aggregate_ops.rs"]
 mod aggregate_ops;

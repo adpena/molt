@@ -359,9 +359,13 @@ fn allocate_boxed_values(
     Some(boxed_ptr)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_buffer2d_new(rows_bits: u64, cols_bits: u64, init_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_buffer2d_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    rows_bits: u64,
+    cols_bits: u64,
+    init_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(rows) = dimension_from_bits(_py, rows_bits, "rows") else {
             return MoltObject::none().bits();
         };
@@ -384,9 +388,13 @@ pub extern "C" fn molt_buffer2d_new(rows_bits: u64, cols_bits: u64, init_bits: u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_buffer2d_get(obj_bits: u64, row_bits: u64, col_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_buffer2d_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    row_bits: u64,
+    col_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(buf_ptr) = checked_buffer(_py, obj_bits) else {
             return MoltObject::none().bits();
         };
@@ -411,9 +419,8 @@ pub extern "C" fn molt_buffer2d_get(obj_bits: u64, row_bits: u64, col_bits: u64)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_buffer2d_rows(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_buffer2d_rows_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(buf_ptr) = checked_buffer(_py, obj_bits) else {
             return MoltObject::none().bits();
         };
@@ -422,9 +429,8 @@ pub extern "C" fn molt_buffer2d_rows(obj_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_buffer2d_cols(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_buffer2d_cols_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(buf_ptr) = checked_buffer(_py, obj_bits) else {
             return MoltObject::none().bits();
         };
@@ -433,14 +439,14 @@ pub extern "C" fn molt_buffer2d_cols(obj_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_buffer2d_set(
+pub(crate) fn molt_buffer2d_set_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     row_bits: u64,
     col_bits: u64,
     val_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(buf_ptr) = checked_buffer(_py, obj_bits) else {
             return MoltObject::none().bits();
         };
@@ -495,9 +501,12 @@ pub extern "C" fn molt_buffer2d_set(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_buffer2d_matmul(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_buffer2d_matmul_attached_body(
+    _py: &crate::PyToken<'_>,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(a_ptr) = checked_buffer(_py, a_bits) else {
             return MoltObject::none().bits();
         };
@@ -697,7 +706,7 @@ mod tests {
     fn small_storage_promotes_once_and_preserves_negative_indexing() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let buffer_bits = molt_buffer2d_new(inline(1), inline(2), inline(7));
+            let buffer_bits = molt_buffer2d_new_attached_body(_py, inline(1), inline(2), inline(7));
             let buffer_ptr = checked_buffer(_py, buffer_bits).expect("buffer");
             assert!(matches!(
                 unsafe { &(*buffer_ptr).data },
@@ -707,7 +716,13 @@ mod tests {
             let large = BigInt::from(1u8) << 90usize;
             let large_bits = crate::builtins::numbers::int_bits_from_bigint(_py, large.clone());
             assert_eq!(
-                molt_buffer2d_set(buffer_bits, inline(-1), inline(-1), large_bits),
+                molt_buffer2d_set_attached_body(
+                    _py,
+                    buffer_bits,
+                    inline(-1),
+                    inline(-1),
+                    large_bits
+                ),
                 MoltObject::none().bits()
             );
             dec_ref_bits(_py, large_bits);
@@ -716,7 +731,7 @@ mod tests {
                 Buffer2DStorage::Boxed(_)
             ));
 
-            let result = molt_buffer2d_get(buffer_bits, inline(0), inline(1));
+            let result = molt_buffer2d_get_attached_body(_py, buffer_bits, inline(0), inline(1));
             assert_eq!(
                 crate::builtins::numbers::index_bigint_integral_bits(result),
                 Some(large)
@@ -732,12 +747,12 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             let value = BigInt::from(i64::MAX);
             let value_bits = crate::builtins::numbers::int_bits_from_bigint(_py, value.clone());
-            let left = molt_buffer2d_new(inline(1), inline(1), value_bits);
-            let right = molt_buffer2d_new(inline(1), inline(1), value_bits);
+            let left = molt_buffer2d_new_attached_body(_py, inline(1), inline(1), value_bits);
+            let right = molt_buffer2d_new_attached_body(_py, inline(1), inline(1), value_bits);
             dec_ref_bits(_py, value_bits);
 
-            let product = molt_buffer2d_matmul(left, right);
-            let result = molt_buffer2d_get(product, inline(0), inline(0));
+            let product = molt_buffer2d_matmul_attached_body(_py, left, right);
+            let result = molt_buffer2d_get_attached_body(_py, product, inline(0), inline(0));
             assert_eq!(
                 crate::builtins::numbers::index_bigint_integral_bits(result),
                 Some(&value * &value)
@@ -754,7 +769,7 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let max_bits = owned_i64_bits(_py, i64::MAX).expect("i64::MAX bits");
-            let buffer_bits = molt_buffer2d_new(inline(1), inline(1), max_bits);
+            let buffer_bits = molt_buffer2d_new_attached_body(_py, inline(1), inline(1), max_bits);
             dec_ref_bits(_py, max_bits);
 
             let buffer_ptr = checked_buffer(_py, buffer_bits).expect("buffer");
@@ -762,7 +777,7 @@ mod tests {
                 unsafe { &(*buffer_ptr).data },
                 Buffer2DStorage::I64(_)
             ));
-            let result = molt_buffer2d_get(buffer_bits, inline(0), inline(0));
+            let result = molt_buffer2d_get_attached_body(_py, buffer_bits, inline(0), inline(0));
             let result_ptr = obj_from_bits(result)
                 .as_ptr()
                 .expect("i64::MAX must use canonical boxed integer storage");
@@ -817,7 +832,7 @@ mod tests {
             let _reset = TrackerReset;
             let sentinel = tracked_vec_box_with_capacity::<u8>(8).expect("sentinel");
             let max_bits = owned_i64_bits(_py, i64::MAX).expect("i64::MAX bits");
-            let buffer_bits = molt_buffer2d_new(inline(1), inline(3), max_bits);
+            let buffer_bits = molt_buffer2d_new_attached_body(_py, inline(1), inline(3), max_bits);
             dec_ref_bits(_py, max_bits);
             let buffer_ptr = checked_buffer(_py, buffer_bits).expect("buffer");
             let Buffer2DStorage::I64(original_storage) = (unsafe { &(*buffer_ptr).data }) else {
@@ -835,7 +850,13 @@ mod tests {
                     .max_allocations
                     .set(Some(baseline_allocations + allowed));
                 assert_eq!(
-                    molt_buffer2d_set(buffer_bits, inline(0), inline(1), large_bits),
+                    molt_buffer2d_set_attached_body(
+                        _py,
+                        buffer_bits,
+                        inline(0),
+                        inline(1),
+                        large_bits
+                    ),
                     MoltObject::none().bits()
                 );
                 assert!(exception_pending(_py), "allocation boundary {allowed}");
@@ -851,7 +872,7 @@ mod tests {
             }
 
             usage.max_allocations.set(Some(baseline_allocations + 4));
-            molt_buffer2d_set(buffer_bits, inline(0), inline(1), large_bits);
+            molt_buffer2d_set_attached_body(_py, buffer_bits, inline(0), inline(1), large_bits);
             assert!(!exception_pending(_py));
             let Buffer2DStorage::Boxed(values) = (unsafe { &(*buffer_ptr).data }) else {
                 panic!("successful promotion must publish boxed storage");
@@ -884,11 +905,11 @@ mod tests {
             let _reset = TrackerReset;
             let sentinel = tracked_vec_box_with_capacity::<u8>(8).expect("sentinel");
             let max_bits = owned_i64_bits(_py, i64::MAX).expect("i64::MAX bits");
-            let left = molt_buffer2d_new(inline(1), inline(1), max_bits);
+            let left = molt_buffer2d_new_attached_body(_py, inline(1), inline(1), max_bits);
             dec_ref_bits(_py, max_bits);
-            let right = molt_buffer2d_new(inline(1), inline(3), inline(1));
-            molt_buffer2d_set(right, inline(0), inline(1), inline(2));
-            molt_buffer2d_set(right, inline(0), inline(2), inline(3));
+            let right = molt_buffer2d_new_attached_body(_py, inline(1), inline(3), inline(1));
+            molt_buffer2d_set_attached_body(_py, right, inline(0), inline(1), inline(2));
+            molt_buffer2d_set_attached_body(_py, right, inline(0), inline(2), inline(3));
             let left_ptr = checked_buffer(_py, left).expect("left");
             let right_ptr = checked_buffer(_py, right).expect("right");
             let baseline_allocations = usage.used_allocations.get();
@@ -899,7 +920,10 @@ mod tests {
             // cell even after promotion releases the original packed backing.
             for allowed in 0..6 {
                 usage.remaining_allocations.set(Some(allowed));
-                assert_eq!(molt_buffer2d_matmul(left, right), MoltObject::none().bits());
+                assert_eq!(
+                    molt_buffer2d_matmul_attached_body(_py, left, right),
+                    MoltObject::none().bits()
+                );
                 assert!(
                     exception_pending(_py),
                     "matmul allocation boundary {allowed}"
@@ -918,11 +942,11 @@ mod tests {
             }
 
             usage.remaining_allocations.set(Some(6));
-            let product = molt_buffer2d_matmul(left, right);
+            let product = molt_buffer2d_matmul_attached_body(_py, left, right);
             assert!(!exception_pending(_py));
             usage.remaining_allocations.set(None);
             for column in 0..3 {
-                let bits = molt_buffer2d_get(product, inline(0), inline(column));
+                let bits = molt_buffer2d_get_attached_body(_py, product, inline(0), inline(column));
                 assert_eq!(
                     crate::builtins::numbers::index_bigint_integral_bits(bits),
                     Some(BigInt::from(i64::MAX) * (column + 1))
@@ -944,9 +968,9 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             let max_bits = owned_i64_bits(_py, isize::MAX as i64).expect("dimension");
             for (rows, cols) in [(inline(0), max_bits), (max_bits, inline(0))] {
-                let left = molt_buffer2d_new(rows, inline(0), inline(7));
-                let right = molt_buffer2d_new(inline(0), cols, inline(9));
-                let product = molt_buffer2d_matmul(left, right);
+                let left = molt_buffer2d_new_attached_body(_py, rows, inline(0), inline(7));
+                let right = molt_buffer2d_new_attached_body(_py, inline(0), cols, inline(9));
+                let product = molt_buffer2d_matmul_attached_body(_py, left, right);
                 assert!(!exception_pending(_py));
                 let buffer_ptr = checked_buffer(_py, product).expect("empty product");
                 assert_eq!(
@@ -974,10 +998,17 @@ mod tests {
     fn wrong_object_is_a_type_error_instead_of_a_none_result() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let result = molt_buffer2d_get(MoltObject::none().bits(), inline(0), inline(0));
+            let result = molt_buffer2d_get_attached_body(
+                _py,
+                MoltObject::none().bits(),
+                inline(0),
+                inline(0),
+            );
             assert_eq!(result, MoltObject::none().bits());
             assert!(exception_pending(_py));
             crate::clear_exception(_py);
         });
     }
 }
+
+include!("../attached_exports_generated/object/buffer2d.rs");

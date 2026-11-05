@@ -22,7 +22,7 @@ use rustls::{
 };
 use webpki_roots::TLS_SERVER_ROOTS;
 
-use super::super::stream::molt_stream_new_with_io_hooks;
+use super::super::stream::molt_stream_new_with_io_hooks_attached_body;
 use crate::{
     GilReleaseGuard, MoltObject, PyToken, alloc_bytes, dec_ref_bits, exception_pending,
     obj_from_bits, pending_bits_i64, raise_exception, string_obj_to_owned, to_i64,
@@ -124,7 +124,7 @@ fn tls_endpoint_shutdown(endpoint: &mut NativeTlsEndpoint) -> Result<(), std::io
 }
 
 #[cfg(molt_has_net_io)]
-fn tls_wrap_endpoint_native(mut endpoint: NativeTlsEndpoint) -> *mut u8 {
+fn tls_wrap_endpoint_native(py: &crate::PyToken<'_>, mut endpoint: NativeTlsEndpoint) -> *mut u8 {
     if tls_endpoint_set_nonblocking(&mut endpoint, true).is_err() {
         return std::ptr::null_mut();
     }
@@ -134,7 +134,8 @@ fn tls_wrap_endpoint_native(mut endpoint: NativeTlsEndpoint) -> *mut u8 {
         pending_write_offset: 0,
         closed: false,
     }))) as *mut u8;
-    let stream_ptr = molt_stream_new_with_io_hooks(
+    let stream_ptr = molt_stream_new_with_io_hooks_attached_body(
+        py,
         tls_stream_send_native_hook as *const () as usize,
         tls_stream_recv_native_hook as *const () as usize,
         tls_stream_close_native_hook as *const () as usize,
@@ -236,7 +237,11 @@ extern "C" fn tls_stream_close_native_hook(ctx: *mut u8) {
 }
 
 #[cfg(molt_has_net_io)]
-fn tls_client_wrap_stream_native(tcp: TcpStream, server_name: &str) -> *mut u8 {
+fn tls_client_wrap_stream_native(
+    py: &crate::PyToken<'_>,
+    tcp: TcpStream,
+    server_name: &str,
+) -> *mut u8 {
     let mut roots = RootCertStore::empty();
     roots.extend(TLS_SERVER_ROOTS.iter().cloned());
     let config = Arc::new(
@@ -264,11 +269,15 @@ fn tls_client_wrap_stream_native(tcp: TcpStream, server_name: &str) -> *mut u8 {
         }
         stream
     };
-    tls_wrap_endpoint_native(NativeTlsEndpoint::ClientTcp(stream))
+    tls_wrap_endpoint_native(py, NativeTlsEndpoint::ClientTcp(stream))
 }
 
 #[cfg(all(molt_has_net_io, unix))]
-fn tls_client_wrap_unix_stream_native(unix: UnixStream, server_name: &str) -> *mut u8 {
+fn tls_client_wrap_unix_stream_native(
+    py: &crate::PyToken<'_>,
+    unix: UnixStream,
+    server_name: &str,
+) -> *mut u8 {
     let mut roots = RootCertStore::empty();
     roots.extend(TLS_SERVER_ROOTS.iter().cloned());
     let config = Arc::new(
@@ -295,7 +304,7 @@ fn tls_client_wrap_unix_stream_native(unix: UnixStream, server_name: &str) -> *m
         }
         stream
     };
-    tls_wrap_endpoint_native(NativeTlsEndpoint::ClientUnix(stream))
+    tls_wrap_endpoint_native(py, NativeTlsEndpoint::ClientUnix(stream))
 }
 
 #[cfg(molt_has_net_io)]
@@ -420,7 +429,8 @@ pub(super) fn tls_client_connect_native(
     server_name: &str,
 ) -> Result<*mut u8, TlsConnectError> {
     let result = unsafe {
-        crate::async_rt::sockets_net::molt_socket_getaddrinfo(
+        crate::async_rt::sockets_net::molt_socket_getaddrinfo_attached_body(
+            py,
             host_bits,
             MoltObject::from_int(i64::from(port)).bits(),
             MoltObject::from_int(i64::from(libc::AF_UNSPEC)).bits(),
@@ -435,7 +445,7 @@ pub(super) fn tls_client_connect_native(
         let _release = GilReleaseGuard::suspend();
         TcpStream::connect(addresses.as_slice()).map_err(TlsConnectError::Io)?
     };
-    let wrapped = tls_client_wrap_stream_native(tcp, server_name);
+    let wrapped = tls_client_wrap_stream_native(py, tcp, server_name);
     if wrapped.is_null() {
         if exception_pending(py) {
             Err(TlsConnectError::PendingPython)
@@ -496,7 +506,11 @@ fn tls_server_load_config(certfile: &str, keyfile: &str) -> Result<Arc<ServerCon
 }
 
 #[cfg(molt_has_net_io)]
-fn tls_server_wrap_stream_native(tcp: TcpStream, config: Arc<ServerConfig>) -> *mut u8 {
+fn tls_server_wrap_stream_native(
+    py: &crate::PyToken<'_>,
+    tcp: TcpStream,
+    config: Arc<ServerConfig>,
+) -> *mut u8 {
     let stream = {
         let _release = GilReleaseGuard::suspend();
         let _ = tcp.set_nodelay(true);
@@ -513,11 +527,15 @@ fn tls_server_wrap_stream_native(tcp: TcpStream, config: Arc<ServerConfig>) -> *
         }
         stream
     };
-    tls_wrap_endpoint_native(NativeTlsEndpoint::ServerTcp(stream))
+    tls_wrap_endpoint_native(py, NativeTlsEndpoint::ServerTcp(stream))
 }
 
 #[cfg(all(molt_has_net_io, unix))]
-fn tls_server_wrap_unix_stream_native(unix: UnixStream, config: Arc<ServerConfig>) -> *mut u8 {
+fn tls_server_wrap_unix_stream_native(
+    py: &crate::PyToken<'_>,
+    unix: UnixStream,
+    config: Arc<ServerConfig>,
+) -> *mut u8 {
     let stream = {
         let _release = GilReleaseGuard::suspend();
         let conn = match ServerConnection::new(config) {
@@ -533,7 +551,7 @@ fn tls_server_wrap_unix_stream_native(unix: UnixStream, config: Arc<ServerConfig
         }
         stream
     };
-    tls_wrap_endpoint_native(NativeTlsEndpoint::ServerUnix(stream))
+    tls_wrap_endpoint_native(py, NativeTlsEndpoint::ServerUnix(stream))
 }
 
 #[cfg(all(molt_has_net_io, unix))]
@@ -555,7 +573,12 @@ fn tls_fd_socket_domain(raw_fd: RawFd) -> Option<i32> {
 }
 
 #[cfg(all(molt_has_net_io, unix))]
-pub(super) fn tls_server_from_fd_native(raw_fd: i64, certfile: &str, keyfile: &str) -> *mut u8 {
+pub(super) fn tls_server_from_fd_native(
+    py: &crate::PyToken<'_>,
+    raw_fd: i64,
+    certfile: &str,
+    keyfile: &str,
+) -> *mut u8 {
     if raw_fd < 0 || raw_fd > i64::from(i32::MAX) {
         return std::ptr::null_mut();
     }
@@ -566,18 +589,23 @@ pub(super) fn tls_server_from_fd_native(raw_fd: i64, certfile: &str, keyfile: &s
     match tls_fd_socket_domain(fd) {
         Some(libc::AF_UNIX) => {
             let unix = unsafe { UnixStream::from_raw_fd(fd) };
-            tls_server_wrap_unix_stream_native(unix, config)
+            tls_server_wrap_unix_stream_native(py, unix, config)
         }
         Some(libc::AF_INET) | Some(libc::AF_INET6) => {
             let tcp = unsafe { TcpStream::from_raw_fd(fd) };
-            tls_server_wrap_stream_native(tcp, config)
+            tls_server_wrap_stream_native(py, tcp, config)
         }
         _ => std::ptr::null_mut(),
     }
 }
 
 #[cfg(all(molt_has_net_io, windows))]
-pub(super) fn tls_server_from_fd_native(raw_fd: i64, certfile: &str, keyfile: &str) -> *mut u8 {
+pub(super) fn tls_server_from_fd_native(
+    py: &crate::PyToken<'_>,
+    raw_fd: i64,
+    certfile: &str,
+    keyfile: &str,
+) -> *mut u8 {
     if raw_fd < 0 {
         return std::ptr::null_mut();
     }
@@ -585,7 +613,7 @@ pub(super) fn tls_server_from_fd_native(raw_fd: i64, certfile: &str, keyfile: &s
         return std::ptr::null_mut();
     };
     let tcp = unsafe { TcpStream::from_raw_socket(raw_fd as RawSocket) };
-    tls_server_wrap_stream_native(tcp, config)
+    tls_server_wrap_stream_native(py, tcp, config)
 }
 
 #[cfg(molt_has_net_io)]
@@ -623,7 +651,11 @@ pub(super) fn tls_server_ssl_attr_string(
 }
 
 #[cfg(all(molt_has_net_io, unix))]
-pub(super) fn tls_client_from_fd_native(raw_fd: i64, server_name: &str) -> *mut u8 {
+pub(super) fn tls_client_from_fd_native(
+    py: &crate::PyToken<'_>,
+    raw_fd: i64,
+    server_name: &str,
+) -> *mut u8 {
     if raw_fd < 0 || raw_fd > i64::from(i32::MAX) {
         return std::ptr::null_mut();
     }
@@ -631,23 +663,27 @@ pub(super) fn tls_client_from_fd_native(raw_fd: i64, server_name: &str) -> *mut 
     match tls_fd_socket_domain(fd) {
         Some(libc::AF_UNIX) => {
             let unix = unsafe { UnixStream::from_raw_fd(fd) };
-            tls_client_wrap_unix_stream_native(unix, server_name)
+            tls_client_wrap_unix_stream_native(py, unix, server_name)
         }
         Some(libc::AF_INET) | Some(libc::AF_INET6) => {
             let tcp = unsafe { TcpStream::from_raw_fd(fd) };
-            tls_client_wrap_stream_native(tcp, server_name)
+            tls_client_wrap_stream_native(py, tcp, server_name)
         }
         _ => std::ptr::null_mut(),
     }
 }
 
 #[cfg(all(molt_has_net_io, windows))]
-pub(super) fn tls_client_from_fd_native(raw_fd: i64, server_name: &str) -> *mut u8 {
+pub(super) fn tls_client_from_fd_native(
+    py: &crate::PyToken<'_>,
+    raw_fd: i64,
+    server_name: &str,
+) -> *mut u8 {
     if raw_fd < 0 {
         return std::ptr::null_mut();
     }
     let tcp = unsafe { TcpStream::from_raw_socket(raw_fd as RawSocket) };
-    tls_client_wrap_stream_native(tcp, server_name)
+    tls_client_wrap_stream_native(py, tcp, server_name)
 }
 
 #[cfg(test)]
@@ -736,7 +772,7 @@ mod resolver_tests {
                     code,
                     "resolver detail",
                 );
-                let original = crate::molt_exception_last_pending();
+                let original = crate::molt_exception_last_pending_attached_body(py);
                 let result = unsafe {
                     OwnedRuntimeValue::from_owned_bits(py.core_token(), MoltObject::none().bits())
                 };
@@ -758,8 +794,12 @@ mod resolver_tests {
                 // requires a clear error slot; `original` retains the exception.
                 clear_exception(py);
                 let errno_name = crate::dynamic_attr_name_bits(py, b"errno").unwrap();
-                let errno =
-                    crate::molt_getattr_builtin(original, errno_name, MoltObject::none().bits());
+                let errno = crate::molt_getattr_builtin_attached_body(
+                    py,
+                    original,
+                    errno_name,
+                    MoltObject::none().bits(),
+                );
                 assert!(!exception_pending(py));
                 assert_eq!(to_i64(obj_from_bits(errno)), Some(code));
                 dec_ref_bits(py, errno_name);
@@ -789,7 +829,7 @@ mod resolver_tests {
                     tls_addresses_from_result(py, result),
                     Err(TlsConnectError::PendingPython)
                 ));
-                let error = crate::molt_exception_last_pending();
+                let error = crate::molt_exception_last_pending_attached_body(py);
                 let class = crate::builtins::exceptions::exception_class(py, error).unwrap();
                 assert_eq!(
                     class.bits(),
@@ -808,7 +848,8 @@ mod resolver_tests {
             assert!(!host.is_null());
             let host = MoltObject::from_ptr(host).bits();
             let result = unsafe {
-                super::super::molt_asyncio_tls_client_connect_new(
+                super::super::molt_asyncio_tls_client_connect_new_attached_body(
+                    py,
                     host,
                     MoltObject::from_int(443).bits(),
                     MoltObject::none().bits(),
@@ -816,7 +857,7 @@ mod resolver_tests {
             };
             dec_ref_bits(py, host);
             assert!(obj_from_bits(result).is_none());
-            let error = crate::molt_exception_last_pending();
+            let error = crate::molt_exception_last_pending_attached_body(py);
             assert_eq!(
                 crate::type_name(py, obj_from_bits(error)),
                 "PermissionError"

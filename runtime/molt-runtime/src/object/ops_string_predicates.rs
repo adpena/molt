@@ -172,70 +172,81 @@ fn string_predicate(
 }
 
 // Keep concrete exported signatures visible to runtime symbol/ABI discovery.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_isidentifier(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_string_isidentifier_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         string_predicate(py, hay_bits, "isidentifier", is_identifier_bytes)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_isdigit(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { string_predicate(py, hay_bits, "isdigit", isdigit) })
+pub(crate) fn molt_string_isdigit_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        string_predicate(py, hay_bits, "isdigit", isdigit)
+    })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_isdecimal(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_string_isdecimal_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         string_predicate(py, hay_bits, "isdecimal", isdecimal)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_isnumeric(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_string_isnumeric_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         string_predicate(py, hay_bits, "isnumeric", isnumeric)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_isspace(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { string_predicate(py, hay_bits, "isspace", isspace) })
+pub(crate) fn molt_string_isspace_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        string_predicate(py, hay_bits, "isspace", isspace)
+    })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_isalpha(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { string_predicate(py, hay_bits, "isalpha", isalpha) })
+pub(crate) fn molt_string_isalpha_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        string_predicate(py, hay_bits, "isalpha", isalpha)
+    })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_isalnum(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { string_predicate(py, hay_bits, "isalnum", isalnum) })
+pub(crate) fn molt_string_isalnum_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        string_predicate(py, hay_bits, "isalnum", isalnum)
+    })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_islower(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { string_predicate(py, hay_bits, "islower", islower) })
+pub(crate) fn molt_string_islower_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        string_predicate(py, hay_bits, "islower", islower)
+    })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_isupper(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { string_predicate(py, hay_bits, "isupper", isupper) })
+pub(crate) fn molt_string_isupper_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        string_predicate(py, hay_bits, "isupper", isupper)
+    })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_isascii(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { string_predicate(py, hay_bits, "isascii", isascii) })
+pub(crate) fn molt_string_isascii_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        string_predicate(py, hay_bits, "isascii", isascii)
+    })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_istitle(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { string_predicate(py, hay_bits, "istitle", istitle) })
+pub(crate) fn molt_string_istitle_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        string_predicate(py, hay_bits, "istitle", istitle)
+    })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_isprintable(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_string_isprintable_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         string_predicate(py, hay_bits, "isprintable", isprintable)
     })
 }
@@ -243,7 +254,7 @@ pub extern "C" fn molt_string_isprintable(hay_bits: u64) -> u64 {
 #[cfg(test)]
 type Predicate = (
     &'static str,
-    extern "C" fn(u64) -> u64,
+    unsafe extern "C" fn(u64, u64) -> u64,
     fn(&PyToken<'_>, &[u8]) -> bool,
 );
 
@@ -280,7 +291,7 @@ mod predicate_contract_tests {
             let symbol = MoltObject::from_ptr(alloc_string(py, "\u{2ffc}".as_bytes())).bits();
             transaction.with_target_python(py, None, || {
                 assert_eq!(
-                    obj_from_bits(molt_string_isupper(cyrillic)).as_bool(),
+                    obj_from_bits(molt_string_isupper_attached_body(py, cyrillic)).as_bool(),
                     Some(false)
                 );
                 assert!(
@@ -298,15 +309,17 @@ mod predicate_contract_tests {
                 ] {
                     transaction.with_target_python_minor(py, minor, || {
                         assert_eq!(
-                            obj_from_bits(molt_string_isupper(cyrillic)).as_bool(),
+                            obj_from_bits(molt_string_isupper_attached_body(py, cyrillic))
+                                .as_bool(),
                             Some(new_upper)
                         );
                         assert_eq!(
-                            obj_from_bits(molt_string_islower(glottal)).as_bool(),
+                            obj_from_bits(molt_string_islower_attached_body(py, glottal)).as_bool(),
                             Some(old_lower)
                         );
                         assert_eq!(
-                            obj_from_bits(molt_string_isprintable(symbol)).as_bool(),
+                            obj_from_bits(molt_string_isprintable_attached_body(py, symbol))
+                                .as_bool(),
                             Some(new_symbol)
                         );
                     });
@@ -334,9 +347,13 @@ mod predicate_contract_tests {
                     (MoltObject::from_bool(true).bits(), "bool"),
                     (bytes, "bytes"),
                 ] {
-                    assert!(obj_from_bits(entry(receiver)).is_none(), "{name}");
+                    assert!(
+                        obj_from_bits(unsafe { entry(py.attached_context(), receiver) }).is_none(),
+                        "{name}"
+                    );
                     assert!(exception_pending(py), "{name}");
-                    let error = crate::builtins::exceptions::molt_exception_last_pending();
+                    let error =
+                        crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                     assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         error,
@@ -482,7 +499,7 @@ mod predicate_contract_tests {
                     let expected = expected.contains(name);
                     assert_eq!(classify(py, bytes), expected, "{name} {bytes:?}");
                     assert_eq!(
-                        entry(receiver),
+                        unsafe { entry(py.attached_context(), receiver) },
                         MoltObject::from_bool(expected).bits(),
                         "{name} {bytes:?}"
                     );
@@ -519,3 +536,5 @@ mod predicate_contract_tests {
         });
     }
 }
+
+include!("../attached_exports_generated/object/ops_string_predicates.rs");

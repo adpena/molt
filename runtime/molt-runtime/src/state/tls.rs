@@ -17,7 +17,7 @@ use crate::state::runtime_state::RuntimeState;
 /// its `PyThreadState`: the leading fields have the fixed layout
 /// `molt_codegen_abi::THREAD_RECORD_*` declares, and compiled code reads and
 /// writes them with plain loads and stores at the address
-/// `molt_thread_record` lends.
+/// the attached context lends.
 #[repr(C)]
 pub(crate) struct ExecutionTls {
     /// An exception is pending in the active execution context
@@ -53,6 +53,20 @@ pub(crate) struct ExecutionTls {
     /// Borrowed from the outermost terminal release until its queue drains.
     /// A pointer Cell has no TLS destructor, including during runtime teardown.
     pub(crate) terminal_release: Cell<*const crate::object::bounded_release::TerminalReleaseState>,
+    pub(crate) attached_context: molt_codegen_abi::AttachedExecutionContextStorage,
+    pub(crate) cext_execution_depth: Cell<u32>,
+    pub(crate) compiled_depth: Cell<usize>,
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) wasm_execution_depth: Cell<usize>,
+    pub(crate) execution_identity: Cell<u64>,
+    pub(crate) compiled_scope_top: Cell<u64>,
+    pub(crate) compiled_public_dependencies: Cell<usize>,
+    pub(crate) compiled_host_scopes:
+        std::mem::ManuallyDrop<RefCell<Vec<crate::concurrency::execution::CompiledScopeFrame>>>,
+    pub(crate) persistent_execution_owner: Cell<u64>,
+    pub(crate) persistent_execution_owns_gil: Cell<bool>,
+    pub(crate) public_gil_depth: Cell<u32>,
+    pub(crate) public_gil_owns_persistent: Cell<bool>,
     /// Explicit mutex and suspended-GIL ownership. Its initialized storage has
     /// no automatic destructor; the GIL authority consumes every acquisition.
     #[cfg(not(target_arch = "wasm32"))]
@@ -98,6 +112,19 @@ thread_local! {
             terminal_release: Cell::new(std::ptr::null()),
             #[cfg(not(target_arch = "wasm32"))]
             native_gil: crate::concurrency::gil::GilMutexCustody::new(),
+            attached_context: molt_codegen_abi::AttachedExecutionContextStorage::new(),
+            cext_execution_depth: Cell::new(0),
+            compiled_depth: Cell::new(0),
+            #[cfg(target_arch = "wasm32")]
+            wasm_execution_depth: Cell::new(0),
+            execution_identity: Cell::new(0),
+            compiled_scope_top: Cell::new(0),
+            compiled_public_dependencies: Cell::new(0),
+            compiled_host_scopes: std::mem::ManuallyDrop::new(RefCell::new(Vec::new())),
+            persistent_execution_owner: Cell::new(0),
+            persistent_execution_owns_gil: Cell::new(false),
+            public_gil_depth: Cell::new(0),
+            public_gil_owns_persistent: Cell::new(false),
         }
     };
 }
@@ -118,13 +145,13 @@ pub(crate) fn execution_tls() -> &'static ExecutionTls {
 /// exception check, the invocation handoff of every direct call). Never null;
 /// the record lives as long as the thread.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_record() -> u64 {
+pub extern "C" fn molt_attached_context() -> u64 {
     let tls = execution_tls();
     let state = super::runtime_state::admitted_runtime_state_in(tls)
         .expect("compiled thread record requires an attached runtime");
     tls.pending_work_ptr
         .set(state.pending_work.word_ptr() as u64);
-    std::ptr::from_ref(tls) as u64
+    unsafe { crate::PyToken::with_custody(tls) }.attached_context()
 }
 
 thread_local! {

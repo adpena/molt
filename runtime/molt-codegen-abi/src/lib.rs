@@ -18,6 +18,9 @@ extern crate std;
 mod heap_kinds_generated;
 pub use heap_kinds_generated::*;
 
+mod attached_context_generated;
+pub use attached_context_generated::*;
+
 pub mod c_width;
 pub mod inline_refcount;
 
@@ -457,10 +460,16 @@ pub struct GeneratedObjectAbiFacts {
     pub refcount_owner_limit: u32,
     pub compiled_plain_refcount_window: u64,
     pub flags_refcount_custody: u32,
+    pub attached_context_schema_fingerprint: u64,
+    pub attached_context_argument_position: u32,
+    pub attached_context_argument_carrier_bytes: u32,
+    pub attached_context_header_size: u32,
+    pub attached_context_header_align: u32,
+    pub attached_context_thread_record_offset: i32,
 }
 
 impl GeneratedObjectAbiFacts {
-    pub const fn words(self) -> [u64; 66] {
+    pub const fn words(self) -> [u64; 72] {
         [
             self.header_size as i64 as u64,
             self.header_align as u64,
@@ -528,6 +537,12 @@ impl GeneratedObjectAbiFacts {
             self.refcount_owner_limit as u64,
             self.compiled_plain_refcount_window,
             self.flags_refcount_custody as u64,
+            self.attached_context_schema_fingerprint,
+            self.attached_context_argument_position as u64,
+            self.attached_context_argument_carrier_bytes as u64,
+            self.attached_context_header_size as u64,
+            self.attached_context_header_align as u64,
+            self.attached_context_thread_record_offset as i64 as u64,
         ]
     }
 
@@ -618,6 +633,12 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
     refcount_owner_limit: REFCOUNT_OWNER_LIMIT,
     compiled_plain_refcount_window: COMPILED_PLAIN_REFCOUNT_WINDOW,
     flags_refcount_custody: HEADER_FLAGS_REFCOUNT_CUSTODY,
+    attached_context_schema_fingerprint: ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT,
+    attached_context_argument_position: ATTACHED_CONTEXT_ARGUMENT_POSITION,
+    attached_context_argument_carrier_bytes: ATTACHED_CONTEXT_ARGUMENT_CARRIER_BYTES,
+    attached_context_header_size: core::mem::size_of::<AttachedExecutionContextStorage>() as u32,
+    attached_context_header_align: core::mem::align_of::<AttachedExecutionContextStorage>() as u32,
+    attached_context_thread_record_offset: ATTACHED_CONTEXT_THREAD_RECORD_OFFSET,
 };
 
 /// Ratchet binding every hardcoded generated-code header fact. A layout/offset
@@ -636,16 +657,19 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
 /// word width. A compiler reading the work-word pointer must never link to an
 /// older runtime whose recursion-depth field occupied that offset. Revision 7
 /// binds the count-word custody encoding, owner bound, inline window and custody
-/// flags; old full-width count objects cannot link to this runtime.
-pub const GENERATED_OBJECT_ABI_FINGERPRINT_V7: u64 = 0x69ba_b6cd_a2ad_ac1b;
+/// flags; old full-width count objects cannot link to this runtime. Revision 8
+/// binds the generated attached-context schema, hidden machine argument and
+/// permanent context header. Physical callable bindings additionally qualify
+/// each archive member's individual call/entry ABI under dead stripping.
+pub const GENERATED_OBJECT_ABI_FINGERPRINT_V8: u64 = 0x845bfb944946eaf2;
 const _: () = assert!(
-    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V7,
+    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V8,
     "native generated-object ABI changed: bump the fingerprint revision and link symbols",
 );
 pub const GENERATED_OBJECT_ABI_GIL_SYMBOL: &str =
-    "molt_generated_object_abi_69bab6cda2adac1b_gil_v7";
+    "molt_generated_object_abi_845bfb944946eaf2_gil_v8";
 pub const GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL: &str =
-    "molt_generated_object_abi_69bab6cda2adac1b_free_threaded_v7";
+    "molt_generated_object_abi_845bfb944946eaf2_free_threaded_v8";
 /// Compile-time authority consumed by runtime storage and generated native
 /// access. Cargo feature unification may enable this through any dependency;
 /// consumers must branch on this value rather than a crate-local feature.
@@ -1640,14 +1664,14 @@ mod tests {
         let canonical = GENERATED_OBJECT_ABI_FACTS.words();
         assert_eq!(
             fingerprint_words(canonical),
-            GENERATED_OBJECT_ABI_FINGERPRINT_V7
+            GENERATED_OBJECT_ABI_FINGERPRINT_V8
         );
         for index in 0..canonical.len() {
             let mut changed = canonical;
             changed[index] ^= 1;
             assert_ne!(
                 fingerprint_words(changed),
-                GENERATED_OBJECT_ABI_FINGERPRINT_V7,
+                GENERATED_OBJECT_ABI_FINGERPRINT_V8,
                 "generated-object ABI word {index} is not fingerprinted"
             );
         }
@@ -1655,13 +1679,13 @@ mod tests {
 
     #[test]
     fn generated_object_link_symbols_embed_fingerprint_and_revision() {
-        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V7);
+        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V8);
         for symbol in [
             GENERATED_OBJECT_ABI_GIL_SYMBOL,
             GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
         ] {
             assert!(symbol.contains(&fingerprint), "{symbol}");
-            assert!(symbol.ends_with("_v7"), "{symbol}");
+            assert!(symbol.ends_with("_v8"), "{symbol}");
         }
     }
 

@@ -1144,9 +1144,11 @@ fn find_matching(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakcontainer_new(kind_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_weakcontainer_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    kind_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let kind_raw = to_i64(obj_from_bits(kind_bits)).unwrap_or(-1);
         let Some(kind) = u8::try_from(kind_raw)
             .ok()
@@ -1176,14 +1178,14 @@ pub extern "C" fn molt_weakcontainer_new(kind_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakcontainer_store_probe(
+pub(crate) fn molt_weakcontainer_store_probe_attached_body(
+    _py: &crate::PyToken<'_>,
     state_bits: u64,
     key_bits: u64,
     value_bits: u64,
     hash_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let (_, state) = match state_from_bits(_py, state_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1235,15 +1237,15 @@ fn attach_entry_cookie(
     weakref_attach_container_cookie(_py, weakref_bits, cookie)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakcontainer_store_commit(
+pub(crate) fn molt_weakcontainer_store_commit_attached_body(
+    _py: &crate::PyToken<'_>,
     state_bits: u64,
     key_bits: u64,
     value_bits: u64,
     weakref_bits: u64,
     hash_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let (_, state) = match state_from_bits(_py, state_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1455,9 +1457,13 @@ pub extern "C" fn molt_weakcontainer_store_commit(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakcontainer_get(state_bits: u64, key_bits: u64, hash_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_weakcontainer_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    state_bits: u64,
+    key_bits: u64,
+    hash_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let (_, state) = match state_from_bits(_py, state_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1495,14 +1501,14 @@ pub extern "C" fn molt_weakcontainer_get(state_bits: u64, key_bits: u64, hash_bi
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakcontainer_take(
+pub(crate) fn molt_weakcontainer_take_attached_body(
+    _py: &crate::PyToken<'_>,
     state_bits: u64,
     key_bits: u64,
     hash_bits: u64,
     raise_missing_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let (_, state) = match state_from_bits(_py, state_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1552,13 +1558,13 @@ pub extern "C" fn molt_weakcontainer_take(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakcontainer_contains(
+pub(crate) fn molt_weakcontainer_contains_attached_body(
+    _py: &crate::PyToken<'_>,
     state_bits: u64,
     key_bits: u64,
     hash_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let (_, state) = match state_from_bits(_py, state_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1571,9 +1577,11 @@ pub extern "C" fn molt_weakcontainer_contains(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakcontainer_len(state_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_weakcontainer_len_attached_body(
+    _py: &crate::PyToken<'_>,
+    state_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let (_, state) = match state_from_bits(_py, state_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1595,9 +1603,12 @@ pub extern "C" fn molt_weakcontainer_len(state_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakcontainer_iter(state_bits: u64, projection_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_weakcontainer_iter_attached_body(
+    _py: &crate::PyToken<'_>,
+    state_bits: u64,
+    projection_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if state_from_bits(_py, state_bits).is_err() {
             return MoltObject::none().bits();
         }
@@ -1829,9 +1840,11 @@ pub(crate) fn weakcontainer_iter_next_value(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakcontainer_refs(state_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_weakcontainer_refs_attached_body(
+    _py: &crate::PyToken<'_>,
+    state_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let (_, state) = match state_from_bits(_py, state_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1889,9 +1902,11 @@ pub extern "C" fn molt_weakcontainer_refs(state_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakcontainer_pop(state_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_weakcontainer_pop_attached_body(
+    _py: &crate::PyToken<'_>,
+    state_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let (_, state) = match state_from_bits(_py, state_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1983,9 +1998,11 @@ pub extern "C" fn molt_weakcontainer_pop(state_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakcontainer_clear(state_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_weakcontainer_clear_attached_body(
+    _py: &crate::PyToken<'_>,
+    state_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let (_, state) = match state_from_bits(_py, state_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1999,9 +2016,12 @@ pub extern "C" fn molt_weakcontainer_clear(state_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakcontainer_dead(state_bits: u64, weakref_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_weakcontainer_dead_attached_body(
+    _py: &crate::PyToken<'_>,
+    state_bits: u64,
+    weakref_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let (_, state) = match state_from_bits(_py, state_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -2402,3 +2422,5 @@ mod tests {
         );
     }
 }
+
+include!("../attached_exports_generated/object/weak_container.rs");

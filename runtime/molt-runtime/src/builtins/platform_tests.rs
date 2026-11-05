@@ -27,7 +27,7 @@ fn pending_error_filters_preserve_independent_handled_error() {
                 &[crate::BuiltinExc::RuntimeError]
             ));
             assert!(exception_pending(py));
-            let observed = molt_exception_last_pending();
+            let observed = molt_exception_last_pending_attached_body(py);
             assert_eq!(observed, inner_bits);
             dec_ref_bits(py, observed);
             assert!(clear_pending_if_kind(py, &[kind]));
@@ -38,7 +38,7 @@ fn pending_error_filters_preserve_independent_handled_error() {
             );
             dec_ref_bits(py, inner_bits);
         }
-        let instance = molt_object_new_bound(builtin_classes(py).object);
+        let instance = molt_object_new_bound_attached_body(py, builtin_classes(py).object);
         let missing_name = alloc_test_string_bits(py, "unpublished_optional_attribute");
         assert_eq!(getattr_optional_bits(py, instance, missing_name), Ok(None));
         assert!(!exception_pending(py));
@@ -66,13 +66,14 @@ fn dynamic_extension_admission_reports_complete_static_grants_before_path_access
             // Invalid path: a filesystem check would produce ImportError, so
             // PermissionError proves admission preceded that protected action.
             let path = alloc_test_string_bits(py, "");
-            let result = molt_importlib_extension_loader_create_module(
+            let result = crate::builtins::platform::molt_importlib_extension_loader_create_module_attached_body(
+                py,
                 name,
                 path,
                 MoltObject::none().bits(),
             );
             assert_eq!(result, MoltObject::none().bits());
-            let error = crate::molt_exception_last_pending();
+            let error = crate::molt_exception_last_pending_attached_body(py);
             let _owner = unsafe {
                 molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), error)
             };
@@ -81,7 +82,7 @@ fn dynamic_extension_admission_reports_complete_static_grants_before_path_access
                 error,
                 crate::BuiltinExc::PermissionError
             ));
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             assert_eq!(
                 crate::builtins::exceptions::format_exception_message(
                     py,
@@ -173,7 +174,7 @@ fn importlib_system_module_authority_returns_and_releases_one_owner() {
         }
         assert_eq!(refcount(), baseline, "resolver releases its owner");
         let name = crate::dynamic_attr_name_bits(_py, b"sys").unwrap();
-        crate::builtins::modules::molt_module_cache_del(name);
+        crate::builtins::modules::molt_module_cache_del_attached_body(_py, name);
         dec_ref_bits(_py, name);
         if let Some(prior) = prior {
             let displaced = crate::builtins::module_table::replace_module_owned_for_test(
@@ -265,14 +266,17 @@ fn clear_extension_metadata_validation_cache() {
 #[test]
 fn platform_constant_runtime_state_is_owned_and_clearable() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
+    let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+    let py = fixture_execution.token();
+
     crate::with_gil_entry_nopanic!(_py, {
         platform_clear_runtime_state(_py, runtime_state(_py));
     });
 
-    let os_name_bits = molt_os_name();
-    let sys_platform_bits = molt_sys_platform();
-    let errno_constants_bits = molt_errno_constants();
-    let socket_constants_bits = molt_socket_constants();
+    let os_name_bits = molt_os_name_attached_body(py);
+    let sys_platform_bits = molt_sys_platform_attached_body(py);
+    let errno_constants_bits = molt_errno_constants_attached_body(py);
+    let socket_constants_bits = molt_socket_constants_attached_body(py);
     assert!(!obj_from_bits(os_name_bits).is_none());
     assert!(!obj_from_bits(sys_platform_bits).is_none());
     assert!(!obj_from_bits(errno_constants_bits).is_none());
@@ -302,16 +306,16 @@ fn platform_constant_cache_returns_owned_values() {
         let state = runtime_state(_py);
         platform_clear_runtime_state(_py, state);
         for make_bits in [
-            molt_os_name as extern "C" fn() -> u64,
-            molt_sys_platform as extern "C" fn() -> u64,
-            molt_errno_constants as extern "C" fn() -> u64,
-            molt_socket_constants as extern "C" fn() -> u64,
+            molt_os_name as unsafe extern "C" fn(u64) -> u64,
+            molt_sys_platform as unsafe extern "C" fn(u64) -> u64,
+            molt_errno_constants as unsafe extern "C" fn(u64) -> u64,
+            molt_socket_constants as unsafe extern "C" fn(u64) -> u64,
         ] {
-            let first = make_bits();
+            let first = unsafe { make_bits(_py.attached_context()) };
             assert!(!obj_from_bits(first).is_none());
             dec_ref_bits(_py, first);
 
-            let second = make_bits();
+            let second = unsafe { make_bits(_py.attached_context()) };
             assert!(!obj_from_bits(second).is_none());
             dec_ref_bits(_py, second);
         }
@@ -386,7 +390,8 @@ fn importlib_module_from_spec_impl_materializes_module_without_util_callback() {
 fn call_extension_loader_boundary(_py: &PyToken<'_>, module_name: &str, path: &str) -> u64 {
     let module_bits = alloc_test_string_bits(_py, module_name);
     let path_bits = alloc_test_string_bits(_py, path);
-    let out = molt_importlib_extension_loader_payload(
+    let out = crate::builtins::platform::molt_importlib_extension_loader_payload_attached_body(
+        _py,
         module_bits,
         path_bits,
         MoltObject::from_bool(false).bits(),
@@ -399,7 +404,7 @@ fn call_extension_loader_boundary(_py: &PyToken<'_>, module_name: &str, path: &s
 fn call_extension_exec_boundary(_py: &PyToken<'_>, module_name: &str, path: &str) -> u64 {
     let module_name_bits = alloc_test_string_bits(_py, module_name);
     let path_bits = alloc_test_string_bits(_py, path);
-    let module_bits = crate::molt_module_new(module_name_bits);
+    let module_bits = crate::molt_module_new_attached_body(_py, module_name_bits);
     let out = match importlib_ffi::bootstrap_loader::importlib_exec_extension_impl(
         _py,
         module_bits,
@@ -430,7 +435,8 @@ fn extension_spec_bits_for_tests(_py: &PyToken<'_>, module_name: &str, origin: &
     );
     let module_name_bits = alloc_test_string_bits(_py, module_name);
     let rc = unsafe {
-        crate::c_api::molt_object_setattr_bytes(
+        crate::c_api::molt_object_setattr_bytes_attached_body(
+            _py,
             spec_bits,
             b"name".as_ptr(),
             b"name".len() as u64,
@@ -446,7 +452,8 @@ fn extension_spec_bits_for_tests(_py: &PyToken<'_>, module_name: &str, origin: &
     dec_ref_bits(_py, module_name_bits);
     let origin_bits = alloc_test_string_bits(_py, origin);
     let rc = unsafe {
-        crate::c_api::molt_object_setattr_bytes(
+        crate::c_api::molt_object_setattr_bytes_attached_body(
+            _py,
             spec_bits,
             b"origin".as_ptr(),
             b"origin".len() as u64,
@@ -473,8 +480,10 @@ fn pending_exception_diagnostic_preserves_message_identity_and_owner() {
             BuiltinExc::ImportError,
             "extension metadata: exact diagnostic",
         );
-        let original =
-            crate::builtins::exceptions::ExceptionValue::adopt(py, molt_exception_last_pending());
+        let original = crate::builtins::exceptions::ExceptionValue::adopt(
+            py,
+            molt_exception_last_pending_attached_body(py),
+        );
         let ptr = obj_from_bits(original.bits())
             .as_ptr()
             .expect("raised error");
@@ -498,7 +507,7 @@ fn pending_exception_diagnostic_preserves_message_identity_and_owner() {
             assert!(exception_pending(py));
             let restored = crate::builtins::exceptions::ExceptionValue::adopt(
                 py,
-                molt_exception_last_pending(),
+                molt_exception_last_pending_attached_body(py),
             );
             assert_eq!(
                 restored.bits(),
@@ -2449,8 +2458,8 @@ fn importlib_metadata_normalize_name_collapses_separator_runs() {
 
 fn loader_identity_class(py: &PyToken<'_>, name: &str, base: u64) -> u64 {
     let name = alloc_test_string_bits(py, name);
-    let class = crate::molt_class_new(name);
-    crate::molt_class_set_base(class, base);
+    let class = crate::molt_class_new_attached_body(py, name);
+    crate::molt_class_set_base_attached_body(py, class, base);
     unsafe {
         crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap())
             .expect("seal loader test class");
@@ -2462,7 +2471,13 @@ fn loader_identity_class(py: &PyToken<'_>, name: &str, base: u64) -> u64 {
 
 fn loader_identity_setattr(py: &PyToken<'_>, object: u64, name: &[u8], value: u64) {
     let result = unsafe {
-        crate::c_api::molt_object_setattr_bytes(object, name.as_ptr(), name.len() as u64, value)
+        crate::c_api::molt_object_setattr_bytes_attached_body(
+            py,
+            object,
+            name.as_ptr(),
+            name.len() as u64,
+            value,
+        )
     };
     assert_eq!(result, 0, "{:?}", pending_exception_kind_and_message(py));
     assert!(!exception_pending(py));
@@ -2484,14 +2499,22 @@ fn loader_identity_class_namespace(py: &PyToken<'_>, class: u64, name: &[u8], va
     assert!(!exception_pending(py));
 }
 
-extern "C" fn loader_identity_descriptor_failure(_self: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn loader_identity_descriptor_failure(__context: u64, _self: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         raise_exception::<_>(
             py,
             BuiltinExc::RuntimeError,
             "loader identity descriptor called",
         )
-    })
+    }
 }
 
 fn loader_identity_failing_property(py: &PyToken<'_>) -> u64 {
@@ -2551,7 +2574,7 @@ fn extension_loader_admission_uses_class_declaration_not_names_or_descriptors() 
         let base_ptr = obj_from_bits(base).as_ptr().unwrap();
         let before = unsafe { (*header_from_obj_ptr(base_ptr)).ref_count_snapshot() };
         for _ in 0..2 {
-            let declared = molt_importlib_extension_loader_type_declare(base);
+            let declared = crate::builtins::platform::molt_importlib_extension_loader_type_declare_attached_body(py, base);
             assert!(obj_from_bits(declared).is_none());
             assert!(!exception_pending(py));
         }
@@ -2603,7 +2626,9 @@ fn extension_loader_declaration_preserves_nonstandard_artifact_manifest_admissio
         let path_text = path.to_string_lossy().into_owned();
         crate::with_gil_entry_nopanic!(py, {
             let class = loader_identity_class(py, "Unrelated", builtin_classes(py).object);
-            molt_importlib_extension_loader_type_declare(class);
+            crate::builtins::platform::molt_importlib_extension_loader_type_declare_attached_body(
+                py, class,
+            );
             let loader = unsafe { call_callable0(py, class) };
             let spec = extension_spec_bits_for_tests(py, "role_extension", &path_text);
             loader_identity_setattr(py, spec, b"loader", loader);
@@ -2700,7 +2725,11 @@ fn extension_spec_origin_suffix_and_descriptor_errors_remain_independent_of_load
             crate::BuiltinExc::RuntimeError,
             &["loader identity descriptor called"],
         );
-        let result = molt_importlib_extension_loader_type_declare(MoltObject::none().bits());
+        let result =
+            crate::builtins::platform::molt_importlib_extension_loader_type_declare_attached_body(
+                py,
+                MoltObject::none().bits(),
+            );
         assert!(obj_from_bits(result).is_none());
         assert_pending_exception_contains(
             py,
@@ -2735,17 +2764,24 @@ mod resolver_admission_tests {
         }
     }
 
-    extern "C" fn find_spec(_name: u64, _path: u64, _target: u64) -> u64 {
+    extern "C" fn find_spec(__context: u64, _name: u64, _path: u64, _target: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         FINDER_CALLS.set(FINDER_CALLS.get() + 1);
         let error = FINDER_ERROR.get();
         if error != 0 {
-            crate::builtins::exceptions::molt_exception_set_last(error);
+            crate::builtins::exceptions::molt_exception_set_last_attached_body(__py, error);
         }
         MoltObject::none().bits()
     }
 
-    fn owner(bits: u64) -> crate::PtrDropGuard {
-        crate::PtrDropGuard::new(obj_from_bits(bits).as_ptr().expect("owned test object"))
+    fn owner<'guard>(py: &'guard crate::PyToken<'guard>, bits: u64) -> crate::PtrDropGuard<'guard> {
+        crate::PtrDropGuard::new(py, obj_from_bits(bits).as_ptr().expect("owned test object"))
     }
 
     fn refs(bits: u64) -> u32 {
@@ -2839,23 +2875,23 @@ mod resolver_admission_tests {
         crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
             crate::with_gil_entry_nopanic!(py, {
                 let sys_name = alloc_test_string_bits(py, "sys");
-                let _sys_name = owner(sys_name);
-                let sys = crate::molt_module_new(sys_name);
-                let _sys = owner(sys);
+                let _sys_name = owner(py, sys_name);
+                let sys = crate::molt_module_new_attached_body(py, sys_name);
+                let _sys = owner(py, sys);
                 crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys);
                 assert!(!exception_pending(py));
                 let paths =
                     alloc_string_list_bits(py, &[artifacts.path().to_string_lossy().into_owned()])
                         .expect("sys.path fixture");
-                let _paths = owner(paths);
+                let _paths = owner(py, paths);
                 loader_identity_setattr(py, sys, b"path", paths);
                 let modules = importlib_runtime_modules_bits(py).expect("public sys.modules");
-                let _modules = owner(modules);
+                let _modules = owner(py, modules);
                 let modules_ptr = obj_from_bits(modules).as_ptr().unwrap();
                 let util_name = alloc_test_string_bits(py, "importlib.util");
-                let _util_name = owner(util_name);
-                let util = crate::molt_module_new(util_name);
-                let _util = owner(util);
+                let _util_name = owner(py, util_name);
+                let util = crate::molt_module_new_attached_body(py, util_name);
+                let _util = owner(py, util);
                 let function_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                     py,
                     crate::builtins::functions::runtime_fn_addr(
@@ -2866,7 +2902,7 @@ mod resolver_admission_tests {
                 );
                 assert!(!function_ptr.is_null());
                 let finder = MoltObject::from_ptr(function_ptr).bits();
-                let _finder = owner(finder);
+                let _finder = owner(py, finder);
                 loader_identity_setattr(py, util, b"find_spec", finder);
                 let meta = alloc_list(py, &[util]);
                 assert!(!meta.is_null());
@@ -2884,7 +2920,7 @@ mod resolver_admission_tests {
                 );
                 let original = crate::builtins::exceptions::ExceptionValue::adopt(
                     py,
-                    molt_exception_last_pending(),
+                    molt_exception_last_pending_attached_body(py),
                 );
                 clear_exception(py);
                 // Reset borrowed callback state before original's owner drops, including unwind.
@@ -2900,11 +2936,16 @@ mod resolver_admission_tests {
                 ];
                 for name_text in &names {
                     let name = alloc_test_string_bits(py, name_text);
-                    let _name = owner(name);
+                    let _name = owner(py, name);
                     for fail in [false, true] {
                         FINDER_ERROR.set(if fail { original.bits() } else { 0 });
                         let calls = FINDER_CALLS.get();
-                        let result = molt_importlib_import_module(name, MoltObject::none().bits());
+                        let result =
+                            crate::builtins::platform::molt_importlib_import_module_attached_body(
+                                py,
+                                name,
+                                MoltObject::none().bits(),
+                            );
                         assert!(obj_from_bits(result).is_none());
                         assert_eq!(
                             FINDER_CALLS.get(),
@@ -2914,7 +2955,7 @@ mod resolver_admission_tests {
                         if fail {
                             let raised = crate::builtins::exceptions::ExceptionValue::adopt(
                                 py,
-                                molt_exception_last_pending(),
+                                molt_exception_last_pending_attached_body(py),
                             );
                             assert_eq!(
                                 raised.bits(),
@@ -2931,7 +2972,7 @@ mod resolver_admission_tests {
                             );
                             let raised = crate::builtins::exceptions::ExceptionValue::adopt(
                                 py,
-                                molt_exception_last_pending(),
+                                molt_exception_last_pending_attached_body(py),
                             );
                             clear_exception(py);
                             for (field, expected) in [
@@ -2977,17 +3018,22 @@ mod resolver_admission_tests {
                         );
                     }
                     // Public cache authority still wins, even while the finder would raise.
-                    let cached = crate::molt_module_new(name);
-                    let _cached = owner(cached);
+                    let cached = crate::molt_module_new_attached_body(py, name);
+                    let _cached = owner(py, cached);
                     unsafe {
                         assert!(dict_set_in_place(py, modules_ptr, name, cached));
                     }
                     assert!(!exception_pending(py));
                     let cached_refs = refs(cached);
                     let calls = FINDER_CALLS.get();
-                    let result = molt_importlib_import_module(name, MoltObject::none().bits());
+                    let result =
+                        crate::builtins::platform::molt_importlib_import_module_attached_body(
+                            py,
+                            name,
+                            MoltObject::none().bits(),
+                        );
                     assert_eq!(result, cached);
-                    let result_owner = owner(result);
+                    let result_owner = owner(py, result);
                     assert!(!exception_pending(py));
                     assert_eq!(FINDER_CALLS.get(), calls);
                     assert_eq!(
@@ -3025,33 +3071,33 @@ fn environment_mapping_owns_exact_objects_and_process_only_writes_do_not_publish
                 inc_ref_bits(py, first);
                 (key, first)
             };
-            molt_env_mapping_set(encoded_key, encoded_value);
+            molt_env_mapping_set_attached_body(py, encoded_key, encoded_value);
             assert!(!exception_pending(py));
             assert_eq!(
                 std::env::var_os(raw_key).as_deref(),
                 Some(std::ffi::OsStr::new("mapping"))
             );
-            let observed = molt_env_mapping_get(encoded_key);
+            let observed = molt_env_mapping_get_attached_body(py, encoded_key);
             assert_eq!(
                 observed, encoded_value,
                 "get transfers the exact stored object"
             );
             dec_ref_bits(py, observed);
-            molt_env_putenv(key, second);
+            molt_env_putenv_attached_body(py, key, second);
             assert!(!exception_pending(py));
             assert_eq!(
                 std::env::var_os(raw_key).as_deref(),
                 Some(std::ffi::OsStr::new("process-only"))
             );
-            let observed = molt_env_mapping_get(encoded_key);
+            let observed = molt_env_mapping_get_attached_body(py, encoded_key);
             assert_eq!(observed, encoded_value);
             dec_ref_bits(py, observed);
-            molt_env_unsetenv(key);
+            molt_env_unsetenv_attached_body(py, key);
             assert!(!exception_pending(py));
-            let observed = molt_env_mapping_get(encoded_key);
+            let observed = molt_env_mapping_get_attached_body(py, encoded_key);
             assert_eq!(observed, encoded_value);
             dec_ref_bits(py, observed);
-            molt_env_mapping_delete(encoded_key);
+            molt_env_mapping_delete_attached_body(py, encoded_key);
             assert!(!exception_pending(py));
             process_env_set(raw_key, original.as_deref()).expect("restore process environment");
             for value in [key, first, second, encoded_key, encoded_value] {
@@ -3070,7 +3116,7 @@ fn environment_mapping_is_lazy_and_terminal_retirement_precedes_direct_mutation(
                 .load(Ordering::Acquire),
             0
         );
-        molt_env_mapping_init();
+        molt_env_mapping_init_attached_body(py);
         assert!(!exception_pending(py));
         let root = platform_state(py)
             .environment_mapping
@@ -3088,10 +3134,10 @@ fn environment_mapping_is_lazy_and_terminal_retirement_precedes_direct_mutation(
         );
         let key = alloc_test_string_bits(py, "__MOLT_ENV_RETIRED_TEST__");
         let value = alloc_test_string_bits(py, "must-not-write");
-        molt_env_putenv(key, value);
+        molt_env_putenv_attached_body(py, key, value);
         assert!(exception_pending(py));
         assert_eq!(std::env::var_os("__MOLT_ENV_RETIRED_TEST__"), None);
-        crate::molt_exception_clear();
+        crate::molt_exception_clear_attached_body(py);
         dec_ref_bits(py, key);
         dec_ref_bits(py, value);
     });
@@ -3099,11 +3145,19 @@ fn environment_mapping_is_lazy_and_terminal_retirement_precedes_direct_mutation(
 
 static ENVIRONMENT_FSPATH_CALLS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
-extern "C" fn denied_environment_fspath(_self: u64) -> u64 {
+extern "C" fn denied_environment_fspath(__context: u64, _self: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     ENVIRONMENT_FSPATH_CALLS.fetch_add(1, Ordering::Relaxed);
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = __py;
         alloc_test_string_bits(py, "__MOLT_ENV_DENIED_CALLBACK__")
-    })
+    }
 }
 
 #[test]
@@ -3135,11 +3189,11 @@ fn environment_intrinsic_admission_precedes_callbacks_and_operand_conversion() {
                 OperationId::EnvUnsetenv,
             ] {
                 match operation {
-                    OperationId::EnvGet => molt_env_mapping_get(operand),
-                    OperationId::EnvSet => molt_env_mapping_set(operand, operand),
-                    OperationId::EnvUnset => molt_env_mapping_delete(operand),
-                    OperationId::EnvPutenv => molt_env_putenv(operand, operand),
-                    OperationId::EnvUnsetenv => molt_env_unsetenv(operand),
+                    OperationId::EnvGet => molt_env_mapping_get_attached_body(py, operand),
+                    OperationId::EnvSet => molt_env_mapping_set_attached_body(py, operand, operand),
+                    OperationId::EnvUnset => molt_env_mapping_delete_attached_body(py, operand),
+                    OperationId::EnvPutenv => molt_env_putenv_attached_body(py, operand, operand),
+                    OperationId::EnvUnsetenv => molt_env_unsetenv_attached_body(py, operand),
                     _ => unreachable!(),
                 };
                 assert!(exception_pending(py));
@@ -3158,7 +3212,7 @@ fn environment_intrinsic_admission_precedes_callbacks_and_operand_conversion() {
                         )
                     ))
                 );
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(py);
                 assert_eq!(ENVIRONMENT_FSPATH_CALLS.load(Ordering::Relaxed), 0);
                 assert_eq!(std::env::var_os("__MOLT_ENV_DENIED_CALLBACK__"), before);
                 assert_eq!(
@@ -3171,13 +3225,13 @@ fn environment_intrinsic_admission_precedes_callbacks_and_operand_conversion() {
             }
         }
         for operation in [
-            molt_env_mapping_keys as extern "C" fn() -> u64,
+            molt_env_mapping_keys as unsafe extern "C" fn(u64) -> u64,
             molt_env_mapping_len,
             molt_env_mapping_items_iter,
         ] {
-            operation();
+            unsafe { operation(py.attached_context()) };
             assert!(exception_pending(py));
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             assert_eq!(
                 platform_state(py)
                     .environment_mapping
@@ -3196,15 +3250,23 @@ static METADATA_CACHE_READS: std::sync::atomic::AtomicUsize =
 static METADATA_CACHE_FAIL: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-extern "C" fn metadata_observed_cached(_spec: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn metadata_observed_cached(__context: u64, _spec: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         METADATA_CACHE_READS.fetch_add(1, Ordering::SeqCst);
         if METADATA_CACHE_FAIL.load(Ordering::SeqCst) {
             raise_exception::<_>(py, BuiltinExc::RuntimeError, "cached getter ran")
         } else {
             MoltObject::from_int(431).bits()
         }
-    })
+    }
 }
 
 #[test]
@@ -3362,16 +3424,38 @@ static EXEC_PRESENCE_READS: AtomicU64 = AtomicU64::new(0);
 static EXEC_PRESENCE_CALLS: AtomicU64 = AtomicU64::new(0);
 static EXEC_PRESENCE_FIRST: AtomicU64 = AtomicU64::new(0);
 static EXEC_PRESENCE_SECOND: AtomicU64 = AtomicU64::new(0);
-extern "C" fn execution_presence_first(_module: u64) -> u64 {
+extern "C" fn execution_presence_first(__context: u64, _module: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     EXEC_PRESENCE_CALLS.store(1, Ordering::SeqCst);
     MoltObject::none().bits()
 }
-extern "C" fn execution_presence_second(_module: u64) -> u64 {
+extern "C" fn execution_presence_second(__context: u64, _module: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     EXEC_PRESENCE_CALLS.store(2, Ordering::SeqCst);
     MoltObject::none().bits()
 }
-extern "C" fn execution_presence_getter(_loader: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn execution_presence_getter(__context: u64, _loader: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         let call = if EXEC_PRESENCE_READS.fetch_add(1, Ordering::SeqCst) == 0 {
             EXEC_PRESENCE_FIRST.load(Ordering::SeqCst)
         } else {
@@ -3379,7 +3463,7 @@ extern "C" fn execution_presence_getter(_loader: u64) -> u64 {
         };
         inc_ref_bits(py, call);
         call
-    })
+    }
 }
 
 #[test]
@@ -3503,8 +3587,16 @@ static SPEC_PROTOCOL_BODY_ERROR: std::sync::atomic::AtomicU64 =
 static SPEC_PROTOCOL_FLAG_ERROR: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-extern "C" fn spec_protocol_setattr(spec: u64, name: u64, value: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn spec_protocol_setattr(__context: u64, spec: u64, name: u64, value: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         let flag = crate::dynamic_attr_name_bits(py, b"_initializing").unwrap();
         // The setter receives a pinned Python str key; flag is an owned str.
         let is_flag = unsafe { crate::object::ops_compare::string_storage_equal(name, flag) };
@@ -3518,21 +3610,37 @@ extern "C" fn spec_protocol_setattr(spec: u64, name: u64, value: u64) -> u64 {
             }
             let mode = SPEC_PROTOCOL_MODE.load(Ordering::SeqCst);
             if (mode == 3 && initializing) || (mode == 4 && !initializing) {
-                return crate::molt_exception_set_last(
+                return crate::molt_exception_set_last_attached_body(
+                    py,
                     SPEC_PROTOCOL_FLAG_ERROR.load(Ordering::SeqCst),
                 );
             }
         }
-        crate::molt_object_setattr(spec, name, value)
-    })
+        crate::molt_object_setattr_attached_body(py, spec, name, value)
+    }
 }
 
-extern "C" fn spec_protocol_create(_loader: u64, _spec: u64) -> u64 {
+extern "C" fn spec_protocol_create(__context: u64, _loader: u64, _spec: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::none().bits()
 }
 
-extern "C" fn spec_protocol_exec(_loader: u64, module: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn spec_protocol_exec(__context: u64, _loader: u64, module: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         let mode = SPEC_PROTOCOL_MODE.load(Ordering::SeqCst);
         let spec = SPEC_PROTOCOL_SPEC.load(Ordering::SeqCst);
         assert_eq!(
@@ -3550,7 +3658,10 @@ extern "C" fn spec_protocol_exec(_loader: u64, module: u64) -> u64 {
             Some(module)
         );
         if matches!(mode, 1 | 4 | 5) {
-            return crate::molt_exception_set_last(SPEC_PROTOCOL_BODY_ERROR.load(Ordering::SeqCst));
+            return crate::molt_exception_set_last_attached_body(
+                py,
+                SPEC_PROTOCOL_BODY_ERROR.load(Ordering::SeqCst),
+            );
         }
         if mode == 2 {
             assert!(unsafe { dict_del_in_place(py, dictionary, name) }.unwrap());
@@ -3563,7 +3674,7 @@ extern "C" fn spec_protocol_exec(_loader: u64, module: u64) -> u64 {
             );
         }
         MoltObject::none().bits()
-    })
+    }
 }
 
 #[test]
@@ -3576,7 +3687,7 @@ fn spec_transaction_finalizes_original_and_selects_flag_body_and_completion_erro
             SPEC_PROTOCOL_MODE.store(mode, Ordering::SeqCst);
             SPEC_PROTOCOL_TRUE.store(0, Ordering::SeqCst);
             SPEC_PROTOCOL_FALSE.store(0, Ordering::SeqCst);
-            let spec_base = crate::molt_importlib_module_spec_type();
+            let spec_base = crate::molt_importlib_module_spec_type_attached_body(py);
             let spec_class = loader_identity_class(py, "FlagProtocolSpec", spec_base);
             let setter = crate::builtins::functions::alloc_runtime_function_obj(
                 py,
@@ -3680,7 +3791,7 @@ fn spec_transaction_finalizes_original_and_selects_flag_body_and_completion_erro
                 dec_ref_bits(py, module);
             } else {
                 assert!(result.is_err());
-                let selected = exceptions::molt_exception_last_pending();
+                let selected = exceptions::molt_exception_last_pending_attached_body(py);
                 if mode == 2 {
                     assert!(exceptions::exception_matches_kind(
                         py,
@@ -3760,7 +3871,8 @@ fn initial_finder_generation_preserves_public_customization_and_retires_owners()
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let name = ExceptionValue::adopt(py, alloc_test_string_bits(py, "sys"));
-            let sys = ExceptionValue::adopt(py, crate::molt_module_new(name.bits()));
+            let sys =
+                ExceptionValue::adopt(py, crate::molt_module_new_attached_body(py, name.bits()));
             crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys.bits());
             let read = |key: crate::NameId| {
                 let key = key.bits(py);
@@ -3781,7 +3893,8 @@ fn initial_finder_generation_preserves_public_customization_and_retires_owners()
             .unwrap();
             assert_eq!(initial.len(), 1, "one early runtime catalog finder");
             let finder = initial[0];
-            let machinery = ExceptionValue::adopt(py, crate::molt_module_new(name.bits()));
+            let machinery =
+                ExceptionValue::adopt(py, crate::molt_module_new_attached_body(py, name.bits()));
             let path_finder = MoltObject::from_int(731).bits();
             loader_identity_setattr(py, machinery.bits(), b"PathFinder", path_finder);
             let defaults = ExceptionValue::adopt(
@@ -3900,27 +4013,45 @@ fn initial_finder_generation_preserves_public_customization_and_retires_owners()
 fn import_lock_reentry_failed_release_and_terminal_custody_share_one_owner() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        assert_eq!(molt_imp_lock_held(), MoltObject::from_bool(false).bits());
-        assert_eq!(molt_imp_acquire_lock(), MoltObject::none().bits());
+        assert_eq!(
+            crate::builtins::platform::molt_imp_lock_held_attached_body(py),
+            MoltObject::from_bool(false).bits()
+        );
+        assert_eq!(
+            crate::builtins::platform::molt_imp_acquire_lock_attached_body(py),
+            MoltObject::none().bits()
+        );
         let guard = ImportLockGuard::acquire(py).unwrap();
-        assert_eq!(molt_imp_lock_held(), MoltObject::from_bool(true).bits());
-        assert_eq!(molt_imp_release_lock(), MoltObject::none().bits());
+        assert_eq!(
+            crate::builtins::platform::molt_imp_lock_held_attached_body(py),
+            MoltObject::from_bool(true).bits()
+        );
+        assert_eq!(
+            crate::builtins::platform::molt_imp_release_lock_attached_body(py),
+            MoltObject::none().bits()
+        );
         guard.finish(py).unwrap();
-        assert_eq!(molt_imp_lock_held(), MoltObject::from_bool(false).bits());
-        molt_imp_release_lock();
+        assert_eq!(
+            crate::builtins::platform::molt_imp_lock_held_attached_body(py),
+            MoltObject::from_bool(false).bits()
+        );
+        crate::builtins::platform::molt_imp_release_lock_attached_body(py);
         assert_pending_exception_contains(
             py,
             crate::BuiltinExc::RuntimeError,
             &["not holding the import lock"],
         );
         importlib_retire_default_generation(py, runtime_state(py));
-        molt_imp_acquire_lock();
+        crate::builtins::platform::molt_imp_acquire_lock_attached_body(py);
         assert_pending_exception_contains(
             py,
             crate::BuiltinExc::ImportError,
             &["interpreter import state is retired"],
         );
-        assert_eq!(molt_imp_lock_held(), MoltObject::from_bool(false).bits());
+        assert_eq!(
+            crate::builtins::platform::molt_imp_lock_held_attached_body(py),
+            MoltObject::from_bool(false).bits()
+        );
     });
 }
 
@@ -3928,8 +4059,16 @@ fn import_lock_reentry_failed_release_and_terminal_custody_share_one_owner() {
 static PLATFORM_FINALIZER_DISPOSITION: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 #[cfg(not(target_arch = "wasm32"))]
-extern "C" fn platform_retirement_finalizer(_self: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn platform_retirement_finalizer(__context: u64, _self: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         let platform = platform_state(py);
         let retired = platform.environment_mapping.load(Ordering::Acquire)
             == MoltObject::none().bits()
@@ -3939,7 +4078,7 @@ extern "C" fn platform_retirement_finalizer(_self: u64) -> u64 {
             );
         PLATFORM_FINALIZER_DISPOSITION.store(if retired { 1 } else { 2 }, Ordering::Release);
         MoltObject::none().bits()
-    })
+    }
 }
 
 #[test]
@@ -3947,7 +4086,7 @@ extern "C" fn platform_retirement_finalizer(_self: u64) -> u64 {
 fn platform_terminal_custody_precedes_environment_value_finalizers() {
     crate::test_support::RuntimeTestTransaction::with_explicit_capabilities("env.write", |py| {
         PLATFORM_FINALIZER_DISPOSITION.store(0, Ordering::Release);
-        molt_env_mapping_init();
+        molt_env_mapping_init_attached_body(py);
         assert!(!exception_pending(py));
         let root = platform_state(py)
             .environment_mapping

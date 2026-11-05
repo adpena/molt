@@ -4,6 +4,7 @@
 // DO NOT EDIT BY HAND.
 
 use super::import_tokens::WasmRuntimeImport;
+#[cfg(test)]
 use super::runtime_surface::RUNTIME_HOST_EXPORTS;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1126,8 +1127,8 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "frame_locals_set",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ThreadRecord,
-        name: "thread_record",
+        import: WasmRuntimeImport::AttachedContext,
+        name: "attached_context",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::RefcountAdmission,
@@ -4062,8 +4063,8 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "types_new_class",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::CpythonAbiCextCallTrampoline,
-        name: "cpython_abi_cext_call_trampoline",
+        import: WasmRuntimeImport::CpythonAbiCextCallTrampolineAdmitted,
+        name: "cpython_abi_cext_call_trampoline_admitted",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibModuleSpecInit,
@@ -11720,8 +11721,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_code_slots_init" => Some(WasmRuntimeImport::CodeSlotsInit),
         "frame_locals_set" => Some(WasmRuntimeImport::FrameLocalsSet),
         "molt_frame_locals_set" => Some(WasmRuntimeImport::FrameLocalsSet),
-        "thread_record" => Some(WasmRuntimeImport::ThreadRecord),
-        "molt_thread_record" => Some(WasmRuntimeImport::ThreadRecord),
+        "attached_context" => Some(WasmRuntimeImport::AttachedContext),
+        "molt_attached_context" => Some(WasmRuntimeImport::AttachedContext),
         "refcount_admission" => Some(WasmRuntimeImport::RefcountAdmission),
         "molt_refcount_admission" => Some(WasmRuntimeImport::RefcountAdmission),
         "trace_enter_slot" => Some(WasmRuntimeImport::TraceEnterSlot),
@@ -13402,9 +13403,11 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_types_resolve_bases" => Some(WasmRuntimeImport::TypesResolveBases),
         "types_new_class" => Some(WasmRuntimeImport::TypesNewClass),
         "molt_types_new_class" => Some(WasmRuntimeImport::TypesNewClass),
-        "cpython_abi_cext_call_trampoline" => Some(WasmRuntimeImport::CpythonAbiCextCallTrampoline),
-        "molt_cpython_abi_cext_call_trampoline" => {
-            Some(WasmRuntimeImport::CpythonAbiCextCallTrampoline)
+        "cpython_abi_cext_call_trampoline_admitted" => {
+            Some(WasmRuntimeImport::CpythonAbiCextCallTrampolineAdmitted)
+        }
+        "molt_cpython_abi_cext_call_trampoline_admitted" => {
+            Some(WasmRuntimeImport::CpythonAbiCextCallTrampolineAdmitted)
         }
         "importlib_module_spec_init" => Some(WasmRuntimeImport::ImportlibModuleSpecInit),
         "molt_importlib_module_spec_init" => Some(WasmRuntimeImport::ImportlibModuleSpecInit),
@@ -17446,6 +17449,7 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
     }
 }
 
+#[cfg(test)]
 #[inline]
 pub(crate) fn wasm_runtime_export_name(name: &str) -> Option<&'static str> {
     if let Some(import) = wasm_runtime_import(name) {

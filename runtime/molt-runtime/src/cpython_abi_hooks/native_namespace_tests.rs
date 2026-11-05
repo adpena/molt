@@ -6,8 +6,16 @@ static IMPORT_PROBE_DICTIONARY: std::sync::atomic::AtomicU64 = std::sync::atomic
 static IMPORT_PROBE_KEY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static IMPORT_PROBE_REPLACE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
-extern "C" fn import_probe_deletes_publication(_spec: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn import_probe_deletes_publication(__context: u64, _spec: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         unsafe {
             let dictionary = crate::ptr_from_bits(
                 IMPORT_PROBE_DICTIONARY.load(std::sync::atomic::Ordering::SeqCst),
@@ -25,7 +33,7 @@ extern "C" fn import_probe_deletes_publication(_spec: u64) -> u64 {
             }
         }
         MoltObject::from_bool(false).bits()
-    })
+    }
 }
 
 #[test]
@@ -39,8 +47,12 @@ fn get_module_revalidates_callback_mutation_for_latest_313_through_315() {
             &py,
             crate::dynamic_attr_name_bits(&py, b"DeletingImportProbe").unwrap(),
         );
-        let class = ExceptionValue::adopt(&py, crate::molt_class_new(class_name.bits()));
-        let base = crate::molt_class_set_base(
+        let class = ExceptionValue::adopt(
+            &py,
+            crate::molt_class_new_attached_body(py, class_name.bits()),
+        );
+        let base = crate::molt_class_set_base_attached_body(
+            py,
             class.bits(),
             crate::builtins::classes::builtin_classes(&py).object,
         );
@@ -169,8 +181,10 @@ fn import_dictionary_is_available_before_sys_and_survives_attribute_rebinding() 
         let name = crate::dynamic_attr_name_bits(&py, b"_molt_presys_capi").unwrap();
         // Replacing the public dictionary entry retires its module owner.
         // Keep this independent owner through every replacement and reinsert.
-        let module =
-            ExceptionValue::adopt(&py, crate::builtins::modules::molt_module_cache_get(name));
+        let module = ExceptionValue::adopt(
+            &py,
+            crate::builtins::modules::molt_module_cache_get_attached_body(py, name),
+        );
         let bits = module.bits();
         assert_eq!(
             molt_cpython_abi::bridge::GLOBAL_BRIDGE
@@ -231,8 +245,10 @@ fn import_dictionary_is_available_before_sys_and_survives_attribute_rebinding() 
             molt_cpython_abi::api::imports::PyImport_GetModuleDict(),
             first
         );
-        let cached =
-            ExceptionValue::adopt(&py, crate::builtins::modules::molt_module_cache_get(name));
+        let cached = ExceptionValue::adopt(
+            &py,
+            crate::builtins::modules::molt_module_cache_get_attached_body(py, name),
+        );
         assert_eq!(cached.bits(), bits);
         drop(cached);
         assert!(crate::dict_del_in_place(&py, namespace, modules_name).unwrap());
@@ -243,7 +259,7 @@ fn import_dictionary_is_available_before_sys_and_survives_attribute_rebinding() 
         let found = molt_cpython_abi::api::imports::PyImport_GetModule(capi_name);
         assert!(!found.is_null());
         refcount::Py_DECREF(found);
-        crate::builtins::modules::molt_module_cache_del(name);
+        crate::builtins::modules::molt_module_cache_del_attached_body(py, name);
         let missing = molt_cpython_abi::api::imports::PyImport_GetModule(capi_name);
         assert!(missing.is_null());
         assert!(errors::PyErr_Occurred().is_null());
@@ -279,7 +295,7 @@ fn eval_builtins_interpreter_role_survives_module_unpublication_and_replacement(
                 .bits(),
             dictionary
         );
-        crate::builtins::modules::molt_module_cache_del(name);
+        crate::builtins::modules::molt_module_cache_del_attached_body(py, name);
         crate::dec_ref_bits(&py, module);
         // The module can be destroyed; its exact dictionary remains owned by
         // the interpreter role, not by a borrowed lookup's temporary pin.
@@ -425,9 +441,9 @@ fn managed_type_projection_owns_one_mirrored_dictionary_edge() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     with_gil(|py| unsafe {
         let name = crate::dynamic_attr_name_bits(&py, b"NativeNamespaceOwner").unwrap();
-        let class = crate::molt_class_new(name);
+        let class = crate::molt_class_new_attached_body(py, name);
         crate::dec_ref_bits(&py, name);
-        crate::molt_class_set_base(class, crate::builtin_classes(&py).object);
+        crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(&py).object);
         crate::object::class_finish_definition(&py, crate::obj_from_bits(class).as_ptr().unwrap())
             .expect("seal the namespace class through its canonical layout owner");
         assert!(!crate::exception_pending(&py));
@@ -462,9 +478,10 @@ fn gc_retires_type_mro_projection_cycle_before_releasing_candidate_pins() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     with_gil(|py| unsafe {
         let name = crate::dynamic_attr_name_bits(&py, b"CollectedProjectionOwner").unwrap();
-        let class = crate::molt_class_new(name);
+        let class = crate::molt_class_new_attached_body(py, name);
         crate::dec_ref_bits(&py, name);
-        let result = crate::molt_class_set_base(class, crate::builtin_classes(&py).object);
+        let result =
+            crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(&py).object);
         crate::dec_ref_bits(&py, result);
         crate::object::class_finish_definition(&py, crate::obj_from_bits(class).as_ptr().unwrap())
             .expect("seal class before publishing its recursive C projection");

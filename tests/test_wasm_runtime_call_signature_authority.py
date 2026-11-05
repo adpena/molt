@@ -28,7 +28,7 @@ def test_browser_embed_requires_binary_callable_table_signatures() -> None:
     assert (
         "if (typeof tableFn === 'function' && directSignature) {\n"
         "try {\n"
-        "return callWithSignature(tableFn, directSignature, args);"
+        "return callWithSignature(tableFn, directSignature, [context, ...args]);"
     ) in source
     # The app's callable-table attestation is required through the shared
     # admission authority; test_wasm_runner_table_base.py
@@ -49,7 +49,7 @@ def test_node_runner_requires_binary_callable_table_signatures() -> None:
     ) in source
     assert (
         "if (typeof fn === 'function' && directSignature) {\n"
-        "return callWithWasmSignature(fn, directSignature, args.slice(1));"
+        "return callWithWasmSignature(fn, directSignature, [args[0], ...args.slice(2)]);"
     ) in source
     # Callable-table attestation is required through the shared admission
     # authority; test_wasm_runner_table_base.py
@@ -277,6 +277,8 @@ def test_runtime_wasm_export_signatures_match_import_registry() -> None:
     from molt._wasm_abi_generated import (
         WASM_IMPORT_SIGNATURES,
         WASM_RUNTIME_IMPORT_EXPORT_NAMES,
+        wasm_runtime_export_name,
+        runtime_execution_abi,
     )
     from tools.wasm_abi_gen.manifest import load_manifest
 
@@ -293,11 +295,18 @@ def test_runtime_wasm_export_signatures_match_import_registry() -> None:
     missing: list[str] = []
     matched = 0
     for import_name, export_name in WASM_RUNTIME_IMPORT_EXPORT_NAMES:
+        logical = wasm_runtime_export_name(import_name)
+        execution = runtime_execution_abi(logical) if logical is not None else None
+        assert execution is not None, f"missing execution ABI for {import_name}"
+        export_name = execution.physical_symbol
         runtime_signature = runtime_signatures.get(export_name)
         declared_signature = declared.get(import_name)
         if declared_signature is None:
             missing.append(f"{import_name}: missing generated import signature")
             continue
+        if execution.context == "Attached":
+            params, results = declared_signature
+            declared_signature = (("i64", *params), results)
         if runtime_signature is None:
             manifest_entry = manifest_imports.get(import_name, {})
             if isinstance(manifest_entry.get("runtime_feature"), str):

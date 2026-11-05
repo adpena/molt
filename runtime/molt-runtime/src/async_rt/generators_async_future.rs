@@ -10,9 +10,8 @@ use crate::runtime_flags::{self, RuntimeFlag};
 const ASYNC_SLEEP_YIELD_SECS: f64 = 0.000_001;
 const ASYNC_SLEEP_YIELD_SENTINEL: f64 = -1.0;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_future_poll_fn(future_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_future_poll_fn_attached_body(_py: &crate::PyToken<'_>, future_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(future_bits);
         let Some(ptr) = obj.as_ptr() else {
             if runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_AWAITABLE) {
@@ -55,9 +54,8 @@ pub extern "C" fn molt_future_poll_fn(future_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_future_poll(future_bits: u64) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_future_poll_attached_body(_py: &crate::PyToken<'_>, future_bits: u64) -> i64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let caller = current_task_ptr();
         // An exception injected at an await continuation belongs to its caller.
         // Do not execute or terminalize the child merely to deliver that error.
@@ -168,7 +166,7 @@ fn poll_future_value(_py: &PyToken<'_>, future_bits: u64) -> i64 {
             if let Some(exc_ptr) = cached_exception {
                 let exc_bits = MoltObject::from_ptr(exc_ptr.0).bits();
                 inc_ref_bits(_py, exc_bits);
-                let raised = molt_raise(exc_bits);
+                let raised = molt_raise_attached_body(_py, exc_bits);
                 dec_ref_bits(_py, exc_bits);
                 return raised as i64;
             }
@@ -236,14 +234,14 @@ fn poll_future_value(_py: &PyToken<'_>, future_bits: u64) -> i64 {
         }
         if res != pending_bits_i64() && poll_pending && ptr != current_task {
             if let Some(exc_bits) = awaited_exception {
-                let raised = molt_raise(exc_bits);
+                let raised = molt_raise_attached_body(_py, exc_bits);
                 dec_ref_bits(_py, exc_bits);
                 return raised as i64;
             } else {
                 let task_scope = crate::CurrentTaskScope::enter(_py, ptr);
                 let prev_task = task_scope.previous();
                 let exc_bits = if exception_pending(_py) {
-                    molt_exception_last_pending()
+                    molt_exception_last_pending_attached_body(_py)
                 } else {
                     MoltObject::none().bits()
                 };
@@ -258,7 +256,7 @@ fn poll_future_value(_py: &PyToken<'_>, future_bits: u64) -> i64 {
                 }
                 drop(task_scope);
                 if !obj_from_bits(exc_bits).is_none() {
-                    let raised = molt_raise(exc_bits);
+                    let raised = molt_raise_attached_body(_py, exc_bits);
                     dec_ref_bits(_py, exc_bits);
                     return raised as i64;
                 }
@@ -521,9 +519,12 @@ fn sleep_register_impl(_py: &PyToken<'_>, task_ptr: *mut u8, future_ptr: *mut u8
 
 /// # Safety
 /// - `future_bits` must be a valid pointer to a Molt future.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_future_cancel(future_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_future_cancel_attached_body(
+    _py: &crate::PyToken<'_>,
+    future_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(task_ptr) = resolve_task_ptr(future_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "object is not awaitable");
         };
@@ -534,9 +535,13 @@ pub unsafe extern "C" fn molt_future_cancel(future_bits: u64) -> u64 {
 
 /// # Safety
 /// - `future_bits` must be a valid pointer to a Molt future.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_future_cancel_msg(future_bits: u64, msg_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_future_cancel_msg_attached_body(
+    _py: &crate::PyToken<'_>,
+    future_bits: u64,
+    msg_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(task_ptr) = resolve_task_ptr(future_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "object is not awaitable");
         };
@@ -547,9 +552,12 @@ pub unsafe extern "C" fn molt_future_cancel_msg(future_bits: u64, msg_bits: u64)
 
 /// # Safety
 /// - `future_bits` must be a valid pointer to a Molt future.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_future_cancel_clear(future_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_future_cancel_clear_attached_body(
+    _py: &crate::PyToken<'_>,
+    future_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(task_ptr) = resolve_task_ptr(future_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "object is not awaitable");
         };
@@ -561,9 +569,13 @@ pub unsafe extern "C" fn molt_future_cancel_clear(future_bits: u64) -> u64 {
 
 /// # Safety
 /// - `future_bits` must be a valid pointer to a Molt future.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_task_cancel_apply(future_bits: u64, msg_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_asyncio_task_cancel_apply_attached_body(
+    _py: &crate::PyToken<'_>,
+    future_bits: u64,
+    msg_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(task_ptr) = resolve_task_ptr(future_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "object is not awaitable");
         };
@@ -578,10 +590,13 @@ pub unsafe extern "C" fn molt_asyncio_task_cancel_apply(future_bits: u64, msg_bi
 
 /// # Safety
 /// - `tasks_bits` must be iterable and contain awaitables with `done()`/`cancel()`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_cancel_pending(tasks_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_asyncio_cancel_pending_attached_body(
+    _py: &crate::PyToken<'_>,
+    tasks_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(task_tuple_bits) = tuple_from_iter_bits(_py, tasks_bits) else {
                 return MoltObject::none().bits();
             };
@@ -632,10 +647,14 @@ pub unsafe extern "C" fn molt_asyncio_cancel_pending(tasks_bits: u64) -> u64 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_future_new(poll_fn_addr: u64, closure_size: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj_bits = molt_task_new(poll_fn_addr, closure_size, TASK_KIND_FUTURE);
+pub(crate) fn molt_future_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    poll_fn_addr: u64,
+    closure_size: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let obj_bits =
+            molt_task_new_attached_body(_py, poll_fn_addr, closure_size, TASK_KIND_FUTURE);
         if runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_AWAITABLE)
             && let Some(obj_ptr) = resolve_obj_ptr(obj_bits)
         {
@@ -653,10 +672,13 @@ pub extern "C" fn molt_future_new(poll_fn_addr: u64, closure_size: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_promise_new() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj_bits = molt_future_new(promise_poll_fn_addr(), std::mem::size_of::<u64>() as u64);
+pub(crate) fn molt_promise_new_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let obj_bits = molt_future_new_attached_body(
+            _py,
+            promise_poll_fn_addr(),
+            std::mem::size_of::<u64>() as u64,
+        );
         if promise_trace_enabled() {
             eprintln!("molt async trace: promise_new bits=0x{:x}", obj_bits);
         }
@@ -666,10 +688,13 @@ pub extern "C" fn molt_promise_new() -> u64 {
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a Molt promise future.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_promise_poll(obj_bits: u64) -> i64 {
+
+pub(crate) unsafe fn molt_promise_poll_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> i64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let ptr = ptr_from_bits(obj_bits);
             if ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -695,7 +720,7 @@ pub unsafe extern "C" fn molt_promise_poll(obj_bits: u64) -> i64 {
                 2 => {
                     let payload_ptr = ptr as *mut u64;
                     let exc_bits = *payload_ptr;
-                    let _ = molt_raise(exc_bits);
+                    let _ = molt_raise_attached_body(_py, exc_bits);
                     MoltObject::none().bits() as i64
                 }
                 _ => MoltObject::none().bits() as i64,
@@ -706,10 +731,14 @@ pub unsafe extern "C" fn molt_promise_poll(obj_bits: u64) -> i64 {
 
 /// # Safety
 /// - `future_bits` must be a valid pointer to a Molt promise future.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_promise_set_result(future_bits: u64, result_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_promise_set_result_attached_body(
+    _py: &crate::PyToken<'_>,
+    future_bits: u64,
+    result_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             if async_trace_enabled() || promise_trace_enabled() {
                 eprintln!(
                     "molt async trace: promise_set_result_enter bits=0x{:x}",
@@ -763,10 +792,14 @@ pub unsafe extern "C" fn molt_promise_set_result(future_bits: u64, result_bits: 
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_async_sleep(delay_bits: u64, result_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj_bits = molt_future_new(
+pub(crate) fn molt_async_sleep_attached_body(
+    _py: &crate::PyToken<'_>,
+    delay_bits: u64,
+    result_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let obj_bits = molt_future_new_attached_body(
+            _py,
             async_sleep_poll_fn_addr(),
             (2 * std::mem::size_of::<u64>()) as u64,
         );
@@ -786,10 +819,13 @@ pub extern "C" fn molt_async_sleep(delay_bits: u64, result_bits: u64) -> u64 {
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer if the runtime associates a future with it.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_async_sleep_poll(obj_bits: u64) -> i64 {
+
+pub(crate) unsafe fn molt_async_sleep_poll_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> i64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let _obj_ptr = ptr_from_bits(obj_bits);
             if _obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -806,10 +842,10 @@ pub unsafe extern "C" fn molt_async_sleep_poll(obj_bits: u64) -> i64 {
             if crate::object::object_state(_obj_ptr) == 0 {
                 let delay_secs = if payload_len >= 1 {
                     let delay_bits = *payload_ptr;
-                    let float_bits = molt_float_from_obj(delay_bits);
+                    let float_bits = molt_float_from_obj_attached_body(_py, delay_bits);
                     let _float_owner = obj_from_bits(float_bits)
                         .as_ptr()
-                        .map(crate::PtrDropGuard::new);
+                        .map(|pointer| crate::PtrDropGuard::new(_py, pointer));
                     if exception_pending(_py) {
                         return MoltObject::none().bits() as i64;
                     }
@@ -892,10 +928,13 @@ pub unsafe extern "C" fn molt_async_sleep_poll(obj_bits: u64) -> i64 {
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a Molt future allocated with payload slots.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_anext_default_poll(obj_bits: u64) -> i64 {
+
+pub(crate) unsafe fn molt_anext_default_poll_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> i64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let _obj_ptr = ptr_from_bits(obj_bits);
             if _obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -909,7 +948,7 @@ pub unsafe extern "C" fn molt_anext_default_poll(obj_bits: u64) -> i64 {
             let raw_awaitable = *payload_ptr;
             let default_bits = *payload_ptr.add(1);
             if crate::object::object_state(_obj_ptr) == 0 {
-                let await_bits = crate::molt_get_awaitable(raw_awaitable);
+                let await_bits = crate::molt_get_awaitable_attached_body(_py, raw_awaitable);
                 if exception_pending(_py) {
                     // Conversion is not iteration: a StopAsyncIteration raised
                     // by __await__ must propagate, not select the default.
@@ -923,19 +962,19 @@ pub unsafe extern "C" fn molt_anext_default_poll(obj_bits: u64) -> i64 {
             let mut result = if exception_pending(_py) {
                 MoltObject::none().bits() as i64
             } else {
-                molt_future_poll(*payload_ptr.add(2))
+                molt_future_poll_attached_body(_py, *payload_ptr.add(2))
             };
             if result == pending_bits_i64() && !exception_pending(_py) {
                 return result;
             }
             if exception_pending(_py) {
-                let exception = molt_exception_last_pending();
+                let exception = molt_exception_last_pending_attached_body(_py);
                 if crate::builtins::exceptions::exception_matches_kind(
                     _py,
                     exception,
                     crate::BuiltinExc::StopAsyncIteration,
                 ) {
-                    molt_exception_clear();
+                    molt_exception_clear_attached_body(_py);
                     dec_ref_bits(_py, result as u64);
                     inc_ref_bits(_py, default_bits);
                     result = default_bits as i64;
@@ -951,10 +990,14 @@ pub unsafe extern "C" fn molt_anext_default_poll(obj_bits: u64) -> i64 {
 /// # Safety
 /// - `task_ptr` must be a valid Molt task pointer.
 /// - `future_ptr` must be a valid Molt future pointer.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_sleep_register(task_ptr: *mut u8, future_ptr: *mut u8) -> u64 {
+
+pub(crate) unsafe fn molt_sleep_register_attached_body(
+    _py: &crate::PyToken<'_>,
+    task_ptr: *mut u8,
+    future_ptr: *mut u8,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             if task_ptr.is_null() || future_ptr.is_null() {
                 return 0;
             }
@@ -1020,14 +1063,16 @@ mod sleep_payload_tests {
         }
     }
 
-    extern "C" fn delay_float(_self: u64) -> u64 {
+    extern "C" fn delay_float(__context: u64, _self: u64) -> u64 {
+        let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         let error = CONVERSION_ERROR.load(Ordering::Relaxed);
         if error != 0 {
-            return crate::molt_exception_set_last(error);
+            return crate::molt_exception_set_last_attached_body(__attached_py, error);
         }
         let result = CONVERSION_RESULT.load(Ordering::Relaxed);
         if result != 0 {
-            return crate::with_gil_entry_nopanic!(py, {
+            return crate::with_attached_entry_nopanic!(__attached_py, py, {
                 inc_ref_bits(py, result);
                 result
             });
@@ -1035,8 +1080,10 @@ mod sleep_payload_tests {
         MoltObject::from_float(0.0).bits()
     }
 
-    extern "C" fn delay_finalizer(_self: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn delay_finalizer(__context: u64, _self: u64) -> u64 {
+        let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        crate::with_attached_entry_nopanic!(__attached_py, py, {
             // Consume the observation before any reentrant runtime call. The
             // callback records facts; assertions belong on the Rust test side
             // of the non-unwinding C ABI boundary.
@@ -1050,7 +1097,7 @@ mod sleep_payload_tests {
                     if prefix == 0 {
                         OBSERVED_SLOTS[0].store(*ptr.cast::<u64>(), Ordering::Relaxed);
                         // Reenter the same poll before replacing the deadline.
-                        let result = molt_async_sleep_poll(owner) as u64;
+                        let result = molt_async_sleep_poll_attached_body(py, owner) as u64;
                         REENTRY_RESULT.store(result, Ordering::Relaxed);
                         dec_ref_bits(py, result);
                     } else {
@@ -1073,9 +1120,9 @@ mod sleep_payload_tests {
 
     fn delay_class(py: &PyToken<'_>) -> u64 {
         let name = dynamic_attr_name_bits(py, b"SleepPayloadDelay").unwrap();
-        let class = crate::molt_class_new(name);
+        let class = crate::molt_class_new_attached_body(py, name);
         dec_ref_bits(py, name);
-        crate::molt_class_set_base(class, builtin_classes(py).object);
+        crate::molt_class_set_base_attached_body(py, class, builtin_classes(py).object);
         for (name, address) in [
             (b"__float__".as_slice(), delay_float as *const ()),
             (b"__del__".as_slice(), delay_finalizer as *const ()),
@@ -1089,7 +1136,7 @@ mod sleep_payload_tests {
             assert!(!function.is_null());
             unsafe { crate::object::layout::function_set_call_target_ptr(function, address) };
             let function = MoltObject::from_ptr(function).bits();
-            crate::molt_set_attr_name(class, name, function);
+            crate::molt_set_attr_name_attached_body(py, class, name, function);
             dec_ref_bits(py, function);
             dec_ref_bits(py, name);
         }
@@ -1128,12 +1175,16 @@ mod sleep_payload_tests {
                     before, 1,
                     "ownership regression requires a mortal allocation"
                 );
-                let future = molt_async_sleep(delay, MoltObject::from_int(41).bits());
+                let future =
+                    molt_async_sleep_attached_body(py, delay, MoltObject::from_int(41).bits());
                 assert_eq!(owners(delay), before + 1);
-                assert_eq!(unsafe { molt_async_sleep_poll(future) }, pending_bits_i64());
+                assert_eq!(
+                    unsafe { molt_async_sleep_poll_attached_body(py, future) },
+                    pending_bits_i64()
+                );
                 assert_eq!(owners(delay), before);
                 assert_eq!(
-                    unsafe { molt_async_sleep_poll(future) } as u64,
+                    unsafe { molt_async_sleep_poll_attached_body(py, future) } as u64,
                     MoltObject::from_int(41).bits()
                 );
                 dec_ref_bits(py, future);
@@ -1164,7 +1215,7 @@ mod sleep_payload_tests {
                 );
                 (*native.as_ptr().cast::<PyFloatObject>()).ob_fval = 0.0;
                 let result = GLOBAL_BRIDGE.molt_value_for_pyobj(native.as_ptr()).unwrap();
-                let _result_owner = crate::PtrDropGuard::preserving(ptr_from_bits(result));
+                let _result_owner = crate::PtrDropGuard::preserving(py, ptr_from_bits(result));
                 assert_eq!(
                     crate::object::object_type_id(ptr_from_bits(result)),
                     crate::TYPE_ID_FOREIGN
@@ -1172,19 +1223,23 @@ mod sleep_payload_tests {
                 let _callbacks = CallbackScope::new();
                 CONVERSION_RESULT.store(result, Ordering::Relaxed);
                 let class = delay_class(py);
-                let _class_owner = crate::PtrDropGuard::preserving(ptr_from_bits(class));
+                let _class_owner = crate::PtrDropGuard::preserving(py, ptr_from_bits(class));
                 let delay = delay_instance(py, class);
-                let _delay_owner = crate::PtrDropGuard::preserving(ptr_from_bits(delay));
-                let future = molt_async_sleep(delay, MoltObject::from_int(41).bits());
-                let _future_owner = crate::PtrDropGuard::preserving(ptr_from_bits(future));
+                let _delay_owner = crate::PtrDropGuard::preserving(py, ptr_from_bits(delay));
+                let future =
+                    molt_async_sleep_attached_body(py, delay, MoltObject::from_int(41).bits());
+                let _future_owner = crate::PtrDropGuard::preserving(py, ptr_from_bits(future));
                 let native_refs = (*native.as_ptr()).ob_refcnt;
                 let result_refs = owners(result);
-                assert_eq!(molt_async_sleep_poll(future), pending_bits_i64());
+                assert_eq!(
+                    molt_async_sleep_poll_attached_body(py, future),
+                    pending_bits_i64()
+                );
                 assert!(!exception_pending(py));
                 assert_eq!(owners(result), result_refs);
                 assert_eq!((*native.as_ptr()).ob_refcnt, native_refs);
                 assert_eq!(
-                    molt_async_sleep_poll(future) as u64,
+                    molt_async_sleep_poll_attached_body(py, future) as u64,
                     MoltObject::from_int(41).bits()
                 );
                 assert!(!exception_pending(py));
@@ -1199,17 +1254,19 @@ mod sleep_payload_tests {
             let _callbacks = CallbackScope::new();
             let class = delay_class(py);
             let delay = delay_instance(py, class);
-            let future = molt_async_sleep(delay, MoltObject::from_int(41).bits());
+            let future = molt_async_sleep_attached_body(py, delay, MoltObject::from_int(41).bits());
             let before = owners(delay);
             let raised =
                 raise_exception::<u64>(py, BuiltinExc::ValueError, "delay conversion failed");
             dec_ref_bits(py, raised);
-            let original = crate::builtins::exceptions::molt_exception_last_pending();
-            crate::molt_exception_clear();
+            let original =
+                crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
+            crate::molt_exception_clear_attached_body(py);
             CONVERSION_ERROR.store(original, Ordering::Relaxed);
-            let result = unsafe { molt_async_sleep_poll(future) } as u64;
+            let result = unsafe { molt_async_sleep_poll_attached_body(py, future) } as u64;
             assert!(obj_from_bits(result).is_none());
-            let observed = crate::builtins::exceptions::molt_exception_last_pending();
+            let observed =
+                crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
             assert_eq!(observed, original);
             assert_eq!(owners(delay), before);
             unsafe {
@@ -1217,7 +1274,7 @@ mod sleep_payload_tests {
                 assert_eq!(*ptr_from_bits(future).cast::<u64>(), delay);
             }
             CONVERSION_ERROR.store(0, Ordering::Relaxed);
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             for bits in [result, observed, original, future, delay, class] {
                 dec_ref_bits(py, bits);
             }
@@ -1235,13 +1292,20 @@ mod sleep_payload_tests {
                 RETIRED_PREFIX.store(retired_prefix, Ordering::Relaxed);
                 let delay = delay_instance(py, class);
                 let future = if retired_prefix == 0 {
-                    molt_async_sleep(delay, MoltObject::from_int(41).bits())
+                    molt_async_sleep_attached_body(py, delay, MoltObject::from_int(41).bits())
                 } else {
-                    let ready = molt_promise_new();
+                    let ready = molt_promise_new_attached_body(py);
                     assert!(!ptr_from_bits(ready).is_null());
-                    unsafe { molt_promise_set_result(ready, MoltObject::from_int(41).bits()) };
+                    unsafe {
+                        molt_promise_set_result_attached_body(
+                            py,
+                            ready,
+                            MoltObject::from_int(41).bits(),
+                        )
+                    };
                     assert!(!exception_pending(py));
-                    let wrapper = molt_future_new(
+                    let wrapper = molt_future_new_attached_body(
+                        py,
                         anext_default_poll_fn_addr(),
                         (3 * std::mem::size_of::<u64>()) as u64,
                     );
@@ -1269,9 +1333,9 @@ mod sleep_payload_tests {
                 OWNER.store(future, Ordering::Relaxed);
                 let result = unsafe {
                     if retired_prefix == 0 {
-                        molt_async_sleep_poll(future)
+                        molt_async_sleep_poll_attached_body(py, future)
                     } else {
-                        molt_anext_default_poll(future)
+                        molt_anext_default_poll_attached_body(py, future)
                     }
                 };
                 assert_eq!(
@@ -1317,7 +1381,8 @@ mod sleep_payload_tests {
         crate::with_gil_entry_nopanic!(py, {
             let class = delay_class(py);
             let delay = delay_instance(py, class);
-            let future = molt_future_new(
+            let future = molt_future_new_attached_body(
+                py,
                 anext_default_poll_fn_addr(),
                 (3 * std::mem::size_of::<u64>()) as u64,
             );
@@ -1329,7 +1394,7 @@ mod sleep_payload_tests {
                 let _callbacks = CallbackScope::new();
                 RETIRED_PREFIX.store(3, Ordering::Relaxed);
                 OWNER.store(future, Ordering::Relaxed);
-                let result = delay_finalizer(delay);
+                let result = delay_finalizer(py.attached_context(), delay);
                 dec_ref_bits(py, result);
                 assert_eq!(OBSERVED_STATE.load(Ordering::Relaxed), 0);
                 assert_eq!(OBSERVED_SLOTS[0].load(Ordering::Relaxed), unexpected);
@@ -1357,3 +1422,5 @@ mod sleep_payload_tests {
         });
     }
 }
+
+include!("../attached_exports_generated/async_rt/generators_async_future.rs");

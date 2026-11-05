@@ -31,8 +31,8 @@ fn int(value: usize) -> u64 {
     MoltObject::from_int(value as i64).bits()
 }
 
-fn cell(value: u64) -> u64 {
-    let bits = crate::object::cells::molt_cell_new(value);
+fn cell(py: &PyToken<'_>, value: u64) -> u64 {
+    let bits = crate::object::cells::molt_cell_new_attached_body(py, value);
     assert!(crate::object::cells::cell_ptr_from_bits(bits).is_some());
     bits
 }
@@ -58,7 +58,7 @@ fn store_owned(py: &PyToken<'_>, task: *mut u8, offset: usize, bits: u64) {
 
 fn take_error(py: &PyToken<'_>, name: crate::BuiltinExc) {
     assert!(crate::exception_pending(py));
-    let exception = crate::molt_exception_last_pending();
+    let exception = crate::molt_exception_last_pending_attached_body(py);
     assert!(crate::builtins::exceptions::exception_matches_kind(
         py, exception, name
     ));
@@ -80,7 +80,7 @@ fn unregister(py: &PyToken<'_>, poll: u64) {
 fn register(py: &PyToken<'_>, poll: u64, names: &[u64], fields: [u64; 4]) {
     let names = tuple(py, names);
     let layout = tuple(py, &fields);
-    super::activation::molt_stateful_locals_register(poll, names, layout);
+    super::activation::molt_stateful_locals_register_attached_body(py, poll, names, layout);
     for bits in fields {
         dec_ref_bits(py, bits);
     }
@@ -139,8 +139,12 @@ fn created_and_suspended_generator_locals_follow_the_registered_layout() {
         let builtins = dict(py);
         // Payload: closure tuple, parameters `x` and cell parameter `c`, body
         // local `body` and body cell `boxed`; free variable `free`.
-        let task =
-            crate::molt_task_new(GEN_POLL, (BASE + 5 * 8) as u64, crate::TASK_KIND_GENERATOR);
+        let task = crate::molt_task_new_attached_body(
+            py,
+            GEN_POLL,
+            (BASE + 5 * 8) as u64,
+            crate::TASK_KIND_GENERATOR,
+        );
         let ptr = obj_from_bits(task).as_ptr().expect("generator task");
         assert!(unsafe {
             crate::object::aux_header::object_init_frame_context_unpublished(
@@ -177,7 +181,7 @@ fn created_and_suspended_generator_locals_follow_the_registered_layout() {
         assert!(!crate::exception_pending(py));
         // The constructor wrote the closure and bound arguments only; body
         // slots still hold the allocator's None.
-        let free_cell = cell(int(7));
+        let free_cell = cell(py, int(7));
         store_owned(py, ptr, BASE, tuple(py, &[free_cell]));
         dec_ref_bits(py, free_cell);
         store_owned(py, ptr, BASE + 8, int(19));
@@ -237,9 +241,9 @@ fn created_and_suspended_generator_locals_follow_the_registered_layout() {
         unsafe {
             crate::async_rt::generators::generator_set_state_for_test(ptr, FrameState::Suspended)
         };
-        store_owned(py, ptr, BASE + 16, cell(int(5)));
+        store_owned(py, ptr, BASE + 16, cell(py, int(5)));
         store_owned(py, ptr, BASE + 24, int(11));
-        store_owned(py, ptr, BASE + 32, cell(crate::missing_bits(py)));
+        store_owned(py, ptr, BASE + 32, cell(py, crate::missing_bits(py)));
         unsafe { crate::object::aux_header::object_set_frame_locals_phase(ptr, 3) };
         let started = unsafe { activation_locals_bits(py, ptr) }.expect("suspended locals");
         assert_eq!(lookup(py, started, x), Some(int(19)));
@@ -282,7 +286,8 @@ fn created_and_suspended_generator_locals_follow_the_registered_layout() {
 fn coroutine_locals_use_the_same_layout_without_generator_control() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        let task = crate::molt_task_new(CORO_POLL, 16, crate::TASK_KIND_COROUTINE);
+        let task =
+            crate::molt_task_new_attached_body(py, CORO_POLL, 16, crate::TASK_KIND_COROUTINE);
         let ptr = obj_from_bits(task).as_ptr().expect("coroutine task");
         let x = string(py, b"x");
         let local = string(py, b"local");
@@ -385,7 +390,12 @@ fn malformed_locals_layouts_fail_before_publication() {
             );
         }
         let bare = tuple(py, &[x]);
-        super::activation::molt_stateful_locals_register(REJECTED_POLL, bare, int(1));
+        super::activation::molt_stateful_locals_register_attached_body(
+            py,
+            REJECTED_POLL,
+            bare,
+            int(1),
+        );
         take_error(py, crate::BuiltinExc::TypeError);
         for bits in [bare, x, free] {
             dec_ref_bits(py, bits);
@@ -407,8 +417,12 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                 let globals = dict(py);
                 let slot = crate::test_support::publish_test_code_slot(py, code, globals);
                 let builtins = dict(py);
-                let task =
-                    crate::molt_task_new(GEN_POLL, (BASE + 16) as u64, crate::TASK_KIND_GENERATOR);
+                let task = crate::molt_task_new_attached_body(
+                    py,
+                    GEN_POLL,
+                    (BASE + 16) as u64,
+                    crate::TASK_KIND_GENERATOR,
+                );
                 let ptr = obj_from_bits(task).as_ptr().unwrap();
                 assert!(unsafe {
                     crate::object::aux_header::object_init_frame_context_unpublished(
@@ -428,7 +442,7 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                 );
                 // A Python cell is itself a lawful argument value. Before prologue
                 // publication it must not be confused with the argument's own cell.
-                let raw_cell = cell(int(19));
+                let raw_cell = cell(py, int(19));
                 unsafe { crate::object::payload_refs::store_borrowed(py, ptr, BASE, raw_cell) };
                 unsafe {
                     crate::async_rt::generators::generator_set_state_for_test(
@@ -439,7 +453,7 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                 let baseline = refs(task);
                 let guard = FrameInvocationGuard::for_activation(py, ptr);
                 assert_eq!(refs(task), baseline, "a handoff borrows its activation");
-                crate::molt_trace_enter_slot(slot);
+                crate::molt_trace_enter_slot_attached_body(py, slot);
                 assert_eq!(frame_stack_active_activation_bits(), task);
                 assert_eq!(
                     refs(task),
@@ -454,12 +468,12 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                 // Constructor admission is checked before any prologue stores. A
                 // non-None body owner cannot be discarded by allocation-free init.
                 store_owned(py, ptr, BASE + 8, int(77));
-                molt_frame_locals_begin();
+                molt_frame_locals_begin_attached_body(py);
                 take_error(py, crate::BuiltinExc::SystemError);
                 assert_eq!(crate::object::aux_header::object_frame_locals_phase(ptr), 0);
                 assert_eq!(unsafe { *ptr.add(BASE + 8).cast::<u64>() }, int(77));
                 store_owned(py, ptr, BASE + 8, MoltObject::none().bits());
-                molt_frame_locals_begin();
+                molt_frame_locals_begin_attached_body(py);
                 assert!(!crate::exception_pending(py));
                 // This observation has exactly the state seen by a finalizer reentering
                 // during CELL_NEW, before the first canonical cell is published.
@@ -467,15 +481,15 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                 assert_eq!(lookup(py, partial, x), Some(raw_cell));
                 assert_eq!(lookup(py, partial, body), None);
                 dec_ref_bits(py, partial);
-                let x_cell = cell(raw_cell);
-                molt_frame_cell_publish(int(BASE), x_cell);
+                let x_cell = cell(py, raw_cell);
+                molt_frame_cell_publish_attached_body(py, int(BASE), x_cell);
                 dec_ref_bits(py, x_cell);
                 let partial = unsafe { activation_locals_bits(py, ptr) }.unwrap();
                 assert_eq!(lookup(py, partial, x), Some(raw_cell));
                 assert_eq!(lookup(py, partial, body), None);
                 dec_ref_bits(py, partial);
-                let body_cell = cell(int(29));
-                molt_frame_cell_publish(int(BASE + 8), body_cell);
+                let body_cell = cell(py, int(29));
+                molt_frame_cell_publish_attached_body(py, int(BASE + 8), body_cell);
                 dec_ref_bits(py, body_cell);
                 assert!(!crate::exception_pending(py));
                 // Once published, a cell role cannot silently revert to a raw word.
@@ -506,15 +520,20 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                     } else {
                         observed_source = Some(sources[0]);
                     }
-                    let locals =
-                        locals_proxy::molt_frame_f_locals_get(MoltObject::none().bits(), frame);
+                    let locals = locals_proxy::molt_frame_f_locals_get_attached_body(
+                        py,
+                        MoltObject::none().bits(),
+                        frame,
+                    );
                     if minor >= 13 {
                         assert!(!obj_from_bits(locals).is_none());
                         assert!(
                             !crate::exception_pending(py),
                             "PEP 667 proxy construction is lazy"
                         );
-                        let projected = locals_proxy::molt_frame_locals_proxy_getitem(locals, x);
+                        let projected = locals_proxy::molt_frame_locals_proxy_getitem_attached_body(
+                            py, locals, x,
+                        );
                         assert!(obj_from_bits(projected).is_none());
                         dec_ref_bits(py, projected);
                     } else {
@@ -548,7 +567,7 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                 assert_eq!(lookup(py, recorded, x), Some(raw_cell));
                 assert_eq!(lookup(py, recorded, body), Some(int(29)));
                 dec_ref_bits(py, recorded);
-                crate::molt_trace_exit();
+                crate::molt_trace_exit_attached_body(py);
                 drop(guard);
                 assert_eq!(refs(task), baseline);
                 dec_ref_bits(py, task);

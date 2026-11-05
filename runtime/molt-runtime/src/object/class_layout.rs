@@ -102,19 +102,19 @@ pub(crate) struct BestBase {
 
 /// Construction-time view of the selected direct base and secondary policy.
 /// Pins outlive arbitrary __slots__ iteration; no descendant registry is kept.
-pub(crate) struct SlotAdmission {
+pub(crate) struct SlotAdmission<'guard> {
     base: Option<BestBase>,
     inherited: super::class_storage::ClassSlotPolicy,
     secondary: super::class_storage::ClassSlotPolicy,
     native: Option<super::class_storage::ClassSlotPolicy>,
-    _pins: Vec<crate::PtrDropGuard>,
+    _pins: Vec<crate::PtrDropGuard<'guard>>,
 }
 
-pub(crate) unsafe fn prepare_slot_admission(
-    py: &PyToken<'_>,
+pub(crate) unsafe fn prepare_slot_admission<'guard>(
+    py: &'guard PyToken<'guard>,
     bases: &[u64],
     native: Option<super::class_storage::ClassSlotPolicy>,
-) -> Result<SlotAdmission, ()> {
+) -> Result<SlotAdmission<'guard>, ()> {
     unsafe {
         let mut pins = Vec::with_capacity(bases.len());
         for &base in bases {
@@ -126,7 +126,7 @@ pub(crate) unsafe fn prepare_slot_admission(
                 return Err(());
             };
             inc_ref_bits(py, base);
-            pins.push(crate::PtrDropGuard::new(class));
+            pins.push(crate::PtrDropGuard::new(py, class));
         }
         let best = select_best_base(py, bases)?;
         let policy = |base| {
@@ -163,13 +163,13 @@ pub(crate) unsafe fn prepare_slot_admission(
     }
 }
 
-impl SlotAdmission {
+impl<'guard> SlotAdmission<'guard> {
     /// CPython type_new_slots: materialization precedes this function; variable
     /// layout rejection precedes per-item validation, then special names are
     /// visited in declaration order. Ordinary duplicate names remain valid.
     pub(crate) unsafe fn validate(
         &self,
-        py: &PyToken<'_>,
+        py: &'guard PyToken<'guard>,
         names: Option<&[u64]>,
     ) -> Result<super::class_storage::ClassSlotPolicy, ()> {
         unsafe {
@@ -458,7 +458,7 @@ impl BaseSelection {
             }
             let class = obj_from_bits(bits).as_ptr().expect("validated base");
             inc_ref_bits(py, bits);
-            let _class_owner = crate::PtrDropGuard::new(class);
+            let _class_owner = crate::PtrDropGuard::new(py, class);
             let has_slots = introduces_slots(py, class)?;
             let bases = class_bases_vec(class_bases_bits(class));
             let best = self.select(py, &bases)?;
@@ -494,7 +494,7 @@ impl BaseSelection {
                     return Err(());
                 }
                 inc_ref_bits(py, bits);
-                pins.push(crate::PtrDropGuard::new(class));
+                pins.push(crate::PtrDropGuard::new(py, class));
             }
             let mut best: Option<BestBase> = None;
             for &direct in bases {
@@ -688,21 +688,21 @@ pub(crate) unsafe fn fields_match(py: &PyToken<'_>, left: *mut u8, right: *mut u
     }
 }
 
-pub(crate) struct PreparedLayout {
+pub(crate) struct PreparedLayout<'guard> {
     record: u64,
     size: usize,
-    record_owner: crate::PtrDropGuard,
+    record_owner: crate::PtrDropGuard<'guard>,
     namespace: *mut u8,
     staged_namespace: *mut u8,
     map_publication: Option<(*mut u8, *mut u8)>,
     projection: Option<*mut u8>,
     // Commit moves displaced owners into these staged dictionaries. Release
     // only after class_finish_definition publishes the completed flag.
-    _owners: Vec<crate::PtrDropGuard>,
+    _owners: Vec<crate::PtrDropGuard<'guard>>,
 }
 
-impl PreparedLayout {
-    pub(crate) unsafe fn publish(&mut self, py: &PyToken<'_>, class: *mut u8) {
+impl<'guard> PreparedLayout<'guard> {
+    pub(crate) unsafe fn publish(&mut self, py: &'guard PyToken<'guard>, class: *mut u8) {
         unsafe {
             if let Some((live, staged)) = self.map_publication {
                 super::ops::dict_publish_staged(py, live, staged);
@@ -751,7 +751,10 @@ unsafe fn find_name(rows: &[ClassField], name: u64) -> Option<ClassField> {
 /// Construct concrete storage once. Explicit compiler offsets remain fixed;
 /// inherited inferred fields contribute names and receive placements in this
 /// concrete class. Only the selected structural base supplies fixed slot owners.
-pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<PreparedLayout, ()> {
+pub(crate) unsafe fn prepare<'guard>(
+    py: &'guard PyToken<'guard>,
+    class: *mut u8,
+) -> Result<PreparedLayout<'guard>, ()> {
     unsafe {
         let namespace = obj_from_bits(class_dict_bits(class))
             .as_ptr()
@@ -765,11 +768,13 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
             })?;
         let live_namespace = namespace;
         inc_ref_bits(py, MoltObject::from_ptr(live_namespace).bits());
-        let mut owners = vec![crate::PtrDropGuard::new(live_namespace)];
-        let staged_bits =
-            super::ops_dict::molt_dict_copy(MoltObject::from_ptr(live_namespace).bits());
+        let mut owners = vec![crate::PtrDropGuard::new(py, live_namespace)];
+        let staged_bits = super::ops_dict::molt_dict_copy_attached_body(
+            py,
+            MoltObject::from_ptr(live_namespace).bits(),
+        );
         let namespace = obj_from_bits(staged_bits).as_ptr().ok_or(())?;
-        owners.push(crate::PtrDropGuard::new(namespace));
+        owners.push(crate::PtrDropGuard::new(py, namespace));
         let fields_name = crate::NameId::DunderMoltFieldOffsets.bits(py);
         let size_name = crate::NameId::DunderMoltLayoutSize.bits(py);
         if obj_from_bits(fields_name).as_ptr().is_none()
@@ -797,7 +802,7 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
         if let Some(bits) = original {
             inc_ref_bits(py, bits);
         }
-        let _original_owner = original_ptr.map(crate::PtrDropGuard::new);
+        let _original_owner = original_ptr.map(|__ptr| crate::PtrDropGuard::new(py, __ptr));
         let size_hint = dict_get_in_place(py, namespace, size_name)?
             .and_then(|bits| obj_from_bits(bits).as_int())
             .filter(|&size| size > 0)
@@ -1042,15 +1047,15 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
                 return Err(());
             }
             let bits = MoltObject::from_ptr(map).bits();
-            owners.push(crate::PtrDropGuard::new(map));
+            owners.push(crate::PtrDropGuard::new(py, map));
             bits
         };
         let projection = obj_from_bits(map).as_ptr();
         let mut map_publication = None;
         if let Some(map_ptr) = projection {
-            let staged_bits = super::ops_dict::molt_dict_copy(map);
+            let staged_bits = super::ops_dict::molt_dict_copy_attached_body(py, map);
             let staged = obj_from_bits(staged_bits).as_ptr().ok_or(())?;
-            owners.push(crate::PtrDropGuard::new(staged));
+            owners.push(crate::PtrDropGuard::new(py, staged));
             for field in visible {
                 let offset = i64::try_from(field.offset).map_err(|_| overflow(py))?;
                 if !dict_set_in_place(py, staged, field.name, MoltObject::from_int(offset).bits()) {
@@ -1085,7 +1090,7 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
                 },
             );
             let descriptor_ptr = obj_from_bits(descriptor).as_ptr().ok_or(())?;
-            let _descriptor_owner = crate::PtrDropGuard::new(descriptor_ptr);
+            let _descriptor_owner = crate::PtrDropGuard::new(py, descriptor_ptr);
             if !dict_set_in_place(py, namespace, name, descriptor) {
                 return Err(());
             }
@@ -1117,7 +1122,7 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
                     },
                 );
                 let descriptor_ptr = obj_from_bits(descriptor).as_ptr().ok_or(())?;
-                let _descriptor_owner = crate::PtrDropGuard::new(descriptor_ptr);
+                let _descriptor_owner = crate::PtrDropGuard::new(py, descriptor_ptr);
                 if !dict_set_in_place(py, namespace, name, descriptor) {
                     return Err(());
                 }
@@ -1135,12 +1140,12 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
         if rows_ptr.is_null() {
             return Err(());
         }
-        let _rows_owner = crate::PtrDropGuard::new(rows_ptr);
+        let _rows_owner = crate::PtrDropGuard::new(py, rows_ptr);
         let record_ptr = alloc_tuple(py, &[map, MoltObject::from_ptr(rows_ptr).bits()]);
         if record_ptr.is_null() {
             return Err(());
         }
-        let record_owner = crate::PtrDropGuard::new(record_ptr);
+        let record_owner = crate::PtrDropGuard::new(py, record_ptr);
         // Construction hints are consumed into the private record/cache.
         // They never survive publication as Python class attributes.
         dict_del_in_place(py, namespace, fields_name)?;
@@ -1267,8 +1272,16 @@ mod tests {
     static REENTERED_SLOT_CLASS: std::sync::atomic::AtomicU64 =
         std::sync::atomic::AtomicU64::new(0);
 
-    extern "C" fn slot_capture_reenter(_self: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn slot_capture_reenter(__context: u64, _self: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             unsafe {
                 let target = REENTERED_SLOT_CLASS.load(std::sync::atomic::Ordering::SeqCst);
                 let class = obj_from_bits(target).as_ptr().unwrap();
@@ -1277,20 +1290,20 @@ mod tests {
                 let empty = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
                 assert!(dict_set_in_place(py, namespace, name, empty));
                 assert!(crate::builtins::attr::capture_class_slot_declaration_for_seal(py, class));
-                let iterator = crate::molt_iter(empty);
+                let iterator = crate::molt_iter_attached_body(py, empty);
                 dec_ref_bits(py, name);
                 dec_ref_bits(py, empty);
                 iterator
             }
-        })
+        }
     }
 
     unsafe fn slotted_class(py: &PyToken<'_>, label: &[u8], base: u64, slots: &[&[u8]]) -> u64 {
         unsafe {
             let name = dynamic_attr_name_bits(py, label).unwrap();
-            let class = molt_class_new(name);
+            let class = molt_class_new_attached_body(py, name);
             dec_ref_bits(py, name);
-            let result = molt_class_set_base(class, base);
+            let result = molt_class_set_base_attached_body(py, class, base);
             dec_ref_bits(py, result);
             let class_ptr = obj_from_bits(class).as_ptr().unwrap();
             let namespace = obj_from_bits(class_dict_bits(class_ptr)).as_ptr().unwrap();
@@ -1355,7 +1368,7 @@ mod tests {
                     let (first_field, first_slot) = rows.next().unwrap();
                     *first_slot = MoltObject::from_int(41).bits();
                     assert_eq!(
-                        crate::molt_set_attr_name(object, class_name, second),
+                        crate::molt_set_attr_name_attached_body(py, object, class_name, second),
                         MoltObject::none().bits()
                     );
                     assert!(!exception_pending(py));
@@ -1401,7 +1414,7 @@ mod tests {
                 let slots = dynamic_attr_name_bits(py, b"__slots__").unwrap();
                 let dict = dynamic_attr_name_bits(py, b"__dict__").unwrap();
                 let weak = dynamic_attr_name_bits(py, b"__weakref__").unwrap();
-                let unfinished = molt_class_new(name);
+                let unfinished = molt_class_new_attached_body(py, name);
                 let unfinished_ptr = obj_from_bits(unfinished).as_ptr().unwrap();
                 assert!(crate::builtins::attr::class_slots_info(py, unfinished_ptr).is_none());
                 for attribute in [dict, weak] {
@@ -1417,7 +1430,7 @@ mod tests {
                 }
                 dec_ref_bits(py, unfinished);
                 let empty = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
-                let admitted = molt_class_new(name);
+                let admitted = molt_class_new_attached_body(py, name);
                 let admitted_ptr = obj_from_bits(admitted).as_ptr().unwrap();
                 let namespace = obj_from_bits(class_dict_bits(admitted_ptr))
                     .as_ptr()
@@ -1437,9 +1450,10 @@ mod tests {
                 assert!(dict_set_in_place(py, namespace, slots, changed));
                 dec_ref_bits(py, changed);
                 for base in [native.object, native.set] {
-                    let result = molt_class_set_base(admitted, base);
+                    let result = molt_class_set_base_attached_body(py, admitted, base);
                     dec_ref_bits(py, result);
-                    let error = crate::builtins::exceptions::molt_exception_last_pending();
+                    let error =
+                        crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                     assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         error,
@@ -1480,9 +1494,9 @@ mod tests {
                     if let Some(declaration) = declaration {
                         assert!(dict_set_in_place(py, namespace, slots, declaration));
                     }
-                    let static_class = molt_class_new(name);
+                    let static_class = molt_class_new_attached_body(py, name);
                     let static_ptr = obj_from_bits(static_class).as_ptr().unwrap();
-                    let result = molt_class_set_base(static_class, base);
+                    let result = molt_class_set_base_attached_body(py, static_class, base);
                     dec_ref_bits(py, result);
                     if let Some(declaration) = declaration {
                         assert!(dict_set_in_place(
@@ -1495,7 +1509,8 @@ mod tests {
                     super::super::class_finish_definition(py, static_ptr)
                         .expect("static slot admission");
                     let bases = MoltObject::from_ptr(alloc_tuple(py, &[base])).bits();
-                    let dynamic_class = crate::builtins::types::molt_type_new(
+                    let dynamic_class = crate::builtins::types::molt_type_new_attached_body(
+                        py,
                         native.type_obj,
                         name,
                         bases,
@@ -1559,19 +1574,20 @@ mod tests {
                     1,
                 );
                 let function = MoltObject::from_ptr(function).bits();
-                crate::molt_set_attr_name(iterable, iterator_name, function);
+                crate::molt_set_attr_name_attached_body(py, iterable, iterator_name, function);
                 let declaration = alloc_instance_for_class(py, iterable_ptr);
                 let name = dynamic_attr_name_bits(py, b"ReenteredSlotOwner").unwrap();
-                let target = molt_class_new(name);
+                let target = molt_class_new_attached_body(py, name);
                 let target_ptr = obj_from_bits(target).as_ptr().unwrap();
                 let slots = dynamic_attr_name_bits(py, b"__slots__").unwrap();
-                crate::molt_set_attr_name(target, slots, declaration);
+                crate::molt_set_attr_name_attached_body(py, target, slots, declaration);
                 REENTERED_SLOT_CLASS.store(target, std::sync::atomic::Ordering::SeqCst);
                 assert!(
                     !crate::builtins::attr::capture_class_slot_declaration_for_seal(py, target_ptr)
                 );
                 REENTERED_SLOT_CLASS.store(0, std::sync::atomic::Ordering::SeqCst);
-                let error = crate::builtins::exceptions::molt_exception_last_pending();
+                let error =
+                    crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                 assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     error,
@@ -1624,13 +1640,15 @@ mod tests {
                 BuiltinExc::ValueError,
                 "incoming class construction context",
             );
-            let incoming = crate::builtins::exceptions::molt_exception_last_pending();
+            let incoming =
+                crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
             let class_bits = crate::builtins::exceptions::exception_class_bits(py, kind);
             let class = obj_from_bits(class_bits)
                 .as_ptr()
                 .expect("class admitted under pending error");
             assert!(unsafe { super::super::layout::class_slot_policy(class) }.is_some());
-            let restored = crate::builtins::exceptions::molt_exception_last_pending();
+            let restored =
+                crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
             assert_eq!(incoming, restored);
             assert!(exception_pending(py));
             clear_exception(py);

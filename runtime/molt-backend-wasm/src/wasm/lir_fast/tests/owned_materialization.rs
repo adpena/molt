@@ -260,11 +260,11 @@ const hooks = {
 };
 const loaded = {};
 for (const [name, file] of Object.entries(config.modules)) {
-  const app = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(file)), {molt_runtime: hooks}).exports;
+  const app = new WebAssembly.Instance(new WebAssembly.Module(fs.readFileSync(file)), attachedImports({molt_runtime: hooks})).exports;
   loaded[name] = (...args) => {
     console.error('WASM case ' + name + '(' + args.map(String).join(', ') + ')');
     memory = app.memory;
-    return app.run(...args);
+    return app.run(executionContext, ...args);
   };
 }
 for (const failure of [0, 1, 2]) {

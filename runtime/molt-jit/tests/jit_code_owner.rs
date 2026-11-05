@@ -19,18 +19,37 @@ const ENTRY: &str = "native_callable_dispatch";
 static GENERATED_OBJECT_ABI: u8 = 0;
 static EXCEPTION_PENDING: u8 = 0;
 
-extern "C" fn dec_ref(_: u64) {}
-extern "C" fn inc_ref(_: u64) {}
-extern "C" fn exception_pending_fast() -> u64 {
+#[repr(C)]
+struct FixtureContext {
+    thread_record: &'static u8,
+}
+static CONTEXT: FixtureContext = FixtureContext {
+    thread_record: &EXCEPTION_PENDING,
+};
+
+fn context() -> u64 {
+    std::ptr::addr_of!(CONTEXT) as u64
+}
+fn assert_context(actual: u64) {
+    assert_eq!(actual, context());
+}
+
+extern "C" fn dec_ref(ctx: u64, _: u64) {
+    assert_context(ctx);
+}
+extern "C" fn inc_ref(ctx: u64, _: u64) {
+    assert_context(ctx);
+}
+extern "C" fn exception_pending_fast(ctx: u64) -> u64 {
+    assert_context(ctx);
     0
 }
-extern "C" fn thread_record() -> u64 {
-    std::ptr::addr_of!(EXCEPTION_PENDING) as u64
-}
-extern "C" fn int_from_i64(value: i64) -> u64 {
+extern "C" fn int_from_i64(ctx: u64, value: i64) -> u64 {
+    assert_context(ctx);
     value as u64
 }
-extern "C" fn async_work_poll_and_exception_pending() -> u64 {
+extern "C" fn async_work_poll_and_exception_pending(ctx: u64) -> u64 {
+    assert_context(ctx);
     0
 }
 extern "C" fn object_call_probe(_: u64) -> u64 {
@@ -39,29 +58,39 @@ extern "C" fn object_call_probe(_: u64) -> u64 {
 
 /// The provider the AOT twin links as an archive, as name -> address.
 fn provider() -> BTreeMap<&'static str, usize> {
+    let physical = |logical| {
+        molt_ir::runtime_callable_abi_generated::runtime_execution_abi(logical)
+            .expect("fixture runtime import has a generated execution ABI")
+            .physical_symbol
+    };
     BTreeMap::from([
         (
             molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL,
             std::ptr::addr_of!(GENERATED_OBJECT_ABI) as usize,
         ),
-        ("molt_dec_ref", dec_ref as extern "C" fn(u64) as usize),
-        ("molt_dec_ref_obj", dec_ref as extern "C" fn(u64) as usize),
-        ("molt_inc_ref_obj", inc_ref as extern "C" fn(u64) as usize),
         (
-            "molt_exception_pending_fast",
-            exception_pending_fast as extern "C" fn() -> u64 as usize,
+            physical("molt_dec_ref"),
+            dec_ref as extern "C" fn(u64, u64) as usize,
         ),
         (
-            "molt_thread_record",
-            thread_record as extern "C" fn() -> u64 as usize,
+            physical("molt_dec_ref_obj"),
+            dec_ref as extern "C" fn(u64, u64) as usize,
         ),
         (
-            "molt_int_from_i64",
-            int_from_i64 as extern "C" fn(i64) -> u64 as usize,
+            physical("molt_inc_ref_obj"),
+            inc_ref as extern "C" fn(u64, u64) as usize,
         ),
         (
-            "molt_async_work_poll_and_exception_pending",
-            async_work_poll_and_exception_pending as extern "C" fn() -> u64 as usize,
+            physical("molt_exception_pending_fast"),
+            exception_pending_fast as extern "C" fn(u64) -> u64 as usize,
+        ),
+        (
+            physical("molt_int_from_i64"),
+            int_from_i64 as extern "C" fn(u64, i64) -> u64 as usize,
+        ),
+        (
+            physical("molt_async_work_poll_and_exception_pending"),
+            async_work_poll_and_exception_pending as extern "C" fn(u64) -> u64 as usize,
         ),
         (
             SYMBOL,
@@ -131,9 +160,9 @@ fn jit_program_calls_its_imports_through_the_lookup() {
     let entry = program
         .function_address(ENTRY)
         .expect("the program defines its entry");
-    // SAFETY: the entry was compiled as `extern "C" fn() -> u64`.
-    let entry: extern "C" fn() -> u64 = unsafe { std::mem::transmute(entry) };
-    assert_eq!(entry(), SENTINEL);
+    // SAFETY: the compiled entry takes its live context before Python args.
+    let entry: extern "C" fn(u64) -> u64 = unsafe { std::mem::transmute(entry) };
+    assert_eq!(entry(context()), SENTINEL);
 }
 
 #[test]

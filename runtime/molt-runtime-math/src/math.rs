@@ -431,7 +431,7 @@ fn math_domain_error(_py: &PyToken) -> u64 {
 }
 
 fn log_domain_error(_py: &PyToken, got: Option<f64>) -> u64 {
-    if target_minor() < 14 {
+    if target_minor(_py) < 14 {
         return raise_exception::<u64>(_py, BuiltinExc::ValueError, "math domain error");
     }
     if let Some(value) = got {
@@ -652,24 +652,20 @@ unsafe fn sum_squares_f64_simd_aarch64(values: &[f64]) -> (f64, usize) {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_log(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, logarithm(_py, val_bits, math_log))
+pub fn molt_math_log_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, logarithm(_py, val_bits, math_log))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_log2(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, logarithm(_py, val_bits, math_log2))
+pub fn molt_math_log2_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, logarithm(_py, val_bits, math_log2))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_log10(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, logarithm(_py, val_bits, math_log10))
+pub fn molt_math_log10_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, logarithm(_py, val_bits, math_log10))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_log1p(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_log1p_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -689,9 +685,8 @@ pub extern "C" fn molt_math_log1p(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_exp(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_exp_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -712,9 +707,8 @@ pub extern "C" fn molt_math_exp(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_expm1(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_expm1_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -735,9 +729,13 @@ pub extern "C" fn molt_math_expm1(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_fma(x_bits: u64, y_bits: u64, z_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_fma_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    x_bits: u64,
+    y_bits: u64,
+    z_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(x) = float_as_double(_py, x_bits) else {
             return MoltObject::none().bits();
         };
@@ -751,9 +749,8 @@ pub extern "C" fn molt_math_fma(x_bits: u64, y_bits: u64, z_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_sin(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_sin_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -771,9 +768,8 @@ pub extern "C" fn molt_math_sin(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_cos(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_cos_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -791,9 +787,8 @@ pub extern "C" fn molt_math_cos(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_acos(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_acos_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -811,9 +806,8 @@ pub extern "C" fn molt_math_acos(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_tan(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_tan_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -831,9 +825,8 @@ pub extern "C" fn molt_math_tan(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_asin(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_asin_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -851,9 +844,8 @@ pub extern "C" fn molt_math_asin(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_atan(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_atan_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -861,9 +853,12 @@ pub extern "C" fn molt_math_atan(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_atan2(y_bits: u64, x_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_atan2_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    y_bits: u64,
+    x_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(y) = float_as_double(_py, y_bits) else {
             return MoltObject::none().bits();
         };
@@ -874,9 +869,8 @@ pub extern "C" fn molt_math_atan2(y_bits: u64, x_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_sinh(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_sinh_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -891,9 +885,8 @@ pub extern "C" fn molt_math_sinh(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_cosh(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_cosh_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -908,9 +901,8 @@ pub extern "C" fn molt_math_cosh(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_tanh(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_tanh_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -918,9 +910,8 @@ pub extern "C" fn molt_math_tanh(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_asinh(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_asinh_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -928,9 +919,8 @@ pub extern "C" fn molt_math_asinh(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_acosh(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_acosh_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -948,9 +938,8 @@ pub extern "C" fn molt_math_acosh(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_atanh(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_atanh_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -964,9 +953,8 @@ pub extern "C" fn molt_math_atanh(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_gamma(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_gamma_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -998,9 +986,8 @@ pub extern "C" fn molt_math_gamma(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_erf(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_erf_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -1008,9 +995,8 @@ pub extern "C" fn molt_math_erf(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_erfc(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_erfc_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -1018,9 +1004,8 @@ pub extern "C" fn molt_math_erfc(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_lgamma(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_lgamma_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -1041,9 +1026,8 @@ pub extern "C" fn molt_math_lgamma(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_isfinite(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_isfinite_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -1051,9 +1035,8 @@ pub extern "C" fn molt_math_isfinite(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_isinf(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_isinf_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -1061,9 +1044,8 @@ pub extern "C" fn molt_math_isinf(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_isnan(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_isnan_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -1071,9 +1053,8 @@ pub extern "C" fn molt_math_isnan(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_fabs(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_fabs_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -1081,9 +1062,12 @@ pub extern "C" fn molt_math_fabs(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_copysign(x_bits: u64, y_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_copysign_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    x_bits: u64,
+    y_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(x) = float_as_double(_py, x_bits) else {
             return MoltObject::none().bits();
         };
@@ -1094,9 +1078,8 @@ pub extern "C" fn molt_math_copysign(x_bits: u64, y_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_sqrt(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_sqrt_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -1153,30 +1136,30 @@ fn round_number(_py: &PyToken, bits: u64, mode: RoundMode, name: &'static [u8]) 
     round_float_bits(_py, value, mode).unwrap_or(MoltObject::none().bits())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_floor(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_floor_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         round_number(_py, val_bits, RoundMode::Floor, b"__floor__")
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_ceil(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_ceil_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         round_number(_py, val_bits, RoundMode::Ceil, b"__ceil__")
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_trunc(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_trunc_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         round_number(_py, val_bits, RoundMode::Trunc, b"__trunc__")
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_fmod(x_bits: u64, y_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_fmod_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    x_bits: u64,
+    y_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(x) = float_as_double(_py, x_bits) else {
             return MoltObject::none().bits();
         };
@@ -1199,9 +1182,8 @@ pub extern "C" fn molt_math_fmod(x_bits: u64, y_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_modf(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_modf_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -1226,9 +1208,8 @@ pub extern "C" fn molt_math_modf(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_frexp(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_frexp_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -1244,9 +1225,12 @@ pub extern "C" fn molt_math_frexp(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_ldexp(val_bits: u64, exp_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_ldexp_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    val_bits: u64,
+    exp_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -1274,9 +1258,14 @@ pub extern "C" fn molt_math_ldexp(val_bits: u64, exp_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_isclose(a_bits: u64, b_bits: u64, rel_bits: u64, abs_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_isclose_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    a_bits: u64,
+    b_bits: u64,
+    rel_bits: u64,
+    abs_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(a) = float_as_double(_py, a_bits) else {
             return MoltObject::none().bits();
         };
@@ -1311,9 +1300,12 @@ pub extern "C" fn molt_math_isclose(a_bits: u64, b_bits: u64, rel_bits: u64, abs
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_prod(iter_bits: u64, start_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_prod_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    iter_bits: u64,
+    start_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(iterator) = owned_iterator(_py, iter_bits) else {
             return MoltObject::none().bits();
         };
@@ -1336,9 +1328,8 @@ pub extern "C" fn molt_math_prod(iter_bits: u64, start_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_fsum(iter_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_fsum_attached_body(_py: &molt_runtime_core::PyToken, iter_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(iterator) = owned_iterator(_py, iter_bits) else {
             return MoltObject::none().bits();
         };
@@ -1388,9 +1379,8 @@ pub extern "C" fn molt_math_fsum(iter_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_gcd(args_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_gcd_attached_body(_py: &molt_runtime_core::PyToken, args_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let args_obj = obj_from_bits(args_bits);
         let Some(args_ptr) = args_obj.as_ptr() else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "gcd() expected arguments");
@@ -1403,7 +1393,7 @@ pub extern "C" fn molt_math_gcd(args_bits: u64) -> u64 {
                     "gcd() expected arguments",
                 );
             }
-            let Some(elems) = seq_snapshot(args_ptr) else {
+            let Some(elems) = seq_snapshot(_py, args_ptr) else {
                 return MoltObject::none().bits();
             };
             if elems.is_empty() {
@@ -1432,9 +1422,8 @@ pub extern "C" fn molt_math_gcd(args_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_lcm(args_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_lcm_attached_body(_py: &molt_runtime_core::PyToken, args_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let args_obj = obj_from_bits(args_bits);
         let Some(args_ptr) = args_obj.as_ptr() else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "lcm() expected arguments");
@@ -1447,7 +1436,7 @@ pub extern "C" fn molt_math_lcm(args_bits: u64) -> u64 {
                     "lcm() expected arguments",
                 );
             }
-            let Some(elems) = seq_snapshot(args_ptr) else {
+            let Some(elems) = seq_snapshot(_py, args_ptr) else {
                 return MoltObject::none().bits();
             };
             if elems.is_empty() {
@@ -1476,9 +1465,8 @@ pub extern "C" fn molt_math_lcm(args_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_factorial(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_factorial_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let msg = format!(
             "factorial() argument must be an integer, not {}",
             type_name(_py, obj_from_bits(val_bits))
@@ -1512,9 +1500,12 @@ pub extern "C" fn molt_math_factorial(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_comb(n_bits: u64, k_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_comb_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    n_bits: u64,
+    k_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let n_msg = format!(
             "comb() argument must be an integer, not {}",
             type_name(_py, obj_from_bits(n_bits))
@@ -1572,9 +1563,12 @@ pub extern "C" fn molt_math_comb(n_bits: u64, k_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_perm(n_bits: u64, k_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_perm_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    n_bits: u64,
+    k_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let n_msg = format!(
             "perm() argument must be an integer, not {}",
             type_name(_py, obj_from_bits(n_bits))
@@ -1633,9 +1627,8 @@ pub extern "C" fn molt_math_perm(n_bits: u64, k_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_degrees(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_degrees_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -1644,9 +1637,8 @@ pub extern "C" fn molt_math_degrees(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_radians(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_radians_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -1655,9 +1647,8 @@ pub extern "C" fn molt_math_radians(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_hypot(args_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_hypot_attached_body(_py: &molt_runtime_core::PyToken, args_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let args_obj = obj_from_bits(args_bits);
         let Some(args_ptr) = args_obj.as_ptr() else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "hypot() expected arguments");
@@ -1665,7 +1656,7 @@ pub extern "C" fn molt_math_hypot(args_bits: u64) -> u64 {
         if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "hypot() expected arguments");
         }
-        let Some(elems) = (unsafe { seq_snapshot(args_ptr) }) else {
+        let Some(elems) = (unsafe { seq_snapshot(_py, args_ptr) }) else {
             return MoltObject::none().bits();
         };
         if elems.is_empty() {
@@ -1750,9 +1741,12 @@ pub extern "C" fn molt_math_hypot(args_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_dist(p_bits: u64, q_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_dist_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    p_bits: u64,
+    q_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(p_vals) = collect_real_vec(_py, p_bits) else {
             return MoltObject::none().bits();
         };
@@ -1863,9 +1857,8 @@ pub extern "C" fn molt_math_dist(p_bits: u64, q_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_isqrt(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_isqrt_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let msg = format!(
             "isqrt() argument must be an integer, not {}",
             type_name(_py, obj_from_bits(val_bits))
@@ -1892,9 +1885,12 @@ pub extern "C" fn molt_math_isqrt(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_nextafter(x_bits: u64, y_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_nextafter_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    x_bits: u64,
+    y_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(x) = float_as_double(_py, x_bits) else {
             return MoltObject::none().bits();
         };
@@ -1911,9 +1907,8 @@ pub extern "C" fn molt_math_nextafter(x_bits: u64, y_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_ulp(val_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_ulp_attached_body(_py: &molt_runtime_core::PyToken, val_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(f) = float_as_double(_py, val_bits) else {
             return MoltObject::none().bits();
         };
@@ -1928,9 +1923,12 @@ pub extern "C" fn molt_math_ulp(val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_math_remainder(x_bits: u64, y_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_math_remainder_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    x_bits: u64,
+    y_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(x) = float_as_double(_py, x_bits) else {
             return MoltObject::none().bits();
         };
@@ -2231,7 +2229,7 @@ fn statistics_builtin_reduction(
     if !obj_from_bits(center).is_none() || !exact_builtin_sequence(py, data) {
         return not_implemented_bits(py);
     }
-    let Some(values) = (unsafe { seq_snapshot(obj_from_bits(data).as_ptr().unwrap()) }) else {
+    let Some(values) = (unsafe { seq_snapshot(py, obj_from_bits(data).as_ptr().unwrap()) }) else {
         return MoltObject::none().bits();
     };
     let Some(total) =
@@ -2245,9 +2243,9 @@ fn statistics_builtin_reduction(
 fn collect_values_vec<'py>(
     _py: &'py PyToken,
     iter_bits: u64,
-) -> Option<Vec<OwnedRuntimeValue<'py>>> {
+) -> Option<molt_runtime_core::RuntimeValueCollection<'py>> {
     let iterator = owned_iterator(_py, iter_bits)?;
-    let mut out = Vec::new();
+    let mut out = molt_runtime_core::RuntimeValueCollection::new(_py);
     loop {
         match molt_runtime_core::iter_next_owned(_py, &iterator) {
             Ok(Some(value)) => out.push(value),
@@ -2278,12 +2276,12 @@ fn statistics_collect_sorted_real(_py: &PyToken, data_bits: u64, opname: &str) -
 
 fn statistics_mode_value(_py: &PyToken, data_bits: u64) -> Option<u64> {
     let owned_values = collect_values_vec(_py, data_bits)?;
-    let values = OwnedRuntimeValue::as_bits_slice(&owned_values);
+    let values = owned_values.as_bits_slice();
     if values.is_empty() {
         raise_exception::<()>(_py, BuiltinExc::StatisticsError, "no mode for empty data");
         return None;
     }
-    let counts_bits = molt_dict_new(0);
+    let counts_bits = molt_dict_new(_py, 0);
     let counts_ptr = obj_from_bits(counts_bits).as_ptr()?;
     let mut best_bits = values[0];
     let mut best_count: i64 = 0;
@@ -2335,7 +2333,7 @@ fn statistics_mode_value(_py: &PyToken, data_bits: u64) -> Option<u64> {
 
 fn statistics_multimode_value(_py: &PyToken, data_bits: u64) -> Option<u64> {
     let owned_values = collect_values_vec(_py, data_bits)?;
-    let values = OwnedRuntimeValue::as_bits_slice(&owned_values);
+    let values = owned_values.as_bits_slice();
     if values.is_empty() {
         let list_ptr = alloc_list(_py, &[]);
         if list_ptr.is_null() {
@@ -2343,7 +2341,7 @@ fn statistics_multimode_value(_py: &PyToken, data_bits: u64) -> Option<u64> {
         }
         return Some(MoltObject::from_ptr(list_ptr).bits());
     }
-    let counts_bits = molt_dict_new(0);
+    let counts_bits = molt_dict_new(_py, 0);
     let counts_ptr = obj_from_bits(counts_bits).as_ptr()?;
     let mut first_seen: Vec<u64> = Vec::new();
     let mut max_count: i64 = 0;
@@ -2427,7 +2425,7 @@ fn statistics_quantiles_value(
     if !exact_builtin_sequence(py, data) {
         return Some(not_implemented_bits(py));
     }
-    let values = unsafe { seq_snapshot(obj_from_bits(data).as_ptr().unwrap()) }?;
+    let values = unsafe { seq_snapshot(py, obj_from_bits(data).as_ptr().unwrap()) }?;
     if values.len() < 2 {
         return Some(not_implemented_bits(py));
     }
@@ -2477,7 +2475,7 @@ fn statistics_harmonic_mean_value(py: &PyToken, data: u64) -> Option<u64> {
     if !exact_builtin_sequence(py, data) {
         return Some(not_implemented_bits(py));
     }
-    let values = unsafe { seq_snapshot(obj_from_bits(data).as_ptr().unwrap()) }?;
+    let values = unsafe { seq_snapshot(py, obj_from_bits(data).as_ptr().unwrap()) }?;
     if values.is_empty() {
         return raise_exception::<Option<u64>>(
             py,
@@ -3065,3 +3063,5 @@ mod statistics_reduction_tests {
         }
     }
 }
+
+include!("attached_exports_generated/math.rs");

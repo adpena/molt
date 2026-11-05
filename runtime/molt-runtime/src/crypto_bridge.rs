@@ -10,13 +10,13 @@ use crate::*;
 use num_bigint::{BigInt, Sign};
 
 crate::object::native_handle::native_handle_bridge!(
-    __molt_crypto_hash_owner_new,
-    __molt_crypto_hash_owner_clone,
+    __molt_crypto_hash_owner_new => "__molt_crypto_hash_owner_new",
+    __molt_crypto_hash_owner_clone => "__molt_crypto_hash_owner_clone",
     std::sync::Mutex<molt_runtime_crypto::hashlib::HashHandle>
 );
 crate::object::native_handle::native_handle_bridge!(
-    __molt_crypto_hmac_owner_new,
-    __molt_crypto_hmac_owner_clone,
+    __molt_crypto_hmac_owner_new => "__molt_crypto_hmac_owner_new",
+    __molt_crypto_hmac_owner_clone => "__molt_crypto_hmac_owner_clone",
     std::sync::Mutex<molt_runtime_crypto::hmac::HmacHandle>
 );
 
@@ -24,41 +24,56 @@ crate::object::native_handle::native_handle_bridge!(
 // Exception / error handling
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_crypto_raise_exception"))]
 pub extern "C" fn __molt_crypto_raise_exception(
+    __molt_context: u64,
     kind_code: u16,
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let msg = unsafe { std::slice::from_raw_parts(msg_ptr, msg_len) };
         crate::builtins::exceptions::raise_exception_code_bytes(_py, kind_code, msg)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_crypto_exception_pending() -> i32 {
-    crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_crypto_exception_pending"))]
+pub extern "C" fn __molt_crypto_exception_pending(__molt_context: u64) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        if exception_pending(_py) { 1 } else { 0 }
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Object allocation
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_crypto_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_crypto_alloc_bytes"))]
+pub extern "C" fn __molt_crypto_alloc_bytes(
+    __molt_context: u64,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_bytes(_py, data)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_crypto_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_crypto_alloc_string"))]
+pub extern "C" fn __molt_crypto_alloc_string(
+    __molt_context: u64,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_string(_py, data)
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -86,26 +101,29 @@ pub extern "C" fn __molt_crypto_string_obj_to_owned(
     }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_crypto_type_name"))]
 pub extern "C" fn __molt_crypto_type_name(
+    __molt_context: u64,
     bits: u64,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let obj = obj_from_bits(bits);
         let name = type_name(_py, obj);
         let bytes = name.into_owned().into_bytes().into_boxed_slice();
         unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_crypto_is_truthy(bits: u64) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_crypto_is_truthy"))]
+pub extern "C" fn __molt_crypto_is_truthy(__molt_context: u64, bits: u64) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let obj = obj_from_bits(bits);
         if is_truthy(_py, obj) { 1 } else { 0 }
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -117,18 +135,20 @@ pub extern "C" fn __molt_crypto_release_ptr(ptr: *mut u8) {
     release_ptr(ptr);
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_crypto_dec_ref_bits(bits: u64) {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_crypto_dec_ref_bits"))]
+pub extern "C" fn __molt_crypto_dec_ref_bits(__molt_context: u64, bits: u64) {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         dec_ref_bits(_py, bits);
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_crypto_inc_ref_bits(bits: u64) {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_crypto_inc_ref_bits"))]
+pub extern "C" fn __molt_crypto_inc_ref_bits(__molt_context: u64, bits: u64) {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         inc_ref_bits(_py, bits);
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -149,18 +169,23 @@ pub extern "C" fn __molt_crypto_to_i64(bits: u64, out: *mut i64) -> i32 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_crypto_int_bits_from_i64(val: i64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, val) })
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_crypto_int_bits_from_i64"))]
+pub extern "C" fn __molt_crypto_int_bits_from_i64(__molt_context: u64, val: i64) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        int_bits_from_i64(_py, val)
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_crypto_int_bits_from_bigint"))]
 pub extern "C" fn __molt_crypto_int_bits_from_bigint(
+    __molt_context: u64,
     sign: i32,
     data_ptr: *const u8,
     data_len: usize,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let bytes = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         let sign = match sign {
             -1 => Sign::Minus,
@@ -169,16 +194,18 @@ pub extern "C" fn __molt_crypto_int_bits_from_bigint(
         };
         let value = BigInt::from_bytes_be(sign, bytes);
         int_bits_from_bigint(_py, value)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_crypto_dict_get_in_place"))]
 pub extern "C" fn __molt_crypto_dict_get_in_place(
+    __molt_context: u64,
     dict_ptr: *mut u8,
     key_bits: u64,
     out: *mut u64,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
             Ok(Some(bits)) => {
                 unsafe {
@@ -189,7 +216,7 @@ pub extern "C" fn __molt_crypto_dict_get_in_place(
             Ok(None) => 0,
             Err(()) => -1,
         }
-    })
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -197,27 +224,30 @@ pub extern "C" fn __molt_crypto_list_len(ptr: *mut u8) -> usize {
     unsafe { list_len(ptr) }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_crypto_seq_snapshot"))]
 pub extern "C" fn __molt_crypto_seq_snapshot(
+    __molt_context: u64,
     ptr: *mut u8,
     out_ptr: *mut *const u64,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         unsafe { crate::seq_snapshot_bridge::export(_py, ptr, out_ptr, out_len) }
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
 // OS randomness
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_crypto_require_random_entropy() -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_crypto_require_random_entropy"))]
+pub extern "C" fn __molt_crypto_require_random_entropy(__molt_context: u64) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         crate::require_operation::<u64>(_py, crate::OperationId::RandomEntropy, AuditArgs::None)
             .is_ok() as i32
-    })
+    }
 }
 
 #[unsafe(no_mangle)]

@@ -278,7 +278,7 @@ unsafe fn type_attr_lookup_ptr_inner(
     unsafe {
         let class_bits = MoltObject::from_ptr(obj_ptr).bits();
         inc_ref_bits(_py, class_bits);
-        let _class_guard = crate::PtrDropGuard::new(obj_ptr);
+        let _class_guard = crate::PtrDropGuard::new(_py, obj_ptr);
         let meta_bits = object_class_bits(obj_ptr);
         let meta_ptr = if meta_bits != 0 {
             obj_from_bits(meta_bits).as_ptr()
@@ -291,7 +291,7 @@ unsafe fn type_attr_lookup_ptr_inner(
         };
         let _meta_guard = meta_ptr.map(|ptr| {
             inc_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-            crate::PtrDropGuard::new(ptr)
+            crate::PtrDropGuard::new(_py, ptr)
         });
         if let Some(meta_ptr) = meta_ptr
             && allow_meta_custom_getattribute
@@ -378,7 +378,8 @@ unsafe fn type_attr_lookup_ptr_inner(
                 {
                     let function = ExceptionValue::pin(_py, func_bits);
                     drop(meta_attribute.take());
-                    let bound_bits = molt_bound_method_new(function.bits(), class_bits);
+                    let bound_bits =
+                        molt_bound_method_new_attached_body(_py, function.bits(), class_bits);
                     return if obj_from_bits(bound_bits).is_none() {
                         Err(())
                     } else {

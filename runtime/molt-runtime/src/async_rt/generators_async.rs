@@ -44,14 +44,15 @@ pub(crate) use generators_async_io::*;
 
 /// # Safety
 /// - `waiters_bits` must be a deque/list-like object supporting pop-front semantics.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_waiters_notify(
+
+pub(crate) unsafe fn molt_asyncio_waiters_notify_attached_body(
+    _py: &crate::PyToken<'_>,
     waiters_bits: u64,
     count_bits: u64,
     result_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(mut count) = to_i64(obj_from_bits(count_bits)) else {
                 return raise_exception::<u64>(
                     _py,
@@ -62,7 +63,7 @@ pub unsafe extern "C" fn molt_asyncio_waiters_notify(
             if count <= 0 {
                 return MoltObject::from_int(0).bits();
             }
-            let len_bits = molt_len(waiters_bits);
+            let len_bits = molt_len_attached_body(_py, waiters_bits);
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -125,14 +126,15 @@ pub unsafe extern "C" fn molt_asyncio_waiters_notify(
 
 /// # Safety
 /// - `waiters_bits` must be a deque/list-like object supporting pop-front semantics.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_waiters_notify_exception(
+
+pub(crate) unsafe fn molt_asyncio_waiters_notify_exception_attached_body(
+    _py: &crate::PyToken<'_>,
     waiters_bits: u64,
     count_bits: u64,
     exc_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(mut count) = to_i64(obj_from_bits(count_bits)) else {
                 return raise_exception::<u64>(
                     _py,
@@ -143,7 +145,7 @@ pub unsafe extern "C" fn molt_asyncio_waiters_notify_exception(
             if count <= 0 {
                 return MoltObject::from_int(0).bits();
             }
-            let len_bits = molt_len(waiters_bits);
+            let len_bits = molt_len_attached_body(_py, waiters_bits);
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -206,10 +208,14 @@ pub unsafe extern "C" fn molt_asyncio_waiters_notify_exception(
 
 /// # Safety
 /// - `waiters_bits` must support `remove(waiter)` semantics.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_waiters_remove(waiters_bits: u64, waiter_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_asyncio_waiters_remove_attached_body(
+    _py: &crate::PyToken<'_>,
+    waiters_bits: u64,
+    waiter_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let out_bits =
                 asyncio_call_method1(_py, waiters_bits, crate::NameId::Remove, waiter_bits);
             if exception_pending(_py) {
@@ -227,14 +233,15 @@ pub unsafe extern "C" fn molt_asyncio_waiters_remove(waiters_bits: u64, waiter_b
 /// # Safety
 /// - `condition_bits` must be an asyncio.Condition-like object.
 /// - `predicate_bits` must be callable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_condition_wait_for_step(
+
+pub(crate) unsafe fn molt_asyncio_condition_wait_for_step_attached_body(
+    _py: &crate::PyToken<'_>,
     condition_bits: u64,
     predicate_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            let callable_bits = molt_is_callable(predicate_bits);
+        crate::with_attached_entry_nopanic!(_py, _py, {
+            let callable_bits = molt_is_callable_attached_body(_py, predicate_bits);
             let is_callable = is_truthy(_py, obj_from_bits(callable_bits));
             if !obj_from_bits(callable_bits).is_none() {
                 dec_ref_bits(_py, callable_bits);
@@ -291,10 +298,13 @@ pub unsafe extern "C" fn molt_asyncio_condition_wait_for_step(
 
 /// # Safety
 /// - `waiters_bits` must be iterable and contain asyncio Future-compatible waiters.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_barrier_release(waiters_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_asyncio_barrier_release_attached_body(
+    _py: &crate::PyToken<'_>,
+    waiters_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(waiter_tuple_bits) = tuple_from_iter_bits(_py, waiters_bits) else {
                 return MoltObject::none().bits();
             };
@@ -375,10 +385,14 @@ unsafe fn asyncio_transfer_set_target_exception(
 
 /// # Safety
 /// - `source_bits`/`target_bits` must be Future-compatible objects.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_future_transfer(source_bits: u64, target_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_asyncio_future_transfer_attached_body(
+    _py: &crate::PyToken<'_>,
+    source_bits: u64,
+    target_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(target_done) = asyncio_method_truthy(_py, target_bits, crate::NameId::Done)
             else {
                 asyncio_clear_pending_exception(_py);
@@ -467,10 +481,13 @@ pub unsafe extern "C" fn molt_asyncio_future_transfer(source_bits: u64, target_b
 
 /// # Safety
 /// - `waiters_bits` must be iterable and contain Event waiter futures.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_event_waiters_cleanup(waiters_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_asyncio_event_waiters_cleanup_attached_body(
+    _py: &crate::PyToken<'_>,
+    waiters_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(waiter_tuple_bits) = tuple_from_iter_bits(_py, waiters_bits) else {
                 return MoltObject::none().bits();
             };
@@ -557,14 +574,15 @@ pub unsafe extern "C" fn molt_asyncio_event_waiters_cleanup(waiters_bits: u64) -
 /// # Safety
 /// - `tasks_bits` must be iterable and contain Future-like objects.
 /// - `callback_bits` must be callable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_tasks_add_done_callback(
+
+pub(crate) unsafe fn molt_asyncio_tasks_add_done_callback_attached_body(
+    _py: &crate::PyToken<'_>,
     tasks_bits: u64,
     callback_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            let callable_bits = molt_is_callable(callback_bits);
+        crate::with_attached_entry_nopanic!(_py, _py, {
+            let callable_bits = molt_is_callable_attached_body(_py, callback_bits);
             let is_callable = is_truthy(_py, obj_from_bits(callable_bits));
             if !obj_from_bits(callable_bits).is_none() {
                 dec_ref_bits(_py, callable_bits);
@@ -623,9 +641,12 @@ pub unsafe extern "C" fn molt_asyncio_tasks_add_done_callback(
 
 /// # Safety
 /// - `future_bits` must be a valid pointer to a Molt future.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_task_uncancel_apply(future_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_asyncio_task_uncancel_apply_attached_body(
+    _py: &crate::PyToken<'_>,
+    future_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(task_ptr) = resolve_task_ptr(future_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "object is not awaitable");
         };
@@ -637,13 +658,14 @@ pub unsafe extern "C" fn molt_asyncio_task_uncancel_apply(future_bits: u64) -> u
 
 /// # Safety
 /// - `waiters_bits` must be iterable of Event waiters.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_event_set_waiters(
+
+pub(crate) unsafe fn molt_asyncio_event_set_waiters_attached_body(
+    _py: &crate::PyToken<'_>,
     waiters_bits: u64,
     result_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(waiter_tuple_bits) = tuple_from_iter_bits(_py, waiters_bits) else {
                 return MoltObject::none().bits();
             };
@@ -681,8 +703,11 @@ pub unsafe extern "C" fn molt_asyncio_event_set_waiters(
                 };
                 if let Some(token_bits) = token {
                     if to_i64(obj_from_bits(token_bits)).is_some() {
-                        let out =
-                            crate::molt_asyncio_event_waiters_unregister(token_bits, waiter_bits);
+                        let out = crate::molt_asyncio_event_waiters_unregister_attached_body(
+                            _py,
+                            token_bits,
+                            waiter_bits,
+                        );
                         if !obj_from_bits(out).is_none() {
                             dec_ref_bits(_py, out);
                         }
@@ -718,10 +743,13 @@ pub unsafe extern "C" fn molt_asyncio_event_set_waiters(
 
 /// # Safety
 /// - `buffer_bits` must be bytes-like.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_stream_buffer_snapshot(buffer_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let out_bits = molt_bytes_from_obj(buffer_bits);
+
+pub(crate) fn molt_asyncio_stream_buffer_snapshot_attached_body(
+    _py: &crate::PyToken<'_>,
+    buffer_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let out_bits = molt_bytes_from_obj_attached_body(_py, buffer_bits);
         if exception_pending(_py) {
             return out_bits;
         }
@@ -731,13 +759,14 @@ pub extern "C" fn molt_asyncio_stream_buffer_snapshot(buffer_bits: u64) -> u64 {
 
 /// # Safety
 /// - `buffer_bits` must be a mutable bytearray-like object.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_stream_buffer_consume(
+
+pub(crate) unsafe fn molt_asyncio_stream_buffer_consume_attached_body(
+    _py: &crate::PyToken<'_>,
     buffer_bits: u64,
     count_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(mut count) = to_i64(obj_from_bits(count_bits)) else {
                 return raise_exception::<u64>(
                     _py,
@@ -748,7 +777,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_buffer_consume(
             if count <= 0 {
                 return MoltObject::from_int(0).bits();
             }
-            let len_bits = molt_len(buffer_bits);
+            let len_bits = molt_len_attached_body(_py, buffer_bits);
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -781,7 +810,8 @@ pub unsafe extern "C" fn molt_asyncio_stream_buffer_consume(
                 return MoltObject::from_int(count).bits();
             }
 
-            let slice_bits = molt_slice_new(
+            let slice_bits = molt_slice_new_attached_body(
+                _py,
                 MoltObject::from_int(0).bits(),
                 MoltObject::from_int(count).bits(),
                 MoltObject::none().bits(),
@@ -804,3 +834,5 @@ pub unsafe extern "C" fn molt_asyncio_stream_buffer_consume(
         })
     }
 }
+
+include!("../attached_exports_generated/async_rt/generators_async.rs");

@@ -396,19 +396,17 @@ pub(crate) unsafe fn read_item_gil_borrowed(ptr: *mut u8, index: usize, out: *mu
 }
 
 #[inline]
-pub(crate) fn read_item_owned(ptr: *mut u8, index: usize, out: *mut u64) -> i32 {
+pub(crate) fn read_item_owned(py: &PyToken<'_>, ptr: *mut u8, index: usize, out: *mut u64) -> i32 {
     if ptr.is_null() || out.is_null() {
         return 0;
     }
-    with_gil(|py| {
-        let Some(item) = (unsafe { pin_item(&py, ptr, index) }) else {
-            return 0;
-        };
-        unsafe {
-            *out = item.into_bits();
-        }
-        1
-    })
+    let Some(item) = (unsafe { pin_item(py, ptr, index) }) else {
+        return 0;
+    };
+    unsafe {
+        *out = item.into_bits();
+    }
+    1
 }
 
 #[inline]

@@ -165,12 +165,16 @@ pub(crate) fn sequence_add(py: &PyToken<'_>, left: u64, right: u64) -> u64 {
     }
 }
 
-pub(crate) extern "C" fn sequence_add_slot(left: u64, right: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { sequence_add(py, left, right) })
+pub(crate) extern "C" fn sequence_add_slot(__context: u64, left: u64, right: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, { sequence_add(py, left, right) })
 }
 
-pub(crate) extern "C" fn sequence_repeat_slot(value: u64, count: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn sequence_repeat_slot(__context: u64, value: u64, count: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         if crate::object::tuple_storage::native_tuple(value).is_some() {
             let tuple = crate::object::tuple_storage::TupleStorage::from_bits(py, value).unwrap();
             let Some(count) = sequence_repeat_count(py, count) else {
@@ -197,8 +201,10 @@ pub(crate) extern "C" fn sequence_repeat_slot(value: u64, count: u64) -> u64 {
     })
 }
 
-pub(crate) extern "C" fn string_mod_slot(value: u64, args: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn string_mod_slot(__context: u64, value: u64, args: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(ptr) = crate::object::ops_string::validate_string_receiver(py, value, "__mod__")
         else {
             return MoltObject::none().bits();
@@ -216,8 +222,10 @@ pub(crate) extern "C" fn string_mod_slot(value: u64, args: u64) -> u64 {
     })
 }
 
-pub(crate) extern "C" fn bytearray_iadd_slot(value: u64, other: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn bytearray_iadd_slot(__context: u64, value: u64, other: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(ptr) = obj_from_bits(value)
             .as_ptr()
             .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_BYTEARRAY })
@@ -236,8 +244,10 @@ pub(crate) extern "C" fn bytearray_iadd_slot(value: u64, other: u64) -> u64 {
     })
 }
 
-pub(crate) extern "C" fn bytearray_imul_slot(value: u64, count: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn bytearray_imul_slot(__context: u64, value: u64, count: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(ptr) = obj_from_bits(value)
             .as_ptr()
             .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_BYTEARRAY })
@@ -264,11 +274,11 @@ fn dict_binary(py: &PyToken<'_>, left: u64, right: u64) -> u64 {
     }) {
         return not_implemented_bits(py);
     }
-    let result = molt_dict_copy(left);
+    let result = molt_dict_copy_attached_body(py, left);
     if exception_pending(py) {
         return MoltObject::none().bits();
     }
-    molt_dict_update(result, right);
+    molt_dict_update_attached_body(py, result, right);
     if exception_pending(py) {
         dec_ref_bits(py, result);
         MoltObject::none().bits()
@@ -276,17 +286,23 @@ fn dict_binary(py: &PyToken<'_>, left: u64, right: u64) -> u64 {
         result
     }
 }
-pub(crate) extern "C" fn dict_or_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { dict_binary(py, a, b) })
+pub(crate) extern "C" fn dict_or_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, { dict_binary(py, a, b) })
 }
-pub(crate) extern "C" fn dict_ror_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { dict_binary(py, b, a) })
+pub(crate) extern "C" fn dict_ror_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, { dict_binary(py, b, a) })
 }
-pub(crate) extern "C" fn dict_ior_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn dict_ior_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         // Unlike normal union, dict_update_apply accepts mappings and pair
         // iterables, including their partial update and original error behavior.
-        molt_dict_update(a, b);
+        molt_dict_update_attached_body(py, a, b);
         if exception_pending(py) {
             MoltObject::none().bits()
         } else {
@@ -338,7 +354,7 @@ fn view_intersection(py: &PyToken<'_>, mut view: u64, mut other: u64) -> u64 {
                 std::mem::swap(&mut view, &mut other);
             }
         }
-        let result = ExceptionValue::adopt(py, molt_set_new(0));
+        let result = ExceptionValue::adopt(py, molt_set_new_attached_body(py, 0));
         let Some(result_ptr) = obj_from_bits(result.bits()).as_ptr() else {
             return MoltObject::none().bits();
         };
@@ -382,12 +398,12 @@ fn items_view_xor(py: &PyToken<'_>, left: u64, right: u64) -> u64 {
             py,
             dict_view_dict_bits(obj_from_bits(right).as_ptr().unwrap()),
         );
-        let temporary = ExceptionValue::adopt(py, molt_dict_copy(left_dict));
+        let temporary = ExceptionValue::adopt(py, molt_dict_copy_attached_body(py, left_dict));
         if exception_pending(py) {
             return MoltObject::none().bits();
         }
         let temporary_ptr = obj_from_bits(temporary.bits()).as_ptr().unwrap();
-        let result = ExceptionValue::adopt(py, molt_set_new(0));
+        let result = ExceptionValue::adopt(py, molt_set_new_attached_body(py, 0));
         let Some(result_ptr) = obj_from_bits(result.bits()).as_ptr() else {
             return MoltObject::none().bits();
         };
@@ -437,7 +453,8 @@ fn items_view_xor(py: &PyToken<'_>, left: u64, right: u64) -> u64 {
                 }
             }
         }
-        let remaining = ExceptionValue::adopt(py, molt_dict_items(temporary.bits()));
+        let remaining =
+            ExceptionValue::adopt(py, molt_dict_items_attached_body(py, temporary.bits()));
         if exception_pending(py)
             || crate::object::ops_set::set_update_iterable(
                 py,
@@ -467,7 +484,7 @@ fn view_binary(py: &PyToken<'_>, left: u64, right: u64, op: SetOp) -> u64 {
     {
         return items_view_xor(py, left, right);
     }
-    let result = ExceptionValue::adopt(py, molt_set_new(0));
+    let result = ExceptionValue::adopt(py, molt_set_new_attached_body(py, 0));
     let Some(result_ptr) = obj_from_bits(result.bits()).as_ptr() else {
         return MoltObject::none().bits();
     };
@@ -517,29 +534,57 @@ fn view_binary(py: &PyToken<'_>, left: u64, right: u64, op: SetOp) -> u64 {
     }
 }
 
-pub(crate) extern "C" fn view_or_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { view_binary(py, a, b, SetOp::Union) })
+pub(crate) extern "C" fn view_or_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, { view_binary(py, a, b, SetOp::Union) })
 }
-pub(crate) extern "C" fn view_ror_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { view_binary(py, b, a, SetOp::Union) })
+pub(crate) extern "C" fn view_ror_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, { view_binary(py, b, a, SetOp::Union) })
 }
-pub(crate) extern "C" fn view_and_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { view_binary(py, a, b, SetOp::Intersection) })
+pub(crate) extern "C" fn view_and_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        view_binary(py, a, b, SetOp::Intersection)
+    })
 }
-pub(crate) extern "C" fn view_rand_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { view_binary(py, b, a, SetOp::Intersection) })
+pub(crate) extern "C" fn view_rand_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        view_binary(py, b, a, SetOp::Intersection)
+    })
 }
-pub(crate) extern "C" fn view_sub_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { view_binary(py, a, b, SetOp::Difference) })
+pub(crate) extern "C" fn view_sub_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        view_binary(py, a, b, SetOp::Difference)
+    })
 }
-pub(crate) extern "C" fn view_rsub_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { view_binary(py, b, a, SetOp::Difference) })
+pub(crate) extern "C" fn view_rsub_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        view_binary(py, b, a, SetOp::Difference)
+    })
 }
-pub(crate) extern "C" fn view_xor_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { view_binary(py, a, b, SetOp::Symdiff) })
+pub(crate) extern "C" fn view_xor_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        view_binary(py, a, b, SetOp::Symdiff)
+    })
 }
-pub(crate) extern "C" fn view_rxor_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { view_binary(py, b, a, SetOp::Symdiff) })
+pub(crate) extern "C" fn view_rxor_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        view_binary(py, b, a, SetOp::Symdiff)
+    })
 }
 
 fn set_binary(py: &PyToken<'_>, left: u64, right: u64, op: SetOp) -> u64 {
@@ -583,16 +628,16 @@ fn set_inplace(py: &PyToken<'_>, left: u64, right: u64, op: SetOp) -> u64 {
     }
     match op {
         SetOp::Union => {
-            molt_set_update(left, right);
+            molt_set_update_attached_body(py, left, right);
         }
         SetOp::Intersection => {
-            molt_set_intersection_update(left, right);
+            molt_set_intersection_update_attached_body(py, left, right);
         }
         SetOp::Difference => {
-            molt_set_difference_update(left, right);
+            molt_set_difference_update_attached_body(py, left, right);
         }
         SetOp::Symdiff => {
-            molt_set_symdiff_update(left, right);
+            molt_set_symdiff_update_attached_body(py, left, right);
         }
     }
     if exception_pending(py) {
@@ -602,86 +647,162 @@ fn set_inplace(py: &PyToken<'_>, left: u64, right: u64, op: SetOp) -> u64 {
     left
 }
 
-pub(crate) extern "C" fn set_or_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { set_binary(py, a, b, SetOp::Union) })
+pub(crate) extern "C" fn set_or_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, { set_binary(py, a, b, SetOp::Union) })
 }
-pub(crate) extern "C" fn set_ror_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { set_binary(py, b, a, SetOp::Union) })
+pub(crate) extern "C" fn set_ror_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, { set_binary(py, b, a, SetOp::Union) })
 }
-pub(crate) extern "C" fn set_and_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { set_binary(py, a, b, SetOp::Intersection) })
+pub(crate) extern "C" fn set_and_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        set_binary(py, a, b, SetOp::Intersection)
+    })
 }
-pub(crate) extern "C" fn set_rand_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { set_binary(py, b, a, SetOp::Intersection) })
+pub(crate) extern "C" fn set_rand_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        set_binary(py, b, a, SetOp::Intersection)
+    })
 }
-pub(crate) extern "C" fn set_sub_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { set_binary(py, a, b, SetOp::Difference) })
+pub(crate) extern "C" fn set_sub_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        set_binary(py, a, b, SetOp::Difference)
+    })
 }
-pub(crate) extern "C" fn set_rsub_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { set_binary(py, b, a, SetOp::Difference) })
+pub(crate) extern "C" fn set_rsub_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        set_binary(py, b, a, SetOp::Difference)
+    })
 }
-pub(crate) extern "C" fn set_xor_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { set_binary(py, a, b, SetOp::Symdiff) })
+pub(crate) extern "C" fn set_xor_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, { set_binary(py, a, b, SetOp::Symdiff) })
 }
-pub(crate) extern "C" fn set_rxor_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { set_binary(py, b, a, SetOp::Symdiff) })
+pub(crate) extern "C" fn set_rxor_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, { set_binary(py, b, a, SetOp::Symdiff) })
 }
-pub(crate) extern "C" fn set_ior_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { set_inplace(py, a, b, SetOp::Union) })
+pub(crate) extern "C" fn set_ior_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, { set_inplace(py, a, b, SetOp::Union) })
 }
-pub(crate) extern "C" fn set_iand_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { set_inplace(py, a, b, SetOp::Intersection) })
+pub(crate) extern "C" fn set_iand_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        set_inplace(py, a, b, SetOp::Intersection)
+    })
 }
-pub(crate) extern "C" fn set_isub_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { set_inplace(py, a, b, SetOp::Difference) })
+pub(crate) extern "C" fn set_isub_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        set_inplace(py, a, b, SetOp::Difference)
+    })
 }
-pub(crate) extern "C" fn set_ixor_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { set_inplace(py, a, b, SetOp::Symdiff) })
+pub(crate) extern "C" fn set_ixor_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        set_inplace(py, a, b, SetOp::Symdiff)
+    })
 }
 
 fn complex_slot(py: &PyToken<'_>, a: u64, b: u64, op: ComplexArith) -> u64 {
     complex_binary_payload(py, op, obj_from_bits(a), obj_from_bits(b))
         .unwrap_or_else(|| not_implemented_bits(py))
 }
-pub(crate) extern "C" fn complex_add_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { complex_slot(py, a, b, ComplexArith::Add) })
+pub(crate) extern "C" fn complex_add_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        complex_slot(py, a, b, ComplexArith::Add)
+    })
 }
-pub(crate) extern "C" fn complex_radd_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { complex_slot(py, b, a, ComplexArith::Add) })
+pub(crate) extern "C" fn complex_radd_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        complex_slot(py, b, a, ComplexArith::Add)
+    })
 }
-pub(crate) extern "C" fn complex_sub_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { complex_slot(py, a, b, ComplexArith::Sub) })
+pub(crate) extern "C" fn complex_sub_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        complex_slot(py, a, b, ComplexArith::Sub)
+    })
 }
-pub(crate) extern "C" fn complex_rsub_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { complex_slot(py, b, a, ComplexArith::Sub) })
+pub(crate) extern "C" fn complex_rsub_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        complex_slot(py, b, a, ComplexArith::Sub)
+    })
 }
-pub(crate) extern "C" fn complex_mul_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { complex_slot(py, a, b, ComplexArith::Mul) })
+pub(crate) extern "C" fn complex_mul_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        complex_slot(py, a, b, ComplexArith::Mul)
+    })
 }
-pub(crate) extern "C" fn complex_rmul_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { complex_slot(py, b, a, ComplexArith::Mul) })
+pub(crate) extern "C" fn complex_rmul_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        complex_slot(py, b, a, ComplexArith::Mul)
+    })
 }
-pub(crate) extern "C" fn complex_div_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { complex_slot(py, a, b, ComplexArith::TrueDiv) })
+pub(crate) extern "C" fn complex_div_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        complex_slot(py, a, b, ComplexArith::TrueDiv)
+    })
 }
-pub(crate) extern "C" fn complex_rdiv_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { complex_slot(py, b, a, ComplexArith::TrueDiv) })
+pub(crate) extern "C" fn complex_rdiv_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        complex_slot(py, b, a, ComplexArith::TrueDiv)
+    })
 }
-pub(crate) extern "C" fn complex_pow_slot(a: u64, b: u64, modulus: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn complex_pow_slot(__context: u64, a: u64, b: u64, modulus: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         complex_power_payload(py, obj_from_bits(a), obj_from_bits(b), modulus)
             .unwrap_or_else(|| not_implemented_bits(py))
     })
 }
-pub(crate) extern "C" fn complex_rpow_slot(a: u64, b: u64, modulus: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn complex_rpow_slot(__context: u64, a: u64, b: u64, modulus: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         complex_power_payload(py, obj_from_bits(b), obj_from_bits(a), modulus)
             .unwrap_or_else(|| not_implemented_bits(py))
     })
 }
 
-pub(crate) extern "C" fn complex_neg_slot(value: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn complex_neg_slot(__context: u64, value: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(ptr) = complex_ptr_from_bits(value) else {
             return not_implemented_bits(py);
         };
@@ -689,11 +810,15 @@ pub(crate) extern "C" fn complex_neg_slot(value: u64) -> u64 {
         complex_bits(py, -value.re, -value.im)
     })
 }
-pub(crate) extern "C" fn complex_pos_slot(value: u64) -> u64 {
-    crate::object::ops_convert::complex_complex(value)
+pub(crate) extern "C" fn complex_pos_slot(__context: u64, value: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::object::ops_convert::complex_complex(__attached_py.attached_context(), value)
 }
-pub(crate) extern "C" fn complex_abs_slot(value: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn complex_abs_slot(__context: u64, value: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(ptr) = complex_ptr_from_bits(value) else {
             return not_implemented_bits(py);
         };
@@ -701,8 +826,10 @@ pub(crate) extern "C" fn complex_abs_slot(value: u64) -> u64 {
         float_result_bits(py, value.re.hypot(value.im))
     })
 }
-pub(crate) extern "C" fn complex_bool_slot(value: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn complex_bool_slot(__context: u64, value: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(ptr) = complex_ptr_from_bits(value) else {
             return not_implemented_bits(py);
         };
@@ -723,7 +850,11 @@ fn integer_carrier(bits: u64) -> Option<u64> {
     )
 }
 
-fn int_unary_slot(py: &PyToken<'_>, value: u64, operation: extern "C" fn(u64) -> u64) -> u64 {
+fn int_unary_slot(
+    py: &PyToken<'_>,
+    value: u64,
+    operation: unsafe extern "C" fn(u64, u64) -> u64,
+) -> u64 {
     let Some(value) = integer_carrier(value) else {
         return raise_exception(
             py,
@@ -731,22 +862,40 @@ fn int_unary_slot(py: &PyToken<'_>, value: u64, operation: extern "C" fn(u64) ->
             "int arithmetic requires an int receiver",
         );
     };
-    operation(value)
+    unsafe { operation(py.attached_context(), value) }
 }
-pub(crate) extern "C" fn int_neg_slot(value: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_unary_slot(py, value, crate::molt_neg) })
+pub(crate) extern "C" fn int_neg_slot(__context: u64, value: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_unary_slot(py, value, crate::molt_neg)
+    })
 }
-pub(crate) extern "C" fn int_pos_slot(value: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_unary_slot(py, value, crate::molt_pos) })
+pub(crate) extern "C" fn int_pos_slot(__context: u64, value: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_unary_slot(py, value, crate::molt_pos)
+    })
 }
-pub(crate) extern "C" fn int_abs_slot(value: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_unary_slot(py, value, crate::molt_abs_builtin) })
+pub(crate) extern "C" fn int_abs_slot(__context: u64, value: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_unary_slot(py, value, crate::molt_abs_builtin)
+    })
 }
-pub(crate) extern "C" fn int_invert_slot(value: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_unary_slot(py, value, crate::molt_invert) })
+pub(crate) extern "C" fn int_invert_slot(__context: u64, value: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_unary_slot(py, value, crate::molt_invert)
+    })
 }
-pub(crate) extern "C" fn int_bool_slot(value: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn int_bool_slot(__context: u64, value: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(value) = integer_carrier(value) else {
             return raise_exception(
                 py,
@@ -757,29 +906,37 @@ pub(crate) extern "C" fn int_bool_slot(value: u64) -> u64 {
         MoltObject::from_bool(is_truthy(py, obj_from_bits(value))).bits()
     })
 }
-pub(crate) extern "C" fn bool_and_slot(a: u64, b: u64) -> u64 {
+pub(crate) extern "C" fn bool_and_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     if obj_from_bits(a).is_bool() && obj_from_bits(b).is_bool() {
-        crate::molt_bit_and(a, b)
+        crate::molt_bit_and_attached_body(__attached_py, a, b)
     } else {
-        int_and_slot(a, b)
+        int_and_slot(__attached_py.attached_context(), a, b)
     }
 }
-pub(crate) extern "C" fn bool_or_slot(a: u64, b: u64) -> u64 {
+pub(crate) extern "C" fn bool_or_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     if obj_from_bits(a).is_bool() && obj_from_bits(b).is_bool() {
-        crate::molt_bit_or(a, b)
+        crate::molt_bit_or_attached_body(__attached_py, a, b)
     } else {
-        int_or_slot(a, b)
+        int_or_slot(__attached_py.attached_context(), a, b)
     }
 }
-pub(crate) extern "C" fn bool_xor_slot(a: u64, b: u64) -> u64 {
+pub(crate) extern "C" fn bool_xor_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     if obj_from_bits(a).is_bool() && obj_from_bits(b).is_bool() {
-        crate::molt_bit_xor(a, b)
+        crate::molt_bit_xor_attached_body(__attached_py, a, b)
     } else {
-        int_xor_slot(a, b)
+        int_xor_slot(__attached_py.attached_context(), a, b)
     }
 }
-pub(crate) extern "C" fn bool_invert_slot(value: u64) -> u64 {
-    crate::molt_invert(value)
+pub(crate) extern "C" fn bool_invert_slot(__context: u64, value: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::molt_invert_attached_body(__attached_py, value)
 }
 
 fn int_binary_slot(
@@ -787,7 +944,7 @@ fn int_binary_slot(
     receiver: u64,
     other: u64,
     reflected: bool,
-    operation: extern "C" fn(u64, u64) -> u64,
+    operation: unsafe extern "C" fn(u64, u64, u64) -> u64,
 ) -> u64 {
     let Some(receiver) = integer_carrier(receiver) else {
         return raise_exception(
@@ -800,118 +957,202 @@ fn int_binary_slot(
         return not_implemented_bits(py);
     };
     if reflected {
-        operation(other, receiver)
+        unsafe { operation(py.attached_context(), other, receiver) }
     } else {
-        operation(receiver, other)
+        unsafe { operation(py.attached_context(), receiver, other) }
     }
 }
 
-pub(crate) extern "C" fn int_add_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, false, crate::molt_add) })
+pub(crate) extern "C" fn int_add_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_binary_slot(py, a, b, false, crate::molt_add)
+    })
 }
 
-pub(crate) extern "C" fn int_radd_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, true, crate::molt_add) })
+pub(crate) extern "C" fn int_radd_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_binary_slot(py, a, b, true, crate::molt_add)
+    })
 }
 
-pub(crate) extern "C" fn int_sub_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, false, crate::molt_sub) })
+pub(crate) extern "C" fn int_sub_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_binary_slot(py, a, b, false, crate::molt_sub)
+    })
 }
 
-pub(crate) extern "C" fn int_rsub_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, true, crate::molt_sub) })
+pub(crate) extern "C" fn int_rsub_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_binary_slot(py, a, b, true, crate::molt_sub)
+    })
 }
 
-pub(crate) extern "C" fn int_mul_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, false, crate::molt_mul) })
+pub(crate) extern "C" fn int_mul_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_binary_slot(py, a, b, false, crate::molt_mul)
+    })
 }
 
-pub(crate) extern "C" fn int_rmul_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, true, crate::molt_mul) })
+pub(crate) extern "C" fn int_rmul_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_binary_slot(py, a, b, true, crate::molt_mul)
+    })
 }
 
-pub(crate) extern "C" fn int_truediv_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, false, crate::molt_div) })
+pub(crate) extern "C" fn int_truediv_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_binary_slot(py, a, b, false, crate::molt_div)
+    })
 }
 
-pub(crate) extern "C" fn int_rtruediv_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, true, crate::molt_div) })
+pub(crate) extern "C" fn int_rtruediv_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_binary_slot(py, a, b, true, crate::molt_div)
+    })
 }
 
-pub(crate) extern "C" fn int_floordiv_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn int_floordiv_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         int_binary_slot(py, a, b, false, crate::molt_floordiv)
     })
 }
 
-pub(crate) extern "C" fn int_rfloordiv_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn int_rfloordiv_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         int_binary_slot(py, a, b, true, crate::molt_floordiv)
     })
 }
 
-pub(crate) extern "C" fn int_mod_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, false, crate::molt_mod) })
+pub(crate) extern "C" fn int_mod_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_binary_slot(py, a, b, false, crate::molt_mod)
+    })
 }
 
-pub(crate) extern "C" fn int_rmod_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, true, crate::molt_mod) })
+pub(crate) extern "C" fn int_rmod_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_binary_slot(py, a, b, true, crate::molt_mod)
+    })
 }
 
-pub(crate) extern "C" fn int_divmod_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn int_divmod_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         int_binary_slot(py, a, b, false, crate::molt_divmod_builtin)
     })
 }
 
-pub(crate) extern "C" fn int_rdivmod_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn int_rdivmod_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         int_binary_slot(py, a, b, true, crate::molt_divmod_builtin)
     })
 }
 
-pub(crate) extern "C" fn int_lshift_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, false, crate::molt_lshift) })
+pub(crate) extern "C" fn int_lshift_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_binary_slot(py, a, b, false, crate::molt_lshift)
+    })
 }
 
-pub(crate) extern "C" fn int_rlshift_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, true, crate::molt_lshift) })
+pub(crate) extern "C" fn int_rlshift_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_binary_slot(py, a, b, true, crate::molt_lshift)
+    })
 }
 
-pub(crate) extern "C" fn int_rshift_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, false, crate::molt_rshift) })
+pub(crate) extern "C" fn int_rshift_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_binary_slot(py, a, b, false, crate::molt_rshift)
+    })
 }
 
-pub(crate) extern "C" fn int_rrshift_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, true, crate::molt_rshift) })
+pub(crate) extern "C" fn int_rrshift_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_binary_slot(py, a, b, true, crate::molt_rshift)
+    })
 }
 
-pub(crate) extern "C" fn int_and_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn int_and_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         int_binary_slot(py, a, b, false, crate::molt_bit_and)
     })
 }
 
-pub(crate) extern "C" fn int_rand_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, true, crate::molt_bit_and) })
+pub(crate) extern "C" fn int_rand_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_binary_slot(py, a, b, true, crate::molt_bit_and)
+    })
 }
 
-pub(crate) extern "C" fn int_or_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, false, crate::molt_bit_or) })
+pub(crate) extern "C" fn int_or_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_binary_slot(py, a, b, false, crate::molt_bit_or)
+    })
 }
 
-pub(crate) extern "C" fn int_ror_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, true, crate::molt_bit_or) })
+pub(crate) extern "C" fn int_ror_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_binary_slot(py, a, b, true, crate::molt_bit_or)
+    })
 }
 
-pub(crate) extern "C" fn int_xor_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn int_xor_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         int_binary_slot(py, a, b, false, crate::molt_bit_xor)
     })
 }
 
-pub(crate) extern "C" fn int_rxor_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, true, crate::molt_bit_xor) })
+pub(crate) extern "C" fn int_rxor_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_binary_slot(py, a, b, true, crate::molt_bit_xor)
+    })
 }
 
 fn int_power_slot(
@@ -936,20 +1177,32 @@ fn int_power_slot(
         modulus
     };
     if reflected {
-        crate::molt_pow_mod(other, receiver, modulus)
+        crate::molt_pow_mod_attached_body(py, other, receiver, modulus)
     } else {
-        crate::molt_pow_mod(receiver, other, modulus)
+        crate::molt_pow_mod_attached_body(py, receiver, other, modulus)
     }
 }
 
-pub(crate) extern "C" fn int_pow_slot(a: u64, b: u64, modulus: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_power_slot(py, a, b, modulus, false) })
+pub(crate) extern "C" fn int_pow_slot(__context: u64, a: u64, b: u64, modulus: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_power_slot(py, a, b, modulus, false)
+    })
 }
-pub(crate) extern "C" fn int_rpow_slot(a: u64, b: u64, modulus: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { int_power_slot(py, a, b, modulus, true) })
+pub(crate) extern "C" fn int_rpow_slot(__context: u64, a: u64, b: u64, modulus: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        int_power_slot(py, a, b, modulus, true)
+    })
 }
 
-fn float_unary_slot(py: &PyToken<'_>, value: u64, operation: extern "C" fn(u64) -> u64) -> u64 {
+fn float_unary_slot(
+    py: &PyToken<'_>,
+    value: u64,
+    operation: unsafe extern "C" fn(u64, u64) -> u64,
+) -> u64 {
     let Some(value) = as_float_extended(obj_from_bits(value)) else {
         return raise_exception(
             py,
@@ -961,32 +1214,53 @@ fn float_unary_slot(py: &PyToken<'_>, value: u64, operation: extern "C" fn(u64) 
     if exception_pending(py) {
         return MoltObject::none().bits();
     }
-    let result = operation(value);
+    let result = unsafe { operation(py.attached_context(), value) };
     molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, value));
     result
 }
-pub(crate) extern "C" fn float_neg_slot(value: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { float_unary_slot(py, value, crate::molt_neg) })
+pub(crate) extern "C" fn float_neg_slot(__context: u64, value: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        float_unary_slot(py, value, crate::molt_neg)
+    })
 }
-pub(crate) extern "C" fn float_pos_slot(value: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { float_unary_slot(py, value, crate::molt_pos) })
+pub(crate) extern "C" fn float_pos_slot(__context: u64, value: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        float_unary_slot(py, value, crate::molt_pos)
+    })
 }
-pub(crate) extern "C" fn float_abs_slot(value: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { float_unary_slot(py, value, crate::molt_abs_builtin) })
+pub(crate) extern "C" fn float_abs_slot(__context: u64, value: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        float_unary_slot(py, value, crate::molt_abs_builtin)
+    })
 }
-extern "C" fn exact_float_int(value: u64) -> u64 {
-    crate::molt_int_from_obj(
+extern "C" fn exact_float_int(__context: u64, value: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::molt_int_from_obj_attached_body(
+        __attached_py,
         value,
         MoltObject::none().bits(),
         MoltObject::from_bool(false).bits(),
     )
 }
-pub(crate) extern "C" fn float_int_slot(value: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { float_unary_slot(py, value, exact_float_int) })
+pub(crate) extern "C" fn float_int_slot(__context: u64, value: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        float_unary_slot(py, value, exact_float_int)
+    })
 }
 
-pub(crate) extern "C" fn float_bool_slot(value: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn float_bool_slot(__context: u64, value: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let value = as_float_extended(obj_from_bits(value));
         let Some(value) = value else {
             return raise_exception(py, BuiltinExc::TypeError, "float.__bool__ requires a float");
@@ -1004,7 +1278,7 @@ fn float_binary_slot(
     receiver: u64,
     other: u64,
     reflected: bool,
-    operation: extern "C" fn(u64, u64) -> u64,
+    operation: unsafe extern "C" fn(u64, u64, u64) -> u64,
 ) -> u64 {
     let Some(value) = as_float_extended(obj_from_bits(receiver)) else {
         return raise_exception(
@@ -1029,75 +1303,123 @@ fn float_binary_slot(
         return MoltObject::none().bits();
     }
     let result = if reflected {
-        operation(other, receiver)
+        unsafe { operation(py.attached_context(), other, receiver) }
     } else {
-        operation(receiver, other)
+        unsafe { operation(py.attached_context(), receiver, other) }
     };
     dec_ref_bits(py, receiver);
     dec_ref_bits(py, other);
     result
 }
 
-pub(crate) extern "C" fn float_add_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { float_binary_slot(py, a, b, false, crate::molt_add) })
+pub(crate) extern "C" fn float_add_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        float_binary_slot(py, a, b, false, crate::molt_add)
+    })
 }
 
-pub(crate) extern "C" fn float_radd_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { float_binary_slot(py, a, b, true, crate::molt_add) })
+pub(crate) extern "C" fn float_radd_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        float_binary_slot(py, a, b, true, crate::molt_add)
+    })
 }
 
-pub(crate) extern "C" fn float_sub_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { float_binary_slot(py, a, b, false, crate::molt_sub) })
+pub(crate) extern "C" fn float_sub_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        float_binary_slot(py, a, b, false, crate::molt_sub)
+    })
 }
 
-pub(crate) extern "C" fn float_rsub_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { float_binary_slot(py, a, b, true, crate::molt_sub) })
+pub(crate) extern "C" fn float_rsub_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        float_binary_slot(py, a, b, true, crate::molt_sub)
+    })
 }
 
-pub(crate) extern "C" fn float_mul_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { float_binary_slot(py, a, b, false, crate::molt_mul) })
+pub(crate) extern "C" fn float_mul_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        float_binary_slot(py, a, b, false, crate::molt_mul)
+    })
 }
 
-pub(crate) extern "C" fn float_rmul_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { float_binary_slot(py, a, b, true, crate::molt_mul) })
+pub(crate) extern "C" fn float_rmul_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        float_binary_slot(py, a, b, true, crate::molt_mul)
+    })
 }
 
-pub(crate) extern "C" fn float_truediv_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { float_binary_slot(py, a, b, false, crate::molt_div) })
+pub(crate) extern "C" fn float_truediv_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        float_binary_slot(py, a, b, false, crate::molt_div)
+    })
 }
 
-pub(crate) extern "C" fn float_rtruediv_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { float_binary_slot(py, a, b, true, crate::molt_div) })
+pub(crate) extern "C" fn float_rtruediv_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        float_binary_slot(py, a, b, true, crate::molt_div)
+    })
 }
 
-pub(crate) extern "C" fn float_floordiv_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn float_floordiv_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         float_binary_slot(py, a, b, false, crate::molt_floordiv)
     })
 }
 
-pub(crate) extern "C" fn float_rfloordiv_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn float_rfloordiv_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         float_binary_slot(py, a, b, true, crate::molt_floordiv)
     })
 }
 
-pub(crate) extern "C" fn float_mod_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { float_binary_slot(py, a, b, false, crate::molt_mod) })
+pub(crate) extern "C" fn float_mod_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        float_binary_slot(py, a, b, false, crate::molt_mod)
+    })
 }
 
-pub(crate) extern "C" fn float_rmod_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { float_binary_slot(py, a, b, true, crate::molt_mod) })
+pub(crate) extern "C" fn float_rmod_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
+        float_binary_slot(py, a, b, true, crate::molt_mod)
+    })
 }
 
-pub(crate) extern "C" fn float_divmod_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn float_divmod_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         float_binary_slot(py, a, b, false, crate::molt_divmod_builtin)
     })
 }
 
-pub(crate) extern "C" fn float_rdivmod_slot(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn float_rdivmod_slot(__context: u64, a: u64, b: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         float_binary_slot(py, a, b, true, crate::molt_divmod_builtin)
     })
 }
@@ -1158,9 +1480,13 @@ fn float_power_slot(py: &PyToken<'_>, a: u64, b: u64, modulus: u64) -> u64 {
     });
     result
 }
-pub(crate) extern "C" fn float_pow_slot(a: u64, b: u64, modulus: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { float_power_slot(py, a, b, modulus) })
+pub(crate) extern "C" fn float_pow_slot(__context: u64, a: u64, b: u64, modulus: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, { float_power_slot(py, a, b, modulus) })
 }
-pub(crate) extern "C" fn float_rpow_slot(a: u64, b: u64, modulus: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { float_power_slot(py, b, a, modulus) })
+pub(crate) extern "C" fn float_rpow_slot(__context: u64, a: u64, b: u64, modulus: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, { float_power_slot(py, b, a, modulus) })
 }

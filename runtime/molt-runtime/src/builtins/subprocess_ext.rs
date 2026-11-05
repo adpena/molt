@@ -44,23 +44,25 @@ const SUBPROCESS_DEVNULL: i32 = -3;
 // ---------------------------------------------------------------------------
 
 /// `subprocess.PIPE` → int (-1)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_subprocess_pipe_const() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_int(SUBPROCESS_PIPE as i64).bits() })
+
+pub(crate) fn molt_subprocess_pipe_const_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        MoltObject::from_int(SUBPROCESS_PIPE as i64).bits()
+    })
 }
 
 /// `subprocess.STDOUT` → int (-2)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_subprocess_stdout_const() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_subprocess_stdout_const_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         MoltObject::from_int(SUBPROCESS_STDOUT as i64).bits()
     })
 }
 
 /// `subprocess.DEVNULL` → int (-3)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_subprocess_devnull_const() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_subprocess_devnull_const_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         MoltObject::from_int(SUBPROCESS_DEVNULL as i64).bits()
     })
 }
@@ -218,9 +220,9 @@ fn extract_env_dict(_py: &PyToken<'_>, env_bits: u64) -> Result<Vec<(String, Str
 //   env_bits            – dict[str,str] or None
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
-pub extern "C" fn molt_subprocess_run(
+pub(crate) fn molt_subprocess_run_attached_body(
+    _py: &crate::PyToken<'_>,
     args_bits: u64,
     capture_output_bits: u64,
     timeout_bits: u64,
@@ -229,7 +231,7 @@ pub extern "C" fn molt_subprocess_run(
     cwd_bits: u64,
     env_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if require_process_capability::<u64>(_py, crate::OperationId::ProcessExec).is_err() {
             return MoltObject::none().bits();
         }
@@ -410,9 +412,9 @@ fn run_with_timeout(
 
 /// WASM stub for molt_subprocess_run.
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
-pub extern "C" fn molt_subprocess_run(
+pub(crate) fn molt_subprocess_run_attached_body(
+    _py: &crate::PyToken<'_>,
     _args_bits: u64,
     _capture_output_bits: u64,
     _timeout_bits: u64,
@@ -421,7 +423,7 @@ pub extern "C" fn molt_subprocess_run(
     _cwd_bits: u64,
     _env_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_exception::<u64>(
             _py,
             BuiltinExc::NotImplementedError,
@@ -440,15 +442,16 @@ pub extern "C" fn molt_subprocess_run(
 // Raises CalledProcessError on non-zero exit.
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_subprocess_check_output(
+
+pub(crate) fn molt_subprocess_check_output_attached_body(
+    _py: &crate::PyToken<'_>,
     args_bits: u64,
     timeout_bits: u64,
     input_bits: u64,
     cwd_bits: u64,
     env_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if require_process_capability::<u64>(_py, crate::OperationId::ProcessExec).is_err() {
             return MoltObject::none().bits();
         }
@@ -519,15 +522,16 @@ pub extern "C" fn molt_subprocess_check_output(
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_subprocess_check_output(
+
+pub(crate) fn molt_subprocess_check_output_attached_body(
+    _py: &crate::PyToken<'_>,
     _args_bits: u64,
     _timeout_bits: u64,
     _input_bits: u64,
     _cwd_bits: u64,
     _env_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_exception::<u64>(
             _py,
             BuiltinExc::NotImplementedError,
@@ -545,14 +549,15 @@ pub extern "C" fn molt_subprocess_check_output(
 // Returns 0 on success; raises CalledProcessError on non-zero exit.
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_subprocess_check_call(
+
+pub(crate) fn molt_subprocess_check_call_attached_body(
+    _py: &crate::PyToken<'_>,
     args_bits: u64,
     timeout_bits: u64,
     cwd_bits: u64,
     env_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if require_process_capability::<u64>(_py, crate::OperationId::ProcessExec).is_err() {
             return MoltObject::none().bits();
         }
@@ -596,14 +601,15 @@ pub extern "C" fn molt_subprocess_check_call(
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_subprocess_check_call(
+
+pub(crate) fn molt_subprocess_check_call_attached_body(
+    _py: &crate::PyToken<'_>,
     _args_bits: u64,
     _timeout_bits: u64,
     _cwd_bits: u64,
     _env_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_exception::<u64>(
             _py,
             BuiltinExc::NotImplementedError,
@@ -647,3 +653,5 @@ fn bytes_to_bits(_py: &PyToken<'_>, data: &[u8]) -> u64 {
         MoltObject::from_ptr(ptr).bits()
     }
 }
+
+include!("../attached_exports_generated/builtins/subprocess_ext.rs");

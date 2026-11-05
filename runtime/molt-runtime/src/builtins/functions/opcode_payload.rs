@@ -332,28 +332,28 @@ fn opcode_stack_effect_core_312(opcode: i64, oparg: i64) -> Option<i64> {
     pushed.checked_sub(popped)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_opcode_payload_312_json() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_opcode_payload_312_json_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         alloc_runtime_payload_str(_py, OPCODE_PAYLOAD_312_JSON)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_opcode_metadata_payload_314_json() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_opcode_metadata_payload_314_json_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         alloc_runtime_payload_str(_py, OPCODE_METADATA_PAYLOAD_314_JSON)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_opcode_get_specialization_stats() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
+pub(crate) fn molt_opcode_get_specialization_stats_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { MoltObject::none().bits() })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_opcode_stack_effect(opcode_bits: u64, oparg_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_opcode_stack_effect_attached_body(
+    _py: &crate::PyToken<'_>,
+    opcode_bits: u64,
+    oparg_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let opcode_obj = obj_from_bits(opcode_bits);
         let Some(opcode) = to_i64(opcode_obj) else {
             let msg = format!(
@@ -402,3 +402,5 @@ pub extern "C" fn molt_opcode_stack_effect(opcode_bits: u64, oparg_bits: u64) ->
         MoltObject::from_int(effect).bits()
     })
 }
+
+include!("../../attached_exports_generated/builtins/functions/opcode_payload.rs");

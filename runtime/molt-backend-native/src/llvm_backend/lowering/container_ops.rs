@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn emit_build_list(&mut self, op: &TirOp) {
@@ -52,7 +54,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 );
                 this.backend
                     .builder
-                    .build_call(
+                    .build_execution_call(
                         constructor,
                         &[keys.into(), values.into(), count.into()],
                         name,
@@ -166,7 +168,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             args.iter().map(|&arg| arg.into()).collect();
         self.backend
             .builder
-            .build_call(constructor, &args, name)
+            .build_execution_call(constructor, &args, name)
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic()
@@ -200,7 +202,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let aggregate = self
             .backend
             .builder
-            .build_call(
+            .build_execution_call(
                 new_fn,
                 &[i64_ty.const_int(capacity, false).into()],
                 "aggregate",
@@ -234,7 +236,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             let mutation_result = self
                 .backend
                 .builder
-                .build_call(mutate, &args, "aggregate_insert")
+                .build_execution_call(mutate, &args, "aggregate_insert")
                 .unwrap()
                 .try_as_basic_value()
                 .unwrap_basic();
@@ -348,7 +350,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let done_bits = self
             .backend
             .builder
-            .build_call(
+            .build_execution_call(
                 iter_next_fn,
                 &[iter_bits.into(), val_ptr_bits.into()],
                 call_name,

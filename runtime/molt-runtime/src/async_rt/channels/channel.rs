@@ -98,9 +98,11 @@ fn chan_recv_blocking_impl(_py: &PyToken<'_>, chan: &MoltChannel) -> i64 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_chan_new(capacity_bits: u64) -> ChanHandle {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_chan_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    capacity_bits: u64,
+) -> ChanHandle {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(capacity) = super::capacity_from_object(_py, capacity_bits) else {
             return MoltObject::none().bits();
         };
@@ -117,11 +119,13 @@ pub extern "C" fn molt_chan_new(capacity_bits: u64) -> ChanHandle {
     })
 }
 
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `chan_handle` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_drop(chan_handle: ChanHandle) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_chan_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    chan_handle: ChanHandle,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // SAFETY: caller guarantees `chan_handle` came from `molt_chan_new`.
         let chan_ptr = unsafe { chan_ptr_from_handle(chan_handle) };
         if chan_ptr.is_null() {
@@ -139,11 +143,14 @@ pub unsafe extern "C" fn molt_chan_drop(chan_handle: ChanHandle) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `chan_handle` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_send(chan_handle: ChanHandle, val: i64) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_chan_send_attached_body(
+    _py: &crate::PyToken<'_>,
+    chan_handle: ChanHandle,
+    val: i64,
+) -> i64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // SAFETY: caller guarantees `chan_handle` is valid for this call.
         let chan_ptr = unsafe { chan_ptr_from_handle(chan_handle) };
         // SAFETY: `chan_ptr` is expected to reference a live `MoltChannel`.
@@ -152,11 +159,14 @@ pub unsafe extern "C" fn molt_chan_send(chan_handle: ChanHandle, val: i64) -> i6
     })
 }
 
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `chan_handle` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_try_send(chan_handle: ChanHandle, val: i64) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_chan_try_send_attached_body(
+    _py: &crate::PyToken<'_>,
+    chan_handle: ChanHandle,
+    val: i64,
+) -> i64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // SAFETY: caller guarantees `chan_handle` is valid for this call.
         let chan_ptr = unsafe { chan_ptr_from_handle(chan_handle) };
         // SAFETY: `chan_ptr` is expected to reference a live `MoltChannel`.
@@ -165,11 +175,14 @@ pub unsafe extern "C" fn molt_chan_try_send(chan_handle: ChanHandle, val: i64) -
     })
 }
 
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `chan_handle` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_send_blocking(chan_handle: ChanHandle, val: i64) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_chan_send_blocking_attached_body(
+    _py: &crate::PyToken<'_>,
+    chan_handle: ChanHandle,
+    val: i64,
+) -> i64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // SAFETY: caller guarantees `chan_handle` is valid for this call.
         let chan_ptr = unsafe { chan_ptr_from_handle(chan_handle) };
         // SAFETY: `chan_ptr` is expected to reference a live `MoltChannel`.
@@ -178,11 +191,13 @@ pub unsafe extern "C" fn molt_chan_send_blocking(chan_handle: ChanHandle, val: i
     })
 }
 
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `chan_handle` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_recv(chan_handle: ChanHandle) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_chan_recv_attached_body(
+    _py: &crate::PyToken<'_>,
+    chan_handle: ChanHandle,
+) -> i64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // SAFETY: caller guarantees `chan_handle` is valid for this call.
         let chan_ptr = unsafe { chan_ptr_from_handle(chan_handle) };
         // SAFETY: `chan_ptr` is expected to reference a live `MoltChannel`.
@@ -191,11 +206,13 @@ pub unsafe extern "C" fn molt_chan_recv(chan_handle: ChanHandle) -> i64 {
     })
 }
 
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must ensure `chan_handle` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_try_recv(chan_handle: ChanHandle) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_chan_try_recv_attached_body(
+    _py: &crate::PyToken<'_>,
+    chan_handle: ChanHandle,
+) -> i64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // SAFETY: caller guarantees `chan_handle` is valid for this call.
         let chan_ptr = unsafe { chan_ptr_from_handle(chan_handle) };
         // SAFETY: `chan_ptr` is expected to reference a live `MoltChannel`.
@@ -205,11 +222,14 @@ pub unsafe extern "C" fn molt_chan_try_recv(chan_handle: ChanHandle) -> i64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// Caller must ensure `chan_handle` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_recv_blocking(chan_handle: ChanHandle) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_chan_recv_blocking_attached_body(
+    _py: &crate::PyToken<'_>,
+    chan_handle: ChanHandle,
+) -> i64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // SAFETY: caller guarantees `chan_handle` is valid for this call.
         let chan_ptr = unsafe { chan_ptr_from_handle(chan_handle) };
         // SAFETY: `chan_ptr` is expected to reference a live `MoltChannel`.
@@ -219,11 +239,14 @@ pub unsafe extern "C" fn molt_chan_recv_blocking(chan_handle: ChanHandle) -> i64
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// Caller must ensure `chan_handle` is a valid channel pointer.
-pub unsafe extern "C" fn molt_chan_recv_blocking(chan_handle: ChanHandle) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_chan_recv_blocking_attached_body(
+    _py: &crate::PyToken<'_>,
+    chan_handle: ChanHandle,
+) -> i64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // SAFETY: caller guarantees `chan_handle` is valid for this call.
         let chan_ptr = unsafe { chan_ptr_from_handle(chan_handle) };
         // SAFETY: `chan_ptr` is expected to reference a live `MoltChannel`.
@@ -231,3 +254,5 @@ pub unsafe extern "C" fn molt_chan_recv_blocking(chan_handle: ChanHandle) -> i64
         chan_recv_blocking_impl(_py, chan)
     })
 }
+
+include!("../../attached_exports_generated/async_rt/channels/channel.rs");

@@ -1,6 +1,7 @@
 use crate::BuiltinExc;
 use crate::object::ops_string::{
-    molt_string_lower, molt_string_startswith, molt_string_strip, molt_string_upper,
+    molt_string_lower_attached_body, molt_string_startswith_attached_body,
+    molt_string_strip_attached_body, molt_string_upper_attached_body,
 };
 use crate::{
     MoltObject, TYPE_ID_BIGINT, TYPE_ID_BOUND_METHOD, TYPE_ID_BUFFER2D, TYPE_ID_BYTEARRAY,
@@ -9,15 +10,19 @@ use crate::{
     TYPE_ID_SLICE, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_TAG_ANY, TYPE_TAG_BOOL, TYPE_TAG_BUFFER2D,
     TYPE_TAG_BYTEARRAY, TYPE_TAG_BYTES, TYPE_TAG_COMPLEX, TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET,
     TYPE_TAG_INT, TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET,
-    TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE, bound_method_self_bits, molt_dict_get,
-    molt_index, molt_list_append, molt_store_index, molt_string_join, obj_from_bits,
+    TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE, bound_method_self_bits,
+    molt_dict_get_attached_body, molt_index_attached_body, molt_list_append_attached_body,
+    molt_store_index_attached_body, molt_string_join_attached_body, obj_from_bits,
     object_is_exact_builtin_dict, object_type_id, raise_exception,
 };
 use std::alloc::{Layout, alloc, dealloc};
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_getitem(dict_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dict_getitem_attached_body(
+    _py: &crate::PyToken<'_>,
+    dict_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // The backend proved the container is a dict. Extract pointer
         // directly — skip the `is_ptr()` type-tag check from `as_ptr()`.
         let obj = obj_from_bits(dict_bits);
@@ -38,18 +43,27 @@ pub extern "C" fn molt_dict_getitem(dict_bits: u64, key_bits: u64) -> u64 {
         }
         // Fallback preserves mapping semantics for dict subclasses, including
         // __missing__, when the backend only proved dict-like storage.
-        molt_index(dict_bits, key_bits)
+        molt_index_attached_body(_py, dict_bits, key_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tuple_getitem(tuple_bits: u64, index_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { molt_index(tuple_bits, index_bits) })
+pub(crate) fn molt_tuple_getitem_attached_body(
+    _py: &crate::PyToken<'_>,
+    tuple_bits: u64,
+    index_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        molt_index_attached_body(_py, tuple_bits, index_bits)
+    })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_setitem(dict_bits: u64, key_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dict_setitem_attached_body(
+    _py: &crate::PyToken<'_>,
+    dict_bits: u64,
+    key_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // Fast path: we know the container is a dict (backend proved it).
         // Skip the type-dispatch chain in molt_store_index entirely.
         let obj = obj_from_bits(dict_bits);
@@ -64,7 +78,7 @@ pub extern "C" fn molt_dict_setitem(dict_bits: u64, key_bits: u64, value_bits: u
             }
         }
         // Fallback for non-dict (shouldn't happen if backend proved dict).
-        let _ = molt_store_index(dict_bits, key_bits, value_bits);
+        let _ = molt_store_index_attached_body(_py, dict_bits, key_bits, value_bits);
         MoltObject::none().bits()
     })
 }
@@ -89,36 +103,46 @@ fn bound_method_self_or_type_error(_py: &crate::PyToken<'_>, method_bits: u64) -
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_fast_list_append(method_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_fast_list_append_attached_body(
+    _py: &crate::PyToken<'_>,
+    method_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let self_bits = match bound_method_self_or_type_error(_py, method_bits) {
             Ok(bits) => bits,
             Err(bits) => return bits,
         };
-        molt_list_append(self_bits, value_bits)
+        molt_list_append_attached_body(_py, self_bits, value_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_fast_str_join(method_bits: u64, iterable_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_fast_str_join_attached_body(
+    _py: &crate::PyToken<'_>,
+    method_bits: u64,
+    iterable_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let self_bits = match bound_method_self_or_type_error(_py, method_bits) {
             Ok(bits) => bits,
             Err(bits) => return bits,
         };
-        molt_string_join(self_bits, iterable_bits)
+        molt_string_join_attached_body(_py, self_bits, iterable_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_fast_dict_get(method_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_fast_dict_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    method_bits: u64,
+    key_bits: u64,
+    default_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let self_bits = match bound_method_self_or_type_error(_py, method_bits) {
             Ok(bits) => bits,
             Err(bits) => return bits,
         };
-        molt_dict_get(self_bits, key_bits, default_bits)
+        molt_dict_get_attached_body(_py, self_bits, key_bits, default_bits)
     })
 }
 
@@ -126,53 +150,55 @@ pub extern "C" fn molt_fast_dict_get(method_bits: u64, key_bits: u64, default_bi
 // These extract the bound method's self and delegate directly to the
 // optimized string operation, bypassing callargs allocation + IC dispatch.
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_fast_str_startswith(method_bits: u64, prefix_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_fast_str_startswith_attached_body(
+    _py: &crate::PyToken<'_>,
+    method_bits: u64,
+    prefix_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let self_bits = match bound_method_self_or_type_error(_py, method_bits) {
             Ok(bits) => bits,
             Err(bits) => return bits,
         };
-        molt_string_startswith(self_bits, prefix_bits)
+        molt_string_startswith_attached_body(_py, self_bits, prefix_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_fast_str_upper(method_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_fast_str_upper_attached_body(_py: &crate::PyToken<'_>, method_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let self_bits = match bound_method_self_or_type_error(_py, method_bits) {
             Ok(bits) => bits,
             Err(bits) => return bits,
         };
-        molt_string_upper(self_bits)
+        molt_string_upper_attached_body(_py, self_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_fast_str_lower(method_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_fast_str_lower_attached_body(_py: &crate::PyToken<'_>, method_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let self_bits = match bound_method_self_or_type_error(_py, method_bits) {
             Ok(bits) => bits,
             Err(bits) => return bits,
         };
-        molt_string_lower(self_bits)
+        molt_string_lower_attached_body(_py, self_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_fast_str_strip(method_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_fast_str_strip_attached_body(_py: &crate::PyToken<'_>, method_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let self_bits = match bound_method_self_or_type_error(_py, method_bits) {
             Ok(bits) => bits,
             Err(bits) => return bits,
         };
-        molt_string_strip(self_bits, MoltObject::none().bits())
+        molt_string_strip_attached_body(_py, self_bits, MoltObject::none().bits())
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_resource_on_allocate(size_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_resource_on_allocate_attached_body(
+    _py: &crate::PyToken<'_>,
+    size_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(size) = crate::to_i64(obj_from_bits(size_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "size must be an integer");
         };
@@ -186,9 +212,8 @@ pub extern "C" fn molt_resource_on_allocate(size_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_resource_on_free(size_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_resource_on_free_attached_body(_py: &crate::PyToken<'_>, size_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(size) = crate::to_i64(obj_from_bits(size_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "size must be an integer");
         };
@@ -200,8 +225,7 @@ pub extern "C" fn molt_resource_on_free(size_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_type_tag_of_bits(bits: u64) -> i64 {
+pub(crate) fn molt_type_tag_of_bits_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> i64 {
     let obj = obj_from_bits(bits);
     if obj.is_int() {
         return TYPE_TAG_INT;
@@ -239,39 +263,40 @@ pub extern "C" fn molt_type_tag_of_bits(bits: u64) -> i64 {
     }
 }
 
+// The primitive provider owns opaque GPU tensor handles and raw storage, not
+// Python values. These attached runtime entries cross that actual raw boundary.
 #[cfg(feature = "molt_gpu_primitives")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_prim_realize(handle: u64) -> u64 {
+pub(crate) fn molt_gpu_prim_realize_attached_body(_py: &crate::PyToken<'_>, handle: u64) -> u64 {
     molt_gpu::primitives_ffi::molt_gpu_prim_realize(handle)
 }
 
 #[cfg(feature = "molt_gpu_primitives")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_prim_dtype(handle: u64) -> u64 {
+
+pub(crate) fn molt_gpu_prim_dtype_attached_body(_py: &crate::PyToken<'_>, handle: u64) -> u64 {
     molt_gpu::primitives_ffi::molt_gpu_prim_dtype(handle)
 }
 
 #[cfg(feature = "molt_gpu_primitives")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_prim_nbytes(handle: u64) -> u64 {
+
+pub(crate) fn molt_gpu_prim_nbytes_attached_body(_py: &crate::PyToken<'_>, handle: u64) -> u64 {
     molt_gpu::primitives_ffi::molt_gpu_prim_nbytes(handle)
 }
 
 #[cfg(feature = "molt_gpu_primitives")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_prim_free(handle: u64) -> u64 {
+
+pub(crate) fn molt_gpu_prim_free_attached_body(_py: &crate::PyToken<'_>, handle: u64) -> u64 {
     molt_gpu::primitives_ffi::molt_gpu_prim_free(handle)
 }
 
 #[cfg(feature = "molt_gpu_primitives")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_prim_contiguous(handle: u64) -> u64 {
+
+pub(crate) fn molt_gpu_prim_contiguous_attached_body(_py: &crate::PyToken<'_>, handle: u64) -> u64 {
     molt_gpu::primitives_ffi::molt_gpu_prim_contiguous(handle)
 }
 
 #[cfg(feature = "molt_gpu_primitives")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_prim_numel(handle: u64) -> u64 {
+
+pub(crate) fn molt_gpu_prim_numel_attached_body(_py: &crate::PyToken<'_>, handle: u64) -> u64 {
     molt_gpu::primitives_ffi::molt_gpu_prim_numel(handle)
 }
 
@@ -354,8 +379,12 @@ mod tests {
 
         let denied = super::molt_scratch_alloc(16);
         assert_eq!(denied, 0);
-        assert_eq!(crate::molt_exception_pending(), 1);
-        let _ = crate::molt_exception_clear();
+        assert_eq!(
+            crate::builtins::exceptions::molt_exception_pending_detached(),
+            1
+        );
+        let _ =
+            crate::with_gil_entry_nopanic!(py, { crate::molt_exception_clear_attached_body(py) });
 
         let allowed = super::molt_scratch_alloc(8);
         assert_ne!(
@@ -370,8 +399,12 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         let ptr = super::molt_scratch_alloc(u64::MAX);
         assert_eq!(ptr, 0);
-        assert_eq!(crate::molt_exception_pending(), 1);
-        let _ = crate::molt_exception_clear();
+        assert_eq!(
+            crate::builtins::exceptions::molt_exception_pending_detached(),
+            1
+        );
+        let _ =
+            crate::with_gil_entry_nopanic!(py, { crate::molt_exception_clear_attached_body(py) });
     }
 
     #[test]
@@ -392,7 +425,10 @@ mod tests {
             assert_eq!(super::molt_scratch_alloc(u64::MAX), 0);
             let denied = super::molt_scratch_alloc(16);
             assert_eq!(denied, 0);
-            assert_eq!(crate::molt_exception_pending(), 0);
+            assert_eq!(
+                crate::builtins::exceptions::molt_exception_pending_detached(),
+                0
+            );
             assert!(!runtime_is_initialized());
             assert!(runtime_state_for_gil().is_none());
             // Refusal must leave the full budget available, and raw success
@@ -429,3 +465,5 @@ mod tests {
         );
     }
 }
+
+include!("attached_exports_generated/wasm_abi_exports.rs");

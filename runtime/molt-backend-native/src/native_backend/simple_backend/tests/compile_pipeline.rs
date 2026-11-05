@@ -414,6 +414,15 @@ fn direct_and_dynamic_calls_release_only_discarded_owned_results() {
                             InstructionData::CallIndirect { .. }
                         )
                     {
+                        let context = function
+                            .dfg
+                            .block_params(function.layout.entry_block().expect("compiled entry"))
+                            [0];
+                        assert_eq!(
+                            function.dfg.inst_args(inst)[1],
+                            context,
+                            "indirect Python calls forward the exact leading context"
+                        );
                         calls.push(inst);
                         continue;
                     }
@@ -454,7 +463,7 @@ fn direct_and_dynamic_calls_release_only_discarded_owned_results() {
                     call_sites_for_import(function, import)
                         .into_iter()
                         .filter(|(_, inst)| {
-                            let args = function.dfg.inst_args(*inst);
+                            let args = attached_arguments(function, *inst);
                             args.len() == 1
                                 && owners.iter().any(|owner| {
                                     canonical_value_sources(function, args[0]).contains(owner)
@@ -598,7 +607,7 @@ fn callable_constructors_release_only_discarded_owned_results() {
                     call_sites_for_import(function, import)
                         .into_iter()
                         .filter(|(_, inst)| {
-                            let args = function.dfg.inst_args(*inst);
+                            let args = attached_arguments(function, *inst);
                             args.len() == 1 && value_originates_only_from(function, args[0], owner)
                         })
                         .count()
@@ -651,7 +660,7 @@ fn closure_extraction_retains_only_bound_borrowed_results() {
                 call_sites_for_import(function, import)
                     .into_iter()
                     .filter(|(_, inst)| {
-                        let args = function.dfg.inst_args(*inst);
+                        let args = attached_arguments(function, *inst);
                         args.len() == 1 && value_originates_only_from(function, args[0], borrowed)
                     })
                     .count()
@@ -793,7 +802,7 @@ fn native_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
             let function = &compiled.function;
             let calls = call_sites_for_import(function, compiled.import_ids[MOLT_TASK_NEW.name]);
             assert_eq!(calls.len(), 1);
-            let poll = function.dfg.inst_args(calls[0].1)[0];
+            let poll = attached_arguments(function, calls[0].1)[0];
             assert_eq!(
                 constant(function, poll).map(|key| key as u64),
                 expected_key,
@@ -880,7 +889,7 @@ fn task_guard_carries_non_entry_owned_cleanup_to_its_merge() {
         let releases: Vec<_> = call_sites_for_import(function, dec_ref_obj)
             .into_iter()
             .filter(|(_, inst)| {
-                let args = function.dfg.inst_args(*inst);
+                let args = attached_arguments(function, *inst);
                 args.len() == 1 && value_originates_only_from(function, args[0], prior_task)
             })
             .collect();
@@ -983,7 +992,7 @@ fn dynamic_br_if_releases_non_entry_owner_on_both_successors() {
     let release_blocks: BTreeSet<_> = call_sites_for_import(function, dec_ref_obj)
         .into_iter()
         .filter(|(_, inst)| {
-            let args = function.dfg.inst_args(*inst);
+            let args = attached_arguments(function, *inst);
             args.len() == 1 && value_originates_only_from(function, args[0], owned_task)
         })
         .map(|(block, _)| block)
@@ -1195,7 +1204,7 @@ fn leading_frame_exception_edge_precedes_heap_literal_materialization() {
             call_sites_for_import(function, compiled.import_ids[MOLT_DEC_REF_OBJ.name])
                 .into_iter()
                 .filter(|(block, inst)| {
-                    let operand = function.dfg.inst_args(*inst)[0];
+                    let operand = attached_arguments(function, *inst)[0];
                     let from_anchor =
                         function
                             .dfg
@@ -1531,11 +1540,11 @@ fn static_calls_transport_closure_arguments_with_the_declared_abi() {
                     matches!(
                         compiled.function.dfg.insts[inst],
                         InstructionData::Call { .. }
-                    ) && compiled.function.dfg.inst_args(inst).first() == Some(&environment)
+                    ) && attached_arguments(&compiled.function, inst).first() == Some(&environment)
                 })
                 .collect();
             assert_eq!(calls.len(), 1, "{}", compiled.function.display());
-            assert_eq!(compiled.function.dfg.inst_args(calls[0]).len(), 2);
+            assert_eq!(attached_arguments(&compiled.function, calls[0]).len(), 2);
             assert_eq!(
                 compiled.function.dfg.inst_results(calls[0]).len(),
                 usize::from(returns_value)
@@ -1639,11 +1648,23 @@ fn marked_finally_observer_imports_both_edges_of_the_inline_work_gate() {
     let undefined = crate::test_support::native_object_symbols(&output.bytes).undefined;
 
     assert!(
-        undefined.contains("molt_async_work_poll_and_exception_last_pending"),
+        undefined.contains(
+            molt_ir::runtime_callable_abi_generated::runtime_execution_abi(
+                "molt_async_work_poll_and_exception_last_pending"
+            )
+            .unwrap()
+            .physical_symbol
+        ),
         "marked observer must import the fused pending-call/exception primitive: {undefined:?}"
     );
     assert!(
-        undefined.contains("molt_exception_last_pending"),
+        undefined.contains(
+            molt_ir::runtime_callable_abi_generated::runtime_execution_abi(
+                "molt_exception_last_pending"
+            )
+            .unwrap()
+            .physical_symbol
+        ),
         "empty work must use the passive exception-only import: {undefined:?}"
     );
 }

@@ -1,7 +1,8 @@
 use std::borrow::Cow;
 
+use crate::wasm_binary::Function;
 use molt_codegen_abi::box_none_bits;
-use wasm_encoder::{BlockType, ExportKind, Function, Instruction};
+use wasm_encoder::{BlockType, ExportKind, Instruction};
 
 use super::WasmBackend;
 use super::module_abi::callable_table::WasmCallableTablePlan;
@@ -32,13 +33,19 @@ impl WasmBackend {
         let init_rows: Vec<_> = registry.init_rows().collect();
         let func_index = self.func_count;
         // Share the (i64) -> i64 signature with the runtime env import.
-        let type_idx = self.types.boxed(1, true);
+        let type_idx = self.types.boxed(2, true);
         self.funcs.function(type_idx);
         self.func_count += 1;
-        self.exports
-            .export("molt_isolate_import", ExportKind::Func, func_index);
+        self.exports.export(
+            &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(
+                "molt_isolate_import",
+            ),
+            ExportKind::Func,
+            func_index,
+        );
 
         let mut func = Function::new_with_locals_types(Vec::new());
+        func.attach_context(2, self.execution_call_abis.clone());
         // The outer empty block is the default/missing-id destination.  It is
         // distinct from the implicit function block, whose i64 result would
         // otherwise require the br_table edge to carry a value.
@@ -52,7 +59,7 @@ impl WasmBackend {
         for (ordinal, (id, _)) in init_rows.iter().enumerate() {
             targets[*id as usize] = ordinal as u32;
         }
-        func.instruction(&Instruction::LocalGet(0));
+        func.instruction(&Instruction::LocalGet(1));
         func.instruction(&Instruction::I32WrapI64);
         func.instruction(&Instruction::BrTable(Cow::Owned(targets), default_depth));
 

@@ -4,8 +4,8 @@ use molt_obj_model::unicode::UnicodeData;
 /// Select a satellite's exact admitted target through the existing runtime
 /// comparison ABI. The registry owns both coordinates and future admission;
 /// an unregistered gap/future version has no descriptor.
-pub fn for_runtime_target() -> Option<&'static UnicodeData> {
-    UnicodeData::for_target_comparison(crate::rt_target_at_least)
+pub fn for_runtime_target(py: &crate::PyToken) -> Option<&'static UnicodeData> {
+    UnicodeData::for_target_comparison(|major, minor| crate::rt_target_at_least(py, major, minor))
 }
 
 #[cfg(test)]

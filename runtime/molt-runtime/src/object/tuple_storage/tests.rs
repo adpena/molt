@@ -107,7 +107,8 @@ fn exercise_descriptors(py: &PyToken<'_>, bits: u64) {
     for expected in [1, 2, 1] {
         let mut value = MoltObject::none().bits();
         let done = unsafe {
-            crate::object::ops_iter::molt_iter_next_unboxed(
+            crate::object::ops_iter::molt_iter_next_unboxed_attached_body(
+                py,
                 iterator,
                 (&raw mut value) as usize as u64,
             )
@@ -119,7 +120,8 @@ fn exercise_descriptors(py: &PyToken<'_>, bits: u64) {
     let mut value = MoltObject::none().bits();
     assert_eq!(
         obj_from_bits(unsafe {
-            crate::object::ops_iter::molt_iter_next_unboxed(
+            crate::object::ops_iter::molt_iter_next_unboxed_attached_body(
+                py,
                 iterator,
                 (&raw mut value) as usize as u64,
             )
@@ -231,7 +233,8 @@ fn exercise_descriptors(py: &PyToken<'_>, bits: u64) {
         );
         assert_values(py, result.bits(), &[1, 2, 1, 1, 2, 1]);
     }
-    let slice_bits = crate::object::ops_slice::molt_slice_new(
+    let slice_bits = crate::object::ops_slice::molt_slice_new_attached_body(
+        py,
         one,
         MoltObject::none().bits(),
         MoltObject::none().bits(),
@@ -262,16 +265,29 @@ fn native_tuple_descriptor_family_reads_real_storage_and_owned_results() {
             TYPE_ID_FOREIGN
         );
         exercise_descriptors(&py, bits);
-        assert_eq!(obj_from_bits(crate::molt_len(bits)).as_int(), Some(3));
         assert_eq!(
-            obj_from_bits(crate::molt_index(bits, MoltObject::from_int(1).bits())).as_int(),
+            obj_from_bits(crate::molt_len_attached_body(py, bits)).as_int(),
+            Some(3)
+        );
+        assert_eq!(
+            obj_from_bits(crate::molt_index_attached_body(
+                py,
+                bits,
+                MoltObject::from_int(1).bits()
+            ))
+            .as_int(),
             Some(2)
         );
         assert_eq!(
-            obj_from_bits(crate::molt_contains(bits, MoltObject::from_int(2).bits())).as_bool(),
+            obj_from_bits(crate::molt_contains_attached_body(
+                py,
+                bits,
+                MoltObject::from_int(2).bits()
+            ))
+            .as_bool(),
             Some(true)
         );
-        let iterator = crate::molt_iter(bits);
+        let iterator = crate::molt_iter_attached_body(py, bits);
         assert!(!exception_pending(&py));
         dec_ref_bits(&py, iterator);
     });
@@ -327,9 +343,14 @@ fn exercise_native_tuple_overrides(unwind_after_item: bool, retired: &Cell<[usiz
             let _bits_owner = ExceptionValue::adopt(&py, bits);
             exercise_descriptors(&py, bits);
             assert_eq!(OVERRIDES.load(Ordering::SeqCst), 0);
-            assert_eq!(obj_from_bits(crate::molt_len(bits)).as_int(), Some(99));
-            let item =
-                ExceptionValue::adopt(&py, crate::molt_index(bits, MoltObject::from_int(1).bits()));
+            assert_eq!(
+                obj_from_bits(crate::molt_len_attached_body(py, bits)).as_int(),
+                Some(99)
+            );
+            let item = ExceptionValue::adopt(
+                &py,
+                crate::molt_index_attached_body(py, bits, MoltObject::from_int(1).bits()),
+            );
             assert!(!exception_pending(&py));
             assert_eq!(
                 crate::type_of_bits(&py, item.bits()),
@@ -343,10 +364,15 @@ fn exercise_native_tuple_overrides(unwind_after_item: bool, retired: &Cell<[usiz
             }
             drop(item);
             assert_eq!(
-                obj_from_bits(crate::molt_contains(bits, MoltObject::from_int(1).bits())).as_bool(),
+                obj_from_bits(crate::molt_contains_attached_body(
+                    py,
+                    bits,
+                    MoltObject::from_int(1).bits()
+                ))
+                .as_bool(),
                 Some(false)
             );
-            let result = ExceptionValue::adopt(&py, crate::molt_iter(bits));
+            let result = ExceptionValue::adopt(&py, crate::molt_iter_attached_body(py, bits));
             assert!(exception_pending(&py));
             crate::clear_exception(&py);
             errors::PyErr_Clear();

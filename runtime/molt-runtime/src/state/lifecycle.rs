@@ -46,8 +46,8 @@ use crate::{
     builtin_classes_shutdown, call_callable0, clear_exception, clear_exception_type_cache,
     clear_thread_exception_for_teardown, dec_ref_bits, default_cancel_tokens,
     dict_clear_in_place_shutdown, dict_get_in_place, exception_pending,
-    exceptions_clear_runtime_state, inc_ref_bits, module_dict_bits, molt_file_flush, obj_from_bits,
-    object_type_id, reset_ptr_registry, runtime_state,
+    exceptions_clear_runtime_state, inc_ref_bits, module_dict_bits, molt_file_flush_attached_body,
+    obj_from_bits, object_type_id, reset_ptr_registry, runtime_state,
 };
 use std::sync::atomic::Ordering as AtomicOrdering;
 
@@ -290,7 +290,7 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
         }
     }
     trace_shutdown("drain_process_registry");
-    state.process_registry.drain_for_teardown();
+    state.process_registry.drain_for_teardown(_py);
     if mode == RuntimeTeardownMode::ProcessExit {
         crate::object::ops::profile_dump_with_gil(_py);
         // Pre-teardown peak-live canary, not the post-teardown true-leak gauge.
@@ -498,7 +498,7 @@ fn clear_runtime_callback_roots(
     changed |= clear_thread_context(py);
     changed |= sys_ext_clear_state(py, state);
     changed |= c_api_module_clear_state(py, state);
-    changed |= runtime_extension_states_clear_and_drop(state);
+    changed |= runtime_extension_states_clear_and_drop(py, state);
     changed |= modules.drain(state);
     changed |= modules_clear_runtime_state(py, state);
     changed |= crate::object::gc::gc_clear_api_roots(py);
@@ -687,6 +687,7 @@ fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
         frame.exit(_py);
     }
     changed |= crate::builtins::exceptions::clear_thread_unraisable_state(_py);
+    crate::concurrency::execution::retire_idle_compiled_scope_storage();
     crate::builtins::frames::clear_frame_home_tls_storage();
     crate::async_rt::awaitable::clear_python_resume_tls_storage();
     crate::builtins::modules::clear_module_execution_tls_storage();
@@ -1394,7 +1395,7 @@ fn flush_stdio_target(_py: &PyToken<'_>, target_bits: u64) {
     if let Some(ptr) = target_obj.as_ptr() {
         unsafe {
             if object_type_id(ptr) == TYPE_ID_FILE_HANDLE {
-                let _ = molt_file_flush(target_bits);
+                let _ = molt_file_flush_attached_body(_py, target_bits);
                 if exception_pending(_py) {
                     clear_exception(_py);
                 }
@@ -1525,24 +1526,31 @@ pub(crate) mod tests {
                     "open test descriptor: {}",
                     std::io::Error::last_os_error()
                 );
-                crate::async_rt::event_loop::molt_pipe_transport_new(
+                crate::async_rt::event_loop::molt_pipe_transport_new_attached_body(
+                    py,
                     MoltObject::from_int(i64::from(fd)).bits(),
                     MoltObject::from_bool(true).bits(),
                 )
             };
             let token = unsafe {
-                crate::async_rt::cancellation::molt_cancel_token_new(MoltObject::none().bits())
+                crate::async_rt::cancellation::molt_cancel_token_new_attached_body(
+                    py,
+                    MoltObject::none().bits(),
+                )
             };
-            let event_loop = crate::async_rt::event_loop::molt_event_loop_new();
+            let event_loop = crate::async_rt::event_loop::molt_event_loop_new_attached_body(py);
             #[cfg(not(target_arch = "wasm32"))]
             let pipe = new_pipe();
             assert!(!crate::exception_pending(py));
             assert!(super::clear_task_state(py, state));
             assert!(!super::clear_task_state(py, state));
             let next_token = unsafe {
-                crate::async_rt::cancellation::molt_cancel_token_new(MoltObject::none().bits())
+                crate::async_rt::cancellation::molt_cancel_token_new_attached_body(
+                    py,
+                    MoltObject::none().bits(),
+                )
             };
-            let next_loop = crate::async_rt::event_loop::molt_event_loop_new();
+            let next_loop = crate::async_rt::event_loop::molt_event_loop_new_attached_body(py);
             assert!(
                 crate::obj_from_bits(next_token).as_int().unwrap()
                     > crate::obj_from_bits(token).as_int().unwrap()
@@ -1676,7 +1684,14 @@ pub(crate) mod tests {
         crate::dec_ref_bits(py, value);
     }
 
-    extern "C" fn repopulate_context_binding(_self: u64) -> u64 {
+    extern "C" fn repopulate_context_binding(__context: u64, _self: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         #[cfg(not(target_arch = "wasm32"))]
         if JOINED_SERVICE_ORIGIN.load(Ordering::SeqCst) != 0 {
             assert!(crate::concurrency::execution::current_thread_holds_shutdown_drain_custody());
@@ -1688,7 +1703,8 @@ pub(crate) mod tests {
                 JOINED_SERVICE_ORIGIN.load(Ordering::SeqCst)
             );
         }
-        crate::with_gil_entry_nopanic!(py, {
+        {
+            let py = __py;
             if REENTRANT_CONTEXT_RELEASES.fetch_add(1, Ordering::SeqCst) == 0 {
                 if REENTRANT_CONTEXT_PUBLISH_C.load(Ordering::SeqCst) {
                     if !molt_cpython_abi::api::object::current_thread_has_retained_runtime_state() {
@@ -1709,14 +1725,14 @@ pub(crate) mod tests {
                 publish_context_binding(py, REENTRANT_CONTEXT_CLASS.load(Ordering::SeqCst));
             }
             MoltObject::none().bits()
-        })
+        }
     }
 
     fn reentrant_context_class(py: &crate::PyToken<'_>) -> u64 {
         let name = crate::dynamic_attr_name_bits(py, b"ReentrantContextDefault").unwrap();
-        let class = crate::molt_class_new(name);
+        let class = crate::molt_class_new_attached_body(py, name);
         crate::dec_ref_bits(py, name);
-        crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+        crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).object);
         let class_ptr = crate::obj_from_bits(class).as_ptr().unwrap();
         unsafe { crate::object::class_finish_definition(py, class_ptr) }.unwrap();
         let method = crate::builtins::functions::alloc_runtime_function_obj(
@@ -1730,7 +1746,7 @@ pub(crate) mod tests {
         assert!(!method.is_null());
         let key = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
         let method = MoltObject::from_ptr(method).bits();
-        crate::molt_set_attr_name(class, key, method);
+        crate::molt_set_attr_name_attached_body(py, class, key, method);
         crate::dec_ref_bits(py, key);
         crate::dec_ref_bits(py, method);
         assert!(!crate::exception_pending(py));
@@ -1816,7 +1832,14 @@ pub(crate) mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    extern "C" fn worker_cached_method(_self: u64) -> u64 {
+    extern "C" fn worker_cached_method(__context: u64, _self: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         MoltObject::none().bits()
     }
 
@@ -1831,9 +1854,9 @@ pub(crate) mod tests {
     impl WorkerIcWitness {
         fn new(py: &crate::PyToken<'_>) -> Self {
             let name = crate::dynamic_attr_name_bits(py, b"WorkerIcOwner").unwrap();
-            let class = crate::molt_class_new(name);
+            let class = crate::molt_class_new_attached_body(py, name);
             crate::dec_ref_bits(py, name);
-            crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+            crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).object);
             let class_ptr = crate::obj_from_bits(class).as_ptr().unwrap();
             unsafe { crate::object::class_finish_definition(py, class_ptr) }.unwrap();
             let method = crate::builtins::functions::alloc_runtime_function_obj(
@@ -1847,7 +1870,7 @@ pub(crate) mod tests {
             assert!(!method.is_null());
             let method = MoltObject::from_ptr(method).bits();
             let name = crate::dynamic_attr_name_bits(py, b"cached").unwrap();
-            crate::molt_set_attr_name(class, name, method);
+            crate::molt_set_attr_name_attached_body(py, class, name, method);
             crate::dec_ref_bits(py, name);
             let receiver = unsafe { crate::alloc_instance_for_class(py, class_ptr) };
             assert!(crate::obj_from_bits(receiver).as_ptr().is_some());
@@ -1903,7 +1926,8 @@ pub(crate) mod tests {
                 super::run_runtime_worker(origin, || {
                     crate::with_gil_entry_nopanic!(py, {
                         let mut self_or_null = molt_codegen_abi::loaded_method_null_bits() as u64;
-                        let callable = crate::call::bind::molt_load_method(
+                        let callable = crate::call::bind::molt_load_method_attached_body(
+                            py,
                             MoltObject::from_int(819).bits(),
                             receiver,
                             b"cached".as_ptr(),
@@ -1911,8 +1935,11 @@ pub(crate) mod tests {
                             (&raw mut self_or_null) as usize as u64,
                         );
                         // The load owns both words; the call adopts them.
-                        let result =
-                            crate::call::bind::molt_call_loaded_method0(callable, self_or_null);
+                        let result = crate::call::bind::molt_call_loaded_method0_attached_body(
+                            py,
+                            callable,
+                            self_or_null,
+                        );
                         assert_eq!(result, MoltObject::none().bits());
                         crate::dec_ref_bits(py, result);
                         assert!(!crate::exception_pending(py));

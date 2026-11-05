@@ -431,6 +431,12 @@ borrow survives a finalizer, and local-object destruction detaches the whole map
 
 ### 11.3 Suspension, public release and foreign return
 
+Raw protocols keep their actual admission contract. Handle decoding does not dereference an
+allocation, and scratch allocation/free can precede interpreter initialization. They remain sole
+Boundary entries without a context parameter. Scratch allocation publishes failure through its
+existing cold raw-admission policy; successful allocation and free do not admit Python execution.
+The detached cold-resource oracle must retain null refusal, unchanged budget and no runtime state.
+
 The final public `molt_gil_release` cannot revoke an owner borrowed by any live compiled scope,
 including dormant scopes under a reentrant callback. Refusal uses the existing `-1` channel and
 precedes changes to public depth, attachment, saved frames or persistent ownership. A public
@@ -464,6 +470,18 @@ Rust calls pass the token. Genuine public C admission entries use the same body.
 compiled export, body pointer in a resolver, guarded internal compatibility body, or fallback
 reacquisition remains for a migrated entry.
 
+Public C declarations in `include/molt/molt.h` identify their own admission entries and raw
+machine signatures. Compiled calls select the schema-qualified attached entries. Both entries
+invoke the single typed implementation. The handle-based `Python.h` bytes-concatenation consumer
+uses the existing public number API; unused direct-intrinsic declarations are retired. Pure raw
+pointer/table/byte protocols keep their established borrowing and lifecycle preconditions.
+
+Private Python providers and cached executable pointers carry the same leading context, including
+native iterator-next slots, class-initializer caches, descriptor callbacks and async polls.
+Logical Python arity remains unchanged. Scoped reference owners retain their actual token borrow.
+Collections of owned handles store contiguous bits and one token; an array of token-bearing owners
+is not a bits slice. Release order and allocation-failure behavior remain observable contracts.
+
 Migrate native and LLVM declarations, compiled signatures/direct calls/indirect trampolines,
 runtime pointer dispatch, core/runtime vtables, constructors, polls, module initialization,
 isolate bootstrap, launch code, generic and lir_fast WASM, callable tables and split/browser
@@ -478,6 +496,16 @@ object cannot qualify a stale object, including one selected from an archive und
 Split-WASM admission compares the application's required schema with the runtime's offered schema
 before any application initializer executes. Preserve `pending_work_ptr` and its Arc lifetime;
 do not impose a RuntimeState prefix, duplicate that word or reinterpret a state address as it.
+
+The object witness is revision 8: the existing 66 facts plus context schema, argument position,
+carrier width, header size/alignment and thread-record offset. Physical bindings qualify each
+individual producer as well as its selected runtime. WASM's application custom section contains
+exactly eight little-endian fingerprint bytes; manifest fingerprints use decimal strings so JS
+does not round them. Node, browser, Worker and Rust hosts enforce the generated schema and the
+existing shared-memory contract. The canonical backend imports memory zero: inline reference
+count, frame handoff, exception/work-word and context-header loads address that same memory.
+Raw byte/argv bridges retain their separate copying protocol and tests. A typed host lifetime is
+published before guest setup/validation calls so failures retain both primary and cleanup errors.
 
 ### 11.5 Review and acceptance
 

@@ -200,8 +200,8 @@ fn build_hmac_handle(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_hmac_new(
+pub fn molt_hmac_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     key_bits: u64,
     msg_bits: u64,
     digest_bits: u64,
@@ -210,7 +210,7 @@ pub extern "C" fn molt_hmac_new(
     error_bits: u64,
     digestmod_present_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let operation = match to_i64(obj_from_bits(operation_bits)) {
             Some(0) => HmacOperation::New,
             Some(1) => HmacOperation::SingleShot,
@@ -383,11 +383,12 @@ pub extern "C" fn molt_hmac_new(
         let name = handle.inner.name;
         let digest_size = handle.digest_size;
         let block_size = handle.block_size;
-        let handle = unsafe { OwnedRuntimeValue::from_owned_bits(_py, new_hmac_owner(handle)) };
+        let handle =
+            unsafe { OwnedRuntimeValue::from_owned_bits(_py, new_hmac_owner(_py, handle)) };
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        let name = unsafe { OwnedRuntimeValue::from_owned_bits(_py, rt_string_from(name)) };
+        let name = unsafe { OwnedRuntimeValue::from_owned_bits(_py, rt_string_from(_py, name)) };
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -403,19 +404,25 @@ pub extern "C" fn molt_hmac_new(
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        rt_tuple(&[
-            handle.bits(),
-            name.bits(),
-            digest_size.bits(),
-            block_size.bits(),
-        ])
+        rt_tuple(
+            _py,
+            &[
+                handle.bits(),
+                name.bits(),
+                digest_size.bits(),
+                block_size.bits(),
+            ],
+        )
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_hmac_update(handle_bits: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(owner) = hmac_owner(handle_bits) else {
+pub fn molt_hmac_update_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(owner) = hmac_owner(_py, handle_bits) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid hmac handle");
         };
         let data = match hash_input(_py, data_bits) {
@@ -429,23 +436,23 @@ pub extern "C" fn molt_hmac_update(handle_bits: u64, data_bits: u64) -> u64 {
         MoltObject::none().bits()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_hmac_copy(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(owner) = hmac_owner(handle_bits) else {
+
+pub fn molt_hmac_copy_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(owner) = hmac_owner(_py, handle_bits) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid hmac handle");
         };
         let copy = owner
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .clone();
-        new_hmac_owner(copy)
+        new_hmac_owner(_py, copy)
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_hmac_digest(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(owner) = hmac_owner(handle_bits) else {
+
+pub fn molt_hmac_digest_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(owner) = hmac_owner(_py, handle_bits) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid hmac handle");
         };
         let handle = owner
@@ -465,8 +472,12 @@ pub extern "C" fn molt_hmac_digest(handle_bits: u64) -> u64 {
         MoltObject::from_ptr(ptr).bits()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_compare_digest(a_bits: u64, b_bits: u64) -> u64 {
+
+pub fn molt_compare_digest_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
     use molt_cpython_abi::{
         abi_types,
         api::{buffer, errors, strings},
@@ -478,7 +489,7 @@ pub extern "C" fn molt_compare_digest(a_bits: u64, b_bits: u64) -> u64 {
     };
     use subtle::ConstantTimeEq;
 
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let is_string = |bits| {
             obj_from_bits(bits)
                 .as_ptr()
@@ -487,8 +498,8 @@ pub extern "C" fn molt_compare_digest(a_bits: u64, b_bits: u64) -> u64 {
         if is_string(a_bits) && is_string(b_bits) {
             // Unicode is immutable; these views borrow the call's operands.
             // No exporter callback or owned string copy is needed here.
-            let a = unsafe { molt_runtime_core::rt_string_as_bytes(a_bits) }.unwrap();
-            let b = unsafe { molt_runtime_core::rt_string_as_bytes(b_bits) }.unwrap();
+            let a = unsafe { molt_runtime_core::rt_string_as_bytes(_py, a_bits) }.unwrap();
+            let b = unsafe { molt_runtime_core::rt_string_as_bytes(_py, b_bits) }.unwrap();
             if !a.is_ascii() || !b.is_ascii() {
                 return raise_exception::<u64>(
                     _py,
@@ -509,8 +520,8 @@ pub extern "C" fn molt_compare_digest(a_bits: u64, b_bits: u64) -> u64 {
         if exact_a && exact_b {
             // Admission is semantic. Borrow only after both class queries;
             // immutable exact bytes need no export or master allocation.
-            let a = unsafe { molt_runtime_core::rt_bytes_as_slice(a_bits) }.unwrap();
-            let b = unsafe { molt_runtime_core::rt_bytes_as_slice(b_bits) }.unwrap();
+            let a = unsafe { molt_runtime_core::rt_bytes_as_slice(_py, a_bits) }.unwrap();
+            let b = unsafe { molt_runtime_core::rt_bytes_as_slice(_py, b_bits) }.unwrap();
             return MoltObject::from_bool(bool::from(a.ct_eq(b))).bits();
         }
         unsafe {
@@ -586,3 +597,5 @@ pub extern "C" fn molt_compare_digest(a_bits: u64, b_bits: u64) -> u64 {
         }
     })
 }
+
+include!("attached_exports_generated/hmac.rs");

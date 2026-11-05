@@ -24,9 +24,9 @@ thread_local! {
 
 fn class(py: &PyToken<'_>, base: u64) -> u64 {
     let name = dynamic_attr_name_bits(py, b"ComparisonConsumerProbe").unwrap();
-    let bits = molt_class_new(name);
+    let bits = molt_class_new_attached_body(py, name);
     dec_ref_bits(py, name);
-    let result = molt_class_set_base(bits, base);
+    let result = molt_class_set_base_attached_body(py, bits, base);
     dec_ref_bits(py, result);
     unsafe { crate::object::class_finish_definition(py, obj_from_bits(bits).as_ptr().unwrap()) }
         .expect("valid fixture class");
@@ -42,7 +42,7 @@ fn instance(py: &PyToken<'_>, class: u64) -> u64 {
 
 fn attr(py: &PyToken<'_>, object: u64, name: &[u8], value: u64) {
     let key = dynamic_attr_name_bits(py, name).unwrap();
-    let result = molt_set_attr_name(object, key, value);
+    let result = molt_set_attr_name_attached_body(py, object, key, value);
     dec_ref_bits(py, result);
     dec_ref_bits(py, key);
     assert!(!exception_pending(py));
@@ -60,8 +60,16 @@ fn install(py: &PyToken<'_>, class: u64, name: &[u8], target: *const (), arity: 
     dec_ref_bits(py, callable);
 }
 
-extern "C" fn equal(left: u64, _right: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn equal(__context: u64, left: u64, _right: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         let (result, mutation, raise) = STATE.with(|state| {
             let mut state = state.borrow_mut();
             let event = if left == state.left_value { 30 } else { 31 };
@@ -71,9 +79,9 @@ extern "C" fn equal(left: u64, _right: u64) -> u64 {
         if mutation != 0 {
             let ptr = obj_from_bits(mutation).as_ptr().unwrap();
             let result = if unsafe { object_type_id(ptr) } == TYPE_ID_DICT {
-                crate::molt_dict_clear(mutation)
+                crate::molt_dict_clear_attached_body(py, mutation)
             } else {
-                crate::molt_list_clear(mutation)
+                crate::molt_list_clear_attached_body(py, mutation)
             };
             dec_ref_bits(py, result);
         }
@@ -81,11 +89,13 @@ extern "C" fn equal(left: u64, _right: u64) -> u64 {
         {
             let deque = STATE.with(|state| state.borrow().deque);
             if deque != 0 {
-                let changed = molt_runtime_collections::collections_ext::molt_deque_setitem(
-                    deque,
-                    MoltObject::from_int(1).bits(),
-                    MoltObject::from_int(1).bits(),
-                );
+                let changed =
+                    molt_runtime_collections::collections_ext::molt_deque_setitem_attached_body(
+                        py.core_token(),
+                        deque,
+                        MoltObject::from_int(1).bits(),
+                        MoltObject::from_int(1).bits(),
+                    );
                 dec_ref_bits(py, changed);
             }
         }
@@ -98,11 +108,19 @@ extern "C" fn equal(left: u64, _right: u64) -> u64 {
         }
         inc_ref_bits(py, result);
         result
-    })
+    }
 }
 
-extern "C" fn getitem(_self: u64, index: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn getitem(__context: u64, _self: u64, index: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         let index = to_i64(obj_from_bits(index)).unwrap();
         STATE.with(|state| state.borrow_mut().events.push(40 + index as u8));
         if index != 0 {
@@ -111,11 +129,19 @@ extern "C" fn getitem(_self: u64, index: u64) -> u64 {
         let value = STATE.with(|state| state.borrow().left_value);
         inc_ref_bits(py, value);
         value
-    })
+    }
 }
 
-extern "C" fn produce() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn produce(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         let value = STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.events.push(50);
@@ -126,7 +152,7 @@ extern "C" fn produce() -> u64 {
         }
         inc_ref_bits(py, value);
         value
-    })
+    }
 }
 
 fn field_get(py: &PyToken<'_>, object: u64, field: u8) -> u64 {
@@ -152,18 +178,38 @@ fn field_get(py: &PyToken<'_>, object: u64, field: u8) -> u64 {
     value
 }
 
-extern "C" fn field_a(object: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { field_get(py, object, 1) })
+extern "C" fn field_a(__context: u64, object: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        field_get(py, object, 1)
+    }
 }
 
-extern "C" fn field_b(object: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { field_get(py, object, 2) })
+extern "C" fn field_b(__context: u64, object: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        field_get(py, object, 2)
+    }
 }
 
 fn expect_value_error(py: &PyToken<'_>, result: u64) {
     assert!(obj_from_bits(result).is_none());
     assert!(exception_pending(py));
-    let exception = molt_exception_last();
+    let exception = molt_exception_last_attached_body(py);
     assert!(crate::builtins::exceptions::exception_matches_kind(
         py,
         exception,
@@ -187,19 +233,26 @@ fn sequence_and_generic_membership_run_rich_equality_and_stop_on_error() {
             state.result = MoltObject::from_bool(true).bits();
         });
         let needle = MoltObject::from_int(1).bits();
-        assert!(obj_from_bits(molt_contains(MoltObject::none().bits(), needle)).is_none());
+        assert!(
+            obj_from_bits(molt_contains_attached_body(
+                py,
+                MoltObject::none().bits(),
+                needle
+            ))
+            .is_none()
+        );
         assert!(exception_pending(py));
         clear_exception(py);
         let list = MoltObject::from_ptr(alloc_list(py, &[probe])).bits();
         let tuple = MoltObject::from_ptr(alloc_tuple(py, &[probe])).bits();
         for container in [list, tuple] {
             assert_eq!(
-                molt_contains(container, needle),
+                molt_contains_attached_body(py, container, needle),
                 MoltObject::from_bool(true).bits()
             );
         }
         assert_eq!(
-            molt_list_contains(list, needle),
+            molt_list_contains_attached_body(py, list, needle),
             MoltObject::from_bool(true).bits()
         );
         let iterable_class = class(py, builtin_classes(py).object);
@@ -210,7 +263,7 @@ fn sequence_and_generic_membership_run_rich_equality_and_stop_on_error() {
             state.raise = true;
             state.events.clear();
         });
-        expect_value_error(py, molt_contains(iterable, needle));
+        expect_value_error(py, molt_contains_attached_body(py, iterable, needle));
         assert_eq!(STATE.with(|state| state.borrow().events.clone()), [40, 30]);
         STATE.with(|state| {
             let mut state = state.borrow_mut();
@@ -219,7 +272,7 @@ fn sequence_and_generic_membership_run_rich_equality_and_stop_on_error() {
             state.mutation = list;
         });
         assert_eq!(
-            molt_contains(list, needle),
+            molt_contains_attached_body(py, list, needle),
             MoltObject::from_bool(false).bits()
         );
         assert!(!exception_pending(py));
@@ -250,7 +303,8 @@ fn enum_callable_sentinel_and_stdio_do_not_publish_after_equality_error() {
             state.result = MoltObject::from_bool(true).bits();
             state.mutation = members;
         });
-        let found = crate::builtins::enum_ext::molt_enum_member(enum_class, returned);
+        let found =
+            crate::builtins::enum_ext::molt_enum_member_attached_body(py, enum_class, returned);
         assert_eq!(found, key);
         assert_eq!(
             string_obj_to_owned(obj_from_bits(found)).as_deref(),
@@ -264,12 +318,13 @@ fn enum_callable_sentinel_and_stdio_do_not_publish_after_equality_error() {
             state.events.clear();
         });
         let callable = function(py, "comparison_consumer_produce", produce as *const (), 0);
-        let iter = crate::molt_iter_sentinel(callable, probe);
-        expect_value_error(py, crate::molt_iter_next(iter));
+        let iter = crate::molt_iter_sentinel_attached_body(py, callable, probe);
+        expect_value_error(py, crate::molt_iter_next_attached_body(py, iter));
         assert_eq!(STATE.with(|state| state.borrow().events.clone()), [50, 30]);
         STATE.with(|state| state.borrow_mut().events.clear());
         let integer = |value| MoltObject::from_int(value).bits();
-        let stdio = crate::async_rt::process::molt_asyncio_subprocess_stdio_normalize(
+        let stdio = crate::async_rt::process::molt_asyncio_subprocess_stdio_normalize_attached_body(
+            py,
             probe,
             MoltObject::from_bool(true).bits(),
             integer(-1),
@@ -289,8 +344,8 @@ fn enum_callable_sentinel_and_stdio_do_not_publish_after_equality_error() {
             state.raise = false;
             state.events.clear();
         });
-        let done = crate::molt_iter_next(iter);
-        let again = crate::molt_iter_next(iter);
+        let done = crate::molt_iter_next_attached_body(py, iter);
+        let again = crate::molt_iter_next_attached_body(py, iter);
         assert_eq!(STATE.with(|state| state.borrow().events.clone()), [50, 30]);
         for result in [done, again] {
             let pair = unsafe {
@@ -300,14 +355,14 @@ fn enum_callable_sentinel_and_stdio_do_not_publish_after_equality_error() {
             assert_eq!(pair.1, MoltObject::from_bool(true).bits());
             dec_ref_bits(py, result);
         }
-        let stop_iter = crate::molt_iter_sentinel(callable, probe);
+        let stop_iter = crate::molt_iter_sentinel_attached_body(py, callable, probe);
         STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.stop_callable = true;
             state.events.clear();
         });
         for _ in 0..2 {
-            let done = crate::molt_iter_next(stop_iter);
+            let done = crate::molt_iter_next_attached_body(py, stop_iter);
             assert!(!exception_pending(py));
             let pair = unsafe {
                 crate::object::seq_access::tuple_pair(obj_from_bits(done).as_ptr().unwrap())
@@ -396,7 +451,7 @@ fn dataclass_equality_matches_versioned_operand_order_and_raw_result_contract() 
         for pair in field_pairs.as_chunks::<2>().0 {
             attr(py, pair[1], b"compare", MoltObject::from_bool(false).bits());
         }
-        let cleared = crate::molt_dict_clear(fields);
+        let cleared = crate::molt_dict_clear_attached_body(py, fields);
         dec_ref_bits(py, cleared);
         let left = instance(py, record_class);
         let right = instance(py, record_class);
@@ -418,7 +473,12 @@ fn dataclass_equality_matches_versioned_operand_order_and_raw_result_contract() 
                     serial: 0,
                 });
             STATE.with(|state| state.borrow_mut().events.clear());
-            let compared = crate::builtins::types::molt_dataclasses_eq(left, right, compare_names);
+            let compared = crate::builtins::types::molt_dataclasses_eq_attached_body(
+                py,
+                left,
+                right,
+                compare_names,
+            );
             assert_eq!(
                 compared,
                 if minor == 12 {
@@ -441,12 +501,22 @@ fn dataclass_equality_matches_versioned_operand_order_and_raw_result_contract() 
             });
             expect_value_error(
                 py,
-                crate::builtins::types::molt_dataclasses_eq(left, right, compare_names),
+                crate::builtins::types::molt_dataclasses_eq_attached_body(
+                    py,
+                    left,
+                    right,
+                    compare_names,
+                ),
             );
             assert_eq!(STATE.with(|state| state.borrow().events.clone()), [11]);
             STATE.with(|state| state.borrow_mut().raise_getter = false);
         }
-        let declined = crate::builtins::types::molt_dataclasses_eq(left, left_value, compare_names);
+        let declined = crate::builtins::types::molt_dataclasses_eq_attached_body(
+            py,
+            left,
+            left_value,
+            compare_names,
+        );
         assert!(crate::builtins::methods::is_not_implemented_bits(
             py, declined
         ));
@@ -489,29 +559,36 @@ fn deque_consumers_preserve_comparison_errors_across_the_runtime_bridge() {
             state.left_value = probe;
             state.raise = true;
         });
-        let deque = molt_deque_new(MoltObject::none().bits());
-        let appended = molt_deque_append(deque, probe);
+        let deque = molt_deque_new_attached_body(py.core_token(), MoltObject::none().bits());
+        let appended = molt_deque_append_attached_body(py.core_token(), deque, probe);
         dec_ref_bits(py, appended);
         for operation in [molt_deque_contains, molt_deque_count, molt_deque_remove] {
-            expect_value_error(py, operation(deque, MoltObject::from_int(1).bits()));
+            expect_value_error(py, unsafe {
+                operation(py.attached_context(), deque, MoltObject::from_int(1).bits())
+            });
         }
         expect_value_error(
             py,
-            molt_deque_index(
+            molt_deque_index_attached_body(
+                py.core_token(),
                 deque,
                 MoltObject::from_int(1).bits(),
                 MoltObject::from_int(0).bits(),
                 MoltObject::from_int(1).bits(),
             ),
         );
-        let dropped = molt_deque_drop(deque);
+        let dropped = molt_deque_drop_attached_body(py.core_token(), deque);
         dec_ref_bits(py, dropped);
         // Replacing an element preserves the structural version. Every scan
         // must see the replacement at its next position, rather than a snapshot.
         for operation in 0..4 {
-            let deque = molt_deque_new(MoltObject::none().bits());
-            let _ = molt_deque_append(deque, probe);
-            let _ = molt_deque_append(deque, MoltObject::from_int(0).bits());
+            let deque = molt_deque_new_attached_body(py.core_token(), MoltObject::none().bits());
+            let _ = molt_deque_append_attached_body(py.core_token(), deque, probe);
+            let _ = molt_deque_append_attached_body(
+                py.core_token(),
+                deque,
+                MoltObject::from_int(0).bits(),
+            );
             STATE.with(|state| {
                 let mut state = state.borrow_mut();
                 state.raise = false;
@@ -520,15 +597,16 @@ fn deque_consumers_preserve_comparison_errors_across_the_runtime_bridge() {
             });
             let needle = MoltObject::from_int(1).bits();
             let result = match operation {
-                0 => molt_deque_contains(deque, needle),
-                1 => molt_deque_count(deque, needle),
-                2 => molt_deque_index(
+                0 => molt_deque_contains_attached_body(py.core_token(), deque, needle),
+                1 => molt_deque_count_attached_body(py.core_token(), deque, needle),
+                2 => molt_deque_index_attached_body(
+                    py.core_token(),
                     deque,
                     needle,
                     MoltObject::from_int(0).bits(),
                     MoltObject::from_int(2).bits(),
                 ),
-                _ => molt_deque_remove(deque, needle),
+                _ => molt_deque_remove_attached_body(py.core_token(), deque, needle),
             };
             assert!(!exception_pending(py));
             assert_eq!(
@@ -541,7 +619,7 @@ fn deque_consumers_preserve_comparison_errors_across_the_runtime_bridge() {
             );
             dec_ref_bits(py, result);
             STATE.with(|state| state.borrow_mut().deque = 0);
-            let dropped = molt_deque_drop(deque);
+            let dropped = molt_deque_drop_attached_body(py.core_token(), deque);
             dec_ref_bits(py, dropped);
         }
         dec_ref_bits(py, probe);

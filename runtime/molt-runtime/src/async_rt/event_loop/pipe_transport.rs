@@ -158,10 +158,14 @@ fn pipe_require_bytes_slice(_py: &crate::PyToken<'_>, bits: u64) -> Result<&'sta
 /// `is_read_bits`: NaN-boxed integer (truthy = read pipe, falsy = write pipe).
 ///
 /// Returns a NaN-boxed integer handle for the pipe transport.
-#[unsafe(no_mangle)]
+
 #[cfg(not(target_arch = "wasm32"))]
-pub extern "C" fn molt_pipe_transport_new(fd_bits: u64, is_read_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_pipe_transport_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    fd_bits: u64,
+    is_read_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
         if fd < 0 {
             return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid file descriptor");
@@ -172,10 +176,13 @@ pub extern "C" fn molt_pipe_transport_new(fd_bits: u64, is_read_bits: u64) -> u6
     })
 }
 
-#[unsafe(no_mangle)]
 #[cfg(target_arch = "wasm32")]
-pub extern "C" fn molt_pipe_transport_new(_fd_bits: u64, _is_read_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_pipe_transport_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    _fd_bits: u64,
+    _is_read_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_exception::<u64>(
             _py,
             BuiltinExc::RuntimeError,
@@ -187,9 +194,12 @@ pub extern "C" fn molt_pipe_transport_new(_fd_bits: u64, _is_read_bits: u64) -> 
 /// Get the file descriptor from a pipe transport.
 ///
 /// Returns a NaN-boxed integer fd, or -1 if the handle is invalid.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pipe_transport_get_fd(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_pipe_transport_get_fd_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = crate::to_i64(crate::obj_from_bits(handle_bits)).unwrap_or(-1);
         let Some(fd) = with_pipe(_py, handle, |state| state.fd as i64) else {
             return MoltObject::from_int(-1).bits();
@@ -201,9 +211,12 @@ pub extern "C" fn molt_pipe_transport_get_fd(handle_bits: u64) -> u64 {
 /// Check if the pipe transport is closing.
 ///
 /// Returns a NaN-boxed bool.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pipe_transport_is_closing(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_pipe_transport_is_closing_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = crate::to_i64(crate::obj_from_bits(handle_bits)).unwrap_or(-1);
         let Some(closing) = with_pipe(_py, handle, |state| state.closing) else {
             return MoltObject::from_bool(true).bits();
@@ -217,10 +230,13 @@ pub extern "C" fn molt_pipe_transport_is_closing(handle_bits: u64) -> u64 {
 /// Marks the transport as closing and closes the underlying fd.
 /// For write pipes, any buffered data is flushed first.
 /// Returns None.
-#[unsafe(no_mangle)]
+
 #[cfg(not(target_arch = "wasm32"))]
-pub extern "C" fn molt_pipe_transport_close(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_pipe_transport_close_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = crate::to_i64(crate::obj_from_bits(handle_bits)).unwrap_or(-1);
         let mut map = pipe_transport_registry(_py).transports.lock().unwrap();
         if let Some(state) = map.get_mut(&handle) {
@@ -260,10 +276,12 @@ fn close_pipe_transport_state(state: &mut PipeTransportState) {
     }
 }
 
-#[unsafe(no_mangle)]
 #[cfg(target_arch = "wasm32")]
-pub extern "C" fn molt_pipe_transport_close(_handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_pipe_transport_close_attached_body(
+    _py: &crate::PyToken<'_>,
+    _handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_exception::<u64>(
             _py,
             BuiltinExc::RuntimeError,
@@ -275,9 +293,12 @@ pub extern "C" fn molt_pipe_transport_close(_handle_bits: u64) -> u64 {
 /// Pause reading on a read pipe transport.
 ///
 /// Returns None. Raises RuntimeError if the transport is a write pipe.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pipe_transport_pause_reading(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_pipe_transport_pause_reading_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = crate::to_i64(crate::obj_from_bits(handle_bits)).unwrap_or(-1);
         let Some(result) = with_pipe(_py, handle, |state| {
             if !state.is_read {
@@ -305,9 +326,12 @@ pub extern "C" fn molt_pipe_transport_pause_reading(handle_bits: u64) -> u64 {
 /// Resume reading on a read pipe transport.
 ///
 /// Returns None. Raises RuntimeError if the transport is a write pipe.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pipe_transport_resume_reading(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_pipe_transport_resume_reading_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = crate::to_i64(crate::obj_from_bits(handle_bits)).unwrap_or(-1);
         let Some(result) = with_pipe(_py, handle, |state| {
             if !state.is_read {
@@ -338,10 +362,14 @@ pub extern "C" fn molt_pipe_transport_resume_reading(handle_bits: u64) -> u64 {
 ///
 /// The data is written directly to the fd if possible; any remainder that would
 /// block is buffered internally. Returns None.
-#[unsafe(no_mangle)]
+
 #[cfg(not(target_arch = "wasm32"))]
-pub extern "C" fn molt_pipe_transport_write(handle_bits: u64, data_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_pipe_transport_write_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    data_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = crate::to_i64(crate::obj_from_bits(handle_bits)).unwrap_or(-1);
         // Extract bytes from the data object.
         let data = match pipe_require_bytes_slice(_py, data_bits) {
@@ -399,10 +427,13 @@ pub extern "C" fn molt_pipe_transport_write(handle_bits: u64, data_bits: u64) ->
     })
 }
 
-#[unsafe(no_mangle)]
 #[cfg(target_arch = "wasm32")]
-pub extern "C" fn molt_pipe_transport_write(_handle_bits: u64, _data_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_pipe_transport_write_attached_body(
+    _py: &crate::PyToken<'_>,
+    _handle_bits: u64,
+    _data_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_exception::<u64>(
             _py,
             BuiltinExc::RuntimeError,
@@ -414,9 +445,12 @@ pub extern "C" fn molt_pipe_transport_write(_handle_bits: u64, _data_bits: u64) 
 /// Get the write buffer size for a pipe transport.
 ///
 /// Returns a NaN-boxed integer (total bytes buffered).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pipe_transport_get_write_buffer_size(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_pipe_transport_get_write_buffer_size_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = crate::to_i64(crate::obj_from_bits(handle_bits)).unwrap_or(-1);
         let Some(size) = with_pipe(_py, handle, |state| {
             state
@@ -434,18 +468,23 @@ pub extern "C" fn molt_pipe_transport_get_write_buffer_size(handle_bits: u64) ->
 /// Drop a pipe transport handle, removing it from the registry.
 /// If the transport is not yet closed, it is closed first (native only).
 /// On WASM, simply removes from the registry (no fd to close).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pipe_transport_drop(handle_bits: u64) -> u64 {
+
+pub(crate) fn molt_pipe_transport_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
     // Close first to flush any pending writes and release the fd.
     // On WASM, skip close since pipe transports cannot be created there.
     #[cfg(not(target_arch = "wasm32"))]
     {
-        molt_pipe_transport_close(handle_bits);
+        molt_pipe_transport_close_attached_body(_py, handle_bits);
     }
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = crate::to_i64(crate::obj_from_bits(handle_bits)).unwrap_or(-1);
         let mut map = pipe_transport_registry(_py).transports.lock().unwrap();
         map.remove(&handle);
         MoltObject::none().bits()
     })
 }
+
+include!("../../attached_exports_generated/async_rt/event_loop/pipe_transport.rs");

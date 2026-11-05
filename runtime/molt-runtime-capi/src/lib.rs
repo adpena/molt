@@ -162,7 +162,7 @@ pub unsafe fn exact_bytes(
         if !std::ptr::eq(class, &raw mut molt_cpython_abi::abi_types::PyBytes_Type) {
             return Ok(None);
         }
-        Ok(molt_runtime_core::rt_bytes_as_slice(bits))
+        Ok(molt_runtime_core::rt_bytes_as_slice(_py, bits))
     }
 }
 

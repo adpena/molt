@@ -246,17 +246,15 @@ impl FormatBuffer {
     }
 }
 
-#[unsafe(no_mangle)]
 /// Print a bare newline to stdout (used by the `print_newline` op).
-pub extern "C" fn molt_print_newline() {
+pub(crate) fn molt_print_newline_attached_body(_py: &crate::PyToken<'_>) {
     use std::io::Write;
     let _ = std::io::stdout().write_all(b"\n");
     let _ = std::io::stdout().flush();
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_print_obj(val: u64) {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_print_obj_attached_body(_py: &crate::PyToken<'_>, val: u64) {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let args_ptr = alloc_tuple(_py, &[val]);
         if args_ptr.is_null() {
             return;
@@ -264,17 +262,18 @@ pub extern "C" fn molt_print_obj(val: u64) {
         let args_bits = MoltObject::from_ptr(args_ptr).bits();
         let none_bits = MoltObject::none().bits();
         let flush_bits = MoltObject::from_bool(true).bits();
-        let res_bits = molt_print_builtin(args_bits, none_bits, none_bits, none_bits, flush_bits);
+        let res_bits = molt_print_builtin_attached_body(
+            _py, args_bits, none_bits, none_bits, none_bits, flush_bits,
+        );
         dec_ref_bits(_py, res_bits);
         dec_ref_bits(_py, args_bits);
     })
 }
 
-#[unsafe(no_mangle)]
 /// Print a string to stderr followed by newline.  Used by the compiler to
 /// emit runtime warnings (DeprecationWarning, etc.) in CPython's format.
-pub extern "C" fn molt_warn_stderr(msg_bits: u64) {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_warn_stderr_attached_body(_py: &crate::PyToken<'_>, msg_bits: u64) {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(msg_bits);
         if let Some(s) = string_obj_to_owned(obj) {
             // Flush stdout first to ensure correct ordering when stdout and
@@ -468,7 +467,9 @@ pub(crate) fn format_diagnostic_type_name_bytes(py: &PyToken<'_>, obj: MoltObjec
             crate::cpython_abi_hooks::propagate_native_failure(py, "diagnostic type name");
             return Vec::new();
         };
-        let _owner = obj_from_bits(bits).as_ptr().map(PtrDropGuard::preserving);
+        let _owner = obj_from_bits(bits)
+            .as_ptr()
+            .map(|__ptr| PtrDropGuard::preserving(py, __ptr));
         return string_obj_bytes(obj_from_bits(bits)).unwrap_or_else(|| {
             raise_exception::<()>(
                 py,
@@ -671,7 +672,7 @@ pub(crate) struct ReprGuard {
 
 impl ReprGuard {
     pub(crate) fn new(_py: &PyToken<'_>, ptr: *mut u8) -> Self {
-        if !repr_depth_enter() {
+        if !repr_depth_enter(_py) {
             let _ = raise_exception::<u64>(
                 _py,
                 BuiltinExc::RecursionError,
@@ -730,8 +731,8 @@ impl Drop for ReprGuard {
     }
 }
 
-fn repr_depth_enter() -> bool {
-    let limit = recursion_limit_get();
+fn repr_depth_enter(py: &PyToken<'_>) -> bool {
+    let limit = recursion_limit_get(py);
     REPR_DEPTH.with(|depth| {
         let current = depth.get();
         if current + 1 > limit {
@@ -773,8 +774,10 @@ fn format_default_object_repr(py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
 
 /// The declaring object slot must not redispatch __repr__ on its receiver.
 /// Generic repr() is a separate entry point; object.__str__ delegates to it.
-pub(crate) extern "C" fn object_repr_slot(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn object_repr_slot(__context: u64, bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let rendered = match obj_from_bits(bits).as_ptr() {
             Some(ptr) => format_default_object_repr(py, ptr),
             None => format!(
@@ -790,8 +793,10 @@ pub(crate) extern "C" fn object_repr_slot(bits: u64) -> u64 {
     })
 }
 
-pub(crate) extern "C" fn object_str_slot(bits: u64) -> u64 {
-    molt_repr_from_obj(bits)
+pub(crate) extern "C" fn object_str_slot(__context: u64, bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    molt_repr_from_obj_attached_body(__attached_py, bits)
 }
 
 /// The native renderers whose subclass slots must run before storage fast paths.
@@ -842,8 +847,10 @@ unsafe fn string_str_output(py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
 }
 
 /// Explicit str.__str__ uses the declaring slot and never redispatches.
-pub(crate) extern "C" fn string_str_slot(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn string_str_slot(__context: u64, bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(ptr) = obj_from_bits(bits)
             .as_ptr()
             .filter(|ptr| unsafe { object_type_id(*ptr) } == TYPE_ID_STRING)
@@ -970,7 +977,10 @@ pub(crate) unsafe fn try_format_special_method_bits(
                         && !super::ops_sys::runtime_target_at_least(py, 3, 14)
                     {
                         clear_exception(py);
-                        return Some(object_repr_slot(MoltObject::from_ptr(ptr).bits()));
+                        return Some(object_repr_slot(
+                            py.attached_context(),
+                            MoltObject::from_ptr(ptr).bits(),
+                        ));
                     }
                     return Some(MoltObject::none().bits());
                 }
@@ -1083,9 +1093,12 @@ unsafe fn dict_repr_contents(
             let (key, value) = (row.key, row.value);
             inc_ref_bits(py, key);
             inc_ref_bits(py, value);
-            let _key_owner =
-                PtrDropGuard::new(obj_from_bits(key).as_ptr().unwrap_or(std::ptr::null_mut()));
+            let _key_owner = PtrDropGuard::new(
+                py,
+                obj_from_bits(key).as_ptr().unwrap_or(std::ptr::null_mut()),
+            );
             let _value_owner = PtrDropGuard::new(
+                py,
                 obj_from_bits(value)
                     .as_ptr()
                     .unwrap_or(std::ptr::null_mut()),
@@ -1109,8 +1122,10 @@ unsafe fn dict_repr_contents(
     }
 }
 
-pub(crate) extern "C" fn dict_repr_slot(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn dict_repr_slot(__context: u64, bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let backing = match crate::object::ops::dict_backing_bits(py, bits) {
             Ok(Some(backing)) => backing,
             Err(()) => return MoltObject::none().bits(),
@@ -1130,7 +1145,7 @@ pub(crate) extern "C" fn dict_repr_slot(bits: u64) -> u64 {
             .expect("admitted dict backing");
         // The physical table remains owned through arbitrary element repr calls.
         inc_ref_bits(py, backing);
-        let _backing_owner = PtrDropGuard::new(storage);
+        let _backing_owner = PtrDropGuard::new(py, storage);
         let rendered = unsafe { dict_repr_contents(py, receiver, storage) };
         if exception_pending(py) {
             return MoltObject::none().bits();
@@ -1163,8 +1178,10 @@ unsafe fn list_repr_contents(py: &PyToken<'_>, ptr: *mut u8) -> FormatOutput {
     out.into()
 }
 
-pub(crate) extern "C" fn list_repr_slot(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn list_repr_slot(__context: u64, bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(storage) = crate::object::ops_list::list_receiver(py, bits, "__repr__") else {
             return MoltObject::none().bits();
         };
@@ -1850,15 +1867,23 @@ mod tests {
 
     static SEQUENCE_FINALIZERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-    extern "C" fn sequence_retirement_finalizer(_object: u64) -> u64 {
+    extern "C" fn sequence_retirement_finalizer(__context: u64, _object: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         SEQUENCE_FINALIZERS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        crate::with_gil_entry_nopanic!(py, {
+        {
+            let py = __py;
             crate::raise_exception::<u64>(
                 py,
                 crate::BuiltinExc::ValueError,
                 "retired sequence element",
             )
-        })
+        }
     }
 
     fn retire_sequence_owner<T>(py: &crate::PyToken<'_>, owner: T, pending: bool) {
@@ -1880,7 +1905,7 @@ mod tests {
         );
         assert_eq!(crate::exception_last_bits_noinc(py), selected);
         assert_eq!(crate::exception_pending(py), pending);
-        crate::molt_exception_clear();
+        crate::molt_exception_clear_attached_body(py);
     }
 
     #[test]
@@ -1891,8 +1916,8 @@ mod tests {
         assert!(crate::cpython_abi_hooks::register_cpython_hooks());
         crate::with_gil_entry_nopanic!(py, {
             let name = dynamic_attr_name_bits(py, b"SequenceRetirement").unwrap();
-            let class = crate::molt_class_new(name);
-            crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+            let class = crate::molt_class_new_attached_body(py, name);
+            crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).object);
             let finalizer_name = dynamic_attr_name_bits(py, b"__del__").unwrap();
             let finalizer = MoltObject::from_ptr(alloc_runtime_function_obj(
                 py,
@@ -1903,7 +1928,7 @@ mod tests {
                 1,
             ))
             .bits();
-            crate::molt_set_attr_name(class, finalizer_name, finalizer);
+            crate::molt_set_attr_name_attached_body(py, class, finalizer_name, finalizer);
             let class_ptr = obj_from_bits(class).as_ptr().unwrap();
             unsafe {
                 crate::object::class_finish_definition(py, class_ptr).unwrap();
@@ -1965,7 +1990,7 @@ mod tests {
             let dict = alloc_dict_with_pairs(py, &bits);
             assert!(!dict.is_null());
             let dict_bits = MoltObject::from_ptr(dict).bits();
-            let cases: [(extern "C" fn(u64) -> u64, &str); 3] = [
+            let cases: [(unsafe extern "C" fn(u64, u64) -> u64, &str); 3] = [
                 (
                     crate::object::ops_dict::molt_dict_keys,
                     "dict_keys(['a', 'b'])",
@@ -1980,7 +2005,7 @@ mod tests {
                 ),
             ];
             for (make_view, expected) in cases {
-                let view = make_view(dict_bits);
+                let view = unsafe { make_view(py.attached_context(), dict_bits) };
                 assert!(!obj_from_bits(view).is_none());
                 let refs = bits.map(refcount);
                 assert_eq!(super::format_obj(py, obj_from_bits(view)), expected);
@@ -1995,14 +2020,22 @@ mod tests {
         });
     }
 
-    extern "C" fn dict_view_element_repr_raises(_self_bits: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn dict_view_element_repr_raises(__context: u64, _self_bits: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             crate::raise_exception::<u64>(
                 py,
                 crate::BuiltinExc::ValueError,
                 "dict view element repr failed",
             )
-        })
+        }
     }
 
     #[test]
@@ -2012,8 +2045,8 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let name = dynamic_attr_name_bits(py, b"DictViewReprError").unwrap();
-            let class = crate::molt_class_new(name);
-            crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+            let class = crate::molt_class_new_attached_body(py, name);
+            crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).object);
             let class_ptr = obj_from_bits(class).as_ptr().unwrap();
             unsafe { crate::object::class_finish_definition(py, class_ptr) }.unwrap();
             let repr_name = dynamic_attr_name_bits(py, b"__repr__").unwrap();
@@ -2027,11 +2060,11 @@ mod tests {
             );
             assert!(!function.is_null());
             let function_bits = MoltObject::from_ptr(function).bits();
-            crate::molt_set_attr_name(class, repr_name, function_bits);
+            crate::molt_set_attr_name_attached_body(py, class, repr_name, function_bits);
             let element = unsafe { crate::alloc_instance_for_class(py, class_ptr) };
             assert!(!obj_from_bits(element).is_none());
             assert!(!crate::exception_pending(py));
-            let cases: [(extern "C" fn(u64) -> u64, bool, &str); 4] = [
+            let cases: [(unsafe extern "C" fn(u64, u64) -> u64, bool, &str); 4] = [
                 (
                     crate::object::ops_dict::molt_dict_keys,
                     true,
@@ -2063,7 +2096,7 @@ mod tests {
                 let dict = alloc_dict_with_pairs(py, &pair);
                 assert!(!dict.is_null());
                 let dict_bits = MoltObject::from_ptr(dict).bits();
-                let view = make_view(dict_bits);
+                let view = unsafe { make_view(py.attached_context(), dict_bits) };
                 assert!(!crate::exception_pending(py));
                 let refs = refcount(element);
                 let result = super::format_obj_output(py, obj_from_bits(view)).into_bits(py);
@@ -2078,7 +2111,7 @@ mod tests {
                     crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap()),
                     "dict view element repr failed"
                 );
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(py);
                 assert_eq!(
                     refcount(element),
                     refs,
@@ -2102,7 +2135,7 @@ mod tests {
     fn dict_view_repr_preserves_recursive_value_markers() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let cases: [(extern "C" fn(u64) -> u64, &str); 2] = [
+            let cases: [(unsafe extern "C" fn(u64, u64) -> u64, &str); 2] = [
                 (
                     crate::object::ops_dict::molt_dict_values,
                     "dict_values([...])",
@@ -2116,7 +2149,7 @@ mod tests {
                 let dict = alloc_dict_with_pairs(py, &[]);
                 assert!(!dict.is_null());
                 let dict_bits = MoltObject::from_ptr(dict).bits();
-                let view = make_view(dict_bits);
+                let view = unsafe { make_view(py.attached_context(), dict_bits) };
                 unsafe {
                     assert!(dict_set_in_place(
                         py,
@@ -2183,7 +2216,8 @@ mod tests {
             ] {
                 let spec =
                     super::parse_format_spec(unicode_data(py), spec.as_bytes(), false).unwrap();
-                let bits = crate::molt_complex_from_obj(
+                let bits = crate::molt_complex_from_obj_attached_body(
+                    py,
                     MoltObject::from_float(re).bits(),
                     MoltObject::from_float(im).bits(),
                     MoltObject::from_bool(true).bits(),
@@ -2201,7 +2235,11 @@ mod tests {
     #[test]
     fn module_repr_includes_file_when_present() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        let _ = crate::molt_exception_clear();
+        let _ = {
+            crate::with_gil_entry_nopanic!(__host_py, {
+                crate::molt_exception_clear_attached_body(__host_py)
+            })
+        };
         crate::with_gil_entry_nopanic!(_py, {
             let name_ptr = alloc_string(_py, b"pathlib");
             assert!(!name_ptr.is_null());
@@ -2233,7 +2271,11 @@ mod tests {
     #[test]
     fn type_alias_and_object_repr_release_namespace_lookup_keys() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        let _ = crate::molt_exception_clear();
+        let _ = {
+            crate::with_gil_entry_nopanic!(__host_py, {
+                crate::molt_exception_clear_attached_body(__host_py)
+            })
+        };
         crate::with_gil_entry_nopanic!(_py, {
             let name_ptr = alloc_string(_py, b"C");
             assert!(!name_ptr.is_null());
@@ -2260,7 +2302,8 @@ mod tests {
                     MoltObject::from_ptr(qual_ptr).bits(),
                 ));
             }
-            let class_bits = crate::builtins::types::molt_type_new(
+            let class_bits = crate::builtins::types::molt_type_new_attached_body(
+                _py,
                 crate::builtin_classes(_py).type_obj,
                 name_bits,
                 MoltObject::none().bits(),
@@ -3871,3 +3914,5 @@ pub(crate) fn format_with_spec(
         }
     }
 }
+
+include!("../attached_exports_generated/object/ops_format.rs");

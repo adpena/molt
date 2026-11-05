@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use molt_ir::OpKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
@@ -50,7 +52,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             let pair = self
                 .backend
                 .builder
-                .build_call(decl, &[lhs.into(), rhs.into()], "checked_add")
+                .build_execution_call(decl, &[lhs.into(), rhs.into()], "checked_add")
                 .unwrap()
                 .try_as_basic_value()
                 .unwrap_basic()
@@ -130,7 +132,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             let pair = self
                 .backend
                 .builder
-                .build_call(decl, &[lhs.into(), rhs.into()], "checked_mul")
+                .build_execution_call(decl, &[lhs.into(), rhs.into()], "checked_mul")
                 .unwrap()
                 .try_as_basic_value()
                 .unwrap_basic()
@@ -856,7 +858,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let truthy = self
             .backend
             .builder
-            .build_call(truthy_fn, &[val.into()], "truthy")
+            .build_execution_call(truthy_fn, &[val.into()], "truthy")
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic();
@@ -1040,7 +1042,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let truthy = self
                     .backend
                     .builder
-                    .build_call(truthy_fn, &[bits.into()], "truthy")
+                    .build_execution_call(truthy_fn, &[bits.into()], "truthy")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic()

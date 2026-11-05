@@ -145,64 +145,112 @@ fn inquiry_binary_method(py: &crate::PyToken<'_>, class: u64, name: &[u8], targe
     dec_ref_bits(py, method);
 }
 
-extern "C" fn inquiry_binary_result(receiver: u64, _needle: u64) -> u64 {
-    inquiry_result(receiver)
+extern "C" fn inquiry_binary_result(__context: u64, receiver: u64, _needle: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    inquiry_result(__context, receiver)
 }
 
-extern "C" fn inquiry_raise_original(receiver: u64) -> u64 {
-    with_gil(|py| {
-        let failure =
-            crate::builtins::exceptions::ExceptionValue::adopt(&py, inquiry_result(receiver));
-        crate::molt_raise(failure.bits())
-    })
+extern "C" fn inquiry_raise_original(__context: u64, receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        {
+            let failure = crate::builtins::exceptions::ExceptionValue::adopt(
+                &py,
+                inquiry_result(__context, receiver),
+            );
+            crate::molt_raise_attached_body(py, failure.bits())
+        }
+    }
 }
 
-extern "C" fn inquiry_binary_raise_original(receiver: u64, _needle: u64) -> u64 {
-    inquiry_raise_original(receiver)
+extern "C" fn inquiry_binary_raise_original(__context: u64, receiver: u64, _needle: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    inquiry_raise_original(__context, receiver)
 }
 
-extern "C" fn inquiry_self(receiver: u64) -> u64 {
-    with_gil(|py| inc_ref_bits(&py, receiver));
+extern "C" fn inquiry_self(__context: u64, receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        inc_ref_bits(&py, receiver)
+    };
     receiver
 }
 
-extern "C" fn inquiry_mutating_equal(receiver: u64, needle: u64) -> u64 {
-    with_gil(|py| {
-        let list =
-            crate::builtins::exceptions::ExceptionValue::adopt(&py, inquiry_result(receiver));
-        let class = crate::type_of_bits(&py, receiver);
-        let name = crate::dynamic_attr_name_bits(&py, b"inquiry_action").unwrap();
-        let action = crate::molt_get_attr_name(receiver, name);
-        dec_ref_bits(&py, name);
-        let action_number = MoltObject::from_bits(action).as_int().unwrap();
-        dec_ref_bits(&py, action);
-        set_value(
-            &py,
-            class,
-            b"inquiry_action",
-            MoltObject::from_int(0).bits(),
-        );
-        match action_number {
-            1 | 2 | 4 => {
-                crate::molt_list_clear(list.bits());
-                if action_number == 2 {
-                    crate::molt_list_append(list.bits(), receiver);
-                }
-            }
-            3 => {
-                crate::molt_list_append(list.bits(), needle);
-            }
-            _ => {}
-        }
-        if action_number == 4 {
-            let name = crate::dynamic_attr_name_bits(&py, b"inquiry_error").unwrap();
-            let failure = crate::molt_get_attr_name(receiver, name);
+extern "C" fn inquiry_mutating_equal(__context: u64, receiver: u64, needle: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        {
+            let list = crate::builtins::exceptions::ExceptionValue::adopt(
+                &py,
+                inquiry_result(__context, receiver),
+            );
+            let class = crate::type_of_bits(&py, receiver);
+            let name = crate::dynamic_attr_name_bits(&py, b"inquiry_action").unwrap();
+            let action = crate::molt_get_attr_name_attached_body(py, receiver, name);
             dec_ref_bits(&py, name);
-            let failure = crate::builtins::exceptions::ExceptionValue::adopt(&py, failure);
-            return crate::molt_raise(failure.bits());
+            let action_number = MoltObject::from_bits(action).as_int().unwrap();
+            dec_ref_bits(&py, action);
+            set_value(
+                &py,
+                class,
+                b"inquiry_action",
+                MoltObject::from_int(0).bits(),
+            );
+            match action_number {
+                1 | 2 | 4 => {
+                    crate::molt_list_clear_attached_body(py, list.bits());
+                    if action_number == 2 {
+                        crate::molt_list_append_attached_body(py, list.bits(), receiver);
+                    }
+                }
+                3 => {
+                    crate::molt_list_append_attached_body(py, list.bits(), needle);
+                }
+                _ => {}
+            }
+            if action_number == 4 {
+                let name = crate::dynamic_attr_name_bits(&py, b"inquiry_error").unwrap();
+                let failure = crate::molt_get_attr_name_attached_body(py, receiver, name);
+                dec_ref_bits(&py, name);
+                let failure = crate::builtins::exceptions::ExceptionValue::adopt(&py, failure);
+                return crate::molt_raise_attached_body(py, failure.bits());
+            }
+            MoltObject::from_bool(false).bits()
         }
-        MoltObject::from_bool(false).bits()
-    })
+    }
 }
 
 #[test]
@@ -310,7 +358,12 @@ fn c_sequence_contains_shares_runtime_special_lookup_and_builtin_membership() {
             let range = mapping_owned(
                 &py,
                 &mut owners,
-                crate::molt_range_new(start, stop, MoltObject::from_int(2).bits()),
+                crate::molt_range_new_attached_body(
+                    py,
+                    start,
+                    stop,
+                    MoltObject::from_int(2).bits(),
+                ),
             );
             let range_view = mapping_view(range);
             let negative = mapping_view(MoltObject::from_int(-1).bits());
@@ -377,10 +430,13 @@ fn c_sequence_search_owns_live_elements_across_clear_shrink_and_growth() {
                         probe(view.as_ptr(), needle.as_ptr(), operation)
                     } else {
                         let bits = match operation {
-                            0 => crate::molt_contains(list, needle_bits),
-                            1 => crate::molt_list_count(list, needle_bits),
-                            _ if consumer == 2 => crate::molt_list_index(list, needle_bits),
-                            _ => crate::molt_list_index_range(
+                            0 => crate::molt_contains_attached_body(py, list, needle_bits),
+                            1 => crate::molt_list_count_attached_body(py, list, needle_bits),
+                            _ if consumer == 2 => {
+                                crate::molt_list_index_attached_body(py, list, needle_bits)
+                            }
+                            _ => crate::molt_list_index_range_attached_body(
+                                py,
                                 list,
                                 needle_bits,
                                 MoltObject::from_int(0).bits(),
@@ -471,7 +527,7 @@ fn c_sequence_search_owns_live_elements_across_clear_shrink_and_growth() {
         }
         // A container may also be its own needle; identity must terminate
         // before recursive equality and cleanup must retire the cyclic edge.
-        crate::molt_list_append(list, list);
+        crate::molt_list_append_attached_body(py, list, list);
         for probe in [
             molt_linked_type_identity_probe_sequence_search,
             molt_public_type_identity_probe_sequence_search,
@@ -480,7 +536,7 @@ fn c_sequence_search_owns_live_elements_across_clear_shrink_and_growth() {
             assert_eq!(probe(view.as_ptr(), view.as_ptr(), 1), 1);
             assert_eq!(probe(view.as_ptr(), view.as_ptr(), 2), 1);
         }
-        crate::molt_list_clear(list);
+        crate::molt_list_clear_attached_body(py, list);
         assert!(!crate::exception_pending(&py));
     });
 }
@@ -492,8 +548,12 @@ fn c_sequence_search_preserves_original_iteration_equality_and_truth_errors() {
     with_gil(|py| unsafe {
         let mut owners = Vec::new();
         crate::raise_exception::<()>(&py, BuiltinExc::LookupError, "original inquiry failure");
-        let failure = mapping_owned(&py, &mut owners, crate::molt_exception_last());
-        crate::molt_exception_clear();
+        let failure = mapping_owned(
+            &py,
+            &mut owners,
+            crate::molt_exception_last_attached_body(py),
+        );
+        crate::molt_exception_clear_attached_body(py);
         let failure_view = mapping_view(failure);
         let needle = mapping_view(MoltObject::from_int(99).bits());
         for probe in [
@@ -575,7 +635,7 @@ fn c_sequence_search_preserves_original_iteration_equality_and_truth_errors() {
                 let view = mapping_view(container);
                 for operation in 0..if stage >= 3 { 1 } else { 3 } {
                     if stage == 2 {
-                        crate::molt_list_append(container, instance);
+                        crate::molt_list_append_attached_body(py, container, instance);
                         set_value(&py, class, b"inquiry_result", container);
                         set_value(
                             &py,
@@ -602,24 +662,52 @@ fn c_sequence_search_preserves_original_iteration_equality_and_truth_errors() {
     });
 }
 
-extern "C" fn inquiry_memory_equal(receiver: u64, candidate: u64) -> u64 {
-    with_gil(|py| {
-        let log = crate::builtins::exceptions::ExceptionValue::adopt(&py, inquiry_result(receiver));
-        crate::molt_list_append(log.bits(), candidate);
-        MoltObject::from_bool(MoltObject::from_bits(candidate).as_int() == Some(98)).bits()
-    })
+extern "C" fn inquiry_memory_equal(__context: u64, receiver: u64, candidate: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        {
+            let log = crate::builtins::exceptions::ExceptionValue::adopt(
+                &py,
+                inquiry_result(__context, receiver),
+            );
+            crate::molt_list_append_attached_body(py, log.bits(), candidate);
+            MoltObject::from_bool(MoltObject::from_bits(candidate).as_int() == Some(98)).bits()
+        }
+    }
 }
 
-extern "C" fn inquiry_memory_release_equal(receiver: u64, candidate: u64) -> u64 {
-    with_gil(|py| unsafe {
-        let log = crate::builtins::exceptions::ExceptionValue::adopt(&py, inquiry_result(receiver));
-        let view =
-            crate::object::seq_access::item(MoltObject::from_bits(log.bits()).as_ptr().unwrap(), 0)
-                .unwrap();
-        crate::molt_list_append(log.bits(), candidate);
-        crate::molt_memoryview_release(view);
-        MoltObject::from_bool(false).bits()
-    })
+extern "C" fn inquiry_memory_release_equal(__context: u64, receiver: u64, candidate: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        unsafe {
+            let log = crate::builtins::exceptions::ExceptionValue::adopt(
+                &py,
+                inquiry_result(__context, receiver),
+            );
+            let view = crate::object::seq_access::item(
+                MoltObject::from_bits(log.bits()).as_ptr().unwrap(),
+                0,
+            )
+            .unwrap();
+            crate::molt_list_append_attached_body(py, log.bits(), candidate);
+            crate::molt_memoryview_release_attached_body(py, view);
+            MoltObject::from_bool(false).bits()
+        }
+    }
 }
 
 #[test]
@@ -633,7 +721,11 @@ fn c_sequence_memoryview_membership_uses_typed_elements_and_original_errors() {
             &mut owners,
             MoltObject::from_ptr(alloc_bytes(&py, b"abcd")).bits(),
         );
-        let view = mapping_owned(&py, &mut owners, crate::molt_memoryview_new(bytes));
+        let view = mapping_owned(
+            &py,
+            &mut owners,
+            crate::molt_memoryview_new_attached_body(py, bytes),
+        );
         let substring = mapping_owned(
             &py,
             &mut owners,
@@ -642,20 +734,29 @@ fn c_sequence_memoryview_membership_uses_typed_elements_and_original_errors() {
         let step = mapping_owned(
             &py,
             &mut owners,
-            crate::molt_slice_new(
+            crate::molt_slice_new_attached_body(
+                py,
                 MoltObject::none().bits(),
                 MoltObject::none().bits(),
                 MoltObject::from_int(-2).bits(),
             ),
         );
-        let strided = mapping_owned(&py, &mut owners, crate::molt_index(view, step));
+        let strided = mapping_owned(
+            &py,
+            &mut owners,
+            crate::molt_index_attached_body(py, view, step),
+        );
         let words = [300u16.to_ne_bytes(), 700u16.to_ne_bytes()].concat();
         let packed = mapping_owned(
             &py,
             &mut owners,
             MoltObject::from_ptr(alloc_bytes(&py, &words)).bits(),
         );
-        let packed_view = mapping_owned(&py, &mut owners, crate::molt_memoryview_new(packed));
+        let packed_view = mapping_owned(
+            &py,
+            &mut owners,
+            crate::molt_memoryview_new_attached_body(py, packed),
+        );
         let format = mapping_owned(
             &py,
             &mut owners,
@@ -664,7 +765,8 @@ fn c_sequence_memoryview_membership_uses_typed_elements_and_original_errors() {
         let typed = mapping_owned(
             &py,
             &mut owners,
-            crate::molt_memoryview_cast(
+            crate::molt_memoryview_cast_attached_body(
+                py,
                 packed_view,
                 format,
                 MoltObject::none().bits(),
@@ -732,8 +834,12 @@ fn c_sequence_memoryview_membership_uses_typed_elements_and_original_errors() {
                 BuiltinExc::LookupError,
                 "memoryview equality identity",
             );
-            let failure = mapping_owned(&py, &mut owners, crate::molt_exception_last());
-            crate::molt_exception_clear();
+            let failure = mapping_owned(
+                &py,
+                &mut owners,
+                crate::molt_exception_last_attached_body(py),
+            );
+            crate::molt_exception_clear_attached_body(py);
             set_value(&py, class, b"inquiry_result", failure);
             inquiry_binary_method(
                 &py,
@@ -745,8 +851,12 @@ fn c_sequence_memoryview_membership_uses_typed_elements_and_original_errors() {
             let error = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
             let original = mapping_view(failure);
             assert_eq!(error.as_ptr(), original.as_ptr());
-            let released = mapping_owned(&py, &mut owners, crate::molt_memoryview_new(bytes));
-            crate::molt_memoryview_release(released);
+            let released = mapping_owned(
+                &py,
+                &mut owners,
+                crate::molt_memoryview_new_attached_body(py, bytes),
+            );
+            crate::molt_memoryview_release_attached_body(py, released);
             let released_view = mapping_view(released);
             assert_eq!(probe(released_view.as_ptr(), last.as_ptr(), 0), -1);
             assert_eq!(
@@ -770,7 +880,11 @@ fn c_sequence_memoryview_membership_uses_typed_elements_and_original_errors() {
                     &mut owners,
                     MoltObject::from_ptr(alloc_bytes(&py, payload)).bits(),
                 );
-                let releasing = mapping_owned(&py, &mut owners, crate::molt_memoryview_new(data));
+                let releasing = mapping_owned(
+                    &py,
+                    &mut owners,
+                    crate::molt_memoryview_new_attached_body(py, data),
+                );
                 let log = mapping_owned(
                     &py,
                     &mut owners,
@@ -887,7 +1001,11 @@ fn c_sequence_bytes_membership_shares_index_and_simple_buffer_admission() {
             &mut owners,
             MoltObject::from_ptr(alloc_bytes(&py, b"ab")).bits(),
         );
-        let buffer = mapping_owned(&py, &mut owners, crate::molt_memoryview_new(pattern));
+        let buffer = mapping_owned(
+            &py,
+            &mut owners,
+            crate::molt_memoryview_new_attached_body(py, pattern),
+        );
         let index_class = mapping_owned(
             &py,
             &mut owners,
@@ -910,14 +1028,23 @@ fn c_sequence_bytes_membership_shares_index_and_simple_buffer_admission() {
         let step = mapping_owned(
             &py,
             &mut owners,
-            crate::molt_slice_new(
+            crate::molt_slice_new_attached_body(
+                py,
                 MoltObject::none().bits(),
                 MoltObject::none().bits(),
                 MoltObject::from_int(2).bits(),
             ),
         );
-        let base_view = mapping_owned(&py, &mut owners, crate::molt_memoryview_new(bytes));
-        let noncontiguous = mapping_owned(&py, &mut owners, crate::molt_index(base_view, step));
+        let base_view = mapping_owned(
+            &py,
+            &mut owners,
+            crate::molt_memoryview_new_attached_body(py, bytes),
+        );
+        let noncontiguous = mapping_owned(
+            &py,
+            &mut owners,
+            crate::molt_index_attached_body(py, base_view, step),
+        );
         for probe in [
             molt_linked_type_identity_probe_sequence_search,
             molt_public_type_identity_probe_sequence_search,
@@ -1002,7 +1129,10 @@ fn c_sequence_set_membership_distinguishes_python_and_exact_key_policies() {
             ] {
                 assert_eq!(probe(container_view.as_ptr(), needle_view.as_ptr(), 0), 1);
                 assert_eq!(
-                    MoltObject::from_bits(crate::molt_set_contains(container, needle)).as_bool(),
+                    MoltObject::from_bits(crate::molt_set_contains_attached_body(
+                        py, container, needle
+                    ))
+                    .as_bool(),
                     Some(true)
                 );
                 assert_eq!(probe(container_view.as_ptr(), needle_view.as_ptr(), 3), -1);
@@ -1029,15 +1159,23 @@ fn c_sequence_set_membership_distinguishes_python_and_exact_key_policies() {
                     errors::PyErr_Clear();
                     assert_eq!(probe(container_view.as_ptr(), needle_view.as_ptr(), 0), 1);
                 }
-                let hash = mapping_owned(&py, &mut owners, crate::molt_hash_builtin(frozen));
+                let hash = mapping_owned(
+                    &py,
+                    &mut owners,
+                    crate::molt_hash_builtin_attached_body(py, frozen),
+                );
                 set_value(&py, custom, b"inquiry_result", hash);
                 let hashable = mapping_owned(&py, &mut owners, construct(&py, custom, singleton));
                 let hashable_view = mapping_view(hashable);
                 assert_eq!(probe(container_view.as_ptr(), hashable_view.as_ptr(), 0), 1);
                 assert_eq!(probe(container_view.as_ptr(), hashable_view.as_ptr(), 3), 1);
                 crate::raise_exception::<()>(&py, BuiltinExc::LookupError, "set hash identity");
-                let failure = mapping_owned(&py, &mut owners, crate::molt_exception_last());
-                crate::molt_exception_clear();
+                let failure = mapping_owned(
+                    &py,
+                    &mut owners,
+                    crate::molt_exception_last_attached_body(py),
+                );
+                crate::molt_exception_clear_attached_body(py);
                 set_value(&py, custom, b"inquiry_result", failure);
                 set_method(
                     &py,
@@ -1061,24 +1199,43 @@ fn c_sequence_set_membership_distinguishes_python_and_exact_key_policies() {
     });
 }
 
-extern "C" fn inquiry_set_collision_hash(_receiver: u64) -> u64 {
+extern "C" fn inquiry_set_collision_hash(__context: u64, _receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::from_int(123).bits()
 }
 
-extern "C" fn inquiry_set_mutating_type_error(receiver: u64, needle: u64) -> u64 {
-    with_gil(|py| unsafe {
-        let state_owner =
-            crate::builtins::exceptions::ExceptionValue::adopt(&py, inquiry_result(receiver));
-        let state = MoltObject::from_bits(state_owner.bits()).as_ptr().unwrap();
-        let container = crate::object::seq_access::item(state, 0).unwrap();
-        let replacement = crate::object::seq_access::item(state, 1).unwrap();
-        let failure = crate::object::seq_access::item(state, 2).unwrap();
-        let log = crate::object::seq_access::item(state, 3).unwrap();
-        crate::molt_list_append(log, needle);
-        crate::molt_set_clear(container);
-        crate::molt_set_add(container, replacement);
-        crate::molt_raise(failure)
-    })
+extern "C" fn inquiry_set_mutating_type_error(__context: u64, receiver: u64, needle: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        unsafe {
+            let state_owner = crate::builtins::exceptions::ExceptionValue::adopt(
+                &py,
+                inquiry_result(__context, receiver),
+            );
+            let state = MoltObject::from_bits(state_owner.bits()).as_ptr().unwrap();
+            let container = crate::object::seq_access::item(state, 0).unwrap();
+            let replacement = crate::object::seq_access::item(state, 1).unwrap();
+            let failure = crate::object::seq_access::item(state, 2).unwrap();
+            let log = crate::object::seq_access::item(state, 3).unwrap();
+            crate::molt_list_append_attached_body(py, log, needle);
+            crate::molt_set_clear_attached_body(py, container);
+            crate::molt_set_add_attached_body(py, container, replacement);
+            crate::molt_raise_attached_body(py, failure)
+        }
+    }
 }
 
 #[test]
@@ -1117,8 +1274,12 @@ fn c_set_membership_reenters_after_mutating_equality_type_error_only_for_python(
         let needle = mapping_owned(&py, &mut owners, construct(&py, needle_class, singleton));
         let needle_view = mapping_view(needle);
         crate::raise_exception::<()>(&py, BuiltinExc::TypeError, "set equality identity");
-        let failure = mapping_owned(&py, &mut owners, crate::molt_exception_last());
-        crate::molt_exception_clear();
+        let failure = mapping_owned(
+            &py,
+            &mut owners,
+            crate::molt_exception_last_attached_body(py),
+        );
+        crate::molt_exception_clear_attached_body(py);
         let original = mapping_view(failure);
         for probe in [
             molt_linked_type_identity_probe_sequence_search,
@@ -1166,7 +1327,7 @@ fn c_set_membership_reenters_after_mutating_equality_type_error_only_for_python(
                         MoltObject::from_bits(stored_class).as_ptr().unwrap(),
                     ),
                 );
-                crate::molt_set_add(container, stored);
+                crate::molt_set_add_attached_body(py, container, stored);
                 assert!(!crate::exception_pending(&py));
                 let container_view = mapping_view(container);
                 assert_eq!(
@@ -1198,20 +1359,32 @@ fn c_set_membership_reenters_after_mutating_equality_type_error_only_for_python(
     });
 }
 
-extern "C" fn inquiry_mutating_bound(receiver: u64) -> u64 {
-    with_gil(|py| unsafe {
-        let state_owner =
-            crate::builtins::exceptions::ExceptionValue::adopt(&py, inquiry_result(receiver));
-        let state = MoltObject::from_bits(state_owner.bits()).as_ptr().unwrap();
-        let list = crate::object::seq_access::item(state, 0).unwrap();
-        let log = crate::object::seq_access::item(state, 1).unwrap();
-        let marker = crate::object::seq_access::item(state, 2).unwrap();
-        let result = crate::object::seq_access::item(state, 3).unwrap();
-        crate::molt_list_append(log, marker);
-        crate::molt_list_append(list, MoltObject::from_int(99).bits());
-        inc_ref_bits(&py, result);
-        result
-    })
+extern "C" fn inquiry_mutating_bound(__context: u64, receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        unsafe {
+            let state_owner = crate::builtins::exceptions::ExceptionValue::adopt(
+                &py,
+                inquiry_result(__context, receiver),
+            );
+            let state = MoltObject::from_bits(state_owner.bits()).as_ptr().unwrap();
+            let list = crate::object::seq_access::item(state, 0).unwrap();
+            let log = crate::object::seq_access::item(state, 1).unwrap();
+            let marker = crate::object::seq_access::item(state, 2).unwrap();
+            let result = crate::object::seq_access::item(state, 3).unwrap();
+            crate::molt_list_append_attached_body(py, log, marker);
+            crate::molt_list_append_attached_body(py, list, MoltObject::from_int(99).bits());
+            inc_ref_bits(&py, result);
+            result
+        }
+    }
 }
 
 #[test]
@@ -1243,16 +1416,25 @@ fn sequence_search_bounds_clip_at_target_width_and_stop_at_first_callback_error(
         for (container, search) in [
             (
                 list,
-                crate::molt_list_index_range as extern "C" fn(u64, u64, u64, u64) -> u64,
+                crate::molt_list_index_range
+                    as unsafe extern "C" fn(u64, u64, u64, u64, u64) -> u64,
             ),
             (
                 tuple,
-                crate::molt_tuple_index_range as extern "C" fn(u64, u64, u64, u64) -> u64,
+                crate::molt_tuple_index_range
+                    as unsafe extern "C" fn(u64, u64, u64, u64, u64) -> u64,
             ),
         ] {
             for (start, stop) in [(MoltObject::from_int(0).bits(), high), (low, high)] {
                 assert_eq!(
-                    MoltObject::from_bits(search(container, value, start, stop)).as_int(),
+                    MoltObject::from_bits(search(
+                        py.attached_context(),
+                        container,
+                        value,
+                        start,
+                        stop
+                    ))
+                    .as_int(),
                     Some(0)
                 );
                 assert!(!crate::exception_pending(&py));
@@ -1268,8 +1450,12 @@ fn sequence_search_bounds_clip_at_target_width_and_stop_at_first_callback_error(
                 inquiry_class(&py, crate::builtin_classes(&py).object, b"__index__"),
             );
             crate::raise_exception::<()>(&py, BuiltinExc::LookupError, "first bound identity");
-            let failure = mapping_owned(&py, &mut owners, crate::molt_exception_last());
-            crate::molt_exception_clear();
+            let failure = mapping_owned(
+                &py,
+                &mut owners,
+                crate::molt_exception_last_attached_body(py),
+            );
+            crate::molt_exception_clear_attached_body(py);
             set_value(&py, start_class, b"inquiry_result", failure);
             set_method(
                 &py,
@@ -1301,7 +1487,7 @@ fn sequence_search_bounds_clip_at_target_width_and_stop_at_first_callback_error(
                 ),
             );
             MAPPING_METHOD_CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
-            let result = search(container, value, start, stop);
+            let result = search(py.attached_context(), container, value, start, stop);
             dec_ref_bits(&py, result);
             let error = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
             let original = mapping_view(failure);
@@ -1364,7 +1550,8 @@ fn sequence_search_bounds_clip_at_target_width_and_stop_at_first_callback_error(
                     ),
                 ));
             }
-            let result = crate::molt_list_index_range(list, value, bounds[0], bounds[1]);
+            let result =
+                crate::molt_list_index_range_attached_body(py, list, value, bounds[0], bounds[1]);
             assert_eq!(MoltObject::from_bits(result).as_int(), Some(expected));
             assert!(!crate::exception_pending(&py));
             let log = MoltObject::from_bits(log).as_ptr().unwrap();
@@ -1386,11 +1573,18 @@ static SET_DISCARD_HASH_CALLS: std::sync::atomic::AtomicUsize =
 static SET_DISCARD_HASH_FAIL_AT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(usize::MAX);
 
-extern "C" fn inquiry_discard_hash(receiver: u64) -> u64 {
+extern "C" fn inquiry_discard_hash(__context: u64, receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     use std::sync::atomic::Ordering::Relaxed;
     let call = SET_DISCARD_HASH_CALLS.fetch_add(1, Relaxed) + 1;
     if call >= SET_DISCARD_HASH_FAIL_AT.load(Relaxed) {
-        inquiry_raise_original(receiver)
+        inquiry_raise_original(__context, receiver)
     } else {
         MoltObject::from_int(123).bits()
     }
@@ -1410,8 +1604,12 @@ fn c_set_discard_hashes_once_and_preserves_first_hash_failure() {
             inquiry_class(&py, classes.object, b"__hash__"),
         );
         crate::raise_exception::<()>(&py, BuiltinExc::LookupError, "discard hash identity");
-        let failure = mapping_owned(&py, &mut owners, crate::molt_exception_last());
-        crate::molt_exception_clear();
+        let failure = mapping_owned(
+            &py,
+            &mut owners,
+            crate::molt_exception_last_attached_body(py),
+        );
+        crate::molt_exception_clear_attached_body(py);
         set_value(&py, class, b"inquiry_result", failure);
         set_method(&py, class, b"__hash__", inquiry_discard_hash as *const ());
         let key = mapping_owned(
@@ -1467,32 +1665,77 @@ fn c_set_discard_hashes_once_and_preserves_first_hash_failure() {
     });
 }
 
-extern "C" fn inquiry_result(receiver: u64) -> u64 {
-    with_gil(|py| {
-        let key = crate::dynamic_attr_name_bits(&py, b"inquiry_result").unwrap();
-        let result = crate::molt_get_attr_name(receiver, key);
-        dec_ref_bits(&py, key);
-        result
-    })
+extern "C" fn inquiry_result(__context: u64, receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        {
+            let key = crate::dynamic_attr_name_bits(&py, b"inquiry_result").unwrap();
+            let result = crate::molt_get_attr_name_attached_body(py, receiver, key);
+            dec_ref_bits(&py, key);
+            result
+        }
+    }
 }
 
-extern "C" fn inquiry_false(_receiver: u64) -> u64 {
+extern "C" fn inquiry_false(__context: u64, _receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::from_bool(false).bits()
 }
 
-extern "C" fn inquiry_first_item(receiver: u64) -> u64 {
-    crate::object::ops::molt_getitem_method(receiver, MoltObject::from_int(0).bits())
+extern "C" fn inquiry_first_item(__context: u64, receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::object::ops::molt_getitem_method_attached_body(
+        __py,
+        receiver,
+        MoltObject::from_int(0).bits(),
+    )
 }
 
-extern "C" fn inquiry_failure(_receiver: u64) -> u64 {
-    with_gil(|py| crate::raise_exception(&py, BuiltinExc::RuntimeError, "inquiry failed"))
+extern "C" fn inquiry_failure(__context: u64, _receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        crate::raise_exception(&py, BuiltinExc::RuntimeError, "inquiry failed")
+    }
 }
 
 static MAPPING_METHOD_CALLS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
-extern "C" fn mapping_method_result(receiver: u64) -> u64 {
+extern "C" fn mapping_method_result(__context: u64, receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MAPPING_METHOD_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    inquiry_result(receiver)
+    inquiry_result(__context, receiver)
 }
 
 #[test]
@@ -1580,7 +1823,7 @@ fn c_mapping_queries_honor_overrides_and_preserve_exact_list_identity() {
 
 fn set_value(py: &crate::PyToken<'_>, class: u64, name: &[u8], value: u64) {
     let key = crate::dynamic_attr_name_bits(py, name).unwrap();
-    crate::molt_set_attr_name(class, key, value);
+    crate::molt_set_attr_name_attached_body(py, class, key, value);
     dec_ref_bits(py, key);
     assert!(!crate::exception_pending(py));
 }
@@ -1598,9 +1841,9 @@ fn set_method(py: &crate::PyToken<'_>, class: u64, name: &[u8], target: *const (
 
 fn inquiry_class(py: &crate::PyToken<'_>, base: u64, special: &[u8]) -> u64 {
     let name = crate::dynamic_attr_name_bits(py, b"ManagedInquiry").unwrap();
-    let class = crate::molt_class_new(name);
+    let class = crate::molt_class_new_attached_body(py, name);
     dec_ref_bits(py, name);
-    crate::molt_class_set_base(class, base);
+    crate::molt_class_set_base_attached_body(py, class, base);
     set_method(py, class, special, inquiry_result as *const ());
     set_value(py, class, b"inquiry_result", MoltObject::from_int(0).bits());
     unsafe {
@@ -1971,19 +2214,43 @@ unsafe extern "C" {
 
 static MAPPING_LENGTH_CALLS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
-extern "C" fn mapping_poisoned_length(receiver: u64) -> u64 {
+extern "C" fn mapping_poisoned_length(__context: u64, receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MAPPING_LENGTH_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    inquiry_failure(receiver)
+    inquiry_failure(__context, receiver)
 }
-extern "C" fn mapping_output_iterator(receiver: u64) -> u64 {
-    with_gil(|py| {
-        let sequence = inquiry_result(receiver);
-        let iter = crate::molt_iter(sequence);
-        dec_ref_bits(&py, sequence);
-        iter
-    })
+extern "C" fn mapping_output_iterator(__context: u64, receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        {
+            let sequence = inquiry_result(__context, receiver);
+            let iter = crate::molt_iter_attached_body(py, sequence);
+            dec_ref_bits(&py, sequence);
+            iter
+        }
+    }
 }
-extern "C" fn mapping_item_value(_receiver: u64, _key: u64) -> u64 {
+extern "C" fn mapping_item_value(__context: u64, _receiver: u64, _key: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::from_int(23).bits()
 }
 fn mapping_item_method(py: &crate::PyToken<'_>, class: u64) {
@@ -2397,7 +2664,7 @@ fn c_dict_lazy_backing_failures_preserve_original_errors() {
                     max_allocations: Some(0),
                     ..ResourceLimits::default()
                 })));
-                let result = query(receiver);
+                let result = query(py.attached_context(), receiver);
                 assert!(MoltObject::from_bits(result).is_none());
             }
             assert_eq!(
@@ -2460,7 +2727,11 @@ fn c_dict_argument_errors_preserve_identity_and_optional_results() {
             (*value.as_ptr()).ob_refcnt
         ));
         crate::raise_exception::<()>(&py, BuiltinExc::RuntimeError, "dict caller sentinel");
-        let original_bits = mapping_owned(&py, &mut owners, crate::molt_exception_last());
+        let original_bits = mapping_owned(
+            &py,
+            &mut owners,
+            crate::molt_exception_last_attached_body(py),
+        );
         crate::clear_exception(&py);
         let original = mapping_view(original_bits);
         assert!(!original.as_ptr().is_null());
@@ -2609,47 +2880,67 @@ static KNOWN_DICT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 static KNOWN_REPLACEMENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static KNOWN_ERROR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 const KNOWN_HASH: i64 = -37;
-extern "C" fn known_hash_callback(_receiver: u64) -> u64 {
-    with_gil(|py| {
-        KNOWN_HASH_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if KNOWN_HASH_POISON.load(std::sync::atomic::Ordering::Relaxed) {
-            crate::raise_exception(&py, BuiltinExc::RuntimeError, "known hash was recomputed")
-        } else {
-            MoltObject::from_int(KNOWN_HASH).bits()
+extern "C" fn known_hash_callback(__context: u64, _receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        {
+            KNOWN_HASH_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if KNOWN_HASH_POISON.load(std::sync::atomic::Ordering::Relaxed) {
+                crate::raise_exception(&py, BuiltinExc::RuntimeError, "known hash was recomputed")
+            } else {
+                MoltObject::from_int(KNOWN_HASH).bits()
+            }
         }
-    })
+    }
 }
-extern "C" fn known_hash_equality(_receiver: u64, query: u64) -> u64 {
-    with_gil(|py| unsafe {
-        use std::sync::atomic::Ordering::Relaxed;
-        let calls = KNOWN_EQ_CALLS.fetch_add(1, Relaxed);
-        match KNOWN_EQ_MODE.load(Relaxed) {
-            1 => MoltObject::from_bool(true).bits(),
-            2 => {
-                let error = KNOWN_ERROR.load(Relaxed);
-                crate::builtins::exceptions::record_exception(
-                    &py,
-                    MoltObject::from_bits(error).as_ptr().unwrap(),
-                );
-                MoltObject::none().bits()
+extern "C" fn known_hash_equality(__context: u64, _receiver: u64, query: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        unsafe {
+            use std::sync::atomic::Ordering::Relaxed;
+            let calls = KNOWN_EQ_CALLS.fetch_add(1, Relaxed);
+            match KNOWN_EQ_MODE.load(Relaxed) {
+                1 => MoltObject::from_bool(true).bits(),
+                2 => {
+                    let error = KNOWN_ERROR.load(Relaxed);
+                    crate::builtins::exceptions::record_exception(
+                        &py,
+                        MoltObject::from_bits(error).as_ptr().unwrap(),
+                    );
+                    MoltObject::none().bits()
+                }
+                3 if calls == 0 => {
+                    let dict = MoltObject::from_bits(KNOWN_DICT.load(Relaxed))
+                        .as_ptr()
+                        .unwrap();
+                    crate::object::ops::dict_clear_in_place(&py, dict);
+                    assert!(crate::object::ops::dict_set_with_hash_in_place(
+                        &py,
+                        dict,
+                        query,
+                        KNOWN_REPLACEMENT.load(Relaxed),
+                        KNOWN_HASH as u64,
+                    ));
+                    MoltObject::from_bool(true).bits()
+                }
+                _ => MoltObject::from_bool(false).bits(),
             }
-            3 if calls == 0 => {
-                let dict = MoltObject::from_bits(KNOWN_DICT.load(Relaxed))
-                    .as_ptr()
-                    .unwrap();
-                crate::object::ops::dict_clear_in_place(&py, dict);
-                assert!(crate::object::ops::dict_set_with_hash_in_place(
-                    &py,
-                    dict,
-                    query,
-                    KNOWN_REPLACEMENT.load(Relaxed),
-                    KNOWN_HASH as u64,
-                ));
-                MoltObject::from_bool(true).bits()
-            }
-            _ => MoltObject::from_bool(false).bits(),
         }
-    })
+    }
 }
 unsafe extern "C" {
     fn molt_linked_known_hash_probe(
@@ -2744,7 +3035,11 @@ fn c_dict_known_hash_preserves_hash_value_borrowed_identity_and_reentrant_errors
             BuiltinExc::RuntimeError,
             "exact known-hash equality error",
         );
-        let error = mapping_owned(&py, &mut owners, crate::molt_exception_last());
+        let error = mapping_owned(
+            &py,
+            &mut owners,
+            crate::molt_exception_last_attached_body(py),
+        );
         crate::clear_exception(&py);
         let error_view = mapping_view(error);
         KNOWN_ERROR.store(error, Relaxed);

@@ -61,8 +61,10 @@ macro_rules! managed_string_slots {
         fn string_slot_address(slot: ExceptionStrSlot) -> u64 {
             match slot { $(ExceptionStrSlot::$slot => fn_addr!($name),)* }
         }
-        $(extern "C" fn $name(object: u64) -> u64 {
-            crate::with_gil_entry_nopanic!(py, {
+        $(extern "C" fn $name(__context: u64, object: u64) -> u64 {
+ let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+            crate::with_attached_entry_nopanic!(__attached_py, py, {
                 invoke(py, object, Some(ExceptionStrSlot::$slot))
             })
         })*
@@ -81,8 +83,10 @@ managed_string_slots! {
     unicode_translate_str => UnicodeTranslate,
 }
 
-extern "C" fn exception_repr(object: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { invoke(py, object, None) })
+extern "C" fn exception_repr(__context: u64, object: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, { invoke(py, object, None) })
 }
 
 fn invoke(py: &PyToken<'_>, object: u64, slot: Option<ExceptionStrSlot>) -> u64 {
@@ -244,9 +248,9 @@ impl<'a, 'py> ExceptionRenderContext for ManagedRender<'a, 'py> {
         let result = ExceptionValue::adopt(
             self.0,
             if repr {
-                molt_repr_from_obj(value)
+                molt_repr_from_obj_attached_body(self.0, value)
             } else {
-                molt_str_from_obj(value)
+                molt_str_from_obj_attached_body(self.0, value)
             },
         );
         if exception_pending(self.0) {

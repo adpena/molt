@@ -135,7 +135,7 @@ fn raise_int_to_float_overflow(_py: &PyToken<'_>) -> bool {
 /// previous result; `None` with the exception pending. A `None` result from
 /// `__add__` is a value, not a failure.
 fn sum_add_releasing(_py: &PyToken<'_>, left: u64, right: u64) -> Option<u64> {
-    let result = molt_add(left, right);
+    let result = molt_add_attached_body(_py, left, right);
     dec_ref_bits(_py, left);
     if exception_pending(_py) {
         return None;
@@ -678,16 +678,24 @@ fn molt_minmax_builtin(
     result
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_min_builtin(args_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_min_builtin_attached_body(
+    _py: &crate::PyToken<'_>,
+    args_bits: u64,
+    key_bits: u64,
+    default_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         molt_minmax_builtin(_py, args_bits, key_bits, default_bits, CompareOp::Lt, "min")
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_max_builtin(args_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_max_builtin_attached_body(
+    _py: &crate::PyToken<'_>,
+    args_bits: u64,
+    key_bits: u64,
+    default_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         molt_minmax_builtin(_py, args_bits, key_bits, default_bits, CompareOp::Gt, "max")
     })
 }
@@ -695,14 +703,19 @@ pub extern "C" fn molt_max_builtin(args_bits: u64, key_bits: u64, default_bits: 
 /// Builtin `sorted()`: CPython's `PySequence_List(iterable)` and that list's
 /// `sort()`, so the list constructor owns iteration and `list.sort` owns
 /// ordering.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sorted_builtin(iter_bits: u64, key_bits: u64, reverse_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_sorted_builtin_attached_body(
+    _py: &crate::PyToken<'_>,
+    iter_bits: u64,
+    key_bits: u64,
+    reverse_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(list_bits) = (unsafe { crate::object::ops::list_from_iter_bits(_py, iter_bits) })
         else {
             return MoltObject::none().bits();
         };
-        let _ = molt_list_sort(list_bits, key_bits, reverse_bits);
+        let _ = molt_list_sort_attached_body(_py, list_bits, key_bits, reverse_bits);
         if exception_pending(_py) {
             dec_ref_bits(_py, list_bits);
             return MoltObject::none().bits();
@@ -711,9 +724,12 @@ pub extern "C" fn molt_sorted_builtin(iter_bits: u64, key_bits: u64, reverse_bit
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sum_builtin_attached_body(
+    _py: &crate::PyToken<'_>,
+    iter_bits: u64,
+    start_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(source) = sum_source(_py, iter_bits) else {
             return MoltObject::none().bits();
         };
@@ -728,3 +744,5 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
         sum_items(_py, sum, source, iter_bits, py314).unwrap_or_else(|| MoltObject::none().bits())
     })
 }
+
+include!("../../attached_exports_generated/object/ops_builtins/builtin_collections.rs");

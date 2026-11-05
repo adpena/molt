@@ -1,9 +1,10 @@
 use super::*;
 use crate::BuiltinExc;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_io_default_buffer_size() -> u64 {
-    crate::with_gil_entry_nopanic!(py, { MoltObject::from_int(default_buffer_size(py)).bits() })
+pub(crate) fn molt_io_default_buffer_size_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        MoltObject::from_int(default_buffer_size(py)).bits()
+    })
 }
 
 /// `_io.text_encoding(encoding, stacklevel=2, /)`, as CPython's
@@ -13,9 +14,13 @@ pub extern "C" fn molt_io_default_buffer_size() -> u64 {
 /// startup flags and warning engine are the ones `open` and `TextIOWrapper`
 /// use. The `_io` wrapper that carries the CPython signature is one Python
 /// frame, so a CPython level of 0 or 1 (the caller) is level 2 here.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_io_text_encoding(encoding_bits: u64, stacklevel_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_io_text_encoding_attached_body(
+    _py: &crate::PyToken<'_>,
+    encoding_bits: u64,
+    stacklevel_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // Argument Clinic converts `int stacklevel` before reading `encoding`.
         let Some(stacklevel) = crate::builtins::numbers::index_c_int_from_obj(_py, stacklevel_bits)
         else {
@@ -59,9 +64,8 @@ pub extern "C" fn molt_io_text_encoding(encoding_bits: u64, stacklevel_bits: u64
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_io_class(name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_io_class_attached_body(_py: &crate::PyToken<'_>, name_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
             Some(name) => name,
             None => {
@@ -95,8 +99,10 @@ pub extern "C" fn molt_io_class(name_bits: u64) -> u64 {
     })
 }
 
-pub(crate) extern "C" fn buffered_writer_new_method(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn buffered_writer_new_method(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) =
             crate::builtins::native_arguments::NativeArguments::read(py, "__new__", args, kwargs)
         else {
@@ -114,8 +120,10 @@ pub(crate) extern "C" fn buffered_writer_new_method(args: u64, kwargs: u64) -> u
     })
 }
 
-pub(crate) extern "C" fn buffered_reader_new_method(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn buffered_reader_new_method(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) =
             crate::builtins::native_arguments::NativeArguments::read(py, "__new__", args, kwargs)
         else {
@@ -133,9 +141,13 @@ pub(crate) extern "C" fn buffered_reader_new_method(args: u64, kwargs: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_buffered_new(cls_bits: u64, raw_bits: u64, buffer_size_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_buffered_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    cls_bits: u64,
+    raw_bits: u64,
+    buffer_size_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let builtins = builtin_classes(_py);
         let Some((_, class_ptr)) = crate::builtins::type_ops::native_constructor_receiver(
             _py,
@@ -263,9 +275,13 @@ pub extern "C" fn molt_buffered_new(cls_bits: u64, raw_bits: u64, buffer_size_bi
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_buffered_init(self_bits: u64, raw_bits: u64, buffer_size_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_buffered_init_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    raw_bits: u64,
+    buffer_size_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(pointer) = obj_from_bits(self_bits).as_ptr() else {
             return raise_exception(py, BuiltinExc::TypeError, "expected buffered stream");
         };
@@ -302,8 +318,8 @@ pub extern "C" fn molt_buffered_init(self_bits: u64, raw_bits: u64, buffer_size_
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_text_io_wrapper_new(
+pub(crate) fn molt_text_io_wrapper_new_attached_body(
+    _py: &crate::PyToken<'_>,
     cls_bits: u64,
     buffer_bits: u64,
     encoding_bits: u64,
@@ -312,7 +328,7 @@ pub extern "C" fn molt_text_io_wrapper_new(
     line_buffering_bits: u64,
     write_through_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if crate::builtins::type_ops::native_constructor_receiver(
             _py,
             builtin_classes(_py).text_io_wrapper,
@@ -426,8 +442,8 @@ pub extern "C" fn molt_text_io_wrapper_new(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_text_io_wrapper_init(
+pub(crate) fn molt_text_io_wrapper_init_attached_body(
+    _py: &crate::PyToken<'_>,
     _self_bits: u64,
     _buffer_bits: u64,
     _encoding_bits: u64,
@@ -436,12 +452,15 @@ pub extern "C" fn molt_text_io_wrapper_init(
     _line_buffering_bits: u64,
     _write_through_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
+    crate::with_attached_entry_nopanic!(_py, _py, { MoltObject::none().bits() })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytesio_new(cls_bits: u64, initial_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytesio_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    cls_bits: u64,
+    initial_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if crate::builtins::type_ops::native_constructor_receiver(
             _py,
             builtin_classes(_py).bytes_io,
@@ -529,14 +548,21 @@ pub extern "C" fn molt_bytesio_new(cls_bits: u64, initial_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytesio_init(_self_bits: u64, _initial_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
+pub(crate) fn molt_bytesio_init_attached_body(
+    _py: &crate::PyToken<'_>,
+    _self_bits: u64,
+    _initial_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { MoltObject::none().bits() })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_stringio_new(cls_bits: u64, initial_bits: u64, newline_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_stringio_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    cls_bits: u64,
+    initial_bits: u64,
+    newline_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if crate::builtins::type_ops::native_constructor_receiver(
             _py,
             builtin_classes(_py).string_io,
@@ -601,11 +627,13 @@ pub extern "C" fn molt_stringio_new(cls_bits: u64, initial_bits: u64, newline_bi
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_stringio_init(
+pub(crate) fn molt_stringio_init_attached_body(
+    _py: &crate::PyToken<'_>,
     _self_bits: u64,
     _initial_bits: u64,
     _newline_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
+    crate::with_attached_entry_nopanic!(_py, _py, { MoltObject::none().bits() })
 }
+
+include!("../../attached_exports_generated/builtins/io/construct.rs");

@@ -181,25 +181,29 @@ impl<'a> Iterator for TemplateScanner<'a> {
     }
 }
 
-fn template_token_tuple(py: &PyToken<'_>, token: TemplateToken<'_>) -> Option<(u64, PtrDropGuard)> {
+fn template_token_tuple<'guard>(
+    py: &'guard PyToken<'guard>,
+    token: TemplateToken<'_>,
+) -> Option<(u64, PtrDropGuard<'guard>)> {
     let (literal, name, original, character) = token.fields();
     let none = MoltObject::none().bits();
     let mut fields = [none; 4];
-    let mut owners: [PtrDropGuard; 4] =
-        std::array::from_fn(|_| PtrDropGuard::new(std::ptr::null_mut()));
+    let mut owners: [PtrDropGuard<'_>; 4] =
+        std::array::from_fn(|_| PtrDropGuard::new(py, std::ptr::null_mut()));
     for (index, text) in [Some(literal), name, original].into_iter().enumerate() {
         if let Some(text) = text {
             let ptr = alloc_string(py, text.as_bytes());
             if ptr.is_null() {
                 return None;
             }
-            owners[index] = PtrDropGuard::new(ptr);
+            owners[index] = PtrDropGuard::new(py, ptr);
             fields[index] = MoltObject::from_ptr(ptr).bits();
         }
     }
     if let Some(character) = character {
         fields[3] = int_bits_from_i64(py, character as i64);
         owners[3] = PtrDropGuard::new(
+            py,
             obj_from_bits(fields[3])
                 .as_ptr()
                 .unwrap_or(std::ptr::null_mut()),
@@ -212,7 +216,7 @@ fn template_token_tuple(py: &PyToken<'_>, token: TemplateToken<'_>) -> Option<(u
     if ptr.is_null() {
         return None;
     }
-    Some((MoltObject::from_ptr(ptr).bits(), PtrDropGuard::new(ptr)))
+    Some((MoltObject::from_ptr(ptr).bits(), PtrDropGuard::new(py, ptr)))
 }
 
 /// Return (literal, name, original, invalid_character_offset) token tuples.
@@ -220,9 +224,13 @@ fn template_token_tuple(py: &PyToken<'_>, token: TemplateToken<'_>) -> Option<(u
 /// an original without either denotes an escaped delimiter. Only literal
 /// tokens have neither name, original nor invalid offset. The Python owner
 /// chooses strict/safe behavior and performs every lookup/str callback.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_template_scan(template_bits: u64, delimiter_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_string_template_scan_attached_body(
+    _py: &crate::PyToken<'_>,
+    template_bits: u64,
+    delimiter_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(template) = string_obj_to_owned(obj_from_bits(template_bits)) else {
             return raise_exception::<_>(py, BuiltinExc::TypeError, "template must be str");
         };
@@ -247,9 +255,12 @@ pub extern "C" fn molt_string_template_scan(template_bits: u64, delimiter_bits: 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_template_is_valid(template_bits: u64, delimiter_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_string_template_is_valid_attached_body(
+    _py: &crate::PyToken<'_>,
+    template_bits: u64,
+    delimiter_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(template) = string_obj_to_owned(obj_from_bits(template_bits)) else {
             return raise_exception::<_>(py, BuiltinExc::TypeError, "template must be str");
         };
@@ -264,12 +275,12 @@ pub extern "C" fn molt_string_template_is_valid(template_bits: u64, delimiter_bi
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_template_get_identifiers(
+pub(crate) fn molt_string_template_get_identifiers_attached_body(
+    _py: &crate::PyToken<'_>,
     template_bits: u64,
     delimiter_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(template) = string_obj_to_owned(obj_from_bits(template_bits)) else {
             return raise_exception::<_>(py, BuiltinExc::TypeError, "template must be str");
         };
@@ -287,7 +298,7 @@ pub extern "C" fn molt_string_template_get_identifiers(
                 if ptr.is_null() {
                     return MoltObject::none().bits();
                 }
-                owners.push(PtrDropGuard::new(ptr));
+                owners.push(PtrDropGuard::new(py, ptr));
                 identifiers.push(MoltObject::from_ptr(ptr).bits());
             }
         }
@@ -319,20 +330,29 @@ fn formatter_string_ptr(py: &PyToken<'_>, bits: u64) -> Option<*mut u8> {
     Some(ptr)
 }
 
-fn formatter_string(py: &PyToken<'_>, text: &[u8]) -> Option<(u64, PtrDropGuard)> {
+fn formatter_string<'guard>(
+    py: &'guard PyToken<'guard>,
+    text: &[u8],
+) -> Option<(u64, PtrDropGuard<'guard>)> {
     let ptr = alloc_string(py, text);
     if ptr.is_null() {
         return None;
     }
-    Some((MoltObject::from_ptr(ptr).bits(), PtrDropGuard::new(ptr)))
+    Some((MoltObject::from_ptr(ptr).bits(), PtrDropGuard::new(py, ptr)))
 }
 
-fn formatter_name(py: &PyToken<'_>, name: FormatName<'_>) -> Option<(u64, PtrDropGuard)> {
+fn formatter_name<'guard>(
+    py: &'guard PyToken<'guard>,
+    name: FormatName<'_>,
+) -> Option<(u64, PtrDropGuard<'guard>)> {
     let Some(index) = name.index else {
         return formatter_string(py, name.text);
     };
     let bits = int_bits_from_i64(py, index as i64);
-    let owner = PtrDropGuard::new(obj_from_bits(bits).as_ptr().unwrap_or(std::ptr::null_mut()));
+    let owner = PtrDropGuard::new(
+        py,
+        obj_from_bits(bits).as_ptr().unwrap_or(std::ptr::null_mut()),
+    );
     if exception_pending(py) {
         return None;
     }
@@ -355,11 +375,12 @@ fn formatter_iterator(
     py: &PyToken<'_>,
     source_bits: u64,
     offset: usize,
-    next: extern "C" fn(u64) -> u64,
+    next: unsafe extern "C" fn(u64, u64) -> u64,
     symbol: &str,
 ) -> u64 {
     let offset_bits = int_bits_from_i64(py, offset as i64);
     let _offset_owner = PtrDropGuard::new(
+        py,
         obj_from_bits(offset_bits)
             .as_ptr()
             .unwrap_or(std::ptr::null_mut()),
@@ -371,18 +392,18 @@ fn formatter_iterator(
     if cell_ptr.is_null() {
         return MoltObject::none().bits();
     }
-    let _cell_owner = PtrDropGuard::new(cell_ptr);
+    let _cell_owner = PtrDropGuard::new(py, cell_ptr);
     let state_ptr = alloc_tuple(py, &[source_bits, MoltObject::from_ptr(cell_ptr).bits()]);
     if state_ptr.is_null() {
         return MoltObject::none().bits();
     }
-    let _state_owner = PtrDropGuard::new(state_ptr);
+    let _state_owner = PtrDropGuard::new(py, state_ptr);
     let address = crate::builtins::functions::runtime_fn_addr(symbol, next as *const ());
     let function_ptr = crate::builtins::functions::alloc_runtime_function_obj(py, address, 1);
     if function_ptr.is_null() {
         return MoltObject::none().bits();
     }
-    let _function_owner = PtrDropGuard::new(function_ptr);
+    let _function_owner = PtrDropGuard::new(py, function_ptr);
     let bound_ptr = alloc_bound_method_obj(
         py,
         MoltObject::from_ptr(function_ptr).bits(),
@@ -391,8 +412,9 @@ fn formatter_iterator(
     if bound_ptr.is_null() {
         return MoltObject::none().bits();
     }
-    let _bound_owner = PtrDropGuard::new(bound_ptr);
-    molt_iter_sentinel(
+    let _bound_owner = PtrDropGuard::new(py, bound_ptr);
+    molt_iter_sentinel_attached_body(
+        py,
         MoltObject::from_ptr(bound_ptr).bits(),
         MoltObject::none().bits(),
     )
@@ -424,7 +446,10 @@ fn formatter_cursor(state_bits: u64) -> Option<(*mut u8, *mut u8, usize)> {
 
 fn formatter_set_offset(py: &PyToken<'_>, cell_ptr: *mut u8, offset: usize) -> bool {
     let bits = int_bits_from_i64(py, offset as i64);
-    let _owner = PtrDropGuard::new(obj_from_bits(bits).as_ptr().unwrap_or(std::ptr::null_mut()));
+    let _owner = PtrDropGuard::new(
+        py,
+        obj_from_bits(bits).as_ptr().unwrap_or(std::ptr::null_mut()),
+    );
     if exception_pending(py) {
         return false;
     }
@@ -432,8 +457,10 @@ fn formatter_set_offset(py: &PyToken<'_>, cell_ptr: *mut u8, offset: usize) -> b
     true
 }
 
-extern "C" fn formatter_parse_next(state_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn formatter_parse_next(__context: u64, state_bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some((source_ptr, cell_ptr, mut offset)) = formatter_cursor(state_bits) else {
             return raise_exception(py, BuiltinExc::SystemError, "invalid format parser cursor");
         };
@@ -472,8 +499,10 @@ extern "C" fn formatter_parse_next(state_bits: u64) -> u64 {
     })
 }
 
-extern "C" fn formatter_field_name_next(state_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn formatter_field_name_next(__context: u64, state_bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some((source_ptr, cell_ptr, mut offset)) = formatter_cursor(state_bits) else {
             return raise_exception(py, BuiltinExc::SystemError, "invalid format field cursor");
         };
@@ -500,9 +529,12 @@ extern "C" fn formatter_field_name_next(state_bits: u64) -> u64 {
 
 /// Return a lazy iterator of (literal, field_name, format_spec, conversion).
 /// Trailing syntax errors surface only when the consumer reaches that token.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_formatter_parse(format_string_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_string_formatter_parse_attached_body(
+    _py: &crate::PyToken<'_>,
+    format_string_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if formatter_string_ptr(py, format_string_bits).is_none() {
             return MoltObject::none().bits();
         }
@@ -518,9 +550,12 @@ pub extern "C" fn molt_string_formatter_parse(format_string_bits: u64) -> u64 {
 
 /// Split the first component immediately, then lazily project attribute/item
 /// steps. Each preceding lookup may run before a later invalid suffix raises.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_formatter_field_name_split(field_name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_string_formatter_field_name_split_attached_body(
+    _py: &crate::PyToken<'_>,
+    field_name_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(source_ptr) = formatter_string_ptr(py, field_name_bits) else {
             return MoltObject::none().bits();
         };
@@ -542,6 +577,7 @@ pub extern "C" fn molt_string_formatter_field_name_split(field_name_bits: u64) -
             "formatter_field_name_next",
         );
         let _rest_owner = PtrDropGuard::new(
+            py,
             obj_from_bits(rest_bits)
                 .as_ptr()
                 .unwrap_or(std::ptr::null_mut()),
@@ -566,10 +602,10 @@ mod tests {
             let text = b"a\xc3\xa9\xed\xa0\x80\xf0\xa0\xae\x80.z";
             let source_ptr = alloc_string(py, text);
             assert!(!source_ptr.is_null());
-            let _source_owner = PtrDropGuard::new(source_ptr);
+            let _source_owner = PtrDropGuard::new(py, source_ptr);
             let cell_ptr = crate::object::cells::alloc_cell(py, MoltObject::from_int(0).bits());
             assert!(!cell_ptr.is_null());
-            let _cell_owner = PtrDropGuard::new(cell_ptr);
+            let _cell_owner = PtrDropGuard::new(py, cell_ptr);
             let state_ptr = alloc_tuple(
                 py,
                 &[
@@ -578,7 +614,7 @@ mod tests {
                 ],
             );
             assert!(!state_ptr.is_null());
-            let _state_owner = PtrDropGuard::new(state_ptr);
+            let _state_owner = PtrDropGuard::new(py, state_ptr);
             let state_bits = MoltObject::from_ptr(state_ptr).bits();
             for offset in [0, 1, 3, 6, 10, 11, 12] {
                 unsafe {
@@ -595,7 +631,7 @@ mod tests {
             }
             let system_error =
                 crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::SystemError);
-            let next_functions: [extern "C" fn(u64) -> u64; 2] =
+            let next_functions: [unsafe extern "C" fn(u64, u64) -> u64; 2] =
                 [formatter_parse_next, formatter_field_name_next];
             for offset in [-1, 2, 4, 5, 7, 8, 9, 13] {
                 let offset_bits = MoltObject::from_int(offset).bits();
@@ -605,7 +641,7 @@ mod tests {
                     "admitted offset {offset}"
                 );
                 for next in next_functions {
-                    let result = next(state_bits);
+                    let result = unsafe { next(py.attached_context(), state_bits) };
                     assert!(crate::builtins::exceptions::pending_exception_matches_type(
                         py,
                         system_error
@@ -621,3 +657,5 @@ mod tests {
         });
     }
 }
+
+include!("../attached_exports_generated/builtins/string_ext.rs");

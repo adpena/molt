@@ -196,11 +196,13 @@ unsafe extern "C" fn asyncio_core_state_init() -> *mut u8 {
     Box::into_raw(Box::new(AsyncioCoreState::new())) as *mut u8
 }
 
-unsafe extern "C" fn asyncio_core_state_clear(ptr: *mut u8) {
+unsafe extern "C" fn asyncio_core_state_clear(__context: u64, ptr: *mut u8) {
+    let _py = unsafe { molt_runtime_core::PyToken::from_attached_context(__context) };
+
     if ptr.is_null() {
         return;
     }
-    molt_runtime_core::with_core_gil!(py, unsafe {
+    molt_runtime_core::with_attached_entry_nopanic!(_py, py, unsafe {
         (&*(ptr as *mut AsyncioCoreState)).clear(py);
     });
 }
@@ -217,6 +219,7 @@ unsafe extern "C" fn asyncio_core_state_drop(ptr: *mut u8) {
 #[inline]
 fn asyncio_core_state(_py: &PyToken) -> &'static AsyncioCoreState {
     let ptr = crate::bridge::runtime_state_get_or_init(
+        _py,
         ASYNCIO_CORE_STATE_KEY,
         asyncio_core_state_init,
         asyncio_core_state_clear,
@@ -229,8 +232,8 @@ fn asyncio_core_state(_py: &PyToken) -> &'static AsyncioCoreState {
     unsafe { &*(ptr as *const AsyncioCoreState) }
 }
 
-pub fn asyncio_core_clear_state() {
-    let _ = crate::bridge::runtime_state_clear_and_drop(ASYNCIO_CORE_STATE_KEY);
+pub fn asyncio_core_clear_state(py: &PyToken) {
+    let _ = crate::bridge::runtime_state_clear_and_drop(py, ASYNCIO_CORE_STATE_KEY);
 }
 
 #[inline]
@@ -262,9 +265,9 @@ fn release_waiters(_py: &PyToken, waiters: Vec<u64>) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Create a new future. Returns a handle as NaN-boxed integer bits.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_future_new() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_future_new_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let registry = asyncio_core_state(_py);
         let handle = registry.next_future_handle();
         registry
@@ -279,9 +282,12 @@ pub extern "C" fn molt_asyncio_future_new() -> u64 {
 /// Get the result of a future. Raises InvalidStateError if not done.
 /// If cancelled, raises CancelledError. If exception is set, raises it.
 /// Otherwise returns the result bits.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_future_result(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_future_result_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         enum Outcome {
             Missing,
             Pending,
@@ -322,7 +328,7 @@ pub extern "C" fn molt_asyncio_future_result(handle_bits: u64) -> u64 {
             ),
             Outcome::Cancelled => raise_exception::<u64>(_py, BuiltinExc::CancelledError, ""),
             Outcome::Raise(exc_bits) => {
-                let raised = molt_runtime_core::rt_raise(exc_bits);
+                let raised = molt_runtime_core::rt_raise(_py, exc_bits);
                 dec_ref_bits(_py, exc_bits);
                 raised
             }
@@ -334,9 +340,12 @@ pub extern "C" fn molt_asyncio_future_result(handle_bits: u64) -> u64 {
 /// Get the exception of a future. Raises InvalidStateError if not done.
 /// If cancelled, raises CancelledError. Otherwise returns exception bits
 /// (may be None if no exception was set).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_future_exception(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_future_exception_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
         let map = registry.futures.lock().unwrap();
@@ -371,9 +380,13 @@ pub extern "C" fn molt_asyncio_future_exception(handle_bits: u64) -> u64 {
 
 /// Atomically store the result and mark the Future done.
 /// Raises InvalidStateError if already done.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_future_set_result_fast(handle_bits: u64, result_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_future_set_result_fast_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    result_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
         let mut map = registry.futures.lock().unwrap();
@@ -405,9 +418,13 @@ pub extern "C" fn molt_asyncio_future_set_result_fast(handle_bits: u64, result_b
 /// Atomically store the exception and mark the Future done.
 /// Raises InvalidStateError if already done. Storing an exception never
 /// transitions a Future to cancelled; cancellation has its own transition.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_future_set_exception_fast(handle_bits: u64, exc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_future_set_exception_fast_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    exc_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
         let mut map = registry.futures.lock().unwrap();
@@ -440,9 +457,13 @@ pub extern "C" fn molt_asyncio_future_set_exception_fast(handle_bits: u64, exc_b
 /// False if already done).
 ///
 /// msg_bits: cancel message (may be None for no message).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_future_cancel_fast(handle_bits: u64, msg_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_future_cancel_fast_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    msg_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
         let mut map = registry.futures.lock().unwrap();
@@ -481,9 +502,12 @@ pub extern "C" fn molt_asyncio_future_cancel_fast(handle_bits: u64, msg_bits: u6
 
 /// Check if a future is done (result set, exception set, or cancelled).
 /// Returns bool bits.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_future_done(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_future_done_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
         let map = registry.futures.lock().unwrap();
@@ -495,9 +519,12 @@ pub extern "C" fn molt_asyncio_future_done(handle_bits: u64) -> u64 {
 }
 
 /// Check if a future was cancelled. Returns bool bits.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_future_cancelled(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_future_cancelled_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
         let map = registry.futures.lock().unwrap();
@@ -509,9 +536,12 @@ pub extern "C" fn molt_asyncio_future_cancelled(handle_bits: u64) -> u64 {
 }
 
 /// Drop a future handle. Dec-refs all stored bits and removes from registry.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_future_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_future_drop_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
         let removed = registry.futures.lock().unwrap().remove(&handle);
@@ -530,9 +560,9 @@ pub extern "C" fn molt_asyncio_future_drop(handle_bits: u64) -> u64 {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Create a new asyncio.Event. Returns handle as NaN-boxed integer bits.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_event_new() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_event_new_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let registry = asyncio_core_state(_py);
         let handle = registry.next_event_handle();
         registry
@@ -545,9 +575,12 @@ pub extern "C" fn molt_asyncio_event_new() -> u64 {
 }
 
 /// Check if an event's internal flag is set. Returns bool bits.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_event_is_set(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_event_is_set_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
         let map = registry.events.lock().unwrap();
@@ -561,9 +594,12 @@ pub extern "C" fn molt_asyncio_event_is_set(handle_bits: u64) -> u64 {
 /// Set the event's internal flag. Returns the waiter count as int bits
 /// so the Python layer can notify all waiters. Idempotent: if already set,
 /// returns 0.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_event_set_fast(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_event_set_fast_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
         let mut map = registry.events.lock().unwrap();
@@ -592,9 +628,12 @@ pub extern "C" fn molt_asyncio_event_set_fast(handle_bits: u64) -> u64 {
 }
 
 /// Clear the event's internal flag. Returns None bits.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_event_clear(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_event_clear_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
         let mut map = registry.events.lock().unwrap();
@@ -606,9 +645,12 @@ pub extern "C" fn molt_asyncio_event_clear(handle_bits: u64) -> u64 {
 }
 
 /// Drop an event handle. Dec-refs all stored waiter bits and removes from registry.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_event_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_event_drop_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
         let removed = registry.events.lock().unwrap().remove(&handle);
@@ -626,9 +668,9 @@ pub extern "C" fn molt_asyncio_event_drop(handle_bits: u64) -> u64 {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Create a new asyncio.Lock. Returns handle as NaN-boxed integer bits.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_lock_new() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_lock_new_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let registry = asyncio_core_state(_py);
         let handle = registry.next_lock_handle();
         registry
@@ -641,9 +683,12 @@ pub extern "C" fn molt_asyncio_lock_new() -> u64 {
 }
 
 /// Check if a lock is currently acquired. Returns bool bits.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_lock_locked(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_lock_locked_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
         let map = registry.locks.lock().unwrap();
@@ -659,9 +704,12 @@ pub extern "C" fn molt_asyncio_lock_locked(handle_bits: u64) -> u64 {
 ///
 /// This is the fast path — the Python layer calls this first, and only if
 /// it returns False does it create a Future waiter and park.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_lock_acquire_fast(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_lock_acquire_fast_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
         let mut map = registry.locks.lock().unwrap();
@@ -681,9 +729,12 @@ pub extern "C" fn molt_asyncio_lock_acquire_fast(handle_bits: u64) -> u64 {
 /// Release the lock. If there are waiters, returns the waiter count (>0)
 /// so the Python layer can notify the next waiter. If no waiters, unlocks
 /// and returns 0. Raises RuntimeError if the lock is not held.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_lock_release_fast(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_lock_release_fast_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
         let mut map = registry.locks.lock().unwrap();
@@ -716,9 +767,12 @@ pub extern "C" fn molt_asyncio_lock_release_fast(handle_bits: u64) -> u64 {
 }
 
 /// Drop a lock handle. Dec-refs all stored waiter bits and removes from registry.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_lock_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_lock_drop_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
         let removed = registry.locks.lock().unwrap().remove(&handle);
@@ -738,9 +792,12 @@ pub extern "C" fn molt_asyncio_lock_drop(handle_bits: u64) -> u64 {
 /// Create a new asyncio.Semaphore with the given initial value.
 /// value_bits: NaN-boxed integer for the initial counter value.
 /// Returns handle as NaN-boxed integer bits.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_semaphore_new(value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_semaphore_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let initial_value = to_i64(obj_from_bits(value_bits)).unwrap_or(1);
         if initial_value < 0 {
             return raise_exception::<u64>(
@@ -763,9 +820,12 @@ pub extern "C" fn molt_asyncio_semaphore_new(value_bits: u64) -> u64 {
 /// Try to acquire the semaphore immediately. Returns True if acquired
 /// (counter was > 0 and has been decremented), False if the counter is 0
 /// (caller must await).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_semaphore_acquire_fast(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_semaphore_acquire_fast_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
         let mut map = registry.semaphores.lock().unwrap();
@@ -789,12 +849,13 @@ pub extern "C" fn molt_asyncio_semaphore_acquire_fast(handle_bits: u64) -> u64 {
 /// max_value_bits: for BoundedSemaphore, the initial value cap. Pass None
 /// or -1 for unbounded Semaphore. If the counter would exceed max_value,
 /// raises ValueError.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_semaphore_release_fast(
+
+pub fn molt_asyncio_semaphore_release_fast_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     max_value_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let max_value_obj = obj_from_bits(max_value_bits);
         let max_value: Option<i64> = if max_value_obj.is_none() {
@@ -833,9 +894,12 @@ pub extern "C" fn molt_asyncio_semaphore_release_fast(
 
 /// Query the current counter value of a semaphore.
 /// Returns the value as NaN-boxed integer bits, or -1 if the handle is not found.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_semaphore_value(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_semaphore_value_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
         let map = registry.semaphores.lock().unwrap();
@@ -845,9 +909,12 @@ pub extern "C" fn molt_asyncio_semaphore_value(handle_bits: u64) -> u64 {
 }
 
 /// Drop a semaphore handle. Dec-refs all stored waiter bits and removes from registry.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_semaphore_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_semaphore_drop_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let registry = asyncio_core_state(_py);
         let removed = registry.semaphores.lock().unwrap().remove(&handle);
@@ -859,3 +926,5 @@ pub extern "C" fn molt_asyncio_semaphore_drop(handle_bits: u64) -> u64 {
         MoltObject::none().bits()
     })
 }
+
+include!("attached_exports_generated/asyncio_core.rs");

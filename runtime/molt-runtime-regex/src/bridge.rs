@@ -13,7 +13,13 @@ use std::sync::{Arc, Mutex};
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_regex_raise_exception(kind_code: u16, msg_ptr: *const u8, msg_len: usize) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_regex_raise_exception")]
+    fn __molt_regex_raise_exception(
+        __molt_context: u64,
+        kind_code: u16,
+        msg_ptr: *const u8,
+        msg_len: usize,
+    ) -> u64;
 }
 
 pub fn raise_exception<T: ExceptionSentinel>(
@@ -21,8 +27,14 @@ pub fn raise_exception<T: ExceptionSentinel>(
     type_name: impl Into<ExcKind>,
     msg: &str,
 ) -> T {
-    let bits =
-        unsafe { __molt_regex_raise_exception(type_name.into().code(), msg.as_ptr(), msg.len()) };
+    let bits = unsafe {
+        __molt_regex_raise_exception(
+            _py.attached_context(),
+            type_name.into().code(),
+            msg.as_ptr(),
+            msg.len(),
+        )
+    };
     T::from_bits(bits)
 }
 
@@ -55,31 +67,58 @@ impl ExceptionSentinel for () {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_regex_alloc_tuple(elems_ptr: *const u64, elems_len: usize) -> *mut u8;
-    fn __molt_regex_alloc_list(elems_ptr: *const u64, elems_len: usize) -> *mut u8;
-    fn __molt_regex_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8;
-    fn __molt_regex_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8;
-    fn __molt_regex_alloc_dict_with_pairs(pairs_ptr: *const u64, pairs_len: usize) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_regex_alloc_tuple")]
+    fn __molt_regex_alloc_tuple(
+        __molt_context: u64,
+        elems_ptr: *const u64,
+        elems_len: usize,
+    ) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_regex_alloc_list")]
+    fn __molt_regex_alloc_list(
+        __molt_context: u64,
+        elems_ptr: *const u64,
+        elems_len: usize,
+    ) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_regex_alloc_string")]
+    fn __molt_regex_alloc_string(
+        __molt_context: u64,
+        data_ptr: *const u8,
+        data_len: usize,
+    ) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_regex_alloc_bytes")]
+    fn __molt_regex_alloc_bytes(
+        __molt_context: u64,
+        data_ptr: *const u8,
+        data_len: usize,
+    ) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_regex_alloc_dict_with_pairs")]
+    fn __molt_regex_alloc_dict_with_pairs(
+        __molt_context: u64,
+        pairs_ptr: *const u64,
+        pairs_len: usize,
+    ) -> *mut u8;
 }
 
 pub fn alloc_tuple(_py: &CoreGilToken, elems: &[u64]) -> *mut u8 {
-    unsafe { __molt_regex_alloc_tuple(elems.as_ptr(), elems.len()) }
+    unsafe { __molt_regex_alloc_tuple(_py.attached_context(), elems.as_ptr(), elems.len()) }
 }
 
 pub fn alloc_list(_py: &CoreGilToken, elems: &[u64]) -> *mut u8 {
-    unsafe { __molt_regex_alloc_list(elems.as_ptr(), elems.len()) }
+    unsafe { __molt_regex_alloc_list(_py.attached_context(), elems.as_ptr(), elems.len()) }
 }
 
 pub fn alloc_string(_py: &CoreGilToken, data: &[u8]) -> *mut u8 {
-    unsafe { __molt_regex_alloc_string(data.as_ptr(), data.len()) }
+    unsafe { __molt_regex_alloc_string(_py.attached_context(), data.as_ptr(), data.len()) }
 }
 
 pub fn alloc_bytes(_py: &CoreGilToken, data: &[u8]) -> *mut u8 {
-    unsafe { __molt_regex_alloc_bytes(data.as_ptr(), data.len()) }
+    unsafe { __molt_regex_alloc_bytes(_py.attached_context(), data.as_ptr(), data.len()) }
 }
 
 pub fn alloc_dict_with_pairs(_py: &CoreGilToken, pairs: &[u64]) -> *mut u8 {
-    unsafe { __molt_regex_alloc_dict_with_pairs(pairs.as_ptr(), pairs.len()) }
+    unsafe {
+        __molt_regex_alloc_dict_with_pairs(_py.attached_context(), pairs.as_ptr(), pairs.len())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -89,21 +128,39 @@ pub fn alloc_dict_with_pairs(_py: &CoreGilToken, pairs: &[u64]) -> *mut u8 {
 unsafe extern "C" {
     fn __molt_regex_object_type_id(ptr: *mut u8) -> u32;
     fn __molt_regex_bytes_view(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
-    fn __molt_regex_subject_slice(subject_bits: u64, start: usize, end: usize) -> u64;
-    fn __molt_regex_pattern_handle_new(pointer: *const std::ffi::c_void) -> u64;
-    fn __molt_regex_pattern_handle_clone(bits: u64) -> *const std::ffi::c_void;
-    fn __molt_regex_scanner_handle_new(pointer: *const std::ffi::c_void) -> u64;
-    fn __molt_regex_scanner_handle_clone(bits: u64) -> *const std::ffi::c_void;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_regex_subject_slice")]
+    fn __molt_regex_subject_slice(
+        __molt_context: u64,
+        subject_bits: u64,
+        start: usize,
+        end: usize,
+    ) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_regex_pattern_handle_new")]
+    fn __molt_regex_pattern_handle_new(
+        __molt_context: u64,
+        pointer: *const std::ffi::c_void,
+    ) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_regex_pattern_handle_clone")]
+    fn __molt_regex_pattern_handle_clone(__molt_context: u64, bits: u64)
+    -> *const std::ffi::c_void;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_regex_scanner_handle_new")]
+    fn __molt_regex_scanner_handle_new(
+        __molt_context: u64,
+        pointer: *const std::ffi::c_void,
+    ) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_regex_scanner_handle_clone")]
+    fn __molt_regex_scanner_handle_clone(__molt_context: u64, bits: u64)
+    -> *const std::ffi::c_void;
 }
 
-pub fn pattern_handle_new(pattern: Arc<crate::PatternHandle>) -> Option<u64> {
+pub fn pattern_handle_new(_py: &PyToken, pattern: Arc<crate::PatternHandle>) -> Option<u64> {
     let pointer = Arc::into_raw(pattern).cast();
-    let bits = unsafe { __molt_regex_pattern_handle_new(pointer) };
+    let bits = unsafe { __molt_regex_pattern_handle_new(_py.attached_context(), pointer) };
     (bits != MoltObject::none().bits()).then_some(bits)
 }
 
-pub fn pattern_handle_arc(bits: u64) -> Option<Arc<crate::PatternHandle>> {
-    let pointer = unsafe { __molt_regex_pattern_handle_clone(bits) };
+pub fn pattern_handle_arc(_py: &PyToken, bits: u64) -> Option<Arc<crate::PatternHandle>> {
+    let pointer = unsafe { __molt_regex_pattern_handle_clone(_py.attached_context(), bits) };
     if pointer.is_null() {
         None
     } else {
@@ -111,14 +168,14 @@ pub fn pattern_handle_arc(bits: u64) -> Option<Arc<crate::PatternHandle>> {
     }
 }
 
-pub fn scanner_handle_new(scanner: Arc<Mutex<crate::ScannerHandle>>) -> Option<u64> {
+pub fn scanner_handle_new(_py: &PyToken, scanner: Arc<Mutex<crate::ScannerHandle>>) -> Option<u64> {
     let pointer = Arc::into_raw(scanner).cast();
-    let bits = unsafe { __molt_regex_scanner_handle_new(pointer) };
+    let bits = unsafe { __molt_regex_scanner_handle_new(_py.attached_context(), pointer) };
     (bits != MoltObject::none().bits()).then_some(bits)
 }
 
-pub fn scanner_handle_arc(bits: u64) -> Option<Arc<Mutex<crate::ScannerHandle>>> {
-    let pointer = unsafe { __molt_regex_scanner_handle_clone(bits) };
+pub fn scanner_handle_arc(_py: &PyToken, bits: u64) -> Option<Arc<Mutex<crate::ScannerHandle>>> {
+    let pointer = unsafe { __molt_regex_scanner_handle_clone(_py.attached_context(), bits) };
     if pointer.is_null() {
         None
     } else {
@@ -154,8 +211,8 @@ pub unsafe fn bytes_obj_to_borrowed<'a>(obj: MoltObject) -> Option<&'a [u8]> {
     Some(unsafe { std::slice::from_raw_parts(out_ptr, out_len) })
 }
 
-pub fn subject_slice_to_object(subject_bits: u64, start: usize, end: usize) -> u64 {
-    unsafe { __molt_regex_subject_slice(subject_bits, start, end) }
+pub fn subject_slice_to_object(_py: &PyToken, subject_bits: u64, start: usize, end: usize) -> u64 {
+    unsafe { __molt_regex_subject_slice(_py.attached_context(), subject_bits, start, end) }
 }
 
 // ---------------------------------------------------------------------------
@@ -163,11 +220,12 @@ pub fn subject_slice_to_object(subject_bits: u64, start: usize, end: usize) -> u
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_regex_dec_ref_bits(bits: u64);
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_regex_dec_ref_bits")]
+    fn __molt_regex_dec_ref_bits(__molt_context: u64, bits: u64);
 }
 
 pub fn dec_ref_bits(_py: &CoreGilToken, bits: u64) {
-    unsafe { __molt_regex_dec_ref_bits(bits) }
+    unsafe { __molt_regex_dec_ref_bits(_py.attached_context(), bits) }
 }
 
 // ---------------------------------------------------------------------------
@@ -189,12 +247,16 @@ pub fn to_i64(obj: MoltObject) -> Option<i64> {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_regex_seq_snapshot")]
     fn __molt_regex_seq_snapshot(
+        __molt_context: u64,
         ptr: *mut u8,
         out_ptr: *mut *const u64,
         out_len: *mut usize,
     ) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_regex_dict_snapshot")]
     fn __molt_regex_dict_snapshot(
+        __molt_context: u64,
         ptr: *mut u8,
         out_ptr: *mut *const u64,
         out_len: *mut usize,
@@ -204,15 +266,17 @@ unsafe extern "C" {
 /// # Safety
 ///
 /// `ptr` must refer to a live Molt list or tuple for the duration of this call.
-pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
+pub unsafe fn seq_snapshot(_py: &PyToken, ptr: *mut u8) -> OwnedBridgeHandleSnapshot<'_> {
     let mut out_ptr: *const u64 = std::ptr::null();
     let mut out_len = 0usize;
-    let ok = unsafe { __molt_regex_seq_snapshot(ptr, &mut out_ptr, &mut out_len) };
+    let ok = unsafe {
+        __molt_regex_seq_snapshot(_py.attached_context(), ptr, &mut out_ptr, &mut out_len)
+    };
     if ok == 0 {
         out_ptr = std::ptr::null();
         out_len = 0;
     }
-    unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) }
+    unsafe { bridge_owned_handle_snapshot(_py, out_ptr, out_len) }
 }
 
 /// Returns owned, pinned key/value pairs in insertion order.
@@ -220,12 +284,17 @@ pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
 ///
 /// `ptr` must refer to a live Molt dictionary object for the duration of this
 /// call.
-pub unsafe fn dict_snapshot(_py: &CoreGilToken, ptr: *mut u8) -> Option<OwnedBridgeHandleSnapshot> {
+pub unsafe fn dict_snapshot(
+    _py: &CoreGilToken,
+    ptr: *mut u8,
+) -> Option<OwnedBridgeHandleSnapshot<'_>> {
     let mut out_ptr: *const u64 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_regex_dict_snapshot(ptr, &mut out_ptr, &mut out_len) };
+    let ok = unsafe {
+        __molt_regex_dict_snapshot(_py.attached_context(), ptr, &mut out_ptr, &mut out_len)
+    };
     if ok == 0 {
         return None;
     }
-    Some(unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) })
+    Some(unsafe { bridge_owned_handle_snapshot(_py, out_ptr, out_len) })
 }

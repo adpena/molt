@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 from molt.backend_protocol import BackendEmissionOrigin
+from molt._wasm_runtime_exports import (
+    wasm_runtime_lifetime_export_names,
+    wasm_output_runtime_export_names,
+)
 from molt.cli.link_input_observation import (
     compilation_input_observation,
 )
 from molt.exact_json import read_exact
-from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+from molt._wasm_abi_generated import (
+    WASM_EXECUTION_MANIFEST_VERSION,
+    RUNTIME_EXECUTION_ABIS,
+    ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT,
+    ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX,
+    ATTACHED_EXECUTION_CONTEXT_ABI_SECTION,
+    ATTACHED_CONTEXT_THREAD_RECORD_OFFSET,
+    compiled_execution_symbol,
+)
 from molt.wasm_artifact import (
     require_current_wasm_execution_manifest,
     verify_wasm_execution_manifest_module,
@@ -40,7 +52,7 @@ from molt.file_publication import staged_file_path
 from molt.exact_json import canonical_json_bytes
 from molt._wasm_abi_generated import (
     WASM_ESSENTIAL_EXPORTS,
-    WASM_OUTPUT_RUNTIME_EXPORT_ALIASES,
+    WASM_PUBLIC_C_API_FUNCTION_SIGNATURES,
 )
 from molt.cli import wasm_link_inputs, wasm_toolchain
 from molt.cli.app_export_contract import load_app_export_contract
@@ -281,7 +293,7 @@ def _app_export_manifest(
     if not isinstance(raw_bindings, list):
         raise ValueError("app export contract bindings are unavailable")
     export_symbols = {
-        symbol
+        compiled_execution_symbol(symbol)
         for binding in raw_bindings
         if isinstance(binding, dict)
         and binding.get("disposition") == "export"
@@ -304,7 +316,8 @@ def _app_export_manifest(
         binding = dict(raw_binding)
         symbol = binding.get("symbol")
         if binding.get("disposition") == "export" and isinstance(symbol, str):
-            binding["signature"] = signatures[symbol]
+            binding["symbol"] = compiled_execution_symbol(symbol)
+            binding["signature"] = signatures[compiled_execution_symbol(symbol)]
         bindings.append(binding)
     return {
         "schema": contract["schema"],
@@ -323,6 +336,8 @@ class _RuntimeImportAbiManifest(TypedDict):
     signatures: dict[str, dict[str, object]]
     runtime_export_signatures: dict[str, WasmExportSignature]
     result_kinds: dict[str, str]
+    execution_context_abi: dict[str, object]
+    runtime_execution_abis: dict[str, dict[str, str]]
 
 
 def _external_static_bundle_arcname(root: Path, path: Path) -> str | None:
@@ -391,8 +406,21 @@ def _runtime_import_abi_manifest(
     )
     return {
         "module": "molt_runtime",
+        "execution_context_abi": {
+            "fingerprint": str(ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT),
+            "suffix": ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX,
+            "section": ATTACHED_EXECUTION_CONTEXT_ABI_SECTION,
+            "thread_record_offset": ATTACHED_CONTEXT_THREAD_RECORD_OFFSET,
+        },
+        "runtime_execution_abis": {
+            logical: {"context": abi.context, "physical_symbol": abi.physical_symbol}
+            for logical, abi in RUNTIME_EXECUTION_ABIS.items()
+        },
         "names": sorted(names),
-        "export_names": _runtime_import_export_names_from_manifest(names),
+        "export_names": {
+            **_runtime_import_export_names_from_manifest(names),
+            **wasm_runtime_lifetime_export_names(),
+        },
         "signatures": _runtime_import_signatures_from_manifest(
             names,
             runtime_export_signatures=runtime_export_signatures,
@@ -408,12 +436,20 @@ def _runtime_import_abi_manifest(
 def _runtime_host_abi_import_names() -> set[str]:
     """Project generated host publication roots into runtime-import ABI keys."""
 
-    return {
-        import_name
-        for export_name in WASM_ESSENTIAL_EXPORTS
-        if (import_name := _runtime_import_name_for_export_from_manifest(export_name))
-        is not None
-    }
+    names: set[str] = set()
+    for logical in WASM_ESSENTIAL_EXPORTS:
+        execution = RUNTIME_EXECUTION_ABIS.get(logical)
+        if (
+            logical in WASM_PUBLIC_C_API_FUNCTION_SIGNATURES
+            and execution is not None
+            and execution.context == "Attached"
+        ):
+            names.add(execution.physical_symbol)
+        elif (
+            name := _runtime_import_name_for_export_from_manifest(logical)
+        ) is not None:
+            names.add(name)
+    return names
 
 
 def _replace_directory_tree_from_source(
@@ -1629,7 +1665,7 @@ def _prepare_non_native_build_result_in_generation(
                 linked_export_signatures
             )
             unexpected_linked_self_imports = linked_self_imports.difference(
-                WASM_OUTPUT_RUNTIME_EXPORT_ALIASES
+                wasm_output_runtime_export_names()
             )
             if unexpected_linked_self_imports:
                 return None, _fail(
@@ -1667,7 +1703,10 @@ def _prepare_non_native_build_result_in_generation(
                             resolved_linked_output.name,
                         )
                     },
-                    "entry": {"module": "linked", "function": "molt_main"},
+                    "entry": {
+                        "module": "linked",
+                        "function": compiled_execution_symbol("molt_main"),
+                    },
                 },
                 indent=2,
             )
@@ -1859,7 +1898,10 @@ def _prepare_non_native_build_result_in_generation(
                 "target_features": target_features,
                 "total_size": app_size + rt_size,
                 "instantiation_order": ["runtime", "app"],
-                "entry": {"module": "app", "function": "molt_main"},
+                "entry": {
+                    "module": "app",
+                    "function": compiled_execution_symbol("molt_main"),
+                },
                 "launch": wasm_execution_manifest_launch(resolved_capability_policy),
             }
             if bundle_manifest is not None:

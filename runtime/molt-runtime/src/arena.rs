@@ -156,8 +156,8 @@ impl ScopeArena {
 
 /// Create a new scope arena. Returns a heap-allocated pointer.
 /// The caller must pair this with `molt_arena_free`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_arena_new() -> *mut ScopeArena {
+
+pub(crate) fn molt_arena_new_attached_body(_py: &crate::PyToken<'_>) -> *mut ScopeArena {
     let Some(arena) = ScopeArena::new() else {
         return std::ptr::null_mut();
     };
@@ -166,8 +166,12 @@ pub extern "C" fn molt_arena_new() -> *mut ScopeArena {
 
 /// Bump-allocate `size` bytes from the arena.
 /// Returns a null pointer if `size` is zero or `arena` is null.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_arena_alloc(arena: *mut ScopeArena, size: u64) -> *mut u8 {
+
+pub(crate) fn molt_arena_alloc_attached_body(
+    _py: &crate::PyToken<'_>,
+    arena: *mut ScopeArena,
+    size: u64,
+) -> *mut u8 {
     if arena.is_null() {
         return std::ptr::null_mut();
     }
@@ -197,12 +201,16 @@ pub extern "C" fn molt_arena_alloc(arena: *mut ScopeArena, size: u64) -> *mut u8
 ///
 /// On null `arena` or arena OOM, returns `MoltObject::none().bits()`, again
 /// matching `molt_alloc`'s failure semantics.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_arena_alloc_object(arena: *mut ScopeArena, size_bits: u64) -> u64 {
+
+pub(crate) fn molt_arena_alloc_object_attached_body(
+    _py: &crate::PyToken<'_>,
+    arena: *mut ScopeArena,
+    size_bits: u64,
+) -> u64 {
     if arena.is_null() {
         return MoltObject::none().bits();
     }
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // SAFETY: the live arena provides aligned storage through the final
         // object DecRef. The shared allocator owns header/extent initialization.
         unsafe {
@@ -215,8 +223,8 @@ pub extern "C" fn molt_arena_alloc_object(arena: *mut ScopeArena, size_bits: u64
 
 /// Reclaim all bump storage after releasing its object owners and metadata.
 /// This costs O(chunks); the arena remains valid for reuse.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_arena_reset(arena: *mut ScopeArena) {
+
+pub(crate) fn molt_arena_reset_attached_body(_py: &crate::PyToken<'_>, arena: *mut ScopeArena) {
     if arena.is_null() {
         return;
     }
@@ -228,8 +236,8 @@ pub extern "C" fn molt_arena_reset(arena: *mut ScopeArena) {
 
 /// Free the arena and its backing storage after releasing every object owner.
 /// After this call, `arena` is dangling and must not be used.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_arena_free(arena: *mut ScopeArena) {
+
+pub(crate) fn molt_arena_free_attached_body(_py: &crate::PyToken<'_>, arena: *mut ScopeArena) {
     if !arena.is_null() {
         // SAFETY: caller guarantees this was returned by `molt_arena_new`
         // and has not been freed yet.
@@ -257,8 +265,8 @@ mod tests {
     fn arena_alloc_object_returns_nan_boxed_pointer() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let arena = molt_arena_new();
-            let bits = molt_arena_alloc_object(arena, 16);
+            let arena = molt_arena_new_attached_body(_py);
+            let bits = molt_arena_alloc_object_attached_body(_py, arena, 16);
             // Recover the underlying pointer from the NaN-boxed bits.
             let obj = MoltObject::from_bits(bits);
             let ptr = obj.as_ptr().expect("expected non-null heap pointer");
@@ -277,16 +285,18 @@ mod tests {
                 );
             }
             crate::dec_ref_bits(_py, bits);
-            molt_arena_free(arena);
+            molt_arena_free_attached_body(_py, arena);
         });
     }
 
     #[test]
     fn arena_alloc_object_handles_null_arena() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        // Null arena must return MoltObject::none().bits() rather than panic.
-        let bits = molt_arena_alloc_object(std::ptr::null_mut(), 16);
-        assert_eq!(bits, MoltObject::none().bits());
+        crate::with_gil_entry_nopanic!(py, {
+            // Null arena must return MoltObject::none().bits() rather than panic.
+            let bits = molt_arena_alloc_object_attached_body(py, std::ptr::null_mut(), 16);
+            assert_eq!(bits, MoltObject::none().bits());
+        });
     }
 
     #[test]
@@ -294,8 +304,8 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             for payload in [16, 131_072] {
-                let arena = molt_arena_new();
-                let bits = molt_arena_alloc_object(arena, payload);
+                let arena = molt_arena_new_attached_body(_py);
+                let bits = molt_arena_alloc_object_attached_body(_py, arena, payload);
                 let ptr = MoltObject::from_bits(bits).as_ptr().unwrap();
                 let child_ptr = crate::alloc_list(_py, &[]);
                 assert!(!child_ptr.is_null());
@@ -306,9 +316,14 @@ mod tests {
                     let extent = crate::object::object_payload_size(ptr);
                     assert!(extent >= payload as usize);
                     let address = crate::provenance::abi::expose_address(ptr);
-                    crate::molt_closure_store(address, 0, child);
-                    crate::molt_closure_store(address, (extent - size_of::<u64>()) as u64, child);
-                    crate::molt_object_publish_initialized(bits);
+                    crate::molt_closure_store_attached_body(_py, address, 0, child);
+                    crate::molt_closure_store_attached_body(
+                        _py,
+                        address,
+                        (extent - size_of::<u64>()) as u64,
+                        child,
+                    );
+                    crate::molt_object_publish_initialized_attached_body(_py, bits);
                     assert!(crate::object::gc::gc_is_tracked(ptr));
                     assert_eq!((*child_header).ref_count_snapshot(), owners + 2);
                     crate::dec_ref_bits(_py, bits);
@@ -320,8 +335,8 @@ mod tests {
                     );
                     crate::dec_ref_bits(_py, child);
                 }
-                molt_arena_reset(arena);
-                molt_arena_free(arena);
+                molt_arena_reset_attached_body(_py, arena);
+                molt_arena_free_attached_body(_py, arena);
                 assert!(!crate::exception_pending(_py));
             }
         });
@@ -331,13 +346,13 @@ mod tests {
     fn arena_boxed_self_cycle_uses_shared_collection_before_storage_reset() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let arena = molt_arena_new();
-            let bits = molt_arena_alloc_object(arena, 8);
+            let arena = molt_arena_new_attached_body(_py);
+            let bits = molt_arena_alloc_object_attached_body(_py, arena, 8);
             let ptr = MoltObject::from_bits(bits).as_ptr().unwrap();
             unsafe {
                 let address = crate::provenance::abi::expose_address(ptr);
-                crate::molt_closure_store(address, 0, bits);
-                crate::molt_object_publish_initialized(bits);
+                crate::molt_closure_store_attached_body(_py, address, 0, bits);
+                crate::molt_object_publish_initialized_attached_body(_py, bits);
                 crate::dec_ref_bits(_py, bits);
                 assert!(crate::object::gc::gc_is_tracked(ptr));
                 crate::object::gc::collect_cycles(_py);
@@ -347,8 +362,8 @@ mod tests {
                     0
                 );
             }
-            molt_arena_reset(arena);
-            molt_arena_free(arena);
+            molt_arena_reset_attached_body(_py, arena);
+            molt_arena_free_attached_body(_py, arena);
             assert!(!crate::exception_pending(_py));
         });
     }
@@ -362,13 +377,13 @@ mod tests {
                 ..Default::default()
             })));
             let _reset = TrackerReset;
-            let arena = molt_arena_new();
+            let arena = molt_arena_new_attached_body(_py);
             assert!(!arena.is_null());
-            let bits = molt_arena_alloc_object(arena, 16);
+            let bits = molt_arena_alloc_object_attached_body(_py, arena, 16);
             assert!(MoltObject::from_bits(bits).as_ptr().is_some());
             crate::dec_ref_bits(_py, bits);
             assert!(crate::resource::with_tracker(|tracker| tracker.on_allocate(1)).is_err());
-            molt_arena_free(arena);
+            molt_arena_free_attached_body(_py, arena);
             assert!(crate::resource::with_tracker(|tracker| tracker.on_allocate(1)).is_ok());
             crate::resource::with_tracker(|tracker| tracker.on_free(1));
         });
@@ -377,49 +392,54 @@ mod tests {
     #[test]
     fn arena_new_respects_resource_limit_without_aborting() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
-            max_memory: Some(SCOPE_ARENA_CHUNK_SIZE - 1),
-            ..Default::default()
-        })));
-        let _reset = TrackerReset;
+        crate::with_gil_entry_nopanic!(py, {
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_memory: Some(SCOPE_ARENA_CHUNK_SIZE - 1),
+                ..Default::default()
+            })));
+            let _reset = TrackerReset;
 
-        let arena = molt_arena_new();
-        assert!(
-            arena.is_null(),
-            "arena creation must fail closed when the first chunk exceeds the resource cap"
-        );
+            let arena = molt_arena_new_attached_body(py);
+            assert!(
+                arena.is_null(),
+                "arena creation must fail closed when the first chunk exceeds the resource cap"
+            );
+        });
     }
 
     #[test]
     fn denied_arena_slow_chunk_does_not_poison_existing_chunk() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
-            max_memory: Some(SCOPE_ARENA_CHUNK_SIZE),
-            ..Default::default()
-        })));
-        let _reset = TrackerReset;
+        crate::with_gil_entry_nopanic!(py, {
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_memory: Some(SCOPE_ARENA_CHUNK_SIZE),
+                ..Default::default()
+            })));
+            let _reset = TrackerReset;
 
-        let arena = molt_arena_new();
-        assert!(!arena.is_null());
+            let arena = molt_arena_new_attached_body(py);
+            assert!(!arena.is_null());
 
-        let denied = molt_arena_alloc(arena, (SCOPE_ARENA_CHUNK_SIZE + 8) as u64);
-        assert!(denied.is_null());
+            let denied =
+                molt_arena_alloc_attached_body(py, arena, (SCOPE_ARENA_CHUNK_SIZE + 8) as u64);
+            assert!(denied.is_null());
 
-        let allowed = molt_arena_alloc(arena, 8);
-        assert!(
-            !allowed.is_null(),
-            "denied slow-path chunk allocation must leave the existing chunk usable"
-        );
-        molt_arena_free(arena);
+            let allowed = molt_arena_alloc_attached_body(py, arena, 8);
+            assert!(
+                !allowed.is_null(),
+                "denied slow-path chunk allocation must leave the existing chunk usable"
+            );
+            molt_arena_free_attached_body(py, arena);
+        });
     }
 
     #[test]
     fn arena_alloc_object_alignment_and_isolation() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let arena = molt_arena_new();
-            let bits1 = molt_arena_alloc_object(arena, 32);
-            let bits2 = molt_arena_alloc_object(arena, 32);
+            let arena = molt_arena_new_attached_body(_py);
+            let bits1 = molt_arena_alloc_object_attached_body(_py, arena, 32);
+            let bits2 = molt_arena_alloc_object_attached_body(_py, arena, 32);
             let p1 = MoltObject::from_bits(bits1).as_ptr().unwrap() as usize;
             let p2 = MoltObject::from_bits(bits2).as_ptr().unwrap() as usize;
             assert_ne!(p1, p2, "consecutive arena allocs must not alias");
@@ -435,7 +455,9 @@ mod tests {
             );
             crate::dec_ref_bits(_py, bits1);
             crate::dec_ref_bits(_py, bits2);
-            molt_arena_free(arena);
+            molt_arena_free_attached_body(_py, arena);
         });
     }
 }
+
+include!("attached_exports_generated/arena.rs");

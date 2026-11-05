@@ -2,9 +2,10 @@ use super::boxed::emit_boxed_binary_call;
 use super::operands::BinaryOperands;
 use crate::wasm::{WasmFrameLocals, WasmFrameSyntheticLocal};
 use crate::wasm_abi_generated::{WasmNumericOpLoopKind, WasmRuntimeImport};
+use crate::wasm_binary::Function;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::emit_f64_to_i64_canonical;
-use wasm_encoder::{BlockType, Function, Instruction, ValType};
+use wasm_encoder::{BlockType, Instruction, ValType};
 
 pub(in crate::wasm::op_loop::numeric_ops) fn emit_plain_f64_binary_result(
     func: &mut Function,

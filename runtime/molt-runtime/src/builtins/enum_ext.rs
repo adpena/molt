@@ -29,9 +29,13 @@ fn flag_bits_from_obj(obj_bits: u64) -> Option<i64> {
 // ─── Public intrinsics: Flag / IntFlag ───────────────────────────────────────
 
 /// Flag.__or__: a | b → combined bitmask.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_enum_flag_or(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_enum_flag_or_attached_body(
+    _py: &crate::PyToken<'_>,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let (Some(a), Some(b)) = (flag_bits_from_obj(a_bits), flag_bits_from_obj(b_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -44,9 +48,13 @@ pub extern "C" fn molt_enum_flag_or(a_bits: u64, b_bits: u64) -> u64 {
 }
 
 /// Flag.__and__: a & b → intersection bitmask.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_enum_flag_and(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_enum_flag_and_attached_body(
+    _py: &crate::PyToken<'_>,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let (Some(a), Some(b)) = (flag_bits_from_obj(a_bits), flag_bits_from_obj(b_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -59,9 +67,13 @@ pub extern "C" fn molt_enum_flag_and(a_bits: u64, b_bits: u64) -> u64 {
 }
 
 /// Flag.__xor__: a ^ b → XOR bitmask.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_enum_flag_xor(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_enum_flag_xor_attached_body(
+    _py: &crate::PyToken<'_>,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let (Some(a), Some(b)) = (flag_bits_from_obj(a_bits), flag_bits_from_obj(b_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -77,9 +89,9 @@ pub extern "C" fn molt_enum_flag_xor(a_bits: u64, b_bits: u64) -> u64 {
 /// complement.  CPython's Flag uses the boundary of the "pseudo-member" set to
 /// invert, but for the low-level intrinsic we return ~a (all bits flipped as i64)
 /// and let the Python wrapper mask to the valid member bits.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_enum_flag_invert(a_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_enum_flag_invert_attached_body(_py: &crate::PyToken<'_>, a_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(a) = flag_bits_from_obj(a_bits) else {
             return raise_exception::<_>(
                 _py,
@@ -93,9 +105,13 @@ pub extern "C" fn molt_enum_flag_invert(a_bits: u64) -> u64 {
 
 /// Flag.__contains__: check whether all bits of `b` are set in `a`.
 /// Returns True if (a & b) == b (i.e. b is a submask of a).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_enum_flag_contains(a_bits: u64, b_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_enum_flag_contains_attached_body(
+    _py: &crate::PyToken<'_>,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let (Some(a), Some(b)) = (flag_bits_from_obj(a_bits), flag_bits_from_obj(b_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -114,9 +130,12 @@ pub extern "C" fn molt_enum_flag_contains(a_bits: u64, b_bits: u64) -> u64 {
 ///
 /// Returns an empty list for value 0.
 /// Negative values (sign bit set) are treated as their unsigned u64 bit pattern.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_enum_flag_decompose(value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_enum_flag_decompose_attached_body(
+    _py: &crate::PyToken<'_>,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(val) = flag_bits_from_obj(value_bits) else {
             return raise_exception::<_>(
                 _py,
@@ -160,9 +179,9 @@ pub extern "C" fn molt_enum_flag_decompose(value_bits: u64) -> u64 {
 /// layer can use as the seed.
 ///
 /// Returns: `count + 1` as a NaN-boxed int.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_enum_auto_value(count_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_enum_auto_value_attached_body(_py: &crate::PyToken<'_>, count_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(count) = to_i64(obj_from_bits(count_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -197,9 +216,12 @@ pub extern "C" fn molt_enum_auto_value(count_bits: u64) -> u64 {
 /// or Molt property attributes fget/fset/fdel).
 ///
 /// Returns True/False as NaN-boxed bool.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_enum_is_descriptor(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_enum_is_descriptor_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() {
             let type_id = unsafe { object_type_id(obj_ptr) };
             if matches!(
@@ -243,9 +265,9 @@ pub extern "C" fn molt_enum_is_descriptor(obj_bits: u64) -> u64 {
 /// Check whether an object is an auto() sentinel (has _molt_auto == True).
 ///
 /// Returns True/False as NaN-boxed bool.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_enum_is_auto(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_enum_is_auto_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let owner_bits = type_of_bits(_py, obj_bits);
         let Some(owner_ptr) = obj_from_bits(owner_bits).as_ptr() else {
             return MoltObject::from_bool(false).bits();
@@ -274,9 +296,9 @@ pub extern "C" fn molt_enum_is_auto(obj_bits: u64) -> u64 {
 /// `name_bits` must be a str object.  Returns str.
 ///
 /// CPython's StrEnum._generate_next_value_ returns `name.lower()`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_enum_str_value(name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_enum_str_value_attached_body(_py: &crate::PyToken<'_>, name_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(name_bits);
         if !obj
             .as_ptr()
@@ -286,7 +308,7 @@ pub extern "C" fn molt_enum_str_value(name_bits: u64) -> u64 {
             let msg = format!("StrEnum name must be str, not {tn}");
             return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
-        crate::object::ops_string::molt_string_lower(name_bits)
+        crate::object::ops_string::molt_string_lower_attached_body(_py, name_bits)
     })
 }
 
@@ -305,9 +327,14 @@ pub extern "C" fn molt_enum_str_value(name_bits: u64) -> u64 {
 /// `name_bits`:    str — the enum class name
 /// `members_bits`: list of (str, value) 2-tuples
 /// `bases_bits`:   tuple of base classes or None
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_enum_create(name_bits: u64, members_bits: u64, bases_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_enum_create_attached_body(
+    _py: &crate::PyToken<'_>,
+    name_bits: u64,
+    members_bits: u64,
+    bases_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // Validate name
         let name_obj = obj_from_bits(name_bits);
         if name_obj.is_none() {
@@ -426,9 +453,13 @@ pub extern "C" fn molt_enum_create(name_bits: u64, members_bits: u64, bases_bits
 ///
 /// `cls_bits`:   the enum class (type object)
 /// `value_bits`: the value to look up
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_enum_member(cls_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_enum_member_attached_body(
+    _py: &crate::PyToken<'_>,
+    cls_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(attr_key) = crate::NameId::DunderMembers.owned_bits(_py) else {
             return MoltObject::none().bits();
         };
@@ -497,3 +528,5 @@ pub extern "C" fn molt_enum_member(cls_bits: u64, value_bits: u64) -> u64 {
         result
     })
 }
+
+include!("../attached_exports_generated/builtins/enum_ext.rs");

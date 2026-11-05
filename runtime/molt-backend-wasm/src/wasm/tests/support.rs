@@ -5,8 +5,9 @@ pub(super) use crate::wasm::lir_fast::is_production_lir_wasm_fast_path_name;
 pub(super) use crate::wasm_abi::{
     CALL_INDIRECT_IMPORTS, POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT,
     RESERVED_RUNTIME_CALLABLE_SPECS, ReservedRuntimeCallableDispatch, WasmRuntimeImport,
-    wasm_runtime_export_name, wasm_runtime_import,
+    wasm_runtime_import,
 };
+pub(super) use crate::wasm_abi_generated::wasm_runtime_export_name;
 pub(super) use crate::wasm_options::RELOC_TABLE_BASE_DEFAULT;
 pub(super) use crate::wasm_plan::{
     is_shared_drop_fact_marker, wasm_scalar_integer_fast_path_for_op,
@@ -226,7 +227,7 @@ pub(super) fn wasm_function_import_names(wasm: &[u8]) -> Vec<String> {
             for import in reader.into_imports() {
                 let import = import.expect("valid WASM import");
                 if matches!(import.ty, TypeRef::Func(_) | TypeRef::FuncExact(_)) {
-                    imports.push(import.name.to_string());
+                    imports.push(logical_export_name(import.name).to_string());
                 }
             }
         }
@@ -240,7 +241,10 @@ pub(super) fn wasm_function_import_modules(wasm: &[u8]) -> BTreeMap<String, Stri
         if let Ok(Payload::ImportSection(reader)) = payload {
             for import in reader.into_imports().flatten() {
                 if matches!(import.ty, TypeRef::Func(_) | TypeRef::FuncExact(_)) {
-                    imports.insert(import.name.to_string(), import.module.to_string());
+                    imports.insert(
+                        logical_export_name(import.name).to_string(),
+                        import.module.to_string(),
+                    );
                 }
             }
         }
@@ -257,7 +261,7 @@ pub(super) fn wasm_function_import_type_indices(wasm: &[u8]) -> BTreeMap<String,
                     TypeRef::Func(idx) | TypeRef::FuncExact(idx) => idx,
                     _ => continue,
                 };
-                imports.insert(import.name.to_string(), type_idx);
+                imports.insert(logical_export_name(import.name).to_string(), type_idx);
             }
         }
     }
@@ -271,7 +275,7 @@ pub(super) fn wasm_function_import_indices(wasm: &[u8]) -> BTreeMap<String, u32>
         if let Ok(Payload::ImportSection(reader)) = payload {
             for import in reader.into_imports().flatten() {
                 if matches!(import.ty, TypeRef::Func(_) | TypeRef::FuncExact(_)) {
-                    imports.insert(import.name.to_string(), func_index);
+                    imports.insert(logical_export_name(import.name).to_string(), func_index);
                     func_index += 1;
                 }
             }
@@ -441,7 +445,7 @@ pub(super) fn wasm_function_exports(wasm: &[u8]) -> BTreeSet<String> {
         if let Ok(Payload::ExportSection(reader)) = payload {
             for export in reader.into_iter().flatten() {
                 if export.kind == ExternalKind::Func {
-                    exports.insert(export.name.to_string());
+                    exports.insert(logical_export_name(export.name).to_string());
                 }
             }
         }
@@ -456,12 +460,21 @@ pub(super) fn wasm_function_export_indices(wasm: &[u8]) -> BTreeMap<String, u32>
             for export in reader {
                 let export = export.expect("valid WASM export");
                 if export.kind == ExternalKind::Func {
-                    exports.insert(export.name.to_string(), export.index);
+                    exports.insert(logical_export_name(export.name).to_string(), export.index);
                 }
             }
         }
     }
     exports
+}
+
+/// Inspection helpers address source identities; the binary retains only the
+/// generated physical identity. Boundary exports have no attached suffix.
+fn logical_export_name(name: &str) -> &str {
+    name.strip_suffix(
+        molt_ir::runtime_callable_abi_generated::ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX,
+    )
+    .unwrap_or(name)
 }
 
 pub(super) fn wasm_type_section_signatures(wasm: &[u8]) -> Vec<(usize, usize)> {

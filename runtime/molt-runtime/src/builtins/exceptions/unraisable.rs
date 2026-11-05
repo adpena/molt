@@ -4,7 +4,10 @@ use super::raised_state::{
     RaisedSnapshot, discard_current_raised, release_raised, resolve_raised, take_raised,
 };
 use super::*;
-use crate::{call_callable1, molt_is_callable, molt_sys_stderr, object_class_bits};
+use crate::{
+    call_callable1, molt_is_callable_attached_body, molt_sys_stderr_attached_body,
+    object_class_bits,
+};
 
 fn try_join_text(parts: &[&str]) -> Option<String> {
     let capacity = parts
@@ -407,7 +410,7 @@ pub(crate) fn context_repr(_py: &PyToken<'_>, context_bits: u64) -> String {
     if obj_from_bits(context_bits).is_none() {
         return "<callback>".to_string();
     }
-    let repr_bits = crate::molt_repr_from_obj(context_bits);
+    let repr_bits = crate::molt_repr_from_obj_attached_body(_py, context_bits);
     if exception_pending(_py) {
         discard_current_raised(_py);
         return "<callback>".to_string();
@@ -493,9 +496,12 @@ fn unraisable_args_is_exact(_py: &PyToken<'_>, bits: u64) -> bool {
 ///
 /// The hidden struct-sequence type is runtime-owned and intentionally absent
 /// from `sys`; name/module/shape checks would let user classes spoof it.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_unraisable_hook_args_is_exact(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_unraisable_hook_args_is_exact_attached_body(
+    _py: &crate::PyToken<'_>,
+    bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         MoltObject::from_bool(unraisable_args_is_exact(_py, bits)).bits()
     })
 }
@@ -575,7 +581,10 @@ fn try_hook(
 ) -> HookOutcome {
     let hook_bits = sys_attr_bits(_py, crate::NameId::Unraisablehook);
     if obj_from_bits(hook_bits).is_none()
-        || !is_truthy(_py, obj_from_bits(molt_is_callable(hook_bits)))
+        || !is_truthy(
+            _py,
+            obj_from_bits(molt_is_callable_attached_body(_py, hook_bits)),
+        )
     {
         if !obj_from_bits(hook_bits).is_none() {
             dec_ref_bits(_py, hook_bits);
@@ -635,13 +644,14 @@ fn write_stderr_line(_py: &PyToken<'_>, text: &str) {
     let args_bits = MoltObject::from_ptr(args_ptr).bits();
     let stderr_bits = sys_attr_bits(_py, crate::NameId::Stderr);
     let stderr_bits = if obj_from_bits(stderr_bits).is_none() {
-        molt_sys_stderr()
+        molt_sys_stderr_attached_body(_py)
     } else {
         stderr_bits
     };
     if !obj_from_bits(stderr_bits).is_none() {
         let none = MoltObject::none().bits();
-        let out = crate::molt_print_builtin(
+        let out = crate::molt_print_builtin_attached_body(
+            _py,
             args_bits,
             none,
             none,
@@ -701,7 +711,7 @@ fn report_unraisable_exception(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::molt_get_attr_name;
+    use crate::molt_get_attr_name_attached_body;
 
     fn ref_count(bits: u64) -> u32 {
         let ptr = obj_from_bits(bits).as_ptr().expect("heap object");
@@ -744,11 +754,15 @@ mod tests {
             assert!(unraisable_args_is_exact(_py, args_bits));
             assert!(!unraisable_args_is_exact(_py, none));
             assert_eq!(
-                obj_from_bits(molt_unraisable_hook_args_is_exact(args_bits)).as_bool(),
+                obj_from_bits(molt_unraisable_hook_args_is_exact_attached_body(
+                    _py, args_bits
+                ))
+                .as_bool(),
                 Some(true)
             );
             assert_eq!(
-                obj_from_bits(molt_unraisable_hook_args_is_exact(none)).as_bool(),
+                obj_from_bits(molt_unraisable_hook_args_is_exact_attached_body(_py, none))
+                    .as_bool(),
                 Some(false)
             );
 
@@ -767,7 +781,7 @@ mod tests {
             let field_name_ptr = alloc_string(_py, b"exc_value");
             assert!(!field_name_ptr.is_null());
             let field_name_bits = MoltObject::from_ptr(field_name_ptr).bits();
-            let field_bits = molt_get_attr_name(args_bits, field_name_bits);
+            let field_bits = molt_get_attr_name_attached_body(_py, args_bits, field_name_bits);
             assert_eq!(field_bits, fields[1]);
             dec_ref_bits(_py, field_bits);
             dec_ref_bits(_py, field_name_bits);
@@ -799,7 +813,7 @@ mod tests {
                 Some("UnraisableHookArgs".to_string())
             );
             let module_name = crate::dynamic_attr_name_bits(_py, b"__module__").unwrap();
-            let module = molt_get_attr_name(class_bits, module_name);
+            let module = molt_get_attr_name_attached_body(_py, class_bits, module_name);
             assert!(!exception_pending(_py));
             assert_eq!(
                 string_obj_to_owned(obj_from_bits(module)),
@@ -840,7 +854,7 @@ mod tests {
                 },
                 class_bits
             );
-            let bound_repr = molt_get_attr_name(args_bits, repr_name_bits);
+            let bound_repr = molt_get_attr_name_attached_body(_py, args_bits, repr_name_bits);
             assert!(!exception_pending(_py));
             let repr_bits = unsafe { crate::call_callable0(_py, bound_repr) };
             assert!(
@@ -850,8 +864,12 @@ mod tests {
             assert_eq!(string_obj_to_owned(obj_from_bits(repr_bits)), Some("UnraisableHookArgs(exc_type=1, exc_value=2, exc_traceback=None, err_msg=4, object=True)".to_string()));
             dec_ref_bits(_py, repr_bits);
             dec_ref_bits(_py, bound_repr);
-            let class_mutation =
-                crate::molt_set_attr_name(class_bits, repr_name_bits, MoltObject::none().bits());
+            let class_mutation = crate::molt_set_attr_name_attached_body(
+                _py,
+                class_bits,
+                repr_name_bits,
+                MoltObject::none().bits(),
+            );
             assert_eq!(
                 class_mutation, none,
                 "setattr reports failure through the exception channel"
@@ -868,15 +886,16 @@ mod tests {
             assert!(!source_ptr.is_null());
             let source_bits = MoltObject::from_ptr(source_ptr).bits();
             let new_name = dynamic_attr_name_bits(_py, b"__new__").unwrap();
-            let constructor = molt_get_attr_name(args_bits, new_name);
+            let constructor = molt_get_attr_name_attached_body(_py, args_bits, new_name);
             assert_eq!(constructor, class_dict_value(_py, class_bits, "__new__"));
-            let builder = crate::molt_callargs_new(
+            let builder = crate::molt_callargs_new_attached_body(
+                _py,
                 MoltObject::from_int(2).bits(),
                 MoltObject::from_int(0).bits(),
             );
-            unsafe { crate::molt_callargs_push_pos(builder, class_bits) };
-            unsafe { crate::molt_callargs_push_pos(builder, source_bits) };
-            let constructed_bits = crate::molt_call_bind(constructor, builder);
+            unsafe { crate::molt_callargs_push_pos_attached_body(_py, builder, class_bits) };
+            unsafe { crate::molt_callargs_push_pos_attached_body(_py, builder, source_bits) };
+            let constructed_bits = crate::molt_call_bind_attached_body(_py, constructor, builder);
             assert!(
                 !exception_pending(_py),
                 "nonbinding constructor must retain its optional argument"
@@ -888,7 +907,7 @@ mod tests {
             dec_ref_bits(_py, constructed_bits);
             dec_ref_bits(_py, source_bits);
 
-            let repr_bits = crate::molt_repr_from_obj(args_bits);
+            let repr_bits = crate::molt_repr_from_obj_attached_body(_py, args_bits);
             assert_eq!(
                 string_obj_to_owned(obj_from_bits(repr_bits)),
                 Some(
@@ -901,7 +920,8 @@ mod tests {
             let err_name_ptr = alloc_string(_py, b"err_msg");
             assert!(!err_name_ptr.is_null());
             let err_name_bits = MoltObject::from_ptr(err_name_ptr).bits();
-            let result = crate::molt_set_attr_name(
+            let result = crate::molt_set_attr_name_attached_body(
+                _py,
                 args_bits,
                 err_name_bits,
                 MoltObject::from_int(99).bits(),
@@ -915,7 +935,7 @@ mod tests {
                 "structured tuple fields are readonly"
             );
             clear_exception(_py);
-            let field = molt_get_attr_name(args_bits, err_name_bits);
+            let field = molt_get_attr_name_attached_body(_py, args_bits, err_name_bits);
             assert!(!exception_pending(_py));
             assert_eq!(field, fields[3]);
             dec_ref_bits(_py, field);
@@ -1201,3 +1221,5 @@ mod tests {
         );
     }
 }
+
+include!("../../attached_exports_generated/builtins/exceptions/unraisable.rs");

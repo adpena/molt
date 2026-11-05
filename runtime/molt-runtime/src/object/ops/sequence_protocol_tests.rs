@@ -26,7 +26,7 @@ fn sequence_slice_failed_publication_retains_error_and_original_storage() {
             0,
         );
         assert_eq!(status, -1);
-        let raised = crate::builtins::exceptions::molt_exception_last_pending();
+        let raised = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
         assert!(!obj_from_bits(raised).is_none());
         let raised_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(raised);
         assert!(!raised_view.is_null());
@@ -84,28 +84,47 @@ fn cold_projection_preserves_independent_raised_channels() {
     });
 }
 
-extern "C" fn forbidden_storage_iteration(_: u64) -> u64 {
-    crate::with_gil(|py| {
+extern "C" fn forbidden_storage_iteration(__context: u64, _: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         crate::raise_exception::<u64>(&py, BuiltinExc::AssertionError, "iterated list storage")
-    })
+    }
 }
 
-extern "C" fn replacement_iteration(_: u64) -> u64 {
-    crate::with_gil(|py| {
-        let values =
-            MoltObject::from_ptr(crate::alloc_list(&py, &[MoltObject::from_int(9).bits()])).bits();
-        let iterator = crate::molt_iter(values);
-        dec_ref_bits(&py, values);
-        iterator
-    })
+extern "C" fn replacement_iteration(__context: u64, _: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        {
+            let values =
+                MoltObject::from_ptr(crate::alloc_list(&py, &[MoltObject::from_int(9).bits()]))
+                    .bits();
+            let iterator = crate::molt_iter_attached_body(py, values);
+            dec_ref_bits(&py, values);
+            iterator
+        }
+    }
 }
 
 unsafe fn list_subtype(py: &PyToken<'_>, iter: *const ()) -> u64 {
     unsafe {
         let name = crate::dynamic_attr_name_bits(py, b"SequenceProtocolList").unwrap();
-        let class = crate::molt_class_new(name);
+        let class = crate::molt_class_new_attached_body(py, name);
         dec_ref_bits(py, name);
-        crate::molt_class_set_base(class, builtin_classes(py).list);
+        crate::molt_class_set_base_attached_body(py, class, builtin_classes(py).list);
         let method = MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
             py,
             crate::provenance::abi::expose_function_address(iter),
@@ -113,7 +132,7 @@ unsafe fn list_subtype(py: &PyToken<'_>, iter: *const ()) -> u64 {
         ))
         .bits();
         let key = crate::dynamic_attr_name_bits(py, b"__iter__").unwrap();
-        crate::molt_set_attr_name(class, key, method);
+        crate::molt_set_attr_name_attached_body(py, class, key, method);
         dec_ref_bits(py, key);
         dec_ref_bits(py, method);
         crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap()).unwrap();
@@ -130,10 +149,10 @@ fn sequence_materialization_separates_subtype_iteration_from_list_storage_mutati
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
         let destination = list_subtype(&py, forbidden_storage_iteration as *const ());
-        crate::molt_list_append(destination, MoltObject::from_int(1).bits());
-        crate::molt_list_append(destination, MoltObject::from_int(2).bits());
+        crate::molt_list_append_attached_body(py, destination, MoltObject::from_int(1).bits());
+        crate::molt_list_append_attached_body(py, destination, MoltObject::from_int(2).bits());
         let source = list_subtype(&py, replacement_iteration as *const ());
-        crate::molt_list_append(source, MoltObject::from_int(5).bits());
+        crate::molt_list_append_attached_body(py, source, MoltObject::from_int(5).bits());
         let dest_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(destination);
         let source_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(source);
         assert!(!dest_view.is_null() && !source_view.is_null());
@@ -400,10 +419,12 @@ fn sequence_headers_share_admission_materialization_and_pending_error_custody() 
             drop(observed_owner);
             drop(incoming_owner);
             crate::raise_exception::<()>(&py, BuiltinExc::LookupError, "incoming runtime error");
-            let incoming = crate::builtins::exceptions::molt_exception_last_pending();
+            let incoming =
+                crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
             assert_eq!(probe(list_view), 1);
             assert_eq!(probe(dict_view), 0);
-            let observed = crate::builtins::exceptions::molt_exception_last_pending();
+            let observed =
+                crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
             assert_eq!(observed, incoming);
             crate::clear_exception(&py);
             dec_ref_bits(&py, observed);
@@ -454,14 +475,31 @@ thread_local! {
     };
 }
 
-extern "C" fn projection_self_iter(value: u64) -> u64 {
-    crate::with_gil(|py| {
-        inc_ref_bits(&py, value);
-        value
-    })
+extern "C" fn projection_self_iter(__context: u64, value: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        {
+            inc_ref_bits(&py, value);
+            value
+        }
+    }
 }
 
-extern "C" fn projection_next(_: u64) -> u64 {
+extern "C" fn projection_next(__context: u64, _: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     PROJECTION_NEXT.with(|state| {
         let (step, exception) = state.get();
         state.set((step + 1, exception));
@@ -469,12 +507,19 @@ extern "C" fn projection_next(_: u64) -> u64 {
             // A zero handle payload is a successful Python float, not NULL.
             MoltObject::from_float(0.0).bits()
         } else {
-            crate::molt_raise(exception)
+            crate::molt_raise_attached_body(__py, exception)
         }
     })
 }
 
-extern "C" fn projection_replaced_next(_: u64) -> u64 {
+extern "C" fn projection_replaced_next(__context: u64, _: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::from_int(41).bits()
 }
 
@@ -486,7 +531,7 @@ fn projection_install(py: &PyToken<'_>, class: u64, name: &[u8], callback: *cons
     ))
     .bits();
     let key = crate::dynamic_attr_name_bits(py, name).unwrap();
-    crate::molt_set_attr_name(class, key, method);
+    crate::molt_set_attr_name_attached_body(py, class, key, method);
     dec_ref_bits(py, key);
     dec_ref_bits(py, method);
     assert!(!crate::exception_pending(py));
@@ -498,9 +543,9 @@ fn managed_iteration_preserves_owned_values_completion_and_live_class_lookup() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
         let name = crate::dynamic_attr_name_bits(&py, b"ProjectedIterator").unwrap();
-        let class = crate::molt_class_new(name);
+        let class = crate::molt_class_new_attached_body(py, name);
         dec_ref_bits(&py, name);
-        crate::molt_class_set_base(class, builtin_classes(&py).object);
+        crate::molt_class_set_base_attached_body(py, class, builtin_classes(&py).object);
         projection_install(&py, class, b"__iter__", projection_self_iter as *const ());
         projection_install(&py, class, b"__next__", projection_next as *const ());
         crate::object::class_finish_definition(&py, obj_from_bits(class).as_ptr().unwrap())
@@ -517,7 +562,7 @@ fn managed_iteration_preserves_owned_values_completion_and_live_class_lookup() {
         ))
         .bits();
         let value_name = crate::dynamic_attr_name_bits(&py, b"value").unwrap();
-        crate::molt_set_attr_name(stop, value_name, payload);
+        crate::molt_set_attr_name_attached_body(py, stop, value_name, payload);
         dec_ref_bits(&py, value_name);
         assert!(!crate::exception_pending(&py));
         PROJECTION_NEXT.with(|state| state.set((0, stop)));
@@ -622,7 +667,14 @@ fn managed_iteration_rejects_noniterator_results_and_noniterable_values() {
     });
 }
 
-extern "C" fn indexed_read_short_length(_: u64) -> u64 {
+extern "C" fn indexed_read_short_length(__context: u64, _: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::from_int(1).bits()
 }
 
@@ -634,7 +686,7 @@ fn indexed_reads_share_inherited_slots_and_normalize_negative_indices_once() {
     crate::with_gil(|py| unsafe {
         let list = list_subtype(&py, forbidden_storage_iteration as *const ());
         for item in [11, 22, 33] {
-            crate::molt_list_append(list, MoltObject::from_int(item).bits());
+            crate::molt_list_append_attached_body(py, list, MoltObject::from_int(item).bits());
         }
         let view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(list);
         assert_eq!(sequence_check_bits(&py, list), 1);
@@ -724,7 +776,14 @@ fn indexed_foreign_reads_use_native_slots_and_preserve_result_ownership() {
     });
 }
 
-extern "C" fn replacement_list_inplace_repeat(_: u64, _: u64) -> u64 {
+extern "C" fn replacement_list_inplace_repeat(__context: u64, _: u64, _: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::from_int(71).bits()
 }
 
@@ -736,8 +795,8 @@ fn list_root_sequence_slots_preserve_storage_and_follow_override_mutation() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
         let value = list_subtype(&py, forbidden_storage_iteration as *const ());
-        crate::molt_list_append(value, MoltObject::from_int(1).bits());
-        crate::molt_list_append(value, MoltObject::from_int(2).bits());
+        crate::molt_list_append_attached_body(py, value, MoltObject::from_int(1).bits());
+        crate::molt_list_append_attached_body(py, value, MoltObject::from_int(2).bits());
         let class = crate::type_of_bits(&py, value);
         let view = OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(value));
         let class_view =
@@ -829,7 +888,7 @@ fn list_root_sequence_slots_preserve_storage_and_follow_override_mutation() {
         ))
         .bits();
         let key = crate::dynamic_attr_name_bits(&py, b"__imul__").unwrap();
-        crate::molt_set_attr_name(class, key, method);
+        crate::molt_set_attr_name_attached_body(py, class, key, method);
         assert!(!crate::exception_pending(&py));
         assert!(
             typeobj::PyType_GetSlot(class_view.as_ptr().cast(), slots::Py_sq_inplace_repeat)
@@ -853,7 +912,7 @@ fn list_root_sequence_slots_preserve_storage_and_follow_override_mutation() {
         assert!(!overridden.as_ptr().is_null());
         assert_eq!(numbers::PyLong_AsLongLong(overridden.as_ptr()), 71);
         assert_eq!(sequences::PyList_Size(view.as_ptr()), 7);
-        crate::molt_del_attr_name(class, key);
+        crate::molt_del_attr_name_attached_body(py, class, key);
         assert!(!crate::exception_pending(&py));
         assert_eq!(
             typeobj::PyType_GetSlot(class_view.as_ptr().cast(), slots::Py_sq_inplace_repeat),
@@ -1276,7 +1335,8 @@ fn builtin_container_number_tables_preserve_alias_and_view_fallback() {
             .unwrap()
             .bits();
         let keys = OwnedPyObject::from_owned(
-            GLOBAL_BRIDGE.owned_handle_to_pyobj(crate::molt_dict_keys(dictionary_bits)),
+            GLOBAL_BRIDGE
+                .owned_handle_to_pyobj(crate::molt_dict_keys_attached_body(py, dictionary_bits)),
         );
         let declined = OwnedPyObject::from_owned(raw(left.as_ptr(), keys.as_ptr()));
         assert_eq!(

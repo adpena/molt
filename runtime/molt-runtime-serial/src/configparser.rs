@@ -309,7 +309,9 @@ unsafe extern "C" fn configparser_runtime_state_init() -> *mut u8 {
     Box::into_raw(Box::new(ConfigparserRuntimeState::new())) as *mut u8
 }
 
-unsafe extern "C" fn configparser_runtime_state_clear(ptr: *mut u8) {
+unsafe extern "C" fn configparser_runtime_state_clear(__context: u64, ptr: *mut u8) {
+    let _py = unsafe { molt_runtime_core::PyToken::from_attached_context(__context) };
+
     if ptr.is_null() {
         return;
     }
@@ -327,8 +329,9 @@ unsafe extern "C" fn configparser_runtime_state_drop(ptr: *mut u8) {
     }
 }
 
-fn configparser_state() -> &'static ConfigparserRuntimeState {
+fn configparser_state(py: &molt_runtime_core::PyToken) -> &'static ConfigparserRuntimeState {
     let ptr = crate::bridge::runtime_state_get_or_init(
+        py,
         b"molt-runtime-serial/configparser/v1",
         configparser_runtime_state_init,
         configparser_runtime_state_clear,
@@ -341,12 +344,12 @@ fn configparser_state() -> &'static ConfigparserRuntimeState {
     unsafe { &*(ptr as *const ConfigparserRuntimeState) }
 }
 
-fn config_registry() -> &'static Mutex<HashMap<i64, ConfigState>> {
-    &configparser_state().config_registry
+fn config_registry(py: &molt_runtime_core::PyToken) -> &'static Mutex<HashMap<i64, ConfigState>> {
+    &configparser_state(py).config_registry
 }
 
-fn next_handle_id() -> i64 {
-    configparser_state()
+fn next_handle_id(py: &molt_runtime_core::PyToken) -> i64 {
+    configparser_state(py)
         .next_handle_id
         .fetch_add(1, Ordering::Relaxed)
 }
@@ -430,9 +433,12 @@ fn string_pairs_to_list(_py: &PyToken, pairs: &[(String, String)]) -> u64 {
 // Public FFI
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_new(defaults_bits: u64, interpolation_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_configparser_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    defaults_bits: u64,
+    interpolation_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         // `defaults_bits` is a dict of str→str or None.
         let defaults = if obj_from_bits(defaults_bits).is_none() {
             SectionMap::new()
@@ -471,8 +477,8 @@ pub extern "C" fn molt_configparser_new(defaults_bits: u64, interpolation_bits: 
             _ => Interpolation::Basic,
         };
 
-        let id = next_handle_id();
-        config_registry()
+        let id = next_handle_id(_py);
+        config_registry(_py)
             .lock()
             .unwrap()
             .insert(id, ConfigState::new(defaults, interpolation));
@@ -480,9 +486,12 @@ pub extern "C" fn molt_configparser_new(defaults_bits: u64, interpolation_bits: 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_read(handle_bits: u64, filename_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_configparser_read_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    filename_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -507,10 +516,14 @@ pub extern "C" fn molt_configparser_read(handle_bits: u64, filename_bits: u64) -
             }
         };
 
-        let ok = config_registry().lock().unwrap().get_mut(&id).map(|state| {
-            state.read_string(&content);
-            true
-        });
+        let ok = config_registry(_py)
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .map(|state| {
+                state.read_string(&content);
+                true
+            });
         if ok.is_none() {
             return raise_exception::<u64>(
                 _py,
@@ -534,9 +547,12 @@ pub extern "C" fn molt_configparser_read(handle_bits: u64, filename_bits: u64) -
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_read_string(handle_bits: u64, text_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_configparser_read_string_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    text_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -547,9 +563,13 @@ pub extern "C" fn molt_configparser_read_string(handle_bits: u64, text_bits: u64
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "text must be str");
         };
-        let ok = config_registry().lock().unwrap().get_mut(&id).map(|state| {
-            state.read_string(&text);
-        });
+        let ok = config_registry(_py)
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .map(|state| {
+                state.read_string(&text);
+            });
         if ok.is_none() {
             return raise_exception::<u64>(
                 _py,
@@ -561,9 +581,11 @@ pub extern "C" fn molt_configparser_read_string(handle_bits: u64, text_bits: u64
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_sections(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_configparser_sections_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -571,7 +593,7 @@ pub extern "C" fn molt_configparser_sections(handle_bits: u64) -> u64 {
                 "invalid configparser handle",
             );
         };
-        let sections = config_registry()
+        let sections = config_registry(_py)
             .lock()
             .unwrap()
             .get(&id)
@@ -587,9 +609,12 @@ pub extern "C" fn molt_configparser_sections(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_has_section(handle_bits: u64, section_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_configparser_has_section_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    section_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -600,7 +625,7 @@ pub extern "C" fn molt_configparser_has_section(handle_bits: u64, section_bits: 
         let Some(section) = string_obj_to_owned(obj_from_bits(section_bits)) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "section must be str");
         };
-        let result = config_registry()
+        let result = config_registry(_py)
             .lock()
             .unwrap()
             .get(&id)
@@ -616,13 +641,13 @@ pub extern "C" fn molt_configparser_has_section(handle_bits: u64, section_bits: 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_has_option(
+pub fn molt_configparser_has_option_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     section_bits: u64,
     option_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -637,7 +662,7 @@ pub extern "C" fn molt_configparser_has_option(
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "option must be str");
         };
         let key = option.to_ascii_lowercase();
-        let result = config_registry().lock().unwrap().get(&id).map(|state| {
+        let result = config_registry(_py).lock().unwrap().get(&id).map(|state| {
             state
                 .sections
                 .get(&section)
@@ -654,14 +679,14 @@ pub extern "C" fn molt_configparser_has_option(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_get(
+pub fn molt_configparser_get_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     section_bits: u64,
     option_bits: u64,
     fallback_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -677,7 +702,7 @@ pub extern "C" fn molt_configparser_get(
         };
         // Look up without fallback first; if missing, return fallback_bits
         // directly (avoids round-tripping fallback through string conversion).
-        let result = config_registry()
+        let result = config_registry(_py)
             .lock()
             .unwrap()
             .get(&id)
@@ -702,14 +727,14 @@ pub extern "C" fn molt_configparser_get(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_getint(
+pub fn molt_configparser_getint_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     section_bits: u64,
     option_bits: u64,
     fallback_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -723,7 +748,7 @@ pub extern "C" fn molt_configparser_getint(
         let Some(option) = string_obj_to_owned(obj_from_bits(option_bits)) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "option must be str");
         };
-        let result = config_registry()
+        let result = config_registry(_py)
             .lock()
             .unwrap()
             .get(&id)
@@ -751,14 +776,14 @@ pub extern "C" fn molt_configparser_getint(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_getfloat(
+pub fn molt_configparser_getfloat_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     section_bits: u64,
     option_bits: u64,
     fallback_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -772,7 +797,7 @@ pub extern "C" fn molt_configparser_getfloat(
         let Some(option) = string_obj_to_owned(obj_from_bits(option_bits)) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "option must be str");
         };
-        let result = config_registry()
+        let result = config_registry(_py)
             .lock()
             .unwrap()
             .get(&id)
@@ -800,14 +825,14 @@ pub extern "C" fn molt_configparser_getfloat(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_getboolean(
+pub fn molt_configparser_getboolean_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     section_bits: u64,
     option_bits: u64,
     fallback_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -821,7 +846,7 @@ pub extern "C" fn molt_configparser_getboolean(
         let Some(option) = string_obj_to_owned(obj_from_bits(option_bits)) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "option must be str");
         };
-        let result = config_registry()
+        let result = config_registry(_py)
             .lock()
             .unwrap()
             .get(&id)
@@ -858,14 +883,14 @@ pub extern "C" fn molt_configparser_getboolean(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_set(
+pub fn molt_configparser_set_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     section_bits: u64,
     option_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -882,16 +907,20 @@ pub extern "C" fn molt_configparser_set(
         let value = string_obj_to_owned(obj_from_bits(value_bits)).unwrap_or_default();
         let key = option.to_ascii_lowercase();
 
-        let ok = config_registry().lock().unwrap().get_mut(&id).map(|state| {
-            if section.eq_ignore_ascii_case("DEFAULT") {
-                state.defaults.insert(key, value);
-            } else if let Some(sec) = state.sections.get_mut(&section) {
-                sec.insert(key, value);
-            } else {
-                return false;
-            }
-            true
-        });
+        let ok = config_registry(_py)
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .map(|state| {
+                if section.eq_ignore_ascii_case("DEFAULT") {
+                    state.defaults.insert(key, value);
+                } else if let Some(sec) = state.sections.get_mut(&section) {
+                    sec.insert(key, value);
+                } else {
+                    return false;
+                }
+                true
+            });
         match ok {
             None => {
                 raise_exception::<u64>(_py, BuiltinExc::ValueError, "configparser handle not found")
@@ -906,9 +935,12 @@ pub extern "C" fn molt_configparser_set(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_add_section(handle_bits: u64, section_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_configparser_add_section_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    section_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -926,15 +958,19 @@ pub extern "C" fn molt_configparser_add_section(handle_bits: u64, section_bits: 
                 "Invalid section name: 'DEFAULT'",
             );
         }
-        let ok = config_registry().lock().unwrap().get_mut(&id).map(|state| {
-            if state.sections.contains_key(&section) {
-                false // DuplicateSectionError
-            } else {
-                state.sections.insert(section.clone(), SectionMap::new());
-                state.section_order.push(section);
-                true
-            }
-        });
+        let ok = config_registry(_py)
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .map(|state| {
+                if state.sections.contains_key(&section) {
+                    false // DuplicateSectionError
+                } else {
+                    state.sections.insert(section.clone(), SectionMap::new());
+                    state.section_order.push(section);
+                    true
+                }
+            });
         match ok {
             None => {
                 raise_exception::<u64>(_py, BuiltinExc::ValueError, "configparser handle not found")
@@ -947,9 +983,12 @@ pub extern "C" fn molt_configparser_add_section(handle_bits: u64, section_bits: 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_remove_section(handle_bits: u64, section_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_configparser_remove_section_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    section_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -960,13 +999,17 @@ pub extern "C" fn molt_configparser_remove_section(handle_bits: u64, section_bit
         let Some(section) = string_obj_to_owned(obj_from_bits(section_bits)) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "section must be str");
         };
-        let result = config_registry().lock().unwrap().get_mut(&id).map(|state| {
-            let removed = state.sections.remove(&section).is_some();
-            if removed {
-                state.section_order.retain(|s| s != &section);
-            }
-            removed
-        });
+        let result = config_registry(_py)
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .map(|state| {
+                let removed = state.sections.remove(&section).is_some();
+                if removed {
+                    state.section_order.retain(|s| s != &section);
+                }
+                removed
+            });
         let Some(removed) = result else {
             return raise_exception::<u64>(
                 _py,
@@ -978,13 +1021,13 @@ pub extern "C" fn molt_configparser_remove_section(handle_bits: u64, section_bit
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_remove_option(
+pub fn molt_configparser_remove_option_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     section_bits: u64,
     option_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -999,12 +1042,16 @@ pub extern "C" fn molt_configparser_remove_option(
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "option must be str");
         };
         let key = option.to_ascii_lowercase();
-        let result = config_registry().lock().unwrap().get_mut(&id).map(|state| {
-            state
-                .sections
-                .get_mut(&section)
-                .map(|sec| sec.remove(&key).is_some())
-        });
+        let result = config_registry(_py)
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .map(|state| {
+                state
+                    .sections
+                    .get_mut(&section)
+                    .map(|sec| sec.remove(&key).is_some())
+            });
         match result {
             None => {
                 raise_exception::<u64>(_py, BuiltinExc::ValueError, "configparser handle not found")
@@ -1019,9 +1066,12 @@ pub extern "C" fn molt_configparser_remove_option(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_options(handle_bits: u64, section_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_configparser_options_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    section_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -1032,7 +1082,7 @@ pub extern "C" fn molt_configparser_options(handle_bits: u64, section_bits: u64)
         let Some(section) = string_obj_to_owned(obj_from_bits(section_bits)) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "section must be str");
         };
-        let result = config_registry().lock().unwrap().get(&id).map(|state| {
+        let result = config_registry(_py).lock().unwrap().get(&id).map(|state| {
             let sec_keys: Vec<String> = state
                 .sections
                 .get(&section)
@@ -1058,9 +1108,12 @@ pub extern "C" fn molt_configparser_options(handle_bits: u64, section_bits: u64)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_items(handle_bits: u64, section_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_configparser_items_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    section_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -1071,7 +1124,7 @@ pub extern "C" fn molt_configparser_items(handle_bits: u64, section_bits: u64) -
         let Some(section) = string_obj_to_owned(obj_from_bits(section_bits)) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "section must be str");
         };
-        let result = config_registry()
+        let result = config_registry(_py)
             .lock()
             .unwrap()
             .get(&id)
@@ -1100,11 +1153,13 @@ pub extern "C" fn molt_configparser_items(handle_bits: u64, section_bits: u64) -
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_drop(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_configparser_drop_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Some(id) = to_i64(obj_from_bits(handle_bits)) {
-            config_registry().lock().unwrap().remove(&id);
+            config_registry(_py).lock().unwrap().remove(&id);
         }
         MoltObject::none().bits()
     })
@@ -1116,9 +1171,12 @@ pub extern "C" fn molt_configparser_drop(handle_bits: u64) -> u64 {
 
 /// Serialize the config to an INI-format string and return it (instead of writing to file).
 /// This allows the Python side to write to any file-like object.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_write_string(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_configparser_write_string_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -1126,7 +1184,7 @@ pub extern "C" fn molt_configparser_write_string(handle_bits: u64) -> u64 {
                 "invalid configparser handle",
             );
         };
-        let content = config_registry()
+        let content = config_registry(_py)
             .lock()
             .unwrap()
             .get(&id)
@@ -1148,13 +1206,14 @@ pub extern "C" fn molt_configparser_write_string(handle_bits: u64) -> u64 {
 
 /// Get a raw (uninterpolated) value for ConfigParser.get(raw=True).
 /// Returns the raw string value, or None if not found.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_get_raw(
+
+pub fn molt_configparser_get_raw_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     section_bits: u64,
     option_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -1169,7 +1228,7 @@ pub extern "C" fn molt_configparser_get_raw(
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "option must be str");
         };
         let key = option.to_ascii_lowercase();
-        let result = config_registry()
+        let result = config_registry(_py)
             .lock()
             .unwrap()
             .get(&id)
@@ -1195,13 +1254,14 @@ pub extern "C" fn molt_configparser_get_raw(
 
 /// Perform basic %(key)s interpolation on a value string within a section context.
 /// Returns the interpolated string.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_interpolate_basic(
+
+pub fn molt_configparser_interpolate_basic_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     section_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -1215,7 +1275,7 @@ pub extern "C" fn molt_configparser_interpolate_basic(
         let Some(value) = string_obj_to_owned(obj_from_bits(value_bits)) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "value must be str");
         };
-        let result = config_registry()
+        let result = config_registry(_py)
             .lock()
             .unwrap()
             .get(&id)
@@ -1238,13 +1298,14 @@ pub extern "C" fn molt_configparser_interpolate_basic(
 
 /// Perform extended ${section:option} interpolation on a value string.
 /// Returns the interpolated string.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_interpolate_extended(
+
+pub fn molt_configparser_interpolate_extended_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     section_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -1258,7 +1319,7 @@ pub extern "C" fn molt_configparser_interpolate_extended(
         let Some(value) = string_obj_to_owned(obj_from_bits(value_bits)) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "value must be str");
         };
-        let result = config_registry()
+        let result = config_registry(_py)
             .lock()
             .unwrap()
             .get(&id)
@@ -1341,13 +1402,14 @@ fn interpolate_extended(state: &ConfigState, value: &str, section: &str) -> Stri
 
 /// Read from a file-like object (string content) into the configparser.
 /// This wraps read_string but accepts an explicit source name for error messages.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_read_file(
+
+pub fn molt_configparser_read_file_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     content_bits: u64,
     source_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -1359,9 +1421,13 @@ pub extern "C" fn molt_configparser_read_file(
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "content must be str");
         };
         let _source = string_obj_to_owned(obj_from_bits(source_bits));
-        let ok = config_registry().lock().unwrap().get_mut(&id).map(|state| {
-            state.read_string(&text);
-        });
+        let ok = config_registry(_py)
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .map(|state| {
+                state.read_string(&text);
+            });
         if ok.is_none() {
             return raise_exception::<u64>(
                 _py,
@@ -1374,9 +1440,12 @@ pub extern "C" fn molt_configparser_read_file(
 }
 
 /// Get the defaults dict as a list of (key, value) pairs.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_defaults(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_configparser_defaults_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -1384,7 +1453,7 @@ pub extern "C" fn molt_configparser_defaults(handle_bits: u64) -> u64 {
                 "invalid configparser handle",
             );
         };
-        let result = config_registry().lock().unwrap().get(&id).map(|state| {
+        let result = config_registry(_py).lock().unwrap().get(&id).map(|state| {
             let mut pairs: Vec<(String, String)> = state
                 .defaults
                 .iter()
@@ -1403,3 +1472,5 @@ pub extern "C" fn molt_configparser_defaults(handle_bits: u64) -> u64 {
         string_pairs_to_list(_py, &pairs)
     })
 }
+
+include!("attached_exports_generated/configparser.rs");

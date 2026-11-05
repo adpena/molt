@@ -3,16 +3,17 @@ use molt_runtime_core::BuiltinExc;
 use std::sync::{Arc, Mutex};
 
 /// `molt_re_execute(handle, text, pos, end, mode) -> match_result | None`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_re_execute(
+
+pub fn molt_re_execute_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     text_bits: u64,
     pos_bits: u64,
     end_bits: u64,
     mode_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(compiled) = pattern_handle_arc(handle_bits) else {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(compiled) = pattern_handle_arc(_py, handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::ValueError, "invalid regex handle");
         };
         let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
@@ -72,15 +73,16 @@ pub extern "C" fn molt_re_execute(
 
 /// Create a GREEN scanner state for one Pattern.finditer call. The Python
 /// iterator owns the original subject and the memoryview lease for byte input.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_re_scanner_new(
+
+pub fn molt_re_scanner_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     subject_bits: u64,
     pos_bits: u64,
     end_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(pattern) = pattern_handle_arc(handle_bits) else {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(pattern) = pattern_handle_arc(_py, handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::ValueError, "invalid regex handle");
         };
         let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
@@ -115,7 +117,7 @@ pub extern "C" fn molt_re_scanner_new(
         };
         let end = end.min(subject_len);
         let scanner = ScannerHandle::new(pattern, pos.min(subject_len), end, text_units);
-        match scanner_handle_new(Arc::new(Mutex::new(scanner))) {
+        match scanner_handle_new(_py, Arc::new(Mutex::new(scanner))) {
             Some(bits) => bits,
             None => MoltObject::none().bits(),
         }
@@ -124,10 +126,14 @@ pub extern "C" fn molt_re_scanner_new(
 
 /// Advance the scanner once and return one ordinary match-result tuple, or
 /// None on exhaustion. The live memoryview is borrowed only during matching.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_re_finditer_next(scanner_bits: u64, subject_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(scanner) = scanner_handle_arc(scanner_bits) else {
+
+pub fn molt_re_finditer_next_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    scanner_bits: u64,
+    subject_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(scanner) = scanner_handle_arc(_py, scanner_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::ValueError, "invalid regex scanner");
         };
         let mut scanner = match scanner.lock() {
@@ -276,3 +282,5 @@ pub(super) fn match_error_result(py: &CoreGilToken, error: MatchError) -> u64 {
         }
     }
 }
+
+include!("../attached_exports_generated/regex/execute_api.rs");

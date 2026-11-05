@@ -1,6 +1,10 @@
 //! Shared RC generation in always-inlined LLVM bodies. Keeping its explicit
 //! blocks in a separate IR function leaves the caller's TIR/phi CFG intact.
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use inkwell::builder::Builder;
 use inkwell::values::IntValue;
 use molt_codegen_abi::inline_refcount::{
@@ -16,7 +20,7 @@ pub(super) struct LlvmRefcountSite<'ctx> {
 impl<'ctx> LlvmRefcountSite<'ctx> {
     pub(super) fn emit(self, builder: &Builder<'ctx>, value: BasicValueEnum<'ctx>) {
         builder
-            .build_call(self.function, &[value.into(), self.admission.into()], "")
+            .build_execution_call(self.function, &[value.into(), self.admission.into()], "")
             .unwrap();
     }
 }
@@ -27,7 +31,7 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             return self.backend.context.i64_type().const_zero();
         }
         builder
-            .build_call(
+            .build_execution_call(
                 self.ensure_runtime_import(crate::runtime_import_abi::MOLT_REFCOUNT_ADMISSION),
                 &[],
                 "rc_admission",
@@ -65,17 +69,18 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             RefcountOperation::Release => "__molt_inline_release",
         };
         let i64_type = self.backend.context.i64_type();
-        let signature = self
+        let logical_signature = self
             .backend
             .context
             .void_type()
             .fn_type(&[i64_type.into(), i64_type.into()], false);
-        if let Some(function) = self.backend.module.get_function(name) {
+        let signature = prepend_execution_context(logical_signature);
+        if let Some(function) = self.backend.module.get_execution_function(name) {
             return require_llvm_function_type(name, function, signature);
         }
-        let function = self.backend.module.add_function(
+        let function = self.backend.module.add_compiled_function(
             name,
-            signature,
+            logical_signature,
             Some(inkwell::module::Linkage::Internal),
         );
         function.add_attribute(
@@ -99,8 +104,8 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         };
         generate_refcount(
             &mut emitter,
-            function.get_nth_param(0).unwrap().into_int_value(),
             function.get_nth_param(1).unwrap().into_int_value(),
+            function.get_nth_param(2).unwrap().into_int_value(),
             operation,
             RefcountStorage::for_build(nanbox::MOLT_REFCOUNT_ATOMIC),
         );
@@ -108,7 +113,7 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         if let Some(block) = emitter.slow_block {
             builder.position_at_end(block);
             builder
-                .build_call(slow, &[function.get_nth_param(0).unwrap().into()], "")
+                .build_execution_call(slow, &[function.get_nth_param(1).unwrap().into()], "")
                 .unwrap();
             builder.build_return(None).unwrap();
         }

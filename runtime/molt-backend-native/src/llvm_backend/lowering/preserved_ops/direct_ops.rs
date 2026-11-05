@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use molt_ir::OpKind;
 
 // Handler-owned authority for LLVM preserved SimpleIR ops lowered directly by
@@ -82,7 +84,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             builder.position_at_end(entry);
         }
         let flag = builder
-            .build_call(function, &[], "runtime_profile_enabled")
+            .build_execution_call(function, &[], "runtime_profile_enabled")
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic()
@@ -205,7 +207,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(new_fn, &[tag_val.into()], "exception_new_builtin_empty")
+                    .build_execution_call(new_fn, &[tag_val.into()], "exception_new_builtin_empty")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -220,7 +222,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(push_fn, &[], "exception_push")
+                    .build_execution_call(push_fn, &[], "exception_push")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -235,7 +237,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(enter_fn, &[], "exception_stack_enter")
+                    .build_execution_call(enter_fn, &[], "exception_stack_enter")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -250,7 +252,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(depth_fn, &[], "exception_stack_depth")
+                    .build_execution_call(depth_fn, &[], "exception_stack_depth")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -265,7 +267,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(pop_fn, &[], "exception_pop")
+                    .build_execution_call(pop_fn, &[], "exception_pop")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -280,7 +282,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(clear_fn, &[], "exception_stack_clear")
+                    .build_execution_call(clear_fn, &[], "exception_stack_clear")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -295,7 +297,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(last_fn, &[], "exception_last")
+                    .build_execution_call(last_fn, &[], "exception_last")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -312,7 +314,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     let last_fn = self.ensure_runtime_i64_fn("molt_exception_last_pending", 0);
                     self.backend
                         .builder
-                        .build_call(last_fn, &[], "exception_last_pending")
+                        .build_execution_call(last_fn, &[], "exception_last_pending")
                         .unwrap()
                         .try_as_basic_value()
                         .unwrap_basic()
@@ -328,7 +330,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(active_fn, &[], "exception_active")
+                    .build_execution_call(active_fn, &[], "exception_active")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -343,7 +345,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(current_fn, &[], "exception_current")
+                    .build_execution_call(current_fn, &[], "exception_current")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -358,7 +360,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(clear_fn, &[], "exception_clear")
+                    .build_execution_call(clear_fn, &[], "exception_clear")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -441,7 +443,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(object_new_fn, &[], "object_new")
+                    .build_execution_call(object_new_fn, &[], "object_new")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -496,7 +498,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(missing_fn, &[], "missing")
+                    .build_execution_call(missing_fn, &[], "missing")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -562,7 +564,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(ell_fn, &[], "const_ellipsis")
+                    .build_execution_call(ell_fn, &[], "const_ellipsis")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -579,7 +581,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(ni_fn, &[], "const_not_implemented")
+                    .build_execution_call(ni_fn, &[], "const_not_implemented")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -656,7 +658,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap_or_else(|| {
                     panic!("molt_get_attr_special must be a fixed LLVM runtime import")
                 });
-                let get_fn = require_llvm_function_type("molt_get_attr_special", get_fn, fn_ty);
+                let get_fn = require_llvm_function_type(
+                    "molt_get_attr_special",
+                    get_fn,
+                    runtime_execution_type("molt_get_attr_special", fn_ty),
+                );
                 self.emit_borrowed_runtime_call(
                     op,
                     get_fn,
@@ -735,7 +741,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let unpublished = self
                     .backend
                     .builder
-                    .build_call(alloc, &[size.into(), class_bits.into()], "alloc_class")
+                    .build_execution_call(alloc, &[size.into(), class_bits.into()], "alloc_class")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -745,7 +751,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let initialized = self
                     .backend
                     .builder
-                    .build_call(publish, &[unpublished.into()], "class_initialized")
+                    .build_execution_call(publish, &[unpublished.into()], "class_initialized")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic()

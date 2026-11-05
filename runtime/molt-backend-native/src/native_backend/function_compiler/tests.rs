@@ -27,6 +27,46 @@ use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_ir::OpKind;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Opcode-unit fixtures author logical operands. Give their actual Cranelift
+/// function the same physical context boundary as a compiled Python entry,
+/// retaining every authored parameter Value and its independent assertions.
+fn complete_unit_fixture_abi(module: &dyn cranelift_module::Module, function: &mut Function) {
+    let entry = function.layout.entry_block().expect("fixture entry");
+    let mut previous = function.dfg.detach_block_params(entry);
+    let parameters = previous.as_slice(&function.dfg.value_lists).to_vec();
+    previous.clear(&mut function.dfg.value_lists);
+    let context = function.dfg.append_block_param(entry, types::I64);
+    for parameter in parameters {
+        function.dfg.attach_block_param(entry, parameter);
+    }
+    function
+        .signature
+        .params
+        .insert(0, AbiParam::new(types::I64));
+    super::complete_attached_calls(module, function, context);
+}
+
+fn attached_arguments(
+    function: &Function,
+    instruction: cranelift_codegen::ir::Inst,
+) -> &[cranelift_codegen::ir::Value] {
+    let arguments = function.dfg.inst_args(instruction);
+    let context = function
+        .dfg
+        .block_params(function.layout.entry_block().unwrap())[0];
+    assert_eq!(
+        arguments[0], context,
+        "attached call must forward the exact entry context"
+    );
+    &arguments[1..]
+}
+
+fn physical_runtime_symbol(logical: &str) -> &'static str {
+    molt_ir::runtime_callable_abi_generated::runtime_execution_abi(logical)
+        .unwrap_or_else(|| panic!("missing runtime execution ABI: {logical}"))
+        .physical_symbol
+}
+
 use crate::test_support::native_object_symbols;
 
 fn native_representation_plan_for_test(func_ir: &FunctionIR) -> ScalarRepresentationPlan {

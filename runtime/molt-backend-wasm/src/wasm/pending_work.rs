@@ -4,9 +4,22 @@
 
 use super::frame_locals::{WasmFrameLocals, WasmFrameSyntheticLocal};
 use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
-use wasm_encoder::{BlockType, Function, Instruction, MemArg, ValType};
+use wasm_encoder::{BlockType, Instruction, MemArg, ValType};
+
+/// The permanent admitted context directly carries this thread's record.
+pub(in crate::wasm) fn emit_thread_record(func: &mut Function) {
+    func.instruction(&Instruction::LocalGet(0));
+    func.instruction(&Instruction::I32WrapI64);
+    func.instruction(&Instruction::I64Load(MemArg {
+        offset: molt_ir::runtime_callable_abi_generated::ATTACHED_CONTEXT_THREAD_RECORD_OFFSET
+            as u64,
+        align: 3,
+        memory_index: 0,
+    }));
+}
 
 /// Push an i32 that is non-zero exactly when `molt_exception_pending()` is.
 /// A function that holds the thread record (`record`) tests its pending byte

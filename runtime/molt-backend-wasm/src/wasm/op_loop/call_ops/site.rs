@@ -2,12 +2,13 @@ use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm::function_frame::WasmFunctionFrame;
 use crate::wasm::local_analysis::ValueOccupancy;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::{ConstantCache, box_int, stable_ic_site_id};
 use molt_tir::tir::simple_def_use::{visit_simple_ir_defined_names, visit_simple_ir_reads};
 use std::collections::{BTreeMap, BTreeSet};
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LocalAccessKind {

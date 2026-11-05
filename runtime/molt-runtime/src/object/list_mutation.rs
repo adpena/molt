@@ -1383,8 +1383,16 @@ mod tests {
         static EVENTS: RefCell<Vec<(usize, usize)>> = const { RefCell::new(Vec::new()) };
     }
 
-    extern "C" fn record_release(bits: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn record_release(__context: u64, bits: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             let index = ITEMS
                 .with(|items| items.borrow().iter().position(|&item| item == bits))
                 .expect("finalized item belongs to this test");
@@ -1409,12 +1417,12 @@ mod tests {
             };
             EVENTS.with(|events| events.borrow_mut().push((index, len)));
             MoltObject::none().bits()
-        })
+        }
     }
 
     fn finalizer_items(py: &PyToken<'_>) -> (u64, Vec<u64>) {
         let name = crate::dynamic_attr_name_bits(py, b"SequenceReleaseItem").unwrap();
-        let class = crate::molt_class_new(name);
+        let class = crate::molt_class_new_attached_body(py, name);
         let class_ptr = obj_from_bits(class).as_ptr().unwrap();
         let del_name = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
         let function = alloc_runtime_function_obj(
@@ -1424,7 +1432,7 @@ mod tests {
         );
         assert!(!function.is_null());
         let function = MoltObject::from_ptr(function).bits();
-        crate::molt_set_attr_name(class, del_name, function);
+        crate::molt_set_attr_name_attached_body(py, class, del_name, function);
         unsafe { crate::object::class_finish_definition(py, class_ptr) }
             .expect("sealed test class");
         let items: Vec<_> = (0..5)

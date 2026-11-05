@@ -101,9 +101,9 @@ fn mkdir_with_mode(path: &Path, mode: i32) -> std::io::Result<()> {
 // ---------------------------------------------------------------------------
 
 /// `os.listdir(path)` → list[str] or list[bytes], matching the path flavor
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_listdir(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_listdir_attached_body(_py: &molt_runtime_core::PyToken, path_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.listdir", AuditArg::None) {
             return error;
         }
@@ -150,9 +150,9 @@ pub extern "C" fn molt_os_listdir(path_bits: u64) -> u64 {
 
 /// `os.scandir(path)` → entries whose name/path match the input str/bytes flavor.
 /// Each tuple: (name, path, is_dir, is_file, is_symlink)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_scandir(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_scandir_attached_body(_py: &molt_runtime_core::PyToken, path_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.scandir", AuditArg::None) {
             return error;
         }
@@ -236,9 +236,14 @@ pub extern "C" fn molt_os_scandir(path_bits: u64) -> u64 {
 ///
 /// Each element: (dirpath, dirnames, filenames).
 /// We collect the full walk eagerly (no generator semantics in the intrinsic layer).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_walk(top_bits: u64, topdown_bits: u64, followlinks_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_walk_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    top_bits: u64,
+    topdown_bits: u64,
+    followlinks_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.walk", AuditArg::None) {
             return error;
         }
@@ -363,9 +368,9 @@ fn walk_dir_collect(
 }
 
 /// `os.getcwd()` → str
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_getcwd() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_getcwd_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.getcwd", AuditArg::None) {
             return error;
         }
@@ -377,9 +382,9 @@ pub extern "C" fn molt_os_getcwd() -> u64 {
 }
 
 /// `os.chdir(path)` → None
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_chdir(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_chdir_attached_body(_py: &molt_runtime_core::PyToken, path_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.chdir", AuditArg::None) {
             return error;
         }
@@ -395,9 +400,13 @@ pub extern "C" fn molt_os_chdir(path_bits: u64) -> u64 {
 }
 
 /// `os.mkdir(path, mode=0o777)` → None  (single directory only)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_mkdir(path_bits: u64, mode_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_mkdir_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    path_bits: u64,
+    mode_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.mkdir", AuditArg::None) {
             return error;
         }
@@ -417,9 +426,9 @@ pub extern "C" fn molt_os_mkdir(path_bits: u64, mode_bits: u64) -> u64 {
 }
 
 /// `os.rmdir(path)` → None  (remove empty directory)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_rmdir(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_rmdir_attached_body(_py: &molt_runtime_core::PyToken, path_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.rmdir", AuditArg::None) {
             return error;
         }
@@ -435,9 +444,9 @@ pub extern "C" fn molt_os_rmdir(path_bits: u64) -> u64 {
 }
 
 /// `os.removedirs(path)` → None  (remove leaf then successive empty parents)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_removedirs(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_removedirs_attached_body(_py: &molt_runtime_core::PyToken, path_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.removedirs", AuditArg::None) {
             return error;
         }
@@ -467,9 +476,13 @@ pub extern "C" fn molt_os_removedirs(path_bits: u64) -> u64 {
 // ---------------------------------------------------------------------------
 
 /// `os.access(path, mode)` -> bool
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_access(path_bits: u64, mode_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(py, {
+
+pub fn molt_os_access_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    path_bits: u64,
+    mode_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, py, {
         if let Err(error) = require_operation(py, "os.access", AuditArg::None) {
             return error;
         }
@@ -489,9 +502,13 @@ pub extern "C" fn molt_os_access(path_bits: u64, mode_bits: u64) -> u64 {
 }
 
 /// `os.chmod(path, mode)` → None
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_chmod(path_bits: u64, mode_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_chmod_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    path_bits: u64,
+    mode_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.chmod", AuditArg::None) {
             return error;
         }
@@ -532,9 +549,13 @@ pub extern "C" fn molt_os_chmod(path_bits: u64, mode_bits: u64) -> u64 {
 
 /// `os.link(src, dst)` → None  (hard link)
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_link(src_bits: u64, dst_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_link_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    src_bits: u64,
+    dst_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.link", AuditArg::None) {
             return error;
         }
@@ -554,9 +575,13 @@ pub extern "C" fn molt_os_link(src_bits: u64, dst_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_link(_src_bits: u64, _dst_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_link_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    _src_bits: u64,
+    _dst_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "link")
     })
 }
@@ -564,9 +589,13 @@ pub extern "C" fn molt_os_link(_src_bits: u64, _dst_bits: u64) -> u64 {
 /// `os.symlink(src, dst)` → None
 /// Thin delegation to the existing molt_path_symlink behaviour.
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_symlink(src_bits: u64, dst_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_symlink_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    src_bits: u64,
+    dst_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.symlink", AuditArg::None) {
             return error;
         }
@@ -608,18 +637,26 @@ pub extern "C" fn molt_os_symlink(src_bits: u64, dst_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_symlink(_src_bits: u64, _dst_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_symlink_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    _src_bits: u64,
+    _dst_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "symlink")
     })
 }
 
 /// `os.truncate(path, length)` → None
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_truncate(path_bits: u64, length_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_truncate_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    path_bits: u64,
+    length_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.truncate", AuditArg::None) {
             return error;
         }
@@ -646,9 +683,13 @@ pub extern "C" fn molt_os_truncate(path_bits: u64, length_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_truncate(_path_bits: u64, _length_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_truncate_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    _path_bits: u64,
+    _length_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "truncate")
     })
 }
@@ -664,9 +705,9 @@ unsafe extern "C" {
 }
 
 /// `os.getpid()` → int, using the same host transport on every WASM profile.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_getpid() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_getpid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.getpid", AuditArg::None) {
             return error;
         }
@@ -684,9 +725,9 @@ pub extern "C" fn molt_os_getpid() -> u64 {
 
 /// `os.getppid()` → int
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_getppid() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_getppid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.getppid", AuditArg::None) {
             return error;
         }
@@ -703,9 +744,9 @@ pub extern "C" fn molt_os_getppid() -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_getppid() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_getppid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_exception::<u64>(
             _py,
             BuiltinExc::OSError,
@@ -716,9 +757,9 @@ pub extern "C" fn molt_os_getppid() -> u64 {
 
 /// `os.getuid()` → int  (Unix only)
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_getuid() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_getuid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.getuid", AuditArg::None) {
             return error;
         }
@@ -734,18 +775,18 @@ pub extern "C" fn molt_os_getuid() -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_getuid() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_getuid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "getuid")
     })
 }
 
 /// `os.getgid()` → int  (Unix only)
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_getgid() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_getgid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.getgid", AuditArg::None) {
             return error;
         }
@@ -761,18 +802,18 @@ pub extern "C" fn molt_os_getgid() -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_getgid() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_getgid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "getgid")
     })
 }
 
 /// `os.geteuid()` → int  (Unix only)
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_geteuid() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_geteuid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.geteuid", AuditArg::None) {
             return error;
         }
@@ -788,18 +829,18 @@ pub extern "C" fn molt_os_geteuid() -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_geteuid() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_geteuid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "geteuid")
     })
 }
 
 /// `os.getegid()` → int  (Unix only)
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_getegid() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_getegid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.getegid", AuditArg::None) {
             return error;
         }
@@ -815,18 +856,18 @@ pub extern "C" fn molt_os_getegid() -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_getegid() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_getegid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "getegid")
     })
 }
 
 /// `os.getlogin()` → str
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_getlogin() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_getlogin_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.getlogin", AuditArg::None) {
             return error;
         }
@@ -869,17 +910,17 @@ pub extern "C" fn molt_os_getlogin() -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_getlogin() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_getlogin_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "getlogin")
     })
 }
 
 /// `os.cpu_count()` → int | None
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_cpu_count() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_cpu_count_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.cpu_count", AuditArg::None) {
             return error;
         }
@@ -890,9 +931,12 @@ pub extern "C" fn molt_os_cpu_count() -> u64 {
 
 /// `os.get_terminal_size(fd=1)` → tuple[int, int]  (columns, lines)
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_get_terminal_size(fd_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_get_terminal_size_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    fd_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let fd: libc::c_int = match c_int_arg(_py, fd_bits) {
             Ok(fd) => fd,
             Err(bits) => return bits,
@@ -927,18 +971,21 @@ pub extern "C" fn molt_os_get_terminal_size(fd_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_get_terminal_size(_fd_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_get_terminal_size_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    _fd_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "get_terminal_size")
     })
 }
 
 /// `os.getloadavg()` → tuple[float, float, float]  (Unix only)
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_getloadavg() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_getloadavg_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.getloadavg", AuditArg::None) {
             return error;
         }
@@ -968,9 +1015,9 @@ pub extern "C" fn molt_os_getloadavg() -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_getloadavg() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_getloadavg_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "getloadavg")
     })
 }
@@ -978,9 +1025,9 @@ pub extern "C" fn molt_os_getloadavg() -> u64 {
 /// `os.uname()` → tuple[str, str, str, str, str]
 /// (sysname, nodename, release, version, machine)
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_uname() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_uname_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.uname", AuditArg::None) {
             return error;
         }
@@ -1034,18 +1081,18 @@ pub extern "C" fn molt_os_uname() -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_uname() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_uname_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "uname")
     })
 }
 
 /// `os.umask(mask)` → int (old mask)
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_umask(mask_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_umask_attached_body(_py: &molt_runtime_core::PyToken, mask_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.umask", AuditArg::None) {
             return error;
         }
@@ -1067,9 +1114,9 @@ pub extern "C" fn molt_os_umask(mask_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_umask(_mask_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_umask_attached_body(_py: &molt_runtime_core::PyToken, _mask_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "umask")
     })
 }
@@ -1080,9 +1127,13 @@ pub extern "C" fn molt_os_umask(_mask_bits: u64) -> u64 {
 
 /// `os.path.commonpath(paths)` → str or bytes, matching the path flavor
 /// All paths must share a common root; raises ValueError if they do not.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_path_commonpath(paths_bits: u64, windows_utf16_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_path_commonpath_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    paths_bits: u64,
+    windows_utf16_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let paths_obj = obj_from_bits(paths_bits);
         if paths_obj.is_none() {
             return raise_exception::<_>(
@@ -1105,7 +1156,7 @@ pub extern "C" fn molt_os_path_commonpath(paths_bits: u64, windows_utf16_bits: u
                     "paths must be a list or tuple",
                 );
             }
-            let elems = unsafe { seq_snapshot(ptr) };
+            let elems = unsafe { seq_snapshot(_py, ptr) };
             if elems.is_empty() {
                 return raise_exception::<_>(
                     _py,
@@ -1115,7 +1166,7 @@ pub extern "C" fn molt_os_path_commonpath(paths_bits: u64, windows_utf16_bits: u
             }
             let mut values = Vec::with_capacity(elems.len());
             for &bits in elems.iter() {
-                let value = fspath_bits(bits);
+                let value = fspath_bits(_py, bits);
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
                 }
@@ -1283,9 +1334,12 @@ fn common_path_impl(paths: &[(Vec<u8>, (usize, usize))]) -> Option<Vec<u8>> {
 
 /// `os.path.commonprefix(paths)` → str
 /// Character-level common prefix of the string representations.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_path_commonprefix(paths_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_path_commonprefix_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    paths_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let paths_obj = obj_from_bits(paths_bits);
         if paths_obj.is_none() {
             let ptr = alloc_string(_py, b"");
@@ -1307,7 +1361,7 @@ pub extern "C" fn molt_os_path_commonprefix(paths_bits: u64) -> u64 {
                     "paths must be a list or tuple",
                 );
             }
-            let elems = unsafe { seq_snapshot(ptr) };
+            let elems = unsafe { seq_snapshot(_py, ptr) };
             if elems.is_empty() {
                 let ep = alloc_string(_py, b"");
                 return if ep.is_null() {
@@ -1348,16 +1402,16 @@ pub extern "C" fn molt_os_path_commonprefix(paths_bits: u64) -> u64 {
 }
 
 /// `os.path.getsize(path)` → int
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_path_getsize(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_path_getsize_attached_body(_py: &molt_runtime_core::PyToken, path_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let path = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
             Err(error) => return error,
         };
         match path_metadata(_py, &path, true, OperationId::OsPathGetsize, false) {
             Ok(Some(metadata)) => match i64::try_from(metadata.fields[6]) {
-                Ok(size) => molt_runtime_core::rt_int(size),
+                Ok(size) => molt_runtime_core::rt_int(_py, size),
                 Err(_) => raise_exception::<u64>(
                     _py,
                     BuiltinExc::OverflowError,
@@ -1371,9 +1425,12 @@ pub extern "C" fn molt_os_path_getsize(path_bits: u64) -> u64 {
 }
 
 /// `os.path.getmtime(path)` → float  (modification time, seconds since epoch)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_path_getmtime(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_path_getmtime_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    path_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let path = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
             Err(error) => return error,
@@ -1387,9 +1444,12 @@ pub extern "C" fn molt_os_path_getmtime(path_bits: u64) -> u64 {
 }
 
 /// `os.path.getatime(path)` → float  (access time)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_path_getatime(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_path_getatime_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    path_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let path = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
             Err(error) => return error,
@@ -1403,9 +1463,12 @@ pub extern "C" fn molt_os_path_getatime(path_bits: u64) -> u64 {
 }
 
 /// `os.path.getctime(path)` → float  (creation/metadata-change time)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_path_getctime(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_path_getctime_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    path_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let path = match path_from_bits(_py, path_bits) {
             Ok(path) => path,
             Err(error) => return error,
@@ -1419,9 +1482,13 @@ pub extern "C" fn molt_os_path_getctime(path_bits: u64) -> u64 {
 }
 
 /// `os.path.samefile(path1, path2)` uses the selected filesystem identity.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_path_samefile(path1_bits: u64, path2_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_path_samefile_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    path1_bits: u64,
+    path2_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let left = match path_from_bits(_py, path1_bits) {
             Ok(path) => path,
             Err(error) => return error,
@@ -1439,18 +1506,18 @@ pub extern "C" fn molt_os_path_samefile(path1_bits: u64, path2_bits: u64) -> u64
 // ---------------------------------------------------------------------------
 
 /// `os.sep` → str  ("/" on POSIX, "\\" on Windows)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_sep() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_sep_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let sep = std::path::MAIN_SEPARATOR_STR;
         str_bits(_py, sep)
     })
 }
 
 /// `os.linesep` → str  ("\n" on POSIX, "\r\n" on Windows)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_linesep() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_linesep_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         #[cfg(windows)]
         {
             str_bits(_py, "\r\n")
@@ -1463,9 +1530,9 @@ pub extern "C" fn molt_os_linesep() -> u64 {
 }
 
 /// `os.devnull` → str  ("/dev/null" on POSIX, "nul" on Windows)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_devnull() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_devnull_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         #[cfg(windows)]
         {
             str_bits(_py, "nul")
@@ -1478,27 +1545,27 @@ pub extern "C" fn molt_os_devnull() -> u64 {
 }
 
 /// `os.curdir` → str  (".")
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_curdir() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, str_bits(_py, "."))
+
+pub fn molt_os_curdir_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, str_bits(_py, "."))
 }
 
 /// `os.pardir` → str  ("..")
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_pardir() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, str_bits(_py, ".."))
+
+pub fn molt_os_pardir_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, str_bits(_py, ".."))
 }
 
 /// `os.extsep` → str  (".")
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_extsep() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, str_bits(_py, "."))
+
+pub fn molt_os_extsep_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, str_bits(_py, "."))
 }
 
 /// `os.altsep` → str | None  (None on POSIX, "/" on Windows)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_altsep() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_altsep_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         #[cfg(windows)]
         {
             str_bits(_py, "/")
@@ -1511,9 +1578,9 @@ pub extern "C" fn molt_os_altsep() -> u64 {
 }
 
 /// `os.pathsep` → str  (":" on POSIX, ";" on Windows)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_pathsep() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_pathsep_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         #[cfg(windows)]
         {
             str_bits(_py, ";")
@@ -1530,9 +1597,13 @@ pub extern "C" fn molt_os_pathsep() -> u64 {
 // ---------------------------------------------------------------------------
 
 /// `os.dup2(fd, fd2)` → int — duplicate fd onto fd2
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_dup2(fd_bits: u64, fd2_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_dup2_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    fd_bits: u64,
+    fd2_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.dup2", AuditArg::None) {
             return error;
         }
@@ -1565,9 +1636,14 @@ pub extern "C" fn molt_os_dup2(fd_bits: u64, fd2_bits: u64) -> u64 {
 }
 
 /// `os.lseek(fd, pos, how)` → int — seek within file descriptor
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_lseek(fd_bits: u64, pos_bits: u64, how_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_lseek_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    fd_bits: u64,
+    pos_bits: u64,
+    how_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.lseek", AuditArg::None) {
             return error;
         }
@@ -1620,15 +1696,19 @@ pub extern "C" fn molt_os_lseek(fd_bits: u64, pos_bits: u64, how_bits: u64) -> u
                 }
                 return raise_os_error::<u64>(_py, err, "lseek");
             }
-            rt_int(result as i64)
+            rt_int(_py, result as i64)
         }
     })
 }
 
 /// `os.ftruncate(fd, length)` → None — truncate fd to length
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_ftruncate(fd_bits: u64, length_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_ftruncate_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    fd_bits: u64,
+    length_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.ftruncate", AuditArg::None) {
             return error;
         }
@@ -1670,9 +1750,9 @@ pub extern "C" fn molt_os_ftruncate(fd_bits: u64, length_bits: u64) -> u64 {
 }
 
 /// `os.isatty(fd)` → bool — return True if fd is a tty
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_isatty(fd_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_isatty_attached_body(_py: &molt_runtime_core::PyToken, fd_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "fd must be an integer");
         };
@@ -1692,9 +1772,14 @@ pub extern "C" fn molt_os_isatty(fd_bits: u64) -> u64 {
 }
 
 /// `os.fdopen(fd, mode, closefd)` — stub: raises NotImplementedError
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_fdopen(_fd_bits: u64, _mode_bits: u64, _closefd_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_fdopen_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    _fd_bits: u64,
+    _mode_bits: u64,
+    _closefd_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_exception::<u64>(
             _py,
             BuiltinExc::NotImplementedError,
@@ -1708,9 +1793,13 @@ pub extern "C" fn molt_os_fdopen(_fd_bits: u64, _mode_bits: u64, _closefd_bits: 
 // ---------------------------------------------------------------------------
 
 /// `os.kill(pid, sig)` → None — send signal to process
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_kill(pid_bits: u64, sig_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_kill_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    pid_bits: u64,
+    sig_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.kill", AuditArg::None) {
             return error;
         }
@@ -1746,9 +1835,13 @@ pub extern "C" fn molt_os_kill(pid_bits: u64, sig_bits: u64) -> u64 {
 }
 
 /// `os.waitpid(pid, options)` → (pid, status) — wait for process
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_waitpid(pid_bits: u64, options_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_waitpid_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    pid_bits: u64,
+    options_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.waitpid", AuditArg::None) {
             return error;
         }
@@ -1794,9 +1887,9 @@ pub extern "C" fn molt_os_waitpid(pid_bits: u64, options_bits: u64) -> u64 {
 }
 
 /// `os.getpgrp()` → int — get process group
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_getpgrp() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_getpgrp_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.getpgrp", AuditArg::None) {
             return error;
         }
@@ -1817,9 +1910,9 @@ pub extern "C" fn molt_os_getpgrp() -> u64 {
 }
 
 /// `os.setpgrp()` → None — set process group
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_setpgrp() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_setpgrp_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.setpgrp", AuditArg::None) {
             return error;
         }
@@ -1848,9 +1941,9 @@ pub extern "C" fn molt_os_setpgrp() -> u64 {
 }
 
 /// `os.setsid()` → int — create new session
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_setsid() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_setsid_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.setsid", AuditArg::None) {
             return error;
         }
@@ -1901,9 +1994,9 @@ const WASM_SYSCONF_ENTRIES: &[(&str, i64, i64)] = &[
 ];
 
 /// `os.sysconf(name)` → int — get system configuration value
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_sysconf(name_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_sysconf_attached_body(_py: &molt_runtime_core::PyToken, name_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(name) = to_i64(obj_from_bits(name_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -1972,9 +2065,9 @@ fn alloc_sysconf_names(
 }
 
 /// Target-owned sysconf names, or None when this target has no sysconf API.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_sysconf_names() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_sysconf_names_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         #[cfg(target_arch = "wasm32")]
         {
             alloc_sysconf_names(
@@ -2028,9 +2121,12 @@ pub extern "C" fn molt_os_sysconf_names() -> u64 {
 // ---------------------------------------------------------------------------
 
 /// `os.path.realpath(path)` → str or bytes, matching the path flavor — resolve path following symlinks
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_path_realpath(path_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_path_realpath_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    path_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.path.realpath", AuditArg::None) {
             return error;
         }
@@ -2049,9 +2145,14 @@ pub extern "C" fn molt_os_path_realpath(path_bits: u64) -> u64 {
 ///
 /// `atime_bits` and `mtime_bits` are floats, or both None for current time.
 /// The Python wrapper decomposes the `times` tuple before calling this.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_utime(path_bits: u64, atime_bits: u64, mtime_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_utime_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    path_bits: u64,
+    atime_bits: u64,
+    mtime_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.utime", AuditArg::None) {
             return error;
         }
@@ -2448,9 +2549,13 @@ fn at_resolve_dir_fd(_py: &CoreGilToken, dir_fd_bits: u64) -> Result<libc::c_int
 }
 
 /// `os.readlink(path, dir_fd=...)` → str or bytes, matching the path flavor.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_readlink_at(path_bits: u64, dir_fd_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_readlink_at_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    path_bits: u64,
+    dir_fd_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let (path, bytes_flavor) = match path_from_bits_with_flavor(_py, path_bits) {
             Ok(path) => path,
             Err(error) => return error,
@@ -2528,9 +2633,14 @@ pub extern "C" fn molt_os_readlink_at(path_bits: u64, dir_fd_bits: u64) -> u64 {
 /// its SECOND argument; `dir_fd` here qualifies the LINK (`dst`), matching
 /// CPython.
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_symlink_at(src_bits: u64, dst_bits: u64, dir_fd_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_symlink_at_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    src_bits: u64,
+    dst_bits: u64,
+    dir_fd_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.symlink_at", AuditArg::None) {
             return error;
         }
@@ -2571,9 +2681,14 @@ pub extern "C" fn molt_os_symlink_at(src_bits: u64, dst_bits: u64, dir_fd_bits: 
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_symlink_at(_s: u64, _d: u64, _dir: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_symlink_at_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    _s: u64,
+    _d: u64,
+    _dir: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "symlink")
     })
 }
@@ -2587,8 +2702,9 @@ pub extern "C" fn molt_os_symlink_at(_s: u64, _d: u64, _dir: u64) -> u64 {
 /// `UTIME_NOW` for that timestamp (the "no times given" path sends `-1` for
 /// both).
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_utime_at(
+
+pub fn molt_os_utime_at_attached_body(
+    _py: &molt_runtime_core::PyToken,
     path_bits: u64,
     dir_fd_bits: u64,
     atime_sec_bits: u64,
@@ -2597,7 +2713,7 @@ pub extern "C" fn molt_os_utime_at(
     mtime_nsec_bits: u64,
     follow_symlinks_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.utime_at", AuditArg::None) {
             return error;
         }
@@ -2715,8 +2831,9 @@ fn at_timespec_pair(
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_utime_at(
+
+pub fn molt_os_utime_at_attached_body(
+    _py: &molt_runtime_core::PyToken,
     _p: u64,
     _d: u64,
     _as: u64,
@@ -2725,20 +2842,21 @@ pub extern "C" fn molt_os_utime_at(
     _mn: u64,
     _f: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "utime")
     })
 }
 
 /// `os.sendfile(out_fd, in_fd, offset, count)` → int — zero-copy file send
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_sendfile(
+
+pub fn molt_os_sendfile_attached_body(
+    _py: &molt_runtime_core::PyToken,
     out_fd_bits: u64,
     in_fd_bits: u64,
     offset_bits: u64,
     count_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.sendfile", AuditArg::None) {
             return error;
         }
@@ -2900,57 +3018,63 @@ fn wait_status_macro(status_bits: u64, project: fn(i32) -> MoltObject) -> u64 {
 }
 
 /// `os.WIFEXITED(status)` -> bool
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_wifexited(status_bits: u64) -> u64 {
+
+pub fn molt_os_wifexited_attached_body(_py: &molt_runtime_core::PyToken, status_bits: u64) -> u64 {
     wait_status_macro(status_bits, |status| {
         MoltObject::from_bool(wait_status::exited(status))
     })
 }
 
 /// `os.WEXITSTATUS(status)` -> int
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_wexitstatus(status_bits: u64) -> u64 {
+
+pub fn molt_os_wexitstatus_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    status_bits: u64,
+) -> u64 {
     wait_status_macro(status_bits, |status| {
         MoltObject::from_int(i64::from(wait_status::exit_status(status)))
     })
 }
 
 /// `os.WIFSIGNALED(status)` -> bool
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_wifsignaled(status_bits: u64) -> u64 {
+
+pub fn molt_os_wifsignaled_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    status_bits: u64,
+) -> u64 {
     wait_status_macro(status_bits, |status| {
         MoltObject::from_bool(wait_status::signaled(status))
     })
 }
 
 /// `os.WTERMSIG(status)` -> int
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_wtermsig(status_bits: u64) -> u64 {
+
+pub fn molt_os_wtermsig_attached_body(_py: &molt_runtime_core::PyToken, status_bits: u64) -> u64 {
     wait_status_macro(status_bits, |status| {
         MoltObject::from_int(i64::from(wait_status::term_sig(status)))
     })
 }
 
 /// `os.WIFSTOPPED(status)` -> bool
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_wifstopped(status_bits: u64) -> u64 {
+
+pub fn molt_os_wifstopped_attached_body(_py: &molt_runtime_core::PyToken, status_bits: u64) -> u64 {
     wait_status_macro(status_bits, |status| {
         MoltObject::from_bool(wait_status::stopped(status))
     })
 }
 
 /// `os.WSTOPSIG(status)` -> int
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_wstopsig(status_bits: u64) -> u64 {
+
+pub fn molt_os_wstopsig_attached_body(_py: &molt_runtime_core::PyToken, status_bits: u64) -> u64 {
     wait_status_macro(status_bits, |status| {
         MoltObject::from_int(i64::from(wait_status::stop_sig(status)))
     })
 }
 
 /// os.fspath shares the canonical runtime protocol and preserves result type.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_fspath(path_bits: u64) -> u64 {
-    crate::bridge::fspath_bits(path_bits)
+
+pub fn molt_os_fspath_attached_body(_py: &molt_runtime_core::PyToken, path_bits: u64) -> u64 {
+    crate::bridge::fspath_bits(_py, path_bits)
 }
 
 // ---------------------------------------------------------------------------
@@ -3047,9 +3171,14 @@ fn makedirs_tree(
 }
 
 /// `os.makedirs(name, mode=0o777, exist_ok=False)` → None
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_os_makedirs_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    path_bits: u64,
+    mode_bits: u64,
+    exist_ok_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(error) = require_operation(_py, "os.makedirs", AuditArg::None) {
             return error;
         }
@@ -3134,3 +3263,5 @@ mod tests {
         );
     }
 }
+
+include!("attached_exports_generated/os_ext.rs");

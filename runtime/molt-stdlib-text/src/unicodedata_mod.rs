@@ -11,13 +11,13 @@ use molt_runtime_core::obj_from_bits;
 use molt_runtime_core::prelude::*;
 
 // Names and normalization retain their separate existing source/algorithm owner.
-fn target_unicode() -> &'static molt_obj_model::unicode::UnicodeData {
-    molt_runtime_core::unicode_target::for_runtime_target()
+fn target_unicode(py: &PyToken) -> &'static molt_obj_model::unicode::UnicodeData {
+    molt_runtime_core::unicode_target::for_runtime_target(py)
         .expect("unsupported target Python Unicode facts")
 }
 
 fn code_point_from_bits(py: &CoreGilToken, bits: u64) -> Result<u32, u64> {
-    let Some(bytes) = (unsafe { molt_runtime_core::rt_string_as_bytes(bits) }) else {
+    let Some(bytes) = (unsafe { molt_runtime_core::rt_string_as_bytes(py, bits) }) else {
         return Err(raise_exception::<u64>(
             py,
             BuiltinExc::TypeError,
@@ -250,9 +250,13 @@ fn alloc_str(_py: &CoreGilToken, s: &str) -> u64 {
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "stdlib_unicode_names")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_unicodedata_name(ch_bits: u64, default_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_unicodedata_name_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ch_bits: u64,
+    default_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ch = match char_from_bits(_py, ch_bits) {
             Ok(c) => c,
             Err(exc) => return exc,
@@ -280,9 +284,12 @@ pub extern "C" fn molt_unicodedata_name(ch_bits: u64, default_bits: u64) -> u64 
 }
 
 #[cfg(feature = "stdlib_unicode_names")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_unicodedata_lookup(name_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_unicodedata_lookup_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    name_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(s) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "argument must be str");
         };
@@ -298,57 +305,67 @@ pub extern "C" fn molt_unicodedata_lookup(name_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_unicodedata_category(ch_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_unicodedata_category_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ch_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let code = match code_point_from_bits(_py, ch_bits) {
             Ok(code) => code,
             Err(error) => return error,
         };
-        let data = target_unicode();
+        let data = target_unicode(_py);
         alloc_str(_py, data.category(code))
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_unicodedata_bidirectional(ch_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_unicodedata_bidirectional_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ch_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let code = match code_point_from_bits(_py, ch_bits) {
             Ok(code) => code,
             Err(error) => return error,
         };
-        let data = target_unicode();
+        let data = target_unicode(_py);
         alloc_str(_py, data.bidirectional(code))
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_unicodedata_combining(ch_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_unicodedata_combining_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ch_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let code = match code_point_from_bits(_py, ch_bits) {
             Ok(code) => code,
             Err(error) => return error,
         };
-        let data = target_unicode();
+        let data = target_unicode(_py);
         int_bits_from_i64(_py, i64::from(data.combining(code)))
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_unicodedata_mirrored(ch_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_unicodedata_mirrored_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ch_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let code = match code_point_from_bits(_py, ch_bits) {
             Ok(code) => code,
             Err(error) => return error,
         };
-        let data = target_unicode();
+        let data = target_unicode(_py);
         int_bits_from_i64(_py, i64::from(data.mirrored(code)))
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_unicodedata_decomposition(ch_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_unicodedata_decomposition_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ch_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ch = match char_from_bits(_py, ch_bits) {
             Ok(c) => c,
             Err(exc) => return exc,
@@ -364,9 +381,12 @@ pub extern "C" fn molt_unicodedata_decomposition(ch_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_unicodedata_normalize(form_bits: u64, text_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_unicodedata_normalize_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    form_bits: u64,
+    text_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(form) = string_obj_to_owned(obj_from_bits(form_bits)) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "form must be str");
         };
@@ -391,9 +411,12 @@ pub extern "C" fn molt_unicodedata_normalize(form_bits: u64, text_bits: u64) -> 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_unicodedata_is_normalized(form_bits: u64, text_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_unicodedata_is_normalized_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    form_bits: u64,
+    text_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(form) = string_obj_to_owned(obj_from_bits(form_bits)) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "form must be str");
         };
@@ -417,14 +440,17 @@ pub extern "C" fn molt_unicodedata_is_normalized(form_bits: u64, text_bits: u64)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_unicodedata_numeric(ch_bits: u64, default_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_unicodedata_numeric_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ch_bits: u64,
+    default_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let code = match code_point_from_bits(_py, ch_bits) {
             Ok(code) => code,
             Err(error) => return error,
         };
-        if let Some(value) = target_unicode().numeric(code) {
+        if let Some(value) = target_unicode(_py).numeric(code) {
             return MoltObject::from_float(value).bits();
         }
         if obj_from_bits(default_bits).is_none() {
@@ -435,14 +461,17 @@ pub extern "C" fn molt_unicodedata_numeric(ch_bits: u64, default_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_unicodedata_decimal(ch_bits: u64, default_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_unicodedata_decimal_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ch_bits: u64,
+    default_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let code = match code_point_from_bits(_py, ch_bits) {
             Ok(code) => code,
             Err(error) => return error,
         };
-        if let Some(value) = target_unicode().decimal(code) {
+        if let Some(value) = target_unicode(_py).decimal(code) {
             return int_bits_from_i64(_py, i64::from(value));
         }
         if obj_from_bits(default_bits).is_none() {
@@ -453,14 +482,17 @@ pub extern "C" fn molt_unicodedata_decimal(ch_bits: u64, default_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_unicodedata_digit(ch_bits: u64, default_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_unicodedata_digit_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ch_bits: u64,
+    default_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let code = match code_point_from_bits(_py, ch_bits) {
             Ok(code) => code,
             Err(error) => return error,
         };
-        if let Some(value) = target_unicode().digit(code) {
+        if let Some(value) = target_unicode(_py).digit(code) {
             return int_bits_from_i64(_py, i64::from(value));
         }
         if obj_from_bits(default_bits).is_none() {
@@ -471,12 +503,15 @@ pub extern "C" fn molt_unicodedata_digit(ch_bits: u64, default_bits: u64) -> u64
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_unicodedata_east_asian_width(ch_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, crate::bridge::east_asian_width(ch_bits))
+pub fn molt_unicodedata_east_asian_width_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ch_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, crate::bridge::east_asian_width(_py, ch_bits))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_unicodedata_unidata_version() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, crate::bridge::unidata_version())
+pub fn molt_unicodedata_unidata_version_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, crate::bridge::unidata_version(_py))
 }
+
+include!("attached_exports_generated/unicodedata_mod.rs");

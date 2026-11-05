@@ -2792,6 +2792,7 @@ name = "molt-runtime-core"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
+ "molt-codegen-abi",
  "molt-lang-obj-model",
  "num-bigint 0.5.1",
  "num-integer",
@@ -2901,6 +2902,7 @@ version = "0.1.0"
 dependencies = [
  "filetime",
  "libc",
+ "molt-codegen-abi",
  "molt-lang-obj-model",
  "molt-runtime-capi",
  "molt-runtime-core",
@@ -3056,6 +3058,7 @@ dependencies = [
  "log",
  "molt-artifact-publish",
  "molt-codegen-abi",
+ "molt-ir",
  "molt-runtime-platform",
  "molt-runtime-resource",
  "molt-wasm-facts",
@@ -3071,6 +3074,7 @@ dependencies = [
  "unicode-casefold",
  "unicode-normalization",
  "url",
+ "wasmparser 0.262.0",
  "wasmtime",
  "wasmtime-wasi",
  "wat",

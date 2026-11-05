@@ -1,7 +1,14 @@
 use super::*;
 use crate::BuiltinExc;
 
-extern "C" fn logical_type_poll(_task: u64) -> i64 {
+extern "C" fn logical_type_poll(__context: u64, _task: u64) -> i64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::none().bits() as i64
 }
 
@@ -11,18 +18,19 @@ fn logical_type_lookup_covers_task_generator_and_awaitable_consumers() {
     crate::with_gil_entry_nopanic!(py, {
         let classes = builtin_classes(py);
         let poll = crate::provenance::abi::expose_function_address(logical_type_poll as *const ());
-        let coroutine = crate::molt_task_new(poll, 0, crate::TASK_KIND_COROUTINE);
-        let generator = crate::molt_task_new(
+        let coroutine = crate::molt_task_new_attached_body(py, poll, 0, crate::TASK_KIND_COROUTINE);
+        let generator = crate::molt_task_new_attached_body(
+            py,
             poll,
             crate::GEN_CONTROL_SIZE as u64,
             crate::TASK_KIND_GENERATOR,
         );
-        let asyncgen = crate::molt_asyncgen_new(generator);
-        let wrapper = crate::molt_awaitable_await(coroutine);
-        let future = crate::molt_future_new(poll, 0);
+        let asyncgen = crate::molt_asyncgen_new_attached_body(py, generator);
+        let wrapper = crate::molt_awaitable_await_attached_body(py, coroutine);
+        let future = crate::molt_future_new_attached_body(py, poll, 0);
         assert!(!exception_pending(py));
         let name = string_bits(py, b"__class__");
-        let dictionary = crate::molt_dict_new(0);
+        let dictionary = crate::molt_dict_new_attached_body(py, 0);
         let missing = MoltObject::from_int(-1).bits();
         for (receiver, expected) in [
             (coroutine, classes.coroutine),
@@ -33,11 +41,18 @@ fn logical_type_lookup_covers_task_generator_and_awaitable_consumers() {
         ] {
             assert_eq!(type_of_bits(py, receiver), expected);
             let reads = [
-                crate::molt_get_attr_name(receiver, name),
-                crate::molt_get_attr_name_default(receiver, name, missing),
-                crate::molt_getattr_builtin(receiver, name, missing),
-                crate::molt_object_getattribute(receiver, name),
-                unsafe { crate::molt_get_attr_object(receiver, b"__class__".as_ptr(), 9) },
+                crate::molt_get_attr_name_attached_body(py, receiver, name),
+                crate::molt_get_attr_name_default_attached_body(py, receiver, name, missing),
+                crate::molt_getattr_builtin_attached_body(py, receiver, name, missing),
+                crate::molt_object_getattribute_attached_body(py, receiver, name),
+                unsafe {
+                    crate::molt_get_attr_object_attached_body(
+                        py,
+                        receiver,
+                        b"__class__".as_ptr(),
+                        9,
+                    )
+                },
                 unsafe {
                     object_attr_lookup_with_dict(py, receiver, name, dictionary, false)
                         .into_result()
@@ -51,7 +66,7 @@ fn logical_type_lookup_covers_task_generator_and_awaitable_consumers() {
                 dec_ref_bits(py, actual);
             }
             assert_eq!(
-                crate::molt_has_attr_name(receiver, name),
+                crate::molt_has_attr_name_attached_body(py, receiver, name),
                 MoltObject::from_bool(true).bits()
             );
             // The actual C generic entrypoint must observe the same descriptor.
@@ -71,7 +86,7 @@ fn logical_type_lookup_covers_task_generator_and_awaitable_consumers() {
         }
         let await_name = string_bits(py, b"__await__");
         for reader in [crate::molt_get_attr_name, crate::molt_object_getattribute] {
-            let result = reader(generator, await_name);
+            let result = unsafe { reader(py.attached_context(), generator, await_name) };
             dec_ref_bits(py, result);
             assert!(crate::builtins::attr::clear_attribute_error_if_pending(py));
         }
@@ -82,7 +97,7 @@ fn logical_type_lookup_covers_task_generator_and_awaitable_consumers() {
             future
         ));
         for reader in [crate::molt_get_attr_name, crate::molt_object_getattribute] {
-            let method = reader(future, await_name);
+            let method = unsafe { reader(py.attached_context(), future, await_name) };
             assert!(!exception_pending(py));
             let result = unsafe { call_callable0(py, method) };
             assert_eq!(
@@ -109,7 +124,8 @@ fn logical_type_lookup_covers_task_generator_and_awaitable_consumers() {
                 "the explicit dictionary precedes the poll adapter"
             );
         }
-        let closed = crate::async_rt::awaitable::molt_coroutine_close_method(coroutine);
+        let closed =
+            crate::async_rt::awaitable::molt_coroutine_close_method_attached_body(py, coroutine);
         dec_ref_bits(py, closed);
         assert!(!exception_pending(py));
         for bits in [
@@ -122,13 +138,21 @@ fn logical_type_lookup_covers_task_generator_and_awaitable_consumers() {
 
 static CLASS_DESCRIPTOR_CALLS: AtomicU64 = AtomicU64::new(0);
 
-extern "C" fn apparent_class(_descriptor: u64, _receiver: u64, _owner: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn apparent_class(__context: u64, _descriptor: u64, _receiver: u64, _owner: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         CLASS_DESCRIPTOR_CALLS.fetch_add(1, Ordering::Relaxed);
         let class = builtin_classes(py).str;
         inc_ref_bits(py, class);
         class
-    })
+    }
 }
 
 #[test]
@@ -149,7 +173,7 @@ fn logical_type_lookup_preserves_nondata_class_shadow_and_real_descriptor_identi
         let receiver = unsafe { call_callable0(py, owner) };
         let name = string_bits(py, b"__class__");
         let dict_name = string_bits(py, b"__dict__");
-        let dictionary = crate::molt_get_attr_name(receiver, dict_name);
+        let dictionary = crate::molt_get_attr_name_attached_body(py, receiver, dict_name);
         let expected = builtin_classes(py).int;
         unsafe {
             assert!(dict_set_in_place(
@@ -160,7 +184,7 @@ fn logical_type_lookup_preserves_nondata_class_shadow_and_real_descriptor_identi
             ))
         };
         for reader in [crate::molt_get_attr_name, crate::molt_object_getattribute] {
-            let result = reader(receiver, name);
+            let result = unsafe { reader(py.attached_context(), receiver, name) };
             assert!(!exception_pending(py));
             assert_eq!(result, expected);
             dec_ref_bits(py, result);
@@ -196,11 +220,19 @@ fn logical_type_lookup_preserves_nondata_class_shadow_and_real_descriptor_identi
     });
 }
 
-extern "C" fn failing_apparent_class(_receiver: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn failing_apparent_class(__context: u64, _receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         CLASS_DESCRIPTOR_CALLS.fetch_add(1, Ordering::Relaxed);
         raise_exception::<u64>(py, BuiltinExc::AttributeError, "class descriptor denied")
-    })
+    }
 }
 
 #[test]
@@ -213,18 +245,23 @@ fn logical_type_lookup_keeps_descriptor_failure_and_optional_default() {
             failing_apparent_class as *const (),
             1,
         );
-        let descriptor =
-            crate::molt_property_new(get, MoltObject::none().bits(), MoltObject::none().bits());
+        let descriptor = crate::molt_property_new_attached_body(
+            py,
+            get,
+            MoltObject::none().bits(),
+            MoltObject::none().bits(),
+        );
         let owner = test_class_bits(py, b"FailingClassOwner", &[], &[(b"__class__", descriptor)]);
         let receiver = unsafe { call_callable0(py, owner) };
         let name = string_bits(py, b"__class__");
         let missing = MoltObject::from_int(73).bits();
         for reader in [crate::molt_get_attr_name, crate::molt_object_getattribute] {
             CLASS_DESCRIPTOR_CALLS.store(0, Ordering::Relaxed);
-            let result = reader(receiver, name);
+            let result = unsafe { reader(py.attached_context(), receiver, name) };
             dec_ref_bits(py, result);
             assert_eq!(CLASS_DESCRIPTOR_CALLS.load(Ordering::Relaxed), 1);
-            let exception = crate::builtins::exceptions::molt_exception_last_pending();
+            let exception =
+                crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
             assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 exception,
@@ -236,7 +273,7 @@ fn logical_type_lookup_keeps_descriptor_failure_and_optional_default() {
         }
         CLASS_DESCRIPTOR_CALLS.store(0, Ordering::Relaxed);
         assert_eq!(
-            crate::molt_get_attr_name_default(receiver, name, missing),
+            crate::molt_get_attr_name_default_attached_body(py, receiver, name, missing),
             missing
         );
         assert_eq!(CLASS_DESCRIPTOR_CALLS.load(Ordering::Relaxed), 1);
@@ -247,7 +284,14 @@ fn logical_type_lookup_keeps_descriptor_failure_and_optional_default() {
     });
 }
 
-extern "C" fn super_precedence_probe(_receiver: u64) -> u64 {
+extern "C" fn super_precedence_probe(__context: u64, _receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::from_int(17).bits()
 }
 
@@ -274,23 +318,24 @@ fn logical_type_super_delegation_and_explicit_generic_are_distinct() {
             let child = test_class_bits(py, b"SuperChild", &[base], &[]);
             let receiver = call_callable0(py, child);
             assert!(!exception_pending(py), "ordinary child construction");
-            let proxy = crate::molt_super_new(child, receiver);
+            let proxy = crate::molt_super_new_attached_body(py, child, receiver);
             assert!(!exception_pending(py), "instance-mode super construction");
             let proxy_ptr = obj_from_bits(proxy).as_ptr().unwrap();
-            let method = crate::molt_get_attr_generic(proxy_ptr, b"__repr__".as_ptr(), 8);
+            let method =
+                crate::molt_get_attr_generic_attached_body(py, proxy_ptr, b"__repr__".as_ptr(), 8);
             let result = call_callable0(py, method);
             assert_eq!(result, MoltObject::from_int(17).bits());
             dec_ref_bits(py, method);
             dec_ref_bits(py, result);
             let name = string_bits(py, b"__self__");
             assert_eq!(
-                crate::molt_get_attr_name(proxy, name),
+                crate::molt_get_attr_name_attached_body(py, proxy, name),
                 MoltObject::from_int(41).bits()
             );
-            let own = crate::molt_object_getattribute(proxy, name);
+            let own = crate::molt_object_getattribute_attached_body(py, proxy, name);
             assert_eq!(own, receiver);
             dec_ref_bits(py, own);
-            let dictionary = crate::molt_dict_new(0);
+            let dictionary = crate::molt_dict_new_attached_body(py, 0);
             assert!(dict_set_in_place(
                 py,
                 obj_from_bits(dictionary).as_ptr().unwrap(),
@@ -317,7 +362,7 @@ fn logical_type_super_delegation_and_explicit_generic_are_distinct() {
             dec_ref_bits(py, own_bits);
             refcount::Py_DECREF(own);
             let class_name = string_bits(py, b"__class__");
-            let class = crate::molt_get_attr_name(proxy, class_name);
+            let class = crate::molt_get_attr_name_attached_body(py, proxy, class_name);
             assert_eq!(class, builtin_classes(py).super_type);
             dec_ref_bits(py, class);
             let new_name = string_bits(py, b"__new__");
@@ -333,7 +378,7 @@ fn logical_type_super_delegation_and_explicit_generic_are_distinct() {
                 object_type_id(obj_from_bits(body_new).as_ptr().unwrap()),
                 TYPE_ID_STATICMETHOD
             );
-            let unbound = crate::molt_get_attr_name(body_new_owner, new_name);
+            let unbound = crate::molt_get_attr_name_attached_body(py, body_new_owner, new_name);
             assert!(
                 !exception_pending(py),
                 "class-body constructor descriptor lookup"
@@ -343,7 +388,7 @@ fn logical_type_super_delegation_and_explicit_generic_are_distinct() {
             dec_ref_bits(py, body_new_owner);
             // Later assignment remains a normal function descriptor. Super
             // must use descriptor identity, not a spelling-based __new__ rule.
-            let assigned = crate::molt_set_attr_name(base, new_name, probe);
+            let assigned = crate::molt_set_attr_name_attached_body(py, base, new_name, probe);
             dec_ref_bits(py, assigned);
             assert!(!exception_pending(py), "late constructor assignment");
             let selected = super_resolve_method_unbound(py, child, receiver, new_name)
@@ -351,7 +396,7 @@ fn logical_type_super_delegation_and_explicit_generic_are_distinct() {
                 .unwrap();
             assert_eq!(selected.func_bits, probe);
             dec_ref_bits(py, selected.func_bits);
-            let bound_new = crate::molt_get_attr_name(proxy, new_name);
+            let bound_new = crate::molt_get_attr_name_attached_body(py, proxy, new_name);
             assert_eq!(
                 crate::bound_method_func_bits(obj_from_bits(bound_new).as_ptr().unwrap()),
                 probe
@@ -364,9 +409,10 @@ fn logical_type_super_delegation_and_explicit_generic_are_distinct() {
             dec_ref_bits(py, new_name);
             // A class receiver must select type.__new__, never object.__new__.
             let meta = test_class_bits(py, b"SuperMeta", &[builtin_classes(py).type_obj], &[]);
-            let meta_proxy = crate::molt_super_new(meta, meta);
+            let meta_proxy = crate::molt_super_new_attached_body(py, meta, meta);
             assert!(!exception_pending(py), "class-mode super construction");
-            let new = crate::molt_get_attr_generic(
+            let new = crate::molt_get_attr_generic_attached_body(
+                py,
                 obj_from_bits(meta_proxy).as_ptr().unwrap(),
                 b"__new__".as_ptr(),
                 7,
@@ -412,7 +458,7 @@ fn logical_type_class_generic_read_uses_only_heap_own_dictionary() {
         let name = string_bits(py, b"__name__");
         for _phase in 0..2 {
             for (owner, key, expected) in [(parent, inherited, 17), (child, own, 23)] {
-                let result = crate::molt_object_getattribute(owner, key);
+                let result = crate::molt_object_getattribute_attached_body(py, owner, key);
                 assert_eq!(result, MoltObject::from_int(expected).bits());
                 assert!(!exception_pending(py));
                 dec_ref_bits(py, result);
@@ -422,13 +468,13 @@ fn logical_type_class_generic_read_uses_only_heap_own_dictionary() {
                 (classes.int, bit_length),
                 (classes.bool, bit_length),
             ] {
-                let result = crate::molt_object_getattribute(owner, key);
+                let result = crate::molt_object_getattribute_attached_body(py, owner, key);
                 dec_ref_bits(py, result);
                 assert!(crate::builtins::attr::clear_attribute_error_if_pending(py));
             }
             for owner in [parent, child, classes.int, classes.bool] {
                 for key in [dictionary, name] {
-                    let result = crate::molt_object_getattribute(owner, key);
+                    let result = crate::molt_object_getattribute_attached_body(py, owner, key);
                     assert!(!exception_pending(py));
                     assert!(obj_from_bits(result).as_ptr().is_some());
                     dec_ref_bits(py, result);
@@ -441,7 +487,7 @@ fn logical_type_class_generic_read_uses_only_heap_own_dictionary() {
                 (classes.int, bit_length),
                 (classes.bool, bit_length),
             ] {
-                let result = crate::molt_get_attr_name(owner, key);
+                let result = crate::molt_get_attr_name_attached_body(py, owner, key);
                 assert!(!exception_pending(py));
                 dec_ref_bits(py, result);
             }
@@ -457,8 +503,9 @@ fn logical_type_coroutine_members_share_normal_explicit_and_c_generic_lookup() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
-            let coroutine = crate::molt_task_new(0, 0, crate::TASK_KIND_COROUTINE);
-            let dictionary = crate::molt_dict_new(0);
+            let coroutine =
+                crate::molt_task_new_attached_body(py, 0, 0, crate::TASK_KIND_COROUTINE);
+            let dictionary = crate::molt_dict_new_attached_body(py, 0);
             for (spelling, expected) in [
                 (
                     b"cr_running".as_slice(),
@@ -476,7 +523,7 @@ fn logical_type_coroutine_members_share_normal_explicit_and_c_generic_lookup() {
                     MoltObject::from_int(99).bits(),
                 ));
                 for reader in [crate::molt_get_attr_name, crate::molt_object_getattribute] {
-                    let result = reader(coroutine, name);
+                    let result = unsafe { reader(py.attached_context(), coroutine, name) };
                     assert_eq!(result, expected);
                     assert!(!exception_pending(py));
                     dec_ref_bits(py, result);
@@ -542,8 +589,8 @@ fn logical_type_super_cache_admits_only_plain_python_methods() {
                         .is_none()
                 );
                 assert!(!exception_pending(py));
-                let proxy = crate::molt_super_new(child, receiver);
-                let bound = crate::molt_get_attr_name(proxy, init_name);
+                let proxy = crate::molt_super_new_attached_body(py, child, receiver);
+                let bound = crate::molt_get_attr_name_attached_body(py, proxy, init_name);
                 assert!(!exception_pending(py), "ordinary native descriptor binding");
                 let result = call_callable0(py, bound);
                 assert_eq!(result, MoltObject::none().bits());
@@ -558,7 +605,8 @@ fn logical_type_super_cache_admits_only_plain_python_methods() {
                 super_precedence_probe as *const (),
                 1,
             );
-            let property = crate::molt_property_new(
+            let property = crate::molt_property_new_attached_body(
+                py,
                 probe,
                 MoltObject::none().bits(),
                 MoltObject::none().bits(),
@@ -583,12 +631,12 @@ fn logical_type_super_cache_admits_only_plain_python_methods() {
                     .expect("resolution succeeds")
                     .is_none()
             );
-            let proxy = crate::molt_super_new(child, receiver);
-            let bound = crate::molt_get_attr_name(proxy, method_name);
+            let proxy = crate::molt_super_new_attached_body(py, child, receiver);
+            let bound = crate::molt_get_attr_name_attached_body(py, proxy, method_name);
             let result = call_callable0(py, bound);
             assert_eq!(result, MoltObject::from_int(17).bits());
             assert_eq!(
-                crate::molt_get_attr_name(proxy, field_name),
+                crate::molt_get_attr_name_attached_body(py, proxy, field_name),
                 MoltObject::from_int(17).bits()
             );
             assert!(!exception_pending(py));
@@ -618,10 +666,11 @@ fn logical_coroutine_wrapper_keeps_capture_owner_out_of_instance_dictionary() {
         unsafe {
             let poll =
                 crate::provenance::abi::expose_function_address(logical_type_poll as *const ());
-            let coroutine = crate::molt_task_new(poll, 0, crate::TASK_KIND_COROUTINE);
+            let coroutine =
+                crate::molt_task_new_attached_body(py, poll, 0, crate::TASK_KIND_COROUTINE);
             let coroutine_ptr = obj_from_bits(coroutine).as_ptr().unwrap();
             let baseline = (*header_from_obj_ptr(coroutine_ptr)).ref_count_snapshot();
-            let wrapper = crate::molt_awaitable_await(coroutine);
+            let wrapper = crate::molt_awaitable_await_attached_body(py, coroutine);
             let ptr = obj_from_bits(wrapper).as_ptr().unwrap();
             assert_eq!(crate::object::object_payload_size(ptr), 8);
             assert_eq!(*ptr.cast::<u64>(), coroutine);
@@ -639,7 +688,7 @@ fn logical_coroutine_wrapper_keeps_capture_owner_out_of_instance_dictionary() {
             // resolving __class__ alone can return before reading a dictionary.
             let name = string_bits(py, b"__repr__");
             for reader in [crate::molt_get_attr_name, crate::molt_object_getattribute] {
-                let repr = reader(wrapper, name);
+                let repr = unsafe { reader(py.attached_context(), wrapper, name) };
                 assert!(!exception_pending(py));
                 assert!(crate::builtins::callable::is_callable_impl(py, repr));
                 dec_ref_bits(py, repr);
@@ -653,7 +702,7 @@ fn logical_coroutine_wrapper_keeps_capture_owner_out_of_instance_dictionary() {
             refcount::Py_DECREF(repr);
             dec_ref_bits(py, name);
 
-            let dictionary = crate::molt_dict_new(0);
+            let dictionary = crate::molt_dict_new_attached_body(py, 0);
             assert!(
                 crate::object::field_storage::replace_dictionary(py, ptr, Some(dictionary))
                     .is_err()

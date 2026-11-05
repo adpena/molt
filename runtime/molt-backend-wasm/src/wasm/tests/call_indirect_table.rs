@@ -88,7 +88,7 @@ fn call_indirect_type_layout_and_sentinel_table_slot_are_pinned() {
         let type_idx = function_type_indices[(func_idx - import_count) as usize];
         assert_eq!(
             signatures[type_idx as usize],
-            (spec.arity + 1, 1),
+            (spec.arity + 2, 1),
             "{} wrapper must accept table index plus {} args and return one value",
             spec.import_name,
             spec.arity

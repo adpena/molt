@@ -56,7 +56,7 @@ _RETURNS: dict[str, tuple[str, str]] = {
     "void": ("void", ""),
     "u64": ("unsigned long long", " -> u64"),
 }
-_PHASES = ("start", "finish")
+_PHASES = ("start", "execution", "finish")
 
 
 _RUNNER_KEYS = (
@@ -152,6 +152,14 @@ def _names(entries: tuple[LaunchEntry, ...], phase: str) -> list[str]:
 
 
 def render_python(entries: tuple[LaunchEntry, ...], runner: RunnerProtocol) -> str:
+    from tools.wasm_abi_gen.execution_context import context_suffix
+
+    with (ROOT / "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml").open(
+        "rb"
+    ) as handle:
+        compiled_bootstrap = "molt_isolate_bootstrap" + context_suffix(
+            tomllib.load(handle)
+        )
     declarations = "\n".join(_c_declaration(entry) for entry in entries)
     return f'''"""The native launch ABI (generated; do not edit).
 
@@ -161,6 +169,8 @@ entry points and calls them in this order; the JIT runner resolves the same
 entries from ``runtime/molt-jit/src/launch_abi_generated.rs``, and reads the
 same command line and image format from it.
 """
+
+COMPILED_ISOLATE_BOOTSTRAP_SYMBOL = {compiled_bootstrap!r}
 
 # The JIT runner's command line: [<receipt flag> <path>] <image flag> <image> [args...].
 JIT_RUNNER_IMAGE_FLAG = {runner.image_flag!r}

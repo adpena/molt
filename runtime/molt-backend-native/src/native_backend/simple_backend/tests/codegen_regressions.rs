@@ -274,7 +274,7 @@ fn assert_guarded_continuation_sources(compiled: &CompiledFunctionClif, paramete
         .map(|&index| {
             function
                 .dfg
-                .resolve_aliases(function.dfg.block_params(entry)[index])
+                .resolve_aliases(function.dfg.block_params(entry)[index + 1])
         })
         .collect();
     // Inline RC adds transparent branches between recursion exit and return.
@@ -674,7 +674,7 @@ fn exception_edges_preserve_actual_dominating_parameter_without_phi() {
 
 fn assert_branch_preserves_parameter_without_phi(function: &Function, parameter: usize) {
     let entry = function.layout.entry_block().expect("entry block");
-    let expected = function.dfg.block_params(entry)[parameter];
+    let expected = function.dfg.block_params(entry)[parameter + 1];
     let mut returns = 0;
     let mut branches = 0;
     for block in function.layout.blocks() {
@@ -756,8 +756,8 @@ fn redefined_value_survives_successive_exception_and_branch_fallthroughs() {
         "redefined_fallthrough_value",
     );
     let entry = function.layout.entry_block().unwrap();
-    let initial = function.dfg.block_params(entry)[0];
-    let replacement = function.dfg.block_params(entry)[1];
+    let initial = function.dfg.block_params(entry)[1];
+    let replacement = function.dfg.block_params(entry)[2];
     let return_block = function
         .layout
         .blocks()
@@ -1048,7 +1048,7 @@ fn assert_return_parameter_sources(function: &Function, parameters: &[usize]) {
     let entry = function.layout.entry_block().unwrap();
     let expected: BTreeSet<_> = parameters
         .iter()
-        .map(|&index| function.dfg.block_params(entry)[index])
+        .map(|&index| function.dfg.block_params(entry)[index + 1])
         .collect();
     let mut returns = 0;
     for block in function.layout.blocks() {

@@ -811,8 +811,8 @@ fn compile_validate_source(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_compile_builtin(
+pub(crate) fn molt_compile_builtin_attached_body(
+    _py: &crate::PyToken<'_>,
     source_bits: u64,
     filename_bits: u64,
     mode_bits: u64,
@@ -820,7 +820,7 @@ pub extern "C" fn molt_compile_builtin(
     dont_inherit_bits: u64,
     optimize_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let source = match string_obj_to_owned(obj_from_bits(source_bits)) {
             Some(val) => val,
             None => {
@@ -874,15 +874,15 @@ pub extern "C" fn molt_compile_builtin(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codeop_compile(
+pub(crate) fn molt_codeop_compile_attached_body(
+    _py: &crate::PyToken<'_>,
     source_bits: u64,
     filename_bits: u64,
     mode_bits: u64,
     flags_bits: u64,
     incomplete_input_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let source = match string_obj_to_owned(obj_from_bits(source_bits)) {
             Some(value) => value,
             None => {
@@ -942,14 +942,14 @@ pub extern "C" fn molt_codeop_compile(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_codeop_compile_command(
+pub(crate) fn molt_codeop_compile_command_attached_body(
+    _py: &crate::PyToken<'_>,
     source_bits: u64,
     filename_bits: u64,
     mode_bits: u64,
     flags_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let mut source = match string_obj_to_owned(obj_from_bits(source_bits)) {
             Some(value) => value,
             None => {
@@ -1088,7 +1088,9 @@ mod code_object_ownership_tests {
         unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() }
     }
 
-    extern "C" fn owned_code_callable() -> u64 {
+    extern "C" fn owned_code_callable(__context: u64) -> u64 {
+        let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         MoltObject::none().bits()
     }
 
@@ -1308,7 +1310,7 @@ mod code_object_ownership_tests {
             dec_ref_bits(_py, code_bits);
             assert_eq!(unsafe { ref_count(code_ptr) }, 1);
 
-            let returned_bits = super::molt_function_get_code(func_bits);
+            let returned_bits = super::molt_function_get_code_attached_body(_py, func_bits);
             assert_eq!(returned_bits, code_bits);
             assert_eq!(unsafe { ref_count(code_ptr) }, 2);
             dec_ref_bits(_py, returned_bits);
@@ -1318,3 +1320,5 @@ mod code_object_ownership_tests {
         })
     }
 }
+
+include!("../../attached_exports_generated/builtins/functions/compile_codeop.rs");

@@ -228,6 +228,11 @@ impl SimpleBackend {
                 .returns
                 .push(AbiParam::new(types::I64));
         }
+        self.ctx
+            .func
+            .signature
+            .params
+            .push(AbiParam::new(types::I64));
         for _ in &func_ir.params {
             self.ctx
                 .func
@@ -366,7 +371,8 @@ impl SimpleBackend {
         switch_to_block_materialized(&mut builder, entry_block);
         cleanup_roots.initialize(&mut builder);
 
-        for (i, val) in entry_param_values.iter().copied().enumerate() {
+        let execution_context = entry_param_values[0];
+        for (i, val) in entry_param_values.iter().copied().skip(1).enumerate() {
             let name = &func_ir.params[i];
             def_var_named(&mut builder, &vars, name, val);
         }
@@ -483,8 +489,8 @@ impl SimpleBackend {
             &[],
             &[types::I64],
         );
-        // The thread record (`molt_thread_record`): fetch its address once
-        // per invocation and keep it in a dedicated stack slot. Inline
+        // The context header supplies the thread record once per invocation;
+        // keep it in a dedicated stack slot. Inline
         // exception checks load its pending byte; direct Python calls write
         // its invocation handoff. Using a Cranelift Variable here let SSA
         // repair synthesize zero-valued placeholder predecessors in nested
@@ -505,21 +511,9 @@ impl SimpleBackend {
             .iter()
             .any(|op| matches!(op.kind, OpKind::CallGuarded | OpKind::CallFunc));
         let has_async_work_polls = func_ir.ops.iter().any(OpIR::is_async_work_poll);
-        let thread_record_fn = (inline_exception_checks
-            || makes_direct_python_calls
-            || has_async_work_polls)
-            .then(|| {
-                import_func_ref(
-                    &mut self.module,
-                    &mut self.import_ids,
-                    &mut builder,
-                    &mut import_refs,
-                    "molt_thread_record",
-                    &[],
-                    &[types::I64],
-                )
-            });
-        let thread_record_slot = thread_record_fn.map(|_| {
+        let needs_thread_record =
+            inline_exception_checks || makes_direct_python_calls || has_async_work_polls;
+        let thread_record_slot = needs_thread_record.then(|| {
             builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3))
         });
         // The pending-exception byte is the record's first byte.
@@ -657,9 +651,13 @@ impl SimpleBackend {
         // Fetch the thread record once in the entry block and keep it in a
         // stack slot so later exception checks and direct calls can load it
         // without re-entering Cranelift SSA variable repair.
-        if let (Some(slot), Some(record_fn_ref)) = (thread_record_slot, thread_record_fn) {
-            let call = builder.ins().call(record_fn_ref, &[]);
-            let record = builder.inst_results(call)[0];
+        if let Some(slot) = thread_record_slot {
+            let record = builder.ins().load(
+                types::I64,
+                MemFlagsData::trusted(),
+                execution_context,
+                molt_ir::runtime_callable_abi_generated::ATTACHED_CONTEXT_THREAD_RECORD_OFFSET,
+            );
             builder.ins().stack_store(pointer_type, record, slot, 0);
             if let Some(work_slot) = work_ptr_slot {
                 let word_ptr = builder.ins().load(
@@ -2415,47 +2413,8 @@ impl SimpleBackend {
             None
         };
 
-        // For molt_main: route the SUCCESS path through the runtime's
-        // executable finalizer. The finalizer runs Python-level process-exit
-        // hooks and then hard-exits, avoiding allocator/TLS destructor races.
-        // On the EXCEPTION path, return normally so the C stub can print the
-        // traceback before invoking the same finalizer with a failure code.
-        if func_ir.name == "molt_main" {
-            let has_exc = emit_exception_pending_condition(
-                &mut builder,
-                pointer_type,
-                local_exc_pending_fast,
-                exc_flag_ptr_slot,
-            );
-
-            let exit_block = builder.create_block();
-            let normal_ret_block = builder.create_block();
-            builder
-                .ins()
-                .brif(has_exc, normal_ret_block, &[], exit_block, &[]);
-
-            // Success path: Python-level exit finalization + _exit(0).
-            switch_to_block_materialized(&mut builder, exit_block);
-            seal_block_once(&mut builder, &mut sealed_blocks, exit_block);
-            let runtime_exit = Self::import_func_id_split(
-                &mut self.module,
-                &mut self.import_ids,
-                "molt_runtime_exit",
-                &[types::I64],
-                &[types::I64],
-            );
-            let local_runtime_exit = self.module.declare_func_in_func(runtime_exit, builder.func);
-            let zero = builder.ins().iconst(types::I64, 0);
-            builder.ins().call(local_runtime_exit, &[zero]);
-            // Unreachable after molt_runtime_exit, but Cranelift needs a terminator.
-            builder
-                .ins()
-                .trap(cranelift_codegen::ir::TrapCode::user(1).unwrap());
-
-            // Exception path: return normally for traceback printing.
-            switch_to_block_materialized(&mut builder, normal_ret_block);
-            seal_block_once(&mut builder, &mut sealed_blocks, normal_ret_block);
-        }
+        // Both successful and exceptional main returns cross the host's
+        // compiled-scope leave before the host invokes process finalization.
         if let Some(res) = final_res {
             builder.ins().return_(&[res]);
         } else {
@@ -2501,6 +2460,7 @@ impl SimpleBackend {
         });
         builder.seal_all_blocks();
         builder.finalize(frontend_config);
+        complete_attached_calls(&self.module, &mut self.ctx.func, execution_context);
 
         if let Some(config) = should_dump_ir()
             && dump_ir_matches(&config, &func_ir.name)
@@ -2535,7 +2495,7 @@ impl SimpleBackend {
         }
 
         let id = match self.module.declare_function(
-            &func_ir.name,
+            &compiled_execution_symbol(&func_ir.name),
             Linkage::Export,
             &self.ctx.func.signature,
         ) {
@@ -2566,7 +2526,8 @@ impl SimpleBackend {
             func: built_func,
             name: func_ir.name.clone(),
         });
-        self.defined_func_names.insert(func_ir.name.clone());
+        self.defined_func_names
+            .insert(compiled_execution_symbol(&func_ir.name));
         self.module.clear_context(&mut self.ctx);
     }
 }

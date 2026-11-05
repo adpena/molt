@@ -1,9 +1,8 @@
 use super::*;
 use crate::BuiltinExc;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_frozen_payload() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_importlib_frozen_payload_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let mut owned: Vec<u64> = Vec::new();
         let mut values: Vec<(&[u8], u64)> = Vec::with_capacity(4);
 
@@ -26,7 +25,7 @@ pub extern "C" fn molt_importlib_frozen_payload() -> u64 {
         owned.push(frozen_importer_bits);
         values.push((b"FrozenImporter", frozen_importer_bits));
 
-        let module_spec_bits = crate::molt_importlib_module_spec_type();
+        let module_spec_bits = crate::molt_importlib_module_spec_type_attached_body(_py);
         if exception_pending(_py) || obj_from_bits(module_spec_bits).is_none() {
             for bits in owned {
                 dec_ref_bits(_py, bits);
@@ -76,9 +75,11 @@ pub extern "C" fn molt_importlib_frozen_payload() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_typing_private_payload(typing_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_typing_private_payload_attached_body(
+    _py: &crate::PyToken<'_>,
+    typing_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let mut owned: Vec<u64> = Vec::new();
         let mut values: Vec<(&[u8], u64)> = Vec::with_capacity(7);
 
@@ -227,14 +228,14 @@ pub extern "C" fn molt_typing_private_payload(typing_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_metadata_types_payload(
+pub(crate) fn molt_importlib_metadata_types_payload_attached_body(
+    _py: &crate::PyToken<'_>,
     typing_bits: u64,
     abc_bits: u64,
     contextlib_bits: u64,
     _itertools_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let mut owned: Vec<u64> = Vec::new();
         let mut values: Vec<(&[u8], u64)> = Vec::with_capacity(11);
 
@@ -453,9 +454,11 @@ fn importlib_external_producer_owns_namespace(
     Ok(())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_frozen_external_commit(namespace_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_importlib_frozen_external_commit_attached_body(
+    _py: &crate::PyToken<'_>,
+    namespace_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(error) = importlib_external_producer_owns_namespace(_py, namespace_bits) {
             return error;
         }
@@ -464,12 +467,12 @@ pub extern "C" fn molt_importlib_frozen_external_commit(namespace_bits: u64) -> 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_frozen_external_payload(
+pub(crate) fn molt_importlib_frozen_external_payload_attached_body(
+    _py: &crate::PyToken<'_>,
     machinery_bits: u64,
     namespace_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(error) = importlib_external_producer_owns_namespace(_py, namespace_bits) {
             return error;
         }
@@ -768,3 +771,5 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         MoltObject::from_ptr(dict_ptr).bits()
     })
 }
+
+include!("../../attached_exports_generated/builtins/platform_importlib_ffi/payloads.rs");

@@ -2,9 +2,10 @@ use super::super::super::result_sink::{discard_runtime_result, finish_owned_loca
 use super::AggregateRuntimeContext;
 use crate::OpIR;
 use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_values::box_none;
-use wasm_encoder::{BlockType, Function, Instruction};
+use wasm_encoder::{BlockType, Instruction};
 
 /// Dictionaries use the runtime full-pairs constructor. Incremental sets keep
 /// one owner through every insertion; a mutator result never replaces it.

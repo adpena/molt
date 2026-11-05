@@ -6,6 +6,10 @@ import inspect
 import pytest
 
 import molt.cli.app_export_contract as app_export_contract
+from molt._wasm_abi_generated import (
+    compiled_execution_symbol,
+    ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT,
+)
 
 from molt.cli.app_export_contract import (
     APP_EXPORT_CALL_ABI_SCHEMA,
@@ -104,9 +108,9 @@ del gone
     # A redefined name exports its final definition and records the one it
     # replaced, so the earlier symbol can never be dispatched by name.
     assert exported_app_symbols(contract) == (
-        "probe__alpha",
-        "probe__beta",
-        "probe__same_1",
+        compiled_execution_symbol("probe__alpha"),
+        compiled_execution_symbol("probe__beta"),
+        compiled_execution_symbol("probe__same_1"),
     )
     assert bindings["same"]["superseded_symbols"] == ["probe__same"]
     assert bindings["_private"]["reason"] == "private-name"
@@ -122,10 +126,10 @@ del gone
     )
     assert bindings["gone"]["reason"] == "deleted-binding"
     assert set(excluded_app_symbols(contract)) >= {
-        "probe___identity",
-        "probe___private",
-        "probe__decorated",
-        "probe__replaced",
+        compiled_execution_symbol("probe___identity"),
+        compiled_execution_symbol("probe___private"),
+        compiled_execution_symbol("probe__decorated"),
+        compiled_execution_symbol("probe__replaced"),
     }
 
 
@@ -144,6 +148,11 @@ def test_app_export_contract_seals_owned_result_boundary() -> None:
     assert call_abi == {
         "schema": APP_EXPORT_CALL_ABI_SCHEMA,
         "name": "molt.wasm.app-call",
+        "execution_context": {
+            "position": 0,
+            "representation": "i64",
+            "fingerprint": str(ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT),
+        },
         "parameters": {
             "representation": "tagged-i64",
             "ownership": "transferred",
@@ -176,7 +185,10 @@ def test_app_export_contract_requires_entries_that_adopt_their_arguments() -> No
         "transferred",
     ]
     assert "parameter_custody" not in entries["probe__zero"]
-    assert exported_app_symbols(contract) == ("probe__alpha", "probe__zero")
+    assert exported_app_symbols(contract) == (
+        compiled_execution_symbol("probe__alpha"),
+        compiled_execution_symbol("probe__zero"),
+    )
 
     # A borrowing entry under the transferred-parameter ABI would have every
     # host release each argument a second time.
@@ -257,14 +269,16 @@ def test_app_exports_use_body_capture_not_generic_syntax():
     bindings = {row["name"]: row for row in contract["bindings"]}
     entries = {row["name"]: row for row in ir["functions"]}
     assert exported_app_symbols(contract) == (
-        "probe__annotations_only",
-        "probe__uncaptured",
+        compiled_execution_symbol("probe__annotations_only"),
+        compiled_execution_symbol("probe__uncaptured"),
     )
     for name in ("captured", "closure_only"):
         row = bindings[name]
         assert row["disposition"] == "excluded"
         assert row["reason"] == "closure-callable-requires-module-dispatch"
-        assert row["symbol"] in excluded_app_symbols(contract)
+        assert compiled_execution_symbol(row["symbol"]) in excluded_app_symbols(
+            contract
+        )
         assert entries[row["symbol"]]["params"][0] == _MOLT_CLOSURE_PARAM
     assert entries["probe__captured"]["parameter_custody"] == [
         "borrowed",
@@ -313,7 +327,9 @@ def test_each_source_callable_producer_preserves_context_exclusion(
     assert binding["disposition"] == "excluded"
     assert binding["reason"] == reason
     assert exported_app_symbols(contract) == ()
-    assert binding["symbol"] in excluded_app_symbols(contract)
+    assert compiled_execution_symbol(binding["symbol"]) in excluded_app_symbols(
+        contract
+    )
 
 
 @pytest.mark.parametrize("final_capture", [False, True])
@@ -326,9 +342,9 @@ def test_closure_export_policy_follows_final_definition(final_capture):
     (binding,) = contract["bindings"]
     assert binding["symbol"] == "probe__item_1"
     assert binding["superseded_symbols"] == ["probe__item"]
-    assert "probe__item" in excluded_app_symbols(contract)
+    assert compiled_execution_symbol("probe__item") in excluded_app_symbols(contract)
     assert exported_app_symbols(contract) == (
-        () if final_capture else ("probe__item_1",)
+        () if final_capture else (compiled_execution_symbol("probe__item_1"),)
     )
     if final_capture:
         assert binding["reason"] == "closure-callable-requires-module-dispatch"

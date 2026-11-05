@@ -98,9 +98,13 @@ pub(crate) unsafe fn dict_snapshot<'a, 'py>(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_update_missing(dict_bits: u64, key_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dict_update_missing_attached_body(
+    _py: &crate::PyToken<'_>,
+    dict_bits: u64,
+    key_bits: u64,
+    val_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let dict_obj = obj_from_bits(dict_bits);
         let key_obj = obj_from_bits(key_bits);
         if dict_obj.as_ptr().is_none() || key_obj.as_ptr().is_none() {
@@ -142,9 +146,13 @@ pub extern "C" fn molt_dict_update_missing(dict_bits: u64, key_bits: u64, val_bi
 }
 
 /// Specialized `in` for dict containers (hash lookup, no type dispatch).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_contains(container_bits: u64, item_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_dict_contains_attached_body(
+    _py: &crate::PyToken<'_>,
+    container_bits: u64,
+    item_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let container = obj_from_bits(container_bits);
         if container.as_ptr().is_some() {
             unsafe {
@@ -163,7 +171,7 @@ pub extern "C" fn molt_dict_contains(container_bits: u64, item_bits: u64) -> u64
                 }
             }
         }
-        molt_contains(container_bits, item_bits)
+        molt_contains_attached_body(_py, container_bits, item_bits)
     })
 }
 
@@ -271,9 +279,13 @@ pub(crate) unsafe fn dict_update_apply(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dict_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    dict_bits: u64,
+    key_bits: u64,
+    val_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(dict_bits);
         let Some(ptr) = obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -302,7 +314,7 @@ pub extern "C" fn molt_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) ->
                 if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
                     return MoltObject::none().bits();
                 }
-                return molt_store_index(dict_bits, key_bits, val_bits);
+                return molt_store_index_attached_body(_py, dict_bits, key_bits, val_bits);
             };
             let Some(dict_ptr) = obj_from_bits(real_dict_bits).as_ptr() else {
                 return MoltObject::none().bits();
@@ -311,7 +323,7 @@ pub extern "C" fn molt_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) ->
                 if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
                     return MoltObject::none().bits();
                 }
-                return molt_store_index(dict_bits, key_bits, val_bits);
+                return molt_store_index_attached_body(_py, dict_bits, key_bits, val_bits);
             }
             // Direct dict set -- bypasses the generic molt_store_index dispatch.
             if !dict_set_in_place(_py, dict_ptr, key_bits, val_bits) {
@@ -322,9 +334,13 @@ pub extern "C" fn molt_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) ->
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_get(dict_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dict_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    dict_bits: u64,
+    key_bits: u64,
+    default_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(dict_bits);
         if obj.as_ptr().is_none() {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "dict.get expects dict");
@@ -360,9 +376,14 @@ pub extern "C" fn molt_dict_get(dict_bits: u64, key_bits: u64, default_bits: u64
 /// the statement provably runs no Python code (see
 /// `dict_increment_exact_statement`). `False` has done nothing observable and
 /// the caller runs the statement itself.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_str_int_inc(dict_bits: u64, key_bits: u64, delta_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_dict_str_int_inc_attached_body(
+    _py: &crate::PyToken<'_>,
+    dict_bits: u64,
+    key_bits: u64,
+    delta_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         match unsafe { dict_increment_exact_statement(_py, dict_bits, key_bits, delta_bits) } {
             Ok(done) => {
                 if !done {
@@ -378,9 +399,14 @@ pub extern "C" fn molt_dict_str_int_inc(dict_bits: u64, key_bits: u64, delta_bit
 /// dict.pop(key, default=MISSING) — method dispatch entry point.
 /// When default is MISSING, equivalent to pop(key) without a default
 /// (raises KeyError if key is absent).  Otherwise, pop(key, default).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_pop_method(dict_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_dict_pop_method_attached_body(
+    _py: &crate::PyToken<'_>,
+    dict_bits: u64,
+    key_bits: u64,
+    default_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let has_default = !crate::builtins::methods::is_missing_bits(_py, default_bits);
         let actual_default = if has_default {
             default_bits
@@ -388,18 +414,18 @@ pub extern "C" fn molt_dict_pop_method(dict_bits: u64, key_bits: u64, default_bi
             MoltObject::none().bits()
         };
         let flag = MoltObject::from_int(has_default as i64).bits();
-        molt_dict_pop(dict_bits, key_bits, actual_default, flag)
+        molt_dict_pop_attached_body(_py, dict_bits, key_bits, actual_default, flag)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_pop(
+pub(crate) fn molt_dict_pop_attached_body(
+    _py: &crate::PyToken<'_>,
     dict_bits: u64,
     key_bits: u64,
     default_bits: u64,
     has_default_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let dict_obj = obj_from_bits(dict_bits);
         let has_default = obj_from_bits(has_default_bits).as_int().unwrap_or(0) != 0;
         if dict_obj.as_ptr().is_none() {
@@ -436,9 +462,13 @@ pub extern "C" fn molt_dict_pop(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_setdefault(dict_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dict_setdefault_attached_body(
+    _py: &crate::PyToken<'_>,
+    dict_bits: u64,
+    key_bits: u64,
+    default_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let dict_obj = obj_from_bits(dict_bits);
         if dict_obj.as_ptr().is_none() {
             return raise_exception::<_>(
@@ -474,9 +504,12 @@ pub extern "C" fn molt_dict_setdefault(dict_bits: u64, key_bits: u64, default_bi
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_setdefault_empty_list(dict_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dict_setdefault_empty_list_attached_body(
+    _py: &crate::PyToken<'_>,
+    dict_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let dict_obj = obj_from_bits(dict_bits);
         if dict_obj.as_ptr().is_none() {
             return raise_exception::<_>(
@@ -514,9 +547,13 @@ pub extern "C" fn molt_dict_setdefault_empty_list(dict_bits: u64, key_bits: u64)
 
 /// Language ** expansion accepts mappings, including non-string keys, but
 /// never the iterable pairs accepted by dict.update and dict construction.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_unpack(dict_bits: u64, source_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_dict_unpack_attached_body(
+    _py: &crate::PyToken<'_>,
+    dict_bits: u64,
+    source_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if obj_from_bits(dict_bits).as_ptr().is_none() {
             return raise_exception::<_>(
                 _py,
@@ -538,7 +575,7 @@ pub extern "C" fn molt_dict_unpack(dict_bits: u64, source_bits: u64) -> u64 {
             let target = obj_from_bits(storage).as_ptr().unwrap();
             let outcome = crate::object::mapping_merge::unpack_dict(_py, target, source_bits);
             if outcome != crate::object::mapping_merge::MergeOutcome::Complete {
-                let error = molt_exception_last_pending();
+                let error = molt_exception_last_pending_attached_body(_py);
                 let attribute_error = crate::builtins::exceptions::exception_matches_kind(
                     _py,
                     error,
@@ -562,9 +599,12 @@ pub extern "C" fn molt_dict_unpack(dict_bits: u64, source_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_update(dict_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dict_update_attached_body(
+    _py: &crate::PyToken<'_>,
+    dict_bits: u64,
+    other_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let dict_obj = obj_from_bits(dict_bits);
         if dict_obj.as_ptr().is_none() {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "dict.update expects dict");
@@ -588,9 +628,8 @@ pub extern "C" fn molt_dict_update(dict_bits: u64, other_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_clear(dict_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dict_clear_attached_body(_py: &crate::PyToken<'_>, dict_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(dict_bits);
         if obj.as_ptr().is_none() {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "dict.clear expects dict");
@@ -665,14 +704,12 @@ pub(crate) fn copy_dict(_py: &PyToken<'_>, dict_bits: u64) -> u64 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_copy(dict_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { copy_dict(_py, dict_bits) })
+pub(crate) fn molt_dict_copy_attached_body(_py: &crate::PyToken<'_>, dict_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { copy_dict(_py, dict_bits) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_popitem(dict_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dict_popitem_attached_body(_py: &crate::PyToken<'_>, dict_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(dict_bits);
         if obj.as_ptr().is_none() {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "dict.popitem expects dict");
@@ -720,9 +757,12 @@ pub extern "C" fn molt_dict_popitem(dict_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_update_kwstar(dict_bits: u64, mapping_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dict_update_kwstar_attached_body(
+    _py: &crate::PyToken<'_>,
+    dict_bits: u64,
+    mapping_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe {
             if obj_from_bits(dict_bits).as_ptr().is_none() {
                 return raise_exception::<_>(
@@ -751,7 +791,7 @@ pub extern "C" fn molt_dict_update_kwstar(dict_bits: u64, mapping_bits: u64) -> 
             if keywords.is_null() {
                 return MoltObject::none().bits();
             }
-            let _keywords_guard = PtrDropGuard::new(keywords);
+            let _keywords_guard = PtrDropGuard::new(_py, keywords);
             if !crate::object::mapping_merge::merge_keywords(_py, keywords, mapping_bits)
                 || !crate::object::mapping_merge::validate_keywords(_py, keywords)
             {
@@ -769,9 +809,8 @@ pub extern "C" fn molt_dict_update_kwstar(dict_bits: u64, mapping_bits: u64) -> 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_keys(dict_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dict_keys_attached_body(_py: &crate::PyToken<'_>, dict_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(dict_bits);
         if obj.as_ptr().is_none() {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "dict.keys expects dict");
@@ -801,9 +840,8 @@ pub extern "C" fn molt_dict_keys(dict_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_values(dict_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dict_values_attached_body(_py: &crate::PyToken<'_>, dict_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(dict_bits);
         if obj.as_ptr().is_none() {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "dict.values expects dict");
@@ -841,9 +879,8 @@ pub extern "C" fn molt_dict_values(dict_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_items(dict_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dict_items_attached_body(_py: &crate::PyToken<'_>, dict_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(dict_bits);
         if obj.as_ptr().is_none() {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "dict.items expects dict");
@@ -877,8 +914,12 @@ pub extern "C" fn molt_dict_items(dict_bits: u64) -> u64 {
 /// The dict holds the value alive. Returns 0 if the key is not found (clears
 /// any KeyError). This mirrors CPython's `PyDict_GetItem()` borrowed-reference
 /// semantics.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_getitem_borrowed(dict_bits: u64, key_bits: u64) -> u64 {
+
+pub(crate) fn molt_dict_getitem_borrowed_attached_body(
+    _py: &crate::PyToken<'_>,
+    dict_bits: u64,
+    key_bits: u64,
+) -> u64 {
     crate::c_api::PyDict_GetItem(dict_bits, key_bits)
 }
 
@@ -961,9 +1002,13 @@ fn count_elements_dict_storage(
 
 /// Stream counts into the canonical mapping. No Counter registry, mirrored
 /// key index, borrowed table or registry lock survives a Python callback.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_count_elements(mapping: u64, iterable: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_dict_count_elements_attached_body(
+    _py: &crate::PyToken<'_>,
+    mapping: u64,
+    iterable: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let _mapping = CountElementOwned::borrow(py, mapping);
         let _iterable = CountElementOwned::borrow(py, iterable);
         let Some(iter) = crate::object::iterable::OwnedIterator::new(py, iterable) else {
@@ -988,7 +1033,7 @@ pub extern "C" fn molt_dict_count_elements(mapping: u64, iterable: u64) -> u64 {
         if storage.is_none() {
             custody.bound_get = Some(CountElementOwned::adopt(
                 py,
-                molt_get_attr_name(mapping, name.bits),
+                molt_get_attr_name_attached_body(py, mapping, name.bits),
             ));
             if exception_pending(py) {
                 return MoltObject::none().bits();
@@ -1015,7 +1060,10 @@ pub extern "C" fn molt_dict_count_elements(mapping: u64, iterable: u64) -> u64 {
                 let next = if let Some(index) = found {
                     let old =
                         CountElementOwned::borrow(py, unsafe { dict_entries(dict)[index].value });
-                    custody.new_value = Some(CountElementOwned::adopt(py, molt_add(old.bits, one)));
+                    custody.new_value = Some(CountElementOwned::adopt(
+                        py,
+                        molt_add_attached_body(py, old.bits, one),
+                    ));
                     drop(old);
                     custody.new_value.as_ref().unwrap().bits
                 } else {
@@ -1036,13 +1084,21 @@ pub extern "C" fn molt_dict_count_elements(mapping: u64, iterable: u64) -> u64 {
                 if exception_pending(py) {
                     return MoltObject::none().bits();
                 }
-                custody.new_value = Some(CountElementOwned::adopt(py, molt_add(old.bits, one)));
+                custody.new_value = Some(CountElementOwned::adopt(
+                    py,
+                    molt_add_attached_body(py, old.bits, one),
+                ));
                 drop(old);
                 if exception_pending(py) {
                     return MoltObject::none().bits();
                 }
                 // StoreIndex returns the borrowed mapping on success.
-                let _ = molt_store_index(mapping, key, custody.new_value.as_ref().unwrap().bits);
+                let _ = molt_store_index_attached_body(
+                    py,
+                    mapping,
+                    key,
+                    custody.new_value.as_ref().unwrap().bits,
+                );
             }
             if exception_pending(py) {
                 return MoltObject::none().bits();
@@ -1058,3 +1114,5 @@ pub extern "C" fn molt_dict_count_elements(mapping: u64, iterable: u64) -> u64 {
         MoltObject::none().bits()
     })
 }
+
+include!("../attached_exports_generated/object/ops_dict.rs");

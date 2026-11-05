@@ -1,5 +1,6 @@
 use super::super::super::op_loop::WasmFunctionEmitContext;
-use wasm_encoder::{Function, Instruction};
+use crate::wasm_binary::Function;
+use wasm_encoder::Instruction;
 
 pub(in crate::wasm::state_dispatch) fn emit_dispatch_trailing_return(
     func: &mut Function,

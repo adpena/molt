@@ -2,12 +2,13 @@
 use crate::wasm::body::WasmBodyOps;
 use crate::wasm::lir_fast::LirRuntimeCall;
 use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use molt_codegen_abi::inline_refcount::{
     RefcountBuilder, RefcountComparison, RefcountOperation, RefcountStorage, generate_refcount,
 };
-use wasm_encoder::{BlockType, Function, Instruction, MemArg, ValType};
+use wasm_encoder::{BlockType, Instruction, MemArg, ValType};
 
 const WORDS: u32 = 40;
 const PREDICATES: u32 = 16;

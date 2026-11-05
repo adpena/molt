@@ -2,7 +2,8 @@ use crate::resource::{LimitedTracker, ResourceLimits, ResourceTracker, Unlimited
 use crate::*;
 use molt_runtime_core::OwnedRuntimeValue;
 use molt_runtime_regex::regex::{
-    molt_re_compile, molt_re_group_values, molt_re_pattern_info, molt_re_split, molt_re_sub,
+    molt_re_compile_attached_body, molt_re_group_values_attached_body,
+    molt_re_pattern_info_attached_body, molt_re_split_attached_body, molt_re_sub_attached_body,
 };
 
 struct TrackerReset;
@@ -72,7 +73,7 @@ fn regex_aggregates_retain_each_created_child_once() {
             let pattern = unsafe {
                 OwnedRuntimeValue::from_owned_bits(
                     py.core_token(),
-                    molt_re_compile(expression.bits(), zero),
+                    molt_re_compile_attached_body(py.core_token(), expression.bits(), zero),
                 )
             };
             assert!(!exception_pending(py));
@@ -80,7 +81,12 @@ fn regex_aggregates_retain_each_created_child_once() {
             let split = unsafe {
                 OwnedRuntimeValue::from_owned_bits(
                     py.core_token(),
-                    molt_re_split(pattern.bits(), source.bits(), zero),
+                    molt_re_split_attached_body(
+                        py.core_token(),
+                        pattern.bits(),
+                        source.bits(),
+                        zero,
+                    ),
                 )
             };
             assert!(!exception_pending(py));
@@ -100,7 +106,13 @@ fn regex_aggregates_retain_each_created_child_once() {
             let replaced = unsafe {
                 OwnedRuntimeValue::from_owned_bits(
                     py.core_token(),
-                    molt_re_sub(pattern.bits(), replacement.bits(), source.bits(), zero),
+                    molt_re_sub_attached_body(
+                        py.core_token(),
+                        pattern.bits(),
+                        replacement.bits(),
+                        source.bits(),
+                        zero,
+                    ),
                 )
             };
             assert!(!exception_pending(py));
@@ -124,14 +136,14 @@ fn regex_aggregates_retain_each_created_child_once() {
             let named_pattern = unsafe {
                 OwnedRuntimeValue::from_owned_bits(
                     py.core_token(),
-                    molt_re_compile(named_expression.bits(), zero),
+                    molt_re_compile_attached_body(py.core_token(), named_expression.bits(), zero),
                 )
             };
             assert!(!exception_pending(py));
             let info = unsafe {
                 OwnedRuntimeValue::from_owned_bits(
                     py.core_token(),
-                    molt_re_pattern_info(named_pattern.bits()),
+                    molt_re_pattern_info_attached_body(py.core_token(), named_pattern.bits()),
                 )
             };
             assert!(!exception_pending(py));
@@ -229,7 +241,11 @@ fn regex_capture_aggregate_owns_children_and_rolls_back_every_failure() {
             let captured = unsafe {
                 OwnedRuntimeValue::from_owned_bits(
                     py.core_token(),
-                    molt_re_group_values(source.bits(), spans.bits()),
+                    molt_re_group_values_attached_body(
+                        py.core_token(),
+                        source.bits(),
+                        spans.bits(),
+                    ),
                 )
             };
             assert!(!exception_pending(py));
@@ -273,10 +289,14 @@ fn regex_capture_aggregate_owns_children_and_rolls_back_every_failure() {
                     MoltObject::from_ptr(alloc_tuple(py, &[first.bits(), reversed.bits()])).bits(),
                 )
             };
-            let failed = molt_re_group_values(source.bits(), malformed.bits());
+            let failed = molt_re_group_values_attached_body(
+                py.core_token(),
+                source.bits(),
+                malformed.bits(),
+            );
             assert!(obj_from_bits(failed).is_none());
             assert!(exception_pending(py));
-            let _ = molt_exception_clear();
+            let _ = molt_exception_clear_attached_body(py);
             assert!(!exception_pending(py));
 
             let live = std::rc::Rc::new(std::cell::Cell::new(0isize));
@@ -285,10 +305,14 @@ fn regex_capture_aggregate_owns_children_and_rolls_back_every_failure() {
             // first boxed capture escaped the aggregate's rollback.
             let reset = TrackerReset;
             set_tracker(Box::new(LiveAllocationCounter(live.clone())));
-            let failed = molt_re_group_values(source.bits(), malformed.bits());
+            let failed = molt_re_group_values_attached_body(
+                py.core_token(),
+                source.bits(),
+                malformed.bits(),
+            );
             assert!(obj_from_bits(failed).is_none());
             assert!(exception_pending(py));
-            let _ = molt_exception_clear();
+            let _ = molt_exception_clear_attached_body(py);
             assert_eq!(
                 live.get(),
                 0,
@@ -305,7 +329,8 @@ fn regex_capture_aggregate_owns_children_and_rolls_back_every_failure() {
                 max_allocations: Some(2),
                 ..ResourceLimits::default()
             })));
-            let failed = molt_re_group_values(source.bits(), spans.bits());
+            let failed =
+                molt_re_group_values_attached_body(py.core_token(), source.bits(), spans.bits());
             assert!(obj_from_bits(failed).is_none());
             crate::test_support::assert_and_clear_emergency_memory_error(py);
             let mut probes = Vec::new();
@@ -333,7 +358,10 @@ fn regex_capture_aggregate_owns_children_and_rolls_back_every_failure() {
 /// These calls bypass the Python facade and exercise the real linked bridge.
 #[test]
 fn regex_text_admission_keeps_contextual_errors_at_every_entry() {
-    use molt_runtime_regex::regex::{molt_re_escape, molt_re_execute, molt_re_scanner_new};
+    use molt_runtime_regex::regex::{
+        molt_re_escape_attached_body, molt_re_execute_attached_body,
+        molt_re_scanner_new_attached_body,
+    };
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         let make = |data: &[u8]| {
@@ -354,7 +382,7 @@ fn regex_text_admission_keeps_contextual_errors_at_every_entry() {
         let pattern = unsafe {
             OwnedRuntimeValue::from_owned_bits(
                 py.core_token(),
-                molt_re_compile(source.bits(), zero),
+                molt_re_compile_attached_body(py.core_token(), source.bits(), zero),
             )
         };
         assert!(!exception_pending(py));
@@ -364,7 +392,7 @@ fn regex_text_admission_keeps_contextual_errors_at_every_entry() {
             let error = unsafe {
                 OwnedRuntimeValue::from_owned_bits(
                     py.core_token(),
-                    crate::builtins::exceptions::molt_exception_last_pending(),
+                    crate::builtins::exceptions::molt_exception_last_pending_attached_body(py),
                 )
             };
             crate::clear_exception(py);
@@ -382,34 +410,63 @@ fn regex_text_admission_keeps_contextual_errors_at_every_entry() {
             );
         };
         check(
-            molt_re_compile(invalid, zero),
+            molt_re_compile_attached_body(py.core_token(), invalid, zero),
             "first argument must be string or compiled pattern",
         );
         check(
-            molt_re_execute(pattern.bits(), invalid, zero, one, mode.bits()),
+            molt_re_execute_attached_body(
+                py.core_token(),
+                pattern.bits(),
+                invalid,
+                zero,
+                one,
+                mode.bits(),
+            ),
             "cannot use a string pattern on a bytes-like object",
         );
         check(
-            molt_re_execute(pattern.bits(), source.bits(), zero, one, invalid),
+            molt_re_execute_attached_body(
+                py.core_token(),
+                pattern.bits(),
+                source.bits(),
+                zero,
+                one,
+                invalid,
+            ),
             "mode must be str",
         );
         check(
-            molt_re_scanner_new(pattern.bits(), invalid, zero, one),
+            molt_re_scanner_new_attached_body(py.core_token(), pattern.bits(), invalid, zero, one),
             "cannot use a string pattern on a bytes-like object",
         );
         check(
-            molt_re_split(pattern.bits(), invalid, zero),
+            molt_re_split_attached_body(py.core_token(), pattern.bits(), invalid, zero),
             "expected string or bytes-like object",
         );
         check(
-            molt_re_sub(pattern.bits(), invalid, source.bits(), zero),
+            molt_re_sub_attached_body(
+                py.core_token(),
+                pattern.bits(),
+                invalid,
+                source.bits(),
+                zero,
+            ),
             "replacement must be str",
         );
         check(
-            molt_re_sub(pattern.bits(), source.bits(), invalid, zero),
+            molt_re_sub_attached_body(
+                py.core_token(),
+                pattern.bits(),
+                source.bits(),
+                invalid,
+                zero,
+            ),
             "cannot use a string pattern on a bytes-like object",
         );
-        check(molt_re_escape(invalid), "pattern must be str or bytes");
+        check(
+            molt_re_escape_attached_body(py.core_token(), invalid),
+            "pattern must be str or bytes",
+        );
         assert!(!exception_pending(py));
     });
 }

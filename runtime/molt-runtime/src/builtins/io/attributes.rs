@@ -228,7 +228,7 @@ pub(crate) fn io_publish_members(py: &PyToken<'_>) -> bool {
         let Some(getter_ptr) = obj_from_bits(getter).as_ptr() else {
             return false;
         };
-        let _getter = PtrDropGuard::new(getter_ptr);
+        let _getter = PtrDropGuard::new(py, getter_ptr);
         let mut owners = Vec::new();
         let mut publications = Vec::new();
         for &kind in IO_CLASSES {
@@ -236,11 +236,11 @@ pub(crate) fn io_publish_members(py: &PyToken<'_>) -> bool {
             let class = obj_from_bits(owner).as_ptr().unwrap();
             let dictionary = class_dict_bits(class);
             let live = obj_from_bits(dictionary).as_ptr().unwrap();
-            let staged_bits = crate::object::ops_dict::molt_dict_copy(dictionary);
+            let staged_bits = crate::object::ops_dict::molt_dict_copy_attached_body(py, dictionary);
             let Some(staged) = obj_from_bits(staged_bits).as_ptr() else {
                 return false;
             };
-            owners.push(PtrDropGuard::new(staged));
+            owners.push(PtrDropGuard::new(py, staged));
             if exception_pending(py) {
                 return false;
             }
@@ -251,7 +251,7 @@ pub(crate) fn io_publish_members(py: &PyToken<'_>) -> bool {
                 let Some(name) = member.name.owned_bits(py) else {
                     return false;
                 };
-                let _name = PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());
+                let _name = PtrDropGuard::new(py, obj_from_bits(name).as_ptr().unwrap());
                 let descriptor = alloc_native_descriptor(
                     py,
                     NativeDescriptorSpec {
@@ -268,7 +268,7 @@ pub(crate) fn io_publish_members(py: &PyToken<'_>) -> bool {
                 let Some(descriptor_ptr) = obj_from_bits(descriptor).as_ptr() else {
                     return false;
                 };
-                let _descriptor = PtrDropGuard::new(descriptor_ptr);
+                let _descriptor = PtrDropGuard::new(py, descriptor_ptr);
                 if exception_pending(py) {
                     return false;
                 }
@@ -370,7 +370,8 @@ pub(super) unsafe fn io_member_value(
                 let _name =
                     molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), name);
                 // No native handle reference/lock spans user attribute lookup.
-                let value = molt_getattr_builtin(underlying, name, missing_bits(py));
+                let value =
+                    molt_getattr_builtin_attached_body(py, underlying, name, missing_bits(py));
                 return (!exception_pending(py)).then_some(value);
             }
         }
@@ -506,11 +507,13 @@ pub(super) unsafe fn io_initialize_dictionary_members(py: &PyToken<'_>, object: 
                 }
                 continue;
             };
-            let _value = obj_from_bits(value).as_ptr().map(PtrDropGuard::new);
+            let _value = obj_from_bits(value)
+                .as_ptr()
+                .map(|__ptr| PtrDropGuard::new(py, __ptr));
             let Some(name) = member.name.owned_bits(py) else {
                 return false;
             };
-            let _name = PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());
+            let _name = PtrDropGuard::new(py, obj_from_bits(name).as_ptr().unwrap());
             let Some(dictionary) = crate::object::field_storage::materialize(py, object) else {
                 return false;
             };
@@ -524,9 +527,12 @@ pub(super) unsafe fn io_initialize_dictionary_members(py: &PyToken<'_>, object: 
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_io_member_get(descriptor: u64, instance: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_io_member_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    descriptor: u64,
+    instance: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         unsafe {
             let Some(descriptor) = obj_from_bits(descriptor)
                 .as_ptr()
@@ -597,3 +603,5 @@ pub extern "C" fn molt_io_member_get(descriptor: u64, instance: u64) -> u64 {
         }
     })
 }
+
+include!("../../attached_exports_generated/builtins/io/attributes.rs");

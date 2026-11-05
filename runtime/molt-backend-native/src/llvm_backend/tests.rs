@@ -109,7 +109,8 @@ fn refcount_cfg_is_deterministic_and_inlined_at_every_optimization_level() {
             );
             let undefined = crate::test_support::native_object_symbols(&bytes).undefined;
             assert!(
-                undefined.contains("molt_inc_ref_obj") && undefined.contains("molt_dec_ref_obj"),
+                undefined.contains(&execution_abi::execution_symbol("molt_inc_ref_obj"))
+                    && undefined.contains(&execution_abi::execution_symbol("molt_dec_ref_obj")),
                 "dynamic cold transitions must survive: {undefined:?}"
             );
             if let Some(expected) = &first_object {

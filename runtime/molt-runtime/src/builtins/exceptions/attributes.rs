@@ -104,9 +104,12 @@ unsafe fn native_field_call(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_member_get(descriptor: u64, instance: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_exception_member_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    descriptor: u64,
+    instance: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         unsafe {
             let Some((object, field)) = callback_field(descriptor, instance) else {
                 return raise_exception::<u64>(
@@ -246,16 +249,23 @@ unsafe fn mutate_field(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_member_set(descriptor: u64, instance: u64, value: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_exception_member_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    descriptor: u64,
+    instance: u64,
+    value: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         unsafe { mutate_field(py, descriptor, instance, Some(value)) }
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_member_delete(descriptor: u64, instance: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_exception_member_delete_attached_body(
+    _py: &crate::PyToken<'_>,
+    descriptor: u64,
+    instance: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         unsafe { mutate_field(py, descriptor, instance, None) }
     })
 }
@@ -284,7 +294,7 @@ pub(crate) fn publish_exception_fields(py: &PyToken<'_>, owner: u64) -> bool {
             if callback.is_null() {
                 return false;
             }
-            callback_owners.push(crate::PtrDropGuard::new(callback));
+            callback_owners.push(crate::PtrDropGuard::new(py, callback));
             if !crate::builtins::functions::native_callable::configure_native_callable(
                 py,
                 callback,
@@ -307,7 +317,7 @@ pub(crate) fn publish_exception_fields(py: &PyToken<'_>, owner: u64) -> bool {
             let Some(name) = name.owned_bits(py) else {
                 return false;
             };
-            let _name_owner = crate::PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());
+            let _name_owner = crate::PtrDropGuard::new(py, obj_from_bits(name).as_ptr().unwrap());
             match dict_get_in_place(py, dictionary, name) {
                 Ok(Some(_)) => continue,
                 Ok(None) => {}
@@ -404,10 +414,11 @@ mod tests {
             let managed_bits = MoltObject::from_ptr(managed).bits();
             let context_name = dynamic_attr_name_bits(&py, b"__context__").unwrap();
             for name in [cause_name, context_name] {
-                let result = crate::molt_set_attr_name(managed_bits, name, receiver);
+                let result =
+                    crate::molt_set_attr_name_attached_body(py, managed_bits, name, receiver);
                 dec_ref_bits(&py, result);
                 assert!(!exception_pending(&py));
-                let observed = crate::molt_get_attr_name(managed_bits, name);
+                let observed = crate::molt_get_attr_name_attached_body(py, managed_bits, name);
                 assert_eq!(observed, receiver);
                 dec_ref_bits(&py, observed);
             }
@@ -419,8 +430,12 @@ mod tests {
             assert_eq!((*managed_view).context, native);
             assert!(GLOBAL_BRIDGE.commit_exception_view(managed_bits));
             for name in [cause_name, context_name] {
-                let result =
-                    crate::molt_set_attr_name(managed_bits, name, MoltObject::none().bits());
+                let result = crate::molt_set_attr_name_attached_body(
+                    py,
+                    managed_bits,
+                    name,
+                    MoltObject::none().bits(),
+                );
                 dec_ref_bits(&py, result);
             }
             refcount::Py_INCREF(managed_view.cast());
@@ -429,7 +444,7 @@ mod tests {
             errors::PyException_SetContext(native, managed_view.cast());
             assert!(errors::PyErr_Occurred().is_null());
             for name in [cause_name, context_name] {
-                let observed = crate::molt_get_attr_name(receiver, name);
+                let observed = crate::molt_get_attr_name_attached_body(py, receiver, name);
                 assert_eq!(observed, managed_bits);
                 dec_ref_bits(&py, observed);
             }
@@ -521,3 +536,5 @@ mod tests {
         });
     }
 }
+
+include!("../../attached_exports_generated/builtins/exceptions/attributes.rs");

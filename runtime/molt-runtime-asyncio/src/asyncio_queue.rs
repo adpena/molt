@@ -245,11 +245,13 @@ unsafe extern "C" fn asyncio_queue_state_init() -> *mut u8 {
     Box::into_raw(Box::new(AsyncioQueueRuntimeState::new())) as *mut u8
 }
 
-unsafe extern "C" fn asyncio_queue_state_clear(ptr: *mut u8) {
+unsafe extern "C" fn asyncio_queue_state_clear(__context: u64, ptr: *mut u8) {
+    let _py = unsafe { molt_runtime_core::PyToken::from_attached_context(__context) };
+
     if ptr.is_null() {
         return;
     }
-    molt_runtime_core::with_core_gil!(py, unsafe {
+    molt_runtime_core::with_attached_entry_nopanic!(_py, py, unsafe {
         (&*(ptr as *mut AsyncioQueueRuntimeState)).clear(py);
     });
 }
@@ -265,6 +267,7 @@ unsafe extern "C" fn asyncio_queue_state_drop(ptr: *mut u8) {
 
 fn queue_runtime_state(_py: &PyToken) -> &'static AsyncioQueueRuntimeState {
     let ptr = crate::bridge::runtime_state_get_or_init(
+        _py,
         ASYNCIO_QUEUE_STATE_KEY,
         asyncio_queue_state_init,
         asyncio_queue_state_clear,
@@ -277,8 +280,8 @@ fn queue_runtime_state(_py: &PyToken) -> &'static AsyncioQueueRuntimeState {
     unsafe { &*(ptr as *const AsyncioQueueRuntimeState) }
 }
 
-pub fn asyncio_queue_clear_state() {
-    let _ = crate::bridge::runtime_state_clear_and_drop(ASYNCIO_QUEUE_STATE_KEY);
+pub fn asyncio_queue_clear_state(py: &PyToken) {
+    let _ = crate::bridge::runtime_state_clear_and_drop(py, ASYNCIO_QUEUE_STATE_KEY);
 }
 
 /// Execute a closure with mutable access to the queue state for the given handle.
@@ -309,9 +312,13 @@ fn handle_from_bits(bits: u64) -> i64 {
 /// `queue_type`: NaN-boxed int, 0 = FIFO, 1 = LIFO, 2 = Priority.
 ///
 /// Returns a NaN-boxed int handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_queue_new(maxsize_bits: u64, queue_type_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_queue_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    maxsize_bits: u64,
+    queue_type_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let maxsize_obj = obj_from_bits(maxsize_bits);
         let maxsize_raw = to_i64(maxsize_obj).unwrap_or(0);
         if maxsize_raw < 0 {
@@ -351,9 +358,13 @@ pub extern "C" fn molt_asyncio_queue_new(maxsize_bits: u64, queue_type_bits: u64
 /// If the queue is shut down, raises `asyncio.QueueShutDown`.
 ///
 /// Returns `MoltObject::none()` on success.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_queue_put_nowait(handle_bits: u64, item_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_queue_put_nowait_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    item_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
 
         // We need to inc_ref the item before storing it.  Do it speculatively;
@@ -397,9 +408,12 @@ pub extern "C" fn molt_asyncio_queue_put_nowait(handle_bits: u64, item_bits: u64
 /// If the queue is empty, raises `asyncio.QueueEmpty`.
 ///
 /// Returns the item bits (caller takes ownership of the reference).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_queue_get_nowait(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_queue_get_nowait_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
 
         let result = with_queue(_py, handle, |state| {
@@ -430,9 +444,12 @@ pub extern "C" fn molt_asyncio_queue_get_nowait(handle_bits: u64) -> u64 {
 }
 
 /// Return the current number of items in the queue.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_queue_qsize(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_queue_qsize_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let Some(size) = with_queue(_py, handle, |state| state.qsize() as i64) else {
             return raise_exception::<u64>(
@@ -446,9 +463,12 @@ pub extern "C" fn molt_asyncio_queue_qsize(handle_bits: u64) -> u64 {
 }
 
 /// Return the maxsize of the queue (0 = unlimited).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_queue_maxsize(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_queue_maxsize_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let Some(maxsize) = with_queue(_py, handle, |state| state.maxsize as i64) else {
             return raise_exception::<u64>(
@@ -462,9 +482,12 @@ pub extern "C" fn molt_asyncio_queue_maxsize(handle_bits: u64) -> u64 {
 }
 
 /// Return True if the queue is empty.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_queue_empty(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_queue_empty_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let Some(empty) = with_queue(_py, handle, |state| state.is_empty()) else {
             return raise_exception::<u64>(
@@ -478,9 +501,12 @@ pub extern "C" fn molt_asyncio_queue_empty(handle_bits: u64) -> u64 {
 }
 
 /// Return True if the queue is full.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_queue_full(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_queue_full_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let Some(full) = with_queue(_py, handle, |state| state.is_full()) else {
             return raise_exception::<u64>(
@@ -497,9 +523,12 @@ pub extern "C" fn molt_asyncio_queue_full(handle_bits: u64) -> u64 {
 ///
 /// Raises `ValueError` if called more times than items have been put.
 /// Returns `MoltObject::none()` on success.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_queue_task_done(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_queue_task_done_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
 
         let result = with_queue(_py, handle, |state| {
@@ -525,9 +554,12 @@ pub extern "C" fn molt_asyncio_queue_task_done(handle_bits: u64) -> u64 {
 }
 
 /// Return the current `unfinished_tasks` count.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_queue_unfinished_tasks(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_queue_unfinished_tasks_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let Some(count) = with_queue(_py, handle, |state| state.unfinished_tasks) else {
             return raise_exception::<u64>(
@@ -546,9 +578,13 @@ pub extern "C" fn molt_asyncio_queue_unfinished_tasks(handle_bits: u64) -> u64 {
 /// and all remaining items are dec_ref'd.
 ///
 /// Returns `MoltObject::none()`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_queue_shutdown(handle_bits: u64, immediate_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_queue_shutdown_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    immediate_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let immediate = is_truthy(_py, obj_from_bits(immediate_bits));
 
@@ -585,9 +621,12 @@ pub extern "C" fn molt_asyncio_queue_shutdown(handle_bits: u64, immediate_bits: 
 }
 
 /// Return True if the queue has been shut down.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_queue_is_shutdown(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_queue_is_shutdown_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
         let Some(shut) = with_queue(_py, handle, |state| state.shutdown) else {
             return raise_exception::<u64>(
@@ -601,9 +640,12 @@ pub extern "C" fn molt_asyncio_queue_is_shutdown(handle_bits: u64) -> u64 {
 }
 
 /// Drop and clean up a queue handle. All remaining items are dec_ref'd.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_queue_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub fn molt_asyncio_queue_drop_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle = handle_from_bits(handle_bits);
 
         let removed = queue_runtime_state(_py)
@@ -619,3 +661,5 @@ pub extern "C" fn molt_asyncio_queue_drop(handle_bits: u64) -> u64 {
         MoltObject::none().bits()
     })
 }
+
+include!("attached_exports_generated/asyncio_queue.rs");

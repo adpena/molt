@@ -3,7 +3,7 @@ use super::AggregateRuntimeContext;
 use crate::OpIR;
 use crate::wasm::container_runtime_select::selected_container_runtime_import;
 use crate::wasm_abi_generated::WasmRuntimeImport;
-use wasm_encoder::Function;
+use crate::wasm_binary::Function;
 
 pub(super) fn emit_container_query_op(
     func: &mut Function,

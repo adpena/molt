@@ -303,8 +303,10 @@ unsafe fn write_namespace_metadata(
             false
         };
         let name = crate::NameId::from(field).owned_bits(py).ok_or(())?;
-        let _name =
-            crate::PtrDropGuard::preserving(obj_from_bits(name).as_ptr().expect("metadata name"));
+        let _name = crate::PtrDropGuard::preserving(
+            py,
+            obj_from_bits(name).as_ptr().expect("metadata name"),
+        );
         let mut publication = super::TypeMutation::prepare(py, class, name).ok_or(())?;
         if matches!(field, Field::Doc | Field::Module) && !publication.invalidate_native() {
             return Err(());
@@ -313,7 +315,7 @@ unsafe fn write_namespace_metadata(
         if field == Field::Module && crate::object::ops_sys::runtime_target_at_least(py, 3, 13) {
             let firstline = crate::NameId::DunderFirstlineno.owned_bits(py).ok_or(())?;
             let _firstline =
-                crate::PtrDropGuard::preserving(obj_from_bits(firstline).as_ptr().unwrap());
+                crate::PtrDropGuard::preserving(py, obj_from_bits(firstline).as_ptr().unwrap());
             let retired = crate::object::ops::dict_del_deferred(py, dictionary, firstline)?;
             if retired.is_some() {
                 class_bump_layout_version(class);
@@ -451,11 +453,14 @@ pub(crate) unsafe fn read_type_annotations(
             let name = crate::NameId::DunderAnnotate.owned_bits(py)?;
             // The owning normal lookup includes metaclass overrides. Its result
             // must survive removal/replacement of the namespace's last edge.
-            let annotate = molt_get_attr_name(class_bits, name);
+            let annotate = molt_get_attr_name_attached_body(py, class_bits, name);
             dec_ref_bits(py, name);
             let result = if exception_pending(py) {
                 MoltObject::none().bits()
-            } else if is_truthy(py, obj_from_bits(molt_is_callable(annotate))) {
+            } else if is_truthy(
+                py,
+                obj_from_bits(molt_is_callable_attached_body(py, annotate)),
+            ) {
                 call_callable1(py, annotate, MoltObject::from_int(1).bits())
             } else if exception_pending(py) {
                 MoltObject::none().bits()

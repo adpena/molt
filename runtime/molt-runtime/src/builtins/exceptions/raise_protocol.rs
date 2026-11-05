@@ -46,9 +46,13 @@ pub(super) fn normalize_raise_operand(py: &PyToken<'_>, bits: u64, cause: bool) 
 
 /// Both source expressions have already been evaluated, exception first and
 /// cause second. MISSING means no `from` clause; None is an explicit cause.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_prepare_raise(exc_bits: u64, cause_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_exception_prepare_raise_attached_body(
+    _py: &crate::PyToken<'_>,
+    exc_bits: u64,
+    cause_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let _cause = ExceptionValue::pin(py, cause_bits);
         let Some(exception) = normalize_raise_operand(py, exc_bits, false) else {
             return MoltObject::none().bits();
@@ -89,22 +93,32 @@ mod tests {
         crate::with_gil_entry_nopanic!(py, {
             let class = exception_class_bits(py, BuiltinExc::ValueError);
             let cause_class = exception_class_bits(py, BuiltinExc::KeyError);
-            let instance =
-                ExceptionValue::adopt(py, molt_exception_prepare_raise(class, cause_class));
+            let instance = ExceptionValue::adopt(
+                py,
+                molt_exception_prepare_raise_attached_body(py, class, cause_class),
+            );
             assert!(!exception_pending(py));
             assert!(exception_matches_type(py, instance.bits(), class));
             let cause = exception_field(py, instance.bits(), ExceptionFieldSlot::Cause).unwrap();
             assert!(exception_matches_type(py, cause.bits(), cause_class));
             let again = ExceptionValue::adopt(
                 py,
-                molt_exception_prepare_raise(instance.bits(), crate::missing_bits(py)),
+                molt_exception_prepare_raise_attached_body(
+                    py,
+                    instance.bits(),
+                    crate::missing_bits(py),
+                ),
             );
             assert_eq!(again.bits(), instance.bits());
             assert!(exception_field(py, class, ExceptionFieldSlot::Cause).is_none());
             assert!(!exception_pending(py));
             let suppressed = ExceptionValue::adopt(
                 py,
-                molt_exception_prepare_raise(instance.bits(), MoltObject::none().bits()),
+                molt_exception_prepare_raise_attached_body(
+                    py,
+                    instance.bits(),
+                    MoltObject::none().bits(),
+                ),
             );
             assert_eq!(suppressed.bits(), instance.bits());
             assert!(
@@ -123,7 +137,11 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let class = exception_class_bits(py, BuiltinExc::ValueError);
-            let result = molt_exception_prepare_raise(class, MoltObject::from_int(1).bits());
+            let result = molt_exception_prepare_raise_attached_body(
+                py,
+                class,
+                MoltObject::from_int(1).bits(),
+            );
             assert!(obj_from_bits(result).is_none());
             let error = exception_last_bits_noinc(py).unwrap();
             assert!(exception_matches_kind(
@@ -139,3 +157,5 @@ mod tests {
         });
     }
 }
+
+include!("../../attached_exports_generated/builtins/exceptions/raise_protocol.rs");

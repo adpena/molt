@@ -20,8 +20,8 @@ import time
 
 from molt import artifact_publication as artifact_publish
 from molt._wasm_abi_generated import (
-    WASM_OUTPUT_RUNTIME_EXPORT_ALIASES,
     WASM_RESERVED_RUNTIME_CALLABLES,
+    compiled_execution_symbol,
 )
 from molt._wasm_runtime_exports import wasm_split_runtime_export_name_for_import
 from molt.cli.app_export_contract import (
@@ -738,13 +738,23 @@ def _load_link_contract_stage(
         if output_callable_layout is not None
         else ()
     )
-    reserved_runtime_link_exports = tuple(
-        runtime_name
-        for _index, runtime_name, _import_name, _arity, dispatch in (
-            WASM_RESERVED_RUNTIME_CALLABLES
-        )
-        if dispatch == "direct"
-    )
+    reserved_export_symbols: list[str] = []
+    for (
+        _index,
+        runtime_name,
+        _import_name,
+        _arity,
+        dispatch,
+    ) in WASM_RESERVED_RUNTIME_CALLABLES:
+        if dispatch != "direct":
+            continue
+        physical = wasm_split_runtime_export_name_for_import(runtime_name)
+        if physical is None:
+            raise ValueError(
+                f"reserved runtime callable lacks physical export: {runtime_name}"
+            )
+        reserved_export_symbols.append(physical)
+    reserved_runtime_link_exports = tuple(reserved_export_symbols)
     split_callable_layout: CallableTableLayout | None = None
     deploy_runtime_path: Path | None = None
     if split_runtime:
@@ -872,7 +882,7 @@ def _prepare_link_inputs_stage(
                 *contract_app_exports,
                 *(
                     name
-                    for name in WASM_OUTPUT_RUNTIME_EXPORT_ALIASES
+                    for name in _format._OUTPUT_RUNTIME_EXPORT_ALIASES
                     if name in export_symbol_map
                 ),
                 *(
@@ -953,14 +963,12 @@ def _prepare_link_inputs_stage(
         ),
     )
     try:
-        rewritten_path = _command._inject_call_indirect_alias(
-            rewritten_path,
-            runtime,
-            temp_dir,
-            facts_provider=facts_provider,
+        _command._validate_call_indirect_bindings(
+            rewritten_path.facts(),
+            facts_provider(runtime.read_bytes()),
         )
     except (OSError, ValueError) as exc:
-        print(f"Wasm call_indirect alias admission failed: {exc}", file=sys.stderr)
+        print(f"Wasm call_indirect binding admission failed: {exc}", file=sys.stderr)
         return None
     base_allowlist = (
         allowlist_override
@@ -1034,7 +1042,7 @@ def _plan_link_commands_stage(
         "--stack-first",
         "-z",
         "stack-size=1048576",
-        "--export=molt_main",
+        f"--export={compiled_execution_symbol('molt_main')}",
         "--export-if-defined=molt_memory",
         "--export-if-defined=memory",
         "--export-if-defined=molt_table",
@@ -1060,7 +1068,11 @@ def _plan_link_commands_stage(
                 f"--export-if-defined={name}"
                 for name in sorted(
                     _format._ESSENTIAL_EXPORTS
-                    - {"__indirect_function_table", "memory", "molt_main"}
+                    - {
+                        "__indirect_function_table",
+                        "memory",
+                        compiled_execution_symbol("molt_main"),
+                    }
                 )
             ),
             (f"--export={name}" for name in inputs.required_native_direct_symbols),
@@ -1155,7 +1167,8 @@ def _plan_link_commands_stage(
         if part == "--stack-first"
         else part
         for part in common_link_args
-        if part != "--export=molt_main" and not part.startswith("--table-base=")
+        if part != f"--export={compiled_execution_symbol('molt_main')}"
+        and not part.startswith("--table-base=")
     ]
     split_linked_path = Path(inputs.temp_dir.name) / "app_split_linked.wasm"
     split_command = (

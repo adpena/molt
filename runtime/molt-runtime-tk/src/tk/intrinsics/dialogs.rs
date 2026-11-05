@@ -27,8 +27,8 @@ use super::super::tcl::TclObj;
 use crate::bridge::{decode_value_list, to_i64};
 use molt_runtime_core::prelude::{MoltObject, obj_from_bits};
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_dialog_show(
+pub fn molt_tk_dialog_show_attached_body(
+    _py: &molt_runtime_core::PyToken,
     app_bits: u64,
     master_path_bits: u64,
     title_bits: u64,
@@ -37,7 +37,7 @@ pub extern "C" fn molt_tk_dialog_show(
     default_index_bits: u64,
     strings_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::DialogShow) {
             return bits;
         }
@@ -71,7 +71,7 @@ pub extern "C" fn molt_tk_dialog_show(
         let Some(default_index) = to_i64(obj_from_bits(default_index_bits)) else {
             return raise_tcl_for_handle(_py, handle, "dialog default index must be an integer");
         };
-        let Some(raw_strings) = decode_value_list(obj_from_bits(strings_bits)) else {
+        let Some(raw_strings) = decode_value_list(_py, obj_from_bits(strings_bits)) else {
             return raise_tcl_for_handle(_py, handle, "dialog button strings must be a list/tuple");
         };
         let mut button_labels = Vec::with_capacity(raw_strings.len());
@@ -120,14 +120,15 @@ pub extern "C" fn molt_tk_dialog_show(
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_commondialog_show(
+
+pub fn molt_tk_commondialog_show_attached_body(
+    _py: &molt_runtime_core::PyToken,
     app_bits: u64,
     master_path_bits: u64,
     command_bits: u64,
     options_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::CommonDialogShow) {
             return bits;
         }
@@ -168,13 +169,14 @@ pub extern "C" fn molt_tk_commondialog_show(
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_messagebox_show(
+
+pub fn molt_tk_messagebox_show_attached_body(
+    _py: &molt_runtime_core::PyToken,
     app_bits: u64,
     master_path_bits: u64,
     options_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::MessageBoxShow) {
             return bits;
         }
@@ -212,14 +214,15 @@ pub extern "C" fn molt_tk_messagebox_show(
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_filedialog_show(
+
+pub fn molt_tk_filedialog_show_attached_body(
+    _py: &molt_runtime_core::PyToken,
     app_bits: u64,
     master_path_bits: u64,
     command_bits: u64,
     options_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::FileDialogShow) {
             return bits;
         }
@@ -258,8 +261,9 @@ pub extern "C" fn molt_tk_filedialog_show(
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_simpledialog_query(
+
+pub fn molt_tk_simpledialog_query_attached_body(
+    _py: &molt_runtime_core::PyToken,
     app_bits: u64,
     parent_path_bits: u64,
     title_bits: u64,
@@ -269,7 +273,7 @@ pub extern "C" fn molt_tk_simpledialog_query(
     min_value_bits: u64,
     max_value_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::SimpleDialogQuery) {
             return bits;
         }
@@ -834,3 +838,5 @@ pub extern "C" fn molt_tk_simpledialog_query(
         }
     })
 }
+
+include!("../../attached_exports_generated/tk/intrinsics/dialogs.rs");

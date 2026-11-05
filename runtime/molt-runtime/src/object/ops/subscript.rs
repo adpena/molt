@@ -29,12 +29,19 @@ pub(crate) fn value_supports_mp_subscript(_py: &PyToken<'_>, obj_bits: u64) -> R
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
+pub(crate) fn molt_index_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    key_bits: u64,
+) -> u64 {
     index_impl(obj_bits, key_bits, false, true).unwrap_or_else(|()| MoltObject::none().bits())
 }
 
-pub(crate) extern "C" fn molt_getitem_builtin(obj_bits: u64, key_bits: u64) -> u64 {
+pub(crate) fn molt_getitem_builtin_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    key_bits: u64,
+) -> u64 {
     index_impl(obj_bits, key_bits, true, true).unwrap_or_else(|()| MoltObject::none().bits())
 }
 
@@ -1025,9 +1032,10 @@ pub(crate) fn index_impl(
                         };
                         if present {
                             return {
-                                let bits = crate::builtins::types::molt_generic_alias_new(
-                                    obj_bits, key_bits,
-                                );
+                                let bits =
+                                    crate::builtins::types::molt_generic_alias_new_attached_body(
+                                        _py, obj_bits, key_bits,
+                                    );
                                 if obj_from_bits(bits).is_none() {
                                     Err(())
                                 } else {
@@ -1083,9 +1091,12 @@ pub(crate) fn index_impl(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ord_at(obj_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ord_at_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(obj_bits);
         let key = obj_from_bits(key_bits);
         if let Some(ptr) = obj.as_ptr() {
@@ -1095,11 +1106,11 @@ pub extern "C" fn molt_ord_at(obj_bits: u64, key_bits: u64) -> u64 {
                         .as_ptr()
                         .is_some_and(|key_ptr| object_type_id(key_ptr) == TYPE_ID_SLICE)
                     {
-                        let indexed = molt_index(obj_bits, key_bits);
+                        let indexed = molt_index_attached_body(_py, obj_bits, key_bits);
                         if exception_pending(_py) {
                             return MoltObject::none().bits();
                         }
-                        let out = crate::object::ops_sys::molt_ord(indexed);
+                        let out = crate::object::ops_sys::molt_ord_attached_body(_py, indexed);
                         if obj_from_bits(indexed).as_ptr().is_some() {
                             dec_ref_bits(_py, indexed);
                         }
@@ -1138,11 +1149,11 @@ pub extern "C" fn molt_ord_at(obj_bits: u64, key_bits: u64) -> u64 {
                 }
             }
         }
-        let indexed = molt_index(obj_bits, key_bits);
+        let indexed = molt_index_attached_body(_py, obj_bits, key_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        let out = crate::object::ops_sys::molt_ord(indexed);
+        let out = crate::object::ops_sys::molt_ord_attached_body(_py, indexed);
         if obj_from_bits(indexed).as_ptr().is_some() {
             dec_ref_bits(_py, indexed);
         }
@@ -1153,21 +1164,32 @@ pub extern "C" fn molt_ord_at(obj_bits: u64, key_bits: u64) -> u64 {
 /// Statement operation: successful builtin mutations return the borrowed
 /// container without retaining it. Callers must inspect exception state, not
 /// treat the ABI return as a newly owned value (StoreIndex has zero IR results).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) -> u64 {
-    store_index_impl(obj_bits, key_bits, val_bits, false)
-}
 
-pub(crate) extern "C" fn molt_setitem_builtin(obj_bits: u64, key_bits: u64, val_bits: u64) -> u64 {
-    store_index_impl(obj_bits, key_bits, val_bits, true)
-}
-
-pub(crate) extern "C" fn molt_setitem_builtin_method(
+pub(crate) fn molt_store_index_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     key_bits: u64,
     val_bits: u64,
 ) -> u64 {
-    let _ = molt_setitem_builtin(obj_bits, key_bits, val_bits);
+    store_index_impl(obj_bits, key_bits, val_bits, false)
+}
+
+pub(crate) fn molt_setitem_builtin_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    key_bits: u64,
+    val_bits: u64,
+) -> u64 {
+    store_index_impl(obj_bits, key_bits, val_bits, true)
+}
+
+pub(crate) fn molt_setitem_builtin_method_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    key_bits: u64,
+    val_bits: u64,
+) -> u64 {
+    let _ = molt_setitem_builtin_attached_body(_py, obj_bits, key_bits, val_bits);
     MoltObject::none().bits()
 }
 
@@ -1211,11 +1233,11 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                 // list_int: flat i64 storage — delegate to specialized setitem
                 let tid = object_type_id(ptr);
                 if tid == TYPE_ID_LIST_INT {
-                    return molt_list_int_setitem(obj_bits, key_bits, val_bits);
+                    return molt_list_int_setitem_attached_body(_py, obj_bits, key_bits, val_bits);
                 }
                 // list_bool: flat u8 storage — delegate to specialized setitem
                 if tid == TYPE_ID_LIST_BOOL {
-                    return molt_list_bool_setitem(obj_bits, key_bits, val_bits);
+                    return molt_list_bool_setitem_attached_body(_py, obj_bits, key_bits, val_bits);
                 }
             }
         }
@@ -1755,17 +1777,28 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
+pub(crate) fn molt_del_index_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    key_bits: u64,
+) -> u64 {
     del_index_impl(obj_bits, key_bits, false)
 }
 
-pub(crate) extern "C" fn molt_delitem_builtin(obj_bits: u64, key_bits: u64) -> u64 {
+pub(crate) fn molt_delitem_builtin_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    key_bits: u64,
+) -> u64 {
     del_index_impl(obj_bits, key_bits, true)
 }
 
-pub(crate) extern "C" fn molt_delitem_builtin_method(obj_bits: u64, key_bits: u64) -> u64 {
-    let _ = molt_delitem_builtin(obj_bits, key_bits);
+pub(crate) fn molt_delitem_builtin_method_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    let _ = molt_delitem_builtin_attached_body(_py, obj_bits, key_bits);
     MoltObject::none().bits()
 }
 
@@ -2018,9 +2051,12 @@ fn unsupported_item_mutation(py: &PyToken<'_>, object: u64, delete: bool) -> u64
     )
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_getitem_method(obj_bits: u64, key_bits: u64) -> u64 {
-    molt_index(obj_bits, key_bits)
+pub(crate) fn molt_getitem_method_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    molt_index_attached_body(_py, obj_bits, key_bits)
 }
 
 /// Same as `molt_getitem_method` but the caller guarantees the index is
@@ -2028,33 +2064,53 @@ pub extern "C" fn molt_getitem_method(obj_bits: u64, key_bits: u64) -> u64 {
 /// delegates to `molt_index` which already has type-dispatch fast paths;
 /// a future refinement can skip the bounds-check branch entirely for
 /// list types once the hot-path is profiled.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_getitem_unchecked(obj_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { molt_index(obj_bits, key_bits) })
+
+pub(crate) fn molt_getitem_unchecked_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        molt_index_attached_body(_py, obj_bits, key_bits)
+    })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_setitem_method(obj_bits: u64, key_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let _ = molt_store_index(obj_bits, key_bits, val_bits);
+pub(crate) fn molt_setitem_method_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    key_bits: u64,
+    val_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let _ = molt_store_index_attached_body(_py, obj_bits, key_bits, val_bits);
         MoltObject::none().bits()
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_delitem_method(obj_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let _ = molt_del_index(obj_bits, key_bits);
+pub(crate) fn molt_delitem_method_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let _ = molt_del_index_attached_body(_py, obj_bits, key_bits);
         MoltObject::none().bits()
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
+pub(crate) fn molt_contains_attached_body(
+    _py: &crate::PyToken<'_>,
+    container_bits: u64,
+    item_bits: u64,
+) -> u64 {
     contains_impl(container_bits, item_bits, false)
 }
 
-pub(crate) extern "C" fn molt_contains_builtin(container_bits: u64, item_bits: u64) -> u64 {
+pub(crate) fn molt_contains_builtin_attached_body(
+    _py: &crate::PyToken<'_>,
+    container_bits: u64,
+    item_bits: u64,
+) -> u64 {
     contains_impl(container_bits, item_bits, true)
 }
 
@@ -2340,28 +2396,36 @@ fn contains_impl(container_bits: u64, item_bits: u64, builtin_only: bool) -> u64
 }
 
 /// Specialized `in` for list containers (linear scan, no type dispatch).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_contains(container_bits: u64, item_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_list_contains_attached_body(
+    _py: &crate::PyToken<'_>,
+    container_bits: u64,
+    item_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let container = obj_from_bits(container_bits);
         if let Some(ptr) = container.as_ptr() {
             unsafe {
                 if object_type_id(ptr) != TYPE_ID_LIST
                     || !crate::object::iterable::builtin_receiver(_py, ptr)
                 {
-                    return molt_contains(container_bits, item_bits);
+                    return molt_contains_attached_body(_py, container_bits, item_bits);
                 }
                 return sequence_contains_builtin(_py, ptr, item_bits);
             }
         }
-        molt_contains(container_bits, item_bits)
+        molt_contains_attached_body(_py, container_bits, item_bits)
     })
 }
 
 /// Specialized `in` for str containers (substring search, no type dispatch).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_str_contains(container_bits: u64, item_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_str_contains_attached_body(
+    _py: &crate::PyToken<'_>,
+    container_bits: u64,
+    item_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let container = obj_from_bits(container_bits);
         let item = obj_from_bits(item_bits);
         if let Some(ptr) = container.as_ptr() {
@@ -2397,6 +2461,8 @@ pub extern "C" fn molt_str_contains(container_bits: u64, item_bits: u64) -> u64 
                 return MoltObject::from_bool(idx >= 0).bits();
             }
         }
-        molt_contains(container_bits, item_bits)
+        molt_contains_attached_body(_py, container_bits, item_bits)
     })
 }
+
+include!("../../attached_exports_generated/object/ops/subscript.rs");

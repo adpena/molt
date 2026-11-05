@@ -353,14 +353,14 @@ for (const test of config.cases) {
   for (const entry of WebAssembly.Module.imports(module)) {
     if (entry.kind !== 'function') { assert.ok(entry.name in imports.env); continue; }
     imports[entry.module] ??= {};
-    imports[entry.module][entry.name] = hooks[entry.name] ?? (() => {throw Error('unexpected import '+entry.name);});
+    imports[entry.module][entry.name] = hooks[runtimeImportName(entry.name)] ?? (() => {throw Error('unexpected import '+entry.name);});
   }
-  const app = new WebAssembly.Instance(module, imports).exports;
+  const app = new WebAssembly.Instance(module, attachedImports(imports)).exports;
   const mode = test.name.split('-')[0];
   const total = mode === 'dispatch' ? config.head + config.tail : config.forward;
   const run = (failure, ...args) => {
     lines = []; polls = 0; failAt = failure;
-    assert.equal(app.molt_main(...args), none);
+    assert.equal(app[compiledSymbol('molt_main')](executionContext, ...args), none);
   };
   // Statement s ends physical block s, so failures at radix boundaries of
   // both fan-outs leave from the first and last block of a node and must
@@ -381,7 +381,7 @@ for (const test of config.cases) {
     // An unplanned saved state traps before any observer runs.
     savedState = BigInt(config.state + 1);
     lines = []; polls = 0; failAt = 0;
-    assert.throws(() => app.molt_main(64n), WebAssembly.RuntimeError);
+    assert.throws(() => app[compiledSymbol('molt_main')](executionContext, 64n), WebAssembly.RuntimeError);
     assert.deepEqual(lines, []);
   } else {
     run(0);

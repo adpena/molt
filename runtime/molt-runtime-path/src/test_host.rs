@@ -9,6 +9,50 @@
 
 use molt_runtime_core::MoltObject;
 
+thread_local! {
+    static FIXTURE_CONTEXT: molt_codegen_abi::AttachedExecutionContextStorage = const {
+        molt_codegen_abi::AttachedExecutionContextStorage::new()
+    };
+    static FIXTURE_THREAD_RECORD: u64 = const { 0x5041_5448 };
+}
+
+fn fixture_context() -> u64 {
+    FIXTURE_THREAD_RECORD.with(|record| {
+        FIXTURE_CONTEXT.with(|storage| {
+            storage.bind_thread_record(std::ptr::from_ref(record) as u64);
+            std::ptr::from_ref(storage) as u64
+        })
+    })
+}
+
+fn assert_fixture_context(context: u64) {
+    assert_eq!(
+        context,
+        fixture_context(),
+        "path host received another context"
+    );
+    let token = unsafe { molt_runtime_core::PyToken::from_attached_context(context) };
+    FIXTURE_THREAD_RECORD.with(|record| {
+        assert_eq!(
+            token.thread_record_address(),
+            std::ptr::from_ref(record) as u64
+        );
+    });
+}
+
+#[test]
+fn scalar_host_preserves_context_and_value_carriers() {
+    let context = fixture_context();
+    assert_eq!(
+        molt_int_from_i64(context, 197),
+        MoltObject::from_int(197).bits()
+    );
+    assert_eq!(
+        molt_is_truthy(context, MoltObject::from_bool(true).bits()),
+        1
+    );
+}
+
 const INLINE_INT_MIN: i64 = -(1i64 << 46);
 const INLINE_INT_MAX_EXCLUSIVE: i64 = 1i64 << 46;
 
@@ -81,6 +125,15 @@ fn unexpected(name: &'static str) -> ! {
 }
 
 macro_rules! unexpected_u64 {
+    ($symbol:tt, $name:ident($($arg:ident: $ty:ty),* $(,)?)) => {
+        #[unsafe(export_name = molt_runtime_core::attached_symbol!($symbol))]
+        pub extern "C" fn $name(context: u64, $($arg: $ty),*) -> u64 {
+            assert_fixture_context(context);
+            let _ = ($($arg),*);
+            unexpected(stringify!($name))
+        }
+    };
+
     ($name:ident($($arg:ident: $ty:ty),* $(,)?)) => {
         #[unsafe(no_mangle)]
         pub extern "C" fn $name($($arg: $ty),*) -> u64 {
@@ -91,6 +144,15 @@ macro_rules! unexpected_u64 {
 }
 
 macro_rules! unexpected_i64 {
+    ($symbol:tt, $name:ident($($arg:ident: $ty:ty),* $(,)?)) => {
+        #[unsafe(export_name = molt_runtime_core::attached_symbol!($symbol))]
+        pub extern "C" fn $name(context: u64, $($arg: $ty),*) -> i64 {
+            assert_fixture_context(context);
+            let _ = ($($arg),*);
+            unexpected(stringify!($name))
+        }
+    };
+
     ($name:ident($($arg:ident: $ty:ty),* $(,)?)) => {
         #[unsafe(no_mangle)]
         pub extern "C" fn $name($($arg: $ty),*) -> i64 {
@@ -101,6 +163,15 @@ macro_rules! unexpected_i64 {
 }
 
 macro_rules! unexpected_ptr_const_u8 {
+    ($symbol:tt, $name:ident($($arg:ident: $ty:ty),* $(,)?)) => {
+        #[unsafe(export_name = molt_runtime_core::attached_symbol!($symbol))]
+        pub extern "C" fn $name(context: u64, $($arg: $ty),*) -> *const u8 {
+            assert_fixture_context(context);
+            let _ = ($($arg),*);
+            unexpected(stringify!($name))
+        }
+    };
+
     ($name:ident($($arg:ident: $ty:ty),* $(,)?)) => {
         #[unsafe(no_mangle)]
         pub extern "C" fn $name($($arg: $ty),*) -> *const u8 {
@@ -111,6 +182,15 @@ macro_rules! unexpected_ptr_const_u8 {
 }
 
 macro_rules! unexpected_ptr_mut_u8 {
+    ($symbol:tt, $name:ident($($arg:ident: $ty:ty),* $(,)?)) => {
+        #[unsafe(export_name = molt_runtime_core::attached_symbol!($symbol))]
+        pub extern "C" fn $name(context: u64, $($arg: $ty),*) -> *mut u8 {
+            assert_fixture_context(context);
+            let _ = ($($arg),*);
+            unexpected(stringify!($name))
+        }
+    };
+
     ($name:ident($($arg:ident: $ty:ty),* $(,)?)) => {
         #[unsafe(no_mangle)]
         pub extern "C" fn $name($($arg: $ty),*) -> *mut u8 {
@@ -120,8 +200,9 @@ macro_rules! unexpected_ptr_mut_u8 {
     };
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_bridge_free_u8(ptr: *mut u8, len: usize) {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("__molt_bridge_free_u8"))]
+pub extern "C" fn __molt_bridge_free_u8(context: u64, ptr: *mut u8, len: usize) {
+    assert_fixture_context(context);
     if ptr.is_null() {
         return;
     }
@@ -130,8 +211,9 @@ pub extern "C" fn __molt_bridge_free_u8(ptr: *mut u8, len: usize) {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_bridge_free_u64(ptr: *mut u64, len: usize) {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("__molt_bridge_free_u64"))]
+pub extern "C" fn __molt_bridge_free_u64(context: u64, ptr: *mut u64, len: usize) {
+    assert_fixture_context(context);
     if ptr.is_null() {
         return;
     }
@@ -140,45 +222,67 @@ pub extern "C" fn __molt_bridge_free_u64(ptr: *mut u64, len: usize) {
     }
 }
 
-unexpected_ptr_mut_u8!(__molt_path_alloc_tuple(elems_ptr: *const u64, elems_len: usize));
-unexpected_ptr_mut_u8!(__molt_path_alloc_list(elems_ptr: *const u64, elems_len: usize));
-unexpected_ptr_mut_u8!(__molt_path_alloc_string(data_ptr: *const u8, data_len: usize));
-unexpected_ptr_mut_u8!(__molt_path_alloc_bytes(data_ptr: *const u8, data_len: usize));
-unexpected_ptr_mut_u8!(__molt_path_alloc_dict_with_pairs(pairs_ptr: *const u64, pairs_len: usize));
+unexpected_ptr_mut_u8!(
+    "__molt_path_alloc_tuple",
+    __molt_path_alloc_tuple(elems_ptr: *const u64, elems_len: usize)
+);
+unexpected_ptr_mut_u8!(
+    "__molt_path_alloc_list",
+    __molt_path_alloc_list(elems_ptr: *const u64, elems_len: usize)
+);
+unexpected_ptr_mut_u8!(
+    "__molt_path_alloc_string",
+    __molt_path_alloc_string(data_ptr: *const u8, data_len: usize)
+);
+unexpected_ptr_mut_u8!(
+    "__molt_path_alloc_bytes",
+    __molt_path_alloc_bytes(data_ptr: *const u8, data_len: usize)
+);
+unexpected_ptr_mut_u8!(
+    "__molt_path_alloc_dict_with_pairs",
+    __molt_path_alloc_dict_with_pairs(pairs_ptr: *const u64, pairs_len: usize)
+);
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("__molt_path_raise_exception"))]
 pub extern "C" fn __molt_path_raise_exception(
+    context: u64,
     kind_code: u16,
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
+    assert_fixture_context(context);
     let _ = (kind_code, msg_ptr, msg_len);
     unexpected("__molt_path_raise_exception")
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_exception_pending() -> i32 {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("__molt_path_exception_pending"))]
+pub extern "C" fn __molt_path_exception_pending(context: u64) -> i32 {
+    assert_fixture_context(context);
     0
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("__molt_path_raise_os_error"))]
 pub extern "C" fn __molt_path_raise_os_error(
+    context: u64,
     raw_error: i64,
     err_msg_ptr: *const u8,
     err_msg_len: usize,
     ctx_ptr: *const u8,
     ctx_len: usize,
 ) -> u64 {
+    assert_fixture_context(context);
     let _ = (raw_error, err_msg_ptr, err_msg_len, ctx_ptr, ctx_len);
     unexpected("__molt_path_raise_os_error")
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("__molt_path_raise_os_error_errno"))]
 pub extern "C" fn __molt_path_raise_os_error_errno(
+    context: u64,
     errno: i64,
     ctx_ptr: *const u8,
     ctx_len: usize,
 ) -> u64 {
+    assert_fixture_context(context);
     let _ = (errno, ctx_ptr, ctx_len);
     unexpected("__molt_path_raise_os_error_errno")
 }
@@ -199,8 +303,9 @@ pub extern "C" fn __molt_path_string_obj_to_owned(
     0
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_is_truthy(bits: u64) -> i32 {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("__molt_path_is_truthy"))]
+pub extern "C" fn __molt_path_is_truthy(context: u64, bits: u64) -> i32 {
+    assert_fixture_context(context);
     match immediate_truthy(bits) {
         Some(value) => i32::from(value),
         None => unexpected("__molt_path_is_truthy"),
@@ -217,26 +322,30 @@ pub extern "C" fn __molt_path_bytes_like_slice(
     0
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_dec_ref_bits(bits: u64) {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("__molt_path_dec_ref_bits"))]
+pub extern "C" fn __molt_path_dec_ref_bits(context: u64, bits: u64) {
+    assert_fixture_context(context);
     let _ = bits;
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_inc_ref_bits(bits: u64) {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("__molt_path_inc_ref_bits"))]
+pub extern "C" fn __molt_path_inc_ref_bits(context: u64, bits: u64) {
+    assert_fixture_context(context);
     let _ = bits;
 }
 
 // Checked C-int coercion can invoke __index__ and publish Python exceptions.
 // It requires the full runtime authority, even for an immediate-looking input.
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_index_c_int(bits: u64, out: *mut i32) -> i32 {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("__molt_path_index_c_int"))]
+pub extern "C" fn __molt_path_index_c_int(context: u64, bits: u64, out: *mut i32) -> i32 {
+    assert_fixture_context(context);
     let _ = (bits, out);
     unexpected("__molt_path_index_c_int")
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_index_i64(bits: u64, out: *mut i64) -> i32 {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("__molt_path_index_i64"))]
+pub extern "C" fn __molt_path_index_i64(context: u64, bits: u64, out: *mut i64) -> i32 {
+    assert_fixture_context(context);
     let _ = (bits, out);
     unexpected("__molt_path_index_i64")
 }
@@ -275,18 +384,21 @@ pub extern "C" fn __molt_path_to_f64(bits: u64, out: *mut f64) -> i32 {
     1
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("__molt_path_seq_snapshot"))]
 pub extern "C" fn __molt_path_seq_snapshot(
+    context: u64,
     ptr: *mut u8,
     out_ptr: *mut *const u64,
     out_len: *mut usize,
 ) -> i32 {
+    assert_fixture_context(context);
     let _ = (ptr, out_ptr, out_len);
     unexpected("__molt_path_seq_snapshot")
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("__molt_path_require_operation"))]
 pub extern "C" fn __molt_path_require_operation(
+    context: u64,
     operation_ptr: *const u8,
     operation_len: usize,
     arg_kind: u32,
@@ -294,6 +406,7 @@ pub extern "C" fn __molt_path_require_operation(
     arg_len: usize,
     out_error_bits: *mut u64,
 ) -> i32 {
+    assert_fixture_context(context);
     let _ = (arg_kind, arg_ptr, arg_len, out_error_bits);
     let operation = unsafe {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(operation_ptr, operation_len))
@@ -306,49 +419,81 @@ pub extern "C" fn __molt_path_require_operation(
     1
 }
 
-unexpected_u64!(__molt_path_molt_object_hash(bits: u64));
-unexpected_u64!(__molt_path_fspath_bits(bits: u64));
+unexpected_u64!(
+    "__molt_path_molt_object_hash",
+    __molt_path_molt_object_hash(bits: u64)
+);
+unexpected_u64!(
+    "__molt_path_fspath_bits",
+    __molt_path_fspath_bits(bits: u64)
+);
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("__molt_path_path_from_bits"))]
 pub extern "C" fn __molt_path_path_from_bits(
+    context: u64,
     bits: u64,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
     out_bytes: *mut bool,
 ) -> i32 {
+    assert_fixture_context(context);
     let _ = (bits, out_ptr, out_len, out_bytes);
     unexpected("__molt_path_path_from_bits")
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("__molt_path_type_name"))]
 pub extern "C" fn __molt_path_type_name(
+    context: u64,
     bits: u64,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) -> i32 {
+    assert_fixture_context(context);
     match immediate_type_name(bits) {
         Some(name) => export_bytes(name.as_bytes(), out_ptr, out_len),
         None => unexpected("__molt_path_type_name"),
     }
 }
 
-unexpected_u64!(molt_string_from(data: *const u8, len: u64));
-unexpected_u64!(molt_bytes_from(data: *const u8, len: u64));
-unexpected_ptr_const_u8!(molt_string_as_ptr(string_bits: u64, out_len: *mut u64));
-unexpected_ptr_const_u8!(molt_bytes_as_ptr(bytes_bits: u64, out_len: *mut u64));
-unexpected_u64!(molt_alloc(size_bits: u64));
-unexpected_u64!(molt_tuple_from_array(items: *const u64, len: u64));
-unexpected_u64!(molt_list_from_array(items: *const u64, len: u64));
-unexpected_u64!(molt_dict_from_pairs(keys: *const u64, values: *const u64, len: u64));
-unexpected_u64!(molt_dict_new(capacity_bits: u64));
+unexpected_u64!(
+    "molt_string_from",
+    molt_string_from(data: *const u8, len: u64)
+);
+unexpected_u64!(
+    "molt_bytes_from",
+    molt_bytes_from(data: *const u8, len: u64)
+);
+unexpected_ptr_const_u8!(
+    "molt_string_as_ptr",
+    molt_string_as_ptr(string_bits: u64, out_len: *mut u64)
+);
+unexpected_ptr_const_u8!(
+    "molt_bytes_as_ptr",
+    molt_bytes_as_ptr(bytes_bits: u64, out_len: *mut u64)
+);
+unexpected_u64!("molt_alloc", molt_alloc(size_bits: u64));
+unexpected_u64!(
+    "molt_tuple_from_array",
+    molt_tuple_from_array(items: *const u64, len: u64)
+);
+unexpected_u64!(
+    "molt_list_from_array",
+    molt_list_from_array(items: *const u64, len: u64)
+);
+unexpected_u64!(
+    "molt_dict_from_pairs",
+    molt_dict_from_pairs(keys: *const u64, values: *const u64, len: u64)
+);
+unexpected_u64!("molt_dict_new", molt_dict_new(capacity_bits: u64));
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_none() -> u64 {
     none_bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_int_from_i64(value: i64) -> u64 {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_int_from_i64"))]
+pub extern "C" fn molt_int_from_i64(context: u64, value: i64) -> u64 {
+    assert_fixture_context(context);
     int_bits(value)
 }
 
@@ -357,135 +502,208 @@ pub extern "C" fn molt_float_from_f64(value: f64) -> u64 {
     MoltObject::from_float(value).bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inc_ref_obj(bits: u64) {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_inc_ref_obj"))]
+pub extern "C" fn molt_inc_ref_obj(context: u64, bits: u64) {
+    assert_fixture_context(context);
     let _ = bits;
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dec_ref_obj(bits: u64) {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_dec_ref_obj"))]
+pub extern "C" fn molt_dec_ref_obj(context: u64, bits: u64) {
+    assert_fixture_context(context);
     let _ = bits;
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inc_ref_n(bits: u64, count: u32) -> u64 {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_inc_ref_n"))]
+pub extern "C" fn molt_inc_ref_n(context: u64, bits: u64, count: u32) -> u64 {
+    assert_fixture_context(context);
     let _ = count;
     bits
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dec_ref_n(bits: u64, count: u32) {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_dec_ref_n"))]
+pub extern "C" fn molt_dec_ref_n(context: u64, bits: u64, count: u32) {
+    assert_fixture_context(context);
     let _ = (bits, count);
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inc_ref(ptr: *mut u8) {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_inc_ref"))]
+pub extern "C" fn molt_inc_ref(context: u64, ptr: *mut u8) {
+    assert_fixture_context(context);
     let _ = ptr;
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dec_ref(ptr: *mut u8) {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_dec_ref"))]
+pub extern "C" fn molt_dec_ref(context: u64, ptr: *mut u8) {
+    assert_fixture_context(context);
     let _ = ptr;
 }
 
-unexpected_u64!(molt_exception_new(kind_bits: u64, args_bits: u64));
-unexpected_u64!(molt_exception_new_builtin(tag: u64, args_bits: u64));
+unexpected_u64!(
+    "molt_exception_new",
+    molt_exception_new(kind_bits: u64, args_bits: u64)
+);
+unexpected_u64!(
+    "molt_exception_new_builtin",
+    molt_exception_new_builtin(tag: u64, args_bits: u64)
+);
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_match_builtin(exc_bits: u64, tag: u64) -> u64 {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_exception_match_builtin"))]
+pub extern "C" fn molt_exception_match_builtin(context: u64, exc_bits: u64, tag: u64) -> u64 {
+    assert_fixture_context(context);
     let _ = (exc_bits, tag);
     bool_bits(false)
 }
 
-unexpected_u64!(molt_raise(exc_bits: u64));
+unexpected_u64!("molt_raise", molt_raise(exc_bits: u64));
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_pending() -> u64 {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_exception_pending"))]
+pub extern "C" fn molt_exception_pending(context: u64) -> u64 {
+    assert_fixture_context(context);
     0
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_pending_fast() -> u64 {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_exception_pending_fast"))]
+pub extern "C" fn molt_exception_pending_fast(context: u64) -> u64 {
+    assert_fixture_context(context);
     0
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_active() -> u64 {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_exception_active"))]
+pub extern "C" fn molt_exception_active(context: u64) -> u64 {
+    assert_fixture_context(context);
     none_bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_clear() -> u64 {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_exception_clear"))]
+pub extern "C" fn molt_exception_clear(context: u64) -> u64 {
+    assert_fixture_context(context);
     none_bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_last() -> u64 {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_exception_last"))]
+pub extern "C" fn molt_exception_last(context: u64) -> u64 {
+    assert_fixture_context(context);
     none_bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_stack_enter() -> u64 {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_exception_stack_enter"))]
+pub extern "C" fn molt_exception_stack_enter(context: u64) -> u64 {
+    assert_fixture_context(context);
     none_bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_stack_exit(prev_bits: u64) -> u64 {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_exception_stack_exit"))]
+pub extern "C" fn molt_exception_stack_exit(context: u64, prev_bits: u64) -> u64 {
+    assert_fixture_context(context);
     let _ = prev_bits;
     none_bits()
 }
 
-unexpected_u64!(molt_exception_kind(exc_bits: u64));
-unexpected_u64!(molt_exception_message(exc_bits: u64));
+unexpected_u64!("molt_exception_kind", molt_exception_kind(exc_bits: u64));
+unexpected_u64!(
+    "molt_exception_message",
+    molt_exception_message(exc_bits: u64)
+);
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_is_truthy(val: u64) -> i64 {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_is_truthy"))]
+pub extern "C" fn molt_is_truthy(context: u64, val: u64) -> i64 {
+    assert_fixture_context(context);
     match immediate_truthy(val) {
         Some(value) => i64::from(value),
         None => unexpected("molt_is_truthy"),
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_is_truthy_int(bits: u64) -> i64 {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_is_truthy_int"))]
+pub extern "C" fn molt_is_truthy_int(context: u64, bits: u64) -> i64 {
+    assert_fixture_context(context);
     i64::from(MoltObject::from_bits(bits).as_int().unwrap_or(0) != 0)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_is_truthy_int_nogil(bits: u64) -> i64 {
-    molt_is_truthy_int(bits)
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_is_truthy_int_nogil"))]
+pub extern "C" fn molt_is_truthy_int_nogil(context: u64, bits: u64) -> i64 {
+    assert_fixture_context(context);
+    molt_is_truthy_int(context, bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_is_truthy_bool(bits: u64) -> i64 {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_is_truthy_bool"))]
+pub extern "C" fn molt_is_truthy_bool(context: u64, bits: u64) -> i64 {
+    assert_fixture_context(context);
     i64::from(MoltObject::from_bits(bits).as_bool().unwrap_or(false))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_is_truthy_bool_nogil(bits: u64) -> i64 {
-    molt_is_truthy_bool(bits)
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_is_truthy_bool_nogil"))]
+pub extern "C" fn molt_is_truthy_bool_nogil(context: u64, bits: u64) -> i64 {
+    assert_fixture_context(context);
+    molt_is_truthy_bool(context, bits)
 }
 
-unexpected_i64!(molt_list_int_getitem_raw(list_bits: u64, raw_index: i64));
-unexpected_i64!(molt_list_int_getitem_raw_checked(list_bits: u64, raw_index: i64));
-unexpected_u64!(molt_type_of(val_bits: u64));
-unexpected_u64!(molt_str_from_obj(val_bits: u64));
-unexpected_u64!(molt_repr_from_obj(val_bits: u64));
-unexpected_u64!(molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits: u64));
-unexpected_u64!(molt_float_from_obj(val_bits: u64));
-unexpected_u64!(molt_fast_list_append(method_bits: u64, elem_bits: u64));
-unexpected_u64!(molt_fast_str_join(method_bits: u64, iterable_bits: u64));
-unexpected_u64!(molt_fast_dict_get(method_bits: u64, key_bits: u64, default_bits: u64));
-unexpected_u64!(molt_list_append(list_bits: u64, val_bits: u64));
-unexpected_u64!(molt_list_pop(list_bits: u64, index_bits: u64));
-unexpected_u64!(molt_list_extend(list_bits: u64, other_bits: u64));
-unexpected_u64!(molt_dict_get(dict_bits: u64, key_bits: u64, default_bits: u64));
-unexpected_u64!(molt_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64));
-unexpected_u64!(molt_str_contains(container_bits: u64, item_bits: u64));
-unexpected_u64!(molt_list_contains(container_bits: u64, item_bits: u64));
-unexpected_u64!(molt_dict_contains(container_bits: u64, item_bits: u64));
-unexpected_u64!(molt_string_eq(a: u64, b: u64));
-unexpected_u64!(molt_unpack_sequence(seq_bits: u64, expected_count: u64, output_ptr: *mut u64));
+unexpected_i64!(
+    "molt_list_int_getitem_raw",
+    molt_list_int_getitem_raw(list_bits: u64, raw_index: i64)
+);
+unexpected_i64!(
+    "molt_list_int_getitem_raw_checked",
+    molt_list_int_getitem_raw_checked(list_bits: u64, raw_index: i64)
+);
+unexpected_u64!("molt_type_of", molt_type_of(val_bits: u64));
+unexpected_u64!("molt_str_from_obj", molt_str_from_obj(val_bits: u64));
+unexpected_u64!("molt_repr_from_obj", molt_repr_from_obj(val_bits: u64));
+unexpected_u64!(
+    "molt_int_from_obj",
+    molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits: u64)
+);
+unexpected_u64!("molt_float_from_obj", molt_float_from_obj(val_bits: u64));
+unexpected_u64!(
+    "molt_fast_list_append",
+    molt_fast_list_append(method_bits: u64, elem_bits: u64)
+);
+unexpected_u64!(
+    "molt_fast_str_join",
+    molt_fast_str_join(method_bits: u64, iterable_bits: u64)
+);
+unexpected_u64!(
+    "molt_fast_dict_get",
+    molt_fast_dict_get(method_bits: u64, key_bits: u64, default_bits: u64)
+);
+unexpected_u64!(
+    "molt_list_append",
+    molt_list_append(list_bits: u64, val_bits: u64)
+);
+unexpected_u64!(
+    "molt_list_pop",
+    molt_list_pop(list_bits: u64, index_bits: u64)
+);
+unexpected_u64!(
+    "molt_list_extend",
+    molt_list_extend(list_bits: u64, other_bits: u64)
+);
+unexpected_u64!(
+    "molt_dict_get",
+    molt_dict_get(dict_bits: u64, key_bits: u64, default_bits: u64)
+);
+unexpected_u64!(
+    "molt_dict_set",
+    molt_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64)
+);
+unexpected_u64!(
+    "molt_str_contains",
+    molt_str_contains(container_bits: u64, item_bits: u64)
+);
+unexpected_u64!(
+    "molt_list_contains",
+    molt_list_contains(container_bits: u64, item_bits: u64)
+);
+unexpected_u64!(
+    "molt_dict_contains",
+    molt_dict_contains(container_bits: u64, item_bits: u64)
+);
+unexpected_u64!("molt_string_eq", molt_string_eq(a: u64, b: u64));
+unexpected_u64!(
+    "molt_unpack_sequence",
+    molt_unpack_sequence(seq_bits: u64, expected_count: u64, output_ptr: *mut u64)
+);
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gil_release_guard() -> u64 {
@@ -497,15 +715,20 @@ pub extern "C" fn molt_gil_reacquire_guard(token: u64) {
     let _ = token;
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_runtime_target_at_least(major: i64, minor: i64) -> i64 {
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("molt_runtime_target_at_least"))]
+pub extern "C" fn molt_runtime_target_at_least(context: u64, major: i64, minor: i64) -> i64 {
+    assert_fixture_context(context);
     i64::from(major < 3 || (major == 3 && minor <= 12))
 }
 
-unexpected_u64!(__molt_path_path_result(data: *const u8, len: usize, bytes: bool));
+unexpected_u64!(
+    "__molt_path_path_result",
+    __molt_path_path_result(data: *const u8, len: usize, bytes: bool)
+);
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_runtime_core::attached_symbol!("__molt_path_metadata"))]
 pub extern "C" fn __molt_path_metadata(
+    context: u64,
     path: *const u8,
     len: usize,
     follow: bool,
@@ -513,10 +736,12 @@ pub extern "C" fn __molt_path_metadata(
     suppress: bool,
     out: *mut molt_runtime_platform::stat_support::PathMetadata,
 ) -> i32 {
+    assert_fixture_context(context);
     let _ = (path, len, follow, operation, suppress, out);
     unexpected("__molt_path_metadata")
 }
 unexpected_u64!(
+    "__molt_path_samefile",
     __molt_path_samefile(
         left: *const u8,
         left_len: usize,
@@ -526,4 +751,7 @@ unexpected_u64!(
     )
 );
 
-unexpected_u64!(__molt_path_readlink(path: *const u8, len: usize, bytes: bool));
+unexpected_u64!(
+    "__molt_path_readlink",
+    __molt_path_readlink(path: *const u8, len: usize, bytes: bool)
+);

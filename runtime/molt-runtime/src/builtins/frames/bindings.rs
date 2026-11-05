@@ -797,9 +797,9 @@ pub(crate) fn frame_bindings_exit(py: &PyToken<'_>, bindings: &FrameBindings) {
 /// chunk, never starts with one pending) and stays so, or the executing frame
 /// has fewer homes than its compiled code addresses, a compiler and runtime
 /// layout disagreement raised as `SystemError`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_homes(min_count: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_frame_homes_attached_body(_py: &crate::PyToken<'_>, min_count: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if exception_pending(py) {
             return 0;
         }
@@ -847,9 +847,9 @@ fn unlent_home(py: &PyToken<'_>) -> u64 {
 /// the homes `molt_frame_homes` lent. A failed boxing leaves its exception
 /// pending and the home unchanged; a cell or invalid kind raises
 /// `SystemError`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_home_load(home: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_frame_home_load_attached_body(_py: &crate::PyToken<'_>, home: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(pair) = crate::provenance::abi::mut_ptr::<u64>(home).filter(|p| !p.is_null())
         else {
             return unlent_home(py);
@@ -896,9 +896,9 @@ unsafe fn plain_home_value(py: &PyToken<'_>, pair: *mut u64) -> Result<u64, ()> 
 /// integer, or the missing sentinel for an unbound slot. PEP 709's save of an
 /// enclosing binding, which a store puts back. A failed boxing leaves its
 /// exception pending and the home unchanged.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_home_take(home: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_frame_home_take_attached_body(_py: &crate::PyToken<'_>, home: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(pair) = crate::provenance::abi::mut_ptr::<u64>(home).filter(|p| !p.is_null())
         else {
             return unlent_home(py);
@@ -1638,3 +1638,5 @@ pub(crate) unsafe fn frame_bindings_detach(
 #[cfg(test)]
 #[path = "bindings_tests.rs"]
 pub(super) mod tests;
+
+include!("../../attached_exports_generated/builtins/frames/bindings.rs");

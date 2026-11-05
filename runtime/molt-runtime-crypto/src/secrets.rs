@@ -77,9 +77,12 @@ fn resolve_nbytes(_py: &PyToken, nbytes_bits: u64, default: usize) -> Result<usi
 // ---------------------------------------------------------------------------
 // Public intrinsics
 // ---------------------------------------------------------------------------
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_secrets_token_bytes(nbytes_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_secrets_token_bytes_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    nbytes_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let n = match resolve_nbytes(_py, nbytes_bits, 32) {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -95,9 +98,12 @@ pub extern "C" fn molt_secrets_token_bytes(nbytes_bits: u64) -> u64 {
         MoltObject::from_ptr(ptr).bits()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_secrets_token_hex(nbytes_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_secrets_token_hex_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    nbytes_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let n = match resolve_nbytes(_py, nbytes_bits, 32) {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -114,9 +120,12 @@ pub extern "C" fn molt_secrets_token_hex(nbytes_bits: u64) -> u64 {
         MoltObject::from_ptr(ptr).bits()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_secrets_token_urlsafe(nbytes_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_secrets_token_urlsafe_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    nbytes_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let n = match resolve_nbytes(_py, nbytes_bits, 32) {
             Ok(v) => v,
             Err(exc) => return exc,
@@ -133,9 +142,9 @@ pub extern "C" fn molt_secrets_token_urlsafe(nbytes_bits: u64) -> u64 {
         MoltObject::from_ptr(ptr).bits()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_secrets_randbits(k_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_secrets_randbits_attached_body(_py: &molt_runtime_core::PyToken, k_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(k) = to_i64(obj_from_bits(k_bits)) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "k must be an integer");
         };
@@ -163,9 +172,9 @@ pub extern "C" fn molt_secrets_randbits(k_bits: u64) -> u64 {
         int_bits_from_bigint(_py, big)
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_secrets_choice(seq_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_secrets_choice_attached_body(_py: &molt_runtime_core::PyToken, seq_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let seq_obj = obj_from_bits(seq_bits);
         let Some(seq_ptr) = seq_obj.as_ptr() else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "sequence must not be None");
@@ -194,7 +203,7 @@ pub extern "C" fn molt_secrets_choice(seq_bits: u64) -> u64 {
             Ok(i) => i,
             Err(exc) => return exc,
         };
-        let Some(elem_bits) = (unsafe { seq_read_item_owned(seq_ptr, idx) }) else {
+        let Some(elem_bits) = (unsafe { seq_read_item_owned(_py, seq_ptr, idx) }) else {
             return raise_exception::<u64>(
                 _py,
                 BuiltinExc::IndexError,
@@ -229,9 +238,9 @@ fn random_index_below(_py: &PyToken, upper: usize) -> Result<usize, u64> {
         }
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_secrets_below(upper_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_secrets_below_attached_body(_py: &molt_runtime_core::PyToken, upper_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(upper_i64) = to_i64(obj_from_bits(upper_bits)) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "upper must be an integer");
         };
@@ -245,3 +254,5 @@ pub extern "C" fn molt_secrets_below(upper_bits: u64) -> u64 {
         }
     })
 }
+
+include!("attached_exports_generated/secrets.rs");

@@ -30,7 +30,12 @@ def _run_node(script: str, tmp_path: Path) -> None:
     if node is None:
         pytest.skip("Node is required for JavaScript startup consumer proof")
     path = tmp_path / "startup-contract.cjs"
-    path.write_text(script, encoding="utf-8")
+    fixture = (
+        "const {fixtureAbi, fixtureCompiledSymbol, FIXTURE_CONTEXT, fixturePhysicalRuntimeSymbol, fixtureScopeNames, fixtureScopeExports, createAttachedRuntimeFixture, fixtureRuntimeExport} = require("
+        + json.dumps(str(ROOT / "tests/wasm_runtime_fixture.js"))
+        + ");\n"
+    )
+    path.write_text(fixture + script, encoding="utf-8")
     run = run_guarded_test_process(
         [node, str(path)],
         cwd=ROOT,
@@ -61,7 +66,7 @@ const {createRuntimeStream} = require(lifecyclePath);
 for (const failure of ['none', 'integer', 'stream', 'cleanup', 'stream-cleanup']) {
   const integers = new Map(), streams = new Set(), events = [];
   let pending = false;
-  const instance = {exports: {
+  const {instance} = createAttachedRuntimeFixture({
     molt_exception_pending_fast: () => pending ? 1n : 0n,
     molt_int_from_i64(value) {
       assert.equal(value, 0n);
@@ -87,11 +92,11 @@ for (const failure of ['none', 'integer', 'stream', 'cleanup', 'stream-cleanup']
       assert(streams.delete(bits), 'unpublished opaque handles need stream drop');
       events.push('drop-stream');
     },
-  }};
+  });
   if (failure === 'none') {
     assert.equal(createRuntimeStream(instance, 0n), 456n);
     assert.deepEqual(events, ['box', 'construct', 'release-capacity']);
-    instance.exports.molt_stream_drop(456n);
+    fixtureRuntimeExport(instance, 'molt_stream_drop')(456n);
   } else {
     assert.throws(() => createRuntimeStream(instance, 0n), error => {
       if (failure === 'stream-cleanup') {
@@ -105,6 +110,60 @@ for (const failure of ['none', 'integer', 'stream', 'cleanup', 'stream-cleanup']
   assert.equal(integers.size, 0);
   assert.equal(streams.size, 0);
 }
+""",
+        tmp_path,
+    )
+
+
+def test_attached_schema_and_shared_memory_admission_fail_closed(
+    tmp_path: Path,
+) -> None:
+    _run_node(
+        "const abi = require("
+        + json.dumps(str(ROOT / "wasm/wasm_abi_generated.json"))
+        + ");\n"
+        + "const bridge = require("
+        + json.dumps(str(ROOT / "wasm/loader_bridge.js"))
+        + ");\n"
+        + r"""
+const assert = require('node:assert/strict');
+const schema = abi.execution_context_abi;
+const required = BigInt(schema.fingerprint);
+const header = [0,97,115,109,1,0,0,0];
+const uleb = value => { const out=[]; do { const byte=value&127; value>>>=7; out.push(byte|(value?128:0)); } while(value); return out; };
+const section = bits => {
+  const name = Buffer.from(schema.section), word = Buffer.alloc(8);
+  word.writeBigUInt64LE(bits);
+  const payload = [...uleb(name.length), ...name, ...word];
+  return [0, ...uleb(payload.length), ...payload];
+};
+const makeModule = sections => new WebAssembly.Module(Uint8Array.from([...header,...sections.flat()]));
+const runtime = {exports:{molt_attached_context_abi_fingerprint:()=>required}};
+bridge.requireAttachedExecutionAbi(makeModule([section(required)]), runtime, abi);
+for (const sections of [[], [section(required),section(required)], [section(required ^ 1n)]]) {
+  assert.throws(()=>bridge.requireAttachedExecutionAbi(makeModule(sections),runtime,abi), /attached execution ABI/);
+}
+assert.throws(()=>bridge.requireAttachedExecutionAbi(makeModule([section(required)]),
+  {exports:{molt_attached_context_abi_fingerprint:()=>required ^ 1n}},abi), /mismatch/);
+for (const mutation of [{fingerprint: `0x${required.toString(16)}`},
+  {fingerprint: `0${schema.fingerprint}`}, {fingerprint: String(required + 1n)},
+  {suffix: `${schema.suffix}_stale`}, {section: `${schema.section}.stale`},
+  {thread_record_offset: schema.thread_record_offset + 8}]) {
+  assert.throws(() => bridge.requireAttachedExecutionAbi(makeModule([section(required)]), runtime,
+    {...abi, execution_context_abi: {...schema, ...mutation}}), /attached execution ABI/);
+}
+const currentIndirect = bridge.compiledExecutionSymbol('molt_call_indirect3');
+assert.equal(bridge.requireCallIndirectImportName(currentIndirect), currentIndirect);
+for (const obsolete of ['molt_call_indirect3', 'molt_call_indirect3__molt_context_stale',
+  bridge.compiledExecutionSymbol('molt_call_indirect99')]) {
+  assert.throws(() => bridge.requireCallIndirectImportName(obsolete), /call_indirect execution ABI/);
+}
+const memory = new WebAssembly.Memory({initial:1});
+bridge.requireSharedExecutionMemory(memory,memory);
+assert.throws(()=>bridge.requireSharedExecutionMemory(memory,new WebAssembly.Memory({initial:1})),/shared/);
+const shared = new WebAssembly.Module(Uint8Array.from([...header,2,15,1,3,101,110,118,6,109,101,109,111,114,121,2,0,1]));
+bridge.requireSharedExecutionMemoryImport(shared);
+assert.throws(()=>bridge.requireSharedExecutionMemoryImport(makeModule([])),/shared env.memory/);
 """,
         tmp_path,
     )
@@ -141,7 +200,7 @@ function runtime(failure, cleanupFails = false) {
       for (const item of value.items || []) release(item);
     }
   };
-  const instance = {exports: {
+  const {instance} = createAttachedRuntimeFixture({
     molt_int_from_i64(value) {
       events.push(['integer', value]);
       const bits = allocate({value});
@@ -180,7 +239,7 @@ function runtime(failure, cleanupFails = false) {
       release(bits);
       if (cleanupFails && builder) throw new Error('builder cleanup failed');
     },
-  }};
+  });
   return {instance, live, events};
 }
 for (const failure of [null, 'new', 'append', 'box2', 'finish']) {
@@ -193,7 +252,7 @@ for (const failure of [null, 'new', 'append', 'box2', 'finish']) {
     result = makeRuntimeIntList(instance, [wide[0].toString(), wide[5]]);
     assert.deepEqual(live.get(result).items.map(bits => live.get(bits).value), [wide[0], wide[5]]);
     assert.ok(live.get(result).items.every(bits => live.get(bits).refs === 1));
-    instance.exports.molt_dec_ref_obj(result);
+    fixtureRuntimeExport(instance, 'molt_dec_ref_obj')(result);
   }
   assert.equal(live.size, 0, String(failure));
   if (failure && failure !== 'finish') assert.equal(events.some(([event]) => event === 'finish'), false);
@@ -214,7 +273,7 @@ for (const failure of [null, 'new', 'append', 'box2', 'finish']) {
   for (const value of [...wide, ...wide.map(String), 42, '+42']) {
     const bits = boxRuntimeInt(instance, value);
     assert.equal(live.get(bits).value, BigInt(value));
-    instance.exports.molt_dec_ref_obj(bits);
+    fixtureRuntimeExport(instance, 'molt_dec_ref_obj')(bits);
   }
   for (const invalid of [Number.MAX_SAFE_INTEGER + 1, 1.5, NaN, Infinity, null, true,
     {}, '', ' 42', '42 ', '42\n', '0x20', '1.0', '1e3', (1n << 63n), -(1n << 63n) - 1n]) {
@@ -228,8 +287,8 @@ for (const failure of [null, 'new', 'append', 'box2', 'finish']) {
     value => boxRuntimeInt(instance, value), () => assert.fail('called')), /host integer/);
   assert.equal(live.size, 0);
   const primary = new Error('invocation failed'), cleanup = new Error('cleanup failed');
-  const drop = instance.exports.molt_dec_ref_obj;
-  instance.exports.molt_dec_ref_obj = bits => { drop(bits); throw cleanup; };
+  const drop = fixtureRuntimeExport(instance, 'molt_dec_ref_obj');
+  instance.exports[fixturePhysicalRuntimeSymbol("molt_dec_ref_obj")] = (context, bits) => { assert.equal(context, FIXTURE_CONTEXT); drop(bits); throw cleanup; };
   assert.throws(() => withRuntimeOwnedValues(instance, wide.slice(0, 2),
     value => boxRuntimeInt(instance, value), () => { throw primary; }), error => {
       assert.deepEqual(error.errors, [primary, cleanup, cleanup]);
@@ -244,14 +303,14 @@ for (const failure of [null, 'new', 'append', 'box2', 'finish']) {
 }
 for (const missing of ['molt_int_from_i64', 'molt_exception_pending_fast', 'molt_dec_ref_obj']) {
   const {instance, events} = runtime();
-  delete instance.exports[missing];
+  delete instance.exports[fixturePhysicalRuntimeSymbol(missing)];
   assert.throws(() => boxRuntimeInt(instance, 1n), /missing ownership export/);
   assert.throws(() => makeRuntimeIntList(instance, []), /missing ownership export/);
   assert.equal(events.length, 0);
 }
 {
   const {instance, events} = runtime();
-  instance.exports.molt_exception_pending_fast = () => 1n;
+  instance.exports[fixturePhysicalRuntimeSymbol("molt_exception_pending_fast")] = () => 1n;
   assert.throws(() => boxRuntimeInt(instance, 1n), /before integer allocation/);
   assert.equal(events.length, 0);
 }
@@ -280,11 +339,12 @@ const release = bits => {
   assert.ok(object, `owner ${bits} released twice`);
   if (--object.refs === 0) live.delete(bits);
 };
-const instance = {exports: {molt_dec_ref_obj: release}};
+const {instance} = createAttachedRuntimeFixture({molt_dec_ref_obj: release});
 const stored = [];
 // A compiled app export adopts every argument: it releases each at its frame
 // boundary, on normal and exceptional exit alike, and returns an owned result.
-const adopting = (behavior) => (...args) => {
+const adopting = (behavior) => (context, ...args) => {
+  assert.equal(context, FIXTURE_CONTEXT);
   try {
     if (behavior === 'store') { retain(args[1]); stored.push(args[1]); }
     if (behavior === 'trap') throw new Error('export trapped');
@@ -350,12 +410,12 @@ const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const {boxRuntimeInt} = require(lifecyclePath);
 const seen = [];
-const runtime = {exports: {
+const {instance: runtime} = createAttachedRuntimeFixture({
   molt_int_from_i64(value) { seen.push(value); return 1000n; },
   molt_exception_pending_fast() { return 0n; },
   molt_dec_ref_obj() {},
-}};
-const context = {boxRuntimeInt, runtimeInstance: runtime,
+});
+const context = {runtimeExport: fixtureRuntimeExport, boxRuntimeInt, runtimeInstance: runtime,
   makeListIntObject: values => values,
   makeListIntObjectWithRuntime: (_runtime, values) => values,
   makeRuntimeIntList: (_runtime, values) => values};
@@ -1268,12 +1328,15 @@ def test_browser_host_initialization_requires_one_real_host_init(
         end = source.index("  const makeExportInvoker =", start)
         initializer = (
             source[start:end]
-            + "\nthis.initialize = () => ensureHostExportsInitialized(app);"
+            + "\nthis.initialize = () => ensureHostExportsInitialized(app, FIXTURE_CONTEXT);"
         )
     else:
         start = source.index("  let initialized = false;")
         end = source.index("  const callBytes =", start)
-        initializer = source[start:end] + "\nthis.initialize = ensureInitialized;"
+        initializer = (
+            source[start:end]
+            + "\nthis.initialize = () => ensureInitialized(FIXTURE_CONTEXT);"
+        )
     _run_node(
         "const initializer = "
         + json.dumps(initializer)
@@ -1287,11 +1350,11 @@ const assert = require('node:assert/strict');
 for (const status of ['missing', 'pending', 'ok']) {
   let calls = 0;
   const app = {exports: {
-    molt_isolate_bootstrap() { throw new Error('raw bootstrap fallback invoked'); },
+    [fixturePhysicalRuntimeSymbol('molt_isolate_bootstrap')](context) { assert.equal(context, FIXTURE_CONTEXT); throw new Error('raw bootstrap fallback invoked'); },
   }};
-  if (status !== 'missing') app.exports.molt_host_init = () => { calls++; };
+  if (status !== 'missing') app.exports[fixtureCompiledSymbol('molt_host_init')] = context => { assert.equal(context, FIXTURE_CONTEXT); calls++; };
   const context = {
-    app, state: {runtimeInstance: {}, memory: {}},
+    app, FIXTURE_CONTEXT, compiledExecutionSymbol: fixtureCompiledSymbol, state: {runtimeInstance: {}, memory: {}},
     embed: {appInstance: app, runtimeInstance: {}, memory: {}},
     runtimeExceptionPending: () => status === 'pending',
     pendingRuntimeExceptionMessage: () => status === 'pending' ? 'original failure' : null,
@@ -1344,22 +1407,22 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const {runtimeExceptionPending} = require(bridgePath);
 const {createRuntimeLifetime} = require(lifetimePath);
-const names = {runtime_execution_enter: 'enter', runtime_execution_leave: 'leave', runtime_shutdown: 'shutdown'};
+const names = fixtureScopeNames({runtime_execution_enter: 'enter', runtime_execution_leave: 'leave', runtime_shutdown: 'shutdown'});
 for (const status of [undefined, 0, () => 0, ignored => 0n, () => 2n, () => 0n, () => 1n]) {
   const events = [];
-  const runtime = {exports: {
+  const runtime = {exports: fixtureScopeExports({
     enter() { events.push('enter'); return 1n; },
     leave() { events.push('leave'); },
     shutdown() { events.push('shutdown'); return 1n; },
-    ...(status === undefined ? {} : {molt_exception_pending: status}),
-  }};
-  const context = {runtimeExceptionPending, createRuntimeLifetime, runtimeImportExportNames: names,
+    ...(status === undefined ? {} : {molt_exception_pending_detached: status}),
+  })};
+  const context = {runtimeExceptionPending, createRuntimeLifetime, wasmAbiGenerated: fixtureAbi, runtimeImportExportNames: names,
     pendingRuntimeExceptionMessage: () => 'original pending error'};
   vm.createContext(context);
   vm.runInContext(boundary + '\nthis.invoke = withRuntimeExecution;', context);
   const operation = () => { events.push('application'); };
   const invoke = () => browser
-    ? context.invoke(runtime, {export_names: names}, operation)
+    ? context.invoke(runtime, {...fixtureAbi, export_names: names}, operation)
     : context.invoke(runtime, operation);
   if (typeof status === 'function' && status.length === 0 &&
       status() === 0n) {
@@ -1397,15 +1460,15 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const {runtimeExceptionPending} = require(bridgePath);
 const {createRuntimeLifetime, combinedError} = require(lifetimePath);
-const names = {runtime_execution_enter: 'enter', runtime_execution_leave: 'leave', runtime_shutdown: 'shutdown'};
+const names = fixtureScopeNames({runtime_execution_enter: 'enter', runtime_execution_leave: 'leave', runtime_shutdown: 'shutdown'});
 for (const capi of ['absent', 'fetch', 'peek', 'both']) {
   for (const failure of ['none', 'repr', 'read']) {
     let pending = true, acquired = 0, released = 0, reprOwners = 0;
     const formattingFailure = new Error('formatting failed');
     const events = [];
     const cleanupFailure = new Error('shutdown failed');
-    const runtime = {exports: {
-      molt_exception_pending: () => pending ? 1n : 0n,
+    const runtime = {exports: fixtureScopeExports({
+      molt_exception_pending_detached: () => pending ? 1n : 0n,
       molt_exception_last_pending() { acquired++; return 11n; },
       molt_exception_last() { throw new Error('handled-exception accessor used'); },
       molt_object_repr(bits) {
@@ -1420,25 +1483,27 @@ for (const capi of ['absent', 'fetch', 'peek', 'both']) {
       enter() { events.push('enter'); return 17n; },
       leave(token) { assert.equal(token, 17n); events.push('leave'); },
       shutdown() { events.push('shutdown'); throw cleanupFailure; },
-    }};
+    })};
+    const observationLifetime = createRuntimeLifetime(runtime, names, () => {});
+    observationLifetime.admit();
     // C API fetch consumes; peek returns another owned reference. Neither is
     // the observer protocol, even if the artifact happens to export both.
     if (capi !== 'absent') {
-      runtime.exports.molt_err_pending = () => { throw new Error('C API status used'); };
-      if (capi !== 'peek') runtime.exports.molt_err_fetch = () => {
-        pending = false; throw new Error('consuming C API fetch used');
+      runtime.exports[fixturePhysicalRuntimeSymbol('molt_err_pending')] = () => { throw new Error('C API status used'); };
+      if (capi !== 'peek') runtime.exports[fixturePhysicalRuntimeSymbol('molt_err_fetch')] = () => {
+            pending = false; throw new Error('consuming C API fetch used');
       };
-      if (capi !== 'fetch') runtime.exports.molt_err_peek = () => {
+      if (capi !== 'fetch') runtime.exports[fixturePhysicalRuntimeSymbol('molt_err_peek')] = () => {
         acquired++; throw new Error('C API peek used');
       };
     }
     const context = {
-      runtimeExceptionPending,
+      runtimeExceptionPending, runtimeExport: fixtureRuntimeExport,
       readRuntimeStringBits() {
         if (failure === 'read') throw formattingFailure;
         return "AttributeError('owned diagnostic')";
       },
-      decRefMaybe: (instance, bits) => instance.exports.molt_dec_ref_obj(bits),
+      decRefMaybe: (instance, bits) => fixtureRuntimeExport(instance, 'molt_dec_ref_obj')(bits),
     };
     vm.createContext(context);
     vm.runInContext(formatter + '\nthis.format = pendingRuntimeExceptionMessage;', context);
@@ -1452,7 +1517,33 @@ for (const capi of ['absent', 'fetch', 'peek', 'both']) {
       assert.equal(released, acquired, 'each diagnostic acquires and retires one owner');
       assert.equal(reprOwners, 0, 'formatting temporaries retire on success and failure');
     }
+    // Rich renderers acquire kind and message separately. A later getter
+    // failure must retire the already acquired kind as well as the exception.
+    if (richRenderer) {
+      const originalRepr = runtime.exports[fixturePhysicalRuntimeSymbol('molt_object_repr')];
+      delete runtime.exports[fixturePhysicalRuntimeSymbol('molt_object_repr')];
+      let kinds = 0;
+      runtime.exports[fixturePhysicalRuntimeSymbol('molt_exception_kind')] = (context, bits) => {
+        assert.equal(context, FIXTURE_CONTEXT); assert.equal(bits, 11n); kinds++; return 13n;
+      };
+      runtime.exports[fixturePhysicalRuntimeSymbol('molt_exception_message')] = () => { throw formattingFailure; };
+      const release = runtime.exports[fixturePhysicalRuntimeSymbol('molt_dec_ref_obj')];
+      runtime.exports[fixturePhysicalRuntimeSymbol('molt_dec_ref_obj')] = (context, bits) => {
+        assert.equal(context, FIXTURE_CONTEXT);
+        if (bits === 13n) kinds--;
+        else release(context, bits);
+      };
+      assert.throws(observe, error => error === formattingFailure);
+      assert.equal(kinds, 0, 'second acquisition failure retires the first owner');
+      assert.equal(released, acquired);
+      assert.equal(runtimeExceptionPending(runtime), true);
+      runtime.exports[fixturePhysicalRuntimeSymbol('molt_object_repr')] = originalRepr;
+      runtime.exports[fixturePhysicalRuntimeSymbol('molt_dec_ref_obj')] = release;
+      delete runtime.exports[fixturePhysicalRuntimeSymbol('molt_exception_kind')];
+      delete runtime.exports[fixturePhysicalRuntimeSymbol('molt_exception_message')];
+    }
     if (failure === 'none') {
+      events.length = 0;
       const lifetime = createRuntimeLifetime(runtime, names, () => {
         if (runtimeExceptionPending(runtime)) throw new Error(observe());
       });
@@ -1469,35 +1560,18 @@ for (const capi of ['absent', 'fetch', 'peek', 'both']) {
       assert.equal(errors[2].errors[1], cleanupFailure);
       assert.equal(combinedError(errors).cause, errors[0]);
       assert.throws(() => lifetime.dispose(), error => error === errors[2]);
-      assert.deepEqual(events, ['enter', 'leave', 'enter', 'leave', 'shutdown']);
+      assert.deepEqual(events.slice(0, 4), ['enter', 'leave', 'enter', 'leave']);
+      assert.equal(events.at(-1), 'shutdown');
+      assert.equal(events.filter(event => event === 'enter').length, events.filter(event => event === 'leave').length);
       assert.equal(runtimeExceptionPending(runtime), true);
       assert.equal(released, acquired);
-    }
-    // Rich renderers acquire kind and message separately. A later getter
-    // failure must retire the already acquired kind as well as the exception.
-    if (richRenderer) {
-      delete runtime.exports.molt_object_repr;
-      let kinds = 0;
-      runtime.exports.molt_exception_kind = bits => {
-        assert.equal(bits, 11n); kinds++; return 13n;
-      };
-      runtime.exports.molt_exception_message = () => { throw formattingFailure; };
-      const release = runtime.exports.molt_dec_ref_obj;
-      runtime.exports.molt_dec_ref_obj = bits => {
-        if (bits === 13n) kinds--;
-        else release(bits);
-      };
-      assert.throws(observe, error => error === formattingFailure);
-      assert.equal(kinds, 0, 'second acquisition failure retires the first owner');
-      assert.equal(released, acquired);
-      assert.equal(runtimeExceptionPending(runtime), true);
     }
     pending = false;
     const before = acquired;
     assert.equal(observe(), null);
     assert.equal(acquired, before, 'no diagnostic acquisition without pending error');
     for (const malformed of [undefined, () => 1, ignored => 1n, () => 2n]) {
-      runtime.exports.molt_exception_pending = malformed;
+      runtime.exports.molt_exception_pending_detached = malformed;
       assert.throws(observe, /molt_exception_pending/);
       assert.equal(acquired, before, 'invalid status never acquires an owner');
     }
@@ -1527,12 +1601,12 @@ def test_pending_status_without_diagnostic_object_is_never_success(
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const {runtimeExceptionPending} = require(bridgePath);
-const runtime = {exports: {molt_exception_pending: () => 1n}};
-const context = {runtimeExceptionPending};
+const {instance: runtime} = createAttachedRuntimeFixture({molt_exception_pending_detached: () => 1n});
+const context = {runtimeExceptionPending, runtimeExport: fixtureRuntimeExport};
 vm.createContext(context);
 vm.runInContext(formatter + '\nthis.format = pendingRuntimeExceptionMessage;', context);
 assert.match(context.format(runtime, null), /Unhandled Molt exception/);
-assert.equal(runtime.exports.molt_exception_pending(), 1n);
+assert.equal(runtime.exports.molt_exception_pending_detached(), 1n);
 """,
         tmp_path,
     )
@@ -1567,8 +1641,8 @@ async function exercise(status) {
   const events = [];
   let compiles = 0;
   let pending = 0n;
-  const exports = {
-    molt_main() { events.push('main'); pending = status === 'pending' ? 1n : 0n; },
+  const exports = fixtureScopeExports({
+    molt_attached_context_abi_fingerprint: () => BigInt(fixtureAbi.execution_context_abi.fingerprint),
     // The runtime's report takes the pending exception and returns its status.
     molt_main_exit_status() {
       events.push('status');
@@ -1579,8 +1653,9 @@ async function exercise(status) {
     molt_runtime_execution_enter() { events.push('enter'); return 1n; },
     molt_runtime_execution_leave() { events.push('leave'); },
     molt_runtime_shutdown() { events.push('shutdown'); return 1n; },
-  };
-  if (status !== 'missing') exports.molt_exception_pending = () => pending;
+  });
+  exports[fixtureCompiledSymbol('molt_main')] = context => { assert.equal(context, FIXTURE_CONTEXT); events.push('main'); pending = status === 'pending' ? 1n : 0n; };
+  if (status !== 'missing') exports.molt_exception_pending_detached = () => pending;
   const context = {
     TextDecoder, TextEncoder, Uint8Array, ArrayBuffer, DataView, Response, URL, performance,
     crypto: webcrypto,
@@ -1685,9 +1760,9 @@ def test_node_runner_trace_milestones_cover_linked_and_direct_boundaries() -> No
         offsets = [body.index(mark) for mark in marks]
         assert offsets == sorted(offsets)
         assert body.index(f"traceMark('{prefix}:guest:enter');") < body.index(
-            "molt_main();"
+            "molt_main(context);"
         )
-        assert body.index("molt_main();") < body.index(
+        assert body.index("molt_main(context);") < body.index(
             f"traceMark('{prefix}:guest:completed');"
         )
         assert body.count("WebAssembly.instantiate(") == len(stages)
@@ -1700,10 +1775,10 @@ def test_shared_runtime_lifetime_custody_and_failure_ordering(tmp_path: Path) ->
         + ");\n"
         + r"""
 const assert = require('node:assert/strict');
-const names = {runtime_execution_enter: 'enter', runtime_execution_leave: 'leave', runtime_shutdown: 'shutdown'};
+const names = fixtureScopeNames({runtime_execution_enter: 'enter', runtime_execution_leave: 'leave', runtime_shutdown: 'shutdown'});
 function fixture({pending, leaveFailure, shutdownFailure, shutdownStatus = 1n} = {}) {
   const events = [];
-  const exports = {
+  const exports = fixtureScopeExports({
     enter() { events.push('enter'); return 17n; },
     leave(token) {
       assert.equal(token, 17n); events.push('leave');
@@ -1714,8 +1789,8 @@ function fixture({pending, leaveFailure, shutdownFailure, shutdownStatus = 1n} =
       if (shutdownFailure) throw shutdownFailure;
       return shutdownStatus;
     },
-  };
-  const lifetime = createRuntimeLifetime({exports}, names, () => {
+  });
+  const lifetime = createRuntimeLifetime({exports}, fixtureScopeNames(names), () => {
     if (pending) throw pending;
   });
   return {lifetime, events, exports};
@@ -1725,7 +1800,7 @@ function failedEntryFixture(kind) {
   let pending = null;
   const entryFailure = new Error(`entry ${kind}`);
   const pendingFailure = new Error(`pending after ${kind}`);
-  const exports = {
+  const exports = fixtureScopeExports({
     enter() {
       events.push('enter'); pending = pendingFailure;
       if (kind === 'trap') throw entryFailure;
@@ -1733,8 +1808,8 @@ function failedEntryFixture(kind) {
     },
     leave() { events.push('leave'); },
     shutdown() { events.push('shutdown'); return 0n; },
-  };
-  const lifetime = createRuntimeLifetime({exports}, names, () => {
+  });
+  const lifetime = createRuntimeLifetime({exports}, fixtureScopeNames(names), () => {
     if (pending) throw pending;
   });
   return {lifetime, events, entryFailure, pendingFailure};
@@ -1747,6 +1822,7 @@ function failedEntryFixture(kind) {
   lifetime.dispose(); lifetime.dispose();
   assert.deepEqual(events, ['initialize', 'enter', 'main', 'leave', 'enter', 'callback', 'leave', 'shutdown']);
   assert.throws(() => lifetime.execute(() => {}), /disposed/);
+  assert.throws(() => lifetime.runtimeFunction('molt_main_exit_status'), /disposed/);
 }
 {
   const {lifetime, events} = fixture();
@@ -1808,11 +1884,11 @@ for (const primary of [new Error('main'), null, undefined]) {
 {
   let pending = null;
   const setupFailure = new Error('setup pending');
-  const exports = {
+  const exports = fixtureScopeExports({
     enter() { return 1n; }, leave() {},
     shutdown() { return 0n; },
-  };
-  const lifetime = createRuntimeLifetime({exports}, names, () => {
+  });
+  const lifetime = createRuntimeLifetime({exports}, fixtureScopeNames(names), () => {
     if (pending) throw pending;
   });
   assert.throws(
@@ -1820,6 +1896,39 @@ for (const primary of [new Error('main'), null, undefined]) {
     error => error === setupFailure,
   );
   assert.throws(() => lifetime.dispose(), error => error === setupFailure);
+}
+for (const stage of ['context', 'scope']) {
+  for (const malformed of [0n, 1, null]) {
+    const {exports, events} = fixture();
+    exports[fixturePhysicalRuntimeSymbol(stage === 'context'
+      ? 'molt_attached_context' : 'molt_compiled_execution_enter')] = () => malformed;
+    const lifetime = createRuntimeLifetime({exports}, names, () => {});
+    assert.throws(() => lifetime.execute(() => assert.fail('unadmitted context entered guest')),
+      stage === 'context' ? /invalid attached execution context/ : /invalid compiled execution scope/);
+    lifetime.dispose();
+    assert.deepEqual(events, ['enter', 'leave', 'shutdown']);
+  }
+}
+{
+  const {exports, events} = fixture();
+  const scopes = [];
+  let serial = 0n;
+  exports[fixturePhysicalRuntimeSymbol('molt_compiled_execution_enter')] = context => {
+    assert.equal(context, FIXTURE_CONTEXT);
+    const scope = ++serial; scopes.push(scope); events.push(`scope:${scope}`); return scope;
+  };
+  exports[fixturePhysicalRuntimeSymbol('molt_compiled_execution_leave')] = (context, scope) => {
+    assert.equal(context, FIXTURE_CONTEXT); assert.equal(scopes.pop(), scope);
+    events.push(`unscope:${scope}`);
+  };
+  const lifetime = createRuntimeLifetime({exports}, names, () => {});
+  lifetime.execute(outer => lifetime.execute(inner => {
+    assert.equal(outer, FIXTURE_CONTEXT); assert.equal(inner, FIXTURE_CONTEXT);
+    assert.deepEqual(scopes, [1n, 2n]);
+  }));
+  lifetime.dispose();
+  assert.deepEqual(events, ['enter', 'scope:1', 'enter', 'scope:2', 'unscope:2', 'leave',
+    'unscope:1', 'leave', 'shutdown']);
 }
 for (const kind of ['trap', 'zero']) {
   const {lifetime, events, entryFailure, pendingFailure} = failedEntryFixture(kind);
@@ -1833,7 +1942,7 @@ for (const kind of ['trap', 'zero']) {
 {
   let queried = false;
   const {exports, events} = fixture({shutdownStatus: 0n});
-  const lifetime = createRuntimeLifetime({exports}, names, () => { queried = true; });
+  const lifetime = createRuntimeLifetime({exports}, fixtureScopeNames(names), () => { queried = true; });
   lifetime.admit(); lifetime.dispose(); lifetime.dispose();
   assert.equal(queried, true, 'admitted disposal must snapshot pure pending status');
   assert.deepEqual(events, ['shutdown']);
@@ -1861,7 +1970,7 @@ const context = {traceIsolateImport: true, console: {error: line => lines.push(l
   readRuntimeStringBits() { throw new Error('trace entered guest'); }};
 vm.createContext(context);
 vm.runInContext(traceSource + '\nthis.trace = traceIsolateImportCall;', context);
-context.trace('enter', [1n]); context.trace('exit', [1n], 0n);
+context.trace('enter', [FIXTURE_CONTEXT, 1n]); context.trace('exit', [FIXTURE_CONTEXT, 1n], 0n);
 assert.equal(lines.length, 2);
 assert.match(lines[0], /moduleId=1/);
 assert.match(lines[1], /result=0/);
@@ -1908,9 +2017,9 @@ for (const failure of [null, undefined, false, 0, '', new Error('close failed')]
 }
 {
   const events = [];
-  const lifetime = createRuntimeLifetime({exports: {
+  const lifetime = createRuntimeLifetime({exports: fixtureScopeExports({
     enter: () => 1n, leave() {}, shutdown() { events.push('shutdown'); return 1n; },
-  }}, {runtime_execution_enter: 'enter', runtime_execution_leave: 'leave', runtime_shutdown: 'shutdown'}, () => {});
+  })}, fixtureScopeNames({runtime_execution_enter: 'enter', runtime_execution_leave: 'leave', runtime_shutdown: 'shutdown'}), () => {});
   const dispose = createRuntimeDisposer(() => lifetime, [() => events.push('host-close')]);
   lifetime.execute(() => {
     assert.throws(dispose, error => error.code === 'MOLT_RUNTIME_ACTIVE');
@@ -2026,19 +2135,22 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const {createRuntimeLifetime, createRuntimeDisposer, withRuntimeOwnedValues, invokeAppExport, combinedError} = require(lifetimePath);
 const events = [];
-const names = {runtime_execution_enter: 'enter', runtime_execution_leave: 'leave', runtime_shutdown: 'shutdown'};
-const instance = {exports: {
+const names = fixtureScopeNames({runtime_execution_enter: 'enter', runtime_execution_leave: 'leave', runtime_shutdown: 'shutdown'});
+const instance = {exports: fixtureScopeExports({
   enter() { events.push('enter'); return 1n; },
   leave() { events.push('leave'); },
   shutdown() { events.push('shutdown'); return 1n; },
-  molt_main() { events.push('main'); },
   molt_main_exit_status() { events.push('status'); return 0n; },
-  molt_host_init() { events.push('host-init'); },
-  sample() { events.push('export'); return 42n; },
   molt_dec_ref_obj() {},
-}};
+})};
+instance.exports[fixtureCompiledSymbol('sample')] = context => { assert.equal(context, FIXTURE_CONTEXT); events.push('export'); return 42n; };
+instance.exports[fixtureCompiledSymbol('molt_main')] = context => { assert.equal(context, FIXTURE_CONTEXT); events.push('main'); };
+instance.exports[fixtureCompiledSymbol('molt_host_init')] = context => { assert.equal(context, FIXTURE_CONTEXT); events.push('host-init'); };
 const context = {
-  instance, state: {runtimeInstance: instance, memory: {}}, runtimeImportAbi: {export_names: names},
+  compiledExecutionSymbol: fixtureCompiledSymbol, runtimeExport: fixtureRuntimeExport,
+  mainExitStatus: runtime => Number(fixtureRuntimeExport(runtime, 'molt_main_exit_status')()),
+  throwOnExitStatus: status => assert.equal(status, 0),
+  instance, state: {runtimeInstance: instance, memory: {}}, runtimeImportAbi: {...fixtureAbi, export_names: names},
   createRuntimeLifetime, createRuntimeDisposer, withRuntimeOwnedValues, invokeAppExport, combinedError, runtimeExceptionPending: () => false,
   pendingRuntimeExceptionMessage: () => null, memoryExport: {}, memory: {}, env: {}, linkedTable: {},
   makeBrowserHostArgObject: () => 0n, decRefMaybeWithRuntime() {},
@@ -2108,30 +2220,45 @@ def assert_split_worker_runtime_lifecycle(
         + json.dumps(str(ROOT / "wasm/loader_bridge.js"))
         + ";\nconst moduleBytes = new Uint8Array("
         + json.dumps(list(attested_empty_callable_table(EMPTY_WASM_MODULE)))
+        + ");\nconst appModuleBytes = new Uint8Array("
+        + json.dumps(
+            list(
+                attested_empty_callable_table(
+                    EMPTY_WASM_MODULE
+                    + bytes.fromhex("020f0103656e76066d656d6f7279020001")
+                )
+            )
+        )
         + ");\n"
         + r"""
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const {createRuntimeLifetime, combinedError} = require(lifetimePath);
-const {prepareWasmTableAdmission, publishWasmTableAdmission} = require(loaderPath);
+const {prepareWasmTableAdmission, publishWasmTableAdmission, requireAttachedExecutionAbi, requireSharedExecutionMemoryImport, requireSharedExecutionMemory} = require(loaderPath);
 const tableAdmission = prepareWasmTableAdmission({module: new WebAssembly.Module(moduleBytes)});
 async function exercise(fail, primary, failShutdown, failInstantiate = false) {
   const events = [];
   const cleanup = new Error('shutdown failed');
-  const runtime = {exports: {
+  const sharedMemory = new WebAssembly.Memory({initial: 1});
+  const runtime = {exports: fixtureScopeExports({
     enter() { events.push('enter'); return 1n; },
     leave() { events.push('leave'); },
     shutdown() { events.push('shutdown'); if (failShutdown) throw cleanup; return 1n; },
     _initialize() { events.push('initialize'); },
+    molt_attached_context_abi_fingerprint: () => BigInt(fixtureAbi.execution_context_abi.fingerprint),
     molt_main_exit_status() { events.push('status'); return 0n; },
-  }};
-  const app = {exports: {molt_main() { events.push('main'); if (fail) throw primary; }}};
-  const runtimeModule = {};
+  })};
+  runtime.exports.memory = sharedMemory;
+  const app = {exports: {memory: sharedMemory, [fixtureCompiledSymbol('molt_main')]: context => { assert.equal(context, FIXTURE_CONTEXT); events.push('main'); if (fail) throw primary; }}};
+  const runtimeModule = new WebAssembly.Module(moduleBytes);
   const context = {
     createRuntimeLifetime, combinedError, runtimeExceptionPending: () => false,
     tableAdmission, publishWasmTableAdmission,
-    runtimeImportExportNames: {runtime_execution_enter: 'enter', runtime_execution_leave: 'leave', runtime_shutdown: 'shutdown'},
-    runtimeModule, appModule: {}, appInstance: null, wasi: {}, hostEnv: {}, sharedTable: {}, wasmMemory: {},
+    compiledExecutionSymbol: fixtureCompiledSymbol, runtimeExport: fixtureRuntimeExport,
+    requireAttachedExecutionAbi, requireSharedExecutionMemoryImport, requireSharedExecutionMemory,
+    deploymentManifest: {abi: {runtime_imports: fixtureAbi}},
+    runtimeImportExportNames: fixtureScopeNames({runtime_execution_enter: 'enter', runtime_execution_leave: 'leave', runtime_shutdown: 'shutdown'}),
+    runtimeModule, appModule: new WebAssembly.Module(appModuleBytes), appInstance: null, wasi: {}, hostEnv: {}, sharedTable: {}, wasmMemory: sharedMemory,
     runtimeCallableTable: {}, appCallableTable: {}, verifyCallableTableEntries() {}, buildRuntimeImports: () => ({}),
     assetBytes: async () => null, vfs: {clear: () => events.push('vfs-clear')},
     stdoutDecoder: {decode: () => ''}, stderrDecoder: {decode: () => ''}, stdoutChunks: [], stderrChunks: [],

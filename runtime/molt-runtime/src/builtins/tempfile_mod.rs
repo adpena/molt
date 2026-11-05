@@ -43,9 +43,12 @@ fn creation_paths(
 }
 
 /// Probe the Python-selected candidate order without caching or consulting host defaults.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tempfile_gettempdir(candidates_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_tempfile_gettempdir_attached_body(
+    _py: &crate::PyToken<'_>,
+    candidates_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if let Err(error) = require_operation(py, OperationId::TempfileGettempdir, AuditArgs::None)
         {
             return error;
@@ -108,9 +111,13 @@ pub extern "C" fn molt_tempfile_gettempdir(candidates_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tempfile_mkdtemp(suffix: u64, prefix: u64, dir: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_tempfile_mkdtemp_attached_body(
+    _py: &crate::PyToken<'_>,
+    suffix: u64,
+    prefix: u64,
+    dir: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if let Err(error) = require_operation(py, OperationId::TempfileMkdtemp, AuditArgs::None) {
             return error;
         }
@@ -144,9 +151,15 @@ pub extern "C" fn molt_tempfile_mkdtemp(suffix: u64, prefix: u64, dir: u64) -> u
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tempfile_mkstemp(suffix: u64, prefix: u64, dir: u64, text: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_tempfile_mkstemp_attached_body(
+    _py: &crate::PyToken<'_>,
+    suffix: u64,
+    prefix: u64,
+    dir: u64,
+    text: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if let Err(error) = require_operation(py, OperationId::TempfileMkstemp, AuditArgs::None) {
             return error;
         }
@@ -230,9 +243,15 @@ pub extern "C" fn molt_tempfile_mkstemp(suffix: u64, prefix: u64, dir: u64, text
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tempfile_mkstemp(_suffix: u64, _prefix: u64, _dir: u64, _text: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_tempfile_mkstemp_attached_body(
+    _py: &crate::PyToken<'_>,
+    _suffix: u64,
+    _prefix: u64,
+    _dir: u64,
+    _text: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if let Err(error) = require_operation(py, OperationId::TempfileMkstemp, AuditArgs::None) {
             return error;
         }
@@ -241,9 +260,8 @@ pub extern "C" fn molt_tempfile_mkstemp(_suffix: u64, _prefix: u64, _dir: u64, _
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tempfile_cleanup(path: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_tempfile_cleanup_attached_body(_py: &crate::PyToken<'_>, path: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if let Err(error) = require_operation(py, OperationId::TempfileCleanup, AuditArgs::None) {
             return error;
         }
@@ -284,7 +302,8 @@ mod tests {
                 ];
                 let list = alloc_list(py, &items);
                 assert!(!list.is_null());
-                let result = molt_tempfile_gettempdir(MoltObject::from_ptr(list).bits());
+                let result =
+                    molt_tempfile_gettempdir_attached_body(py, MoltObject::from_ptr(list).bits());
                 assert!(!exception_pending(py));
                 assert_eq!(
                     string_obj_to_owned(obj_from_bits(result)),
@@ -320,7 +339,7 @@ mod tests {
                 dotted.extend_from_slice(b"/../opaque-\xff/.");
                 let dir = MoltObject::from_ptr(alloc_bytes(py, &dotted)).bits();
                 let empty = MoltObject::from_ptr(alloc_bytes(py, b"")).bits();
-                let result = molt_tempfile_mkdtemp(empty, empty, dir);
+                let result = molt_tempfile_mkdtemp_attached_body(py, empty, empty, dir);
                 assert!(!exception_pending(py));
                 let (created, flavor) = path_from_bits_with_flavor(py, result).unwrap();
                 assert_eq!(flavor, PathFlavor::Bytes);
@@ -328,8 +347,13 @@ mod tests {
                 assert!(created.exists());
                 std::fs::remove_dir(created).unwrap();
                 dec_ref_bits(py, result);
-                let result =
-                    molt_tempfile_mkstemp(empty, empty, dir, MoltObject::from_bool(false).bits());
+                let result = molt_tempfile_mkstemp_attached_body(
+                    py,
+                    empty,
+                    empty,
+                    dir,
+                    MoltObject::from_bool(false).bits(),
+                );
                 assert!(!exception_pending(py));
                 let rows = unsafe {
                     crate::object::seq_access::snapshot(
@@ -356,11 +380,12 @@ mod tests {
     fn candidate_probe_denial_reports_complete_missing_set_before_path_access() {
         crate::test_support::RuntimeTestTransaction::with_explicit_capabilities("", |py| {
             // An invalid candidate container would raise TypeError if inspected first.
-            molt_tempfile_gettempdir(MoltObject::none().bits());
+            molt_tempfile_gettempdir_attached_body(py, MoltObject::none().bits());
             assert!(exception_pending(py));
-            let error = molt_exception_last();
-            molt_exception_clear();
-            let message = crate::builtins::exceptions::molt_exception_message(error);
+            let error = molt_exception_last_attached_body(py);
+            molt_exception_clear_attached_body(py);
+            let message =
+                crate::builtins::exceptions::molt_exception_message_attached_body(py, error);
             assert_eq!(
                 string_obj_to_owned(obj_from_bits(message)).unwrap(),
                 "missing [env.read, fs.read, fs.write] capabilities for 'tempfile.gettempdir'"
@@ -370,3 +395,5 @@ mod tests {
         });
     }
 }
+
+include!("../attached_exports_generated/builtins/tempfile_mod.rs");

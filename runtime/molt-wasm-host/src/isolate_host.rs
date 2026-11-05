@@ -5,7 +5,7 @@ pub(super) fn define_isolate_host_imports(
     store: &mut Store<HostState>,
     engine: &Engine,
 ) -> Result<()> {
-    let bootstrap_ty = FuncType::new(engine, [], [ValType::I64]);
+    let bootstrap_ty = FuncType::new(engine, [ValType::I64], [ValType::I64]);
     let bootstrap = Func::new(
         &mut *store,
         bootstrap_ty,
@@ -24,9 +24,14 @@ pub(super) fn define_isolate_host_imports(
             result
         },
     );
-    linker.define(&mut *store, "env", "molt_isolate_bootstrap", bootstrap)?;
+    linker.define(
+        &mut *store,
+        "env",
+        &compiled_execution_symbol("molt_isolate_bootstrap"),
+        bootstrap,
+    )?;
 
-    let import_ty = FuncType::new(engine, [ValType::I64], [ValType::I64]);
+    let import_ty = FuncType::new(engine, [ValType::I64, ValType::I64], [ValType::I64]);
     let import = Func::new(
         &mut *store,
         import_ty,
@@ -43,7 +48,12 @@ pub(super) fn define_isolate_host_imports(
             result
         },
     );
-    linker.define(&mut *store, "env", "molt_isolate_import", import)?;
+    linker.define(
+        &mut *store,
+        "env",
+        &compiled_execution_symbol("molt_isolate_import"),
+        import,
+    )?;
     Ok(())
 }
 
@@ -52,10 +62,16 @@ pub(super) fn register_isolate_exports(
     instance: &Instance,
 ) -> Result<()> {
     let bootstrap = instance
-        .get_typed_func::<(), i64>(&mut *store, "molt_isolate_bootstrap")
+        .get_typed_func::<i64, i64>(
+            &mut *store,
+            &compiled_execution_symbol("molt_isolate_bootstrap"),
+        )
         .context("missing or malformed molt_isolate_bootstrap export")?;
     let import = instance
-        .get_typed_func::<i64, i64>(&mut *store, "molt_isolate_import")
+        .get_typed_func::<(i64, i64), i64>(
+            &mut *store,
+            &compiled_execution_symbol("molt_isolate_import"),
+        )
         .context("missing or malformed molt_isolate_import export")?;
     // Publish only after both signatures match the runtime import ABI.
     let state = store.data_mut();

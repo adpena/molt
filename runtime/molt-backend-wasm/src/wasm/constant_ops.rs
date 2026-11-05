@@ -5,11 +5,11 @@ use super::context::CompileFuncContext;
 use super::function_frame::{WasmConstAnchorRegion, WasmConstAnchorSlot};
 use super::{WasmBackend, WasmFrameLocals};
 use crate::OpIR;
+use crate::wasm_binary::Function;
 use crate::wasm_data::DataSegmentRef;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::ConstantCache;
 use std::collections::BTreeMap;
-use wasm_encoder::Function;
 
 pub(in crate::wasm) use anchors::{emit_const_anchor_materialization, emit_const_anchor_result};
 

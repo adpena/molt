@@ -83,7 +83,7 @@ fn native_c_names_share_creation_identity_and_heap_rename_publication() {
             ] {
                 let key = dynamic_attr_name_bits(py, key).unwrap();
                 let value = dynamic_attr_name_bits(py, value).unwrap();
-                let result = crate::molt_set_attr_name(class, key, value);
+                let result = crate::molt_set_attr_name_attached_body(py, class, key, value);
                 dec_ref_bits(py, result);
                 dec_ref_bits(py, key);
                 dec_ref_bits(py, value);
@@ -101,10 +101,10 @@ fn assert_namespace_mutability(py: &PyToken<'_>, class: u64, immutable: bool) {
     let ptr = obj_from_bits(class).as_ptr().expect("class pointer");
     let name_ptr = alloc_string(py, b"cached_class_policy_witness");
     assert!(!name_ptr.is_null());
-    let _name = crate::PtrDropGuard::new(name_ptr);
+    let _name = crate::PtrDropGuard::new(py, name_ptr);
     let name = MoltObject::from_ptr(name_ptr).bits();
     let value = MoltObject::from_int(73).bits();
-    let result = crate::molt_set_attr_name(class, name, value);
+    let result = crate::molt_set_attr_name_attached_body(py, class, name, value);
     dec_ref_bits(py, result);
     let namespace = obj_from_bits(unsafe { class_dict_bits(ptr) })
         .as_ptr()
@@ -114,8 +114,8 @@ fn assert_namespace_mutability(py: &PyToken<'_>, class: u64, immutable: bool) {
             exception_pending(py),
             "immutable class accepted a new attribute"
         );
-        let exception = crate::builtins::exceptions::molt_exception_last_pending();
-        let kind = crate::builtins::exceptions::molt_exception_kind(exception);
+        let exception = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
+        let kind = crate::builtins::exceptions::molt_exception_kind_attached_body(py, exception);
         assert_eq!(
             string_obj_to_owned(obj_from_bits(kind)).as_deref(),
             Some("TypeError")
@@ -136,7 +136,7 @@ fn assert_namespace_mutability(py: &PyToken<'_>, class: u64, immutable: bool) {
             unsafe { dict_get_in_place(py, namespace, name).expect("dictionary lookup succeeds") },
             Some(value)
         );
-        let result = crate::molt_del_attr_name(class, name);
+        let result = crate::molt_del_attr_name_attached_body(py, class, name);
         dec_ref_bits(py, result);
         assert!(!exception_pending(py));
         assert_eq!(
@@ -217,7 +217,7 @@ fn module_exception_identity_survives_mutation_and_does_not_follow_names() {
                 assert!(crate::issubclass_bits(class, base));
             }
             let module_key = dynamic_attr_name_bits(py, b"__module__").unwrap();
-            let observed = crate::molt_get_attr_name(class, module_key);
+            let observed = crate::molt_get_attr_name_attached_body(py, class, module_key);
             assert_eq!(
                 string_obj_to_owned(obj_from_bits(observed)).as_deref(),
                 Some(module)
@@ -234,9 +234,13 @@ fn module_exception_identity_survives_mutation_and_does_not_follow_names() {
             dec_ref_bits(py, original);
             dec_ref_bits(py, renamed);
             let fake_name = dynamic_attr_name_bits(py, name.name().as_bytes()).unwrap();
-            let fake = crate::molt_class_new(fake_name);
+            let fake = crate::molt_class_new_attached_body(py, fake_name);
             dec_ref_bits(py, fake_name);
-            let result = crate::molt_class_set_base(fake, builtin_classes(py).base_exception);
+            let result = crate::molt_class_set_base_attached_body(
+                py,
+                fake,
+                builtin_classes(py).base_exception,
+            );
             dec_ref_bits(py, result);
             assert!(!exception_pending(py));
             assert!(!is_builtin_exception_class_bits(py, fake));
@@ -261,8 +265,9 @@ fn cached_types_enforce_native_and_python_namespace_policies() {
         for class in native {
             assert_namespace_mutability(py, class, true);
         }
-        let module_spec = molt_importlib_module_spec_type();
+        let module_spec = molt_importlib_module_spec_type_attached_body(py);
         let _module_spec = crate::PtrDropGuard::new(
+            py,
             obj_from_bits(module_spec)
                 .as_ptr()
                 .expect("ModuleSpec type"),
@@ -297,9 +302,9 @@ fn class_semantics_distinguish_static_heap_and_mutable_bank_types() {
         );
         assert!(!exception_pending(py));
         let operator_classes = [
-            crate::builtins::operator::molt_operator_itemgetter_type(),
-            crate::builtins::operator::molt_operator_attrgetter_type(),
-            crate::builtins::operator::molt_operator_methodcaller_type(),
+            crate::builtins::operator::molt_operator_itemgetter_type_attached_body(py),
+            crate::builtins::operator::molt_operator_attrgetter_type_attached_body(py),
+            crate::builtins::operator::molt_operator_methodcaller_type_attached_body(py),
         ];
         for (class, expected) in [
             (
@@ -362,9 +367,9 @@ fn class_semantics_distinguish_static_heap_and_mutable_bank_types() {
         // Static origin and immutability belong to the actual class, never its
         // inherited native shape. A SimpleNamespace subclass is a mutable heap.
         let name = dynamic_attr_name_bits(py, b"NamespaceChild").unwrap();
-        let child = crate::molt_class_new(name);
+        let child = crate::molt_class_new_attached_body(py, name);
         dec_ref_bits(py, name);
-        let result = crate::molt_class_set_base(child, simplenamespace_class(py));
+        let result = crate::molt_class_set_base_attached_body(py, child, simplenamespace_class(py));
         dec_ref_bits(py, result);
         assert!(!exception_pending(py));
         let ptr = obj_from_bits(child).as_ptr().unwrap();
@@ -376,9 +381,9 @@ fn class_semantics_distinguish_static_heap_and_mutable_bank_types() {
         dec_ref_bits(py, child);
         // Admission consumes the same explicit BASETYPE fact as C flags.
         let name = dynamic_attr_name_bits(py, b"RejectedMethodChild").unwrap();
-        let child = crate::molt_class_new(name);
+        let child = crate::molt_class_new_attached_body(py, name);
         dec_ref_bits(py, name);
-        let result = crate::molt_class_set_base(child, method_class(py));
+        let result = crate::molt_class_set_base_attached_body(py, child, method_class(py));
         dec_ref_bits(py, result);
         assert!(exception_pending(py));
         clear_exception(py);
@@ -410,28 +415,28 @@ fn annotations_admit_immutable_heap_types_but_reject_static_types() {
             method_class(py),
             builtin_classes(py).int,
         ] {
-            let result = crate::molt_get_attr_name(class, field);
+            let result = crate::molt_get_attr_name_attached_body(py, class, field);
             dec_ref_bits(py, result);
             assert!(exception_pending(py), "static type exposed annotations");
             clear_exception(py);
         }
-        let annotations = crate::molt_get_attr_name(heap, field);
+        let annotations = crate::molt_get_attr_name_attached_body(py, heap, field);
         assert!(!exception_pending(py));
         assert_eq!(
             unsafe { object_type_id(obj_from_bits(annotations).as_ptr().unwrap()) },
             TYPE_ID_DICT
         );
-        let again = crate::molt_get_attr_name(heap, field);
+        let again = crate::molt_get_attr_name_attached_body(py, heap, field);
         assert_eq!(annotations, again, "heap annotation cache is stable");
         dec_ref_bits(py, again);
-        let result = crate::molt_set_attr_name(heap, field, annotations);
+        let result = crate::molt_set_attr_name_attached_body(py, heap, field, annotations);
         dec_ref_bits(py, result);
         assert!(
             exception_pending(py),
             "immutable heap accepted annotation assignment"
         );
         clear_exception(py);
-        let result = crate::molt_del_attr_name(heap, field);
+        let result = crate::molt_del_attr_name_attached_body(py, heap, field);
         dec_ref_bits(py, result);
         assert!(
             exception_pending(py),
@@ -446,8 +451,16 @@ fn annotations_admit_immutable_heap_types_but_reject_static_types() {
 
 static ANNOTATION_EVALUATIONS: AtomicU64 = AtomicU64::new(0);
 
-extern "C" fn class_annotation_evaluator(format: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn class_annotation_evaluator(__context: u64, format: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         if obj_from_bits(format).as_int() != Some(1) {
             return raise_exception::<_>(
                 py,
@@ -460,7 +473,7 @@ extern "C" fn class_annotation_evaluator(format: u64) -> u64 {
         let dictionary = alloc_dict_with_pairs(py, &[name, MoltObject::from_int(42).bits()]);
         dec_ref_bits(py, name);
         MoltObject::from_ptr(dictionary).bits()
-    })
+    }
 }
 
 #[test]
@@ -554,9 +567,10 @@ fn heap_c_view_names_are_owned_and_follow_runtime_metadata_mutation() {
             b"HeapProjectionName",
         ))
         .bits();
-        let class = crate::molt_class_new(name);
+        let class = crate::molt_class_new_attached_body(py, name);
         let ptr = obj_from_bits(class).as_ptr().unwrap();
-        let result = crate::molt_class_set_base(class, builtin_classes(py).object);
+        let result =
+            crate::molt_class_set_base_attached_body(py, class, builtin_classes(py).object);
         dec_ref_bits(py, result);
         unsafe { crate::object::class_finish_definition(py, ptr) }.unwrap();
         let qualname = unsafe { crate::class_qualname_bits(ptr) };
@@ -602,7 +616,7 @@ fn heap_c_view_names_are_owned_and_follow_runtime_metadata_mutation() {
                 let value_bits =
                     MoltObject::from_ptr(crate::object::builders::alloc_string_nointern(py, value))
                         .bits();
-                let result = crate::molt_set_attr_name(class, key, value_bits);
+                let result = crate::molt_set_attr_name_attached_body(py, class, key, value_bits);
                 dec_ref_bits(py, result);
                 dec_ref_bits(py, key);
                 assert!(!exception_pending(py));

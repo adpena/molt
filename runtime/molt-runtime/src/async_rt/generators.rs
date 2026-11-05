@@ -8,7 +8,6 @@ use molt_codegen_abi::GENERATOR_RESUME_RETURNED;
 use molt_obj_model::MoltObject;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
-use super::generators_async::molt_future_new;
 use crate::builtins::exceptions::{ActivationExceptionScope, ActivationKind};
 use crate::object::accessors::resolve_obj_ptr;
 use crate::object::{
@@ -27,8 +26,9 @@ use crate::{
     alloc_object_with_aux, alloc_tuple, asyncgen_poll_fn_addr, call_callable1, call_poll_fn,
     clear_exception, current_task_ptr, dec_ref_bits, exception_class_bits,
     exception_clear_reason_set, exception_pending, generator_raise_active, header_from_obj_ptr,
-    inc_ref_bits, maybe_ptr_from_bits, molt_exception_clear, molt_exception_last_pending,
-    molt_exception_set_last, molt_raise, obj_from_bits, object_mark_has_ptrs, object_type_id,
+    inc_ref_bits, maybe_ptr_from_bits, molt_exception_clear_attached_body,
+    molt_exception_last_pending_attached_body, molt_exception_set_last_attached_body,
+    molt_raise_attached_body, obj_from_bits, object_mark_has_ptrs, object_type_id,
     pending_bits_i64, ptr_from_bits, raise_exception, register_task_execution, resolve_task_ptr,
     runtime_state, set_generator_raise, to_i64, token_id_from_bits, type_name,
 };
@@ -323,7 +323,8 @@ pub(crate) unsafe fn raise_stop_iteration_from_value(py: &PyToken<'_>, value: u6
         return MoltObject::none().bits();
     }
     let args = MoltObject::from_ptr(args).bits();
-    let exception = crate::builtins::exceptions::molt_exception_new_from_class(
+    let exception = crate::builtins::exceptions::molt_exception_new_from_class_attached_body(
+        py,
         exception_class_bits(py, BuiltinExc::StopIteration),
         args,
     );
@@ -332,7 +333,7 @@ pub(crate) unsafe fn raise_stop_iteration_from_value(py: &PyToken<'_>, value: u6
         dec_ref_bits(py, exception);
         return MoltObject::none().bits();
     }
-    let raised = molt_raise(exception);
+    let raised = molt_raise_attached_body(py, exception);
     dec_ref_bits(py, exception);
     raised
 }
@@ -467,9 +468,13 @@ fn task_new_with_context(
     MoltObject::from_ptr(ptr).bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_task_new(poll_fn_addr: u64, closure_size: u64, kind_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_task_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    poll_fn_addr: u64,
+    closure_size: u64,
+    kind_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let pending =
             crate::builtins::frames::acquire_pending_invocation_context(_py, poll_fn_addr);
         // Generated callable trampolines carry the exact invocation context.
@@ -542,9 +547,11 @@ pub(crate) fn is_direct_await_future_bits(bits: u64) -> bool {
     is_native_poll_future_bits(bits) || is_asyncgen_awaitable_bits(bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_is_native_awaitable(val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_is_native_awaitable_attached_body(
+    _py: &crate::PyToken<'_>,
+    val_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         MoltObject::from_bool(
             is_native_python_awaitable_bits(val_bits) || is_direct_await_future_bits(val_bits),
         )
@@ -555,13 +562,14 @@ pub extern "C" fn molt_is_native_awaitable(val_bits: u64) -> u64 {
 /// # Safety
 /// - `task_bits` must be a valid pointer to a Molt task with a valid header.
 /// - `token_bits` must be an integer cancel token id.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_task_register_execution(
+
+pub(crate) unsafe fn molt_task_register_execution_attached_body(
+    _py: &crate::PyToken<'_>,
     task_bits: u64,
     token_bits: u64,
     context_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(task_ptr) = resolve_task_ptr(task_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "object is not awaitable");
         };
@@ -587,9 +595,8 @@ pub unsafe extern "C" fn molt_task_register_execution(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_is_generator(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_is_generator_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let is_gen = maybe_ptr_from_bits(obj_bits)
             .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_GENERATOR });
         MoltObject::from_bool(is_gen).bits()
@@ -644,7 +651,7 @@ unsafe fn generator_run_body(
         }
         let pending = exception_pending(py);
         let exc_bits = if pending {
-            let bits = molt_exception_last_pending();
+            let bits = molt_exception_last_pending_attached_body(py);
             clear_exception(py);
             bits
         } else {
@@ -755,8 +762,8 @@ pub(crate) unsafe fn generator_throw_step(
             Err(EntryRefusal::Terminal) => {
                 // A finished activation owns no frame; the exception simply
                 // propagates from the caller.
-                crate::molt_exception_trace_prepend(pending);
-                molt_raise(pending);
+                crate::molt_exception_trace_prepend_attached_body(py, pending);
+                molt_raise_attached_body(py, pending);
                 dec_ref_bits(py, pending);
                 return Err(());
             }
@@ -771,8 +778,8 @@ pub(crate) unsafe fn generator_throw_step(
                 dec_ref_bits(py, pending);
                 return Err(());
             };
-            crate::molt_exception_trace_prepend(pending);
-            molt_raise(pending);
+            crate::molt_exception_trace_prepend_attached_body(py, pending);
+            molt_raise_attached_body(py, pending);
             dec_ref_bits(py, pending);
             return Err(());
         }
@@ -796,9 +803,13 @@ unsafe fn generator_resume_step(py: &PyToken<'_>, ptr: *mut u8) -> GeneratorResu
 }
 
 /// The compiled `gen_send` operation: the `(value, done)` pair projection.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_generator_send_attached_body(
+    _py: &crate::PyToken<'_>,
+    gen_bits: u64,
+    send_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(ptr) = generator_receiver(py, gen_bits) else {
             return MoltObject::none().bits();
         };
@@ -807,9 +818,13 @@ pub extern "C" fn molt_generator_send(gen_bits: u64, send_bits: u64) -> u64 {
 }
 
 /// The compiled `gen_throw` operation: the `(value, done)` pair projection.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_generator_throw(gen_bits: u64, exc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_generator_throw_attached_body(
+    _py: &crate::PyToken<'_>,
+    gen_bits: u64,
+    exc_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(ptr) = generator_receiver(py, gen_bits) else {
             return MoltObject::none().bits();
         };
@@ -818,9 +833,9 @@ pub extern "C" fn molt_generator_throw(gen_bits: u64, exc_bits: u64) -> u64 {
 }
 
 /// `close()` (CPython's `gen_close`).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_generator_close_attached_body(_py: &crate::PyToken<'_>, gen_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(ptr) = generator_receiver(py, gen_bits) else {
             return MoltObject::none().bits();
         };
@@ -854,7 +869,7 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
             dec_ref_bits(py, exit);
             match step {
                 Err(()) => {
-                    let exception = molt_exception_last_pending();
+                    let exception = molt_exception_last_pending_attached_body(py);
                     if crate::builtins::exceptions::exception_matches_kind(
                         py,
                         exception,
@@ -891,9 +906,11 @@ pub extern "C" fn molt_generator_close(gen_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_generator_next_method(gen_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_generator_next_method_attached_body(
+    _py: &crate::PyToken<'_>,
+    gen_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(ptr) = generator_receiver(py, gen_bits) else {
             return MoltObject::none().bits();
         };
@@ -903,9 +920,12 @@ pub extern "C" fn molt_generator_next_method(gen_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_generator_send_method(gen_bits: u64, send_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_generator_send_method_attached_body(
+    _py: &crate::PyToken<'_>,
+    gen_bits: u64,
+    send_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(ptr) = generator_receiver(py, gen_bits) else {
             return MoltObject::none().bits();
         };
@@ -913,9 +933,12 @@ pub extern "C" fn molt_generator_send_method(gen_bits: u64, send_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_generator_throw_method(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_generator_throw_method_attached_body(
+    _py: &crate::PyToken<'_>,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some((receiver, arguments)) = super::throw_protocol::parse_throw_call(py, args, kwargs)
         else {
             return MoltObject::none().bits();
@@ -931,9 +954,11 @@ pub extern "C" fn molt_generator_throw_method(args: u64, kwargs: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_generator_close_method(gen_bits: u64) -> u64 {
-    molt_generator_close(gen_bits)
+pub(crate) fn molt_generator_close_method_attached_body(
+    _py: &crate::PyToken<'_>,
+    gen_bits: u64,
+) -> u64 {
+    molt_generator_close_attached_body(_py, gen_bits)
 }
 
 unsafe fn asyncgen_slot_ptr(ptr: *mut u8, offset: usize) -> *mut u64 {
@@ -985,7 +1010,7 @@ pub(crate) unsafe fn generator_call_finalizer(py: &PyToken<'_>, ptr: *mut u8) {
         || (generator, None),
         || {
             let _scope = crate::builtins::exceptions::ExceptionStackScope::push(py);
-            let result = molt_generator_close(generator);
+            let result = molt_generator_close_attached_body(py, generator);
             dec_ref_bits(py, result);
         },
     );
@@ -1138,9 +1163,9 @@ unsafe fn asyncgen_call_firstiter_if_needed(
             dec_ref_bits(_py, res_bits);
         }
         if exception_pending(_py) {
-            let exc_bits = molt_exception_last_pending();
+            let exc_bits = molt_exception_last_pending_attached_body(_py);
             clear_exception(_py);
-            let raised = molt_raise(exc_bits);
+            let raised = molt_raise_attached_body(_py, exc_bits);
             dec_ref_bits(_py, exc_bits);
             return Some(raised);
         }
@@ -1157,7 +1182,9 @@ pub(crate) unsafe fn asyncgen_call_finalizer(py: &PyToken<'_>, ptr: *mut u8) {
         }
         let hook = asyncgen_finalizer_bits(ptr);
         inc_ref_bits(py, hook);
-        let _hook_owner = obj_from_bits(hook).as_ptr().map(crate::PtrDropGuard::new);
+        let _hook_owner = obj_from_bits(hook)
+            .as_ptr()
+            .map(|pointer| crate::PtrDropGuard::new(py, pointer));
         let generator = MoltObject::from_ptr(ptr).bits();
         crate::builtins::exceptions::run_unraisable_with_policy(
             py,
@@ -1165,7 +1192,7 @@ pub(crate) unsafe fn asyncgen_call_finalizer(py: &PyToken<'_>, ptr: *mut u8) {
             || {
                 let _scope = crate::builtins::exceptions::ExceptionStackScope::push(py);
                 let result = if obj_from_bits(hook).is_none() {
-                    molt_generator_close(asyncgen_gen_bits(ptr))
+                    molt_generator_close_attached_body(py, asyncgen_gen_bits(ptr))
                 } else {
                     call_callable1(py, hook, generator)
                 };
@@ -1311,7 +1338,7 @@ unsafe fn asyncgen_future_new(
 ) -> u64 {
     unsafe {
         let payload = (ASYNCGEN_AWAITABLE_SLOTS * std::mem::size_of::<u64>()) as u64;
-        let obj_bits = molt_future_new(asyncgen_poll_fn_addr(), payload);
+        let obj_bits = crate::molt_future_new_attached_body(_py, asyncgen_poll_fn_addr(), payload);
         if obj_from_bits(obj_bits).is_none() {
             return obj_bits;
         }
@@ -1347,9 +1374,8 @@ unsafe fn asyncgen_future_new(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncgen_new(gen_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_asyncgen_new_attached_body(_py: &crate::PyToken<'_>, gen_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(gen_ptr) = maybe_ptr_from_bits(gen_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected generator");
         };
@@ -1380,9 +1406,8 @@ pub extern "C" fn molt_asyncgen_new(gen_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncgen_hooks_get() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_asyncgen_hooks_get_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hooks = asyncgen_hooks_snapshot(_py);
         let ptr = alloc_tuple(_py, &hooks);
         for bits in hooks {
@@ -1454,13 +1479,13 @@ fn replace_asyncgen_hook(py: &PyToken<'_>, slot: AsyncGenHook, bits: u64) {
     dec_ref_bits(py, old);
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncgen_hooks_set(
+pub(crate) fn molt_asyncgen_hooks_set_attached_body(
+    _py: &crate::PyToken<'_>,
     firstiter_bits: u64,
     finalizer_bits: u64,
     omitted_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let transactional = crate::object::ops_sys::runtime_target_minor(py) >= 13;
         if transactional {
             // CPython 3.13+ validates both arguments before any audit/update.
@@ -1528,9 +1553,12 @@ pub extern "C" fn molt_asyncgen_hooks_set(
 
 /// `inspect.getasyncgenlocals`: the async generator's activation is its inner
 /// generator task, projected through the shared layout authority.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncgen_locals(asyncgen_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_asyncgen_locals_attached_body(
+    _py: &crate::PyToken<'_>,
+    asyncgen_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(asyncgen_ptr) = maybe_ptr_from_bits(asyncgen_bits) else {
             return raise_exception::<_>(
                 _py,
@@ -1556,9 +1584,9 @@ pub extern "C" fn molt_asyncgen_locals(asyncgen_bits: u64) -> u64 {
 }
 
 /// `inspect.getgeneratorlocals`, projected through the shared layout authority.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gen_locals(gen_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_gen_locals_attached_body(_py: &crate::PyToken<'_>, gen_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(gen_ptr) = maybe_ptr_from_bits(gen_bits) else {
             return raise_exception::<_>(
                 _py,
@@ -1578,9 +1606,11 @@ pub extern "C" fn molt_gen_locals(gen_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncgen_aiter(asyncgen_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_asyncgen_aiter_attached_body(
+    _py: &crate::PyToken<'_>,
+    asyncgen_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(ptr) = maybe_ptr_from_bits(asyncgen_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected async generator");
         };
@@ -1598,9 +1628,11 @@ pub extern "C" fn molt_asyncgen_aiter(asyncgen_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncgen_anext(asyncgen_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_asyncgen_anext_attached_body(
+    _py: &crate::PyToken<'_>,
+    asyncgen_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe {
             let Some(ptr) = maybe_ptr_from_bits(asyncgen_bits) else {
                 return raise_exception::<_>(
@@ -1629,9 +1661,12 @@ pub extern "C" fn molt_asyncgen_anext(asyncgen_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncgen_asend(asyncgen_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_asyncgen_asend_attached_body(
+    _py: &crate::PyToken<'_>,
+    asyncgen_bits: u64,
+    val_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe {
             let Some(ptr) = maybe_ptr_from_bits(asyncgen_bits) else {
                 return raise_exception::<_>(
@@ -1655,9 +1690,12 @@ pub extern "C" fn molt_asyncgen_asend(asyncgen_bits: u64, val_bits: u64) -> u64 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncgen_athrow(asyncgen_bits: u64, exc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_asyncgen_athrow_attached_body(
+    _py: &crate::PyToken<'_>,
+    asyncgen_bits: u64,
+    exc_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe {
             let Some(ptr) = maybe_ptr_from_bits(asyncgen_bits) else {
                 return raise_exception::<_>(
@@ -1681,9 +1719,11 @@ pub extern "C" fn molt_asyncgen_athrow(asyncgen_bits: u64, exc_bits: u64) -> u64
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncgen_aclose(asyncgen_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_asyncgen_aclose_attached_body(
+    _py: &crate::PyToken<'_>,
+    asyncgen_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(ptr) = maybe_ptr_from_bits(asyncgen_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected async generator");
         };
@@ -1715,10 +1755,13 @@ pub extern "C" fn molt_asyncgen_aclose(asyncgen_bits: u64) -> u64 {
 /// Caller must pass a valid async-generator awaitable object bits value.
 /// The runtime must be initialized and the thread must be allowed to enter
 /// the GIL-guarded runtime state.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
+
+pub(crate) unsafe fn molt_asyncgen_poll_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> i64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             struct PendingExceptionGuard<'a> {
                 py: &'a PyToken<'a>,
                 prior_bits: Option<u64>,
@@ -1727,9 +1770,9 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
             impl<'a> PendingExceptionGuard<'a> {
                 fn new(py: &'a PyToken<'a>) -> Self {
                     let prior_bits = if exception_pending(py) {
-                        let bits = molt_exception_last_pending();
+                        let bits = molt_exception_last_pending_attached_body(py);
                         exception_clear_reason_set("asyncgen_poll_guard_prior");
-                        molt_exception_clear();
+                        molt_exception_clear_attached_body(py);
                         Some(bits)
                     } else {
                         None
@@ -1743,9 +1786,9 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                     };
                     if exception_pending(self.py) {
                         exception_clear_reason_set("asyncgen_poll_guard_restore");
-                        molt_exception_clear();
+                        molt_exception_clear_attached_body(self.py);
                     }
-                    let _ = molt_exception_set_last(prior_bits);
+                    let _ = molt_exception_set_last_attached_body(self.py, prior_bits);
                     dec_ref_bits(self.py, prior_bits);
                 }
             }
@@ -1833,7 +1876,7 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
             {
                 inc_ref_bits(_py, pending_bits);
                 asyncgen_clear_pending_bits(_py, asyncgen_ptr);
-                let raised = molt_raise(pending_bits);
+                let raised = molt_raise_attached_body(_py, pending_bits);
                 dec_ref_bits(_py, pending_bits);
                 return raised as i64;
             }
@@ -1857,7 +1900,7 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                                     GEN_THROW_OFFSET,
                                     MoltObject::none().bits(),
                                 );
-                                let raised = molt_raise(throw_bits);
+                                let raised = molt_raise_attached_body(_py, throw_bits);
                                 dec_ref_bits(_py, throw_bits);
                                 return raised as i64;
                             }
@@ -1941,7 +1984,7 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                         asyncgen_clear_running_bits(_py, asyncgen_ptr);
                     }
                     crate::object::object_set_state(obj_ptr, 0);
-                    let exc_bits = molt_exception_last_pending();
+                    let exc_bits = molt_exception_last_pending_attached_body(_py);
                     if op == ASYNCGEN_OP_ACLOSE {
                         let terminal = obj_from_bits(exc_bits).as_ptr().is_some_and(|exc_ptr| {
                             crate::builtins::exceptions::exception_matches_kind(
@@ -1956,7 +1999,7 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                         });
                         if terminal {
                             exception_clear_reason_set("asyncgen_aclose_swallow");
-                            molt_exception_clear();
+                            molt_exception_clear_attached_body(_py);
                             dec_ref_bits(_py, exc_bits);
                             generator_complete(_py, gen_ptr, true);
                             return MoltObject::none().bits() as i64;
@@ -2023,8 +2066,10 @@ mod asyncgen_lifetime_tests {
     static ORIGINAL_CALLS: AtomicUsize = AtomicUsize::new(0);
     static REPLACEMENT_CALLS: AtomicUsize = AtomicUsize::new(0);
 
-    extern "C" fn original_finalizer(generator: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn original_finalizer(__context: u64, generator: u64) -> u64 {
+        let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        crate::with_attached_entry_nopanic!(__attached_py, py, {
             ORIGINAL_CALLS.fetch_add(1, Ordering::Relaxed);
             // Models loop.call_soon_threadsafe retaining an aclose awaitable.
             // This must occur before committed death, in the shared revival window.
@@ -2034,7 +2079,9 @@ mod asyncgen_lifetime_tests {
         })
     }
 
-    extern "C" fn replacement_finalizer(_generator: u64) -> u64 {
+    extern "C" fn replacement_finalizer(__context: u64, _generator: u64) -> u64 {
+        let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         REPLACEMENT_CALLS.fetch_add(1, Ordering::Relaxed);
         MoltObject::none().bits()
     }
@@ -2054,8 +2101,10 @@ mod asyncgen_lifetime_tests {
     static HOOK_AUDIT_EVENTS: std::sync::Mutex<Vec<&'static str>> =
         std::sync::Mutex::new(Vec::new());
 
-    extern "C" fn hook_audit(event: u64, _args: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn hook_audit(__context: u64, event: u64, _args: u64) -> u64 {
+        let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        crate::with_attached_entry_nopanic!(__attached_py, py, {
             let mode = HOOK_AUDIT_MODE.load(Ordering::Relaxed);
             match crate::string_obj_to_owned(obj_from_bits(event)).as_deref() {
                 Some("sys.set_asyncgen_hook_firstiter") => {
@@ -2111,7 +2160,7 @@ mod asyncgen_lifetime_tests {
                 );
             }
             let audit = MoltObject::from_ptr(audit_ptr).bits();
-            crate::builtins::sys_ext::molt_sys_addaudithook(audit);
+            crate::builtins::sys_ext::molt_sys_addaudithook_attached_body(py, audit);
             let saved_version =
                 crate::object::ops_sys::runtime_target_python_info(runtime_state(py));
             for minor in [12, 13, 14] {
@@ -2119,9 +2168,14 @@ mod asyncgen_lifetime_tests {
                 version.minor = minor;
                 *runtime_state(py).sys_version_info.lock().unwrap() = Some(version);
                 HOOK_AUDIT_MODE.store(0, Ordering::Relaxed);
-                molt_asyncgen_hooks_set(first, old_finalizer, omitted);
+                molt_asyncgen_hooks_set_attached_body(py, first, old_finalizer, omitted);
                 HOOK_AUDIT_EVENTS.lock().unwrap().clear();
-                molt_asyncgen_hooks_set(MoltObject::from_int(1).bits(), replacement, omitted);
+                molt_asyncgen_hooks_set_attached_body(
+                    py,
+                    MoltObject::from_int(1).bits(),
+                    replacement,
+                    omitted,
+                );
                 assert!(exception_pending(py));
                 clear_exception(py);
                 let hooks = asyncgen_hooks_snapshot(py);
@@ -2168,12 +2222,12 @@ mod asyncgen_lifetime_tests {
                     ),
                 ] {
                     HOOK_AUDIT_MODE.store(0, Ordering::Relaxed);
-                    molt_asyncgen_hooks_set(first, old_finalizer, omitted);
+                    molt_asyncgen_hooks_set_attached_body(py, first, old_finalizer, omitted);
                     HOOK_AUDIT_EVENTS.lock().unwrap().clear();
                     HOOK_AUDIT_MODE.store(mode, Ordering::Relaxed);
-                    molt_asyncgen_hooks_set(replacement, replacement, omitted);
+                    molt_asyncgen_hooks_set_attached_body(py, replacement, replacement, omitted);
                     assert!(exception_pending(py));
-                    let exception = crate::molt_exception_last_pending();
+                    let exception = crate::molt_exception_last_pending_attached_body(py);
                     assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         exception,
@@ -2200,7 +2254,7 @@ mod asyncgen_lifetime_tests {
                 // never upgrade that dead identity or leak its borrow entry.
                 HOOK_AUDIT_MODE.store(0, Ordering::Relaxed);
                 let ephemeral = callback(py, replacement_finalizer as *const ());
-                molt_asyncgen_hooks_set(first, ephemeral, omitted);
+                molt_asyncgen_hooks_set_attached_body(py, first, ephemeral, omitted);
                 dec_ref_bits(py, ephemeral);
                 let registrations = runtime_state(py)
                     .weakrefs
@@ -2210,7 +2264,7 @@ mod asyncgen_lifetime_tests {
                     .len();
                 HOOK_AUDIT_EVENTS.lock().unwrap().clear();
                 HOOK_AUDIT_MODE.store(1, Ordering::Relaxed);
-                molt_asyncgen_hooks_set(replacement, replacement, omitted);
+                molt_asyncgen_hooks_set_attached_body(py, replacement, replacement, omitted);
                 assert!(exception_pending(py));
                 clear_exception(py);
                 let hooks = asyncgen_hooks_snapshot(py);
@@ -2229,7 +2283,7 @@ mod asyncgen_lifetime_tests {
                 );
             }
             HOOK_AUDIT_MODE.store(0, Ordering::Relaxed);
-            molt_asyncgen_hooks_set(none, none, omitted);
+            molt_asyncgen_hooks_set_attached_body(py, none, none, omitted);
             *runtime_state(py).sys_version_info.lock().unwrap() = Some(saved_version);
             crate::builtins::sys_ext::sys_ext_clear_state(py, runtime_state(py));
             for bits in [first, old_finalizer, replacement, audit] {
@@ -2254,15 +2308,15 @@ mod asyncgen_lifetime_tests {
                     dec_ref_bits(py, bits);
                 }
             };
-            molt_asyncgen_hooks_set(first, finalizer, omitted);
-            molt_asyncgen_hooks_set(omitted, omitted, omitted);
+            molt_asyncgen_hooks_set_attached_body(py, first, finalizer, omitted);
+            molt_asyncgen_hooks_set_attached_body(py, omitted, omitted, omitted);
             check([first, finalizer]);
             let invalid = MoltObject::from_int(1).bits();
-            molt_asyncgen_hooks_set(finalizer, invalid, omitted);
+            molt_asyncgen_hooks_set_attached_body(py, finalizer, invalid, omitted);
             assert!(exception_pending(py));
             clear_exception(py);
             check([first, finalizer]);
-            molt_asyncgen_hooks_set(invalid, first, omitted);
+            molt_asyncgen_hooks_set_attached_body(py, invalid, first, omitted);
             assert!(exception_pending(py));
             clear_exception(py);
             check([
@@ -2273,9 +2327,9 @@ mod asyncgen_lifetime_tests {
                     first
                 },
             ]);
-            molt_asyncgen_hooks_set(omitted, none, omitted);
+            molt_asyncgen_hooks_set_attached_body(py, omitted, none, omitted);
             check([first, none]);
-            molt_asyncgen_hooks_set(none, none, omitted);
+            molt_asyncgen_hooks_set_attached_body(py, none, none, omitted);
             dec_ref_bits(py, first);
             dec_ref_bits(py, finalizer);
             assert!(!exception_pending(py));
@@ -2292,15 +2346,16 @@ mod asyncgen_lifetime_tests {
             RESURRECTED.store(0, Ordering::Relaxed);
             let original = callback(py, original_finalizer as *const ());
             let replacement = callback(py, replacement_finalizer as *const ());
-            molt_asyncgen_hooks_set(none, original, missing_bits(py));
-            let inner = molt_task_new(0, GEN_CONTROL_SIZE as u64, TASK_KIND_GENERATOR);
+            molt_asyncgen_hooks_set_attached_body(py, none, original, missing_bits(py));
+            let inner =
+                molt_task_new_attached_body(py, 0, GEN_CONTROL_SIZE as u64, TASK_KIND_GENERATOR);
             assert!(!obj_from_bits(inner).is_none());
-            let generator = molt_asyncgen_new(inner);
+            let generator = molt_asyncgen_new_attached_body(py, inner);
             assert!(!obj_from_bits(generator).is_none());
             dec_ref_bits(py, inner);
             let pointer = obj_from_bits(generator).as_ptr().unwrap();
             assert!(unsafe { asyncgen_call_firstiter_if_needed(py, generator, pointer) }.is_none());
-            molt_asyncgen_hooks_set(none, replacement, missing_bits(py));
+            molt_asyncgen_hooks_set_attached_body(py, none, replacement, missing_bits(py));
             dec_ref_bits(py, original);
             // Captured hook is a real GC-visible owner after hook replacement.
             let mut edges = Vec::new();
@@ -2317,7 +2372,7 @@ mod asyncgen_lifetime_tests {
             assert!(!unsafe {
                 (*header_from_obj_ptr(pointer)).has_flag(crate::object::HEADER_FLAG_DEALLOCATING)
             });
-            molt_asyncgen_hooks_set(none, none, missing_bits(py));
+            molt_asyncgen_hooks_set_attached_body(py, none, none, missing_bits(py));
             dec_ref_bits(py, replacement);
             dec_ref_bits(py, RESURRECTED.swap(0, Ordering::Relaxed));
             assert!(observation.upgrade_owned().is_none());
@@ -2364,12 +2419,16 @@ mod suspension_reference_tests {
         }
     }
 
-    extern "C" fn payload(_value: u64) -> u64 {
+    extern "C" fn payload(__context: u64, _value: u64) -> u64 {
+        let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         MoltObject::none().bits()
     }
 
-    extern "C" fn on_release(_weak: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn on_release(__context: u64, _weak: u64) -> u64 {
+        let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        crate::with_attached_entry_nopanic!(__attached_py, py, {
             let bits = CALLBACK_OWNER.swap(0, Ordering::Relaxed);
             if bits == 0 {
                 return MoltObject::none().bits();
@@ -2405,8 +2464,10 @@ mod suspension_reference_tests {
     }
 
     fn watched(py: &PyToken<'_>, value: u64, callback: u64) -> u64 {
-        let class = crate::molt_weakref_reference_type();
-        let weak = crate::molt_weakref_new(class, value, callback);
+        let class = crate::builtins::weakref_type::molt_weakref_reference_type_attached_body(py);
+        let weak = crate::builtins::weakref_type::molt_weakref_new_attached_body(
+            py, class, value, callback,
+        );
         dec_ref_bits(py, class);
         assert!(!exception_pending(py));
         weak
@@ -2431,11 +2492,12 @@ mod suspension_reference_tests {
         }
 
         fn owner(self, py: &PyToken<'_>) -> u64 {
-            let inner = molt_task_new(0, GEN_CONTROL_SIZE as u64, TASK_KIND_GENERATOR);
+            let inner =
+                molt_task_new_attached_body(py, 0, GEN_CONTROL_SIZE as u64, TASK_KIND_GENERATOR);
             match self {
                 Self::Send | Self::Throw => inner,
                 Self::Pending | Self::Running => {
-                    let owner = molt_asyncgen_new(inner);
+                    let owner = molt_asyncgen_new_attached_body(py, inner);
                     dec_ref_bits(py, inner);
                     owner
                 }
@@ -2471,7 +2533,8 @@ mod suspension_reference_tests {
                 unsafe { field.store(py, ptr, value) };
                 dec_ref_bits(py, value);
                 unsafe { field.store(py, ptr, value) };
-                let retained = crate::molt_weakref_call(weak);
+                let retained =
+                    crate::builtins::weakref_type::molt_weakref_call_attached_body(py, weak);
                 assert_eq!(
                     retained, value,
                     "borrowed self assignment finalized the value"
@@ -2482,7 +2545,10 @@ mod suspension_reference_tests {
                 };
                 unsafe { field.store(py, ptr, none) };
                 assert!(
-                    obj_from_bits(crate::molt_weakref_call(weak)).is_none(),
+                    obj_from_bits(
+                        crate::builtins::weakref_type::molt_weakref_call_attached_body(py, weak)
+                    )
+                    .is_none(),
                     "owned self assignment leaked an edge"
                 );
                 dec_ref_bits(py, weak);
@@ -2497,7 +2563,7 @@ mod suspension_reference_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let _callbacks = CallbackScope::new();
-            let owner = crate::molt_alloc(16);
+            let owner = crate::molt_alloc_attached_body(py, 16);
             let ptr = ptr_from_bits(owner);
             let value = callback(py, payload as *const ());
             let hook = callback(py, on_release as *const ());
@@ -2508,7 +2574,7 @@ mod suspension_reference_tests {
                 crate::object::payload_refs::store_owned(py, ptr, 0, value);
                 crate::object::payload_refs::store_owned(py, ptr, 8, later);
             }
-            crate::molt_object_publish_initialized(owner);
+            crate::molt_object_publish_initialized_attached_body(py, owner);
             CALLBACK_OWNER.store(owner, Ordering::Relaxed);
             CALLBACK_OFFSET.store(8, Ordering::Relaxed);
             CALLBACK_EMPTY_PREFIX.store(2, Ordering::Relaxed);
@@ -2525,8 +2591,18 @@ mod suspension_reference_tests {
                 unsafe { *ptr.cast::<u64>().add(1) },
                 MoltObject::from_int(77).bits()
             );
-            assert!(obj_from_bits(crate::molt_weakref_call(weak)).is_none());
-            assert!(obj_from_bits(crate::molt_weakref_call(later_weak)).is_none());
+            assert!(
+                obj_from_bits(
+                    crate::builtins::weakref_type::molt_weakref_call_attached_body(py, weak)
+                )
+                .is_none()
+            );
+            assert!(
+                obj_from_bits(
+                    crate::builtins::weakref_type::molt_weakref_call_attached_body(py, later_weak)
+                )
+                .is_none()
+            );
             dec_ref_bits(py, weak);
             dec_ref_bits(py, later_weak);
             dec_ref_bits(py, hook);
@@ -2563,7 +2639,12 @@ mod suspension_reference_tests {
                     unsafe { *ptr.add(field.offset()).cast::<u64>() },
                     MoltObject::from_int(77).bits()
                 );
-                assert!(obj_from_bits(crate::molt_weakref_call(weak)).is_none());
+                assert!(
+                    obj_from_bits(
+                        crate::builtins::weakref_type::molt_weakref_call_attached_body(py, weak)
+                    )
+                    .is_none()
+                );
                 dec_ref_bits(py, incoming);
                 dec_ref_bits(py, weak);
                 dec_ref_bits(py, hook);
@@ -2577,7 +2658,7 @@ mod suspension_reference_tests {
     fn suspension_callback_records_bad_prefix_and_disarms_on_unwind() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let owner = crate::molt_alloc(16);
+            let owner = crate::molt_alloc_attached_body(py, 16);
             let ptr = ptr_from_bits(owner);
             assert!(!ptr.is_null());
             let unexpected = MoltObject::from_int(73).bits();
@@ -2585,12 +2666,12 @@ mod suspension_reference_tests {
                 ptr.cast::<u64>().write(unexpected);
                 ptr.cast::<u64>().add(1).write(MoltObject::none().bits());
             }
-            crate::molt_object_publish_initialized(owner);
+            crate::molt_object_publish_initialized_attached_body(py, owner);
             let failure = crate::test_support::catch_expected_unwind(|| {
                 let _callbacks = CallbackScope::new();
                 CALLBACK_OWNER.store(owner, Ordering::Relaxed);
                 CALLBACK_EMPTY_PREFIX.store(2, Ordering::Relaxed);
-                let result = on_release(0);
+                let result = on_release(py.attached_context(), 0);
                 dec_ref_bits(py, result);
                 assert_eq!(CALLBACK_PREFIX[0].load(Ordering::Relaxed), unexpected);
                 assert_eq!(CALLBACK_OWNER.load(Ordering::Relaxed), 0);
@@ -2623,14 +2704,16 @@ mod frame_state_tests {
     /// compiled bodies do: a yield stores its resume label, a return stores
     /// `GENERATOR_RESUME_RETURNED`, and the value itself is the result. A
     /// resumed yield raises a thrown exception first, as compiled bodies do.
-    extern "C" fn count_poll(raw: u64) -> i64 {
+    extern "C" fn count_poll(__context: u64, raw: u64) -> i64 {
+        let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         let ptr = std::ptr::with_exposed_provenance_mut::<u8>(raw as usize);
         let thrown = unsafe { *generator_slot_ptr(ptr, GEN_THROW_OFFSET) };
         if !obj_from_bits(thrown).is_none() {
-            return crate::with_gil_entry_nopanic!(py, {
+            return crate::with_attached_entry_nopanic!(__attached_py, py, {
                 inc_ref_bits(py, thrown);
                 unsafe { generator_set_slot(py, ptr, GEN_THROW_OFFSET, MoltObject::none().bits()) };
-                let raised = molt_raise(thrown);
+                let raised = molt_raise_attached_body(py, thrown);
                 dec_ref_bits(py, thrown);
                 raised as i64
             });
@@ -2644,15 +2727,22 @@ mod frame_state_tests {
         MoltObject::from_int(value).bits() as i64
     }
 
-    extern "C" fn raising_poll(_raw: u64) -> i64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn raising_poll(__context: u64, _raw: u64) -> i64 {
+        let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        crate::with_attached_entry_nopanic!(__attached_py, py, {
             raise_exception::<i64>(py, BuiltinExc::ValueError, "body raised")
         })
     }
 
-    fn generator(poll: extern "C" fn(u64) -> i64) -> (u64, *mut u8) {
+    fn generator(py: &PyToken<'_>, poll: unsafe extern "C" fn(u64, u64) -> i64) -> (u64, *mut u8) {
         let address = crate::provenance::abi::expose_function_address(poll as *const ());
-        let bits = molt_task_new(address, (GEN_CONTROL_SIZE + 8) as u64, TASK_KIND_GENERATOR);
+        let bits = molt_task_new_attached_body(
+            py,
+            address,
+            (GEN_CONTROL_SIZE + 8) as u64,
+            TASK_KIND_GENERATOR,
+        );
         (bits, obj_from_bits(bits).as_ptr().expect("generator"))
     }
 
@@ -2671,7 +2761,7 @@ mod frame_state_tests {
     fn a_body_reports_yields_and_completion_without_a_tuple() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let (bits, ptr) = generator(count_poll);
+            let (bits, ptr) = generator(py, count_poll);
             let none = MoltObject::none().bits();
             unsafe {
                 assert_eq!(generator_state(ptr), FrameState::Created);
@@ -2697,18 +2787,18 @@ mod frame_state_tests {
         crate::with_gil_entry_nopanic!(py, {
             let none = MoltObject::none().bits();
             // An exception escaping the body.
-            let (raising, ptr) = generator(raising_poll);
+            let (raising, ptr) = generator(py, raising_poll);
             assert!(unsafe { generator_send_step(py, ptr, none) }.is_err());
             assert_eq!(unsafe { generator_state(ptr) }, FrameState::Completed);
             clear_exception(py);
             dec_ref_bits(py, raising);
             // close() of a created generator.
-            let (created, ptr) = generator(count_poll);
-            dec_ref_bits(py, molt_generator_close(created));
+            let (created, ptr) = generator(py, count_poll);
+            dec_ref_bits(py, molt_generator_close_attached_body(py, created));
             assert_eq!(unsafe { generator_state(ptr) }, FrameState::Completed);
             dec_ref_bits(py, created);
             // throw() into a created generator raises at its first line.
-            let (thrown, ptr) = generator(count_poll);
+            let (thrown, ptr) = generator(py, count_poll);
             let exception =
                 MoltObject::from_ptr(alloc_exception(py, BuiltinExc::KeyError, "k")).bits();
             assert!(unsafe { generator_throw_step(py, ptr, exception) }.is_err());
@@ -2721,12 +2811,12 @@ mod frame_state_tests {
             dec_ref_bits(py, exception);
             dec_ref_bits(py, thrown);
             // close() of a suspended generator throws GeneratorExit into it.
-            let (suspended, ptr) = generator(count_poll);
+            let (suspended, ptr) = generator(py, count_poll);
             assert_eq!(
                 int(unsafe { generator_send_step(py, ptr, none) }),
                 ("yielded", 1)
             );
-            let result = molt_generator_close(suspended);
+            let result = molt_generator_close_attached_body(py, suspended);
             assert_eq!(unsafe { generator_state(ptr) }, FrameState::Completed);
             dec_ref_bits(py, result);
             clear_exception(py);
@@ -2738,7 +2828,7 @@ mod frame_state_tests {
     fn entry_is_exclusive_and_terminal_states_absorb() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let (bits, ptr) = generator(count_poll);
+            let (bits, ptr) = generator(py, count_poll);
             unsafe {
                 let entered = GeneratorExecution::enter(ptr).ok().expect("created enters");
                 assert_eq!(generator_state(ptr), FrameState::Executing);
@@ -2778,7 +2868,7 @@ mod frame_state_tests {
     fn raw_control_words_are_never_visited_or_detached_as_edges() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let (bits, ptr) = generator(count_poll);
+            let (bits, ptr) = generator(py, count_poll);
             // Raw words that a boxed-value reader would misread; none may
             // reach an edge visitor or the detachment sink.
             let reserved = 0x0000_dead_beef_u64;
@@ -2814,3 +2904,5 @@ mod frame_state_tests {
         });
     }
 }
+
+include!("../attached_exports_generated/async_rt/generators.rs");

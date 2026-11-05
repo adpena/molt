@@ -12,11 +12,11 @@ pub(in crate::object) fn set_like_result_type_id(type_id: u32) -> u32 {
     }
 }
 
-unsafe fn set_like_new_bits(type_id: u32, capacity: usize) -> u64 {
+unsafe fn set_like_new_bits(py: &PyToken<'_>, type_id: u32, capacity: usize) -> u64 {
     if type_id == TYPE_ID_FROZENSET {
-        molt_frozenset_new(capacity as u64)
+        molt_frozenset_new_attached_body(py, capacity as u64)
     } else {
-        molt_set_new(capacity as u64)
+        molt_set_new_attached_body(py, capacity as u64)
     }
 }
 
@@ -26,7 +26,7 @@ pub(in crate::object) unsafe fn set_like_copy_bits(
     kind: u32,
 ) -> u64 {
     unsafe {
-        let bits = set_like_new_bits(kind, crate::builtins::containers::set_len(source));
+        let bits = set_like_new_bits(py, kind, crate::builtins::containers::set_len(source));
         let Some(result) = obj_from_bits(bits).as_ptr() else {
             return MoltObject::none().bits();
         };
@@ -79,7 +79,7 @@ pub(in crate::object) unsafe fn set_like_intersection(
         }
         let llen = crate::builtins::containers::set_len(left);
         let rlen = crate::builtins::containers::set_len(right);
-        let bits = set_like_new_bits(kind, llen.min(rlen));
+        let bits = set_like_new_bits(py, kind, llen.min(rlen));
         let Some(result) = obj_from_bits(bits).as_ptr() else {
             return MoltObject::none().bits();
         };
@@ -134,7 +134,7 @@ pub(in crate::object) unsafe fn set_like_difference(
             }
             return bits;
         }
-        let bits = set_like_new_bits(kind, llen);
+        let bits = set_like_new_bits(py, kind, llen);
         let Some(result) = obj_from_bits(bits).as_ptr() else {
             return MoltObject::none().bits();
         };
@@ -213,7 +213,7 @@ pub(in crate::object) unsafe fn set_from_iter_bits(
     other_bits: u64,
     ctx: HashContext,
 ) -> Option<u64> {
-    let bits = molt_set_new(0);
+    let bits = molt_set_new_attached_body(py, 0);
     let ptr = obj_from_bits(bits).as_ptr()?;
     if unsafe { crate::object::ops_set::set_update_iterable(py, ptr, other_bits, ctx) }.is_err() {
         dec_ref_bits(py, bits);

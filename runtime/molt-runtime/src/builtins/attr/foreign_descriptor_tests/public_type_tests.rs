@@ -62,8 +62,8 @@ unsafe fn check_headers(
 
 unsafe fn identity_subclass(py: &PyToken<'_>, base: u64, name: &[u8]) -> u64 {
     let name = dynamic_attr_name_bits(py, name).unwrap();
-    let class = crate::molt_class_new(name);
-    let status = crate::molt_class_set_base(class, base);
+    let class = crate::molt_class_new_attached_body(py, name);
+    let status = crate::molt_class_set_base_attached_body(py, class, base);
     dec_ref_bits(py, status);
     unsafe {
         crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap()).unwrap()
@@ -125,7 +125,7 @@ fn compiled_headers_follow_runtime_class_for_list_tuple_and_type_projections() {
         let bases = MoltObject::from_ptr(alloc_tuple(&py, &[classes.object])).bits();
         let namespace = MoltObject::from_ptr(alloc_dict_with_pairs(&py, &[])).bits();
         let keywords = MoltObject::from_ptr(alloc_dict_with_pairs(&py, &[])).bits();
-        let class = crate::molt_type_new(meta, name, bases, namespace, keywords);
+        let class = crate::molt_type_new_attached_body(py, meta, name, bases, namespace, keywords);
         assert!(!exception_pending(&py));
         assert_eq!(type_of_bits(&py, class), meta);
         let class_view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(class);

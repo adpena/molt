@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use crate::runtime_import_abi::MOLT_ASYNCGEN_NEW;
 use molt_ir::OpKind;
 
@@ -87,7 +89,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let homes = self
             .backend
             .builder
-            .build_call(
+            .build_execution_call(
                 lend,
                 &[i64_ty.const_int(slots, false).into()],
                 "frame_homes",
@@ -224,7 +226,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let slow = self
             .backend
             .builder
-            .build_call(load_fn, &[home.into()], "frame_home_load")
+            .build_execution_call(load_fn, &[home.into()], "frame_home_load")
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic()
@@ -502,7 +504,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(
+                    .build_execution_call(
                         new_fn,
                         &[
                             fn_ptr.into(),
@@ -607,7 +609,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let _ = self
                     .backend
                     .builder
-                    .build_call(
+                    .build_execution_call(
                         init_fn,
                         &[i64_ty.const_int(count as u64, true).into()],
                         "code_slots_init",
@@ -624,7 +626,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let _ = self
                     .backend
                     .builder
-                    .build_call(enter_fn, &[code_id.into()], "trace_enter_slot")
+                    .build_execution_call(enter_fn, &[code_id.into()], "trace_enter_slot")
                     .unwrap();
                 // Even a failed entry attempt records a runtime credit that
                 // must be balanced; this is not proof that a frame was pushed.
@@ -793,7 +795,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let slow_bits = self
                     .backend
                     .builder
-                    .build_call(load_fn, &[home.into()], "frame_home_load")
+                    .build_execution_call(load_fn, &[home.into()], "frame_home_load")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -886,7 +888,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let _ = self
                     .backend
                     .builder
-                    .build_call(
+                    .build_execution_call(
                         line_fn,
                         &[i64_ty.const_int(line as u64, true).into()],
                         "trace_set_line",
@@ -905,7 +907,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(
+                    .build_execution_call(
                         new_fn,
                         &[i64_ty.const_zero().into(), i64_ty.const_zero().into()],
                         "callargs_new",

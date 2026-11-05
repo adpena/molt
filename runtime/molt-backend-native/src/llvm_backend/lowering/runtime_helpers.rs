@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use molt_ir::OpKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
@@ -174,7 +176,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let builder_bits = self
             .backend
             .builder
-            .build_call(
+            .build_execution_call(
                 new_fn,
                 &[
                     i64_ty.const_int(args.len() as u64, false).into(),
@@ -190,7 +192,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         for &arg in args {
             self.backend
                 .builder
-                .build_call(push_fn, &[builder_bits.into(), arg.into()], "callargs_push")
+                .build_execution_call(push_fn, &[builder_bits.into(), arg.into()], "callargs_push")
                 .unwrap();
         }
         consume(&mut *self, builder_bits)
@@ -236,7 +238,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.with_callargs(args, |this, builder| {
             this.backend
                 .builder
-                .build_call(bind_fn, &[callable.into(), builder.into()], "call_result")
+                .build_execution_call(bind_fn, &[callable.into(), builder.into()], "call_result")
                 .unwrap()
                 .try_as_basic_value()
                 .unwrap_basic()
@@ -264,7 +266,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         }
         self.backend
             .builder
-            .build_call(fast_fn, &call_args, "call_func")
+            .build_execution_call(fast_fn, &call_args, "call_func")
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic()
@@ -322,7 +324,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let result = self
             .backend
             .builder
-            .build_call(
+            .build_execution_call(
                 owned_fn,
                 &[
                     words[0].into(),
@@ -351,7 +353,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let is_func_bits = self
             .backend
             .builder
-            .build_call(is_func_fn, &[callable_bits.into()], "is_function_obj")
+            .build_execution_call(is_func_fn, &[callable_bits.into()], "is_function_obj")
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic()
@@ -360,7 +362,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let is_func_truthy = self
             .backend
             .builder
-            .build_call(truthy_fn, &[is_func_bits.into()], "is_function_truthy")
+            .build_execution_call(truthy_fn, &[is_func_bits.into()], "is_function_truthy")
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic()
@@ -454,16 +456,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.inline_int_constant(site_id)
     }
 
-    /// Compiled polls receive exactly one raw frame address, independent of
-    /// Python-visible parameter names and constructor arity.
+    /// Compiled polls receive the attached context and one raw frame address,
+    /// independent of Python-visible parameter names and constructor arity.
     pub(super) fn poll_frame_address(&self) -> inkwell::values::IntValue<'ctx> {
         assert_eq!(
             self.llvm_fn.count_params(),
-            1,
-            "compiled poll requires one frame parameter"
+            2,
+            "compiled poll requires an execution context and one frame parameter"
         );
         self.llvm_fn
-            .get_first_param()
+            .get_nth_param(1)
             .expect("compiled poll requires its frame address")
             .into_int_value()
     }

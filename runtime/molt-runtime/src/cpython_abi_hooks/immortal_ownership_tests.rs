@@ -180,7 +180,7 @@ fn immortal_c_views_preserve_runtime_roots_and_gc() {
             );
             assert_eq!(GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits), view);
             assert_eq!(sequences::PyList_Size(view), 1);
-            crate::molt_list_clear(bits);
+            crate::molt_list_clear_attached_body(py, bits);
             assert_eq!(hook_ref_count(bits), 1);
             let retained = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits);
             assert_eq!(retained, view);

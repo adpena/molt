@@ -1,4 +1,8 @@
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use molt_ir::OpKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
@@ -28,18 +32,21 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .iter()
             .map(|ty| lower_type(self.backend.context, ty).into())
             .collect();
-        let fn_ty = match linkage_abi.return_type.as_ref() {
+        let logical_fn_ty = match linkage_abi.return_type.as_ref() {
             Some(return_type) => {
                 lower_type(self.backend.context, return_type).fn_type(&params, false)
             }
             None => self.backend.context.void_type().fn_type(&params, false),
         };
-        if let Some(func) = self.backend.module.get_function(name) {
+        let fn_ty = prepend_execution_context(logical_fn_ty);
+        if let Some(func) = self.backend.module.get_execution_function(name) {
             return require_llvm_function_type(name, func, fn_ty);
         }
-        self.backend
-            .module
-            .add_function(name, fn_ty, Some(inkwell::module::Linkage::External))
+        self.backend.module.add_compiled_function(
+            name,
+            logical_fn_ty,
+            Some(inkwell::module::Linkage::External),
+        )
     }
 
     /// A compiled function's linkage row owns its machine parameter list. An
@@ -135,13 +142,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let closure_suffix = if has_closure { "_closure" } else { "" };
         let trampoline_name =
             format!("{name}__molt_llvm_trampoline_{callable_arity}{closure_suffix}");
-        if let Some(func) = self.backend.module.get_function(&trampoline_name) {
+        if let Some(func) = self.backend.module.get_execution_function(&trampoline_name) {
             return func;
         }
 
         let i64_ty = self.backend.context.i64_type();
         let fn_ty = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into(), i64_ty.into()], false);
-        let trampoline_fn = self.backend.module.add_function(
+        let trampoline_fn = self.backend.module.add_compiled_function(
             &trampoline_name,
             fn_ty,
             Some(inkwell::module::Linkage::Internal),
@@ -155,11 +162,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         builder.position_at_end(entry);
 
         let closure_bits = trampoline_fn
-            .get_nth_param(0)
+            .get_nth_param(1)
             .expect("trampoline closure param missing")
             .into_int_value();
         let args_bits = trampoline_fn
-            .get_nth_param(1)
+            .get_nth_param(2)
             .expect("trampoline args param missing")
             .into_int_value();
         let ptr_ty = self
@@ -226,7 +233,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             Vec::with_capacity(callable_arity + usize::from(has_closure));
         if has_closure {
             let target_ty = target_fn
-                .get_nth_param(0)
+                .get_nth_param(1)
                 .map(|param| param.get_type())
                 .unwrap_or_else(|| i64_ty.into());
             call_args.push(coerce_trampoline_arg(
@@ -269,7 +276,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 &param_tir_types[param_index],
             );
             let target_ty = target_fn
-                .get_nth_param(param_index as u32)
+                .get_nth_param(param_index as u32 + 1)
                 .map(|param| param.get_type())
                 .unwrap_or_else(|| i64_ty.into());
             call_args.push(coerce_trampoline_arg(
@@ -280,7 +287,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         }
 
         let result = builder
-            .build_call(target_fn, &call_args, "trampoline_call")
+            .build_execution_call(target_fn, &call_args, "trampoline_call")
             .unwrap()
             .try_as_basic_value()
             .basic()
@@ -360,7 +367,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let callable = self
             .backend
             .builder
-            .build_call(call_fn, &call_args, lane)
+            .build_execution_call(call_fn, &call_args, lane)
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic()
@@ -426,7 +433,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let result = self
             .backend
             .builder
-            .build_call(
+            .build_execution_call(
                 push_fn,
                 &[builder_word.into(), receiver_word.into()],
                 "method_receiver_push_result",
@@ -502,7 +509,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let result = self
             .backend
             .builder
-            .build_call(call_fn, &call_args, lane)
+            .build_execution_call(call_fn, &call_args, lane)
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic()
@@ -611,7 +618,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .get(target_name.as_str())
                     .and_then(|abi| abi.return_type.clone())
                     .unwrap_or(TirType::DynBox);
-                let expected_params = target_fn.count_params() as usize;
+                let expected_params = target_fn.count_params() as usize - 1;
                 if expected_params != direct_operands.len()
                     && let Some(callable_id) = guarded_callable
                 {
@@ -772,7 +779,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 )
             };
             let target_ty = target_fn
-                .get_nth_param(idx as u32)
+                .get_nth_param(idx as u32 + 1)
                 .map(|param| param.get_type())
                 .unwrap_or_else(|| i64_ty.into());
             let current_bb = self
@@ -799,7 +806,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let call_result = self
             .backend
             .builder
-            .build_call(target_fn, &args, "direct_call")
+            .build_execution_call(target_fn, &args, "direct_call")
             .unwrap();
         self.release_call_inputs(&self.backend.builder, None, &extracted_owners);
         let returned = call_result.try_as_basic_value().basic();
@@ -886,7 +893,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let bound = self
             .backend
             .builder
-            .build_call(
+            .build_execution_call(
                 runtime_fn,
                 &[site_bits.into(), callable_bits.into(), builder_bits.into()],
                 runtime_name,
@@ -929,7 +936,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let bound = self.with_callargs(&arg_bits, |this, builder| {
             this.backend
                 .builder
-                .build_call(
+                .build_execution_call(
                     call_bind_fn,
                     &[site_bits.into(), method_bits.into(), builder.into()],
                     "call_method_bind",
@@ -966,7 +973,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let arg_bits = self.borrowed_operand(&mut custody, arg_id);
                 self.backend
                     .builder
-                    .build_call(print_fn, &[arg_bits.into()], "")
+                    .build_execution_call(print_fn, &[arg_bits.into()], "")
                     .unwrap();
             }
             let none = i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false);
@@ -1050,7 +1057,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let bound = self.with_callargs(&arg_bits, |this, builder| {
             this.backend
                 .builder
-                .build_call(
+                .build_execution_call(
                     call_builtin_fn,
                     &[name_bits, builder.into()],
                     "call_builtin",

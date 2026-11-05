@@ -5,7 +5,8 @@ use super::weak_container::{
 use crate::BuiltinExc;
 use crate::state::runtime_state::{WeakRefEntry, WeakRefRegistry};
 use crate::{
-    MoltObject, PtrSlot, PyToken, molt_is_callable, raise_exception, runtime_state, type_name,
+    MoltObject, PtrSlot, PyToken, molt_is_callable_attached_body, raise_exception, runtime_state,
+    type_name,
 };
 use crate::{
     alloc_list, call_callable1, dec_ref_bits, exception_pending, header_from_obj_ptr, inc_ref_bits,
@@ -759,9 +760,11 @@ fn weakref_snapshot_for_target(_py: &PyToken<'_>, target_ptr: *mut u8) -> Result
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakref_find_nocallback(target_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_weakref_find_nocallback_attached_body(
+    _py: &crate::PyToken<'_>,
+    target_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(target_ptr) = obj_from_bits(target_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
@@ -796,9 +799,8 @@ pub extern "C" fn molt_weakref_find_nocallback(target_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakref_refs(target_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_weakref_refs_attached_body(_py: &crate::PyToken<'_>, target_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(target_ptr) = obj_from_bits(target_bits).as_ptr() else {
             let ptr = alloc_list(_py, &[]);
             return MoltObject::from_ptr(ptr).bits();
@@ -815,9 +817,8 @@ pub extern "C" fn molt_weakref_refs(target_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakref_count(target_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_weakref_count_attached_body(_py: &crate::PyToken<'_>, target_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(target_ptr) = obj_from_bits(target_bits).as_ptr() else {
             return int_bits_from_i64(_py, 0);
         };
@@ -868,13 +869,13 @@ pub(crate) fn weakref_head_for_target(_py: &PyToken<'_>, target_bits: u64) -> u6
     MoltObject::none().bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakref_register(
+pub(crate) fn molt_weakref_register_attached_body(
+    _py: &crate::PyToken<'_>,
     weak_bits: u64,
     target_bits: u64,
     callback_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(weak_ptr) = obj_from_bits(weak_bits).as_ptr() else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "weakref must be an object");
         };
@@ -929,7 +930,10 @@ pub extern "C" fn molt_weakref_register(
         if crate::object::ops_sys::runtime_target_minor(_py) >= 15
             && !obj_from_bits(callback_bits).is_none()
         {
-            let callable_ok = is_truthy(_py, obj_from_bits(molt_is_callable(callback_bits)));
+            let callable_ok = is_truthy(
+                _py,
+                obj_from_bits(molt_is_callable_attached_body(_py, callback_bits)),
+            );
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -1127,14 +1131,12 @@ pub(crate) fn weakref_has_live_target(
         })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakref_get(weak_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { weakref_get_owned_or_none(_py, weak_bits) })
+pub(crate) fn molt_weakref_get_attached_body(_py: &crate::PyToken<'_>, weak_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { weakref_get_owned_or_none(_py, weak_bits) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakref_callback(weak_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { weakref_callback_owned(_py, weak_bits) })
+pub(crate) fn molt_weakref_callback_attached_body(_py: &crate::PyToken<'_>, weak_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { weakref_callback_owned(_py, weak_bits) })
 }
 
 pub(crate) fn weakref_callback_owned(_py: &PyToken<'_>, weak_bits: u64) -> u64 {
@@ -1157,9 +1159,8 @@ pub(crate) fn weakref_callback_owned(_py: &PyToken<'_>, weak_bits: u64) -> u64 {
     callback_bits
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakref_peek(weak_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { weakref_get_owned_or_none(_py, weak_bits) })
+pub(crate) fn molt_weakref_peek_attached_body(_py: &crate::PyToken<'_>, weak_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { weakref_get_owned_or_none(_py, weak_bits) })
 }
 
 #[cfg(test)]
@@ -1228,7 +1229,7 @@ mod tests {
                 owners
             );
             assert_eq!(
-                super::molt_weakref_count(bits),
+                super::molt_weakref_count_attached_body(py, bits),
                 crate::MoltObject::from_int(0).bits()
             );
             assert_eq!(first.upgrade_owned(), Some(bits));
@@ -1290,7 +1291,7 @@ mod tests {
             assert!(!pointer.is_null());
             let bits = crate::MoltObject::from_ptr(pointer).bits();
             let borrowed = super::WeakBorrow::new(py, bits).unwrap();
-            crate::molt_list_append(bits, bits);
+            crate::molt_list_append_attached_body(py, bits, bits);
             crate::dec_ref_bits(py, bits);
             assert_eq!(
                 unsafe { crate::object::gc::collect_cycles(py) }.collected,
@@ -1332,8 +1333,16 @@ mod tests {
         matched
     }
 
-    extern "C" fn observe_retiring_class_weakref(weak_bits: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn observe_retiring_class_weakref(__context: u64, weak_bits: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             let target = RETIRING_TARGET.load(Ordering::SeqCst);
             let retry = RETIRING_RETRY_WEAK.load(Ordering::SeqCst);
             let callback = RETIRING_CALLBACK.load(Ordering::SeqCst);
@@ -1341,14 +1350,18 @@ mod tests {
             let header = unsafe { crate::header_from_obj_ptr(ptr) };
             let mut observations = 0;
             RETIRING_CALLBACK_CALLS.fetch_add(1, Ordering::SeqCst);
-            if crate::obj_from_bits(crate::molt_weakref_get(weak_bits)).is_none() {
+            if crate::obj_from_bits(crate::object::weakref::molt_weakref_get_attached_body(
+                py, weak_bits,
+            ))
+            .is_none()
+            {
                 observations |= 1;
             }
 
             // Ordinary attribute reads and strong ownership remain valid. The
             // retirement policy is not the terminal DEALLOCATING state.
             let name_key = crate::dynamic_attr_name_bits(py, b"__name__").unwrap();
-            let name = crate::molt_get_attr_name(target, name_key);
+            let name = crate::molt_get_attr_name_attached_body(py, target, name_key);
             if crate::object::ops_format::string_obj_matches_bytes(
                 crate::obj_from_bits(name),
                 b"int",
@@ -1363,23 +1376,25 @@ mod tests {
             crate::dec_ref_bits(py, name);
             crate::dec_ref_bits(py, name_key);
             let before = unsafe { (*header).ref_count_snapshot() };
-            crate::molt_inc_ref_obj(target);
+            crate::molt_inc_ref_obj_attached_body(py, target);
             if unsafe { (*header).ref_count_snapshot() } == before + 1 {
                 observations |= 4;
             }
-            crate::molt_dec_ref_obj(target);
+            crate::molt_dec_ref_obj_attached_body(py, target);
 
             let callback_ptr = crate::obj_from_bits(callback).as_ptr().unwrap();
             let callback_header = unsafe { crate::header_from_obj_ptr(callback_ptr) };
             let callback_before = unsafe { (*callback_header).ref_count_snapshot() };
-            let registered = crate::molt_weakref_register(retry, target, callback);
+            let registered =
+                crate::molt_weakref_register_attached_body(py, retry, target, callback);
             if unsafe { (*callback_header).ref_count_snapshot() } == callback_before {
                 observations |= 16;
             }
             if crate::obj_from_bits(registered).is_none() && take_retiring_registration_error(py) {
                 observations |= 8;
             }
-            let constructed = crate::molt_weakref_new(
+            let constructed = crate::builtins::weakref_type::molt_weakref_new_attached_body(
+                py,
                 crate::builtin_classes(py).reference_type,
                 target,
                 crate::MoltObject::none().bits(),
@@ -1399,7 +1414,7 @@ mod tests {
             drop(registry);
             RETIRING_OBSERVATIONS.store(observations, Ordering::SeqCst);
             crate::MoltObject::none().bits()
-        })
+        }
     }
 
     #[test]
@@ -1425,9 +1440,15 @@ mod tests {
                 RETIRING_CALLBACK.store(callback, Ordering::SeqCst);
                 RETIRING_OBSERVATIONS.store(0, Ordering::SeqCst);
                 RETIRING_CALLBACK_CALLS.store(0, Ordering::SeqCst);
-                let weak = crate::molt_weakref_new(reference, target, callback);
-                let cached =
-                    crate::molt_weakref_new(reference, target, crate::MoltObject::none().bits());
+                let weak = crate::builtins::weakref_type::molt_weakref_new_attached_body(
+                    py, reference, target, callback,
+                );
+                let cached = crate::builtins::weakref_type::molt_weakref_new_attached_body(
+                    py,
+                    reference,
+                    target,
+                    crate::MoltObject::none().bits(),
+                );
                 assert!(crate::obj_from_bits(weak).as_ptr().is_some());
                 assert!(crate::obj_from_bits(cached).as_ptr().is_some());
                 assert!(!crate::exception_pending(py));
@@ -1436,9 +1457,17 @@ mod tests {
                 assert!(retirement.include(py, [target]));
                 assert_eq!(RETIRING_CALLBACK_CALLS.load(Ordering::SeqCst), 1);
                 assert_eq!(RETIRING_OBSERVATIONS.load(Ordering::SeqCst), 127);
-                assert!(crate::obj_from_bits(crate::molt_weakref_get(cached)).is_none());
                 assert!(
-                    crate::obj_from_bits(crate::molt_weakref_find_nocallback(target)).is_none()
+                    crate::obj_from_bits(crate::object::weakref::molt_weakref_get_attached_body(
+                        py, cached
+                    ))
+                    .is_none()
+                );
+                assert!(
+                    crate::obj_from_bits(crate::molt_weakref_find_nocallback_attached_body(
+                        py, target
+                    ))
+                    .is_none()
                 );
                 assert!(!crate::exception_pending(py));
 
@@ -1448,7 +1477,8 @@ mod tests {
                 assert!(!ordinary.is_null());
                 let ordinary_bits = crate::bits_from_ptr(ordinary);
                 assert_eq!(
-                    crate::molt_weakref_register(
+                    crate::molt_weakref_register_attached_body(
+                        py,
                         retry,
                         ordinary_bits,
                         crate::MoltObject::none().bits()
@@ -1473,28 +1503,41 @@ mod tests {
                 let target = crate::builtin_classes(py).int;
                 let target_ptr = crate::obj_from_bits(target).as_ptr().unwrap();
                 let reference = crate::builtin_classes(py).reference_type;
-                let weak =
-                    crate::molt_weakref_new(reference, target, crate::MoltObject::none().bits());
+                let weak = crate::builtins::weakref_type::molt_weakref_new_attached_body(
+                    py,
+                    reference,
+                    target,
+                    crate::MoltObject::none().bits(),
+                );
                 assert!(crate::obj_from_bits(weak).as_ptr().is_some());
                 unsafe { crate::object::class_begin_runtime_retirement(target_ptr) };
                 assert!(
-                    crate::obj_from_bits(crate::molt_weakref_find_nocallback(target)).is_none()
+                    crate::obj_from_bits(crate::molt_weakref_find_nocallback_attached_body(
+                        py, target
+                    ))
+                    .is_none()
                 );
                 assert!(
-                    crate::obj_from_bits(crate::molt_weakref_new(
-                        reference,
-                        target,
-                        crate::MoltObject::none().bits()
-                    ))
+                    crate::obj_from_bits(
+                        crate::builtins::weakref_type::molt_weakref_new_attached_body(
+                            py,
+                            reference,
+                            target,
+                            crate::MoltObject::none().bits()
+                        )
+                    )
                     .is_none()
                 );
                 assert!(take_retiring_registration_error(py));
                 // Weak-container insertion is another admission path through an
                 // existing weakref. Cookie rejection must roll back its new entry.
-                let container =
-                    crate::molt_weakcontainer_new(crate::MoltObject::from_int(3).bits());
+                let container = crate::object::weak_container::molt_weakcontainer_new_attached_body(
+                    py,
+                    crate::MoltObject::from_int(3).bits(),
+                );
                 assert!(crate::obj_from_bits(container).as_ptr().is_some());
-                crate::molt_weakcontainer_store_commit(
+                crate::object::weak_container::molt_weakcontainer_store_commit_attached_body(
+                    py,
                     container,
                     target,
                     target,
@@ -1505,9 +1548,11 @@ mod tests {
                 crate::clear_exception(py);
                 assert!(super::weakref_container_cookie(py, weak).is_none());
                 assert_eq!(
-                    crate::to_i64(crate::obj_from_bits(crate::molt_weakcontainer_len(
-                        container
-                    ))),
+                    crate::to_i64(crate::obj_from_bits(
+                        crate::object::weak_container::molt_weakcontainer_len_attached_body(
+                            py, container
+                        )
+                    )),
                     Some(0)
                 );
                 crate::dec_ref_bits(py, container);
@@ -1551,7 +1596,8 @@ mod tests {
             let target_bits = crate::bits_from_ptr(target_ptr);
             let weak_bits = unsafe { crate::alloc_instance_for_class(_py, reference_type_ptr) };
             assert_eq!(
-                crate::molt_weakref_register(
+                crate::molt_weakref_register_attached_body(
+                    _py,
                     weak_bits,
                     target_bits,
                     crate::MoltObject::none().bits(),
@@ -1592,7 +1638,8 @@ mod tests {
                 1
             );
             assert_eq!(
-                crate::molt_weakref_register(
+                crate::molt_weakref_register_attached_body(
+                    _py,
                     weak_bits,
                     target_bits,
                     crate::MoltObject::none().bits(),
@@ -1633,7 +1680,8 @@ mod tests {
             let target_header = unsafe { crate::header_from_obj_ptr(target_ptr) };
             let weak_header = unsafe { crate::header_from_obj_ptr(weak_ptr) };
             assert_eq!(
-                crate::molt_weakref_register(
+                crate::molt_weakref_register_attached_body(
+                    _py,
                     weak_bits,
                     target_bits,
                     crate::MoltObject::none().bits(),
@@ -1647,10 +1695,10 @@ mod tests {
             crate::dec_ref_bits(_py, owned_target);
 
             for lookup in [
-                crate::molt_weakref_get as extern "C" fn(u64) -> u64,
-                crate::molt_weakref_peek as extern "C" fn(u64) -> u64,
+                crate::molt_weakref_get as unsafe extern "C" fn(u64, u64) -> u64,
+                crate::molt_weakref_peek as unsafe extern "C" fn(u64, u64) -> u64,
             ] {
-                let owned_target = lookup(weak_bits);
+                let owned_target = unsafe { lookup(_py.attached_context(), weak_bits) };
                 assert_eq!(owned_target, target_bits);
                 assert_eq!(unsafe { (*target_header).ref_count_snapshot() }, 2);
                 crate::dec_ref_bits(_py, owned_target);
@@ -1661,7 +1709,7 @@ mod tests {
             assert_eq!(unsafe { (*weak_header).ref_count_snapshot() }, 2);
             crate::dec_ref_bits(_py, snapshot[0]);
 
-            let cached = crate::molt_weakref_find_nocallback(target_bits);
+            let cached = crate::molt_weakref_find_nocallback_attached_body(_py, target_bits);
             assert_eq!(cached, weak_bits);
             assert_eq!(unsafe { (*weak_header).ref_count_snapshot() }, 2);
             crate::dec_ref_bits(_py, cached);
@@ -1681,11 +1729,11 @@ mod tests {
             }
             assert_eq!(weakref_peek_owned(_py, weak_bits), None);
             assert_eq!(
-                crate::molt_weakref_get(weak_bits),
+                crate::object::weakref::molt_weakref_get_attached_body(_py, weak_bits),
                 crate::MoltObject::none().bits(),
             );
             assert_eq!(
-                crate::molt_weakref_peek(weak_bits),
+                crate::object::weakref::molt_weakref_peek_attached_body(_py, weak_bits),
                 crate::MoltObject::none().bits(),
             );
             unsafe {
@@ -1698,7 +1746,7 @@ mod tests {
                     .is_empty()
             );
             assert_eq!(
-                crate::molt_weakref_find_nocallback(target_bits),
+                crate::molt_weakref_find_nocallback_attached_body(_py, target_bits),
                 crate::MoltObject::none().bits(),
             );
             assert_eq!(
@@ -1738,7 +1786,8 @@ mod tests {
             let before = unsafe { (*target_header).ref_count_snapshot() };
             let weak_bits = unsafe { crate::alloc_instance_for_class(_py, reference_type_ptr) };
             assert_eq!(
-                crate::molt_weakref_register(
+                crate::molt_weakref_register_attached_body(
+                    _py,
                     weak_bits,
                     target_bits,
                     crate::MoltObject::none().bits(),
@@ -1850,8 +1899,12 @@ mod tests {
                     crate::type_of_bits(py, bits)
                 ));
                 assert!(!super::object_supports_weakrefs(py, bits));
-                let weak =
-                    crate::molt_weakref_new(crate::builtin_classes(py).reference_type, bits, none);
+                let weak = crate::builtins::weakref_type::molt_weakref_new_attached_body(
+                    py,
+                    crate::builtin_classes(py).reference_type,
+                    bits,
+                    none,
+                );
                 assert!(crate::obj_from_bits(weak).is_none());
                 let exception = crate::builtins::exceptions::exception_last_bits_noinc(py)
                     .and_then(|bits| crate::obj_from_bits(bits).as_ptr())
@@ -1872,7 +1925,13 @@ mod tests {
     #[test]
     fn cookie_pin_rejects_terminal_state_and_retains_live_state() {
         let _lock = crate::test_support::RuntimeTestTransaction::new();
-        let state_bits = crate::molt_weakcontainer_new(crate::MoltObject::from_int(1).bits());
+        let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        let py = fixture_execution.token();
+
+        let state_bits = crate::object::weak_container::molt_weakcontainer_new_attached_body(
+            py,
+            crate::MoltObject::from_int(1).bits(),
+        );
         crate::with_gil_entry_nopanic!(_py, {
             let state_ptr = crate::obj_from_bits(state_bits)
                 .as_ptr()
@@ -1910,7 +1969,10 @@ mod tests {
                 .expect("object class ptr");
             for weakref_first in [true, false] {
                 let state_bits =
-                    crate::molt_weakcontainer_new(crate::MoltObject::from_int(3).bits());
+                    crate::object::weak_container::molt_weakcontainer_new_attached_body(
+                        _py,
+                        crate::MoltObject::from_int(3).bits(),
+                    );
                 let target_ptr = crate::object::builders::alloc_set_with_entries(_py, &[]);
                 let weak_bits = unsafe { crate::alloc_instance_for_class(_py, reference_type_ptr) };
                 let weak_ptr = crate::obj_from_bits(weak_bits)
@@ -1918,7 +1980,8 @@ mod tests {
                     .expect("weakref instance ptr");
                 assert!(!target_ptr.is_null() && !weak_ptr.is_null());
                 let target_bits = crate::bits_from_ptr(target_ptr);
-                crate::molt_weakref_register(
+                crate::molt_weakref_register_attached_body(
+                    _py,
                     weak_bits,
                     target_bits,
                     crate::MoltObject::none().bits(),
@@ -1927,7 +1990,8 @@ mod tests {
                     unsafe { crate::object_type_id(weak_ptr) },
                     crate::TYPE_ID_WEAKREF
                 );
-                crate::molt_weakcontainer_store_commit(
+                crate::object::weak_container::molt_weakcontainer_store_commit_attached_body(
+                    _py,
                     state_bits,
                     target_bits,
                     target_bits,
@@ -1941,14 +2005,20 @@ mod tests {
                     super::weakref_object_detach_owned_edges(_py, weak_ptr, &mut sink);
                     sink.release_all(_py);
                     assert_eq!(
-                        crate::to_i64(crate::obj_from_bits(crate::molt_weakcontainer_len(
-                            state_bits,
-                        ))),
+                        crate::to_i64(crate::obj_from_bits(
+                            crate::object::weak_container::molt_weakcontainer_len_attached_body(
+                                _py, state_bits,
+                            )
+                        )),
                         Some(0),
                     );
-                    crate::molt_weakcontainer_clear(state_bits);
+                    crate::object::weak_container::molt_weakcontainer_clear_attached_body(
+                        _py, state_bits,
+                    );
                 } else {
-                    crate::molt_weakcontainer_clear(state_bits);
+                    crate::object::weak_container::molt_weakcontainer_clear_attached_body(
+                        _py, state_bits,
+                    );
                     let mut sink = super::DetachedEdgeSink::try_with_capacities(3, 0)
                         .expect("weakref test sink allocation");
                     super::weakref_object_detach_owned_edges(_py, weak_ptr, &mut sink);
@@ -1962,3 +2032,5 @@ mod tests {
         });
     }
 }
+
+include!("../attached_exports_generated/object/weakref.rs");

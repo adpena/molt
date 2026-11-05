@@ -2,7 +2,7 @@ use super::*;
 use molt_ir::OpKind;
 
 #[test]
-#[should_panic(expected = "import signature mismatch for molt_test_import")]
+#[should_panic(expected = "import signature mismatch for molt_add")]
 fn import_func_ref_validates_signature_before_local_reuse() {
     let mut backend = SimpleBackend::new();
     let mut builder_ctx = FunctionBuilderContext::new();
@@ -17,7 +17,7 @@ fn import_func_ref_validates_signature_before_local_reuse() {
         &mut backend.import_ids,
         &mut builder,
         &mut import_refs,
-        "molt_test_import",
+        "molt_add",
         &[types::I64],
         &[types::I64],
     );
@@ -26,7 +26,7 @@ fn import_func_ref_validates_signature_before_local_reuse() {
         &mut backend.import_ids,
         &mut builder,
         &mut import_refs,
-        "molt_test_import",
+        "molt_add",
         &[types::I64, types::I64],
         &[types::I64],
     );

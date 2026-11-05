@@ -105,11 +105,11 @@ fn wrapper_allocate(py: &PyToken<'_>, kind: WrapperKind, class: Option<u64>) -> 
     unsafe { alloc_instance_for_class(py, ptr) }
 }
 
-fn property_arguments(
-    py: &PyToken<'_>,
+fn property_arguments<'guard>(
+    py: &'guard PyToken<'guard>,
     args: &[u64],
     keywords: NativeKeywords<'_>,
-) -> Option<NamedBinding<[Option<u64>; 4]>> {
+) -> Option<NamedBinding<'guard, [Option<u64>; 4]>> {
     crate::builtins::native_arguments::bind_named(
         py,
         "property",
@@ -145,7 +145,8 @@ fn property_initialize(py: &PyToken<'_>, self_bits: u64, values: [u64; 4]) -> u6
             let Some(name) = crate::NameId::DunderDoc.owned_bits(py) else {
                 return MoltObject::none().bits();
             };
-            let value = molt_getattr_builtin(get, name, MoltObject::none().bits());
+            let value =
+                molt_getattr_builtin_attached_body(py, get, name, MoltObject::none().bits());
             dec_ref_bits(py, name);
             if exception_pending(py) {
                 dec_ref_bits(py, value);
@@ -170,7 +171,8 @@ fn property_initialize(py: &PyToken<'_>, self_bits: u64, values: [u64; 4]) -> u6
                 dec_ref_bits(py, effective_doc);
                 return MoltObject::none().bits();
             };
-            let result = crate::molt_set_attr_name(self_bits, name, effective_doc);
+            let result =
+                crate::molt_set_attr_name_attached_body(py, self_bits, name, effective_doc);
             dec_ref_bits(py, name);
             dec_ref_bits(py, effective_doc);
             dec_ref_bits(py, result);
@@ -425,7 +427,7 @@ unsafe fn property_missing_accessor(
         let class_ptr = obj_from_bits(class).as_ptr().expect("instance type");
         let qualname = class_qualname_bits(class_ptr);
         let _class = WrapperInputs::new(py, [class, qualname]);
-        let qualname_repr = molt_repr_from_obj(qualname);
+        let qualname_repr = molt_repr_from_obj_attached_body(py, qualname);
         let qualname_text = string_obj_to_owned(obj_from_bits(qualname_repr));
         dec_ref_bits(py, qualname_repr);
         if exception_pending(py) {
@@ -435,7 +437,7 @@ unsafe fn property_missing_accessor(
             return MoltObject::none().bits();
         }
         let name_text = if let Some(name) = name {
-            let repr = molt_repr_from_obj(name);
+            let repr = molt_repr_from_obj_attached_body(py, name);
             dec_ref_bits(py, name);
             let text = string_obj_to_owned(obj_from_bits(repr));
             dec_ref_bits(py, repr);
@@ -709,9 +711,8 @@ fn wrapper_method(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_staticmethod_new(target: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_staticmethod_new_attached_body(_py: &crate::PyToken<'_>, target: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         wrapper_construct(
             py,
             WrapperKind::Staticmethod,
@@ -720,9 +721,9 @@ pub extern "C" fn molt_staticmethod_new(target: u64) -> u64 {
         )
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_classmethod_new(target: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_classmethod_new_attached_body(_py: &crate::PyToken<'_>, target: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         wrapper_construct(
             py,
             WrapperKind::Classmethod,
@@ -731,9 +732,14 @@ pub extern "C" fn molt_classmethod_new(target: u64) -> u64 {
         )
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_property_new(get: u64, set: u64, delete: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_property_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    get: u64,
+    set: u64,
+    delete: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         wrapper_construct(
             py,
             WrapperKind::Property,
@@ -742,21 +748,37 @@ pub extern "C" fn molt_property_new(get: u64, set: u64, delete: u64) -> u64 {
         )
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_property_getter(wrapper: u64, get: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { property_copy(py, wrapper, get, 0) })
+
+pub(crate) fn molt_property_getter_attached_body(
+    _py: &crate::PyToken<'_>,
+    wrapper: u64,
+    get: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { property_copy(py, wrapper, get, 0) })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_property_setter(wrapper: u64, set: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { property_copy(py, wrapper, set, 1) })
+
+pub(crate) fn molt_property_setter_attached_body(
+    _py: &crate::PyToken<'_>,
+    wrapper: u64,
+    set: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { property_copy(py, wrapper, set, 1) })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_property_deleter(wrapper: u64, delete: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { property_copy(py, wrapper, delete, 2) })
+
+pub(crate) fn molt_property_deleter_attached_body(
+    _py: &crate::PyToken<'_>,
+    wrapper: u64,
+    delete: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { property_copy(py, wrapper, delete, 2) })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_staticmethod_type_new(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_staticmethod_type_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         wrapper_method(
             py,
             WrapperKind::Staticmethod,
@@ -766,9 +788,13 @@ pub extern "C" fn molt_staticmethod_type_new(args: u64, kwargs: u64) -> u64 {
         )
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_staticmethod_init(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_staticmethod_init_attached_body(
+    _py: &crate::PyToken<'_>,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         wrapper_method(
             py,
             WrapperKind::Staticmethod,
@@ -778,9 +804,13 @@ pub extern "C" fn molt_staticmethod_init(args: u64, kwargs: u64) -> u64 {
         )
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_staticmethod_get(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_staticmethod_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         wrapper_method(
             py,
             WrapperKind::Staticmethod,
@@ -790,9 +820,13 @@ pub extern "C" fn molt_staticmethod_get(args: u64, kwargs: u64) -> u64 {
         )
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_staticmethod_call(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_staticmethod_call_attached_body(
+    _py: &crate::PyToken<'_>,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         wrapper_method(
             py,
             WrapperKind::Staticmethod,
@@ -802,9 +836,13 @@ pub extern "C" fn molt_staticmethod_call(args: u64, kwargs: u64) -> u64 {
         )
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_classmethod_type_new(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_classmethod_type_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         wrapper_method(
             py,
             WrapperKind::Classmethod,
@@ -814,9 +852,13 @@ pub extern "C" fn molt_classmethod_type_new(args: u64, kwargs: u64) -> u64 {
         )
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_classmethod_init(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_classmethod_init_attached_body(
+    _py: &crate::PyToken<'_>,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         wrapper_method(
             py,
             WrapperKind::Classmethod,
@@ -826,9 +868,13 @@ pub extern "C" fn molt_classmethod_init(args: u64, kwargs: u64) -> u64 {
         )
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_classmethod_get(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_classmethod_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         wrapper_method(
             py,
             WrapperKind::Classmethod,
@@ -838,9 +884,13 @@ pub extern "C" fn molt_classmethod_get(args: u64, kwargs: u64) -> u64 {
         )
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_property_type_new(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_property_type_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         wrapper_method(
             py,
             WrapperKind::Property,
@@ -850,9 +900,13 @@ pub extern "C" fn molt_property_type_new(args: u64, kwargs: u64) -> u64 {
         )
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_property_init(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_property_init_attached_body(
+    _py: &crate::PyToken<'_>,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         wrapper_method(
             py,
             WrapperKind::Property,
@@ -862,9 +916,13 @@ pub extern "C" fn molt_property_init(args: u64, kwargs: u64) -> u64 {
         )
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_property_get(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_property_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         wrapper_method(
             py,
             WrapperKind::Property,
@@ -874,9 +932,13 @@ pub extern "C" fn molt_property_get(args: u64, kwargs: u64) -> u64 {
         )
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_property_set(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_property_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         wrapper_method(
             py,
             WrapperKind::Property,
@@ -886,9 +948,13 @@ pub extern "C" fn molt_property_set(args: u64, kwargs: u64) -> u64 {
         )
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_property_delete(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_property_delete_attached_body(
+    _py: &crate::PyToken<'_>,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         wrapper_method(
             py,
             WrapperKind::Property,
@@ -898,9 +964,13 @@ pub extern "C" fn molt_property_delete(args: u64, kwargs: u64) -> u64 {
         )
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_property_set_name(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_property_set_name_attached_body(
+    _py: &crate::PyToken<'_>,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         wrapper_method(
             py,
             WrapperKind::Property,
@@ -910,3 +980,5 @@ pub extern "C" fn molt_property_set_name(args: u64, kwargs: u64) -> u64 {
         )
     })
 }
+
+include!("../../attached_exports_generated/builtins/types/wrappers.rs");

@@ -15,7 +15,9 @@ use std::sync::{Arc, Mutex};
 fn string_from_bits_wasm(_py: &PyToken<'_>, bits: u64, label: &str) -> Result<String, u64> {
     use crate::builtins::io_path_utils::{PathFlavor, fspath_bits_with_flavor};
     let (path, flavor) = fspath_bits_with_flavor(_py, bits)?;
-    let _owner = obj_from_bits(path).as_ptr().map(crate::PtrDropGuard::new);
+    let _owner = obj_from_bits(path)
+        .as_ptr()
+        .map(|pointer| crate::PtrDropGuard::new(_py, pointer));
     match flavor {
         PathFlavor::Str => string_obj_to_owned(obj_from_bits(path)).ok_or_else(|| {
             raise_exception::<u64>(
@@ -93,7 +95,7 @@ fn env_from_bits_wasm(
                 "env must be a dict",
             ));
         }
-        let items_bits = crate::molt_dict_items(env_bits);
+        let items_bits = crate::molt_dict_items_attached_body(_py, env_bits);
         let items =
             molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), items_bits);
         if exception_pending(_py) {
@@ -168,8 +170,9 @@ fn encode_env_entries(entries: &[(String, String)], overlay: bool) -> Vec<u8> {
 /// # Safety
 /// All arguments must be valid runtime-encoded objects.
 /// WASM target ignores start_new_session and process_group (no Unix process model).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_spawn_ex(
+
+pub(crate) unsafe fn molt_process_spawn_ex_attached_body(
+    _py: &crate::PyToken<'_>,
     args_bits: u64,
     env_bits: u64,
     cwd_bits: u64,
@@ -181,7 +184,7 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
     _close_fds_bits: u64,
     pass_fds_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if is_truthy(_py, obj_from_bits(pass_fds_bits)) {
             return raise_exception::<u64>(
                 _py,
@@ -190,7 +193,8 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
             );
         }
         unsafe {
-            molt_process_spawn(
+            molt_process_spawn_attached_body(
+                _py,
                 args_bits,
                 env_bits,
                 cwd_bits,
@@ -231,8 +235,9 @@ extern "C" fn process_stdin_close_host_hook(ctx: *mut u8) {
 /// # Safety
 /// `args_bits`, `env_bits`, and `cwd_bits` must be valid runtime-encoded objects.
 /// The runtime must be initialized and the call must be allowed to enter the GIL.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_spawn(
+
+pub(crate) unsafe fn molt_process_spawn_attached_body(
+    _py: &crate::PyToken<'_>,
     args_bits: u64,
     env_bits: u64,
     cwd_bits: u64,
@@ -240,7 +245,7 @@ pub unsafe extern "C" fn molt_process_spawn(
     stdout_bits: u64,
     stderr_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if require_process_capability::<u64>(_py, crate::OperationId::ProcessExec).is_err() {
             return MoltObject::none().bits();
         }
@@ -339,7 +344,8 @@ pub unsafe extern "C" fn molt_process_spawn(
 
         let stdin_stream = if stdin_mode == PROCESS_STDIO_PIPE {
             let ctx_ptr = Box::into_raw(Box::new(handle)) as *mut u8;
-            let stream_ptr = molt_stream_new_with_hooks(
+            let stream_ptr = molt_stream_new_with_hooks_attached_body(
+                _py,
                 process_stdin_send_host_hook as *const () as usize,
                 process_stdin_close_host_hook as *const () as usize,
                 ctx_ptr,
@@ -367,7 +373,7 @@ pub unsafe extern "C" fn molt_process_spawn(
             if rc != 0 || stream_bits == 0 {
                 if stdin_stream != 0 {
                     unsafe {
-                        molt_stream_drop(stdin_stream);
+                        molt_stream_drop_attached_body(_py, stdin_stream);
                     }
                 }
                 let _ = unsafe { crate::molt_process_terminate_host(handle) };
@@ -385,12 +391,12 @@ pub unsafe extern "C" fn molt_process_spawn(
             if rc != 0 || stream_bits == 0 {
                 if stdin_stream != 0 {
                     unsafe {
-                        molt_stream_drop(stdin_stream);
+                        molt_stream_drop_attached_body(_py, stdin_stream);
                     }
                 }
                 if stdout_stream != 0 {
                     unsafe {
-                        molt_stream_drop(stdout_stream);
+                        molt_stream_drop_attached_body(_py, stdout_stream);
                     }
                 }
                 let _ = unsafe { crate::molt_process_terminate_host(handle) };
@@ -422,10 +428,13 @@ pub unsafe extern "C" fn molt_process_spawn(
 
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_wait_future(proc_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_process_wait_future_attached_body(
+    _py: &crate::PyToken<'_>,
+    proc_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -437,7 +446,7 @@ pub unsafe extern "C" fn molt_process_wait_future(proc_bits: u64) -> u64 {
                 inc_ref_bits(_py, bits);
                 return bits;
             }
-            let future_bits = molt_future_new(process_poll_fn_addr(), 0);
+            let future_bits = molt_future_new_attached_body(_py, process_poll_fn_addr(), 0);
             let Some(future_ptr) = resolve_obj_ptr(future_bits) else {
                 return MoltObject::none().bits();
             };
@@ -475,9 +484,12 @@ pub unsafe extern "C" fn molt_process_wait_future(proc_bits: u64) -> u64 {
 
 /// # Safety
 /// `obj_bits` must be a valid process wait future object from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_poll(obj_bits: u64) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_process_poll_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> i64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj_ptr = ptr_from_bits(obj_bits);
         if obj_ptr.is_null() {
             return MoltObject::none().bits() as i64;
@@ -525,10 +537,13 @@ pub unsafe extern "C" fn molt_process_poll(obj_bits: u64) -> i64 {
 
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_pid(proc_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_process_pid_attached_body(
+    _py: &crate::PyToken<'_>,
+    proc_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::from_int(0).bits();
@@ -541,10 +556,13 @@ pub unsafe extern "C" fn molt_process_pid(proc_bits: u64) -> u64 {
 
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_returncode(proc_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_process_returncode_attached_body(
+    _py: &crate::PyToken<'_>,
+    proc_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -562,10 +580,13 @@ pub unsafe extern "C" fn molt_process_returncode(proc_bits: u64) -> u64 {
 
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_kill(proc_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_process_kill_attached_body(
+    _py: &crate::PyToken<'_>,
+    proc_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -585,10 +606,13 @@ pub unsafe extern "C" fn molt_process_kill(proc_bits: u64) -> u64 {
 
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_terminate(proc_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_process_terminate_attached_body(
+    _py: &crate::PyToken<'_>,
+    proc_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -608,10 +632,13 @@ pub unsafe extern "C" fn molt_process_terminate(proc_bits: u64) -> u64 {
 
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_stdin(proc_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_process_stdin_attached_body(
+    _py: &crate::PyToken<'_>,
+    proc_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -620,17 +647,20 @@ pub unsafe extern "C" fn molt_process_stdin(proc_bits: u64) -> u64 {
             if handle.state.stdin_stream == 0 {
                 return MoltObject::none().bits();
             }
-            molt_stream_clone(handle.state.stdin_stream)
+            molt_stream_clone_attached_body(_py, handle.state.stdin_stream)
         })
     }
 }
 
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_stdout(proc_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_process_stdout_attached_body(
+    _py: &crate::PyToken<'_>,
+    proc_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -639,17 +669,20 @@ pub unsafe extern "C" fn molt_process_stdout(proc_bits: u64) -> u64 {
             if handle.state.stdout_stream == 0 {
                 return MoltObject::none().bits();
             }
-            molt_stream_clone(handle.state.stdout_stream)
+            molt_stream_clone_attached_body(_py, handle.state.stdout_stream)
         })
     }
 }
 
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_stderr(proc_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_process_stderr_attached_body(
+    _py: &crate::PyToken<'_>,
+    proc_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -658,17 +691,20 @@ pub unsafe extern "C" fn molt_process_stderr(proc_bits: u64) -> u64 {
             if handle.state.stderr_stream == 0 {
                 return MoltObject::none().bits();
             }
-            molt_stream_clone(handle.state.stderr_stream)
+            molt_stream_clone_attached_body(_py, handle.state.stderr_stream)
         })
     }
 }
 
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_drop(proc_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_process_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    proc_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -686,10 +722,14 @@ pub unsafe extern "C" fn molt_process_drop(proc_bits: u64) -> u64 {
 
 /// # Safety
 /// `handle` must be a valid wasm process handle owned by this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_host_notify(handle: i64, exit_code: i32) {
+
+pub(crate) unsafe fn molt_process_host_notify_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle: i64,
+    exit_code: i32,
+) {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let entry = runtime_state(_py).process_registry.get_wasm_handle(handle);
             let Some(slot) = entry else {
                 return;
@@ -724,7 +764,8 @@ struct MoltProcessHandle {
 impl Drop for ProcessState {
     fn drop(&mut self) {
         self.request_terminate_for_teardown();
-        self.release_owned_streams();
+        let execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        self.release_owned_streams(execution.token());
     }
 }
 
@@ -735,16 +776,16 @@ impl ProcessState {
         }
     }
 
-    fn release_owned_streams(&self) {
+    fn release_owned_streams(&self, py: &PyToken<'_>) {
         if self.streams_released.swap(true, AtomicOrdering::AcqRel) {
             return;
         }
-        self.close_and_drop_stream(self.stdin_stream);
-        self.close_and_drop_stream(self.stdout_stream);
-        self.close_and_drop_stream(self.stderr_stream);
+        self.close_and_drop_stream(py, self.stdin_stream);
+        self.close_and_drop_stream(py, self.stdout_stream);
+        self.close_and_drop_stream(py, self.stderr_stream);
     }
 
-    fn close_and_drop_stream(&self, stream_bits: u64) {
+    fn close_and_drop_stream(&self, py: &PyToken<'_>, stream_bits: u64) {
         if stream_bits == 0 {
             return;
         }
@@ -754,7 +795,7 @@ impl ProcessState {
             super::super::channels::stream_close_local(stream);
         }
         unsafe {
-            molt_stream_drop(stream_bits);
+            molt_stream_drop_attached_body(py, stream_bits);
         }
     }
 }
@@ -782,7 +823,7 @@ impl ProcessRegistry {
         self.handles.lock().unwrap().get(&handle).copied()
     }
 
-    pub(crate) fn drain_for_teardown(&self) {
+    pub(crate) fn drain_for_teardown(&self, py: &PyToken<'_>) {
         let handles = {
             let mut guard = self.handles.lock().unwrap();
             std::mem::take(&mut *guard)
@@ -794,7 +835,7 @@ impl ProcessRegistry {
             }
             let handle_obj = unsafe { &*(proc_ptr as *mut MoltProcessHandle) };
             handle_obj.state.request_terminate_for_teardown();
-            handle_obj.state.release_owned_streams();
+            handle_obj.state.release_owned_streams(py);
         }
     }
 }
@@ -830,3 +871,5 @@ mod process_state_tests {
         assert!(state.publish_exit(0).is_some());
     }
 }
+
+include!("../../attached_exports_generated/async_rt/process/wasm_host.rs");

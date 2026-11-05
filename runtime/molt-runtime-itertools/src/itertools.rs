@@ -79,11 +79,11 @@ impl ItertoolsRuntimeState {
     /// the runtime's extension-state teardown (which holds the GIL) on every
     /// interpreter shutdown — the byte-for-byte analogue of the in-tree
     /// `clear_atomic_slots` (swap-to-0 + interned-aware release).
-    fn clear(&self) {
+    fn clear(&self, py: &PyToken) {
         for slot in self.slots() {
             let bits = slot.swap(0, Ordering::AcqRel);
             if bits != 0 {
-                unsafe { bridge::release_runtime_slot_bits(bits) };
+                unsafe { bridge::release_runtime_slot_bits(py, bits) };
             }
         }
     }
@@ -93,12 +93,14 @@ unsafe extern "C" fn itertools_runtime_state_init() -> *mut u8 {
     Box::into_raw(Box::new(ItertoolsRuntimeState::new())) as *mut u8
 }
 
-unsafe extern "C" fn itertools_runtime_state_clear(ptr: *mut u8) {
+unsafe extern "C" fn itertools_runtime_state_clear(__context: u64, ptr: *mut u8) {
+    let _py = unsafe { molt_runtime_core::PyToken::from_attached_context(__context) };
+
     if ptr.is_null() {
         return;
     }
     unsafe {
-        (*(ptr as *const ItertoolsRuntimeState)).clear();
+        (*(ptr as *const ItertoolsRuntimeState)).clear(_py);
     }
 }
 
@@ -113,6 +115,7 @@ unsafe extern "C" fn itertools_runtime_state_drop(ptr: *mut u8) {
 
 fn itertools_state(_py: &PyToken) -> &'static ItertoolsRuntimeState {
     let ptr = bridge::runtime_state_get_or_init(
+        _py,
         b"molt-runtime-itertools/object-slots/v2",
         itertools_runtime_state_init,
         itertools_runtime_state_clear,
@@ -167,9 +170,11 @@ fn itertools_class(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_iter_self(self_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_itertools_iter_self_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    self_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         inc_ref_bits(_py, self_bits);
         self_bits
     })
@@ -1126,9 +1131,12 @@ fn zip_longest_class(_py: &PyToken) -> u64 {
     )
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_chain_new(class_bits: u64, iterables_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_itertools_chain_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    class_bits: u64,
+    iterables_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         if !bridge::validate_constructor_class(_py, class_bits, chain_class(_py)) {
             return MoltObject::none().bits();
         }
@@ -1153,14 +1161,19 @@ pub extern "C" fn molt_itertools_chain_new(class_bits: u64, iterables_bits: u64)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_chain_from_iterable(class_bits: u64, iterables_bits: u64) -> u64 {
-    molt_itertools_chain_new(class_bits, iterables_bits)
+pub fn molt_itertools_chain_from_iterable_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    class_bits: u64,
+    iterables_bits: u64,
+) -> u64 {
+    molt_itertools_chain_new_attached_body(_py, class_bits, iterables_bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_chain_next(self_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_itertools_chain_next_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    self_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let source = unsafe { chain_iterables_bits(self_ptr) };
         if source == 0 || obj_from_bits(source).is_none() {
@@ -1213,15 +1226,15 @@ pub extern "C" fn molt_itertools_chain_next(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_islice_new(
+pub fn molt_itertools_islice_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     class_bits: u64,
     iterable_bits: u64,
     start_bits: u64,
     stop_bits: u64,
     step_bits: u64,
 ) -> u64 {
-    with_core_gil!(_py, {
+    with_attached_entry!(_py, _py, {
         if !bridge::validate_constructor_class(_py, class_bits, islice_class(_py)) {
             return MoltObject::none().bits();
         }
@@ -1347,9 +1360,11 @@ pub extern "C" fn molt_itertools_islice_new(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_islice_next(self_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_itertools_islice_next_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    self_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let iter_bits = unsafe { islice_iter_bits(self_ptr) };
         if iter_bits == 0 || obj_from_bits(iter_bits).is_none() {
@@ -1440,21 +1455,24 @@ fn itertools_repeat_impl(_py: &PyToken, class_bits: u64, obj_bits: u64, times_bi
     inst_bits
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_repeat_new(
+pub fn molt_itertools_repeat_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     class_bits: u64,
     obj_bits: u64,
     times_bits: u64,
 ) -> u64 {
-    with_core_gil!(
+    with_attached_entry!(
+        _py,
         _py,
         itertools_repeat_impl(_py, class_bits, obj_bits, times_bits)
     )
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_repeat_repr(instance: u64) -> u64 {
-    with_core_gil!(py, {
+pub fn molt_itertools_repeat_repr_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    instance: u64,
+) -> u64 {
+    with_attached_entry!(_py, py, {
         let pointer = obj_from_bits(instance).as_ptr().unwrap();
         bridge::constructor_repr(
             py,
@@ -1465,9 +1483,11 @@ pub extern "C" fn molt_itertools_repeat_repr(instance: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_count_repr(instance: u64) -> u64 {
-    with_core_gil!(py, {
+pub fn molt_itertools_count_repr_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    instance: u64,
+) -> u64 {
+    with_attached_entry!(_py, py, {
         let pointer = obj_from_bits(instance).as_ptr().unwrap();
         bridge::constructor_repr(
             py,
@@ -1478,9 +1498,11 @@ pub extern "C" fn molt_itertools_count_repr(instance: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_repeat_next(self_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_itertools_repeat_next_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    self_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let obj_bits = unsafe { repeat_obj_bits(self_ptr) };
         let times = unsafe { repeat_times(self_ptr) };
@@ -1495,13 +1517,13 @@ pub extern "C" fn molt_itertools_repeat_next(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_count_new(
+pub fn molt_itertools_count_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     class_bits: u64,
     start_bits: u64,
     step_bits: u64,
 ) -> u64 {
-    with_core_gil!(_py, {
+    with_attached_entry!(_py, _py, {
         if !bridge::validate_constructor_class(_py, class_bits, count_class(_py)) {
             return MoltObject::none().bits();
         }
@@ -1523,14 +1545,16 @@ pub extern "C" fn molt_itertools_count_new(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_count_next(self_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_itertools_count_next_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    self_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let current_bits = unsafe { count_current_bits(self_ptr) };
         let step_bits = unsafe { count_step_bits(self_ptr) };
         inc_ref_bits(_py, current_bits);
-        let next_bits = bridge_molt_add(current_bits, step_bits);
+        let next_bits = bridge_molt_add(_py, current_bits, step_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -1542,9 +1566,12 @@ pub extern "C" fn molt_itertools_count_next(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_cycle_new(class_bits: u64, iterable_bits: u64) -> u64 {
-    with_core_gil!(py, {
+pub fn molt_itertools_cycle_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    class_bits: u64,
+    iterable_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, py, {
         if !bridge::validate_constructor_class(py, class_bits, cycle_class(py)) {
             return MoltObject::none().bits();
         }
@@ -1593,7 +1620,7 @@ fn cycle_payload<'py>(
 ) -> Option<(OwnedRuntimeValue<'py>, OwnedRuntimeValue<'py>)> {
     let payload = unsafe { cycle_saved_bits(pointer) };
     let pointer = obj_from_bits(payload).as_ptr()?;
-    let values = unsafe { seq_snapshot(pointer) };
+    let values = unsafe { seq_snapshot(py, pointer) };
     if values.len() != 2 {
         raise_exception::<u64>(py, BuiltinExc::SystemError, "invalid cycle payload");
         return None;
@@ -1604,9 +1631,11 @@ fn cycle_payload<'py>(
     ))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_cycle_next(instance: u64) -> u64 {
-    with_core_gil!(py, {
+pub fn molt_itertools_cycle_next_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    instance: u64,
+) -> u64 {
+    with_attached_entry!(_py, py, {
         let pointer = obj_from_bits(instance).as_ptr().unwrap();
         let Some((source, saved)) = cycle_payload(py, pointer) else {
             return MoltObject::none().bits();
@@ -1616,7 +1645,11 @@ pub extern "C" fn molt_itertools_cycle_next(instance: u64) -> u64 {
                 Ok(Some(value)) => {
                     if unsafe { cycle_phase(pointer) } == CyclePhase::Saving {
                         let result = unsafe {
-                            molt_runtime_core::ffi::molt_list_append(saved.bits(), value.bits())
+                            molt_runtime_core::ffi::molt_list_append(
+                                py.attached_context(),
+                                saved.bits(),
+                                value.bits(),
+                            )
                         };
                         dec_ref_bits(py, result);
                         if exception_pending(py) {
@@ -1650,7 +1683,7 @@ pub extern "C" fn molt_itertools_cycle_next(instance: u64) -> u64 {
             unreachable!("a cycle without a source is replaying");
         };
         let index = index % length;
-        let Some(value) = (unsafe { seq_read_item_owned(saved_ptr, index) }) else {
+        let Some(value) = (unsafe { seq_read_item_owned(py, saved_ptr, index) }) else {
             return MoltObject::none().bits();
         };
         unsafe {
@@ -1660,14 +1693,14 @@ pub extern "C" fn molt_itertools_cycle_next(instance: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_accumulate_new(
+pub fn molt_itertools_accumulate_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     class_bits: u64,
     iterable_bits: u64,
     func_bits: u64,
     initial_bits: u64,
 ) -> u64 {
-    with_core_gil!(_py, {
+    with_attached_entry!(_py, _py, {
         if !bridge::validate_constructor_class(_py, class_bits, accumulate_class(_py)) {
             return MoltObject::none().bits();
         }
@@ -1714,9 +1747,11 @@ pub extern "C" fn molt_itertools_accumulate_new(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_accumulate_next(self_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_itertools_accumulate_next_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    self_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -1753,7 +1788,7 @@ pub extern "C" fn molt_itertools_accumulate_next(self_bits: u64) -> u64 {
         let total = OwnedRuntimeValue::retain(_py, unsafe { accumulate_total_bits(self_ptr) });
         let func_bits = unsafe { accumulate_func_bits(self_ptr) };
         let next_bits = if func_bits == 0 || obj_from_bits(func_bits).is_none() {
-            bridge_molt_add(total.bits(), value.bits())
+            bridge_molt_add(_py, total.bits(), value.bits())
         } else {
             call_callable2(_py, func_bits, total.bits(), value.bits())
         };
@@ -1772,14 +1807,14 @@ pub extern "C" fn molt_itertools_accumulate_next(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_batched_new(
+pub fn molt_itertools_batched_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     class_bits: u64,
     iterable_bits: u64,
     n_bits: u64,
     strict_bits: u64,
 ) -> u64 {
-    with_core_gil!(_py, {
+    with_attached_entry!(_py, _py, {
         if !bridge::validate_constructor_class(_py, class_bits, batched_class(_py)) {
             return MoltObject::none().bits();
         }
@@ -1817,9 +1852,11 @@ pub extern "C" fn molt_itertools_batched_new(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_batched_next(self_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_itertools_batched_next_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    self_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         if unsafe { batched_done(self_ptr) } != 0 {
             return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
@@ -1833,7 +1870,7 @@ pub extern "C" fn molt_itertools_batched_next(self_bits: u64) -> u64 {
         let iterator = OwnedRuntimeValue::retain(_py, iter_bits);
         let n = unsafe { batched_n(self_ptr) } as usize;
         let strict = unsafe { batched_strict(self_ptr) } != 0;
-        let mut chunk = Vec::with_capacity(n);
+        let mut chunk = molt_runtime_core::RuntimeValueCollection::with_capacity(_py, n);
         for _ in 0..n {
             match iter_next_owned(_py, &iterator) {
                 Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
@@ -1859,7 +1896,7 @@ pub extern "C" fn molt_itertools_batched_next(self_bits: u64) -> u64 {
                 }
             }
         }
-        let tuple_ptr = alloc_tuple(_py, OwnedRuntimeValue::as_bits_slice(&chunk));
+        let tuple_ptr = alloc_tuple(_py, chunk.as_bits_slice());
         if tuple_ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -1867,13 +1904,13 @@ pub extern "C" fn molt_itertools_batched_next(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_compress_new(
+pub fn molt_itertools_compress_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     class_bits: u64,
     data_bits: u64,
     selectors_bits: u64,
 ) -> u64 {
-    with_core_gil!(_py, {
+    with_attached_entry!(_py, _py, {
         if !bridge::validate_constructor_class(_py, class_bits, compress_class(_py)) {
             return MoltObject::none().bits();
         }
@@ -1906,9 +1943,11 @@ pub extern "C" fn molt_itertools_compress_new(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_compress_next(self_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_itertools_compress_next_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    self_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let data_iter_bits = unsafe { compress_data_iter_bits(self_ptr) };
         let selectors_iter_bits = unsafe { compress_selectors_iter_bits(self_ptr) };
@@ -1936,13 +1975,13 @@ pub extern "C" fn molt_itertools_compress_next(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_dropwhile_new(
+pub fn molt_itertools_dropwhile_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     class_bits: u64,
     predicate_bits: u64,
     iterable_bits: u64,
 ) -> u64 {
-    with_core_gil!(_py, {
+    with_attached_entry!(_py, _py, {
         if !bridge::validate_constructor_class(_py, class_bits, dropwhile_class(_py)) {
             return MoltObject::none().bits();
         }
@@ -1972,9 +2011,11 @@ pub extern "C" fn molt_itertools_dropwhile_new(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_dropwhile_next(self_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_itertools_dropwhile_next_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    self_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let iter_bits = unsafe { dropwhile_iter_bits(self_ptr) };
         let iterator = OwnedRuntimeValue::retain(_py, iter_bits);
@@ -2012,13 +2053,13 @@ pub extern "C" fn molt_itertools_dropwhile_next(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_filterfalse_new(
+pub fn molt_itertools_filterfalse_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     class_bits: u64,
     predicate_bits: u64,
     iterable_bits: u64,
 ) -> u64 {
-    with_core_gil!(_py, {
+    with_attached_entry!(_py, _py, {
         if !bridge::validate_constructor_class(_py, class_bits, filterfalse_class(_py)) {
             return MoltObject::none().bits();
         }
@@ -2047,9 +2088,11 @@ pub extern "C" fn molt_itertools_filterfalse_new(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_filterfalse_next(self_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_itertools_filterfalse_next_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    self_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let predicate_bits = unsafe { filterfalse_predicate_bits(self_ptr) };
         let iter_bits = unsafe { filterfalse_iter_bits(self_ptr) };
@@ -2081,9 +2124,12 @@ pub extern "C" fn molt_itertools_filterfalse_next(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_pairwise_new(class_bits: u64, iterable_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_itertools_pairwise_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    class_bits: u64,
+    iterable_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         if !bridge::validate_constructor_class(_py, class_bits, pairwise_class(_py)) {
             return MoltObject::none().bits();
         }
@@ -2110,9 +2156,11 @@ pub extern "C" fn molt_itertools_pairwise_new(class_bits: u64, iterable_bits: u6
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_pairwise_next(self_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_itertools_pairwise_next_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    self_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let iter_bits = unsafe { pairwise_iter_bits(self_ptr) };
         let iterator = OwnedRuntimeValue::retain(_py, iter_bits);
@@ -2146,13 +2194,13 @@ pub extern "C" fn molt_itertools_pairwise_next(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_product_new(
+pub fn molt_itertools_product_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     class_bits: u64,
     iterables_bits: u64,
     repeat_bits: u64,
 ) -> u64 {
-    with_core_gil!(_py, {
+    with_attached_entry!(_py, _py, {
         if !bridge::validate_constructor_class(_py, class_bits, product_class(_py)) {
             return MoltObject::none().bits();
         }
@@ -2176,7 +2224,7 @@ pub extern "C" fn molt_itertools_product_new(
             if unsafe { object_type_id(iterables_ptr) } != TYPE_ID_TUPLE {
                 return raise_exception::<_>(_py, BuiltinExc::TypeError, "product expects a tuple");
             }
-            let iterables = unsafe { seq_snapshot(iterables_ptr) };
+            let iterables = unsafe { seq_snapshot(_py, iterables_ptr) };
             let mut base_pools: Vec<u64> = Vec::with_capacity(iterables.len());
             for &iterable_bits in iterables.iter() {
                 let Some(tuple_bits) = tuple_from_iter_bits(_py, iterable_bits) else {
@@ -2239,9 +2287,11 @@ pub extern "C" fn molt_itertools_product_new(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_product_next(self_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_itertools_product_next_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    self_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let data_ptr = unsafe { product_data_ptr(self_ptr) };
         if data_ptr.is_null() {
@@ -2306,13 +2356,13 @@ pub extern "C" fn molt_itertools_product_next(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_permutations_new(
+pub fn molt_itertools_permutations_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     class_bits: u64,
     iterable_bits: u64,
     r_bits: u64,
 ) -> u64 {
-    with_core_gil!(_py, {
+    with_attached_entry!(_py, _py, {
         if !bridge::validate_constructor_class(_py, class_bits, permutations_class(_py)) {
             return MoltObject::none().bits();
         }
@@ -2379,9 +2429,11 @@ pub extern "C" fn molt_itertools_permutations_new(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_permutations_next(self_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_itertools_permutations_next_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    self_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let data_ptr = unsafe { permutations_data_ptr(self_ptr) };
         if data_ptr.is_null() {
@@ -2443,13 +2495,13 @@ pub extern "C" fn molt_itertools_permutations_next(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_combinations_new(
+pub fn molt_itertools_combinations_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     class_bits: u64,
     iterable_bits: u64,
     r_bits: u64,
 ) -> u64 {
-    with_core_gil!(_py, {
+    with_attached_entry!(_py, _py, {
         if !bridge::validate_constructor_class(_py, class_bits, combinations_class(_py)) {
             return MoltObject::none().bits();
         }
@@ -2505,13 +2557,13 @@ pub extern "C" fn molt_itertools_combinations_new(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_combinations_with_replacement_new(
+pub fn molt_itertools_combinations_with_replacement_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     class_bits: u64,
     iterable_bits: u64,
     r_bits: u64,
 ) -> u64 {
-    with_core_gil!(_py, {
+    with_attached_entry!(_py, _py, {
         if !bridge::validate_constructor_class(
             _py,
             class_bits,
@@ -2571,9 +2623,11 @@ pub extern "C" fn molt_itertools_combinations_with_replacement_new(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_combinations_next(self_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_itertools_combinations_next_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    self_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let data_ptr = unsafe { combinations_data_ptr(self_ptr) };
         if data_ptr.is_null() {
@@ -2614,7 +2668,7 @@ pub extern "C" fn molt_itertools_combinations_next(self_bits: u64) -> u64 {
             return MoltObject::from_ptr(tuple_ptr).bits();
         }
         let pool_ptr = obj_from_bits(data.pool_bits).as_ptr().unwrap();
-        let pool = unsafe { seq_snapshot(pool_ptr) };
+        let pool = unsafe { seq_snapshot(_py, pool_ptr) };
         data.row_buf.clear();
         for &idx in data.indices.iter() {
             data.row_buf.push(pool[idx]);
@@ -2627,9 +2681,11 @@ pub extern "C" fn molt_itertools_combinations_next(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_combinations_with_replacement_next(self_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_itertools_combinations_with_replacement_next_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    self_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let data_ptr = unsafe { combinations_with_replacement_data_ptr(self_ptr) };
         if data_ptr.is_null() {
@@ -2671,7 +2727,7 @@ pub extern "C" fn molt_itertools_combinations_with_replacement_next(self_bits: u
             return MoltObject::from_ptr(tuple_ptr).bits();
         }
         let pool_ptr = obj_from_bits(data.pool_bits).as_ptr().unwrap();
-        let pool = unsafe { seq_snapshot(pool_ptr) };
+        let pool = unsafe { seq_snapshot(_py, pool_ptr) };
         data.row_buf.clear();
         for &idx in data.indices.iter() {
             data.row_buf.push(pool[idx]);
@@ -2684,13 +2740,13 @@ pub extern "C" fn molt_itertools_combinations_with_replacement_next(self_bits: u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_groupby_new(
+pub fn molt_itertools_groupby_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     class_bits: u64,
     iterable_bits: u64,
     key_bits: u64,
 ) -> u64 {
-    with_core_gil!(_py, {
+    with_attached_entry!(_py, _py, {
         if !bridge::validate_constructor_class(_py, class_bits, groupby_class(_py)) {
             return MoltObject::none().bits();
         }
@@ -2765,9 +2821,11 @@ fn groupby_advance(_py: &PyToken, ptr: *mut u8, iterator: &OwnedRuntimeValue<'_>
     true
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_groupby_next(self_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_itertools_groupby_next_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    self_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -2787,7 +2845,7 @@ pub extern "C" fn molt_itertools_groupby_next(self_bits: u64) -> u64 {
                     OwnedRuntimeValue::retain(_py, unsafe { groupby_tgt_key_bits(self_ptr) });
                 let current =
                     OwnedRuntimeValue::retain(_py, unsafe { groupby_curr_key_bits(self_ptr) });
-                let result = bridge_molt_eq(target.bits(), current.bits());
+                let result = bridge_molt_eq(_py, target.bits(), current.bits());
                 let eq = unsafe { OwnedRuntimeValue::from_owned_bits(_py, result) };
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
@@ -2848,9 +2906,11 @@ pub extern "C" fn molt_itertools_groupby_next(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_groupby_iter_next(self_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_itertools_groupby_iter_next_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    self_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -2879,7 +2939,7 @@ pub extern "C" fn molt_itertools_groupby_iter_next(self_bits: u64) -> u64 {
         }
         let target = OwnedRuntimeValue::retain(_py, unsafe { groupby_iter_target_bits(self_ptr) });
         let current = OwnedRuntimeValue::retain(_py, unsafe { groupby_curr_key_bits(parent_ptr) });
-        let result = bridge_molt_eq(current.bits(), target.bits());
+        let result = bridge_molt_eq(_py, current.bits(), target.bits());
         let eq = unsafe { OwnedRuntimeValue::from_owned_bits(_py, result) };
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -2915,13 +2975,13 @@ pub extern "C" fn molt_itertools_groupby_iter_next(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_starmap_new(
+pub fn molt_itertools_starmap_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     class_bits: u64,
     func_bits: u64,
     iterable_bits: u64,
 ) -> u64 {
-    with_core_gil!(_py, {
+    with_attached_entry!(_py, _py, {
         if !bridge::validate_constructor_class(_py, class_bits, starmap_class(_py)) {
             return MoltObject::none().bits();
         }
@@ -2950,9 +3010,11 @@ pub extern "C" fn molt_itertools_starmap_new(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_starmap_next(self_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_itertools_starmap_next_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    self_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let func_bits = unsafe { starmap_func_bits(self_ptr) };
         let iter_bits = unsafe { starmap_iter_bits(self_ptr) };
@@ -2962,28 +3024,28 @@ pub extern "C" fn molt_itertools_starmap_next(self_bits: u64) -> u64 {
             Ok(None) => return raise_exception::<u64>(_py, BuiltinExc::StopIteration, ""),
             Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
         };
-        let builder_bits = bridge_callargs_new(0, 0);
+        let builder_bits = bridge_callargs_new(_py, 0, 0);
         if obj_from_bits(builder_bits).is_none() {
             return MoltObject::none().bits();
         }
         let builder = unsafe { OwnedRuntimeValue::from_owned_bits(_py, builder_bits) };
-        let result = bridge_callargs_expand_star(builder.bits(), args.bits());
+        let result = bridge_callargs_expand_star(_py, builder.bits(), args.bits());
         let _expanded = unsafe { OwnedRuntimeValue::from_owned_bits(_py, result) };
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
         // Call binding consumes the builder on every outcome.
-        bridge_call_bind(func_bits, builder.into_bits())
+        bridge_call_bind(_py, func_bits, builder.into_bits())
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_takewhile_new(
+pub fn molt_itertools_takewhile_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     class_bits: u64,
     predicate_bits: u64,
     iterable_bits: u64,
 ) -> u64 {
-    with_core_gil!(_py, {
+    with_attached_entry!(_py, _py, {
         if !bridge::validate_constructor_class(_py, class_bits, takewhile_class(_py)) {
             return MoltObject::none().bits();
         }
@@ -3013,9 +3075,11 @@ pub extern "C" fn molt_itertools_takewhile_new(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_takewhile_next(self_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_itertools_takewhile_next_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    self_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         if unsafe { takewhile_done(self_ptr) } != 0 {
             return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
@@ -3057,13 +3121,13 @@ pub extern "C" fn molt_itertools_takewhile_next(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_zip_longest_new(
+pub fn molt_itertools_zip_longest_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     class_bits: u64,
     iterables_bits: u64,
     fillvalue_bits: u64,
 ) -> u64 {
-    with_core_gil!(_py, {
+    with_attached_entry!(_py, _py, {
         if !bridge::validate_constructor_class(_py, class_bits, zip_longest_class(_py)) {
             return MoltObject::none().bits();
         }
@@ -3081,7 +3145,7 @@ pub extern "C" fn molt_itertools_zip_longest_new(
                 "zip_longest expects a tuple",
             );
         }
-        let iterables = unsafe { seq_snapshot(iterables_ptr) };
+        let iterables = unsafe { seq_snapshot(_py, iterables_ptr) };
         let mut iter_bits_vec = Vec::with_capacity(iterables.len());
         for &iterable_bits in iterables.iter() {
             let iter_bits = molt_iter(_py, iterable_bits);
@@ -3133,9 +3197,11 @@ pub extern "C" fn molt_itertools_zip_longest_new(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_zip_longest_next(self_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_itertools_zip_longest_next_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    self_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let data_ptr = unsafe { zip_longest_data_ptr(self_ptr) };
         if data_ptr.is_null() || unsafe { (*data_ptr).active } == 0 {
@@ -3145,7 +3211,7 @@ pub extern "C" fn molt_itertools_zip_longest_next(self_bits: u64) -> u64 {
         // no shared row buffer or Rust mutable borrow can cross advancement.
         let fill = OwnedRuntimeValue::retain(_py, unsafe { (*data_ptr).fillvalue_bits });
         let width = unsafe { (*data_ptr).iter_bits.len() };
-        let mut out = Vec::with_capacity(width);
+        let mut out = molt_runtime_core::RuntimeValueCollection::with_capacity(_py, width);
         let mut produced = false;
         for index in 0..width {
             let iter_bits = unsafe { (&(*data_ptr).iter_bits)[index] };
@@ -3176,7 +3242,7 @@ pub extern "C" fn molt_itertools_zip_longest_next(self_bits: u64) -> u64 {
         if !produced {
             return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         }
-        let tuple_ptr = alloc_tuple(_py, OwnedRuntimeValue::as_bits_slice(&out));
+        let tuple_ptr = alloc_tuple(_py, out.as_bits_slice());
         if tuple_ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -3184,9 +3250,12 @@ pub extern "C" fn molt_itertools_zip_longest_next(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_tee(iterable_bits: u64, n_bits: u64) -> u64 {
-    with_core_gil!(py, {
+pub fn molt_itertools_tee_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    iterable_bits: u64,
+    n_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, py, {
         let n = index_i64_from_obj(py, n_bits, "n must be an integer");
         if exception_pending(py) {
             return MoltObject::none().bits();
@@ -3201,7 +3270,7 @@ pub extern "C" fn molt_itertools_tee(iterable_bits: u64, n_bits: u64) -> u64 {
         if n < 0 {
             return raise_exception::<u64>(py, BuiltinExc::ValueError, "n must be >= 0");
         }
-        let mut readers = Vec::new();
+        let mut readers = molt_runtime_core::RuntimeValueCollection::new(py);
         if readers.try_reserve_exact(n as usize).is_err() {
             return raise_exception::<u64>(py, BuiltinExc::MemoryError, "");
         }
@@ -3220,14 +3289,15 @@ pub extern "C" fn molt_itertools_tee(iterable_bits: u64, n_bits: u64) -> u64 {
             if exception_pending(py) {
                 return MoltObject::none().bits();
             }
-            let first_bits = molt_itertools_tee_new(class, iterator.bits());
+            let first_bits = molt_itertools_tee_new_attached_body(py, class, iterator.bits());
             let first = unsafe { OwnedRuntimeValue::from_owned_bits(py, first_bits) };
             if exception_pending(py) {
                 return MoltObject::none().bits();
             }
             readers.push(first);
             for _ in 1..n {
-                let copied_bits = molt_itertools_tee_copy(readers[0].bits());
+                let copied_bits =
+                    molt_itertools_tee_copy_attached_body(py, readers.as_bits_slice()[0]);
                 let copied = unsafe { OwnedRuntimeValue::from_owned_bits(py, copied_bits) };
                 if exception_pending(py) {
                     return MoltObject::none().bits();
@@ -3235,7 +3305,7 @@ pub extern "C" fn molt_itertools_tee(iterable_bits: u64, n_bits: u64) -> u64 {
                 readers.push(copied);
             }
         }
-        let tuple = alloc_tuple(py, OwnedRuntimeValue::as_bits_slice(&readers));
+        let tuple = alloc_tuple(py, readers.as_bits_slice());
         if tuple.is_null() {
             MoltObject::none().bits()
         } else {
@@ -3244,9 +3314,12 @@ pub extern "C" fn molt_itertools_tee(iterable_bits: u64, n_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_tee_new(_cls_bits: u64, iterable_bits: u64) -> u64 {
-    with_core_gil!(py, {
+pub fn molt_itertools_tee_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    _cls_bits: u64,
+    iterable_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, py, {
         let iterator_bits = molt_iter(py, iterable_bits);
         if obj_from_bits(iterator_bits).is_none() {
             return raise_not_iterable(py, iterable_bits);
@@ -3264,7 +3337,7 @@ pub extern "C" fn molt_itertools_tee_new(_cls_bits: u64, iterable_bits: u64) -> 
             .expect("iterator object");
         if unsafe { bridge::object_class_bits(iterator_ptr) } == class {
             // Flatten tee-of-tee by copying its current block and offset.
-            return molt_itertools_tee_copy(iterator.bits());
+            return molt_itertools_tee_copy_attached_body(py, iterator.bits());
         }
         let Some(block) = tee_new_block(py, iterator.bits()) else {
             return MoltObject::none().bits();
@@ -3275,9 +3348,11 @@ pub extern "C" fn molt_itertools_tee_new(_cls_bits: u64, iterable_bits: u64) -> 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_tee_copy(self_bits: u64) -> u64 {
-    with_core_gil!(py, {
+pub fn molt_itertools_tee_copy_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    self_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, py, {
         let ptr = obj_from_bits(self_bits).as_ptr().expect("tee reader");
         let cursor = unsafe { ptr.cast::<TeeCursor>().read() };
         let class = tee_iter_class(py);
@@ -3290,9 +3365,11 @@ pub extern "C" fn molt_itertools_tee_copy(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_tee_next(self_bits: u64) -> u64 {
-    with_core_gil!(py, {
+pub fn molt_itertools_tee_next_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    self_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, py, {
         let self_ptr = obj_from_bits(self_bits)
             .as_ptr()
             .expect("tee reader")
@@ -3743,9 +3820,19 @@ pub fn itertools_release_typed_resources(resource: DetachedItertoolsResource) {
     unsafe { (resource.drop_fn)(resource.pointer) };
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_batched_new_312(class_bits: u64, iterable: u64, n: u64) -> u64 {
-    molt_itertools_batched_new(class_bits, iterable, n, MoltObject::from_bool(false).bits())
+pub fn molt_itertools_batched_new_312_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    class_bits: u64,
+    iterable: u64,
+    n: u64,
+) -> u64 {
+    molt_itertools_batched_new_attached_body(
+        _py,
+        class_bits,
+        iterable,
+        n,
+        MoltObject::from_bool(false).bits(),
+    )
 }
 
 #[cfg(test)]
@@ -3784,3 +3871,5 @@ mod tests {
         assert_eq!(next_idx, i64::MAX);
     }
 }
+
+include!("attached_exports_generated/itertools.rs");

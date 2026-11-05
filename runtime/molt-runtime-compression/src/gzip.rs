@@ -25,26 +25,32 @@ pub struct GzipFileHandle {
     inner: GzipHandleInner,
 }
 
-fn gzip_handle_from_bits(bits: u64) -> Option<Arc<Mutex<GzipFileHandle>>> {
-    unsafe { molt_runtime_core::clone_native_arc(bits, __molt_compression_gzip_file_owner_clone) }
+fn gzip_handle_from_bits(
+    py: &molt_runtime_core::PyToken,
+    bits: u64,
+) -> Option<Arc<Mutex<GzipFileHandle>>> {
+    unsafe {
+        molt_runtime_core::clone_native_arc(py, bits, __molt_compression_gzip_file_owner_clone)
+    }
 }
 
 /// `gzip.open(filename, mode, compresslevel) -> handle`
 ///
 /// This is the retained filename READ owner. Writing uses BufferedWriter and zlib.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gzip_open(
+
+pub fn molt_gzip_open_attached_body(
+    _py: &molt_runtime_core::PyToken,
     filename_bits: u64,
     mode_bits: u64,
     _compresslevel_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let name_obj = obj_from_bits(filename_bits);
-        let Some(name) = string_obj_to_owned(name_obj) else {
+        let Some(name) = string_obj_to_owned(_py, name_obj) else {
             return raise_exception(_py, BuiltinExc::TypeError, "filename must be str");
         };
         let mode_obj = obj_from_bits(mode_bits);
-        let mode = string_obj_to_owned(mode_obj).unwrap_or_else(|| "rb".to_string());
+        let mode = string_obj_to_owned(_py, mode_obj).unwrap_or_else(|| "rb".to_string());
         let inner = match mode.trim_matches('b') {
             "r" => {
                 let file = match File::open(&name) {
@@ -83,16 +89,24 @@ pub extern "C" fn molt_gzip_open(
         };
         let handle = Arc::new(Mutex::new(GzipFileHandle { inner }));
         unsafe {
-            molt_runtime_core::transfer_native_arc(handle, __molt_compression_gzip_file_owner_new)
+            molt_runtime_core::transfer_native_arc(
+                _py,
+                handle,
+                __molt_compression_gzip_file_owner_new,
+            )
         }
     })
 }
 
 /// `handle.read(size=-1) -> bytes`
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gzip_read(handle_bits: u64, size_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle_owner) = gzip_handle_from_bits(handle_bits) else {
+
+pub fn molt_gzip_read_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    size_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(handle_owner) = gzip_handle_from_bits(_py, handle_bits) else {
             return raise_exception(_py, BuiltinExc::OSError, "invalid gzip handle");
         };
 
@@ -139,10 +153,10 @@ pub extern "C" fn molt_gzip_read(handle_bits: u64, size_bits: u64) -> u64 {
 }
 
 /// `reader.close() -> None`
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gzip_close(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(handle_owner) = gzip_handle_from_bits(handle_bits) else {
+
+pub fn molt_gzip_close_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(handle_owner) = gzip_handle_from_bits(_py, handle_bits) else {
             return raise_exception(_py, BuiltinExc::OSError, "invalid gzip handle");
         };
 
@@ -153,3 +167,5 @@ pub extern "C" fn molt_gzip_close(handle_bits: u64) -> u64 {
         MoltObject::none().bits()
     })
 }
+
+include!("attached_exports_generated/gzip.rs");

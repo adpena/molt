@@ -1731,8 +1731,9 @@ unsafe fn write_bits_out(out: *mut u64, bits: u64) {
 /// points to eight writable bytes (alignment is not required).
 /// A valid out is initialized to None before failure; nonzero status records
 /// a pending exception (1: invalid input, 2: output/allocation failure).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_string_from_bytes(
+
+pub(crate) unsafe fn molt_string_from_bytes_attached_body(
+    _py: &crate::PyToken<'_>,
     ptr: *const u8,
     len_bits: u64,
     out: *mut u64,
@@ -1741,7 +1742,7 @@ pub unsafe extern "C" fn molt_string_from_bytes(
         if !out.is_null() {
             write_bits_out(out, MoltObject::none().bits());
         }
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(len) = usize_from_bits(len_bits).filter(|len| *len <= isize::MAX as usize)
             else {
                 crate::raise_exception::<()>(
@@ -1849,8 +1850,9 @@ pub unsafe extern "C" fn molt_string_from_bytes(
 /// points to eight writable bytes (alignment is not required).
 /// A valid out is initialized to None before failure; nonzero status records
 /// a pending exception (1: invalid input, 2: output/allocation failure).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_bytes_from_bytes(
+
+pub(crate) unsafe fn molt_bytes_from_bytes_attached_body(
+    _py: &crate::PyToken<'_>,
     ptr: *const u8,
     len_bits: u64,
     out: *mut u64,
@@ -1859,7 +1861,7 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
         if !out.is_null() {
             write_bits_out(out, MoltObject::none().bits());
         }
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let trace = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_BYTES_FROM_BYTES);
             let Some(len) = usize_from_bits(len_bits).filter(|len| *len <= isize::MAX as usize)
             else {
@@ -1938,11 +1940,14 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
 
 #[cfg(test)]
 mod literal_failure_tests {
-    use super::{molt_bytes_from_bytes, molt_string_from_bytes};
+    use super::{
+        molt_bytes_from_bytes, molt_bytes_from_bytes_attached_body, molt_string_from_bytes,
+        molt_string_from_bytes_attached_body,
+    };
     use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
     use crate::{MoltObject, dec_ref_bits, exception_pending, obj_from_bits};
 
-    type Materializer = unsafe extern "C" fn(*const u8, u64, *mut u64) -> i32;
+    type Materializer = unsafe extern "C" fn(u64, *const u8, u64, *mut u64) -> i32;
 
     struct RestoreTracker;
 
@@ -1963,7 +1968,10 @@ mod literal_failure_tests {
                 for len in [1, u64::MAX] {
                     let mut storage = [0xa5_u8; 10];
                     let out = unsafe { storage.as_mut_ptr().add(1).cast::<u64>() };
-                    assert_eq!(unsafe { materialize(std::ptr::null(), len, out) }, 1);
+                    assert_eq!(
+                        unsafe { materialize(py.attached_context(), std::ptr::null(), len, out) },
+                        1
+                    );
                     assert_eq!(unsafe { out.read_unaligned() }, MoltObject::none().bits());
                     assert_eq!(storage[0], 0xa5);
                     assert_eq!(storage[9], 0xa5);
@@ -1971,7 +1979,14 @@ mod literal_failure_tests {
                     crate::clear_exception(py);
                 }
                 assert_eq!(
-                    unsafe { materialize(std::ptr::null(), 0, std::ptr::null_mut()) },
+                    unsafe {
+                        materialize(
+                            py.attached_context(),
+                            std::ptr::null(),
+                            0,
+                            std::ptr::null_mut(),
+                        )
+                    },
                     2
                 );
                 assert!(exception_pending(py));
@@ -1979,7 +1994,10 @@ mod literal_failure_tests {
 
                 // A null input with zero length is a valid empty literal.
                 let mut out = MoltObject::none().bits();
-                assert_eq!(unsafe { materialize(std::ptr::null(), 0, &mut out) }, 0);
+                assert_eq!(
+                    unsafe { materialize(py.attached_context(), std::ptr::null(), 0, &mut out) },
+                    0
+                );
                 assert!(obj_from_bits(out).as_ptr().is_some());
                 assert!(!exception_pending(py));
                 dec_ref_bits(py, out);
@@ -1994,14 +2012,18 @@ mod literal_failure_tests {
             static INVALID_WTF8: &[u8] = &[0xff, 0, 0x80];
             let mut out = 0;
             assert_eq!(
-                unsafe { molt_string_from_bytes(INVALID_WTF8.as_ptr(), 3, &mut out) },
+                unsafe {
+                    molt_string_from_bytes_attached_body(py, INVALID_WTF8.as_ptr(), 3, &mut out)
+                },
                 1
             );
             assert_eq!(out, MoltObject::none().bits());
             assert!(exception_pending(py));
             crate::clear_exception(py);
             assert_eq!(
-                unsafe { molt_bytes_from_bytes(INVALID_WTF8.as_ptr(), 3, &mut out) },
+                unsafe {
+                    molt_bytes_from_bytes_attached_body(py, INVALID_WTF8.as_ptr(), 3, &mut out)
+                },
                 0
             );
             let ptr = obj_from_bits(out).as_ptr().expect("owned bytes result");
@@ -2035,7 +2057,14 @@ mod literal_failure_tests {
             for (materialize, bytes, _) in cases {
                 let mut out = 0;
                 assert_eq!(
-                    unsafe { materialize(bytes.as_ptr(), bytes.len() as u64, &mut out) },
+                    unsafe {
+                        materialize(
+                            py.attached_context(),
+                            bytes.as_ptr(),
+                            bytes.len() as u64,
+                            &mut out,
+                        )
+                    },
                     2
                 );
                 assert_eq!(out, MoltObject::none().bits());
@@ -2046,7 +2075,14 @@ mod literal_failure_tests {
             for (materialize, bytes, type_id) in cases {
                 let mut out = MoltObject::none().bits();
                 assert_eq!(
-                    unsafe { materialize(bytes.as_ptr(), bytes.len() as u64, &mut out) },
+                    unsafe {
+                        materialize(
+                            py.attached_context(),
+                            bytes.as_ptr(),
+                            bytes.len() as u64,
+                            &mut out,
+                        )
+                    },
                     0
                 );
                 let ptr = obj_from_bits(out).as_ptr().expect("owned literal result");
@@ -2070,3 +2106,5 @@ mod search_tests {
         assert_eq!(bytes_rfind_impl(b"ababab", b"xyz"), -1);
     }
 }
+
+include!("../attached_exports_generated/builtins/strings.rs");

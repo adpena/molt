@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use molt_ir::OpKind;
 
 fn runtime_call_shape_function(
@@ -84,13 +86,13 @@ fn named_builtin_llvm_lowering_never_drops_the_first_argument() {
             .print_to_string()
             .to_string();
         assert_eq!(
-            ir.matches("@molt_callargs_push_pos(").count(),
+            ir.matches_execution("@molt_callargs_push_pos(").count(),
             expected_arguments,
             "{ir}"
         );
-        assert!(ir.contains("@molt_call_builtin("), "{ir}");
+        assert!(ir.contains_execution("@molt_call_builtin("), "{ir}");
         assert_eq!(
-            ir.matches("@__molt_inline_release(").count(),
+            ir.matches_execution("@__molt_inline_release(").count(),
             usize::from(named),
             "only synthesized names are temporary owners; dynamic names remain borrowed: {ir}"
         );
@@ -162,7 +164,7 @@ fn lower_preserved_passthrough_class_routes_to_runtime() {
                 )
             });
         assert!(
-            ir.contains(sym),
+            ir.contains_execution(sym),
             "preserved `{kind}` must lower to `{sym}` (not an operand-0 \
                  passthrough); IR:\n{ir}"
         );
@@ -208,33 +210,33 @@ fn runtime_builtin_callable_uses_manifest_without_compiled_linkage() {
             let function = builtin_callable_function(symbol, arity, named);
             try_lower_tir_to_llvm(&function, &backend).unwrap();
             backend.module.verify().unwrap();
-            let target = backend.module.get_function(symbol).unwrap();
-            assert_eq!(target.count_params(), arity as u32);
+            let target = backend.module.get_execution_function(symbol).unwrap();
+            assert_eq!(target.count_params(), arity as u32 + 1);
             assert_eq!(
                 target.get_type().get_return_type(),
                 Some(ctx.i64_type().into())
             );
             let trampoline = backend
                 .module
-                .get_function(&format!("{symbol}__molt_llvm_trampoline_{arity}"))
+                .get_execution_function(&format!("{symbol}__molt_llvm_trampoline_{arity}"))
                 .unwrap()
                 .print_to_string()
                 .to_string();
             assert_eq!(
-                trampoline.matches("load i64,").count(),
+                trampoline.matches_execution("load i64,").count(),
                 arity as usize,
                 "{trampoline}"
             );
             assert!(
-                trampoline.contains(&format!("call i64 @{symbol}(")),
+                trampoline.contains_execution(&format!("call i64 @{symbol}(")),
                 "{trampoline}"
             );
             assert!(
-                !trampoline.contains("molt_int_as_i64"),
+                !trampoline.contains_execution("molt_int_as_i64"),
                 "boxed integer arguments must retain all bits: {trampoline}"
             );
             assert!(
-                !trampoline.contains("molt_dec_ref"),
+                !trampoline.contains_execution("molt_dec_ref"),
                 "runtime entries borrow the boxed arguments: {trampoline}"
             );
         }
@@ -277,11 +279,15 @@ fn runtime_builtin_call_frame_uses_provider_as_trampoline() {
     let lowered = try_lower_tir_to_llvm(&function, &backend).unwrap();
     backend.module.verify().unwrap();
     let ir = lowered.print_to_string().to_string();
-    assert_eq!(ir.matches(&format!("ptr @{symbol}")).count(), 2, "{ir}");
+    assert_eq!(
+        ir.matches_execution(&format!("ptr @{symbol}")).count(),
+        2,
+        "{ir}"
+    );
     assert!(
         backend
             .module
-            .get_function(&format!("{symbol}__molt_llvm_trampoline_3"))
+            .get_execution_function(&format!("{symbol}__molt_llvm_trampoline_3"))
             .is_none(),
         "call frame must not be unpacked as Python positional arguments"
     );
@@ -339,14 +345,18 @@ fn callable_constructors_release_only_discarded_owned_results() {
             } else {
                 format!("molt_{kind}")
             };
-            assert!(ir.contains(&format!("call i64 @{symbol}(")), "{ir}");
+            assert!(
+                ir.contains_execution(&format!("call i64 @{symbol}(")),
+                "{ir}"
+            );
             assert_eq!(
-                ir.matches("call void @__molt_inline_release(").count(),
+                ir.matches_execution("call void @__molt_inline_release(")
+                    .count(),
                 usize::from(!bound),
                 "{kind}, bound={bound}: {ir}"
             );
             assert!(
-                !ir.contains("call void @__molt_inline_retain("),
+                !ir.contains_execution("call void @__molt_inline_retain("),
                 "owned constructor result is transferred, not retained: {ir}"
             );
         }
@@ -389,7 +399,7 @@ fn descriptor_constructors_share_boxed_admission_and_argument_materialization() 
             let error = lower_preserved_kind_ir(&backend, kind, supplied, true, None)
                 .expect_err("descriptor construction must enforce generated ABI admission");
             assert_lowering_error_contains(&error, diagnostic);
-            assert!(backend.module.get_function(&symbol).is_none());
+            assert!(backend.module.get_execution_function(&symbol).is_none());
         }
 
         // A raw integer carrier is not already a Python object. The common
@@ -426,17 +436,21 @@ fn descriptor_constructors_share_boxed_admission_and_argument_materialization() 
         let boxed = (nanbox::QNAN | nanbox::TAG_INT | 7) as i64;
         let call = ir
             .lines()
-            .find(|line| line.contains(&format!("call i64 @{symbol}(")))
+            .find(|line| line.contains_execution(&format!("call i64 @{symbol}(")))
             .unwrap_or_else(|| panic!("missing descriptor call: {ir}"));
-        assert_eq!(call.matches("i64 %boxed_int").count(), arity, "{ir}");
         assert_eq!(
-            ir.matches("call void @__molt_inline_release(i64 %boxed_call_owner_bits")
+            call.matches_execution("i64 %boxed_int").count(),
+            arity,
+            "{ir}"
+        );
+        assert_eq!(
+            ir.matches_execution("call void @__molt_inline_release(i64 %boxed_call_owner_bits")
                 .count(),
             1,
             "repeated descriptor operands share one materialized owner: {ir}"
         );
         assert_eq!(
-            ir.matches(&format!("phi i64 [ {boxed}, %box_int_inline"))
+            ir.matches_execution(&format!("phi i64 [ {boxed}, %box_int_inline"))
                 .count(),
             1,
             "repeated descriptor operands preserve identity: {ir}"
@@ -489,25 +503,26 @@ fn dedicated_runtime_results_preserve_borrowed_and_owned_custody() {
             } else {
                 format!("call i64 @molt_{kind}(i64 %0)")
             };
-            assert!(ir.contains(&expected_call), "{ir}");
-            assert!(!ir.contains("@molt_int_from_i64("), "{ir}");
+            assert!(ir.contains_execution(&expected_call), "{ir}");
+            assert!(!ir.contains_execution("@molt_int_from_i64("), "{ir}");
             if kind == OpKind::AllocClass {
                 let publish = "call i64 @molt_object_publish_initialized(i64 %alloc_class)";
-                assert!(ir.contains(publish), "{ir}");
+                assert!(ir.contains_execution(publish), "{ir}");
                 assert!(
-                    ir.find(&expected_call).unwrap() < ir.find(publish).unwrap(),
+                    ir.find_execution(&expected_call).unwrap()
+                        < ir.find_execution(publish).unwrap(),
                     "{ir}"
                 );
                 if !keep_result {
                     assert!(
-                        ir.contains("call void @__molt_inline_release(i64 %class_initialized, i64 %rc_admission)"),
+                        ir.contains_execution("call void @__molt_inline_release(i64 %class_initialized, i64 %rc_admission)"),
                         "{ir}"
                     );
                 }
             }
             if kind == OpKind::AsyncgenNew && !keep_result {
                 assert!(
-                    ir.contains(
+                    ir.contains_execution(
                         "call void @__molt_inline_release(i64 %asyncgen_new, i64 %rc_admission)"
                     ),
                     "{ir}"
@@ -519,22 +534,27 @@ fn dedicated_runtime_results_preserve_borrowed_and_owned_custody() {
                 } else {
                     kind.as_str()
                 };
-                assert!(ir.contains(&format!("ret i64 %{result_name}")), "{ir}");
+                assert!(
+                    ir.contains_execution(&format!("ret i64 %{result_name}")),
+                    "{ir}"
+                );
             }
             let borrowed = kind == OpKind::FunctionClosureBits;
             assert_eq!(
-                ir.matches("call void @__molt_inline_retain(").count(),
+                ir.matches_execution("call void @__molt_inline_retain(")
+                    .count(),
                 usize::from(borrowed && keep_result),
                 "only binding a borrowed closure acquires an owner: {ir}"
             );
             assert_eq!(
-                ir.matches("call void @__molt_inline_release(").count(),
+                ir.matches_execution("call void @__molt_inline_release(")
+                    .count(),
                 usize::from(!borrowed && !keep_result),
                 "only discarding an owned result retires an owner: {ir}"
             );
             if borrowed && keep_result {
                 assert!(
-                    ir.contains("call void @__molt_inline_retain(i64 %function_closure_bits, i64 %rc_admission)"),
+                    ir.contains_execution("call void @__molt_inline_retain(i64 %function_closure_bits, i64 %rc_admission)"),
                     "{ir}"
                 );
             }
@@ -596,23 +616,23 @@ fn retired_exact_runtime_kinds_take_the_admitted_boxed_route() {
                 .unwrap_or_else(|error| panic!("{kind}: {error}"));
             let call = ir
                 .lines()
-                .find(|line| line.contains(&format!("call i64 @{symbol}(")))
+                .find(|line| line.contains_execution(&format!("call i64 @{symbol}(")))
                 .unwrap_or_else(|| panic!("{kind}: missing runtime call: {ir}"));
             assert_eq!(
-                call.matches("i64 %boxed_int").count(),
+                call.matches_execution("i64 %boxed_int").count(),
                 arity,
                 "{kind}: {ir}"
             );
             assert_eq!(
-                ir.matches("call i64 @molt_int_from_i64(").count(),
+                ir.matches_execution("call i64 @molt_int_from_i64(").count(),
                 1,
                 "{kind}: {ir}"
             );
             let release =
                 "call void @__molt_inline_release(i64 %boxed_call_owner_bits, i64 %rc_admission)";
-            assert_eq!(ir.matches(release).count(), 1, "{kind}: {ir}");
+            assert_eq!(ir.matches_execution(release).count(), 1, "{kind}: {ir}");
             assert!(
-                ir.find(call).unwrap() < ir.find(release).unwrap(),
+                ir.find_execution(call).unwrap() < ir.find_execution(release).unwrap(),
                 "{kind}: the box outlives the borrowing call: {ir}"
             );
         }
@@ -731,17 +751,17 @@ fn dedicated_object_abi_arms_box_raw_operands_and_keep_raw_words() {
         let release =
             format!("call void @__molt_inline_release(i64 %{kind}_owner_bits, i64 %rc_admission)");
         assert!(
-            ir.contains(&call),
+            ir.contains_execution(&call),
             "{kind}: object operands are boxed and raw ABI words stay raw: {ir}"
         );
         assert_eq!(
-            ir.matches("call i64 @molt_int_from_i64(").count(),
+            ir.matches_execution("call i64 @molt_int_from_i64(").count(),
             1,
             "{kind}: {ir}"
         );
-        assert_eq!(ir.matches(&release).count(), 1, "{kind}: {ir}");
+        assert_eq!(ir.matches_execution(&release).count(), 1, "{kind}: {ir}");
         assert!(
-            ir.find(&call).unwrap() < ir.find(&release).unwrap(),
+            ir.find_execution(&call).unwrap() < ir.find_execution(&release).unwrap(),
             "{kind}: the box outlives the borrowing call: {ir}"
         );
     }
@@ -780,10 +800,15 @@ fn dedicated_object_abi_arms_box_raw_operands_and_keep_raw_words() {
     let call = "call i64 @molt_module_set_attr(i64 %boxed_int, i64 %boxed_int, i64 %boxed_int)";
     let release =
         "call void @__molt_inline_release(i64 %module_call_owner_bits, i64 %rc_admission)";
-    assert!(ir.contains(call), "{ir}");
-    assert!(ir.find(call).unwrap() < ir.find(release).unwrap(), "{ir}");
+    assert!(ir.contains_execution(call), "{ir}");
     assert!(
-        ir.contains("call void @__molt_inline_release(i64 %module_call_result, i64 %rc_admission)"),
+        ir.find_execution(call).unwrap() < ir.find_execution(release).unwrap(),
+        "{ir}"
+    );
+    assert!(
+        ir.contains_execution(
+            "call void @__molt_inline_release(i64 %module_call_result, i64 %rc_admission)"
+        ),
         "a discarded owned module result is released: {ir}"
     );
 }
@@ -839,14 +864,19 @@ fn direct_and_preserved_boxed_calls_share_result_custody() {
                     .print_to_string()
                     .to_string();
                 let call_abi = if shape == "void" { "void" } else { "i64" };
-                assert!(ir.contains(&format!("call {call_abi} @{symbol}(")), "{ir}");
+                assert!(
+                    ir.contains_execution(&format!("call {call_abi} @{symbol}(")),
+                    "{ir}"
+                );
                 assert_eq!(
-                    ir.matches("call void @__molt_inline_retain(").count(),
+                    ir.matches_execution("call void @__molt_inline_retain(")
+                        .count(),
                     usize::from(shape == "borrowed" && with_result),
                     "only a bound borrowed result acquires ownership: {ir}"
                 );
                 assert_eq!(
-                    ir.matches("call void @__molt_inline_release(").count(),
+                    ir.matches_execution("call void @__molt_inline_release(")
+                        .count(),
                     usize::from(shape == "owned" && !with_result),
                     "only an unbound owned result is disposed: {ir}"
                 );
@@ -879,14 +909,14 @@ fn preserved_vector_reductions_reject_wrong_arity_before_materialization() {
                 &error,
                 "has no positional boxed-value ABI classification",
             );
-            assert!(backend.module.get_function(&symbol).is_none());
+            assert!(backend.module.get_execution_function(&symbol).is_none());
             let ir = backend.module.print_to_string().to_string();
             assert!(
-                !ir.contains("call i64 @molt_int_from_i64("),
+                !ir.contains_execution("call i64 @molt_int_from_i64("),
                 "{kind}/{arity}: {ir}"
             );
             assert!(
-                !ir.contains("call void @__molt_inline_release("),
+                !ir.contains_execution("call void @__molt_inline_release("),
                 "{kind}/{arity}: {ir}"
             );
         }
@@ -908,25 +938,27 @@ fn direct_and_preserved_borrowed_calls_box_raw_arguments_before_cleanup() {
             .to_string();
         let call = ir
             .lines()
-            .find(|line| line.contains("call i64 @molt_dict_set("))
+            .find(|line| line.contains_execution("call i64 @molt_dict_set("))
             .unwrap_or_else(|| panic!("missing borrowed dict call: {ir}"));
-        assert_eq!(call.matches("i64 %boxed_int").count(), 3, "{ir}");
+        assert_eq!(call.matches_execution("i64 %boxed_int").count(), 3, "{ir}");
         assert_eq!(
-            ir.matches("call i64 @molt_int_from_i64(").count(),
+            ir.matches_execution("call i64 @molt_int_from_i64(").count(),
             1,
             "the same raw value in three positions must keep one object identity: {ir}"
         );
         assert_eq!(
-            ir.matches("call void @__molt_inline_release(i64 %boxed_call_owner_bits")
+            ir.matches_execution("call void @__molt_inline_release(i64 %boxed_call_owner_bits")
                 .count(),
             1,
             "the single materialized owner must be retired exactly once: {ir}"
         );
         let retain = ir
-            .find("call void @__molt_inline_retain(i64 %molt_dict_set, i64 %rc_admission)")
+            .find_execution(
+                "call void @__molt_inline_retain(i64 %molt_dict_set, i64 %rc_admission)",
+            )
             .unwrap_or_else(|| panic!("bound borrowed result was not retained: {ir}"));
         let cleanup = ir
-            .find("call void @__molt_inline_release(i64 %boxed_call_owner_bits")
+            .find_execution("call void @__molt_inline_release(i64 %boxed_call_owner_bits")
             .unwrap_or_else(|| panic!("temporary argument owner was not retired: {ir}"));
         assert!(
             retain < cleanup,
@@ -963,11 +995,20 @@ fn direct_and_preserved_boxed_calls_require_runtime_symbol_admission() {
                         "boxed runtime symbol `{symbol}` is unavailable in the selected runtime"
                     ),
                 );
-                assert!(backend.module.get_function(symbol).is_none());
+                assert!(backend.module.get_execution_function(symbol).is_none());
                 let ir = backend.module.print_to_string().to_string();
-                assert!(!ir.contains("call i64 @molt_int_from_i64("), "{ir}");
-                assert!(!ir.contains("call void @__molt_inline_retain("), "{ir}");
-                assert!(!ir.contains("call void @__molt_inline_release("), "{ir}");
+                assert!(
+                    !ir.contains_execution("call i64 @molt_int_from_i64("),
+                    "{ir}"
+                );
+                assert!(
+                    !ir.contains_execution("call void @__molt_inline_retain("),
+                    "{ir}"
+                );
+                assert!(
+                    !ir.contains_execution("call void @__molt_inline_release("),
+                    "{ir}"
+                );
             }
         }
     }
@@ -1021,15 +1062,18 @@ fn stateful_locals_registration_preserves_mixed_abi() {
             .verify()
             .expect("generator locals mixed ABI must verify");
         assert!(
-            ir.contains(&format!(
+            ir.contains_execution(&format!(
                 "call i64 @molt_{kind}(i64 ptrtoint (ptr @poll_fn to i64), i64 %0, i64 %1)"
             )),
             "{ir}"
         );
-        let poll_fn = backend.module.get_function("poll_fn").unwrap();
-        assert_eq!(poll_fn.count_params(), 1, "{ir}");
-        assert!(!ir.contains("@molt_int_from_i64("), "{ir}");
-        assert!(!ir.contains("call void @__molt_inline_release("), "{ir}");
+        let poll_fn = backend.module.get_execution_function("poll_fn").unwrap();
+        assert_eq!(poll_fn.count_params(), 2, "{ir}");
+        assert!(!ir.contains_execution("@molt_int_from_i64("), "{ir}");
+        assert!(
+            !ir.contains_execution("call void @__molt_inline_release("),
+            "{ir}"
+        );
     }
 }
 
@@ -1092,18 +1136,18 @@ fn layout_guards_pass_the_class_statement_slot_and_a_tagged_receiver() {
         molt_ir::code_slots::ProgramSlotKind::Code,
         "class:m:C",
     );
-    assert!(ir.contains(&format!("@{binding}")), "{ir}");
+    assert!(ir.contains_execution(&format!("@{binding}")), "{ir}");
     assert!(
-        ir.contains("@molt_class_set_definition(i64 %0, i64 %program_slot"),
+        ir.contains_execution("@molt_class_set_definition(i64 %0, i64 %program_slot"),
         "the stamp names its statement's slot: {ir}"
     );
     assert!(
-        ir.contains("@molt_guard_layout(i64 %1, i64 %program_slot"),
+        ir.contains_execution("@molt_guard_layout(i64 %1, i64 %program_slot"),
         "layout guards keep the receiver tag and name the statement's slot: {ir}"
     );
-    assert!(ir.contains(", i64 %2)"), "{ir}");
+    assert!(ir.contains_execution(", i64 %2)"), "{ir}");
     assert!(
-        !ir.contains("inttoptr") && !ir.contains("ptr_unbox"),
+        !ir.contains_execution("inttoptr") && !ir.contains_execution("ptr_unbox"),
         "{ir}"
     );
 }
@@ -1140,19 +1184,31 @@ fn marked_finally_observer_loads_the_work_word_and_selects_the_passive_or_cold_p
         .print_to_string()
         .to_string();
     assert!(
-        ir.contains("molt_async_work_poll_and_exception_last_pending"),
+        ir.contains_execution(&format!(
+            "add i64 %execution_context, {}",
+            molt_ir::runtime_callable_abi_generated::ATTACHED_CONTEXT_THREAD_RECORD_OFFSET,
+        )),
+        "the thread record comes from the admitted context header: {ir}"
+    );
+    assert!(
+        ir.contains_execution("load i64, ptr %execution_context_header_ptr")
+            && !ir.contains_execution("molt_thread_record"),
+        "entry must load its attached record without runtime/TLS admission: {ir}"
+    );
+    assert!(
+        ir.contains_execution("molt_async_work_poll_and_exception_last_pending"),
         "marked observer must use the fused poll/object-return primitive:\n{ir}"
     );
     assert!(
-        ir.contains("call i64 @molt_exception_last_pending"),
+        ir.contains_execution("call i64 @molt_exception_last_pending"),
         "the empty work edge must observe the passive exception payload:\n{ir}"
     );
     assert!(
-        ir.contains("load atomic volatile i32") && ir.contains("monotonic"),
+        ir.contains_execution("load atomic volatile i32") && ir.contains_execution("monotonic"),
         "{ir}"
     );
     assert!(
-        ir.contains("async_poll_cold") && ir.contains("async_poll_fast"),
+        ir.contains_execution("async_poll_cold") && ir.contains_execution("async_poll_fast"),
         "{ir}"
     );
 }
@@ -1169,9 +1225,12 @@ fn lower_special_get_attr_trusts_runtime_owned_result() {
         Some("__class__"),
     )
     .expect("special getattr must lower");
-    assert!(ir.contains("molt_get_attr_special"), "{ir}");
-    assert!(!ir.contains("get_attr_special_inc_ref"), "{ir}");
-    assert!(!ir.contains("call void @__molt_inline_retain"), "{ir}");
+    assert!(ir.contains_execution("molt_get_attr_special"), "{ir}");
+    assert!(!ir.contains_execution("get_attr_special_inc_ref"), "{ir}");
+    assert!(
+        !ir.contains_execution("call void @__molt_inline_retain"),
+        "{ir}"
+    );
 }
 
 /// Repr-identity preserved ops (`cast`, `widen`, `store_var`, `copy_var`, and
@@ -1229,11 +1288,11 @@ fn lower_preserved_repr_identity_ops_pass_operand_through() {
                 )
             });
         assert!(
-            !ir.contains("call "),
+            !ir.contains_execution("call "),
             "repr-identity preserved `{kind}` must not lower through a runtime call:\n{ir}"
         );
         assert!(
-            ir.contains("ret i64 %0"),
+            ir.contains_execution("ret i64 %0"),
             "repr-identity preserved `{kind}` must return operand 0 exactly:\n{ir}"
         );
     }
@@ -1290,13 +1349,13 @@ fn lower_preserved_resultless_side_effect_routes_to_runtime() {
             )
         });
         assert!(
-            ir.contains(sym),
+            ir.contains_execution(sym),
             "result-less preserved `{kind}` must lower to `{sym}` (not a \
                  dropped no-op); IR:\n{ir}"
         );
         if sym == "molt_print_newline" {
             assert!(
-                ir.contains("call void @molt_print_newline()"),
+                ir.contains_execution("call void @molt_print_newline()"),
                 "print_newline must use the runtime's void ABI; IR:\n{ir}"
             );
         }
@@ -1320,7 +1379,7 @@ fn raw_runtime_services_cannot_be_spelled_as_wire_operations() {
     for spelling in ["int_from_i64", "int_as_i64", "is_truthy"] {
         let error = serde_json::from_value::<molt_ir::OpIR>(serde_json::json!({"kind": spelling}))
             .unwrap_err();
-        assert!(error.to_string().contains(spelling), "{error}");
+        assert!(error.to_string().contains_execution(spelling), "{error}");
     }
 }
 
@@ -1373,7 +1432,7 @@ fn lower_bare_copy_withoutorigin_passes_through() {
         .map(|f| f.print_to_string().to_string())
         .expect("a bare Copy without origin must lower as a passthrough");
     assert!(
-        !ir.contains("unhandled preserved"),
+        !ir.contains_execution("unhandled preserved"),
         "bare Copy must not trigger the preserved-op fail-loud: {ir}"
     );
 }
@@ -1413,8 +1472,8 @@ fn lower_preserved_len_ignores_transport_container_type() {
 
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("call i64 @molt_len("), "{ir}");
-    assert!(!ir.contains("call i64 @molt_len_tuple("), "{ir}");
+    assert!(ir.contains_execution("call i64 @molt_len("), "{ir}");
+    assert!(!ir.contains_execution("call i64 @molt_len_tuple("), "{ir}");
 }
 
 #[test]
@@ -1446,7 +1505,7 @@ fn lower_preserved_len_uses_tir_tuple_fact() {
 
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("call i64 @molt_len_tuple("), "{ir}");
+    assert!(ir.contains_execution("call i64 @molt_len_tuple("), "{ir}");
 }
 
 #[test]
@@ -1495,7 +1554,7 @@ fn custom_container_calls_retire_discarded_owned_returns() {
     let ir = llvm_fn.print_to_string().to_string();
     for result in ["molt_len", "molt_iter_checked", "unpack_sequence"] {
         assert!(
-            ir.contains(&format!("call void @__molt_inline_release(i64 %{result}")),
+            ir.contains_execution(&format!("call void @__molt_inline_release(i64 %{result}")),
             "custom result {result} must be retired through its provider-backed ownership contract: {ir}"
         );
     }
@@ -1544,19 +1603,19 @@ fn custom_container_calls_box_and_retire_raw_inputs() {
         let input_release =
             "call void @__molt_inline_release(i64 %boxed_call_owner_bits, i64 %rc_admission)";
         assert!(
-            ir.contains(&call),
+            ir.contains_execution(&call),
             "raw preserved {kind} input must be boxed: {ir}"
         );
         assert!(
-            ir.contains(input_release),
+            ir.contains_execution(input_release),
             "raw preserved {kind} owner must be retired: {ir}"
         );
         assert!(
-            ir.find(&call).unwrap() < ir.find(input_release).unwrap(),
+            ir.find_execution(&call).unwrap() < ir.find_execution(input_release).unwrap(),
             "{ir}"
         );
         assert!(
-            ir.contains(
+            ir.contains_execution(
                 "call void @__molt_inline_release(i64 %boxed_call_result, i64 %rc_admission)"
             ),
             "discarded preserved {kind} result must be retired: {ir}"
@@ -1598,23 +1657,25 @@ fn custom_container_calls_box_and_retire_raw_inputs() {
     let input_release =
         "call void @__molt_inline_release(i64 %unpack_owner_bits, i64 %rc_admission)";
     assert!(
-        ir.contains(call),
+        ir.contains_execution(call),
         "unpack must keep its boxed/raw/raw mixed ABI: {ir}"
     );
     assert!(
-        ir.contains(input_release),
+        ir.contains_execution(input_release),
         "unpack input temporary must be retired: {ir}"
     );
     assert!(
-        ir.find(call).unwrap() < ir.find(input_release).unwrap(),
+        ir.find_execution(call).unwrap() < ir.find_execution(input_release).unwrap(),
         "{ir}"
     );
     assert!(
-        ir.contains("call void @__molt_inline_release(i64 %unpack_sequence, i64 %rc_admission)"),
+        ir.contains_execution(
+            "call void @__molt_inline_release(i64 %unpack_sequence, i64 %rc_admission)"
+        ),
         "unpack status owner must remain independently retired: {ir}"
     );
     assert!(
-        ir.contains("%unpack_elem = load i64, ptr %unpack_elem_ptr"),
+        ir.contains_execution("%unpack_elem = load i64, ptr %unpack_elem_ptr"),
         "{ir}"
     );
 }
@@ -1650,7 +1711,7 @@ fn lower_preserved_list_append_calls_runtime() {
 
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("molt_list_append"), "{ir}");
+    assert!(ir.contains_execution("molt_list_append"), "{ir}");
 }
 
 #[test]
@@ -1679,7 +1740,7 @@ fn lower_del_boundary_calls_dec_ref_runtime() {
 
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("__molt_inline_release"), "{ir}");
+    assert!(ir.contains_execution("__molt_inline_release"), "{ir}");
 }
 
 #[test]
@@ -1690,7 +1751,7 @@ fn lower_preserved_list_pop_calls_runtime() {
         .insert("molt_list_pop".to_string());
     let ir = lower_preserved_kind_ir(&backend, OpKind::ListPop, 2, true, None)
         .expect("list_pop must lower through the boxed runtime call");
-    assert!(ir.contains("molt_list_pop"), "{ir}");
+    assert!(ir.contains_execution("molt_list_pop"), "{ir}");
 }
 
 #[test]
@@ -1754,8 +1815,15 @@ fn preserved_word_ranges_use_static_entry_block_slots() {
             entry_ir.push_str(&current.print_to_string().to_string());
             instruction = current.get_next_instruction();
         }
-        assert!(entry_ir.contains("alloca i64, i64 2"), "{kind}: {ir}");
-        assert_eq!(ir.matches("alloca i64, i64 2").count(), 1, "{kind}: {ir}");
+        assert!(
+            entry_ir.contains_execution("alloca i64, i64 2"),
+            "{kind}: {ir}"
+        );
+        assert_eq!(
+            ir.matches_execution("alloca i64, i64 2").count(),
+            1,
+            "{kind}: {ir}"
+        );
     }
 }
 
@@ -1790,7 +1858,7 @@ fn lower_preserved_tuple_from_list_calls_runtime() {
 
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("molt_tuple_from_list"), "{ir}");
+    assert!(ir.contains_execution("molt_tuple_from_list"), "{ir}");
 }
 
 #[test]
@@ -1823,7 +1891,7 @@ fn lower_preserved_set_add_calls_runtime() {
 
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("molt_set_add"), "{ir}");
+    assert!(ir.contains_execution("molt_set_add"), "{ir}");
 }
 
 #[test]
@@ -1857,7 +1925,7 @@ fn lower_preserved_list_extend_calls_runtime() {
 
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("molt_list_extend"), "{ir}");
+    assert!(ir.contains_execution("molt_list_extend"), "{ir}");
 }
 
 #[test]
@@ -1890,7 +1958,7 @@ fn lower_preserved_aiter_calls_runtime() {
 
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("molt_aiter"), "{ir}");
+    assert!(ir.contains_execution("molt_aiter"), "{ir}");
 }
 
 #[test]
@@ -1925,7 +1993,7 @@ fn lower_preserved_gen_send_calls_runtime() {
 
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("molt_generator_send"), "{ir}");
+    assert!(ir.contains_execution("molt_generator_send"), "{ir}");
 }
 
 #[test]
@@ -1962,7 +2030,7 @@ fn lower_preserved_context_exit_calls_runtime() {
 
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("molt_context_exit"), "{ir}");
+    assert!(ir.contains_execution("molt_context_exit"), "{ir}");
 }
 
 #[test]
@@ -1996,9 +2064,12 @@ fn runtime_guard_results_return_the_original_operand_after_checking() {
             .expect("guard lowering")
             .print_to_string()
             .to_string();
-        assert!(ir.contains("@molt_guard_type(i64 %0, i64 %1)"), "{ir}");
         assert!(
-            ir.contains("ret i64 %0"),
+            ir.contains_execution("@molt_guard_type(i64 %0, i64 %1)"),
+            "{ir}"
+        );
+        assert!(
+            ir.contains_execution("ret i64 %0"),
             "guard must return its source: {ir}"
         );
     }
@@ -2039,13 +2110,18 @@ fn runtime_guard_literal_tag_loads_one_entry_profile_flag_and_keeps_source() {
         assert!(llvm.verify(true));
         let ir = llvm.print_to_string().to_string();
         assert_eq!(
-            ir.matches("call i64 @molt_profile_enabled()").count(),
+            ir.matches_execution("call i64 @molt_profile_enabled()")
+                .count(),
             1,
             "{ir}"
         );
-        assert_eq!(ir.matches("call i64 @molt_guard_type(").count(), 2, "{ir}");
+        assert_eq!(
+            ir.matches_execution("call i64 @molt_guard_type(").count(),
+            2,
+            "{ir}"
+        );
         assert!(
-            ir.contains("guard_profile") && ir.contains("ret i64 %0"),
+            ir.contains_execution("guard_profile") && ir.contains_execution("ret i64 %0"),
             "{ir}"
         );
     }
@@ -2091,12 +2167,14 @@ fn shared_boxed_text_calls_use_owned_abi_and_exact_arity() {
                 .print_to_string()
                 .to_string();
             assert_eq!(
-                ir.matches(&format!("call i64 @{symbol}(")).count(),
+                ir.matches_execution(&format!("call i64 @{symbol}("))
+                    .count(),
                 1,
                 "{ir}"
             );
             assert_eq!(
-                ir.matches("call void @__molt_inline_release(").count(),
+                ir.matches_execution("call void @__molt_inline_release(")
+                    .count(),
                 usize::from(!bound),
                 "{ir}"
             );
@@ -2158,11 +2236,14 @@ fn generated_runtime_call_agreement_imports_declared_llvm_function() {
                     .to_string();
                 backend.module.verify().expect("contract LLVM module");
                 assert!(
-                    ir.contains(&format!("call i64 @{}(", abi.symbol)),
+                    ir.contains_execution(&format!("call i64 @{}(", abi.symbol)),
                     "{call:?}: {ir}"
                 );
-                assert!(!ir.contains("call i64 @molt_store_index("), "{ir}");
-                assert!(!ir.contains("call i64 @molt_iter("), "{ir}");
+                assert!(
+                    !ir.contains_execution("call i64 @molt_store_index("),
+                    "{ir}"
+                );
+                assert!(!ir.contains_execution("call i64 @molt_iter("), "{ir}");
             }
         }
     }

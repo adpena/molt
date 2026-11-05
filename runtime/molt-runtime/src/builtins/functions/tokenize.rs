@@ -70,9 +70,9 @@ fn token_payload(py: &crate::PyToken<'_>, table: &TokenTable) -> Option<u64> {
 }
 
 /// Project the selected target's constants and public maps without runtime JSON.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_token_payload() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_token_payload_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if crate::exception_pending(py) {
             return MoltObject::none().bits();
         }
@@ -83,9 +83,9 @@ pub extern "C" fn molt_token_payload() -> u64 {
 }
 
 /// Tokenize source; scanner identities are projected through the same target table.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tokenize_scan(source_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_tokenize_scan_attached_body(_py: &crate::PyToken<'_>, source_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if crate::exception_pending(py) {
             return MoltObject::none().bits();
         }
@@ -176,9 +176,13 @@ fn make_token_tuple(
 }
 
 /// Detect source encoding using the first two byte lines.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_linecache_detect_encoding(first_bits: u64, second_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_linecache_detect_encoding_attached_body(
+    _py: &crate::PyToken<'_>,
+    first_bits: u64,
+    second_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if crate::exception_pending(py) {
             return MoltObject::none().bits();
         }
@@ -213,3 +217,5 @@ fn encoding_detection_tuple(py: &crate::PyToken<'_>, encoding: &str, bom_found: 
 #[cfg(test)]
 #[path = "tokenize_tests.rs"]
 mod tests;
+
+include!("../../attached_exports_generated/builtins/functions/tokenize.rs");

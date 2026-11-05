@@ -8,9 +8,9 @@ use crate::*;
 use molt_stdlib_text::punycode::{punycode_decode_impl, punycode_encode_impl};
 
 /// `molt_punycode_encode(text) -> bytes`
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_punycode_encode(text_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_punycode_encode_attached_body(_py: &crate::PyToken<'_>, text_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -28,9 +28,13 @@ pub extern "C" fn molt_punycode_encode(text_bits: u64) -> u64 {
 }
 
 /// `molt_punycode_decode(data, errors) -> str`
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_punycode_decode(data_bits: u64, errors_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_punycode_decode_attached_body(
+    _py: &crate::PyToken<'_>,
+    data_bits: u64,
+    errors_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let raw: Vec<u8> = if let Some(s) = string_obj_to_owned(obj_from_bits(data_bits)) {
             s.into_bytes()
         } else {
@@ -69,3 +73,5 @@ pub extern "C" fn molt_punycode_decode(data_bits: u64, errors_bits: u64) -> u64 
         }
     })
 }
+
+include!("../attached_exports_generated/builtins/punycode.rs");

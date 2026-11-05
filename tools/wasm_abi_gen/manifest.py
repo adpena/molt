@@ -237,21 +237,32 @@ def _call_indirect_imports(data: dict) -> list[tuple[int, str]]:
 def generator_external_native_artifact_import_shapes(
     data: dict,
 ) -> tuple[tuple[str, str, str], ...]:
+    from tools.wasm_abi_gen.execution_context import runtime_execution_specs
+
+    execution = {row["symbol"]: row for row in runtime_execution_specs(data)}
+
+    def physical(name: str) -> str:
+        return execution.get(name, {}).get("physical_symbol", name)
+
     shapes: dict[str, tuple[str, str]] = {}
     for entry in (
         *data.get("link_allowed_import", []),
         *data.get("external_native_link_import", []),
     ):
         shape = (entry["wasm_import_module"], entry["wasm_import_kind"])
-        previous = shapes.setdefault(entry["name"], shape)
+        previous = shapes.setdefault(physical(entry["name"]), shape)
         if previous != shape:
             raise WasmAbiManifestError(
                 f"WASM artifact import {entry['name']!r} has conflicting shapes "
                 f"{previous!r} and {shape!r}"
             )
     for entry in data["import"]:
-        shapes.setdefault(entry["name"], ("env", "function"))
+        shapes.setdefault(physical(runtime_export_name(entry)), ("env", "function"))
     for name in data["runtime_export_policy"]["host_exports"]:
+        shapes.setdefault(physical(name), ("env", "function"))
+    # libmolt's public C admission protocol is a distinct real producer from
+    # the attached compiled entry. Its declarations keep their C ABI.
+    for name in _public_c_api_signatures():
         shapes.setdefault(name, ("env", "function"))
     return tuple((name, *shapes[name]) for name in sorted(shapes))
 
@@ -260,11 +271,28 @@ def generator_external_native_artifact_function_signatures(
     data: dict,
 ) -> tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], ...]:
     """Return the complete module-qualified ABI for external artifacts."""
+    from tools.wasm_abi_gen.execution_context import runtime_execution_specs
+
+    execution = {row["symbol"]: row for row in runtime_execution_specs(data)}
+
+    def physical(name: str, params: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:
+        abi = execution.get(name)
+        if abi is None:
+            return name, params
+        return abi["physical_symbol"], (
+            ("i64", *params) if abi["context"] == "Attached" else params
+        )
 
     candidates: dict[tuple[str, str], tuple[tuple[str, ...], tuple[str, ...]]] = {
         ("env", name): (params, results)
         for name, params, results in generator_cpython_abi_link_import_signatures()
     }
+    candidates.update(
+        {
+            ("env", name): signature
+            for name, signature in _public_c_api_signatures().items()
+        }
+    )
     for entry in data.get("link_allowed_import", []):
         if entry.get("wasm_import_kind") != "function":
             continue
@@ -273,6 +301,8 @@ def generator_external_native_artifact_function_signatures(
             tuple(entry["wasm_params"]),
             tuple(entry["wasm_results"]),
         )
+        name, attached_params = physical(name, signature[0])
+        signature = (attached_params, signature[1])
         identity = (entry["wasm_import_module"], name)
         previous = candidates.setdefault(identity, signature)
         if previous != signature:
@@ -283,15 +313,15 @@ def generator_external_native_artifact_function_signatures(
     for entry in data["import"]:
         signature = static_types[entry["type"]]
         normalized = (tuple(signature["params"]), tuple(signature["results"]))
-        candidates.setdefault(("env", entry["name"]), normalized)
         export_name = runtime_export_name(entry)
         if export_name is not None:
-            candidates.setdefault(("env", export_name), normalized)
+            export_name, attached_params = physical(export_name, normalized[0])
+            candidates.setdefault(
+                ("env", export_name), (attached_params, normalized[1])
+            )
     for entry in data["runtime_host_export_signature"]:
-        candidates.setdefault(
-            ("env", entry["name"]),
-            (tuple(entry["params"]), tuple(entry["results"])),
-        )
+        name, params = physical(entry["name"], tuple(entry["params"]))
+        candidates.setdefault(("env", name), (params, tuple(entry["results"])))
 
     signatures: list[tuple[str, str, tuple[str, ...], tuple[str, ...]]] = []
     for name, module, kind in generator_external_native_artifact_import_shapes(data):
@@ -1256,6 +1286,15 @@ def _normalize_rust_wasm_scalar(typ: str, aliases: dict[str, str]) -> str:
     while typ in aliases and typ not in seen:
         seen.add(typ)
         typ = aliases[typ].strip()
+    if typ.startswith("Option<") and typ.endswith(">"):
+        callback = typ[len("Option<") : -1].strip()
+        while callback in aliases and callback not in seen:
+            seen.add(callback)
+            callback = aliases[callback].strip()
+        # Nullable C function pointers retain the C pointer ABI. No other
+        # optional Rust representation is admitted as a scalar projection.
+        if 'extern "C" fn' in callback:
+            return "i32"
     typ = typ.strip().removeprefix("std::os::raw::")
     if (
         typ.startswith("*const ")
@@ -1292,38 +1331,57 @@ def _normalize_rust_wasm_scalar(typ: str, aliases: dict[str, str]) -> str:
 def _rust_export_signatures(
     *, include_native: bool = False
 ) -> dict[str, set[tuple[tuple[str, ...], str]]]:
+    from tools.wasm_abi_gen.attached_entries import functions, split_params, BODY_SUFFIX
+
     aliases = _rust_type_aliases()
-    fn_re = re.compile(
-        r'pub\s+(?:unsafe\s+)?extern\s+"C"\s+fn\s+'
-        r"(molt_[A-Za-z0-9_]+)\s*\((.*?)\)\s*(?:->\s*([^{\n]+?))?\s*\{",
-        re.S,
-    )
     exports: dict[str, set[tuple[tuple[str, ...], str]]] = {}
     for path in _runtime_rust_files():
+        if (
+            "attached_exports_generated" in path.parts
+            or "test" in path.stem
+            or "tests" in path.parts
+        ):
+            continue
         text = _read_runtime_rust_source(path)
         if text is None:
             continue
-        for match in fn_re.finditer(text):
-            if not include_native and not _rust_fn_cfg_allows_wasm(text, match.start()):
+        for function in functions(text):
+            name = function.name
+            if not (name.startswith("molt_") or name.startswith("__molt_")):
                 continue
-            params_text = match.group(2).strip()
-            params: list[str] = []
-            if params_text:
-                for raw_param in _split_rust_top_level_commas(params_text):
-                    param = raw_param.strip()
-                    if not param:
-                        continue
-                    if ":" not in param:
-                        params.append(param)
-                        continue
-                    params.append(
-                        _normalize_rust_wasm_scalar(
-                            param.rsplit(":", 1)[1].strip(),
-                            aliases,
-                        )
+            if not function.external and not name.endswith(BODY_SUFFIX):
+                continue
+            if function.external and not any(
+                "no_mangle" in attr or "export_name" in attr for attr in function.attrs
+            ):
+                # A Rust callback with C calling convention is not an exported
+                # runtime identity (and may share a private Rust identifier).
+                continue
+            if not include_native and not _rust_fn_cfg_allows_wasm(
+                text, function.start
+            ):
+                continue
+            params = split_params(function.params)
+            if name.endswith(BODY_SUFFIX):
+                name = name.removesuffix(BODY_SUFFIX)
+                if not params or "PyToken" not in params[0]:
+                    raise WasmAbiManifestError(
+                        f"attached body {name} lacks its typed context"
                     )
-            result = _normalize_rust_wasm_scalar(match.group(3) or "void", aliases)
-            exports.setdefault(match.group(1), set()).add((tuple(params), result))
+                params = params[1:]
+            elif params and params[0].split(":", 1)[0].strip() in {
+                "__context",
+                "__molt_context",
+                "context",
+                "context_bits",
+            }:
+                params = params[1:]
+            normalized = tuple(
+                _normalize_rust_wasm_scalar(p.rsplit(":", 1)[-1].strip(), aliases)
+                for p in params
+            )
+            result = _normalize_rust_wasm_scalar(function.result, aliases)
+            exports.setdefault(name, set()).add((normalized, result))
     return exports
 
 
@@ -1372,6 +1430,32 @@ def _runtime_host_export_signatures(
             + "; ".join(unsupported)
         )
     return rows
+
+
+@lru_cache(maxsize=1)
+def _public_c_api_signatures() -> dict[str, tuple[tuple[str, ...], tuple[str, ...]]]:
+    header = (ROOT / "include/molt/molt.h").read_text()
+    declarations = set(
+        re.findall(r"(?m)^[A-Za-z_][\w\s*]*\b(molt_\w+)\s*\([^;{}]*\)\s*;", header)
+    )
+    exports = _rust_export_signatures()
+    result = {}
+    for name in sorted(declarations & exports.keys()):
+        signatures = exports[name]
+        if len(signatures) != 1:
+            raise WasmAbiManifestError(
+                f"public C API {name} has ambiguous runtime producers"
+            )
+        params, returns = next(iter(signatures))
+        if any(value not in WASM_VAL_TYPES for value in params) or returns not in {
+            *WASM_VAL_TYPES,
+            "void",
+        }:
+            raise WasmAbiManifestError(
+                f"public C API {name} lacks a scalar WASM signature"
+            )
+        result[name] = params, (() if returns == "void" else (returns,))
+    return result
 
 
 def _intrinsic_runtime_callable_imports(
@@ -2061,6 +2145,7 @@ MANIFEST_FIELDS = frozenset(
         "synthetic_errno",
         "errno_adoption",
         "deployment_manifest",
+        "execution_context_abi",
         "wasi_errno_disposition",
         "resolver_error",
         "resolver_status",
@@ -2334,6 +2419,12 @@ def validate_loaded_manifest(
     *,
     reject_manual_runtime_cfgs: bool = False,
 ) -> dict:
+    from tools.wasm_abi_gen.execution_context import context_schema
+
+    try:
+        context_schema(data)
+    except ValueError as error:
+        raise WasmAbiManifestError(str(error)) from error
     unknown_fields = data.keys() - MANIFEST_FIELDS - DERIVED_MANIFEST_FIELDS
     if unknown_fields:
         raise WasmAbiManifestError(f"unknown manifest fields: {sorted(unknown_fields)}")

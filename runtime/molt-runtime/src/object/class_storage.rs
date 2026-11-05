@@ -474,9 +474,10 @@ pub(crate) unsafe fn class_capture_native_module<'a, 'py>(
         let dictionary_bits = crate::class_dict_bits(class);
         let dictionary = crate::obj_from_bits(dictionary_bits).as_ptr().unwrap();
         inc_ref_bits(py, dictionary_bits);
-        let _dictionary = crate::PtrDropGuard::preserving(dictionary);
+        let _dictionary = crate::PtrDropGuard::preserving(py, dictionary);
         let name = crate::NameId::DunderModule.owned_bits(py).ok_or(())?;
-        let _name = crate::PtrDropGuard::preserving(crate::obj_from_bits(name).as_ptr().unwrap());
+        let _name =
+            crate::PtrDropGuard::preserving(py, crate::obj_from_bits(name).as_ptr().unwrap());
         let hash = ops::dict_key_hash(py, name).ok_or(())?;
         let entry = ops::dict_find_entry_kv_with_hash(py, dictionary, name, hash)?;
         // Native factories supply an unpublished namespace. A callback during
@@ -595,7 +596,7 @@ pub(crate) unsafe fn class_module_bits(
             .as_ptr()
             .unwrap();
         let key = crate::NameId::DunderModule.owned_bits(py).ok_or(())?;
-        let _key = crate::PtrDropGuard::preserving(crate::obj_from_bits(key).as_ptr().unwrap());
+        let _key = crate::PtrDropGuard::preserving(py, crate::obj_from_bits(key).as_ptr().unwrap());
         crate::dict_get_in_place(py, dictionary, key)
     }
 }
@@ -856,18 +857,18 @@ pub(crate) fn is_canonical_runtime_class(py: &PyToken<'_>, bits: u64) -> bool {
         })
 }
 
-struct RetiringClass {
+struct RetiringClass<'guard> {
     bits: u64,
-    owner: crate::PtrDropGuard,
+    owner: crate::PtrDropGuard<'guard>,
 }
 
 /// Pins the complete canonical class cohort across callback-capable teardown.
 /// The ordinary RC/GC lifecycle of user classes is deliberately not intercepted.
-pub(crate) struct RuntimeClassRetirement {
-    classes: Vec<RetiringClass>,
+pub(crate) struct RuntimeClassRetirement<'guard> {
+    classes: Vec<RetiringClass<'guard>>,
 }
 
-impl RuntimeClassRetirement {
+impl<'guard> RuntimeClassRetirement<'guard> {
     pub(crate) fn new() -> Self {
         Self {
             classes: Vec::new(),
@@ -876,7 +877,7 @@ impl RuntimeClassRetirement {
 
     pub(crate) fn include(
         &mut self,
-        py: &PyToken<'_>,
+        py: &'guard PyToken<'guard>,
         roots: impl IntoIterator<Item = u64>,
     ) -> bool {
         let mut added = Vec::new();
@@ -914,7 +915,7 @@ impl RuntimeClassRetirement {
             inc_ref_bits(py, bits);
             self.classes.push(RetiringClass {
                 bits,
-                owner: crate::PtrDropGuard::new(ptr),
+                owner: crate::PtrDropGuard::new(py, ptr),
             });
             unsafe { super::class_begin_runtime_retirement(ptr) };
             added.push(crate::PtrSlot(ptr));
@@ -939,7 +940,7 @@ impl RuntimeClassRetirement {
         changed
     }
 
-    pub(crate) fn clear_contents(&self, py: &PyToken<'_>, through: ClassOrigin) -> bool {
+    pub(crate) fn clear_contents(&self, py: &'guard PyToken<'guard>, through: ClassOrigin) -> bool {
         let mut changed = false;
         // Heap namespaces may contain ordinary Python callback owners (for
         // example ExceptionGroup attributes). Drain them while static builtin
@@ -968,7 +969,7 @@ impl RuntimeClassRetirement {
     /// their ordinary release must finish before any C identity is invalidated.
     pub(crate) fn retire_projections(
         &self,
-        py: &PyToken<'_>,
+        py: &'guard PyToken<'guard>,
         drained: &molt_cpython_abi::api::object::DrainedRuntimeShutdownThreadState<'_>,
     ) -> bool {
         let state = crate::runtime_state(py);
@@ -985,12 +986,12 @@ impl RuntimeClassRetirement {
         molt_cpython_abi::bridge::GLOBAL_BRIDGE.retire_runtime_type_views(&roots)
     }
 
-    fn has_isolate_owners(&self, py: &PyToken<'_>) -> bool {
+    fn has_isolate_owners(&self, py: &'guard PyToken<'guard>) -> bool {
         crate::state::runtime_state::owns_process_cpython_state(crate::runtime_state(py))
             && crate::object::gc::gc_has_live_isolate_owners()
     }
 
-    fn has_native_owners(&self, py: &PyToken<'_>) -> bool {
+    fn has_native_owners(&self, py: &'guard PyToken<'guard>) -> bool {
         let state = crate::runtime_state(py);
         if crate::state::runtime_state::owns_process_cpython_state(state) {
             crate::object::gc::gc_has_live_native_nodes()
@@ -999,7 +1000,7 @@ impl RuntimeClassRetirement {
         }
     }
 
-    fn retained_thread_states(&self, py: &PyToken<'_>) -> usize {
+    fn retained_thread_states(&self, py: &'guard PyToken<'guard>) -> usize {
         let state = crate::runtime_state(py);
         if crate::state::runtime_state::owns_process_cpython_state(state) {
             molt_cpython_abi::api::object::runtime_retained_thread_state_count()
@@ -1014,7 +1015,7 @@ impl RuntimeClassRetirement {
         })
     }
 
-    pub(crate) fn detach_identities(&self, py: &PyToken<'_>) {
+    pub(crate) fn detach_identities(&self, py: &'guard PyToken<'guard>) {
         assert!(
             self.contents_empty(),
             "class contents survived final callback drain"
@@ -1140,7 +1141,12 @@ impl RuntimeClassRetirement {
         self.classes.iter().any(|class| class.bits == bits)
     }
 
-    unsafe fn assert_exact_metadata(&self, py: &PyToken<'_>, bits: u64, type_id: u32) -> *mut u8 {
+    unsafe fn assert_exact_metadata(
+        &self,
+        py: &'guard PyToken<'guard>,
+        bits: u64,
+        type_id: u32,
+    ) -> *mut u8 {
         let ptr = crate::obj_from_bits(bits)
             .as_ptr()
             .expect("runtime class metadata must be heap-backed");
@@ -1171,7 +1177,7 @@ impl RuntimeClassRetirement {
         ptr
     }
 
-    pub(crate) fn release_pins(mut self, py: &PyToken<'_>) {
+    pub(crate) fn release_pins(mut self, py: &'guard PyToken<'guard>) {
         for class in &mut self.classes {
             // The callback-free tail already owns the GIL; do not reenter a
             // public ABI decref wrapper and acquire a fresh thread-state record.
@@ -1213,18 +1219,26 @@ mod tests {
         let name = crate::dynamic_attr_name_bits(py, b"__annotations__").unwrap();
         match value {
             Some(value) => {
-                crate::molt_set_attr_name(class, name, value);
+                crate::molt_set_attr_name_attached_body(py, class, name, value);
             }
             None => {
-                crate::molt_del_attr_name(class, name);
+                crate::molt_del_attr_name_attached_body(py, class, name);
             }
         }
         dec_ref_bits(py, name);
         assert!(!crate::exception_pending(py));
     }
 
-    extern "C" fn inspect_replacement(_self_bits: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn inspect_replacement(__context: u64, _self_bits: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             let owner = crate::obj_from_bits(OBSERVED_CLASS.load(Ordering::SeqCst))
                 .as_ptr()
                 .expect("test class remains pinned");
@@ -1242,13 +1256,13 @@ mod tests {
                 CALLBACK_OBSERVATIONS.fetch_add(1, Ordering::SeqCst);
             }
             MoltObject::none().bits()
-        })
+        }
     }
 
     fn user_class(py: &PyToken<'_>, name: &[u8]) -> u64 {
         let name = crate::dynamic_attr_name_bits(py, name).unwrap();
-        let class = crate::molt_class_new(name);
-        crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+        let class = crate::molt_class_new_attached_body(py, name);
+        crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).object);
         let ptr = crate::obj_from_bits(class).as_ptr().unwrap();
         unsafe { crate::object::class_finish_definition(py, ptr) }.expect("seal test class");
         dec_ref_bits(py, name);
@@ -1269,7 +1283,7 @@ mod tests {
         );
         assert!(!function.is_null());
         let function = MoltObject::from_ptr(function).bits();
-        crate::molt_set_attr_name(class, key, function);
+        crate::molt_set_attr_name_attached_body(py, class, key, function);
         dec_ref_bits(py, function);
         dec_ref_bits(py, key);
         assert!(!crate::exception_pending(py));
@@ -1334,7 +1348,7 @@ mod tests {
             let annotation = callback_instance(py, observer_class);
             let namespace = callback_instance(py, observer_class);
             let key = crate::dynamic_attr_name_bits(py, b"payload").unwrap();
-            crate::molt_set_attr_name(owner, key, namespace);
+            crate::molt_set_attr_name_attached_body(py, owner, key, namespace);
             set_annotations(py, owner, Some(annotation));
             dec_ref_bits(py, annotation);
             dec_ref_bits(py, namespace);
@@ -1402,7 +1416,7 @@ mod tests {
                         crate::dict_get_in_place(py, namespace_ptr, key).unwrap(),
                         (!is_static).then_some(value)
                     );
-                    let result = crate::molt_object_getattribute(owner, key);
+                    let result = crate::molt_object_getattribute_attached_body(py, owner, key);
                     assert_eq!(result, value);
                     dec_ref_bits(py, result);
                     assert!(!crate::exception_pending(py));
@@ -1489,7 +1503,7 @@ mod tests {
                 let pending = crate::exception_last_bits_noinc(py).unwrap();
                 assert!(ClassSemanticPolicy::static_type(true).apply(py, class));
                 assert_eq!(crate::exception_last_bits_noinc(py), Some(pending));
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(py);
                 assert_eq!(class_module_bits(py, class), Ok(Some(declaration)));
                 assert_eq!(crate::dict_get_in_place(py, dictionary, key), Ok(None));
                 // The original namespace owner moved into the typed identity
@@ -1551,7 +1565,7 @@ mod tests {
                 assert!(!ClassSemanticPolicy::static_type(true).apply(py, class));
                 drop(reset);
                 assert!(crate::exception_pending(py));
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(py);
                 assert!(class_is_heap_type(class));
                 assert!(!class_declares(
                     class,

@@ -2,7 +2,8 @@ use crate::BuiltinExc;
 use crate::PyToken;
 use crate::builtins::exceptions::{
     exception_layout_kind_for_class, exception_typed_fields_replace_internal, molt_exception_init,
-    molt_exception_init_owned, molt_exception_new_bound, molt_exceptiongroup_init,
+    molt_exception_init_attached_body, molt_exception_init_owned, molt_exception_new_bound,
+    molt_exceptiongroup_init, molt_exceptiongroup_init_attached_body,
     record_memory_error_without_allocation,
 };
 use crate::call::type_policy::{
@@ -79,7 +80,7 @@ pub(crate) unsafe fn alloc_instance_for_default_object_new(
     class_ptr: *mut u8,
 ) -> u64 {
     // Every default object allocation, including dataclasses, shares admission.
-    crate::molt_object_new_bound(MoltObject::from_ptr(class_ptr).bits())
+    crate::molt_object_new_bound_attached_body(_py, MoltObject::from_ptr(class_ptr).bits())
 }
 
 /// Consume and validate an owned `__init__` result.
@@ -245,12 +246,12 @@ unsafe fn initialize_builtin_exception_from_positional(
         callable_matches_runtime_symbol(Some(init_bits), fn_key!(molt_exception_init))
             || callable_matches_runtime_symbol(Some(init_bits), fn_key!(molt_exception_init_owned))
     } {
-        let _ = molt_exception_init(inst_bits, args_bits);
+        let _ = molt_exception_init_attached_body(_py, inst_bits, args_bits);
     } else {
         debug_assert!(unsafe {
             callable_matches_runtime_symbol(Some(init_bits), fn_key!(molt_exceptiongroup_init))
         });
-        let _ = molt_exceptiongroup_init(inst_bits, args_bits);
+        let _ = molt_exceptiongroup_init_attached_body(_py, inst_bits, args_bits);
     }
 }
 
@@ -471,17 +472,23 @@ pub(crate) unsafe fn call_class_init_with_args(
                     );
                 }
                 1 => {
-                    return molt_slice_new(
+                    return molt_slice_new_attached_body(
+                        _py,
                         MoltObject::none().bits(),
                         args[0],
                         MoltObject::none().bits(),
                     );
                 }
                 2 => {
-                    return molt_slice_new(args[0], args[1], MoltObject::none().bits());
+                    return molt_slice_new_attached_body(
+                        _py,
+                        args[0],
+                        args[1],
+                        MoltObject::none().bits(),
+                    );
                 }
                 3 => {
-                    return molt_slice_new(args[0], args[1], args[2]);
+                    return molt_slice_new_attached_body(_py, args[0], args[1], args[2]);
                 }
                 _ => {
                     let msg = format!("slice expected at most 3 arguments, got {}", args.len());
@@ -501,14 +508,14 @@ pub(crate) unsafe fn call_class_init_with_args(
                 1 => {
                     let start_bits = MoltObject::from_int(0).bits();
                     let step_bits = MoltObject::from_int(1).bits();
-                    return molt_range_new(start_bits, args[0], step_bits);
+                    return molt_range_new_attached_body(_py, start_bits, args[0], step_bits);
                 }
                 2 => {
                     let step_bits = MoltObject::from_int(1).bits();
-                    return molt_range_new(args[0], args[1], step_bits);
+                    return molt_range_new_attached_body(_py, args[0], args[1], step_bits);
                 }
                 3 => {
-                    return molt_range_new(args[0], args[1], args[2]);
+                    return molt_range_new_attached_body(_py, args[0], args[1], args[2]);
                 }
                 _ => {
                     let msg = format!("range expected at most 3 arguments, got {}", args.len());
@@ -567,7 +574,7 @@ pub(crate) unsafe fn construct_regular_class(
         let _new_owner = new.and_then(|bits| {
             obj_from_bits(bits).as_ptr().map(|ptr| {
                 inc_ref_bits(py, bits);
-                crate::PtrDropGuard::new(ptr)
+                crate::PtrDropGuard::new(py, ptr)
             })
         });
         let instance = match new {
@@ -719,7 +726,7 @@ pub(crate) unsafe fn call_builtin_type_if_needed(
                     return Some(MoltObject::from_bool(false).bits());
                 }
                 if args.len() == 1 {
-                    return Some(crate::molt_bool_builtin(args[0]));
+                    return Some(crate::molt_bool_builtin_attached_body(_py, args[0]));
                 }
                 let msg = format!("bool expected at most 1 argument, got {}", args.len());
                 return Some(raise_exception::<_>(_py, BuiltinExc::TypeError, &msg));
@@ -896,7 +903,7 @@ mod tests {
                 ));
                 assert!(exception_pending(py));
                 assert_eq!(function_dict_bits(function), 0);
-                let _ = molt_exception_clear();
+                let _ = molt_exception_clear_attached_body(py);
 
                 set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                     max_memory: Some(0),
@@ -908,12 +915,12 @@ mod tests {
                 ));
                 assert!(exception_pending(py));
                 assert_eq!(function_dict_bits(function), 0);
-                let _ = molt_exception_clear();
+                let _ = molt_exception_clear_attached_body(py);
                 assert!(crate::object::field_storage::materialize(py, function).is_none());
                 assert!(exception_pending(py));
                 assert_eq!(function_dict_bits(function), 0);
                 drop(reset);
-                let _ = molt_exception_clear();
+                let _ = molt_exception_clear_attached_body(py);
                 assert_eq!((*header_from_obj_ptr(value)).ref_count_snapshot(), 1);
 
                 assert!(super::function_set_attr_bits(
@@ -954,7 +961,7 @@ mod tests {
                 assert!(crate::object::field_storage::materialize(py, function).is_none());
                 assert!(exception_pending(py));
                 assert_eq!(function_dict_bits(function), corrupt);
-                let _ = molt_exception_clear();
+                let _ = molt_exception_clear_attached_body(py);
                 let key = dynamic_attr_name_bits(py, b"corrupt_read").unwrap();
                 assert!(
                     crate::builtins::attributes::attr_lookup_ptr(py, function, key)
@@ -963,15 +970,23 @@ mod tests {
                 );
                 assert!(exception_pending(py));
                 assert_eq!(function_dict_bits(function), corrupt);
-                let _ = molt_exception_clear();
+                let _ = molt_exception_clear_attached_body(py);
                 dec_ref_bits(py, key);
             }
             dec_ref_bits(py, MoltObject::from_ptr(function).bits());
         });
     }
 
-    extern "C" fn compiled_init_borrows_self(self_bits: u64) -> i64 {
-        crate::with_gil_entry_nopanic!(_py, {
+    extern "C" fn compiled_init_borrows_self(__context: u64, self_bits: u64) -> i64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        ({
+            let _py = __py;
             assert!(!obj_from_bits(self_bits).is_none());
             MoltObject::none().bits()
         }) as i64
@@ -1048,7 +1063,7 @@ mod tests {
                     owners
                 );
                 drop(reset);
-                let _ = molt_exception_clear();
+                let _ = molt_exception_clear_attached_body(py);
                 let result = alloc_instance_for_class(py, class_ptr);
                 let instance = obj_from_bits(result).as_ptr().expect("retry succeeds");
                 assert!((*header_from_obj_ptr(instance)).gc_is_published());
@@ -1077,7 +1092,7 @@ mod tests {
             );
             let original = crate::builtins::exceptions::ExceptionValue::adopt(
                 py,
-                molt_exception_last_pending(),
+                molt_exception_last_pending_attached_body(py),
             );
             assert!(obj_from_bits(original.bits()).as_ptr().is_some());
             let result = unsafe {
@@ -1097,7 +1112,7 @@ mod tests {
                 (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).cast()
             );
             assert!(exception_pending(py));
-            let _ = molt_exception_clear();
+            let _ = molt_exception_clear_attached_body(py);
         });
     }
 
@@ -1123,7 +1138,8 @@ mod tests {
             let attrs = [init_name_bits, init_bits];
             let bases = [builtin_classes(_py).object];
             let class_bits = unsafe {
-                crate::object::ops::molt_guarded_class_def(
+                crate::object::ops::molt_guarded_class_def_attached_body(
+                    _py,
                     name_bits,
                     crate::provenance::abi::expose_address(bases.as_ptr()),
                     bases.len() as u64,
@@ -1159,18 +1175,18 @@ mod tests {
             let source = crate::alloc_bytearray(py, b"abcdefgh");
             assert!(!source.is_null());
             let source_bits = MoltObject::from_ptr(source).bits();
-            let _source = crate::PtrDropGuard::new(source);
+            let _source = crate::PtrDropGuard::new(py, source);
             let class = builtin_classes(py).memoryview;
             let class_ptr = obj_from_bits(class).as_ptr().unwrap();
             let object_name = crate::alloc_string(py, b"object");
             assert!(!object_name.is_null());
-            let _object_name = crate::PtrDropGuard::new(object_name);
+            let _object_name = crate::PtrDropGuard::new(py, object_name);
             let object_name = MoltObject::from_ptr(object_name).bits();
             let new_name = crate::dynamic_attr_name_bits(py, b"__new__").unwrap();
-            let new = crate::molt_get_attr_name(class, new_name);
+            let new = crate::molt_get_attr_name_attached_body(py, class, new_name);
             dec_ref_bits(py, new_name);
             assert!(!exception_pending(py));
-            let _new = crate::PtrDropGuard::new(obj_from_bits(new).as_ptr().unwrap());
+            let _new = crate::PtrDropGuard::new(py, obj_from_bits(new).as_ptr().unwrap());
             let positional = call_class_init_with_args(py, class_ptr, &[source_bits]);
             let keyword = crate::call::bind::call_bind_borrowed(
                 py,
@@ -1192,7 +1208,7 @@ mod tests {
                 assert!(!exception_pending(py));
                 let ptr = obj_from_bits(view).as_ptr().expect("native memoryview");
                 assert_eq!(object_type_id(ptr), crate::TYPE_ID_MEMORYVIEW);
-                let bytes = crate::molt_memoryview_tobytes(view);
+                let bytes = crate::molt_memoryview_tobytes_attached_body(py, view);
                 assert!(!exception_pending(py));
                 let bytes_ptr = obj_from_bits(bytes).as_ptr().unwrap();
                 assert_eq!(
@@ -1203,13 +1219,13 @@ mod tests {
                     b"abcdefgh",
                 );
                 dec_ref_bits(py, bytes);
-                crate::molt_memoryview_release(view);
+                crate::molt_memoryview_release_attached_body(py, view);
                 dec_ref_bits(py, view);
             }
             let missing = call_class_init_with_args(py, class_ptr, &[]);
             assert!(obj_from_bits(missing).is_none());
             assert!(exception_pending(py));
-            let error = crate::molt_exception_last();
+            let error = crate::molt_exception_last_attached_body(py);
             let error_ptr = obj_from_bits(error).as_ptr().unwrap();
             assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
@@ -1244,7 +1260,7 @@ mod tests {
                     ClassEdgeOwnership::Owned,
                 )
             });
-            let set_base = molt_class_set_base(class_bits, builtins.tuple);
+            let set_base = molt_class_set_base_attached_body(_py, class_bits, builtins.tuple);
             assert!(obj_from_bits(set_base).is_none());
             assert!(!exception_pending(_py));
 
@@ -1395,7 +1411,7 @@ mod tests {
                 )
             };
             assert!(obj_from_bits(result).is_none());
-            let error_bits = crate::molt_exception_last();
+            let error_bits = crate::molt_exception_last_attached_body(_py);
             let error_ptr = obj_from_bits(error_bits)
                 .as_ptr()
                 .expect("pending TypeError");

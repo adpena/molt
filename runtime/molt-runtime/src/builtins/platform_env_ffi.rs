@@ -3,9 +3,8 @@ use crate::BuiltinExc;
 use crate::audit::AuditArgs;
 use molt_runtime_platform::socket_constants::{errno_constants, socket_constants};
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_uuid_getnode() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_uuid_getnode_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         match uuid_node() {
             Ok(node) => MoltObject::from_int(node as i64).bits(),
             Err(err) => raise_exception::<_>(_py, BuiltinExc::RuntimeError, &err),
@@ -13,9 +12,8 @@ pub extern "C" fn molt_uuid_getnode() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_uuid_uuid4_bytes() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_uuid_uuid4_bytes_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let payload = match uuid_v4_bytes() {
             Ok(bytes) => bytes,
             Err(err) => return raise_exception::<_>(_py, BuiltinExc::RuntimeError, &err),
@@ -29,9 +27,12 @@ pub extern "C" fn molt_uuid_uuid4_bytes() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_uuid_uuid1_bytes(node_bits: u64, clock_seq_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_uuid_uuid1_bytes_attached_body(
+    _py: &crate::PyToken<'_>,
+    node_bits: u64,
+    clock_seq_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = crate::operation_allowed(_py, crate::OperationId::TimeUuid1, AuditArgs::None);
         if !allowed {
             return raise_exception::<_>(
@@ -85,9 +86,12 @@ pub extern "C" fn molt_uuid_uuid1_bytes(node_bits: u64, clock_seq_bits: u64) -> 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_uuid_uuid3_bytes(namespace_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_uuid_uuid3_bytes_attached_body(
+    _py: &crate::PyToken<'_>,
+    namespace_bits: u64,
+    name_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let namespace = match bytes_arg_from_bits(_py, namespace_bits, "namespace") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -113,9 +117,12 @@ pub extern "C" fn molt_uuid_uuid3_bytes(namespace_bits: u64, name_bits: u64) -> 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_uuid_uuid5_bytes(namespace_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_uuid_uuid5_bytes_attached_body(
+    _py: &crate::PyToken<'_>,
+    namespace_bits: u64,
+    name_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let namespace = match bytes_arg_from_bits(_py, namespace_bits, "namespace") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -141,9 +148,8 @@ pub extern "C" fn molt_uuid_uuid5_bytes(namespace_bits: u64, name_bits: u64) -> 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_name() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_os_name_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         init_platform_cached_owned_bits(_py, &platform_state(_py).os_name_cache, || {
             let ptr = alloc_string(_py, os_name_str().as_bytes());
             if ptr.is_null() {
@@ -155,9 +161,8 @@ pub extern "C" fn molt_os_name() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sys_platform() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sys_platform_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         init_platform_cached_owned_bits(_py, &platform_state(_py).sys_platform_cache, || {
             let ptr = alloc_string(_py, sys_platform_str().as_bytes());
             if ptr.is_null() {
@@ -169,9 +174,12 @@ pub extern "C" fn molt_sys_platform() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_locale_setlocale(category_bits: u64, locale_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_locale_setlocale_attached_body(
+    _py: &crate::PyToken<'_>,
+    category_bits: u64,
+    locale_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(category) = crate::builtins::numbers::index_c_int_from_obj(_py, category_bits)
         else {
             return MoltObject::none().bits();
@@ -204,9 +212,8 @@ pub extern "C" fn molt_locale_setlocale(category_bits: u64, locale_bits: u64) ->
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_locale_getencoding() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_locale_getencoding_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         match locale_encoding() {
             Ok(value) => alloc_str_bits(_py, &value).unwrap_or_else(|error| error),
             Err(error) => raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &error),
@@ -215,9 +222,9 @@ pub extern "C" fn molt_locale_getencoding() -> u64 {
 }
 
 #[cfg(windows)]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_locale_getdefaultlocale() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_locale_getdefaultlocale_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let legacy_lcid = !crate::object::ops_sys::runtime_target_at_least(py, 3, 15);
         let (language, encoding) =
             molt_runtime_platform::env_support::windows_default_locale(legacy_lcid);
@@ -245,9 +252,8 @@ pub extern "C" fn molt_locale_getdefaultlocale() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_locale_constants() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_locale_constants_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let entries = [
             ("LC_CTYPE", libc::LC_CTYPE),
             ("LC_NUMERIC", libc::LC_NUMERIC),
@@ -285,17 +291,23 @@ pub extern "C" fn molt_locale_constants() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gettext_gettext(message_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_gettext_gettext_attached_body(
+    _py: &crate::PyToken<'_>,
+    message_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         inc_ref_bits(_py, message_bits);
         message_bits
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gettext_ngettext(singular_bits: u64, plural_bits: u64, n_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_gettext_ngettext_attached_body(
+    _py: &crate::PyToken<'_>,
+    singular_bits: u64,
+    plural_bits: u64,
+    n_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let one = MoltObject::from_int(1);
         let result_bits = match crate::object::ops_compare::compare_object_eq_bool(
             _py,
@@ -314,9 +326,8 @@ pub extern "C" fn molt_gettext_ngettext(singular_bits: u64, plural_bits: u64, n_
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_errno_constants() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_errno_constants_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         init_platform_cached_owned_bits(_py, &platform_state(_py).errno_constants_cache, || {
             let constants =
                 errno_constants(300 + crate::object::ops_sys::runtime_target_minor(_py) as u16);
@@ -374,9 +385,8 @@ pub extern "C" fn molt_errno_constants() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socket_constants() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_socket_constants_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         init_platform_cached_owned_bits(_py, &platform_state(_py).socket_constants_cache, || {
             let constants = socket_constants();
             let capacity = constants.size_hint().0 * 2;
@@ -578,7 +588,8 @@ fn environment_mapping<'a>(
             }
             // Exact startup strings use the same versioned Unicode operation as
             // the Python key encoder; do not uppercase UTF-16 or Rust chars.
-            let upper = crate::object::ops_string::molt_string_upper(key_owner.bits());
+            let upper =
+                crate::object::ops_string::molt_string_upper_attached_body(py, key_owner.bits());
             (upper, env_string_bits(py, &value))
         };
         #[cfg(not(windows))]
@@ -633,9 +644,8 @@ fn environment_mapping<'a>(
     ))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_env_mapping_init() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_env_mapping_init_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         match environment_mapping(py) {
             Ok(_) => MoltObject::none().bits(),
             Err(error) => error,
@@ -643,9 +653,8 @@ pub extern "C" fn molt_env_mapping_init() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_env_mapping_get(key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_env_mapping_get_attached_body(_py: &crate::PyToken<'_>, key_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if let Err(error) =
             require_operation::<u64>(py, OperationId::EnvGet, env_key_audit_args(key_bits))
         {
@@ -668,9 +677,12 @@ pub extern "C" fn molt_env_mapping_get(key_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_env_mapping_set(key_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_env_mapping_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    key_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if let Err(error) =
             require_operation::<u64>(py, OperationId::EnvSet, env_key_audit_args(key_bits))
         {
@@ -710,9 +722,11 @@ pub extern "C" fn molt_env_mapping_set(key_bits: u64, value_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_env_mapping_delete(key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_env_mapping_delete_attached_body(
+    _py: &crate::PyToken<'_>,
+    key_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if let Err(error) =
             require_operation::<u64>(py, OperationId::EnvUnset, env_key_audit_args(key_bits))
         {
@@ -746,9 +760,8 @@ pub extern "C" fn molt_env_mapping_delete(key_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_env_mapping_keys() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_env_mapping_keys_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if let Err(error) = require_operation::<u64>(py, OperationId::EnvKeys, AuditArgs::None) {
             return error;
         }
@@ -775,9 +788,8 @@ pub extern "C" fn molt_env_mapping_keys() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_env_mapping_len() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_env_mapping_len_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if let Err(error) = require_operation::<u64>(py, OperationId::EnvLen, AuditArgs::None) {
             return error;
         }
@@ -792,9 +804,8 @@ pub extern "C" fn molt_env_mapping_len() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_env_mapping_items_iter() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_env_mapping_items_iter_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if let Err(error) = require_operation::<u64>(py, OperationId::EnvSnapshot, AuditArgs::None)
         {
             return error;
@@ -803,19 +814,22 @@ pub extern "C" fn molt_env_mapping_items_iter() -> u64 {
             Ok(root) => root,
             Err(error) => return error,
         };
-        let view = crate::object::ops_dict::molt_dict_items(root.bits());
+        let view = crate::object::ops_dict::molt_dict_items_attached_body(py, root.bits());
         let view =
             unsafe { molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), view) };
         if exception_pending(py) {
             return MoltObject::none().bits();
         }
-        crate::molt_iter(view.bits())
+        crate::molt_iter_attached_body(py, view.bits())
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_env_putenv(key_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_env_putenv_attached_body(
+    _py: &crate::PyToken<'_>,
+    key_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if let Err(error) =
             require_operation::<u64>(py, OperationId::EnvPutenv, env_key_audit_args(key_bits))
         {
@@ -840,9 +854,8 @@ pub extern "C" fn molt_env_putenv(key_bits: u64, value_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_env_unsetenv(key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_env_unsetenv_attached_body(_py: &crate::PyToken<'_>, key_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if let Err(error) =
             require_operation::<u64>(py, OperationId::EnvUnsetenv, env_key_audit_args(key_bits))
         {
@@ -863,9 +876,11 @@ pub extern "C" fn molt_env_unsetenv(key_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_os_need_current_directory_for_exe_path(command_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_os_need_current_directory_for_exe_path_attached_body(
+    _py: &crate::PyToken<'_>,
+    command_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if let Err(error) = require_operation::<u64>(
             py,
             OperationId::OsNeedCurrentDirectoryForExePath,
@@ -911,3 +926,5 @@ pub extern "C" fn molt_os_need_current_directory_for_exe_path(command_bits: u64)
         }
     })
 }
+
+include!("../attached_exports_generated/builtins/platform_env_ffi.rs");

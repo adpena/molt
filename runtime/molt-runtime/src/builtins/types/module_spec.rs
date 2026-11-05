@@ -243,7 +243,7 @@ fn set_spec_attr(py: &PyToken<'_>, spec_bits: u64, name: crate::NameId, value_bi
     let Some(name_bits) = name.owned_bits(py) else {
         return false;
     };
-    let _ = crate::molt_set_attr_name(spec_bits, name_bits, value_bits);
+    let _ = crate::molt_set_attr_name_attached_body(py, spec_bits, name_bits, value_bits);
     dec_ref_bits(py, name_bits);
     !exception_pending(py)
 }
@@ -251,7 +251,7 @@ fn set_spec_attr(py: &PyToken<'_>, spec_bits: u64, name: crate::NameId, value_bi
 /// Owned `obj.<name>` through the full attribute protocol.
 fn get_spec_attr(py: &PyToken<'_>, obj_bits: u64, name: crate::NameId) -> Option<u64> {
     let name_bits = name.owned_bits(py)?;
-    let value_bits = crate::molt_get_attr_name(obj_bits, name_bits);
+    let value_bits = crate::molt_get_attr_name_attached_body(py, obj_bits, name_bits);
     dec_ref_bits(py, name_bits);
     if exception_pending(py) {
         dec_ref_bits(py, value_bits);
@@ -476,9 +476,8 @@ pub(crate) fn commit_module_spec_suffix_namespace(py: &PyToken<'_>, globals: u64
     !exception_pending(py)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_suffixes() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_importlib_suffixes_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         use crate::builtins::exceptions::ExceptionValue;
         let Some(source) = module_spec_suffix_value(py, crate::NameId::SourceSuffixes) else {
             return MoltObject::none().bits();
@@ -523,7 +522,8 @@ fn module_spec_cached_from_origin(py: &PyToken<'_>, origin: u64) -> Option<u64> 
             inc_ref_bits(py, origin);
             return Some(origin);
         }
-        let cached = crate::builtins::platform::molt_importlib_cache_from_source(origin);
+        let cached =
+            crate::builtins::platform::molt_importlib_cache_from_source_attached_body(py, origin);
         if exception_pending(py) {
             dec_ref_bits(py, cached);
             if crate::builtins::platform::clear_pending_if_kind(
@@ -539,9 +539,11 @@ fn module_spec_cached_from_origin(py: &PyToken<'_>, origin: u64) -> Option<u64> 
     Some(MoltObject::none().bits())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_module_spec_cached_get(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_importlib_module_spec_cached_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         use crate::builtins::exceptions::ExceptionValue;
         let result = (|| -> Option<u64> {
             let cached = ExceptionValue::adopt(
@@ -582,28 +584,33 @@ pub extern "C" fn molt_importlib_module_spec_cached_get(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_module_spec_cached_set(self_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_importlib_module_spec_cached_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let _ = set_spec_attr(py, self_bits, crate::NameId::PrivateCached, value_bits);
         MoltObject::none().bits()
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_module_spec_has_location_get(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_importlib_module_spec_has_location_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         get_spec_attr(py, self_bits, crate::NameId::PrivateSetFileattr)
             .unwrap_or_else(|| MoltObject::none().bits())
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_module_spec_has_location_set(
+pub(crate) fn molt_importlib_module_spec_has_location_set_attached_body(
+    _py: &crate::PyToken<'_>,
     self_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if let Ok(value) = crate::object::ops::truth_value(py, obj_from_bits(value_bits)) {
             let _ = set_spec_attr(
                 py,
@@ -648,20 +655,20 @@ fn module_parent_of_name(py: &PyToken<'_>, name_bits: u64) -> u64 {
         dec_ref_bits(py, parts_bits);
         return MoltObject::none().bits();
     }
-    let head_bits = crate::molt_index(parts_bits, MoltObject::from_int(0).bits());
+    let head_bits = crate::molt_index_attached_body(py, parts_bits, MoltObject::from_int(0).bits());
     dec_ref_bits(py, parts_bits);
     head_bits
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_module_spec_init(
+pub(crate) fn molt_importlib_module_spec_init_attached_body(
+    _py: &crate::PyToken<'_>,
     self_bits: u64,
     name_bits: u64,
     loader_bits: u64,
     origin_bits: u64,
     is_package_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let _ = initialize_module_spec(
             py,
             self_bits,
@@ -675,9 +682,12 @@ pub extern "C" fn molt_importlib_module_spec_init(
 }
 
 /// Getter of the `ModuleSpec.parent` property.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_module_spec_parent(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_importlib_module_spec_parent_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(locations_bits) =
             get_spec_attr(py, self_bits, crate::NameId::SubmoduleSearchLocations)
         else {
@@ -697,9 +707,11 @@ pub extern "C" fn molt_importlib_module_spec_parent(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_module_spec_repr(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_importlib_module_spec_repr_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         // CPython's field order is observable through attribute getters and
         // __repr__/__format__: read each optional field for the condition,
         // then read it again only when the field is included.
@@ -762,7 +774,7 @@ fn append_spec_formatted_value(
     out: &mut Vec<u8>,
 ) -> bool {
     let formatted = if use_repr {
-        molt_repr_from_obj(value_bits)
+        molt_repr_from_obj_attached_body(py, value_bits)
     } else {
         let empty_ptr = alloc_string(py, b"");
         if empty_ptr.is_null() {
@@ -770,7 +782,7 @@ fn append_spec_formatted_value(
             return false;
         }
         let empty = MoltObject::from_ptr(empty_ptr).bits();
-        let formatted = crate::molt_format_builtin(value_bits, empty);
+        let formatted = crate::molt_format_builtin_attached_body(py, value_bits, empty);
         dec_ref_bits(py, empty);
         formatted
     };
@@ -791,9 +803,9 @@ fn append_spec_formatted_value(
 }
 
 /// The canonical class for the `importlib.machinery` facade (owned).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_module_spec_type() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_importlib_module_spec_type_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         crate::state::cache::retain_cached_result(py, module_spec_class(py))
     })
 }
@@ -801,3 +813,5 @@ pub extern "C" fn molt_importlib_module_spec_type() -> u64 {
 #[cfg(test)]
 #[path = "module_spec/tests.rs"]
 mod tests;
+
+include!("../../attached_exports_generated/builtins/types/module_spec.rs");

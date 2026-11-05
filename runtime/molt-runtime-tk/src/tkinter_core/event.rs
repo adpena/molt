@@ -38,13 +38,13 @@ const EVENT_FIELD_COUNT: usize = 19;
 /// Mirrors `_event_int`: if the value is already an int, return it; if it's a
 /// string of digits (possibly negative), parse it; otherwise return the
 /// original value unchanged.
-fn event_int_convert(bits: u64) -> u64 {
+fn event_int_convert(py: &molt_runtime_core::PyToken, bits: u64) -> u64 {
     // Already an integer?
     if let Some(i) = bits_as_i64(bits) {
         return MoltObject::from_int(i).bits();
     }
     // String of digits (possibly with leading minus)?
-    if let Some(text) = bits_to_string(bits) {
+    if let Some(text) = bits_to_string(py, bits) {
         let trimmed = text.trim();
         if !trimmed.is_empty()
             && trimmed
@@ -84,7 +84,7 @@ fn parse_tcl_bool(text: &str) -> Option<bool> {
 }
 
 /// Convert a substitution field to a boolean value.
-fn event_bool_convert(bits: u64) -> u64 {
+fn event_bool_convert(py: &molt_runtime_core::PyToken, bits: u64) -> u64 {
     let obj = obj_from_bits(bits);
     if obj.is_bool() {
         return bits;
@@ -92,7 +92,7 @@ fn event_bool_convert(bits: u64) -> u64 {
     if let Some(i) = bits_as_i64(bits) {
         return MoltObject::from_bool(i != 0).bits();
     }
-    if let Some(text) = bits_to_string(bits)
+    if let Some(text) = bits_to_string(py, bits)
         && let Some(b) = parse_tcl_bool(&text)
     {
         return MoltObject::from_bool(b).bits();
@@ -124,10 +124,14 @@ const MODIFIER_NAMES: &[&str] = &[
 ///   strings: char, keysym, type, widget_path
 ///
 /// Returns None on malformed input.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_event_build_from_args(_widget_path_bits: u64, args_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(elems) = decode_value_list_bits(args_bits) else {
+
+pub fn molt_tk_event_build_from_args_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    _widget_path_bits: u64,
+    args_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(elems) = decode_value_list_bits(_py, args_bits) else {
             return MoltObject::none().bits();
         };
         if elems.len() != EVENT_FIELD_COUNT {
@@ -154,35 +158,35 @@ pub extern "C" fn molt_tk_event_build_from_args(_widget_path_bits: u64, args_bit
         // 16: x_root   (int)
         // 17: y_root   (int)
         // 18: delta    (int, default 0 if empty)
-        let delta = if bits_is_empty_or_none(elems[18]) {
+        let delta = if bits_is_empty_or_none(_py, elems[18]) {
             MoltObject::from_int(0).bits()
         } else {
-            event_int_convert(elems[18])
+            event_int_convert(_py, elems[18])
         };
 
         let payload = [
-            event_int_convert(elems[0]),   // serial
-            event_int_convert(elems[1]),   // num
-            event_bool_convert(elems[2]),  // focus
-            event_int_convert(elems[3]),   // height
-            event_int_convert(elems[4]),   // keycode
-            event_int_convert(elems[5]),   // state
-            event_int_convert(elems[6]),   // time
-            event_int_convert(elems[7]),   // width
-            event_int_convert(elems[8]),   // x
-            event_int_convert(elems[9]),   // y
-            elems[10],                     // char (pass-through)
-            event_bool_convert(elems[11]), // send_event
-            elems[12],                     // keysym (pass-through)
-            event_int_convert(elems[13]),  // keysym_num
-            elems[14],                     // widget_path (pass-through)
-            elems[15],                     // type (pass-through)
-            event_int_convert(elems[16]),  // x_root
-            event_int_convert(elems[17]),  // y_root
-            delta,                         // delta
+            event_int_convert(_py, elems[0]),   // serial
+            event_int_convert(_py, elems[1]),   // num
+            event_bool_convert(_py, elems[2]),  // focus
+            event_int_convert(_py, elems[3]),   // height
+            event_int_convert(_py, elems[4]),   // keycode
+            event_int_convert(_py, elems[5]),   // state
+            event_int_convert(_py, elems[6]),   // time
+            event_int_convert(_py, elems[7]),   // width
+            event_int_convert(_py, elems[8]),   // x
+            event_int_convert(_py, elems[9]),   // y
+            elems[10],                          // char (pass-through)
+            event_bool_convert(_py, elems[11]), // send_event
+            elems[12],                          // keysym (pass-through)
+            event_int_convert(_py, elems[13]),  // keysym_num
+            elems[14],                          // widget_path (pass-through)
+            elems[15],                          // type (pass-through)
+            event_int_convert(_py, elems[16]),  // x_root
+            event_int_convert(_py, elems[17]),  // y_root
+            delta,                              // delta
         ];
 
-        match alloc_list_bits(&payload) {
+        match alloc_list_bits(_py, &payload) {
             Ok(bits) => bits,
             Err(bits) => bits,
         }
@@ -196,9 +200,9 @@ pub extern "C" fn molt_tk_event_build_from_args(_widget_path_bits: u64, args_bit
 ///   - If value is already int, return it.
 ///   - If value is a string and `value.lstrip("-").isdigit()`, parse as int.
 ///   - Otherwise return value unchanged.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_event_int(value_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, event_int_convert(value_bits))
+
+pub fn molt_tk_event_int_attached_body(_py: &molt_runtime_core::PyToken, value_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, event_int_convert(_py, value_bits))
 }
 
 /// Decode an event state bitmask into a list of modifier name strings.
@@ -212,9 +216,12 @@ pub extern "C" fn molt_tk_event_int(value_bits: u64) -> u64 {
 /// just "0x0".
 ///
 /// Returns a Molt list of strings, or the "|"-joined string representation.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_event_state_decode(state_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_event_state_decode_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    state_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(state_value) = bits_as_i64(state_bits) else {
             // Not an integer — return None
             return MoltObject::none().bits();
@@ -225,7 +232,7 @@ pub extern "C" fn molt_tk_event_state_decode(state_bits: u64) -> u64 {
 
         for (index, name) in MODIFIER_NAMES.iter().enumerate() {
             if remaining & (1i64 << index) != 0 {
-                match alloc_str_bits(name) {
+                match alloc_str_bits(_py, name) {
                     Ok(bits) => parts.push(bits),
                     Err(bits) => return bits,
                 }
@@ -238,28 +245,30 @@ pub extern "C" fn molt_tk_event_state_decode(state_bits: u64) -> u64 {
         // If there are leftover high bits or no modifiers matched, append hex
         if remaining != 0 || parts.is_empty() {
             let hex = format!("{:#x}", remaining);
-            match alloc_str_bits(&hex) {
+            match alloc_str_bits(_py, &hex) {
                 Ok(bits) => parts.push(bits),
                 Err(bits) => return bits,
             }
         }
 
         // Return the list of modifier strings
-        match alloc_list_bits(&parts) {
+        match alloc_list_bits(_py, &parts) {
             Ok(list_bits) => {
                 // Dec-ref the individual strings since alloc_list inc-refs them
                 for &part_bits in &parts {
-                    rt_dec_ref(part_bits);
+                    rt_dec_ref(_py, part_bits);
                 }
                 list_bits
             }
             Err(bits) => {
                 // Clean up on failure
                 for &part_bits in &parts {
-                    rt_dec_ref(part_bits);
+                    rt_dec_ref(_py, part_bits);
                 }
                 bits
             }
         }
     })
 }
+
+include!("../attached_exports_generated/tkinter_core/event.rs");

@@ -658,7 +658,10 @@ fn open_impl(
     } else if let Some(path) = path {
         let flags = file_mode_to_flags(&mode_info);
         if !opener_is_none {
-            if !is_truthy(_py, obj_from_bits(molt_is_callable(opener_bits))) {
+            if !is_truthy(
+                _py,
+                obj_from_bits(molt_is_callable_attached_body(_py, opener_bits)),
+            ) {
                 let type_name = class_name_for_error(type_of_bits(_py, opener_bits));
                 let msg = format!("'{type_name}' object is not callable");
                 return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
@@ -1288,9 +1291,8 @@ fn cached_stdio_handle(
     handle_bits
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sys_stdin() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sys_stdin_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         cached_stdio_handle(_py, &runtime_state(_py).io.sys_stdin_handle_bits, || {
             alloc_stdio_handle(
                 _py,
@@ -1305,9 +1307,8 @@ pub extern "C" fn molt_sys_stdin() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sys_stdout() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sys_stdout_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         cached_stdio_handle(_py, &runtime_state(_py).io.sys_stdout_handle_bits, || {
             alloc_stdio_handle(
                 _py,
@@ -1322,18 +1323,20 @@ pub extern "C" fn molt_sys_stdout() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sys_stderr() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sys_stderr_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         cached_stdio_handle(_py, &runtime_state(_py).io.sys_stderr_handle_bits, || {
             alloc_stdio_handle(_py, 2, false, true, "<stderr>", "backslashreplace", true)
         })
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_file_open(path_bits: u64, mode_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_file_open_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+    mode_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let none = MoltObject::none().bits();
         open_impl(
             _py,
@@ -1351,8 +1354,8 @@ pub extern "C" fn molt_file_open(path_bits: u64, mode_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_file_open_ex(
+pub(crate) fn molt_file_open_ex_attached_body(
+    _py: &crate::PyToken<'_>,
     file_bits: u64,
     mode_bits: u64,
     buffering_bits: u64,
@@ -1362,7 +1365,7 @@ pub extern "C" fn molt_file_open_ex(
     closefd_bits: u64,
     opener_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         open_impl(
             _py,
             file_bits,
@@ -1379,15 +1382,15 @@ pub extern "C" fn molt_file_open_ex(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_file_io_new(
+pub(crate) fn molt_file_io_new_attached_body(
+    _py: &crate::PyToken<'_>,
     cls_bits: u64,
     name_bits: u64,
     mode_bits: u64,
     closefd_bits: u64,
     opener_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if crate::builtins::type_ops::native_constructor_receiver(
             _py,
             builtin_classes(_py).file_io,
@@ -1443,19 +1446,19 @@ pub extern "C" fn molt_file_io_new(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_file_io_init(
+pub(crate) fn molt_file_io_init_attached_body(
+    _py: &crate::PyToken<'_>,
     _self_bits: u64,
     _name_bits: u64,
     _mode_bits: u64,
     _closefd_bits: u64,
     _opener_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
+    crate::with_attached_entry_nopanic!(_py, _py, { MoltObject::none().bits() })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_open_builtin(
+pub(crate) fn molt_open_builtin_attached_body(
+    _py: &crate::PyToken<'_>,
     file_bits: u64,
     mode_bits: u64,
     buffering_bits: u64,
@@ -1465,7 +1468,7 @@ pub extern "C" fn molt_open_builtin(
     closefd_bits: u64,
     opener_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         open_impl(
             _py,
             file_bits,
@@ -1481,3 +1484,5 @@ pub extern "C" fn molt_open_builtin(
         )
     })
 }
+
+include!("../../attached_exports_generated/builtins/io/open.rs");

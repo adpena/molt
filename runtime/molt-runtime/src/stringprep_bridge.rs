@@ -11,28 +11,35 @@ use crate::*;
 // Exception / error handling
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_stringprep_raise_exception"))]
 pub extern "C" fn __molt_stringprep_raise_exception(
+    __molt_context: u64,
     kind_code: u16,
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let msg = unsafe { std::slice::from_raw_parts(msg_ptr, msg_len) };
         crate::builtins::exceptions::raise_exception_code_bytes(_py, kind_code, msg)
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Object allocation
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_stringprep_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_stringprep_alloc_string"))]
+pub extern "C" fn __molt_stringprep_alloc_string(
+    __molt_context: u64,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_string(_py, data)
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------

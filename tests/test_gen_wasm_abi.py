@@ -31,6 +31,16 @@ _RENDERED_PY_CACHE: str | None = None
 _RENDERED_TABLE_LAYOUT_INC_CACHE: str | None = None
 
 
+def _physical_runtime_symbol(data: dict, logical: str) -> str:
+    from tools.wasm_abi_gen.execution_context import runtime_execution_specs
+
+    return next(
+        row["physical_symbol"]
+        for row in runtime_execution_specs(data)
+        if row["symbol"] == logical
+    )
+
+
 def test_runtime_name_registry_changes_invalidate_callable_render_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -228,7 +238,7 @@ def test_runtime_callable_abi_preserves_target_neutral_callable_contracts() -> N
     for symbol, arity, trampoline in (
         ("molt_abs_builtin", 1, "unpack_args"),
         ("molt_importlib_import_transaction", 5, "unpack_args"),
-        ("molt_cpython_abi_cext_call_trampoline", 3, "call_frame"),
+        ("molt_cpython_abi_cext_call_trampoline_admitted", 3, "call_frame"),
         ("molt_sqlite3_connect", 1, "unpack_args"),
         ("molt_locale_getdefaultlocale", 0, "unpack_args"),
     ):
@@ -978,7 +988,7 @@ def test_runtime_return_contract_generated_rust_agrees_with_shared_boxed_project
     for name in (
         "exception_pending",
         "async_work_poll_and_exception_pending",
-        "thread_record",
+        "attached_context",
         "recursion_enter_fast",
     ):
         assert contracts[name] == "raw_bits"
@@ -1523,8 +1533,10 @@ def test_external_native_function_signature_authority_is_complete() -> None:
         "result": "i32",
     }
     assert wasm_import_signature("path_readlink") == (("i64",), ("i64",))
-    assert signatures[("env", "molt_call_indirect3")] == {
-        "params": ["i64", "i64", "i64", "i64"],
+    assert signatures[
+        ("env", _physical_runtime_symbol(data, "molt_call_indirect3"))
+    ] == {
+        "params": ["i64", "i64", "i64", "i64", "i64"],
         "result": "i64",
     }
     assert wasm_import_signature("molt_cbor_parse_scalar_obj") is not None
@@ -1765,9 +1777,9 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert '"Py_GenericAliasType": "data"' in rendered_py
     assert '"Py_OptimizeFlag": "data"' in rendered_py
     assert '"PyType_Ready": "function"' in rendered_py
-    assert rendered_js_abi["runtime_export_by_import"]["socket_drop"] == (
-        "molt_socket_drop"
-    )
+    assert rendered_js_abi["runtime_export_by_import"][
+        "socket_drop"
+    ] == _physical_runtime_symbol(data, "molt_socket_drop")
     assert rendered_js_abi["runtime_export_by_import"]["runtime_execution_enter"] == (
         "molt_runtime_execution_enter"
     )
@@ -1817,7 +1829,9 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
             ("i64",) * arity,
             ("i64",),
         )
-        assert rendered_js_abi["runtime_export_by_import"][name] == export_name
+        assert rendered_js_abi["runtime_export_by_import"][
+            name
+        ] == _physical_runtime_symbol(data, export_name)
     assert rendered_namespace["wasm_runtime_import_name"]("molt_none") == "molt_none"
     assert rendered_namespace["wasm_runtime_export_name"]("molt_none") == "molt_none"
     assert rendered_namespace["wasm_import_signature"]("molt_none") == (
@@ -3337,8 +3351,8 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
     }
     assert reserved[22] == {
         "index": 22,
-        "runtime_name": "molt_cpython_abi_cext_call_trampoline",
-        "import_name": "cpython_abi_cext_call_trampoline",
+        "runtime_name": "molt_cpython_abi_cext_call_trampoline_admitted",
+        "import_name": "cpython_abi_cext_call_trampoline_admitted",
         "callable_arity": 3,
         "trampoline_abi": "call_frame",
     }
@@ -3570,9 +3584,9 @@ def test_wasm_abi_manifest_owns_link_export_policy() -> None:
     assert "_WASM_ABI.WASM_OUTPUT_RUNTIME_EXPORT_ALIASES" in link_format
     assert "_WASM_ABI.WASM_INTERNAL_OUTPUT_EXPORT_PREFIXES" in link_format
     assert "_WASM_ABI.WASM_ESSENTIAL_EXPORTS" in link_format
-    assert "_WASM_ABI.wasm_runtime_export_name" in link_format
+    assert "_runtime_exports.wasm_split_runtime_import_signature" in link_format
     assert '"molt_alloc"' not in link_format
-    assert '"molt_isolate_import"' not in link_format
+    assert "_WASM_ABI.compiled_execution_symbol(logical)" in link_format
 
 
 def test_runtime_execution_token_exports_are_wasm_only() -> None:
@@ -3656,9 +3670,10 @@ def test_pure_profile_keeps_every_intrinsic_core_stdlib_modules_require() -> Non
     thread_imports = {
         name for name in import_by_runtime_name.values() if name.startswith("thread_")
     }
-    assert "thread_record" in thread_imports
+    assert "attached_context" in import_by_runtime_name.values()
+    assert not pure_profile_skips_import("attached_context")
     for name in thread_imports:
-        assert pure_profile_skips_import(name) == (name != "thread_record"), name
+        assert pure_profile_skips_import(name), name
 
 
 def test_every_frontend_direct_runtime_call_has_a_wasm_import() -> None:

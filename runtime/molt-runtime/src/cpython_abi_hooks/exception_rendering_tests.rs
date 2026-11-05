@@ -1913,11 +1913,19 @@ unsafe extern "C" fn percent_long_drop(value: *mut PyObject) {
         molt_cpython_abi::api::memory::PyObject_Free(value.cast());
     }
 }
-extern "C" fn percent_managed_mod(_self: u64, _rhs: u64) -> u64 {
+extern "C" fn percent_managed_mod(__context: u64, _self: u64, _rhs: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     PERCENT_MOD_CALLS.fetch_add(1, Ordering::SeqCst);
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = __py;
         crate::MoltObject::from_ptr(crate::alloc_string(py, b"override")).bits()
-    })
+    }
 }
 
 #[test]
@@ -2067,15 +2075,18 @@ fn unicode_percent_format_declaring_slot_bypasses_format_subclass_mod() {
         let py = &py;
         let name = crate::dynamic_attr_name_bits(py, b"PercentFormatSubclass").unwrap();
         let _name_owner =
-            crate::PtrDropGuard::preserving(crate::obj_from_bits(name).as_ptr().unwrap());
-        let class = crate::molt_class_new(name);
+            crate::PtrDropGuard::preserving(py, crate::obj_from_bits(name).as_ptr().unwrap());
+        let class = crate::molt_class_new_attached_body(py, name);
         let _class_owner =
-            crate::PtrDropGuard::preserving(crate::obj_from_bits(class).as_ptr().unwrap());
-        let base_result = crate::molt_class_set_base(class, crate::builtin_classes(py).str);
+            crate::PtrDropGuard::preserving(py, crate::obj_from_bits(class).as_ptr().unwrap());
+        let base_result =
+            crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).str);
         crate::dec_ref_bits(py, base_result);
         let method_name = crate::dynamic_attr_name_bits(py, b"__mod__").unwrap();
-        let _method_name_owner =
-            crate::PtrDropGuard::preserving(crate::obj_from_bits(method_name).as_ptr().unwrap());
+        let _method_name_owner = crate::PtrDropGuard::preserving(
+            py,
+            crate::obj_from_bits(method_name).as_ptr().unwrap(),
+        );
         let callback = crate::alloc_runtime_function_obj(
             py,
             crate::builtins::functions::runtime_fn_addr(
@@ -2085,9 +2096,10 @@ fn unicode_percent_format_declaring_slot_bypasses_format_subclass_mod() {
             2,
         );
         assert!(!callback.is_null());
-        let _callback_owner = crate::PtrDropGuard::preserving(callback);
+        let _callback_owner = crate::PtrDropGuard::preserving(py, callback);
         let callback_bits = crate::MoltObject::from_ptr(callback).bits();
-        let set_result = crate::molt_set_attr_name(class, method_name, callback_bits);
+        let set_result =
+            crate::molt_set_attr_name_attached_body(py, class, method_name, callback_bits);
         crate::dec_ref_bits(py, set_result);
         crate::object::class_finish_definition(py, crate::obj_from_bits(class).as_ptr().unwrap())
             .unwrap();
@@ -2110,7 +2122,8 @@ fn unicode_percent_format_declaring_slot_bypasses_format_subclass_mod() {
             b"value=5000"
         );
         assert_eq!(PERCENT_MOD_CALLS.load(Ordering::SeqCst), 0);
-        let rendered = crate::molt_mod(subclass, crate::MoltObject::from_int(5000).bits());
+        let rendered =
+            crate::molt_mod_attached_body(py, subclass, crate::MoltObject::from_int(5000).bits());
         assert_eq!(
             take_raw(GLOBAL_BRIDGE.owned_handle_to_pyobj(rendered)),
             b"override"
@@ -2195,7 +2208,7 @@ fn diagnostic_type_names_use_current_heap_qualname_and_module() {
                 .unwrap();
             let _owner = crate::obj_from_bits(bits)
                 .as_ptr()
-                .map(crate::PtrDropGuard::preserving);
+                .map(|__ptr| crate::PtrDropGuard::preserving(py, __ptr));
             assert_eq!(
                 crate::object::ops_format::format_diagnostic_type_name_bytes(
                     py,
@@ -2255,19 +2268,47 @@ fn diagnostic_type_names_use_current_heap_qualname_and_module() {
     });
 }
 
-extern "C" fn percent_managed_int(_self: u64) -> u64 {
+extern "C" fn percent_managed_int(__context: u64, _self: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     PERCENT_INT_CALLS.fetch_add(1, Ordering::SeqCst);
     crate::MoltObject::from_int(23).bits()
 }
-extern "C" fn percent_managed_index(_self: u64) -> u64 {
+extern "C" fn percent_managed_index(__context: u64, _self: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     PERCENT_INDEX_CALLS.fetch_add(1, Ordering::SeqCst);
     crate::MoltObject::from_int(42).bits()
 }
-extern "C" fn percent_managed_float(_self: u64) -> u64 {
+extern "C" fn percent_managed_float(__context: u64, _self: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     PERCENT_FLOAT_CALLS.fetch_add(1, Ordering::SeqCst);
     crate::MoltObject::from_float(9.5).bits()
 }
-extern "C" fn percent_managed_trunc(_self: u64) -> u64 {
+extern "C" fn percent_managed_trunc(__context: u64, _self: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     PERCENT_INT_CALLS.fetch_add(1, Ordering::SeqCst);
     crate::MoltObject::from_int(99).bits()
 }
@@ -2275,7 +2316,7 @@ extern "C" fn percent_managed_trunc(_self: u64) -> u64 {
 fn percent_managed_protocol<'a, 'py>(
     py: &'a crate::PyToken<'py>,
     base: u64,
-    methods: &[(&[u8], extern "C" fn(u64) -> u64)],
+    methods: &[(&[u8], extern "C" fn(u64, u64) -> u64)],
     arguments: &[u64],
 ) -> (
     crate::builtins::exceptions::ExceptionValue<'a, 'py>,
@@ -2286,8 +2327,8 @@ fn percent_managed_protocol<'a, 'py>(
         py,
         crate::dynamic_attr_name_bits(py, b"ManagedPercentProtocol").unwrap(),
     );
-    let class = ExceptionValue::adopt(py, crate::molt_class_new(name.bits()));
-    let result = crate::molt_class_set_base(class.bits(), base);
+    let class = ExceptionValue::adopt(py, crate::molt_class_new_attached_body(py, name.bits()));
+    let result = crate::molt_class_set_base_attached_body(py, class.bits(), base);
     crate::dec_ref_bits(py, result);
     for (name, callback) in methods {
         let name = ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, name).unwrap());
@@ -2301,7 +2342,8 @@ fn percent_managed_protocol<'a, 'py>(
         );
         assert!(!function.is_null());
         let function = ExceptionValue::adopt(py, crate::MoltObject::from_ptr(function).bits());
-        let result = crate::molt_set_attr_name(class.bits(), name.bits(), function.bits());
+        let result =
+            crate::molt_set_attr_name_attached_body(py, class.bits(), name.bits(), function.bits());
         crate::dec_ref_bits(py, result);
     }
     unsafe {
@@ -2425,8 +2467,16 @@ static PERCENT_REFLECTED_MISSING: AtomicBool = AtomicBool::new(false);
 
 /// Return a genuinely native object from a managed Python special method.
 /// No conversion is performed here: the production shared validator owns it.
-extern "C" fn percent_managed_native_result(_self: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn percent_managed_native_result(__context: u64, _self: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         unsafe {
             let borrowed = PERCENT_MANAGED_NATIVE_RESULT.load(Ordering::SeqCst);
             let temporary = if borrowed.is_null() {
@@ -2470,7 +2520,7 @@ extern "C" fn percent_managed_native_result(_self: u64) -> u64 {
                 }
             }
         }
-    })
+    }
 }
 
 unsafe extern "C" fn percent_managed_numeric_drop(value: *mut PyObject) {
@@ -2489,17 +2539,18 @@ unsafe extern "C" fn percent_managed_numeric_drop(value: *mut PyObject) {
     }
 }
 
-struct PercentWarningPolicy;
-impl Drop for PercentWarningPolicy {
+struct PercentWarningPolicy<'py>(&'py crate::PyToken<'py>);
+impl Drop for PercentWarningPolicy<'_> {
     fn drop(&mut self) {
-        crate::molt_warnings_resetwarnings();
+        crate::molt_warnings_resetwarnings_attached_body(self.0);
     }
 }
 fn percent_warning_policy(py: &crate::PyToken<'_>, action: &[u8]) {
     use crate::builtins::exceptions::ExceptionValue;
-    crate::molt_warnings_resetwarnings();
+    crate::molt_warnings_resetwarnings_attached_body(py);
     let action = ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, action).unwrap());
-    let result = crate::molt_warnings_simplefilter(
+    let result = crate::molt_warnings_simplefilter_attached_body(
+        py,
         action.bits(),
         crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::DeprecationWarning),
         crate::MoltObject::from_int(0).bits(),
@@ -2518,10 +2569,13 @@ fn managed_numeric_callbacks_accept_native_owners_and_preserve_public_identity()
     let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
     crate::concurrency::gil::with_gil(|py| unsafe {
         let py = &py;
-        let _warnings = PercentWarningPolicy;
+        let _warnings = PercentWarningPolicy(py);
         percent_warning_policy(py, b"ignore");
         assert_eq!(
-            crate::c_api::molt_int_as_i64(crate::MoltObject::from_float(42.0).bits()),
+            crate::c_api::molt_int_as_i64_attached_body(
+                py,
+                crate::MoltObject::from_float(42.0).bits()
+            ),
             42,
             "direct integral float carriers retain the existing public extractor domain"
         );
@@ -2580,8 +2634,13 @@ fn managed_numeric_callbacks_accept_native_owners_and_preserve_public_identity()
                 Some(5000)
             );
             for result in [
-                crate::molt_int_from_obj(producer.bits(), crate::MoltObject::none().bits(), 0),
-                crate::molt_operator_index(producer.bits()),
+                crate::molt_int_from_obj_attached_body(
+                    py,
+                    producer.bits(),
+                    crate::MoltObject::none().bits(),
+                    0,
+                ),
+                crate::molt_operator_index_attached_body(py, producer.bits()),
             ] {
                 let result = ExceptionValue::adopt(py, result);
                 let view = OwnedPyObject::from_owned(
@@ -2591,7 +2650,10 @@ fn managed_numeric_callbacks_accept_native_owners_and_preserve_public_identity()
                 assert_eq!(numbers::PyLong_CheckExact(view.as_ptr()), 1);
                 assert_eq!(numbers::PyLong_AsLongLong(view.as_ptr()), 5000);
                 assert_eq!(view.as_ptr() == native, is_exact);
-                assert_eq!(crate::c_api::molt_int_as_i64(result.bits()), 5000);
+                assert_eq!(
+                    crate::c_api::molt_int_as_i64_attached_body(py, result.bits()),
+                    5000
+                );
             }
             let direct =
                 ExceptionValue::adopt(py, numeric::index_from_object(py, native_bits.bits()));
@@ -2602,7 +2664,12 @@ fn managed_numeric_callbacks_accept_native_owners_and_preserve_public_identity()
             );
             let direct_int = ExceptionValue::adopt(
                 py,
-                crate::molt_int_from_obj(native_bits.bits(), crate::MoltObject::none().bits(), 0),
+                crate::molt_int_from_obj_attached_body(
+                    py,
+                    native_bits.bits(),
+                    crate::MoltObject::none().bits(),
+                    0,
+                ),
             );
             assert_eq!(
                 numeric::integer_storage_i64(py, direct_int.bits()),
@@ -2665,8 +2732,10 @@ fn managed_numeric_callbacks_accept_native_owners_and_preserve_public_identity()
                 numeric::float_as_double(py, float_producer.bits()),
                 Some(4.25)
             );
-            let converted =
-                ExceptionValue::adopt(py, crate::molt_float_from_obj(float_producer.bits()));
+            let converted = ExceptionValue::adopt(
+                py,
+                crate::molt_float_from_obj_attached_body(py, float_producer.bits()),
+            );
             let converted_view = OwnedPyObject::from_owned(
                 GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(converted.bits()),
             );
@@ -2674,7 +2743,10 @@ fn managed_numeric_callbacks_accept_native_owners_and_preserve_public_identity()
             assert_eq!(numbers::PyFloat_CheckExact(converted_view.as_ptr()), 1);
             assert_eq!(numbers::PyFloat_AsDouble(converted_view.as_ptr()), 4.25);
             assert_eq!(converted_view.as_ptr() == native.as_ptr(), is_exact);
-            assert_eq!(crate::c_api::molt_float_as_f64(converted.bits()), 4.25);
+            assert_eq!(
+                crate::c_api::molt_float_as_f64_attached_body(py, converted.bits()),
+                4.25
+            );
             let capi =
                 OwnedPyObject::from_owned(molt_cpython_abi::api::abstract_number::PyNumber_Float(
                     float_producer_view.as_ptr(),
@@ -2683,7 +2755,8 @@ fn managed_numeric_callbacks_accept_native_owners_and_preserve_public_identity()
             assert_eq!(capi.as_ptr() == native.as_ptr(), is_exact);
             let complex = ExceptionValue::adopt(
                 py,
-                crate::molt_complex_from_obj(
+                crate::molt_complex_from_obj_attached_body(
+                    py,
                     float_producer.bits(),
                     crate::MoltObject::none().bits(),
                     crate::MoltObject::from_bool(false).bits(),
@@ -2705,7 +2778,10 @@ fn managed_numeric_callbacks_accept_native_owners_and_preserve_public_identity()
                 Some(4.25)
             );
             assert_eq!(numeric::float_as_double(py, native_bits.bits()), Some(4.25));
-            let direct = ExceptionValue::adopt(py, crate::molt_float_from_obj(native_bits.bits()));
+            let direct = ExceptionValue::adopt(
+                py,
+                crate::molt_float_from_obj_attached_body(py, native_bits.bits()),
+            );
             assert_eq!(
                 numeric::float_storage_value(py, direct.bits()),
                 Ok(Some(if is_exact { 4.25 } else { 9.5 }))
@@ -2756,7 +2832,7 @@ fn managed_native_numeric_result_cleanup_preserves_warning_and_conversion_errors
     let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
     crate::concurrency::gil::with_gil(|py| unsafe {
         let py = &py;
-        let _warnings = PercentWarningPolicy;
+        let _warnings = PercentWarningPolicy(py);
         let mut integer = NativeType::subtype(&raw mut PyLong_Type, c"percent.ReturnedInteger");
         integer.tp_dealloc = Some(percent_managed_numeric_drop);
         assert_eq!(integer.ready(), 0);
@@ -2804,13 +2880,16 @@ fn managed_native_numeric_result_cleanup_preserves_warning_and_conversion_errors
                     let result = ExceptionValue::adopt(
                         py,
                         match method {
-                            b"__int__" => crate::molt_int_from_obj(
+                            b"__int__" => crate::molt_int_from_obj_attached_body(
+                                py,
                                 producer.bits(),
                                 crate::MoltObject::none().bits(),
                                 0,
                             ),
-                            b"__index__" => crate::molt_operator_index(producer.bits()),
-                            _ => crate::molt_float_from_obj(producer.bits()),
+                            b"__index__" => {
+                                crate::molt_operator_index_attached_body(py, producer.bits())
+                            }
+                            _ => crate::molt_float_from_obj_attached_body(py, producer.bits()),
                         },
                     );
                     assert!(crate::obj_from_bits(result.bits()).is_none());
@@ -2857,7 +2936,10 @@ fn managed_native_numeric_result_cleanup_preserves_warning_and_conversion_errors
             PERCENT_MANAGED_DROP_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
             TEXT_DROP_RAISES.store(false, Ordering::SeqCst);
             if conversion == 0 {
-                let result = ExceptionValue::adopt(py, crate::molt_float_from_obj(producer.bits()));
+                let result = ExceptionValue::adopt(
+                    py,
+                    crate::molt_float_from_obj_attached_body(py, producer.bits()),
+                );
                 assert!(crate::obj_from_bits(result.bits()).is_none());
             } else {
                 let result = OwnedPyObject::from_owned(percent(
@@ -2910,7 +2992,7 @@ fn native_numeric_retirement_completes_error_transport_and_keeps_shielding_expli
     let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
     crate::concurrency::gil::with_gil(|py| unsafe {
         let py = &py;
-        let _warnings = PercentWarningPolicy;
+        let _warnings = PercentWarningPolicy(py);
         percent_warning_policy(py, b"ignore");
         let mut returned = NativeType::subtype(&raw mut PyLong_Type, c"percent.RetiredInteger");
         returned.tp_dealloc = Some(percent_managed_numeric_drop);
@@ -2929,9 +3011,9 @@ fn native_numeric_retirement_completes_error_transport_and_keeps_shielding_expli
             0
         );
         for shielded in [false, true] {
-            let victim = percent_managed_native_result(0);
+            let victim = percent_managed_native_result(py.attached_context(), 0);
             let victim_ptr = crate::obj_from_bits(victim).as_ptr().unwrap();
-            let victim_owner = crate::PtrDropGuard::new(victim_ptr);
+            let victim_owner = crate::PtrDropGuard::new(py, victim_ptr);
             assert_eq!(crate::object_type_id(victim_ptr), crate::TYPE_ID_FOREIGN);
             PERCENT_DROPS.store(0, Ordering::SeqCst);
             PERCENT_MANAGED_DROP_ERROR.store(ptr::null_mut(), Ordering::SeqCst);
@@ -3225,7 +3307,7 @@ fn native_bound_callable_retirement_preserves_error_identity_and_validation_orde
     let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
     crate::concurrency::gil::with_gil(|py| unsafe {
         let py = &py;
-        let _warnings = PercentWarningPolicy;
+        let _warnings = PercentWarningPolicy(py);
         percent_warning_policy(py, b"ignore");
         let minor = crate::object::ops_sys::runtime_target_minor(py);
         let failure = exception(&raw mut PyExc_LookupError, &[]);
@@ -3772,10 +3854,12 @@ fn managed_exception_observers_and_replacement_admit_runtime_pending_error() {
                     let prior = ExceptionValue::adopt(py, MoltObject::from_ptr(prior_ptr).bits());
                     let prior_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(prior.bits());
                     assert!(!prior_view.is_null());
-                    let next_bits = crate::builtins::exceptions::molt_exception_new_builtin_one(
-                        u64::from(crate::ExcKind::from(crate::BuiltinExc::ValueError).code()),
-                        MoltObject::from_int(42).bits(),
-                    );
+                    let next_bits =
+                        crate::builtins::exceptions::molt_exception_new_builtin_one_attached_body(
+                            py,
+                            u64::from(crate::ExcKind::from(crate::BuiltinExc::ValueError).code()),
+                            MoltObject::from_int(42).bits(),
+                        );
                     let next = ExceptionValue::adopt(py, next_bits);
                     let next_ptr = crate::obj_from_bits(next.bits())
                         .as_ptr()
@@ -4032,7 +4116,7 @@ fn dictionary_typed_lookup_distinguishes_prior_errors_from_native_hash_failures(
             }
             // The real satellite producers share the same three-state
             // ABI. An absent/error lookup must not publish an output value.
-            type Getter = unsafe extern "C" fn(*mut u8, u64, *mut u64) -> i32;
+            type Getter = unsafe extern "C" fn(u64, *mut u8, u64, *mut u64) -> i32;
             let getters: &[(&str, Getter)] = &[
                 #[cfg(feature = "stdlib_crypto")]
                 (
@@ -4085,7 +4169,7 @@ fn dictionary_typed_lookup_distinguishes_prior_errors_from_native_hash_failures(
                         let untouched = 0x0123_4567_89ab_cdef;
                         let mut value = untouched;
                         assert_eq!(
-                            getter(dict_pointer, key, &raw mut value),
+                            getter(py.attached_context(), dict_pointer, key, &raw mut value),
                             expected,
                             "{name}"
                         );
@@ -4540,17 +4624,19 @@ mod decimal_output_limits {
 
     const LIMIT_ERROR: &[u8] = b"Exceeds the limit (640 digits) for integer string conversion; use sys.set_int_max_str_digits() to increase the limit";
 
-    struct LimitRestore(usize);
-    impl Drop for LimitRestore {
+    struct LimitRestore<'py>(&'py crate::PyToken<'py>, usize);
+    impl Drop for LimitRestore<'_> {
         fn drop(&mut self) {
-            crate::builtins::sys_ext::molt_sys_set_int_max_str_digits(
-                crate::MoltObject::from_int(self.0 as i64).bits(),
+            crate::builtins::sys_ext::molt_sys_set_int_max_str_digits_attached_body(
+                self.0,
+                crate::MoltObject::from_int(self.1 as i64).bits(),
             );
         }
     }
 
-    fn set_limit(limit: i64) {
-        crate::builtins::sys_ext::molt_sys_set_int_max_str_digits(
+    fn set_limit(py: &crate::PyToken<'_>, limit: i64) {
+        crate::builtins::sys_ext::molt_sys_set_int_max_str_digits_attached_body(
+            py,
             crate::MoltObject::from_int(limit).bits(),
         );
     }
@@ -4599,7 +4685,8 @@ mod decimal_output_limits {
         let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         crate::concurrency::gil::with_gil(|py| unsafe {
             let py = &py;
-            let _restore = LimitRestore(crate::builtins::sys_ext::current_int_max_str_digits(py));
+            let _restore =
+                LimitRestore(py, crate::builtins::sys_ext::current_int_max_str_digits(py));
             let mut subtype = NativeType::subtype(&raw mut PyLong_Type, c"DecimalLimitInteger");
             assert_eq!(subtype.ready(), 0);
             let allowed = BigInt::from(10u8).pow(639);
@@ -4627,7 +4714,7 @@ mod decimal_output_limits {
                                 .is_none()
                         );
                     }
-                    set_limit(640);
+                    set_limit(py, 640);
                     limit_failure(
                         typeobj::PyObject_Str(integer.as_ptr()),
                         &format!("{stage}: str"),
@@ -4656,12 +4743,12 @@ mod decimal_output_limits {
                         take_raw(object::PyObject_Format(integer.as_ptr(), hex.as_ptr())),
                         (&rejected * sign).to_str_radix(16).as_bytes()
                     );
-                    set_limit(0);
+                    set_limit(py, 0);
                     assert_eq!(
                         take_raw(typeobj::PyObject_Str(integer.as_ptr())).len(),
                         if sign < 0 { 642 } else { 641 }
                     );
-                    set_limit(640);
+                    set_limit(py, 640);
                     limit_failure(
                         typeobj::PyObject_Str(integer.as_ptr()),
                         &format!("{stage}: str after restoring limit"),
@@ -4737,7 +4824,7 @@ mod decimal_output_limits {
                 py,
                 crate::dynamic_attr_name_bits(py, spec).expect("format spec"),
             );
-            let result = crate::molt_format_builtin(value.bits(), spec.bits());
+            let result = crate::molt_format_builtin_attached_body(py, value.bits(), spec.bits());
             take_raw(GLOBAL_BRIDGE.owned_handle_to_pyobj(result))
         }
     }
@@ -4936,27 +5023,43 @@ mod decimal_output_limits {
     static MANAGED_SCALAR_REPRS: AtomicUsize = AtomicUsize::new(0);
     static MANAGED_SCALAR_CONVERSIONS: AtomicUsize = AtomicUsize::new(0);
 
-    extern "C" fn managed_scalar_conversion_override(_value: u64) -> u64 {
+    extern "C" fn managed_scalar_conversion_override(__context: u64, _value: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         MANAGED_SCALAR_CONVERSIONS.fetch_add(1, Ordering::SeqCst);
-        crate::with_gil_entry_nopanic!(py, {
+        {
+            let py = __py;
             crate::raise_exception::<u64>(
                 py,
                 BuiltinExc::AssertionError,
                 "repr called a conversion override",
             )
-        })
+        }
     }
 
-    extern "C" fn managed_scalar_repr_override(_value: u64) -> u64 {
+    extern "C" fn managed_scalar_repr_override(__context: u64, _value: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         MANAGED_SCALAR_REPRS.fetch_add(1, Ordering::SeqCst);
-        crate::with_gil_entry_nopanic!(py, {
+        {
+            let py = __py;
             let text = crate::alloc_string(py, b"managed-repr");
             if text.is_null() {
                 crate::MoltObject::none().bits()
             } else {
                 crate::MoltObject::from_ptr(text).bits()
             }
-        })
+        }
     }
 
     #[test]
@@ -5127,7 +5230,9 @@ mod decimal_output_limits {
 
     unsafe extern "C" fn decimal_from_callback(_self: *mut PyObject) -> *mut PyObject {
         CALLBACKS.fetch_add(1, Ordering::SeqCst);
-        set_limit(CALLBACK_LIMIT.load(Ordering::SeqCst) as i64);
+        crate::with_gil_entry_nopanic!(py, {
+            set_limit(py, CALLBACK_LIMIT.load(Ordering::SeqCst) as i64);
+        });
         // 2^2190 has 660 decimal digits. Public allocation yields a real native
         // exact int; the callback does not pre-render or consult output policy.
         let mut digits = [0u32; 74];
@@ -5142,7 +5247,8 @@ mod decimal_output_limits {
         let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         crate::concurrency::gil::with_gil(|py| unsafe {
             let py = &py;
-            let _restore = LimitRestore(crate::builtins::sys_ext::current_int_max_str_digits(py));
+            let _restore =
+                LimitRestore(py, crate::builtins::sys_ext::current_int_max_str_digits(py));
             let mut methods: PyNumberMethods = std::mem::zeroed();
             methods.nb_int = decimal_from_callback as *const () as *mut _;
             let mut source =
@@ -5154,7 +5260,7 @@ mod decimal_output_limits {
                 OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(&raw mut *source, 0));
             assert!(!value.as_ptr().is_null());
             CALLBACKS.store(0, Ordering::SeqCst);
-            set_limit(640);
+            set_limit(py, 640);
             CALLBACK_LIMIT.store(700, Ordering::SeqCst);
             assert_eq!(take_raw(percent(b"%d", value.as_ptr())).len(), 660);
             CALLBACK_LIMIT.store(640, Ordering::SeqCst);
@@ -5171,12 +5277,13 @@ mod decimal_output_limits {
         let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
         crate::concurrency::gil::with_gil(|py| unsafe {
             let py = &py;
-            let _restore = LimitRestore(crate::builtins::sys_ext::current_int_max_str_digits(py));
-            set_limit(640);
+            let _restore =
+                LimitRestore(py, crate::builtins::sys_ext::current_int_max_str_digits(py));
+            set_limit(py, 640);
             let value =
                 ExceptionValue::adopt(py, crate::bigint_bits(py, BigInt::from(10u8).pow(640)));
             let sentinel = b"unpublished".as_ptr();
-            let exports: &[extern "C" fn(u64, *mut *const u8, *mut usize) -> i32] = &[
+            let exports: &[extern "C" fn(u64, u64, *mut *const u8, *mut usize) -> i32] = &[
                 #[cfg(feature = "stdlib_math")]
                 crate::math_bridge::__molt_math_format_obj,
                 #[cfg(feature = "stdlib_math")]
@@ -5187,17 +5294,28 @@ mod decimal_output_limits {
             for export in exports {
                 let mut out = sentinel;
                 let mut len = 777usize;
-                assert_eq!(export(value.bits(), &raw mut out, &raw mut len), 0);
+                assert_eq!(
+                    export(
+                        py.attached_context(),
+                        value.bits(),
+                        &raw mut out,
+                        &raw mut len
+                    ),
+                    0
+                );
                 assert_eq!((out, len), (sentinel, 777));
                 limit_failure(ptr::null_mut(), "failed bridge output publication");
             }
             // Serial is a typed hook table; exercise its real CSV consumer.
             #[cfg(feature = "stdlib_csv")]
             {
-                struct Writer(u64);
-                impl Drop for Writer {
+                struct Writer<'py> {
+                    py: &'py molt_runtime_core::PyToken,
+                    bits: u64,
+                }
+                impl Drop for Writer<'_> {
                     fn drop(&mut self) {
-                        crate::molt_csv_writer_drop(self.0);
+                        crate::molt_csv_writer_drop_attached_body(self.py, self.bits);
                     }
                 }
                 let string = |bytes: &[u8]| {
@@ -5208,20 +5326,25 @@ mod decimal_output_limits {
                 let comma = string(b",");
                 let quote = string(b"\"");
                 let newline = string(b"\r\n");
-                let writer = Writer(crate::molt_csv_writer_new(
-                    comma.bits(),
-                    quote.bits(),
-                    crate::MoltObject::none().bits(),
-                    crate::MoltObject::from_bool(true).bits(),
-                    crate::MoltObject::from_int(0).bits(),
-                    newline.bits(),
-                ));
-                assert_ne!(writer.0, crate::MoltObject::none().bits());
+                let writer = Writer {
+                    py: py.core_token(),
+                    bits: crate::molt_csv_writer_new_attached_body(
+                        py.core_token(),
+                        comma.bits(),
+                        quote.bits(),
+                        crate::MoltObject::none().bits(),
+                        crate::MoltObject::from_bool(true).bits(),
+                        crate::MoltObject::from_int(0).bits(),
+                        newline.bits(),
+                    ),
+                };
+                assert_ne!(writer.bits, crate::MoltObject::none().bits());
                 let row_ptr = crate::alloc_list(py, &[value.bits()]);
                 assert!(!row_ptr.is_null());
                 let row = ExceptionValue::adopt(py, crate::MoltObject::from_ptr(row_ptr).bits());
-                let rendered = crate::molt_csv_writer_writerow(
-                    writer.0,
+                let rendered = crate::molt_csv_writer_writerow_attached_body(
+                    py.core_token(),
+                    writer.bits,
                     row.bits(),
                     crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::Exception),
                 );
@@ -5443,8 +5566,16 @@ fn native_comparison_truth_status_preserves_prior_and_distinguishes_same_instanc
 static COMPLETION_CALLS: AtomicUsize = AtomicUsize::new(0);
 static COMPLETION_MANAGED_ERROR: AtomicPtr<u8> = AtomicPtr::new(ptr::null_mut());
 
-extern "C" fn completion_managed_bool(_self: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn completion_managed_bool(__context: u64, _self: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         COMPLETION_CALLS.fetch_add(1, Ordering::SeqCst);
         COMPLETION_SEEN.store(unsafe { errors::PyErr_Occurred() }, Ordering::SeqCst);
         let failure = COMPLETION_MANAGED_ERROR.load(Ordering::SeqCst);
@@ -5455,7 +5586,7 @@ extern "C" fn completion_managed_bool(_self: u64) -> u64 {
         // this exact instance while the callback selects it as its own failure.
         crate::record_exception(py, failure);
         crate::MoltObject::none().bits()
-    })
+    }
 }
 
 #[test]

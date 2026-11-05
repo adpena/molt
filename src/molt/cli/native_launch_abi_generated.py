@@ -7,6 +7,10 @@ entries from ``runtime/molt-jit/src/launch_abi_generated.rs``, and reads the
 same command line and image format from it.
 """
 
+COMPILED_ISOLATE_BOOTSTRAP_SYMBOL = (
+    "molt_isolate_bootstrap__molt_context_4f0a38f533b47b0b"
+)
+
 # The JIT runner's command line: [<receipt flag> <path>] <image flag> <image> [args...].
 JIT_RUNNER_IMAGE_FLAG = "--image"
 # Alone, this flag runs the runner's executable-memory admission probe.
@@ -15,7 +19,7 @@ JIT_RUNNER_START_RECEIPT_FLAG = "--start-receipt"
 # What the runner writes to its start receipt right before the program starts.
 JIT_START_RECEIPT = '{"schema":"molt.jit-start.v1"}\n'
 # The second line of a JIT image starts with this marker.
-JIT_IMAGE_MARKER = "#molt.jit-image.v3"
+JIT_IMAGE_MARKER = "#molt.jit-image.v4"
 
 # Called in this order before the program's entry.
 NATIVE_LAUNCH_START_SEQUENCE = (
@@ -29,4 +33,4 @@ NATIVE_LAUNCH_START_SEQUENCE = (
 # Called after the entry returns: report a pending exception, then exit.
 NATIVE_LAUNCH_FINISH_ENTRIES = ("molt_main_exit_status", "molt_runtime_exit")
 # The C declarations of every launch entry.
-NATIVE_LAUNCH_C_DECLARATIONS = "extern void molt_register_compiled_sources(const char* const*, unsigned long long);\nextern unsigned long long molt_set_app_callable_resolver(unsigned long long);\nextern unsigned long long molt_module_registry_install(const unsigned char*);\nextern unsigned long long molt_runtime_init(void);\nextern void molt_runtime_ensure_gil(void);\nextern void molt_set_argv(int, const char**);\nextern unsigned long long molt_main_exit_status(void);\nextern unsigned long long molt_runtime_exit(unsigned long long);"
+NATIVE_LAUNCH_C_DECLARATIONS = "extern void molt_register_compiled_sources(const char* const*, unsigned long long);\nextern unsigned long long molt_set_app_callable_resolver(unsigned long long);\nextern unsigned long long molt_module_registry_install(const unsigned char*);\nextern unsigned long long molt_runtime_init(void);\nextern void molt_runtime_ensure_gil(void);\nextern void molt_set_argv(int, const char**);\nextern unsigned long long molt_attached_context(void);\nextern unsigned long long molt_compiled_execution_enter(unsigned long long);\nextern void molt_compiled_execution_leave(unsigned long long, unsigned long long);\nextern unsigned long long molt_main_exit_status(void);\nextern unsigned long long molt_runtime_exit(unsigned long long);"

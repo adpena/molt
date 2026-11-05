@@ -46,9 +46,10 @@ use crate::{
     dict_get_in_place, dynamic_attr_name_bits, ensure_function_code_bits, exception_pending,
     function_globals_bits, function_set_closure_bits, function_set_globals_bits,
     function_set_trampoline_ptr, inc_ref_bits, is_truthy, missing_bits, module_dict_bits,
-    molt_cpython_abi_cext_call_trampoline, molt_getattr_builtin, molt_getitem_method, molt_iter,
-    molt_trace_enter_slot, obj_from_bits, object_class_bits, object_type_id, raise_exception,
-    string_obj_to_owned, to_i64, type_name,
+    molt_cpython_abi_cext_call_trampoline_admitted, molt_getattr_builtin_attached_body,
+    molt_getitem_method_attached_body, molt_iter_attached_body, molt_trace_enter_slot,
+    obj_from_bits, object_class_bits, object_type_id, raise_exception, string_obj_to_owned, to_i64,
+    type_name,
 };
 mod compile_codeop;
 mod function_abi;
@@ -86,13 +87,17 @@ fn enum_set_attr(
     let Some(name_bits) = dynamic_attr_name_bits(_py, name) else {
         return false;
     };
-    let _ = crate::molt_set_attr_name(target_bits, name_bits, value_bits);
+    let _ = crate::molt_set_attr_name_attached_body(_py, target_bits, name_bits, value_bits);
     !exception_pending(_py)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_enum_init_member(member_bits: u64, name_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_enum_init_member_attached_body(
+    _py: &crate::PyToken<'_>,
+    member_bits: u64,
+    name_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if !enum_set_attr(_py, member_bits, b"_name_", name_bits)
             || !enum_set_attr(_py, member_bits, b"_value_", value_bits)
         {
@@ -138,7 +143,7 @@ pub(super) fn iterable_to_string_vec(
     _py: &crate::PyToken<'_>,
     values_bits: u64,
 ) -> Result<Vec<String>, u64> {
-    let iter_bits = molt_iter(values_bits);
+    let iter_bits = molt_iter_attached_body(_py, values_bits);
     let iterator_owner = unsafe {
         molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), iter_bits)
     };
@@ -319,9 +324,12 @@ pub(super) fn alloc_string_bits(_py: &crate::PyToken<'_>, value: &str) -> Option
 
 // ─── logging filter intrinsics ──────────────────────────────────────────────
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_filter_check(filter_name_bits: u64, record_name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_logging_filter_check_attached_body(
+    _py: &crate::PyToken<'_>,
+    filter_name_bits: u64,
+    record_name_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let filter_name = string_obj_to_owned(obj_from_bits(filter_name_bits)).unwrap_or_default();
         let record_name = string_obj_to_owned(obj_from_bits(record_name_bits)).unwrap_or_default();
         let result = filter_name.is_empty()
@@ -522,9 +530,8 @@ fn compileall_compile_dir_impl(dir: &str, maxlevels: i64) -> bool {
     success
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shlex_quote(text_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_shlex_quote_attached_body(_py: &crate::PyToken<'_>, text_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -541,8 +548,8 @@ pub extern "C" fn molt_shlex_quote(text_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shlex_split_ex(
+pub(crate) fn molt_shlex_split_ex_attached_body(
+    _py: &crate::PyToken<'_>,
     text_bits: u64,
     whitespace_bits: u64,
     posix_bits: u64,
@@ -551,7 +558,7 @@ pub extern "C" fn molt_shlex_split_ex(
     commenters_bits: u64,
     punctuation_chars_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -600,9 +607,8 @@ pub extern "C" fn molt_shlex_split_ex(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shlex_join(words_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_shlex_join_attached_body(_py: &crate::PyToken<'_>, words_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let parts = match iterable_to_string_vec(_py, words_bits) {
             Ok(parts) => parts,
             Err(bits) => return bits,
@@ -616,9 +622,8 @@ pub extern "C" fn molt_shlex_join(words_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_this_payload() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_this_payload_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(s_bits) = alloc_string_bits(_py, THIS_ENCODED) else {
             return MoltObject::none().bits();
         };
@@ -713,7 +718,7 @@ fn bisect_normalize_bounds(
         ));
     }
 
-    let seq_len_bits = crate::molt_len(seq_bits);
+    let seq_len_bits = crate::molt_len_attached_body(_py, seq_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
@@ -755,7 +760,7 @@ fn bisect_find_index(
     while lo < hi {
         let mid = (lo + hi) / 2;
         let mid_bits = MoltObject::from_int(mid).bits();
-        let item_bits = molt_getitem_method(seq_bits, mid_bits);
+        let item_bits = molt_getitem_method_attached_body(_py, seq_bits, mid_bits);
         if exception_pending(_py) {
             return Err(MoltObject::none().bits());
         }
@@ -774,9 +779,9 @@ fn bisect_find_index(
         }
 
         let lt_bits = if left {
-            crate::molt_lt(key_result_bits, x_bits)
+            crate::molt_lt_attached_body(_py, key_result_bits, x_bits)
         } else {
-            crate::molt_lt(x_bits, key_result_bits)
+            crate::molt_lt_attached_body(_py, x_bits, key_result_bits)
         };
         if exception_pending(_py) {
             if release_key && !obj_from_bits(key_result_bits).is_none() {
@@ -820,7 +825,7 @@ fn bisect_insert_at(
     let Some(insert_name_bits) = crate::NameId::Insert.owned_bits(_py) else {
         return Err(MoltObject::none().bits());
     };
-    let insert_bits = molt_getattr_builtin(seq_bits, insert_name_bits, missing);
+    let insert_bits = molt_getattr_builtin_attached_body(_py, seq_bits, insert_name_bits, missing);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
@@ -838,15 +843,15 @@ fn bisect_insert_at(
     Ok(())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bisect_left(
+pub(crate) fn molt_bisect_left_attached_body(
+    _py: &crate::PyToken<'_>,
     seq_bits: u64,
     x_bits: u64,
     lo_bits: u64,
     hi_bits: u64,
     key_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let (lo, hi) = match bisect_normalize_bounds(_py, seq_bits, lo_bits, hi_bits) {
             Ok(bounds) => bounds,
             Err(bits) => return bits,
@@ -859,15 +864,15 @@ pub extern "C" fn molt_bisect_left(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bisect_right(
+pub(crate) fn molt_bisect_right_attached_body(
+    _py: &crate::PyToken<'_>,
     seq_bits: u64,
     x_bits: u64,
     lo_bits: u64,
     hi_bits: u64,
     key_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let (lo, hi) = match bisect_normalize_bounds(_py, seq_bits, lo_bits, hi_bits) {
             Ok(bounds) => bounds,
             Err(bits) => return bits,
@@ -880,15 +885,15 @@ pub extern "C" fn molt_bisect_right(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bisect_insort_left(
+pub(crate) fn molt_bisect_insort_left_attached_body(
+    _py: &crate::PyToken<'_>,
     seq_bits: u64,
     x_bits: u64,
     lo_bits: u64,
     hi_bits: u64,
     key_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let (lo, hi) = match bisect_normalize_bounds(_py, seq_bits, lo_bits, hi_bits) {
             Ok(bounds) => bounds,
             Err(bits) => return bits,
@@ -921,15 +926,15 @@ pub extern "C" fn molt_bisect_insort_left(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bisect_insort_right(
+pub(crate) fn molt_bisect_insort_right_attached_body(
+    _py: &crate::PyToken<'_>,
     seq_bits: u64,
     x_bits: u64,
     lo_bits: u64,
     hi_bits: u64,
     key_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let (lo, hi) = match bisect_normalize_bounds(_py, seq_bits, lo_bits, hi_bits) {
             Ok(bounds) => bounds,
             Err(bits) => return bits,
@@ -962,9 +967,12 @@ pub extern "C" fn molt_bisect_insort_right(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pkgutil_iter_modules(path_bits: u64, prefix_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_pkgutil_iter_modules_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+    prefix_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = crate::has_capability(_py, "fs.read");
         audit_capability_decision("pkgutil.iter.modules", "fs.read", AuditArgs::None, allowed);
         if !allowed {
@@ -990,9 +998,12 @@ pub extern "C" fn molt_pkgutil_iter_modules(path_bits: u64, prefix_bits: u64) ->
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pkgutil_walk_packages(path_bits: u64, prefix_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_pkgutil_walk_packages_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+    prefix_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = crate::has_capability(_py, "fs.read");
         audit_capability_decision("pkgutil.walk.packages", "fs.read", AuditArgs::None, allowed);
         if !allowed {
@@ -1018,9 +1029,12 @@ pub extern "C" fn molt_pkgutil_walk_packages(path_bits: u64, prefix_bits: u64) -
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shutil_copyfile(src_bits: u64, dst_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_shutil_copyfile_attached_body(
+    _py: &crate::PyToken<'_>,
+    src_bits: u64,
+    dst_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(error) =
             crate::require_operation(_py, crate::OperationId::ShutilCopyfile, AuditArgs::None)
         {
@@ -1044,9 +1058,13 @@ pub extern "C" fn molt_shutil_copyfile(src_bits: u64, dst_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shutil_which(files_bits: u64, directories_bits: u64, mode_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_shutil_which_attached_body(
+    _py: &crate::PyToken<'_>,
+    files_bits: u64,
+    directories_bits: u64,
+    mode_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if let Err(error) = crate::require_operation::<u64>(
             py,
             crate::OperationId::ShutilWhichExplicitPath,
@@ -1156,7 +1174,8 @@ pub extern "C" fn molt_shutil_which(files_bits: u64, directories_bits: u64, mode
                             MoltObject::from_ptr(name_ptr).bits(),
                         )
                     };
-                    let join = crate::molt_object_getattribute(path.bits(), name.bits());
+                    let join =
+                        crate::molt_object_getattribute_attached_body(py, path.bits(), name.bits());
                     let join = unsafe {
                         molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), join)
                     };
@@ -1213,9 +1232,12 @@ pub extern "C" fn molt_shutil_which(files_bits: u64, directories_bits: u64, mode
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_py_compile_compile(file_bits: u64, cfile_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_py_compile_compile_attached_body(
+    _py: &crate::PyToken<'_>,
+    file_bits: u64,
+    cfile_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(error) =
             crate::require_operation(_py, crate::OperationId::PyCompileCompile, AuditArgs::None)
         {
@@ -1258,9 +1280,11 @@ pub extern "C" fn molt_py_compile_compile(file_bits: u64, cfile_bits: u64) -> u6
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_compileall_compile_file(fullname_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_compileall_compile_file_attached_body(
+    _py: &crate::PyToken<'_>,
+    fullname_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = crate::has_capability(_py, "fs.read");
         audit_capability_decision(
             "compileall.compile.file",
@@ -1282,9 +1306,12 @@ pub extern "C" fn molt_compileall_compile_file(fullname_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_compileall_compile_dir(dir_bits: u64, maxlevels_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_compileall_compile_dir_attached_body(
+    _py: &crate::PyToken<'_>,
+    dir_bits: u64,
+    maxlevels_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = crate::has_capability(_py, "fs.read");
         audit_capability_decision(
             "compileall.compile.dir",
@@ -1309,13 +1336,13 @@ pub extern "C" fn molt_compileall_compile_dir(dir_bits: u64, maxlevels_bits: u64
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_compileall_compile_path(
+pub(crate) fn molt_compileall_compile_path_attached_body(
+    _py: &crate::PyToken<'_>,
     paths_bits: u64,
     skip_curdir_bits: u64,
     maxlevels_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = crate::has_capability(_py, "fs.read");
         audit_capability_decision(
             "compileall.compile.path",
@@ -1351,3 +1378,5 @@ pub extern "C" fn molt_compileall_compile_path(
         MoltObject::from_bool(success).bits()
     })
 }
+
+include!("../attached_exports_generated/builtins/functions.rs");

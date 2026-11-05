@@ -13,10 +13,10 @@ use super::common::{alloc_tuple_result, bits_to_string};
 ///   - "#RRRRGGGGBBBB" — each component 0-65535, scaled to 0-255 (component >> 8)
 ///
 /// Returns None on failure (not a valid hex color string).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_hex_to_rgb(color_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(color) = bits_to_string(color_bits) else {
+
+pub fn molt_tk_hex_to_rgb_attached_body(_py: &molt_runtime_core::PyToken, color_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(color) = bits_to_string(_py, color_bits) else {
             return MoltObject::none().bits();
         };
         let trimmed = color.trim();
@@ -70,9 +70,11 @@ pub extern "C" fn molt_tk_hex_to_rgb(color_bits: u64) -> u64 {
             MoltObject::from_int(g).bits(),
             MoltObject::from_int(b).bits(),
         ];
-        match alloc_tuple_result(&elems) {
+        match alloc_tuple_result(_py, &elems) {
             Ok(bits) => bits,
             Err(bits) => bits,
         }
     })
 }
+
+include!("../attached_exports_generated/tkinter_core/color.rs");

@@ -613,6 +613,8 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     gil_check: fake_gil_check,
     operation_enter: support::operation_enter,
     operation_leave: support::operation_leave,
+    foreign_execution_capture: support::foreign_execution_capture,
+    foreign_execution_validate: support::foreign_execution_validate,
     runtime_is_initialized: fake_runtime_is_initialized,
     thread_state_drop_enter: fake_thread_state_drop_enter,
     thread_state_drop_cleanup: support::thread_state_drop_cleanup,
@@ -2917,4 +2919,244 @@ fn module_dictionary_publication_precedes_foreign_retirement_and_preserves_error
 
 unsafe extern "C" fn test_target_python_at_least(major: i64, minor: i64) -> bool {
     (3, 12) >= (major, minor)
+}
+
+#[test]
+fn standalone_foreign_snapshot_tracks_actual_suspension_and_restore() {
+    use molt_cpython_abi::api::object::{
+        PyEval_RestoreThread, PyEval_SaveThread, PyGILState_Ensure, PyGILState_Release,
+    };
+    use molt_cpython_abi::hooks::{ForeignExecutionDomain, hooks_or_stubs};
+    let (_transaction, _lock) = init();
+    let hooks = hooks_or_stubs();
+    unsafe {
+        let before = (hooks.foreign_execution_capture)();
+        assert_eq!(before.domain, ForeignExecutionDomain::StandaloneHost);
+        assert_ne!(before.thread_record, 0);
+        assert_ne!(before.runtime_identity, 0);
+        assert_ne!(before.thread_state, 0);
+        assert_eq!((hooks.foreign_execution_validate)(before), 1);
+        let saved = PyEval_SaveThread();
+        assert_eq!((hooks.foreign_execution_validate)(before), 0);
+        let callback = PyGILState_Ensure();
+        assert_eq!((hooks.foreign_execution_validate)(before), 0);
+        PyGILState_Release(callback);
+        PyEval_RestoreThread(saved);
+        assert_eq!((hooks.foreign_execution_validate)(before), 1);
+    }
+}
+
+// Each child owns a real standalone ABI transaction. The callback uses the
+// public suspension protocol, rather than manufacturing an AttachedRuntime
+// snapshot or making the validation hook reject a fabricated state.
+static CUSTODY_CALLBACK_TARGET: AtomicUsize = AtomicUsize::new(0);
+static CUSTODY_CALLBACK_RESTORE: AtomicBool = AtomicBool::new(false);
+
+unsafe fn suspend_in_native_callback(target: usize) {
+    if CUSTODY_CALLBACK_TARGET.load(Ordering::Relaxed) != target {
+        return;
+    }
+    let saved = unsafe { molt_cpython_abi::api::object::PyEval_SaveThread() };
+    assert!(!saved.is_null());
+    eprintln!("native callback suspended");
+    if CUSTODY_CALLBACK_RESTORE.load(Ordering::Relaxed) {
+        unsafe { molt_cpython_abi::api::object::PyEval_RestoreThread(saved) };
+        eprintln!("native callback restored");
+    }
+}
+
+unsafe extern "C" fn custody_getbuffer(
+    object: *mut PyObject,
+    view: *mut Py_buffer,
+    flags: std::os::raw::c_int,
+) -> std::os::raw::c_int {
+    let result = unsafe {
+        molt_cpython_abi::api::buffer::PyBuffer_FillInfo(
+            view,
+            object,
+            (&raw mut FAKE_BUFFER).cast(),
+            4,
+            0,
+            flags,
+        )
+    };
+    if result == 0 {
+        unsafe { suspend_in_native_callback(1) };
+    }
+    result
+}
+
+unsafe extern "C" fn custody_releasebuffer(_object: *mut PyObject, _view: *mut Py_buffer) {
+    unsafe { suspend_in_native_callback(2) };
+}
+
+unsafe extern "C" fn custody_module_create(
+    _spec: *mut PyObject,
+    _def: *mut PyModuleDef,
+) -> *mut PyObject {
+    let module =
+        unsafe { molt_cpython_abi::api::modules::PyModule_New(c"custody.module".as_ptr()) };
+    assert!(!module.is_null());
+    unsafe { suspend_in_native_callback(3) };
+    module
+}
+
+unsafe extern "C" fn custody_module_exec(_module: *mut PyObject) -> std::os::raw::c_int {
+    unsafe { suspend_in_native_callback(4) };
+    0
+}
+
+#[test]
+fn native_buffer_and_module_callback_custody_child() {
+    let Ok(mode) = std::env::var("MOLT_NATIVE_BUFFER_MODULE_CUSTODY_CHILD") else {
+        return;
+    };
+    let (target, restore) = mode.split_once(':').expect("callback:restore child mode");
+    let target: usize = target.parse().unwrap();
+    assert!((1..=4).contains(&target));
+    let restore = match restore {
+        "restore" => true,
+        "detached" => false,
+        _ => panic!("unknown native callback custody mode"),
+    };
+    let _transaction = init();
+    let snapshot =
+        unsafe { (molt_cpython_abi::hooks::hooks_or_stubs().foreign_execution_capture)() };
+    assert_eq!(
+        snapshot.domain,
+        molt_cpython_abi::hooks::ForeignExecutionDomain::StandaloneHost
+    );
+    CUSTODY_CALLBACK_TARGET.store(target, Ordering::Relaxed);
+    CUSTODY_CALLBACK_RESTORE.store(restore, Ordering::Relaxed);
+    unsafe {
+        if target <= 2 {
+            let mut procs = PyBufferProcs {
+                bf_getbuffer: custody_getbuffer as *mut c_void,
+                bf_releasebuffer: custody_releasebuffer as *mut c_void,
+            };
+            let mut class: Box<PyTypeObject> = Box::new(std::mem::zeroed());
+            class.ob_base.ob_base.ob_refcnt = 1;
+            class.ob_base.ob_base.ob_type = &raw mut PyType_Type;
+            class.tp_name = c"fixture.CustodyBufferExporter".as_ptr();
+            class.tp_base = &raw mut PyBaseObject_Type;
+            class.tp_as_buffer = (&raw mut procs).cast();
+            let binding = BoundType::new(&raw mut *class);
+            let bits = support::fake_runtime::fresh_handle();
+            FAKE_CLASS_OVERRIDES
+                .lock()
+                .unwrap()
+                .insert(bits, binding.bits);
+            let _class_override = InstanceClassOverride(bits);
+            let owner = molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(bits),
+            );
+            let original_refs = (*owner.as_ptr()).ob_refcnt;
+            let mut view = OwnedBufferView(std::mem::zeroed());
+            assert_eq!(
+                molt_cpython_abi::api::buffer::PyObject_GetBuffer(owner.as_ptr(), &mut view.0, 0),
+                0
+            );
+            if target == 1 {
+                eprintln!("native callback public return reached");
+            }
+            assert_eq!(view.0.obj, owner.as_ptr());
+            assert_eq!(view.0.len, 4);
+            assert_eq!((*owner.as_ptr()).ob_refcnt, original_refs + 1);
+            molt_cpython_abi::api::buffer::PyBuffer_Release(&mut view.0);
+            if target == 2 {
+                eprintln!("native callback public return reached");
+            }
+            assert!(view.0.obj.is_null());
+            assert_eq!((*owner.as_ptr()).ob_refcnt, original_refs);
+        } else {
+            let mut slots = [
+                PyModuleDef_Slot {
+                    slot: 1,
+                    value: custody_module_create as *mut c_void,
+                },
+                PyModuleDef_Slot {
+                    slot: 2,
+                    value: custody_module_exec as *mut c_void,
+                },
+                PyModuleDef_Slot {
+                    slot: 0,
+                    value: ptr::null_mut(),
+                },
+            ];
+            let mut def: PyModuleDef = std::mem::zeroed();
+            def.m_name = c"custody.module".as_ptr();
+            def.m_slots = slots.as_mut_ptr();
+            let module = module_from_test_spec(&raw mut def);
+            if target == 3 {
+                eprintln!("native callback public return reached");
+            }
+            assert!(!module.is_null());
+            assert_eq!(
+                molt_cpython_abi::api::modules::PyModule_ExecDef(module, &raw mut def),
+                0
+            );
+            if target == 4 {
+                eprintln!("native callback public return reached");
+            }
+            molt_cpython_abi::api::refcount::Py_DECREF(module);
+        }
+        assert!(molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
+    }
+    eprintln!("native callback owners retired");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_buffer_and_module_callbacks_validate_before_public_return_and_cleanup() {
+    for target in 1..=4 {
+        for restore in [true, false] {
+            let mode = format!("{target}:{}", if restore { "restore" } else { "detached" });
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command.args([
+                "--exact",
+                "native_buffer_and_module_callback_custody_child",
+                "--nocapture",
+            ]);
+            command.env("MOLT_NATIVE_BUFFER_MODULE_CUSTODY_CHILD", &mode);
+            let output = support::captured_runtime_children::capture(
+                &mut command,
+                "native-buffer-module-callback-custody",
+                &mode,
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("native callback suspended"),
+                "{mode}: {stderr}"
+            );
+            if restore {
+                assert!(output.status.success(), "{mode}: {stderr}");
+                assert!(
+                    stderr.contains("native callback restored"),
+                    "{mode}: {stderr}"
+                );
+                assert!(
+                    stderr.contains("native callback public return reached"),
+                    "{mode}: {stderr}"
+                );
+                assert!(
+                    stderr.contains("native callback owners retired"),
+                    "{mode}: {stderr}"
+                );
+            } else {
+                assert!(!output.status.success(), "{mode}: {stderr}");
+                assert!(
+                    stderr.contains("foreign callback returned with invalid execution custody"),
+                    "{mode}: {stderr}"
+                );
+                assert!(
+                    !stderr.contains("native callback public return reached"),
+                    "{mode}: {stderr}"
+                );
+                assert!(
+                    !stderr.contains("native callback owners retired"),
+                    "{mode}: {stderr}"
+                );
+            }
+        }
+    }
 }

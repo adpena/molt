@@ -111,9 +111,8 @@ pub(crate) fn alloc_cell(_py: &PyToken<'_>, value_bits: u64) -> *mut u8 {
     ptr
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cell_new(value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_cell_new_attached_body(_py: &crate::PyToken<'_>, value_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let ptr = alloc_cell(_py, value_bits);
         if ptr.is_null() {
             MoltObject::none().bits()
@@ -123,9 +122,8 @@ pub extern "C" fn molt_cell_new(value_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cell_get(cell_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_cell_get_attached_body(_py: &crate::PyToken<'_>, cell_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(ptr) = cell_ptr_from_bits(cell_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected cell");
         };
@@ -135,9 +133,12 @@ pub extern "C" fn molt_cell_get(cell_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cell_set(cell_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_cell_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    cell_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(ptr) = cell_ptr_from_bits(cell_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected cell");
         };
@@ -182,3 +183,5 @@ mod tests {
         });
     }
 }
+
+include!("../attached_exports_generated/object/cells.rs");

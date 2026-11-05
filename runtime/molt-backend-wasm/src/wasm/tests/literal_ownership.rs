@@ -82,10 +82,10 @@ for (const present of [false, true]) for (const fail of [false, true]) {
   for (const entry of WebAssembly.Module.imports(module)) {
     imports[entry.module] ??= {};
     if (entry.kind !== 'function') { assert.ok(entry.module === 'env' && entry.name in imports.env); continue; }
-    imports[entry.module][entry.name] = providers[entry.name] ?? (() => { throw new Error('unexpected runtime call '+entry.name); });
+    imports[entry.module][entry.name] = providers[runtimeImportName(entry.name)] ?? (() => { throw new Error('unexpected runtime call '+entry.name); });
   }
-  const app = new WebAssembly.Instance(module, imports).exports;
-  assert.equal(app.molt_main(builder, present ? receiver : nullWord), none);
+  const app = new WebAssembly.Instance(module, attachedImports(imports)).exports;
+  assert.equal(app[compiledSymbol('molt_main')](executionContext, builder, present ? receiver : nullWord), none);
   assert.equal(pushes, Number(present));
   assert.equal(pending, present && fail, 'push failure remains pending after release');
   assert.equal(owners, Number(present && !fail), 'only the builder retains the receiver');
@@ -229,11 +229,11 @@ for (const test of config.cases) {
         assert.ok(entry.module === 'env' && entry.name in imports.env, name + ': unknown host resource');
         continue;
       }
-      imports[entry.module][entry.name] = providers[entry.name] ??
+      imports[entry.module][entry.name] = providers[runtimeImportName(entry.name)] ??
         (() => { throw new Error(name + ': unexpected runtime call ' + entry.name); });
     }
-    const app = new WebAssembly.Instance(module, imports).exports;
-    const result = app.molt_main(value);
+    const app = new WebAssembly.Instance(module, attachedImports(imports)).exports;
+    const result = app[compiledSymbol('molt_main')](executionContext, value);
     const retained = test.bound && failure === 'success';
     assert.equal(result, retained ? owner : none, name + ': result');
     assert.equal(allocations, 1, name);
@@ -401,11 +401,11 @@ for (const test of config.cases) {
         assert.ok(entry.module === 'env' && entry.name in imports.env, name + ': unknown host resource');
         continue;
       }
-      imports[entry.module][entry.name] = providers[entry.name] ??
+      imports[entry.module][entry.name] = providers[runtimeImportName(entry.name)] ??
         (() => { throw new Error(name + ': unexpected runtime call ' + entry.name); });
     }
-    const app = new WebAssembly.Instance(module, imports).exports;
-    const result = app.molt_main(...operands);
+    const app = new WebAssembly.Instance(module, attachedImports(imports)).exports;
+    const result = app[compiledSymbol('molt_main')](executionContext, ...operands);
     const retained = test.bound && failure === 'success';
     assert.equal(result, retained ? owner : none, name + ': result');
     assert.equal(allocations, words.length ? 1 : 0, name + ': scratch only for a nonempty range');
@@ -674,12 +674,12 @@ for (const test of config.cases) {
         assert.ok(entry.module === 'env' && entry.name in imports.env, name + ': unknown host resource');
         continue;
       }
-      imports[entry.module][entry.name] = providers[entry.name] ??
+      imports[entry.module][entry.name] = providers[runtimeImportName(entry.name)] ??
         (() => { throw new Error(name + ': unexpected runtime call ' + entry.name); });
     }
     // A tagged nonnumeric operand selects the boxed runtime path. This test
     // proves call/result ownership, not the provider's arithmetic semantics.
-    const result = new WebAssembly.Instance(module, imports).exports.molt_main(none);
+    const result = new WebAssembly.Instance(module, attachedImports(imports)).exports[compiledSymbol('molt_main')](executionContext, none);
     const retained = test.bound && !failed;
     assert.equal(calls, 1, name + ': selected runtime import');
     assert.equal(result, retained ? owner : none, name + ': result');
@@ -1741,12 +1741,12 @@ for (const failure of [-1, 0, 1, 2, 3]) {
     for (const entry of WebAssembly.Module.imports(module)) {
       if (entry.kind !== 'function') continue;
       imports[entry.module] ??= {};
-      imports[entry.module][entry.name] = hooks[entry.name] ?? (() => {
+      imports[entry.module][entry.name] = hooks[runtimeImportName(entry.name)] ?? (() => {
         throw new Error('unexpected runtime call ' + entry.name);
       });
     }
-    const app = new WebAssembly.Instance(module, imports).exports;
-    assert.equal(app.molt_main(condition), failure || condition === no ? none : yes);
+    const app = new WebAssembly.Instance(module, attachedImports(imports)).exports;
+    assert.equal(app[compiledSymbol('molt_main')](executionContext, condition), failure || condition === no ? none : yes);
     assert.equal(pending, failure !== 0, 'cleanup preserves the constructor exception');
     assert.equal(constructed, failure === -1 ? 0 : failure || 3);
     assert.equal(live, false); assert.equal(frees, failure === -1 ? 0 : 1);

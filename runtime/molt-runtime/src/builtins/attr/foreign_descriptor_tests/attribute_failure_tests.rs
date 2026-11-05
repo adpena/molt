@@ -110,16 +110,16 @@ fn native_attribute_failures_reach_all_public_runtime_consumers() {
                 let before = receiver.calls;
                 match operation {
                     0 => {
-                        crate::molt_get_attr_name(bits, name);
+                        crate::molt_get_attr_name_attached_body(py, bits, name);
                     }
                     1 => {
-                        crate::molt_get_attr_name_default(bits, name, none);
+                        crate::molt_get_attr_name_default_attached_body(py, bits, name, none);
                     }
                     2 => {
-                        crate::molt_set_attr_name(bits, name, none);
+                        crate::molt_set_attr_name_attached_body(py, bits, name, none);
                     }
                     _ => {
-                        crate::molt_del_attr_name(bits, name);
+                        crate::molt_del_attr_name_attached_body(py, bits, name);
                     }
                 }
                 assert_eq!(receiver.calls, before + 1, "callback must not be retried");
@@ -157,9 +157,9 @@ fn native_attribute_failures_reach_all_public_runtime_consumers() {
         kind.tp_setattro = None;
         for delete in [false, true] {
             if delete {
-                crate::molt_del_attr_name(bits, name);
+                crate::molt_del_attr_name_attached_body(py, bits, name);
             } else {
-                crate::molt_set_attr_name(bits, name, none);
+                crate::molt_set_attr_name_attached_body(py, bits, name, none);
             }
             let error = crate::exception_last_bits_noinc(&py).expect("missing setter is an error");
             assert!(crate::builtins::exceptions::exception_matches_kind(

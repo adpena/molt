@@ -7,6 +7,8 @@ use crate::BuiltinExc;
 use crate::*;
 use molt_obj_model::MoltObject;
 use molt_obj_model::unicode::CaseOperation;
+#[cfg(test)]
+pub(crate) use ops_string_predicates::molt_string_isspace_attached_body;
 
 use super::ops::{
     bytes_ascii_capitalize, bytes_ascii_swapcase, bytes_ascii_title, format_with_spec,
@@ -19,10 +21,14 @@ use super::ops::{
 #[path = "ops_string_predicates.rs"]
 mod ops_string_predicates;
 pub(crate) use ops_string_predicates::is_identifier_bytes;
-pub use ops_string_predicates::{
-    molt_string_isalnum, molt_string_isalpha, molt_string_isascii, molt_string_isdecimal,
-    molt_string_isdigit, molt_string_isidentifier, molt_string_islower, molt_string_isnumeric,
-    molt_string_isprintable, molt_string_isspace, molt_string_istitle, molt_string_isupper,
+pub(crate) use ops_string_predicates::molt_string_isidentifier_attached_body;
+pub use {
+    ops_string_predicates::molt_string_isalnum, ops_string_predicates::molt_string_isalpha,
+    ops_string_predicates::molt_string_isascii, ops_string_predicates::molt_string_isdecimal,
+    ops_string_predicates::molt_string_isdigit, ops_string_predicates::molt_string_isidentifier,
+    ops_string_predicates::molt_string_islower, ops_string_predicates::molt_string_isnumeric,
+    ops_string_predicates::molt_string_isprintable, ops_string_predicates::molt_string_isspace,
+    ops_string_predicates::molt_string_istitle, ops_string_predicates::molt_string_isupper,
 };
 
 /// Require the strict UTF-8 view used by C-facing names. Python text storage
@@ -99,15 +105,23 @@ pub(super) fn validate_string_receiver(
 
 #[path = "ops_string_affix.rs"]
 mod ops_string_affix;
+pub(crate) use ops_string_affix::molt_string_strip_attached_body;
 use ops_string_affix::{ascii_lower_into, ascii_upper_into};
-pub use ops_string_affix::{
-    molt_string_center, molt_string_expandtabs, molt_string_ljust, molt_string_lstrip,
-    molt_string_maketrans, molt_string_removeprefix, molt_string_removesuffix, molt_string_rjust,
-    molt_string_rstrip, molt_string_strip, molt_string_translate, molt_string_zfill,
+pub use {
+    ops_string_affix::molt_string_center, ops_string_affix::molt_string_expandtabs,
+    ops_string_affix::molt_string_ljust, ops_string_affix::molt_string_lstrip,
+    ops_string_affix::molt_string_maketrans, ops_string_affix::molt_string_removeprefix,
+    ops_string_affix::molt_string_removesuffix, ops_string_affix::molt_string_rjust,
+    ops_string_affix::molt_string_rstrip, ops_string_affix::molt_string_strip,
+    ops_string_affix::molt_string_translate, ops_string_affix::molt_string_zfill,
 };
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_find(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_string_find_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // ASCII fast path: skip all char-to-byte conversion overhead when both
         // haystack and needle are pure ASCII (byte index == char index).
         if let Some(hay_ptr) = obj_from_bits(hay_bits).as_ptr() {
@@ -133,7 +147,8 @@ pub extern "C" fn molt_string_find(hay_bits: u64, needle_bits: u64) -> u64 {
         }
         let none_bits = MoltObject::none().bits();
         let false_bits = MoltObject::from_bool(false).bits();
-        molt_string_find_slice(
+        molt_string_find_slice_attached_body(
+            _py,
             hay_bits,
             needle_bits,
             none_bits,
@@ -144,9 +159,12 @@ pub extern "C" fn molt_string_find(hay_bits: u64, needle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_rfind(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_rfind_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // ASCII fast path: skip all char-to-byte conversion overhead.
         if let Some(hay_ptr) = obj_from_bits(hay_bits).as_ptr() {
             unsafe {
@@ -171,7 +189,8 @@ pub extern "C" fn molt_string_rfind(hay_bits: u64, needle_bits: u64) -> u64 {
         }
         let none_bits = MoltObject::none().bits();
         let false_bits = MoltObject::from_bool(false).bits();
-        molt_string_rfind_slice(
+        molt_string_rfind_slice_attached_body(
+            _py,
             hay_bits,
             needle_bits,
             none_bits,
@@ -182,12 +201,16 @@ pub extern "C" fn molt_string_rfind(hay_bits: u64, needle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_index(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_index_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let none_bits = MoltObject::none().bits();
         let false_bits = MoltObject::from_bool(false).bits();
-        molt_string_index_slice(
+        molt_string_index_slice_attached_body(
+            _py,
             hay_bits,
             needle_bits,
             none_bits,
@@ -198,12 +221,16 @@ pub extern "C" fn molt_string_index(hay_bits: u64, needle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_rindex(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_rindex_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let none_bits = MoltObject::none().bits();
         let false_bits = MoltObject::from_bool(false).bits();
-        molt_string_rindex_slice(
+        molt_string_rindex_slice_attached_body(
+            _py,
             hay_bits,
             needle_bits,
             none_bits,
@@ -221,8 +248,9 @@ pub extern "C" fn molt_string_rindex(hay_bits: u64, needle_bits: u64) -> u64 {
 // tuples; the backends continue to call the _slice variants directly.
 
 /// str.find(sub, start=None, end=None) — method dispatch entry point.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_find_method(
+
+pub(crate) fn molt_string_find_method_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -240,7 +268,8 @@ pub extern "C" fn molt_string_find_method(
     } else {
         MoltObject::from_int(0).bits()
     };
-    molt_string_find_slice(
+    molt_string_find_slice_attached_body(
+        _py,
         hay_bits,
         needle_bits,
         start,
@@ -251,8 +280,9 @@ pub extern "C" fn molt_string_find_method(
 }
 
 /// str.rfind(sub, start=None, end=None)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_rfind_method(
+
+pub(crate) fn molt_string_rfind_method_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -270,7 +300,8 @@ pub extern "C" fn molt_string_rfind_method(
     } else {
         MoltObject::from_int(0).bits()
     };
-    molt_string_rfind_slice(
+    molt_string_rfind_slice_attached_body(
+        _py,
         hay_bits,
         needle_bits,
         start,
@@ -281,8 +312,9 @@ pub extern "C" fn molt_string_rfind_method(
 }
 
 /// str.index(sub, start=None, end=None)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_index_method(
+
+pub(crate) fn molt_string_index_method_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -300,7 +332,8 @@ pub extern "C" fn molt_string_index_method(
     } else {
         MoltObject::from_int(0).bits()
     };
-    molt_string_index_slice(
+    molt_string_index_slice_attached_body(
+        _py,
         hay_bits,
         needle_bits,
         start,
@@ -311,8 +344,9 @@ pub extern "C" fn molt_string_index_method(
 }
 
 /// str.rindex(sub, start=None, end=None)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_rindex_method(
+
+pub(crate) fn molt_string_rindex_method_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -330,7 +364,8 @@ pub extern "C" fn molt_string_rindex_method(
     } else {
         MoltObject::from_int(0).bits()
     };
-    molt_string_rindex_slice(
+    molt_string_rindex_slice_attached_body(
+        _py,
         hay_bits,
         needle_bits,
         start,
@@ -341,8 +376,9 @@ pub extern "C" fn molt_string_rindex_method(
 }
 
 /// str.count(sub, start=None, end=None)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_count_method(
+
+pub(crate) fn molt_string_count_method_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -360,7 +396,8 @@ pub extern "C" fn molt_string_count_method(
     } else {
         MoltObject::from_int(0).bits()
     };
-    molt_string_count_slice(
+    molt_string_count_slice_attached_body(
+        _py,
         hay_bits,
         needle_bits,
         start,
@@ -371,8 +408,9 @@ pub extern "C" fn molt_string_count_method(
 }
 
 /// str.startswith(prefix, start=None, end=None)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_startswith_method(
+
+pub(crate) fn molt_string_startswith_method_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -390,7 +428,8 @@ pub extern "C" fn molt_string_startswith_method(
     } else {
         MoltObject::from_int(0).bits()
     };
-    molt_string_startswith_slice(
+    molt_string_startswith_slice_attached_body(
+        _py,
         hay_bits,
         needle_bits,
         start,
@@ -401,8 +440,9 @@ pub extern "C" fn molt_string_startswith_method(
 }
 
 /// str.endswith(suffix, start=None, end=None)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_endswith_method(
+
+pub(crate) fn molt_string_endswith_method_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -420,7 +460,8 @@ pub extern "C" fn molt_string_endswith_method(
     } else {
         MoltObject::from_int(0).bits()
     };
-    molt_string_endswith_slice(
+    molt_string_endswith_slice_attached_body(
+        _py,
         hay_bits,
         needle_bits,
         start,
@@ -430,8 +471,8 @@ pub extern "C" fn molt_string_endswith_method(
     )
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_find_slice(
+pub(crate) fn molt_string_find_slice_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -439,7 +480,7 @@ pub extern "C" fn molt_string_find_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let has_start = to_i64(obj_from_bits(has_start_bits)).unwrap_or(0) != 0;
@@ -525,8 +566,8 @@ pub extern "C" fn molt_string_find_slice(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_rfind_slice(
+pub(crate) fn molt_string_rfind_slice_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -534,7 +575,7 @@ pub extern "C" fn molt_string_rfind_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let has_start = to_i64(obj_from_bits(has_start_bits)).unwrap_or(0) != 0;
@@ -619,8 +660,8 @@ pub extern "C" fn molt_string_rfind_slice(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_index_slice(
+pub(crate) fn molt_string_index_slice_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -628,7 +669,7 @@ pub extern "C" fn molt_string_index_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // Validate the needle HERE so a non-str needle yields the "index()"-named
         // TypeError; index delegates to find_slice, whose own check would
         // otherwise report "find" (the message differs by method on 3.13+).
@@ -640,7 +681,8 @@ pub extern "C" fn molt_string_index_slice(
             let msg = str_sub_arg_type_msg(_py, "index", needle);
             return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
-        let out_bits = molt_string_find_slice(
+        let out_bits = molt_string_find_slice_attached_body(
+            _py,
             hay_bits,
             needle_bits,
             start_bits,
@@ -656,8 +698,8 @@ pub extern "C" fn molt_string_index_slice(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_rindex_slice(
+pub(crate) fn molt_string_rindex_slice_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -665,7 +707,7 @@ pub extern "C" fn molt_string_rindex_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // Validate the needle HERE so a non-str needle yields the "rindex()"-named
         // TypeError; rindex delegates to rfind_slice, whose own check would
         // otherwise report "rfind" (the message differs by method on 3.13+).
@@ -677,7 +719,8 @@ pub extern "C" fn molt_string_rindex_slice(
             let msg = str_sub_arg_type_msg(_py, "rindex", needle);
             return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
-        let out_bits = molt_string_rfind_slice(
+        let out_bits = molt_string_rfind_slice_attached_body(
+            _py,
             hay_bits,
             needle_bits,
             start_bits,
@@ -693,9 +736,12 @@ pub extern "C" fn molt_string_rindex_slice(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_startswith(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_startswith_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
@@ -725,7 +771,8 @@ pub extern "C" fn molt_string_startswith(hay_bits: u64, needle_bits: u64) -> u64
             // `"hi".startswith(("x", 1))` returned False instead of raising.
             let none_bits = MoltObject::none().bits();
             let false_bits = MoltObject::from_bool(false).bits();
-            molt_string_startswith_slice(
+            molt_string_startswith_slice_attached_body(
+                _py,
                 hay_bits,
                 needle_bits,
                 none_bits,
@@ -737,9 +784,12 @@ pub extern "C" fn molt_string_startswith(hay_bits: u64, needle_bits: u64) -> u64
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_endswith(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_endswith_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
@@ -768,7 +818,8 @@ pub extern "C" fn molt_string_endswith(hay_bits: u64, needle_bits: u64) -> u64 {
             // `"hi".endswith(("x", 1))` returned False instead of raising.
             let none_bits = MoltObject::none().bits();
             let false_bits = MoltObject::from_bool(false).bits();
-            molt_string_endswith_slice(
+            molt_string_endswith_slice_attached_body(
+                _py,
                 hay_bits,
                 needle_bits,
                 none_bits,
@@ -780,8 +831,8 @@ pub extern "C" fn molt_string_endswith(hay_bits: u64, needle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_startswith_slice(
+pub(crate) fn molt_string_startswith_slice_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -789,7 +840,7 @@ pub extern "C" fn molt_string_startswith_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let has_start = to_i64(obj_from_bits(has_start_bits)).unwrap_or(0) != 0;
@@ -885,8 +936,8 @@ pub extern "C" fn molt_string_startswith_slice(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_endswith_slice(
+pub(crate) fn molt_string_endswith_slice_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -894,7 +945,7 @@ pub extern "C" fn molt_string_endswith_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let has_start = to_i64(obj_from_bits(has_start_bits)).unwrap_or(0) != 0;
@@ -1015,9 +1066,12 @@ fn str_count_arg_type_msg(_py: &PyToken<'_>, needle: MoltObject) -> String {
     str_sub_arg_type_msg(_py, "count", needle)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_count(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_count_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
@@ -1075,8 +1129,8 @@ pub extern "C" fn molt_string_count(hay_bits: u64, needle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_count_slice(
+pub(crate) fn molt_string_count_slice_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -1084,7 +1138,7 @@ pub extern "C" fn molt_string_count_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let has_start = to_i64(obj_from_bits(has_start_bits)).unwrap_or(0) != 0;
@@ -1154,9 +1208,12 @@ pub extern "C" fn molt_string_count_slice(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_join_attached_body(
+    _py: &crate::PyToken<'_>,
+    sep_bits: u64,
+    items_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let sep = obj_from_bits(sep_bits);
         let sep_ptr = match sep.as_ptr() {
             Some(ptr) => ptr,
@@ -1298,8 +1355,13 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
 
 #[path = "ops_string_format.rs"]
 pub(crate) mod ops_string_format;
-pub use ops_string_format::{
-    molt_string_format, molt_string_format_map, molt_string_format_method,
+pub use {
+    ops_string_format::molt_string_format, ops_string_format::molt_string_format_map,
+    ops_string_format::molt_string_format_method,
+};
+pub(crate) use {
+    ops_string_format::molt_string_format_attached_body,
+    ops_string_format::molt_string_format_method_attached_body,
 };
 
 #[path = "ops_string_utf8.rs"]
@@ -1314,23 +1376,32 @@ pub(crate) use ops_string_utf8::{utf8_cache_remove, utf8_codepoint_count_cached,
 #[path = "ops_string_split.rs"]
 mod ops_string_split;
 pub(crate) use ops_string_split::{explicit_split_field_args, split_field_bounds_at_index};
-pub use ops_string_split::{
-    molt_string_partition, molt_string_rpartition, molt_string_rsplit, molt_string_rsplit_max,
-    molt_string_split, molt_string_split_field, molt_string_split_field_end,
-    molt_string_split_field_eq, molt_string_split_field_is_ascii, molt_string_split_field_len,
-    molt_string_split_field_len_from_bounds, molt_string_split_field_ord_at_bounds,
-    molt_string_split_field_start, molt_string_split_max, molt_string_split_validate,
-    molt_string_splitlines,
+pub use {
+    ops_string_split::molt_string_partition, ops_string_split::molt_string_rpartition,
+    ops_string_split::molt_string_rsplit, ops_string_split::molt_string_rsplit_max,
+    ops_string_split::molt_string_split, ops_string_split::molt_string_split_field,
+    ops_string_split::molt_string_split_field_end, ops_string_split::molt_string_split_field_eq,
+    ops_string_split::molt_string_split_field_is_ascii,
+    ops_string_split::molt_string_split_field_len,
+    ops_string_split::molt_string_split_field_len_from_bounds,
+    ops_string_split::molt_string_split_field_ord_at_bounds,
+    ops_string_split::molt_string_split_field_start, ops_string_split::molt_string_split_max,
+    ops_string_split::molt_string_split_validate, ops_string_split::molt_string_splitlines,
+};
+pub(crate) use {
+    ops_string_split::molt_string_rsplit_max_attached_body,
+    ops_string_split::molt_string_split_max_attached_body,
+    ops_string_split::molt_string_splitlines_attached_body,
 };
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_replace(
+pub(crate) fn molt_string_replace_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     replacement_bits: u64,
     count_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let needle = obj_from_bits(needle_bits);
         let replacement = obj_from_bits(replacement_bits);
@@ -1409,9 +1480,13 @@ pub extern "C" fn molt_string_replace(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_encode(hay_bits: u64, encoding_bits: u64, errors_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_encode_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    encoding_bits: u64,
+    errors_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
             return MoltObject::none().bits();
@@ -1443,9 +1518,8 @@ pub extern "C" fn molt_string_encode(hay_bits: u64, encoding_bits: u64, errors_b
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_lower(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_lower_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
             return MoltObject::none().bits();
@@ -1496,9 +1570,8 @@ pub extern "C" fn molt_string_lower(hay_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_casefold(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_casefold_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
             return MoltObject::none().bits();
@@ -1518,9 +1591,8 @@ pub extern "C" fn molt_string_casefold(hay_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_upper(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_upper_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
             return MoltObject::none().bits();
@@ -1569,9 +1641,8 @@ pub extern "C" fn molt_string_upper(hay_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_swapcase(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_swapcase_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
             return MoltObject::none().bits();
@@ -1601,9 +1672,8 @@ pub extern "C" fn molt_string_swapcase(hay_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_capitalize(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_capitalize_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
             return MoltObject::none().bits();
@@ -1633,9 +1703,8 @@ pub extern "C" fn molt_string_capitalize(hay_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_title(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_title_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
             return MoltObject::none().bits();
@@ -1664,3 +1733,5 @@ pub extern "C" fn molt_string_title(hay_bits: u64) -> u64 {
         }
     })
 }
+
+include!("../attached_exports_generated/object/ops_string.rs");

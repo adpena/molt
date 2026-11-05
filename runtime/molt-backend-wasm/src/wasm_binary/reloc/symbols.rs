@@ -1,6 +1,6 @@
 use crate::wasm_abi::{
     CALL_INDIRECT_IMPORTS, NATIVE_CALLABLE_IMPORT_MODULE, RUNTIME_IMPORT_MODULE,
-    USER_FUNCTION_IMPORT_MODULE, wasm_runtime_export_name,
+    USER_FUNCTION_IMPORT_MODULE,
 };
 use crate::wasm_abi_generated::{WasmRuntimeImport, wasm_runtime_import};
 use crate::wasm_data::DataSegmentInfo;
@@ -56,13 +56,15 @@ pub(super) fn is_manifest_call_indirect_import_name(name: &str) -> bool {
 
 fn linker_symbol_name_for_function_import(import: &FunctionImport) -> String {
     match import.module.as_str() {
-        RUNTIME_IMPORT_MODULE => wasm_runtime_export_name(&import.name)
+        RUNTIME_IMPORT_MODULE => wasm_runtime_import(&import.name)
             .unwrap_or_else(|| {
                 panic!(
                     "missing generated runtime export for import {}",
                     import.name
                 )
             })
+            .execution_abi()
+            .physical_symbol
             .to_string(),
         NATIVE_CALLABLE_IMPORT_MODULE => import.name.clone(),
         USER_FUNCTION_IMPORT_MODULE => import.name.clone(),
@@ -112,7 +114,13 @@ pub(super) fn build_symbol_maps(scan: &RelocScan, data_segments: &[DataSegmentIn
         // Preserve explicit call_indirect export symbols because wasm_link.py
         // resolves/aliases those by name for runtime ABI wiring.
         let name = match export_name.as_deref() {
-            Some("molt_host_init") | Some("molt_main") => export_name.clone().unwrap_or_default(),
+            Some(exported)
+                if exported.ends_with(
+                    molt_ir::runtime_callable_abi_generated::ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX,
+                ) =>
+            {
+                exported.to_string()
+            }
             Some(exported) if is_manifest_call_indirect_import_name(exported) => {
                 exported.to_string()
             }

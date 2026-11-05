@@ -274,12 +274,12 @@ for (const test of config.cases) {
       continue;
     }
     assert.equal(entry.kind, 'function');
-    imports[entry.module][entry.name] = entry.name === 'refcount_admission' ? () => 0n : ['inc_ref_obj', 'dec_ref_obj'].includes(entry.name)
+    imports[entry.module][entry.name] = runtimeImportName(entry.name) === 'refcount_admission' ? () => 0n : ['inc_ref_obj', 'dec_ref_obj'].includes(runtimeImportName(entry.name))
       ? scalarReference : () => { throw new Error(test.name + ': unexpected runtime call ' + entry.name); };
   }
-  const app = new WebAssembly.Instance(module, imports).exports;
-  assert.equal(app.molt_main(first, second), test.returns_none ? none : first, test.name);
-  assert.equal(app.molt_main(second, first), test.returns_none ? none : second, test.name + ': swapped');
+  const app = new WebAssembly.Instance(module, attachedImports(imports)).exports;
+  assert.equal(app[compiledSymbol('molt_main')](executionContext, first, second), test.returns_none ? none : first, test.name);
+  assert.equal(app[compiledSymbol('molt_main')](executionContext, second, first), test.returns_none ? none : second, test.name + ': swapped');
 }
 "#,
         &[&config],

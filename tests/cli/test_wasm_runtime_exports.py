@@ -24,6 +24,7 @@ from molt._wasm_abi_generated import (
     WASM_RUNTIME_HOST_EXPORTS,
     wasm_runtime_export_name,
     wasm_runtime_import_name,
+    runtime_execution_abi,
 )
 from molt._intrinsic_symbols import intrinsic_runtime_symbol_name
 from molt._runtime_feature_gates import runtime_symbol_available_on_target
@@ -35,6 +36,12 @@ from molt.wasm_artifact import parse_wasm_exports, transform_wasm_publication_fi
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def _physical(logical: str) -> str:
+    abi = runtime_execution_abi(logical)
+    assert abi is not None, logical
+    return abi.physical_symbol
+
+
 RUNTIME_OWNED_GPU_MODULES = {
     "molt.gpu",
     "molt.gpu.tensor",
@@ -43,32 +50,35 @@ RUNTIME_OWNED_GPU_MODULES = {
 }
 
 RUNTIME_OWNED_GPU_EXPORTS = {
-    "molt_gpu_kernel_launch_python",
-    "molt_gpu_thread_id",
-    "molt_gpu_block_id",
-    "molt_gpu_block_dim",
-    "molt_gpu_grid_dim",
-    "molt_gpu_barrier",
-    "molt_gpu_buffer_to_list",
-    "molt_gpu_tensor_from_parts",
-    "molt_gpu_linear_contiguous",
-    "molt_gpu_linear_split_last_dim_contiguous",
-    "molt_gpu_tensor__tensor_linear_split_last_dim",
-    "molt_gpu_linear_squared_relu_gate_interleaved_contiguous",
-    "molt_gpu_permute_contiguous",
-    "molt_gpu_softmax_last_axis_contiguous",
-    "molt_gpu_tensor__tensor_concat_first_dim",
-    "molt_gpu_tensor__tensor_scatter_rows",
-    "molt_gpu_broadcast_binary_contiguous",
-    "molt_gpu_matmul_contiguous",
-    "molt_gpu_repeat_axis_contiguous",
-    "molt_gpu_rms_norm_last_axis_contiguous",
-    "molt_gpu_squared_relu_gate_interleaved_contiguous",
-    "molt_gpu_tensor__tensor_scaled_dot_product_attention",
-    "molt_gpu_tensor__zeros",
-    "molt_gpu_turboquant_attention_packed",
-    "molt_gpu_interop_decode_f16_bytes_to_f32",
-    "molt_gpu_interop_decode_bf16_bytes_to_f32",
+    _physical(name)
+    for name in {
+        "molt_gpu_kernel_launch_python",
+        "molt_gpu_thread_id",
+        "molt_gpu_block_id",
+        "molt_gpu_block_dim",
+        "molt_gpu_grid_dim",
+        "molt_gpu_barrier",
+        "molt_gpu_buffer_to_list",
+        "molt_gpu_tensor_from_parts",
+        "molt_gpu_linear_contiguous",
+        "molt_gpu_linear_split_last_dim_contiguous",
+        "molt_gpu_tensor__tensor_linear_split_last_dim",
+        "molt_gpu_linear_squared_relu_gate_interleaved_contiguous",
+        "molt_gpu_permute_contiguous",
+        "molt_gpu_softmax_last_axis_contiguous",
+        "molt_gpu_tensor__tensor_concat_first_dim",
+        "molt_gpu_tensor__tensor_scatter_rows",
+        "molt_gpu_broadcast_binary_contiguous",
+        "molt_gpu_matmul_contiguous",
+        "molt_gpu_repeat_axis_contiguous",
+        "molt_gpu_rms_norm_last_axis_contiguous",
+        "molt_gpu_squared_relu_gate_interleaved_contiguous",
+        "molt_gpu_tensor__tensor_scaled_dot_product_attention",
+        "molt_gpu_tensor__zeros",
+        "molt_gpu_turboquant_attention_packed",
+        "molt_gpu_interop_decode_f16_bytes_to_f32",
+        "molt_gpu_interop_decode_bf16_bytes_to_f32",
+    }
 }
 
 TINYGRAD_GPU_PRIMITIVE_EXPORTS = {
@@ -176,12 +186,15 @@ def test_export_link_args_are_sorted_rust_flag_token_pairs(
 
 def test_wasm_runtime_export_link_args_prefixes_import_registry() -> None:
     flags = wasm_runtime_export_link_args()
-    assert "link-arg=--export-if-defined=molt_set_update" in flags
-    assert "link-arg=--export-if-defined=molt_ord_at" in flags
-    assert "link-arg=--export-if-defined=molt_gpu_matmul_contiguous" in flags
+    assert f"link-arg=--export-if-defined={_physical('molt_set_update')}" in flags
+    assert f"link-arg=--export-if-defined={_physical('molt_ord_at')}" in flags
     assert (
-        "link-arg=--export-if-defined="
-        "molt_gpu_tensor__tensor_scaled_dot_product_attention" in flags
+        f"link-arg=--export-if-defined={_physical('molt_gpu_matmul_contiguous')}"
+        in flags
+    )
+    assert (
+        f"link-arg=--export-if-defined={_physical('molt_gpu_tensor__tensor_scaled_dot_product_attention')}"
+        in flags
     )
 
 
@@ -192,7 +205,9 @@ def test_wasm_runtime_export_names_are_generated() -> None:
     assert wasm_runtime_export_name("socket_drop") == "molt_socket_drop"
     assert wasm_runtime_export_name("molt_socket_drop") == "molt_socket_drop"
     assert wasm_runtime_export_name("molt_alloc") == "molt_alloc"
-    assert wasm_runtime_export_name_for_import("socket_drop") == "molt_socket_drop"
+    assert wasm_runtime_export_name_for_import("socket_drop") == _physical(
+        "molt_socket_drop"
+    )
     assert wasm_runtime_export_name_for_import("PyArg_ParseTuple") == "PyArg_ParseTuple"
     assert (
         wasm_split_runtime_export_name_for_import("PyArg_ParseTuple")
@@ -247,14 +262,14 @@ def test_split_runtime_cpython_abi_exports_use_public_molt_names() -> None:
                 "molt_PyType_Ready",
                 "molt_PyArg_ParseTuple",
                 "molt_cpython_abi_date_from_date",
-                "molt_socket_drop",
+                _physical("molt_socket_drop"),
             },
             required,
         )
         == set()
     )
     assert wasm_split_runtime_missing_required_exports(
-        {"PyType_Ready", "molt_socket_drop"},
+        {"PyType_Ready", _physical("molt_socket_drop")},
         {"PyType_Ready", "socket_drop"},
     ) == {"molt_PyType_Ready"}
 
@@ -296,7 +311,7 @@ def test_split_runtime_publication_transform_rewrites_raw_cpython_abi_names(
 ) -> None:
     runtime = tmp_path / "runtime.wasm"
     runtime.write_bytes(
-        _build_exported_wasm_module(["PyType_Ready", "molt_socket_drop"])
+        _build_exported_wasm_module(["PyType_Ready", _physical("molt_socket_drop")])
     )
 
     metrics = transform_wasm_publication_file(
@@ -314,7 +329,7 @@ def test_split_runtime_publication_transform_rewrites_raw_cpython_abi_names(
     }
     assert "molt_PyType_Ready" in exports
     assert "PyType_Ready" not in exports
-    assert "molt_socket_drop" in exports
+    assert _physical("molt_socket_drop") in exports
 
 
 def test_split_runtime_publication_transform_rejects_rename_collision(
@@ -362,23 +377,29 @@ def test_wasm_runtime_export_link_args_adds_runtime_owned_gpu_intrinsics() -> No
     flags = wasm_runtime_export_link_args(
         resolved_modules={"molt.gpu.tensor", "molt.gpu.kv_cache"}
     )
-    assert "link-arg=--export-if-defined=molt_gpu_linear_contiguous" in flags
     assert (
-        "link-arg=--export-if-defined="
-        "molt_gpu_linear_split_last_dim_contiguous" in flags
+        f"link-arg=--export-if-defined={_physical('molt_gpu_linear_contiguous')}"
+        in flags
     )
     assert (
-        "link-arg=--export-if-defined="
-        "molt_gpu_tensor__tensor_scaled_dot_product_attention" in flags
+        f"link-arg=--export-if-defined={_physical('molt_gpu_linear_split_last_dim_contiguous')}"
+        in flags
     )
-    assert "link-arg=--export-if-defined=molt_gpu_turboquant_attention_packed" in flags
+    assert (
+        f"link-arg=--export-if-defined={_physical('molt_gpu_tensor__tensor_scaled_dot_product_attention')}"
+        in flags
+    )
+    assert (
+        f"link-arg=--export-if-defined={_physical('molt_gpu_turboquant_attention_packed')}"
+        in flags
+    )
 
 
 def test_wasm_runtime_export_link_args_adds_required_runtime_imports() -> None:
     flags = wasm_runtime_export_link_args({"ssl_cert_none", "ssl_context_new"})
-    assert "link-arg=--export-if-defined=molt_ssl_cert_none" in flags
-    assert "link-arg=--export-if-defined=molt_ssl_context_new" in flags
-    assert "link-arg=--export-if-defined=molt_set_update" not in flags
+    assert f"link-arg=--export-if-defined={_physical('molt_ssl_cert_none')}" in flags
+    assert f"link-arg=--export-if-defined={_physical('molt_ssl_context_new')}" in flags
+    assert f"link-arg=--export-if-defined={_physical('molt_set_update')}" not in flags
 
 
 def test_wasm_runtime_export_link_args_adds_required_cpython_abi_symbols() -> None:
@@ -397,7 +418,10 @@ def test_wasm_runtime_export_link_args_adds_required_cpython_abi_symbols() -> No
     assert "link-arg=--export-if-defined=PyObject_CallFunction" in flags
     assert "link-arg=--export-if-defined=PyArg_ParseTupleAndKeywords" in flags
     assert "link-arg=--export-if-defined=PyTuple_Pack" in flags
-    assert "link-arg=--export-if-defined=molt_cpython_abi_date_from_date" in flags
+    assert (
+        f"link-arg=--export-if-defined={_physical('molt_cpython_abi_date_from_date')}"
+        in flags
+    )
     assert "link-arg=--export-if-defined=PyArray_NDIM" not in flags
 
 
@@ -414,9 +438,13 @@ def test_wasm_runtime_export_link_args_accepts_generated_raw_c_api_symbols() -> 
 
 
 def test_wasm_runtime_export_link_args_rejects_non_runtime_c_api_symbols() -> None:
-    with pytest.raises(ValueError, match="unknown WASM runtime import/export name"):
+    with pytest.raises(
+        ValueError, match="unknown logical WASM runtime export: PyArray_NDIM"
+    ):
         wasm_runtime_export_link_args({"PyArray_NDIM"})
-    with pytest.raises(ValueError, match="unknown WASM runtime import/export name"):
+    with pytest.raises(
+        ValueError, match="unknown logical WASM runtime export: _Pyx_PyObject_Call"
+    ):
         wasm_runtime_export_link_args({"_Pyx_PyObject_Call"})
 
 
@@ -425,7 +453,7 @@ def test_wasm_runtime_shared_export_link_args_adds_required_cpython_abi_symbols(
 ):
     flags = wasm_runtime_shared_export_link_args({"PyErr_Format"})
     assert "link-arg=--export-if-defined=PyErr_Format" in flags
-    assert "link-arg=--export-if-defined=molt_set_update" in flags
+    assert f"link-arg=--export-if-defined={_physical('molt_set_update')}" in flags
     assert "link-arg=--export-if-defined=PyModuleDef_Init" not in flags
 
 
@@ -436,11 +464,17 @@ def test_wasm_runtime_export_link_args_does_not_widen_required_imports_with_reso
         {"runtime_init"},
         resolved_modules={"ssl"},
     )
-    assert "link-arg=--export-if-defined=molt_runtime_init" in flags
-    assert "link-arg=--export-if-defined=molt_runtime_shutdown" in flags
-    assert "link-arg=--export-if-defined=molt_set_wasm_table_base" in flags
-    assert "link-arg=--export-if-defined=molt_ssl_cert_none" not in flags
-    assert "link-arg=--export-if-defined=molt_ssl_context_new" not in flags
+    assert f"link-arg=--export-if-defined={_physical('molt_runtime_init')}" in flags
+    assert f"link-arg=--export-if-defined={_physical('molt_runtime_shutdown')}" in flags
+    assert (
+        f"link-arg=--export-if-defined={_physical('molt_set_wasm_table_base')}" in flags
+    )
+    assert (
+        f"link-arg=--export-if-defined={_physical('molt_ssl_cert_none')}" not in flags
+    )
+    assert (
+        f"link-arg=--export-if-defined={_physical('molt_ssl_context_new')}" not in flags
+    )
 
 
 def test_wasm_runtime_export_link_args_keeps_runtime_owned_dynamic_intrinsics_in_minimal_mode() -> (
@@ -450,11 +484,14 @@ def test_wasm_runtime_export_link_args_keeps_runtime_owned_dynamic_intrinsics_in
         {"runtime_init"},
         resolved_modules={"molt.gpu.tensor"},
     )
-    assert "link-arg=--export-if-defined=molt_runtime_init" in flags
-    assert "link-arg=--export-if-defined=molt_gpu_linear_contiguous" in flags
+    assert f"link-arg=--export-if-defined={_physical('molt_runtime_init')}" in flags
     assert (
-        "link-arg=--export-if-defined="
-        "molt_gpu_linear_split_last_dim_contiguous" in flags
+        f"link-arg=--export-if-defined={_physical('molt_gpu_linear_contiguous')}"
+        in flags
+    )
+    assert (
+        f"link-arg=--export-if-defined={_physical('molt_gpu_linear_split_last_dim_contiguous')}"
+        in flags
     )
 
 
@@ -475,8 +512,8 @@ def test_dynamic_intrinsic_aliases_export_one_canonical_executable(
     )
     monkeypatch.setattr(exports, "compiler_source_root", lambda: tmp_path)
     assert exports.wasm_runtime_dynamic_export_names({"molt.alias_probe"}) == (
-        "molt_binascii_b2a_hex",
-        "molt_operator_invert",
+        _physical("molt_binascii_b2a_hex"),
+        _physical("molt_operator_invert"),
     )
 
 
@@ -486,9 +523,9 @@ def test_wasm_runtime_dynamic_export_names_reports_runtime_owned_gpu_intrinsics(
     names = set(
         wasm_runtime_dynamic_export_names({"molt.gpu.tensor", "molt.gpu.kv_cache"})
     )
-    assert "molt_gpu_linear_contiguous" in names
-    assert "molt_gpu_tensor__tensor_scaled_dot_product_attention" in names
-    assert "molt_gpu_turboquant_attention_packed" in names
+    assert _physical("molt_gpu_linear_contiguous") in names
+    assert _physical("molt_gpu_tensor__tensor_scaled_dot_product_attention") in names
+    assert _physical("molt_gpu_turboquant_attention_packed") in names
 
 
 def test_wasm_runtime_dynamic_export_names_cover_all_runtime_owned_gpu_intrinsics() -> (
@@ -514,9 +551,11 @@ def test_wasm_runtime_export_link_args_keeps_host_runtime_exports(
     required_imports: set[str] | None,
 ) -> None:
     flags = wasm_runtime_export_link_args(required_imports)
-    assert "link-arg=--export-if-defined=molt_runtime_init" in flags
-    assert "link-arg=--export-if-defined=molt_runtime_shutdown" in flags
-    assert "link-arg=--export-if-defined=molt_set_wasm_table_base" in flags
+    assert f"link-arg=--export-if-defined={_physical('molt_runtime_init')}" in flags
+    assert f"link-arg=--export-if-defined={_physical('molt_runtime_shutdown')}" in flags
+    assert (
+        f"link-arg=--export-if-defined={_physical('molt_set_wasm_table_base')}" in flags
+    )
     for name in (
         "molt_stream_new",
         "molt_stream_send",
@@ -526,7 +565,7 @@ def test_wasm_runtime_export_link_args_keeps_host_runtime_exports(
         "molt_exception_pending_fast",
         "molt_dec_ref_obj",
     ):
-        assert f"link-arg=--export-if-defined={name}" in flags
+        assert f"link-arg=--export-if-defined={_physical(name)}" in flags
 
 
 @pytest.mark.parametrize(
@@ -545,7 +584,7 @@ def test_runtime_admission_requires_every_canonical_export(missing_exports) -> N
         "fast_list_append",
         "fast_str_join",
     }
-    canonical = {"molt_" + name for name in required}
+    canonical = {_physical("molt_" + name) for name in required}
     substitutes = {
         "molt_dict_getitem_borrowed",
         "molt_dict_set",
@@ -556,9 +595,9 @@ def test_runtime_admission_requires_every_canonical_export(missing_exports) -> N
     }
     assert missing_exports(substitutes, required) == canonical
     assert missing_exports(substitutes | canonical, required) == set()
-    assert missing_exports(substitutes | {"molt_fast_str_join"}, required) == (
-        canonical - {"molt_fast_str_join"}
-    )
+    assert missing_exports(
+        substitutes | {_physical("molt_fast_str_join")}, required
+    ) == (canonical - {_physical("molt_fast_str_join")})
 
 
 def test_runtime_link_roots_keep_only_requested_and_host_exports() -> None:
@@ -576,9 +615,9 @@ def test_runtime_link_roots_keep_only_requested_and_host_exports() -> None:
         for flag in flags
         if flag.startswith("link-arg=--export-if-defined=")
     }
-    assert actual == {"molt_" + name for name in required} | set(
-        WASM_RUNTIME_HOST_EXPORTS
-    )
+    assert actual == {_physical("molt_" + name) for name in required} | {
+        _physical(name) for name in WASM_RUNTIME_HOST_EXPORTS
+    }
 
 
 def test_reached_runtime_import_names_read_stdlib_intrinsics() -> None:
@@ -673,7 +712,7 @@ def _import_for_runtime_symbol(symbol: str) -> str:
     matches = [
         name
         for name in wasm_runtime_import_names()
-        if wasm_runtime_export_name_for_import(name) == symbol
+        if wasm_runtime_export_name(name) == symbol
     ]
     assert len(matches) == 1, (symbol, matches)
     return matches[0]
@@ -715,7 +754,7 @@ def test_runtime_build_abi_is_the_registry_narrowed_by_that_build_only() -> None
         name
         for name in wasm_runtime_import_names()
         if not runtime_symbol_available_on_target(
-            wasm_runtime_export_name_for_import(name) or name,
+            wasm_runtime_export_name(name) or name,
             target=_target("aarch64-apple-darwin"),
         )
     }
@@ -750,3 +789,34 @@ def test_network_runtime_abi_includes_select_without_widening_provider_targets(
     assert watcher not in micro and select not in micro
     assert select in network
     assert (watcher in network) is has_network_provider
+
+
+def test_public_c_fields_and_attached_runtime_fields_keep_distinct_signatures() -> None:
+    # include/molt/molt.h declares one logical i64 parameter. Compiled callers
+    # additionally transport context under their current physical identity.
+    from molt.cli.wasm import (
+        _runtime_import_signature_from_manifest,
+        _runtime_import_name_for_export_from_manifest,
+    )
+
+    public = "molt_int_from_i64"
+    physical = _physical(public)
+    assert physical != public
+    assert wasm_runtime_export_name_for_import(public) == public
+    assert wasm_split_runtime_export_name_for_import(public) == public
+    assert wasm_runtime_export_name_for_import("int_from_i64") == physical
+    assert wasm_runtime_export_name_for_import(physical) == physical
+    assert _runtime_import_name_for_export_from_manifest(public) == public
+    assert _runtime_import_name_for_export_from_manifest(physical) == physical
+    assert _runtime_import_signature_from_manifest(public) == (("i64",), ("i64",))
+    assert _runtime_import_signature_from_manifest("int_from_i64") == (
+        ("i64", "i64"),
+        ("i64",),
+    )
+    assert _runtime_import_signature_from_manifest(physical) == (
+        ("i64", "i64"),
+        ("i64",),
+    )
+    flags = wasm_runtime_shared_export_link_args()
+    assert f"link-arg=--export-if-defined={public}" in flags
+    assert f"link-arg=--export-if-defined={physical}" in flags

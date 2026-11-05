@@ -158,7 +158,7 @@ pub(super) fn call(py: &PyToken<'_>, raw: u64, name: crate::NameId, argument: Op
         return MoltObject::none().bits();
     };
     let _key = owned(py, key);
-    let function = molt_getattr_builtin(raw, key, missing_bits(py));
+    let function = molt_getattr_builtin_attached_body(py, raw, key, missing_bits(py));
     let _function = owned(py, function);
     if exception_pending(py) {
         return MoltObject::none().bits();
@@ -191,7 +191,7 @@ pub(super) fn closed(py: &PyToken<'_>, raw: u64) -> Result<bool, u64> {
         return Err(MoltObject::none().bits());
     };
     let _key = owned(py, key);
-    let value = molt_getattr_builtin(raw, key, missing_bits(py));
+    let value = molt_getattr_builtin_attached_body(py, raw, key, missing_bits(py));
     let _value = owned(py, value);
     if exception_pending(py) {
         return Err(MoltObject::none().bits());

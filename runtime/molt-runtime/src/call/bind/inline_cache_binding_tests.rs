@@ -2,6 +2,160 @@ use super::*;
 use crate::TYPE_ID_OBJECT;
 use crate::call::bind::test_support::*;
 
+static IC_INIT_ARGUMENTS: std::sync::Mutex<Vec<(u64, u64, Vec<u64>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn observe_ic_init(context: u64, closure: u64, instance: u64, args: &[u64]) -> i64 {
+    assert_eq!(context, crate::state::molt_attached_context());
+    let py = unsafe { crate::PyToken::from_attached_context(context) };
+    assert_eq!(py.attached_context(), context);
+    let pointer = obj_from_bits(instance).as_ptr().expect("constructor self");
+    assert_eq!(unsafe { object_type_id(pointer) }, TYPE_ID_OBJECT);
+    IC_INIT_ARGUMENTS
+        .lock()
+        .unwrap()
+        .push((closure, instance, args.to_vec()));
+    MoltObject::none().bits() as i64
+}
+
+macro_rules! ic_init_fixture {
+    ($name:ident, $($argument:ident),*) => {
+        extern "C" fn $name(context: u64, instance: u64, $($argument: u64),*) -> i64 {
+            observe_ic_init(context, 0, instance, &[$($argument),*])
+        }
+    };
+    ($name:ident, closure; $($argument:ident),*) => {
+        extern "C" fn $name(context: u64, closure: u64, instance: u64, $($argument: u64),*) -> i64 {
+            observe_ic_init(context, closure, instance, &[$($argument),*])
+        }
+    };
+}
+ic_init_fixture!(ic_init0,);
+ic_init_fixture!(ic_init1, a);
+ic_init_fixture!(ic_init2, a, b);
+ic_init_fixture!(ic_init3, a, b, c);
+ic_init_fixture!(ic_closure_init0, closure;);
+ic_init_fixture!(ic_closure_init1, closure; a);
+ic_init_fixture!(ic_closure_init2, closure; a, b);
+ic_init_fixture!(ic_closure_init3, closure; a, b, c);
+
+#[test]
+fn type_call_ic_forwards_context_self_closure_and_all_small_argument_widths() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        clear_call_bind_ic_cache(py);
+        for (closure, callbacks) in [
+            (
+                0,
+                [
+                    ic_init0 as *const (),
+                    ic_init1 as *const (),
+                    ic_init2 as *const (),
+                    ic_init3 as *const (),
+                ],
+            ),
+            (
+                MoltObject::from_int(97).bits(),
+                [
+                    ic_closure_init0 as *const (),
+                    ic_closure_init1 as *const (),
+                    ic_closure_init2 as *const (),
+                    ic_closure_init3 as *const (),
+                ],
+            ),
+        ] {
+            for (width, callback) in callbacks.into_iter().enumerate() {
+                let target = crate::provenance::abi::expose_function_address(callback);
+                let function = crate::builtins::functions::alloc_runtime_function_obj(
+                    py,
+                    target,
+                    width as u64 + 1,
+                );
+                assert!(!function.is_null());
+                let function_bits = MoltObject::from_ptr(function).bits();
+                if closure != 0 {
+                    unsafe {
+                        crate::object::layout::function_set_closure_bits(
+                            py,
+                            function,
+                            closure,
+                            crate::object::layout::FunctionCallAbi::OpaqueContextFirst,
+                        );
+                    }
+                }
+                let name = MoltObject::from_ptr(crate::alloc_string(py, b"ContextIcCtor")).bits();
+                let init_name = crate::dynamic_attr_name_bits(py, b"__init__").unwrap();
+                let attrs = [init_name, function_bits];
+                let bases = [crate::builtin_classes(py).object];
+                let class = unsafe {
+                    crate::object::ops::molt_guarded_class_def_attached_body(
+                        py,
+                        name,
+                        crate::provenance::abi::expose_address(bases.as_ptr()),
+                        1,
+                        crate::provenance::abi::expose_address(attrs.as_ptr()),
+                        1,
+                        std::mem::size_of::<u64>() as i64,
+                        0,
+                        1,
+                    )
+                };
+                assert!(!crate::exception_pending(py));
+                let class_ptr = obj_from_bits(class).as_ptr().unwrap();
+                let layout =
+                    unsafe { crate::call::class_init::class_layout_size_cached(py, class_ptr) }
+                        .unwrap();
+                let entry = CallBindIcEntry {
+                    fn_ptr: unsafe { crate::object::layout::function_fn_ptr(function) },
+                    target_bits: function_bits,
+                    class_bits: class,
+                    class_version: unsafe { crate::class_layout_version_bits(class_ptr) },
+                    type_version: crate::global_type_version(),
+                    function_version: unsafe {
+                        crate::object::layout::function_mutation_version(function)
+                    },
+                    cached_alloc_size: layout
+                        .checked_add(std::mem::size_of::<crate::object::MoltHeader>())
+                        .unwrap(),
+                    arity: width as u8,
+                    kind: CALL_BIND_IC_KIND_TYPE_CALL,
+                };
+                let values = [17, 29, 41].map(|value| MoltObject::from_int(value).bits());
+                IC_INIT_ARGUMENTS.lock().unwrap().clear();
+                for _ in 0..2 {
+                    let mut arguments = crate::call::bind::arguments::CallArguments::retained(
+                        py,
+                        None,
+                        &values[..width],
+                        &[],
+                        &[],
+                    )
+                    .unwrap();
+                    let instance =
+                        unsafe { try_call_bind_ic_fast(py, entry, class, &mut arguments) }
+                            .expect("cached constructor applies");
+                    assert!(!crate::exception_pending(py));
+                    let observation = IC_INIT_ARGUMENTS
+                        .lock()
+                        .unwrap()
+                        .pop()
+                        .expect("initializer called");
+                    assert_eq!(observation, (closure, instance, values[..width].to_vec()));
+                    let pointer = obj_from_bits(instance).as_ptr().unwrap();
+                    assert_eq!(
+                        unsafe { (*crate::header_from_obj_ptr(pointer)).ref_count_snapshot() },
+                        1
+                    );
+                    dec_ref_bits(py, instance);
+                }
+                for bits in [class, function_bits, init_name, name] {
+                    dec_ref_bits(py, bits);
+                }
+            }
+        }
+    });
+}
+
 #[test]
 fn cached_method_name_must_match_even_at_the_same_site() {
     let _test = crate::test_support::RuntimeTestTransaction::new();
@@ -48,7 +202,8 @@ fn type_call_ic_returns_single_owned_constructor_result_after_borrowed_init() {
         let attrs = [init_name_bits, init_bits];
         let bases = [builtins.object];
         let class_bits = unsafe {
-            crate::object::ops::molt_guarded_class_def(
+            crate::object::ops::molt_guarded_class_def_attached_body(
+                _py,
                 name_bits,
                 crate::provenance::abi::expose_address(bases.as_ptr()),
                 bases.len() as u64,
@@ -68,7 +223,12 @@ fn type_call_ic_returns_single_owned_constructor_result_after_borrowed_init() {
         let churn_name = crate::call::bind::alloc_string(_py, b"unrelated_attr");
         let churn_bits = MoltObject::from_ptr(churn_name).bits();
         assert_eq!(
-            crate::molt_set_attr_name(class_bits, churn_bits, MoltObject::from_int(1).bits()),
+            crate::molt_set_attr_name_attached_body(
+                _py,
+                class_bits,
+                churn_bits,
+                MoltObject::from_int(1).bits()
+            ),
             MoltObject::none().bits()
         );
         assert_eq!(
@@ -80,10 +240,17 @@ fn type_call_ic_returns_single_owned_constructor_result_after_borrowed_init() {
 
         let layout_name = crate::call::bind::alloc_string(_py, b"__molt_layout_size__");
         let layout_name_bits = MoltObject::from_ptr(layout_name).bits();
-        let _ =
-            crate::molt_set_attr_name(class_bits, layout_name_bits, MoltObject::from_int(1).bits());
-        assert_eq!(crate::molt_exception_pending(), 1);
-        let _ = crate::molt_exception_clear();
+        let _ = crate::molt_set_attr_name_attached_body(
+            _py,
+            class_bits,
+            layout_name_bits,
+            MoltObject::from_int(1).bits(),
+        );
+        assert_eq!(
+            crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+            1
+        );
+        let _ = crate::molt_exception_clear_attached_body(_py);
         assert_eq!(
             unsafe { crate::call::class_init::class_layout_size_cached(_py, class_ptr) },
             Some(layout_size)
@@ -125,12 +292,12 @@ fn type_call_ic_returns_single_owned_constructor_result_after_borrowed_init() {
         let abstract_name = crate::dynamic_attr_name_bits(_py, b"__abstractmethods__").unwrap();
         let methods =
             MoltObject::from_ptr(crate::alloc_tuple(_py, &[init_name_bits, name_bits])).bits();
-        crate::molt_set_attr_name(class_bits, abstract_name, methods);
+        crate::molt_set_attr_name_attached_body(_py, class_bits, abstract_name, methods);
         assert!(!crate::exception_pending(_py));
         assert!(unsafe { try_call_bind_ic_fast(_py, entry, class_bits, &mut arguments) }.is_none());
         for direct in [false, true] {
             let rejected = if direct {
-                crate::molt_object_new_bound(class_bits)
+                crate::molt_object_new_bound_attached_body(_py, class_bits)
             } else {
                 unsafe { crate::call::class_init::call_class_init_with_args(_py, class_ptr, &[]) }
             };
@@ -140,10 +307,10 @@ fn type_call_ic_returns_single_owned_constructor_result_after_borrowed_init() {
                 crate::format_exception_message(_py, obj_from_bits(error).as_ptr().unwrap()),
                 "Can't instantiate abstract class IcCtor without an implementation for abstract methods 'IcCtor', '__init__'"
             );
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(_py);
         }
-        crate::molt_del_attr_name(class_bits, abstract_name);
-        let recovered = crate::molt_object_new_bound(class_bits);
+        crate::molt_del_attr_name_attached_body(_py, class_bits, abstract_name);
+        let recovered = crate::molt_object_new_bound_attached_body(_py, class_bits);
         assert!(!obj_from_bits(recovered).is_none());
         assert!(!crate::exception_pending(_py));
         for bits in [recovered, methods, abstract_name] {
@@ -337,11 +504,13 @@ fn direct_call_ic_hot_path_is_allocation_free_with_slow_path_control() {
         crate::attestation_probe::reset();
         crate::attestation_probe::set_tracking(true);
         for _ in 0..64 {
-            let builder_bits = crate::call::bind::arguments::molt_callargs_new(1, 0);
+            let builder_bits =
+                crate::call::bind::arguments::molt_callargs_new_attached_body(_py, 1, 0);
             assert!(!obj_from_bits(builder_bits).is_none());
             assert_eq!(
                 unsafe {
-                    crate::call::bind::arguments::molt_callargs_push_pos(
+                    crate::call::bind::arguments::molt_callargs_push_pos_attached_body(
+                        _py,
                         builder_bits,
                         MoltObject::from_int(17).bits(),
                     )
@@ -349,7 +518,7 @@ fn direct_call_ic_hot_path_is_allocation_free_with_slow_path_control() {
                 MoltObject::none().bits()
             );
             assert_eq!(
-                crate::call::bind::molt_call_bind(func_bits, builder_bits),
+                crate::call::bind::molt_call_bind_attached_body(_py, func_bits, builder_bits),
                 MoltObject::from_int(17).bits()
             );
         }
@@ -375,16 +544,23 @@ fn type_epoch_invalidates_every_mro_resolved_call_cache_family() {
 
 #[test]
 fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
-    extern "C" fn explicit_getter(receiver: u64, name: u64) -> u64 {
-        crate::molt_object_getattribute(receiver, name)
+    extern "C" fn explicit_getter(__context: u64, receiver: u64, name: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        crate::molt_object_getattribute_attached_body(__py, receiver, name)
     }
     let _test = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let name = crate::dynamic_attr_name_bits(py, b"reverse").unwrap();
             let label = crate::dynamic_attr_name_bits(py, b"NoArgsList").unwrap();
-            let class = crate::molt_class_new(label);
-            crate::molt_class_set_base(class, builtin_classes(py).list);
+            let class = crate::molt_class_new_attached_body(py, label);
+            crate::molt_class_set_base_attached_body(py, class, builtin_classes(py).list);
             assert!(!exception_pending(py));
             let receiver = crate::call::bind::call_bind_borrowed(py, class, None, &[], &[], &[]);
             assert!(!exception_pending(py));
@@ -417,7 +593,8 @@ fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
                 assert!(!exception_pending(py));
                 assert_eq!(loaded.self_or_null, receiver);
                 assert_eq!(refs(), original_refs + 1);
-                let descriptor = crate::molt_get_attr_name(builtin_classes(py).list, name);
+                let descriptor =
+                    crate::molt_get_attr_name_attached_body(py, builtin_classes(py).list, name);
                 assert_eq!(loaded.callable, descriptor);
                 assert_eq!(
                     object_type_id(obj_from_bits(loaded.callable).as_ptr().unwrap()),
@@ -436,11 +613,11 @@ fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
                     crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap()),
                     "list.reverse() takes no arguments (1 given)"
                 );
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(py);
                 assert_eq!(refs(), original_refs);
             }
 
-            let bound = crate::molt_get_attr_name(receiver, name);
+            let bound = crate::molt_get_attr_name_attached_body(py, receiver, name);
             assert_eq!(
                 object_type_id(obj_from_bits(bound).as_ptr().unwrap()),
                 TYPE_ID_BOUND_METHOD
@@ -460,7 +637,7 @@ fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
                 crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap()),
                 "NoArgsList.reverse() takes no arguments (1 given)"
             );
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             dec_ref_bits(py, bound);
             assert_eq!(refs(), original_refs);
             // Foreign calls below project their argument into C. Establish
@@ -493,9 +670,9 @@ fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
                 builtin_classes(py).list,
                 builtin_classes(py).tuple,
             ] {
-                let wrapper = crate::molt_get_attr_name(source, getter_name);
+                let wrapper = crate::molt_get_attr_name_attached_body(py, source, getter_name);
                 assert!(!exception_pending(py));
-                crate::molt_set_attr_name(class, getter_name, wrapper);
+                crate::molt_set_attr_name_attached_body(py, class, getter_name, wrapper);
                 assert!(!exception_pending(py));
                 let loaded = load_method(
                     py,
@@ -514,7 +691,7 @@ fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
                         crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap()),
                         "descriptor '__getattribute__' requires a 'tuple' object but received a 'NoArgsList'"
                     );
-                    crate::molt_exception_clear();
+                    crate::molt_exception_clear_attached_body(py);
                     // Explicit binding retains descr_check's distinct oracle.
                     assert!(
                         crate::builtins::attr::descriptor_bind(
@@ -530,7 +707,7 @@ fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
                         crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap()),
                         "descriptor '__getattribute__' for 'tuple' objects doesn't apply to a 'NoArgsList' object"
                     );
-                    crate::molt_exception_clear();
+                    crate::molt_exception_clear_attached_body(py);
                     // Two explicit arguments share the same direct-call
                     // receiver boundary, before the wrapper's arity check.
                     assert!(
@@ -549,7 +726,7 @@ fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
                         crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap()),
                         "descriptor '__getattribute__' requires a 'tuple' object but received a 'NoArgsList'"
                     );
-                    crate::molt_exception_clear();
+                    crate::molt_exception_clear_attached_body(py);
                 } else {
                     assert!(!exception_pending(py));
                     assert_eq!(loaded.self_or_null, receiver);
@@ -572,7 +749,7 @@ fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
             );
             assert!(!custom_ptr.is_null());
             let custom = MoltObject::from_ptr(custom_ptr).bits();
-            crate::molt_set_attr_name(class, getter_name, custom);
+            crate::molt_set_attr_name_attached_body(py, class, getter_name, custom);
             assert!(!exception_pending(py));
             dec_ref_bits(py, custom);
             let through_hook = load_method(
@@ -591,12 +768,17 @@ fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
             assert_eq!(refs(), projected_refs + 1);
             dec_ref_bits(py, through_hook.callable);
             assert_eq!(refs(), projected_refs);
-            crate::molt_del_attr_name(class, getter_name);
+            crate::molt_del_attr_name_attached_body(py, class, getter_name);
             assert!(!exception_pending(py));
 
             // An instance shadow must not acquire a synthetic receiver even
             // with the native default getter fully readied and cached.
-            crate::molt_set_attr_name(receiver, name, MoltObject::from_int(73).bits());
+            crate::molt_set_attr_name_attached_body(
+                py,
+                receiver,
+                name,
+                MoltObject::from_int(73).bits(),
+            );
             assert!(!exception_pending(py));
             let shadow = load_method(
                 py,

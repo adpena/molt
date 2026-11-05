@@ -15,11 +15,16 @@ use super::common::{
 ///
 /// Returns a Molt list of [key, value] pairs (each pair is a 2-element list).
 /// Raises RuntimeError if the element count is odd.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_splitdict(tcl_str_bits: u64, cut_minus_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(tcl_str) = bits_to_string(tcl_str_bits) else {
+
+pub fn molt_tk_splitdict_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    tcl_str_bits: u64,
+    cut_minus_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(tcl_str) = bits_to_string(_py, tcl_str_bits) else {
             return rt_raise_str(
+                _py,
                 BuiltinExc::TypeError,
                 "splitdict requires a string argument",
             );
@@ -41,6 +46,7 @@ pub extern "C" fn molt_tk_splitdict(tcl_str_bits: u64, cut_minus_bits: u64) -> u
 
         if !items.len().is_multiple_of(2) {
             return rt_raise_str(
+                _py,
                 BuiltinExc::RuntimeError,
                 "Tcl list representing a dict is expected to contain an even number of elements",
             );
@@ -56,51 +62,51 @@ pub extern "C" fn molt_tk_splitdict(tcl_str_bits: u64, cut_minus_bits: u64) -> u
             }
             let value = &items[i + 1];
 
-            let key_bits = match alloc_str_bits(&key) {
+            let key_bits = match alloc_str_bits(_py, &key) {
                 Ok(bits) => bits,
                 Err(bits) => {
-                    cleanup_list(&pairs);
+                    cleanup_list(_py, &pairs);
                     return bits;
                 }
             };
-            let value_bits = match alloc_str_bits(value) {
+            let value_bits = match alloc_str_bits(_py, value) {
                 Ok(bits) => bits,
                 Err(bits) => {
-                    rt_dec_ref(key_bits);
-                    cleanup_list(&pairs);
+                    rt_dec_ref(_py, key_bits);
+                    cleanup_list(_py, &pairs);
                     return bits;
                 }
             };
 
             // Build a 2-element list [key, value]
             let pair_elems = [key_bits, value_bits];
-            let pair_bits = match alloc_list_bits(&pair_elems) {
+            let pair_bits = match alloc_list_bits(_py, &pair_elems) {
                 Ok(bits) => bits,
                 Err(bits) => {
-                    rt_dec_ref(key_bits);
-                    rt_dec_ref(value_bits);
-                    cleanup_list(&pairs);
+                    rt_dec_ref(_py, key_bits);
+                    rt_dec_ref(_py, value_bits);
+                    cleanup_list(_py, &pairs);
                     return bits;
                 }
             };
             // alloc_list already inc-ref'd key and value; release our local refs
-            rt_dec_ref(key_bits);
-            rt_dec_ref(value_bits);
+            rt_dec_ref(_py, key_bits);
+            rt_dec_ref(_py, value_bits);
 
             pairs.push(pair_bits);
             i += 2;
         }
 
         // Build the outer list of pairs
-        match alloc_list_bits(&pairs) {
+        match alloc_list_bits(_py, &pairs) {
             Ok(list_bits) => {
                 for &pair_bits in &pairs {
-                    rt_dec_ref(pair_bits);
+                    rt_dec_ref(_py, pair_bits);
                 }
                 list_bits
             }
             Err(bits) => {
-                cleanup_list(&pairs);
+                cleanup_list(_py, &pairs);
                 bits
             }
         }
@@ -206,3 +212,5 @@ fn split_tcl_list(input: &str) -> Vec<String> {
 
     items
 }
+
+include!("../attached_exports_generated/tkinter_core/tcl_list.rs");

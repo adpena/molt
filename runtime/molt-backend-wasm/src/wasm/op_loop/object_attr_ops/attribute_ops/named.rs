@@ -2,9 +2,10 @@ use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm::op_loop::result_sink::store_runtime_result;
 use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 pub(super) fn emit_named_attribute_op(
     func: &mut Function,

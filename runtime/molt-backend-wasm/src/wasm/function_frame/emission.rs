@@ -4,13 +4,14 @@ use crate::wasm::WasmBackend;
 use crate::wasm::const_materialization::WasmConstOpPolicy;
 use crate::wasm::constant_ops::emit_const_anchor_materialization;
 use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_data::DataSegmentRef;
 use crate::wasm_import_tracking::TrackedImportIds;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::borrow::Cow;
 use std::fmt::Write as _;
-use wasm_encoder::{BlockType, Catch, Function, Instruction, RefType, ValType};
+use wasm_encoder::{BlockType, Catch, Instruction, RefType, ValType};
 
 impl WasmFunctionFrame {
     pub(in crate::wasm) fn emit_guard_profile_flag(
@@ -150,8 +151,8 @@ impl WasmFunctionFrame {
     pub(in crate::wasm) fn emit_entry_initializers(
         &self,
         func: &mut Function,
-        imports: &TrackedImportIds,
-        reloc: bool,
+        _imports: &TrackedImportIds,
+        _reloc: bool,
     ) {
         self.const_cache.emit_init(func);
         use super::super::frame_locals::WasmFrameSyntheticLocal;
@@ -159,7 +160,7 @@ impl WasmFunctionFrame {
             .locals
             .optional_synthetic(WasmFrameSyntheticLocal::ThreadRecord)
         {
-            emit_call(func, reloc, imports[WasmRuntimeImport::ThreadRecord]);
+            crate::wasm::pending_work::emit_thread_record(func);
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::LocalTee(record));
             func.instruction(&Instruction::I64Load(wasm_encoder::MemArg {

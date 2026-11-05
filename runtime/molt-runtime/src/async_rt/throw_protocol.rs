@@ -153,7 +153,7 @@ fn take_throw_normalization_failure(
     if !exception_pending(py) {
         return None;
     }
-    let exception = ExceptionValue::adopt(py, molt_exception_last_pending());
+    let exception = ExceptionValue::adopt(py, molt_exception_last_pending_attached_body(py));
     clear_exception(py);
     if let Some(traceback) = fallback_traceback {
         let current = exception_field(py, exception.bits(), ExceptionFieldSlot::Traceback)?;
@@ -210,8 +210,10 @@ pub(crate) fn normalize_throw_argument(py: &PyToken<'_>, carrier: u64) -> Option
             let Some(actual_class) = exception_class(py, value) else {
                 return take_throw_normalization_failure(py, traceback);
             };
-            let matched =
-                ExceptionValue::adopt(py, crate::molt_issubclass(actual_class.bits(), exception));
+            let matched = ExceptionValue::adopt(
+                py,
+                crate::molt_issubclass_attached_body(py, actual_class.bits(), exception),
+            );
             if exception_pending(py) {
                 return take_throw_normalization_failure(py, traceback);
             }
@@ -282,8 +284,8 @@ pub(crate) fn raise_throw_argument(py: &PyToken<'_>, carrier: u64) -> u64 {
     let Some(exception) = normalize_throw_argument(py, carrier) else {
         return MoltObject::none().bits();
     };
-    crate::molt_exception_trace_prepend(exception);
-    let result = crate::molt_raise(exception);
+    crate::molt_exception_trace_prepend_attached_body(py, exception);
+    let result = crate::molt_raise_attached_body(py, exception);
     dec_ref_bits(py, exception);
     result
 }
@@ -360,7 +362,7 @@ pub(crate) unsafe fn raise_body_exception(
         None
     };
     let Some(message) = message else {
-        let result = molt_raise(exception);
+        let result = molt_raise_attached_body(py, exception);
         dec_ref_bits(py, exception);
         return result;
     };
@@ -381,7 +383,7 @@ pub(crate) unsafe fn raise_body_exception(
         }
     }
     dec_ref_bits(py, exception);
-    let result = molt_raise(converted);
+    let result = molt_raise_attached_body(py, converted);
     dec_ref_bits(py, converted);
     result
 }

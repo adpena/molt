@@ -695,7 +695,7 @@ unsafe fn exception_group_subset<'a, 'py>(
     }
     let name = crate::NameId::Derive.owned_bits(py)?;
     let name = Owned::adopt(py, name);
-    let derive = crate::molt_get_attr_name(orig, name.bits());
+    let derive = crate::molt_get_attr_name_attached_body(py, orig, name.bits());
     if exception_pending(py) {
         dec_ref_bits(py, derive);
         return None;
@@ -824,9 +824,12 @@ fn exception_group_receiver(
     fail(py, BuiltinExc::TypeError, &message)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exceptiongroup_init(self_bits: u64, args_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_exceptiongroup_init_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    args_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(storage) = ExceptionStorage::for_exception(_py, self_bits) else {
             if !obj_from_bits(args_bits).is_none() {
                 dec_ref_bits(_py, args_bits);
@@ -853,9 +856,12 @@ pub extern "C" fn molt_exceptiongroup_init(self_bits: u64, args_bits: u64) -> u6
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exceptiongroup_subgroup(self_bits: u64, matcher_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_exceptiongroup_subgroup_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    matcher_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let none = MoltObject::none().bits();
         if exception_group_receiver(_py, self_bits, "subgroup").is_none() {
             return none;
@@ -870,9 +876,12 @@ pub extern "C" fn molt_exceptiongroup_subgroup(self_bits: u64, matcher_bits: u64
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exceptiongroup_split(self_bits: u64, matcher_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_exceptiongroup_split_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    matcher_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let none = MoltObject::none().bits();
         if exception_group_receiver(_py, self_bits, "split").is_none() {
             return none;
@@ -889,9 +898,13 @@ pub extern "C" fn molt_exceptiongroup_split(self_bits: u64, matcher_bits: u64) -
 
 /// CPython `BaseExceptionGroup_derive` (CPy:877-893):
 /// `BaseExceptionGroup(self.message, excs)` through the canonical constructor.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exceptiongroup_derive(self_bits: u64, exceptions_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_exceptiongroup_derive_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    exceptions_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let none = MoltObject::none().bits();
         let Some(group) = exception_group_receiver(_py, self_bits, "derive") else {
             return none;
@@ -906,9 +919,13 @@ pub extern "C" fn molt_exceptiongroup_derive(self_bits: u64, exceptions_bits: u6
 /// `except*` matching. A group is partitioned by the shared split authority
 /// (calling `derive` for each non-empty part); a matching naked exception is
 /// wrapped with `_PyExc_CreateExceptionGroup("", (exc,))`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exceptiongroup_match(exc_bits: u64, matcher_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_exceptiongroup_match_attached_body(
+    _py: &crate::PyToken<'_>,
+    exc_bits: u64,
+    matcher_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let none = MoltObject::none().bits();
         if obj_from_bits(exc_bits).is_none() {
             return exception_group_pair(_py, None, None);
@@ -972,9 +989,12 @@ pub extern "C" fn molt_exceptiongroup_match(exc_bits: u64, matcher_bits: u64) ->
 
 /// `except*` reraise combination: `_PyExc_CreateExceptionGroup("", raised)`
 /// (CPy:810-824) through the canonical constructor.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exceptiongroup_combine(list_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_exceptiongroup_combine_attached_body(
+    _py: &crate::PyToken<'_>,
+    list_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let none = MoltObject::none().bits();
         let Some(message) = alloc_owned_str(_py, b"") else {
             return none;
@@ -994,8 +1014,20 @@ mod tests {
     static PREDICATE_CALLS: AtomicU64 = AtomicU64::new(0);
     static PREDICATE_TARGET: AtomicU64 = AtomicU64::new(0);
 
-    extern "C" fn generic_sequence_getitem(_self_bits: u64, index_bits: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(_py, {
+    extern "C" fn generic_sequence_getitem(
+        __context: u64,
+        _self_bits: u64,
+        index_bits: u64,
+    ) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let _py = __py;
             let Some(index) = to_i64(obj_from_bits(index_bits)) else {
                 return raise_exception::<u64>(_py, BuiltinExc::TypeError, "index must be int");
             };
@@ -1015,7 +1047,7 @@ mod tests {
                 );
             };
             let mut bits = 0;
-            if crate::object::seq_access::read_item_owned(items_ptr, index, &mut bits) == 0 {
+            if crate::object::seq_access::read_item_owned(_py, items_ptr, index, &mut bits) == 0 {
                 return raise_exception::<u64>(
                     _py,
                     BuiltinExc::IndexError,
@@ -1023,11 +1055,18 @@ mod tests {
                 );
             }
             bits
-        })
+        }
     }
 
     /// A Python-function predicate that records every node it inspects.
-    extern "C" fn counting_predicate(exc_bits: u64) -> u64 {
+    extern "C" fn counting_predicate(__context: u64, exc_bits: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         PREDICATE_CALLS.fetch_add(1, Ordering::SeqCst);
         MoltObject::from_bool(exc_bits == PREDICATE_TARGET.load(Ordering::SeqCst)).bits()
     }
@@ -1058,7 +1097,8 @@ mod tests {
         assert!(!name_ptr.is_null() && !getitem_ptr.is_null());
         assert!(!namespace_ptr.is_null());
         let namespace_bits = MoltObject::from_ptr(namespace_ptr).bits();
-        let class_bits = crate::builtins::types::molt_type_new(
+        let class_bits = crate::builtins::types::molt_type_new_attached_body(
+            _py,
             builtin_classes(_py).type_obj,
             MoltObject::from_ptr(name_ptr).bits(),
             MoltObject::none().bits(),
@@ -1390,7 +1430,8 @@ mod tests {
             PREDICATE_TARGET.store(first_bits, Ordering::SeqCst);
 
             PREDICATE_CALLS.store(0, Ordering::SeqCst);
-            let pair_bits = molt_exceptiongroup_split(group_bits, predicate_bits);
+            let pair_bits =
+                molt_exceptiongroup_split_attached_body(_py, group_bits, predicate_bits);
             assert!(!exception_pending(_py));
             assert_eq!(
                 PREDICATE_CALLS.load(Ordering::SeqCst),
@@ -1409,14 +1450,16 @@ mod tests {
             );
 
             PREDICATE_CALLS.store(0, Ordering::SeqCst);
-            let subgroup_bits = molt_exceptiongroup_subgroup(group_bits, predicate_bits);
+            let subgroup_bits =
+                molt_exceptiongroup_subgroup_attached_body(_py, group_bits, predicate_bits);
             assert!(!exception_pending(_py));
             assert_eq!(PREDICATE_CALLS.load(Ordering::SeqCst), 3);
             assert_eq!(group_children(_py, subgroup_bits), [first_bits]);
 
             PREDICATE_TARGET.store(group_bits, Ordering::SeqCst);
             PREDICATE_CALLS.store(0, Ordering::SeqCst);
-            let whole_bits = molt_exceptiongroup_subgroup(group_bits, predicate_bits);
+            let whole_bits =
+                molt_exceptiongroup_subgroup_attached_body(_py, group_bits, predicate_bits);
             assert_eq!(whole_bits, group_bits, "a matching root is returned itself");
             assert_eq!(PREDICATE_CALLS.load(Ordering::SeqCst), 1);
 
@@ -1454,7 +1497,7 @@ mod tests {
             let values = alloc_list(_py, &[value_bits]);
             assert!(!values.is_null());
             let values = MoltObject::from_ptr(values).bits();
-            let derived = molt_exceptiongroup_derive(base_group, values);
+            let derived = molt_exceptiongroup_derive_attached_body(_py, base_group, values);
             assert!(!exception_pending(_py));
             let derived_ptr = obj_from_bits(derived).as_ptr().unwrap();
             assert_eq!(
@@ -1481,3 +1524,5 @@ mod tests {
         });
     }
 }
+
+include!("../../attached_exports_generated/builtins/exceptions/exception_group.rs");

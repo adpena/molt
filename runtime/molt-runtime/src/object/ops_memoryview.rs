@@ -26,9 +26,8 @@ fn raise_memoryview_buffer_error(py: &PyToken<'_>, object: MoltObject) -> u64 {
     )
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_memoryview_new(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_memoryview_new_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         memoryview_new_with_flags(_py, bits, molt_cpython_abi::abi_types::PyBUF_FULL_RO)
     })
 }
@@ -132,9 +131,12 @@ fn memoryview_new_with_flags(_py: &PyToken<'_>, bits: u64, buffer_flags: i32) ->
     raise_memoryview_buffer_error(_py, obj)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_memoryview_from_flags(obj_bits: u64, flags_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_memoryview_from_flags_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    flags_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let flag_type = class_name_for_error(type_of_bits(_py, flags_bits));
         let err = format!("'{flag_type}' object cannot be interpreted as an integer");
         let Some(flags) = index_bigint_from_obj(_py, flags_bits, &err) else {
@@ -168,14 +170,14 @@ pub extern "C" fn molt_memoryview_from_flags(obj_bits: u64, flags_bits: u64) -> 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_memoryview_cast(
+pub(crate) fn molt_memoryview_cast_attached_body(
+    _py: &crate::PyToken<'_>,
     view_bits: u64,
     format_bits: u64,
     shape_bits: u64,
     has_shape_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let view = obj_from_bits(view_bits);
         let view_ptr = match view.as_ptr() {
             Some(ptr) => ptr,
@@ -409,8 +411,10 @@ pub extern "C" fn molt_memoryview_cast(
     })
 }
 
-pub(crate) extern "C" fn memoryview_tobytes_method(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn memoryview_tobytes_method(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) =
             crate::builtins::native_arguments::NativeArguments::read(py, "tobytes", args, kwargs)
         else {
@@ -519,9 +523,8 @@ fn memoryview_tobytes_ordered(py: &PyToken<'_>, bits: u64, order: Option<&str>) 
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_memoryview_tobytes(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { memoryview_tobytes_ordered(py, bits, None) })
+pub(crate) fn molt_memoryview_tobytes_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { memoryview_tobytes_ordered(py, bits, None) })
 }
 
 unsafe fn memoryview_tolist_recursive(
@@ -570,9 +573,8 @@ unsafe fn memoryview_tolist_recursive(
     Some(MoltObject::from_ptr(out_ptr).bits())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_memoryview_tolist(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_memoryview_tolist_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(bits);
         let ptr = match obj.as_ptr() {
             Some(ptr) => ptr,
@@ -619,9 +621,12 @@ pub extern "C" fn molt_memoryview_tolist(bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_memoryview_count(bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_memoryview_count_attached_body(
+    _py: &crate::PyToken<'_>,
+    bits: u64,
+    val_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(bits);
         let ptr = match obj.as_ptr() {
             Some(ptr) => ptr,
@@ -680,9 +685,12 @@ pub extern "C" fn molt_memoryview_count(bits: u64, val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_memoryview_index(bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_memoryview_index_attached_body(
+    _py: &crate::PyToken<'_>,
+    bits: u64,
+    val_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(bits);
         let ptr = match obj.as_ptr() {
             Some(ptr) => ptr,
@@ -758,9 +766,13 @@ pub extern "C" fn molt_memoryview_index(bits: u64, val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_memoryview_hex(bits: u64, sep_bits: u64, bytes_per_sep_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_memoryview_hex_attached_body(
+    _py: &crate::PyToken<'_>,
+    bits: u64,
+    sep_bits: u64,
+    bytes_per_sep_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(bits);
         let ptr = match obj.as_ptr() {
             Some(ptr) => ptr,
@@ -794,8 +806,10 @@ pub extern "C" fn molt_memoryview_hex(bits: u64, sep_bits: u64, bytes_per_sep_bi
 
 /// A context entry retains the same view; it does not acquire a new buffer
 /// export or reject a restricted release-callback view that is still live.
-pub(crate) extern "C" fn memoryview_enter_method(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn memoryview_enter_method(__context: u64, bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(pointer) = obj_from_bits(bits)
             .as_ptr()
             .filter(|&pointer| unsafe { object_type_id(pointer) == TYPE_ID_MEMORYVIEW })
@@ -812,8 +826,10 @@ pub(crate) extern "C" fn memoryview_enter_method(bits: u64) -> u64 {
 
 /// CPython's METH_VARARGS exit ignores positional exception information and
 /// rejects keywords. Its only state transition is the existing release owner.
-pub(crate) extern "C" fn memoryview_exit_method(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn memoryview_exit_method(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) =
             crate::builtins::native_arguments::NativeArguments::read(py, "__exit__", args, kwargs)
         else {
@@ -846,13 +862,12 @@ pub(crate) extern "C" fn memoryview_exit_method(args: u64, kwargs: u64) -> u64 {
                 "__exit__() takes no keyword arguments",
             );
         }
-        molt_memoryview_release(receiver)
+        molt_memoryview_release_attached_body(py, receiver)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_memoryview_release(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_memoryview_release_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(bits);
         let ptr = match obj.as_ptr() {
             Some(ptr) => ptr,
@@ -897,9 +912,8 @@ pub extern "C" fn molt_memoryview_release(bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_memoryview_toreadonly(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_memoryview_toreadonly_attached_body(_py: &crate::PyToken<'_>, bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(bits);
         let ptr = match obj.as_ptr() {
             Some(ptr) => ptr,
@@ -940,10 +954,14 @@ pub extern "C" fn molt_memoryview_toreadonly(bits: u64) -> u64 {
 
 /// # Safety
 /// Caller must ensure `out_ptr` is valid and writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_buffer_export(obj_bits: u64, out_ptr: *mut MoltBufferView) -> i32 {
+
+pub(crate) unsafe fn molt_buffer_export_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    out_ptr: *mut MoltBufferView,
+) -> i32 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             if out_ptr.is_null() {
                 return 1;
             }
@@ -971,3 +989,5 @@ pub unsafe extern "C" fn molt_buffer_export(obj_bits: u64, out_ptr: *mut MoltBuf
         })
     }
 }
+
+include!("../attached_exports_generated/object/ops_memoryview.rs");

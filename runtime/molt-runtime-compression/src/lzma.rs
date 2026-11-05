@@ -23,45 +23,45 @@ pub(crate) const PRESET_DEFAULT: i64 = 6;
 pub(crate) const PRESET_EXTREME: i64 = 1 << 31;
 
 // ── Constant intrinsics ───────────────────────────────────────────────────────
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_format_auto() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, FORMAT_AUTO))
+
+pub fn molt_lzma_format_auto_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, FORMAT_AUTO))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_format_xz() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, FORMAT_XZ))
+
+pub fn molt_lzma_format_xz_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, FORMAT_XZ))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_format_alone() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, FORMAT_ALONE))
+
+pub fn molt_lzma_format_alone_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, FORMAT_ALONE))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_format_raw() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, FORMAT_RAW))
+
+pub fn molt_lzma_format_raw_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, FORMAT_RAW))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_check_none() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, CHECK_NONE))
+
+pub fn molt_lzma_check_none_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, CHECK_NONE))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_check_crc32() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, CHECK_CRC32))
+
+pub fn molt_lzma_check_crc32_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, CHECK_CRC32))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_check_crc64() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, CHECK_CRC64))
+
+pub fn molt_lzma_check_crc64_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, CHECK_CRC64))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_check_sha256() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, CHECK_SHA256))
+
+pub fn molt_lzma_check_sha256_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, CHECK_SHA256))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_preset_default() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, PRESET_DEFAULT))
+
+pub fn molt_lzma_preset_default_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, PRESET_DEFAULT))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_preset_extreme() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, PRESET_EXTREME))
+
+pub fn molt_lzma_preset_extreme_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, PRESET_EXTREME))
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -113,15 +113,16 @@ fn resolve_check(check: i64) -> xz2::stream::Check {
 // ── One-shot compress ─────────────────────────────────────────────────────────
 
 /// `lzma.compress(data, format=FORMAT_XZ, check=-1, preset=None) -> bytes`
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_compress(
+
+pub fn molt_lzma_compress_attached_body(
+    _py: &molt_runtime_core::PyToken,
     error_class: u64,
     data_bits: u64,
     format_bits: u64,
     check_bits: u64,
     preset_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
         let error_class = error_owner.bits();
 
@@ -201,14 +202,15 @@ pub extern "C" fn molt_lzma_compress(
 // ── One-shot decompress ───────────────────────────────────────────────────────
 
 /// `lzma.decompress(data, format=FORMAT_AUTO, memlimit=None) -> bytes`
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_decompress(
+
+pub fn molt_lzma_decompress_attached_body(
+    _py: &molt_runtime_core::PyToken,
     error_class: u64,
     data_bits: u64,
     format_bits: u64,
     _memlimit_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
         let error_class = error_owner.bits();
 
@@ -293,18 +295,26 @@ pub struct LzmaCompressorHandle {
     flushed: bool,
 }
 
-fn lzma_compressor_from_bits(bits: u64) -> Option<Arc<Mutex<LzmaCompressorHandle>>> {
+fn lzma_compressor_from_bits(
+    py: &molt_runtime_core::PyToken,
+    bits: u64,
+) -> Option<Arc<Mutex<LzmaCompressorHandle>>> {
     unsafe {
-        molt_runtime_core::clone_native_arc(bits, __molt_compression_lzma_compressor_owner_clone)
+        molt_runtime_core::clone_native_arc(
+            py,
+            bits,
+            __molt_compression_lzma_compressor_owner_clone,
+        )
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_compressor_new(
+
+pub fn molt_lzma_compressor_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     format_bits: u64,
     check_bits: u64,
     preset_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let format = match opt_i64(_py, format_bits, FORMAT_XZ, "format") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -330,6 +340,7 @@ pub extern "C" fn molt_lzma_compressor_new(
         }));
         unsafe {
             molt_runtime_core::transfer_native_arc(
+                _py,
                 handle,
                 __molt_compression_lzma_compressor_owner_new,
             )
@@ -338,16 +349,17 @@ pub extern "C" fn molt_lzma_compressor_new(
 }
 
 /// `compressor.compress(data) -> bytes`
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_compressor_compress(
+
+pub fn molt_lzma_compressor_compress_attached_body(
+    _py: &molt_runtime_core::PyToken,
     error_class: u64,
     handle_bits: u64,
     data_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
         let error_class = error_owner.bits();
-        let Some(handle_owner) = lzma_compressor_from_bits(handle_bits) else {
+        let Some(handle_owner) = lzma_compressor_from_bits(_py, handle_bits) else {
             return molt_runtime_core::rt_raise_class(
                 _py,
                 error_class,
@@ -388,12 +400,16 @@ pub extern "C" fn molt_lzma_compressor_compress(
 }
 
 /// `compressor.flush() -> bytes`  (finalises and returns compressed stream)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_compressor_flush(error_class: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_lzma_compressor_flush_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    error_class: u64,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
         let error_class = error_owner.bits();
-        let Some(handle_owner) = lzma_compressor_from_bits(handle_bits) else {
+        let Some(handle_owner) = lzma_compressor_from_bits(_py, handle_bits) else {
             return molt_runtime_core::rt_raise_class(
                 _py,
                 error_class,
@@ -504,18 +520,26 @@ pub struct LzmaDecompressorHandle {
     state: StreamDecoder<xz2::stream::Stream>,
 }
 
-fn lzma_decompressor_from_bits(bits: u64) -> Option<Arc<Mutex<LzmaDecompressorHandle>>> {
+fn lzma_decompressor_from_bits(
+    py: &molt_runtime_core::PyToken,
+    bits: u64,
+) -> Option<Arc<Mutex<LzmaDecompressorHandle>>> {
     unsafe {
-        molt_runtime_core::clone_native_arc(bits, __molt_compression_lzma_decompressor_owner_clone)
+        molt_runtime_core::clone_native_arc(
+            py,
+            bits,
+            __molt_compression_lzma_decompressor_owner_clone,
+        )
     }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_decompressor_new(
+
+pub fn molt_lzma_decompressor_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     error_class: u64,
     format_bits: u64,
     memlimit_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
         let format = match codec_index(_py, format_bits, CodecIndexRole::CInt) {
             Ok(value) => value,
@@ -581,6 +605,7 @@ pub extern "C" fn molt_lzma_decompressor_new(
         }));
         unsafe {
             molt_runtime_core::transfer_native_arc(
+                _py,
                 handle,
                 __molt_compression_lzma_decompressor_owner_new,
             )
@@ -589,17 +614,18 @@ pub extern "C" fn molt_lzma_decompressor_new(
 }
 
 /// `decompressor.decompress(data, max_length=-1) -> bytes`
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_decompressor_decompress(
+
+pub fn molt_lzma_decompressor_decompress_attached_body(
+    _py: &molt_runtime_core::PyToken,
     error_class: u64,
     handle_bits: u64,
     data_bits: u64,
     max_length_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
         let error_class = error_owner.bits();
-        let Some(handle_owner) = lzma_decompressor_from_bits(handle_bits) else {
+        let Some(handle_owner) = lzma_decompressor_from_bits(_py, handle_bits) else {
             return molt_runtime_core::rt_raise_class(
                 _py,
                 error_class,
@@ -652,12 +678,16 @@ pub extern "C" fn molt_lzma_decompressor_decompress(
 }
 
 /// `decompressor.eof` property
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_decompressor_eof(error_class: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_lzma_decompressor_eof_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    error_class: u64,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
         let error_class = error_owner.bits();
-        let Some(handle_owner) = lzma_decompressor_from_bits(handle_bits) else {
+        let Some(handle_owner) = lzma_decompressor_from_bits(_py, handle_bits) else {
             return molt_runtime_core::rt_raise_class(
                 _py,
                 error_class,
@@ -673,12 +703,16 @@ pub extern "C" fn molt_lzma_decompressor_eof(error_class: u64, handle_bits: u64)
 }
 
 /// `decompressor.needs_input` property
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_decompressor_needs_input(error_class: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_lzma_decompressor_needs_input_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    error_class: u64,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
         let error_class = error_owner.bits();
-        let Some(handle_owner) = lzma_decompressor_from_bits(handle_bits) else {
+        let Some(handle_owner) = lzma_decompressor_from_bits(_py, handle_bits) else {
             return molt_runtime_core::rt_raise_class(
                 _py,
                 error_class,
@@ -694,12 +728,16 @@ pub extern "C" fn molt_lzma_decompressor_needs_input(error_class: u64, handle_bi
 }
 
 /// `decompressor.unused_data` property
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_decompressor_unused_data(error_class: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_lzma_decompressor_unused_data_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    error_class: u64,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
         let error_class = error_owner.bits();
-        let Some(handle_owner) = lzma_decompressor_from_bits(handle_bits) else {
+        let Some(handle_owner) = lzma_decompressor_from_bits(_py, handle_bits) else {
             return molt_runtime_core::rt_raise_class(
                 _py,
                 error_class,
@@ -735,13 +773,19 @@ pub struct LzmaFileHandle {
     inner: LzmaFileInner,
 }
 
-fn lzma_file_handle_from_bits(bits: u64) -> Option<Arc<Mutex<LzmaFileHandle>>> {
-    unsafe { molt_runtime_core::clone_native_arc(bits, __molt_compression_lzma_file_owner_clone) }
+fn lzma_file_handle_from_bits(
+    py: &molt_runtime_core::PyToken,
+    bits: u64,
+) -> Option<Arc<Mutex<LzmaFileHandle>>> {
+    unsafe {
+        molt_runtime_core::clone_native_arc(py, bits, __molt_compression_lzma_file_owner_clone)
+    }
 }
 
 /// `lzma.open(filename, mode, format, check, preset) -> handle`
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_file_open(
+
+pub fn molt_lzma_file_open_attached_body(
+    _py: &molt_runtime_core::PyToken,
     error_class: u64,
     filename_bits: u64,
     mode_bits: u64,
@@ -749,15 +793,15 @@ pub extern "C" fn molt_lzma_file_open(
     check_bits: u64,
     preset_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
         let error_class = error_owner.bits();
         let name_obj = obj_from_bits(filename_bits);
-        let Some(name) = string_obj_to_owned(name_obj) else {
+        let Some(name) = string_obj_to_owned(_py, name_obj) else {
             return raise_exception(_py, BuiltinExc::TypeError, "filename must be str");
         };
         let mode_obj = obj_from_bits(mode_bits);
-        let mode = string_obj_to_owned(mode_obj).unwrap_or_else(|| "rb".to_string());
+        let mode = string_obj_to_owned(_py, mode_obj).unwrap_or_else(|| "rb".to_string());
         let format = match opt_i64(_py, format_bits, FORMAT_XZ, "format") {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -851,18 +895,27 @@ pub extern "C" fn molt_lzma_file_open(
         };
         let handle = Arc::new(Mutex::new(LzmaFileHandle { inner }));
         unsafe {
-            molt_runtime_core::transfer_native_arc(handle, __molt_compression_lzma_file_owner_new)
+            molt_runtime_core::transfer_native_arc(
+                _py,
+                handle,
+                __molt_compression_lzma_file_owner_new,
+            )
         }
     })
 }
 
 /// `handle.read(size=-1) -> bytes`
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_file_read(error_class: u64, handle_bits: u64, size_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_lzma_file_read_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    error_class: u64,
+    handle_bits: u64,
+    size_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
         let error_class = error_owner.bits();
-        let Some(handle_owner) = lzma_file_handle_from_bits(handle_bits) else {
+        let Some(handle_owner) = lzma_file_handle_from_bits(_py, handle_bits) else {
             return molt_runtime_core::rt_raise_class(_py, error_class, "invalid lzma file handle");
         };
 
@@ -913,12 +966,17 @@ pub extern "C" fn molt_lzma_file_read(error_class: u64, handle_bits: u64, size_b
 }
 
 /// `handle.write(data) -> int`
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_file_write(error_class: u64, handle_bits: u64, data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_lzma_file_write_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    error_class: u64,
+    handle_bits: u64,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
         let error_class = error_owner.bits();
-        let Some(handle_owner) = lzma_file_handle_from_bits(handle_bits) else {
+        let Some(handle_owner) = lzma_file_handle_from_bits(_py, handle_bits) else {
             return molt_runtime_core::rt_raise_class(_py, error_class, "invalid lzma file handle");
         };
         let data_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
@@ -949,12 +1007,16 @@ pub extern "C" fn molt_lzma_file_write(error_class: u64, handle_bits: u64, data_
 }
 
 /// `handle.close() -> None` (finishes the lzma stream and writes to file)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lzma_file_close(error_class: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_lzma_file_close_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    error_class: u64,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
         let error_class = error_owner.bits();
-        let Some(handle_owner) = lzma_file_handle_from_bits(handle_bits) else {
+        let Some(handle_owner) = lzma_file_handle_from_bits(_py, handle_bits) else {
             return molt_runtime_core::rt_raise_class(_py, error_class, "invalid lzma file handle");
         };
 
@@ -1025,3 +1087,5 @@ pub extern "C" fn molt_lzma_file_close(error_class: u64, handle_bits: u64) -> u6
         MoltObject::none().bits()
     })
 }
+
+include!("attached_exports_generated/lzma.rs");

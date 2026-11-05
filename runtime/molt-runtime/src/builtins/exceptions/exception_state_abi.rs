@@ -172,19 +172,16 @@ pub(crate) fn pending_exception_diagnostic(_py: &PyToken<'_>) -> Option<(String,
     Some((kind, message))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_last() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { exception_last_public_bits(_py) })
+pub(crate) fn molt_exception_last_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { exception_last_public_bits(_py) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_last_pending() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { exception_last_pending_bits(_py) })
+pub(crate) fn molt_exception_last_pending_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { exception_last_pending_bits(_py) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_active() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_exception_active_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Some(bits) = exception_context_active_bits() {
             if debug_exception_flow() {
                 let kind = obj_from_bits(bits)
@@ -206,9 +203,8 @@ pub extern "C" fn molt_exception_active() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_current() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_exception_current_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Some(bits) = exception_context_active_bits() {
             if debug_exception_flow() {
                 let kind = obj_from_bits(bits)
@@ -238,9 +234,11 @@ pub extern "C" fn molt_exception_current() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_resolve_captured(captured_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_exception_resolve_captured_attached_body(
+    _py: &crate::PyToken<'_>,
+    captured_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let captured = obj_from_bits(captured_bits);
         if exception_is_instance(_py, captured_bits) {
             if debug_exception_flow() {
@@ -282,9 +280,11 @@ pub extern "C" fn molt_exception_resolve_captured(captured_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_enter_handler(captured_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_exception_enter_handler_attached_body(
+    _py: &crate::PyToken<'_>,
+    captured_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let bits = {
             if exception_is_instance(_py, captured_bits) {
                 inc_ref_bits(_py, captured_bits);
@@ -302,9 +302,8 @@ pub extern "C" fn molt_exception_enter_handler(captured_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_clear() -> u64 {
-    crate::with_raw_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_exception_clear_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let debug_clear = debug_exception_clear();
         let reason = exception_clear_reason_take();
         let cleared_bits = if debug_clear && exception_pending(_py) {
@@ -373,29 +372,31 @@ pub extern "C" fn molt_exception_clear() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_pending() -> u64 {
-    crate::with_raw_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
+pub(crate) fn molt_exception_pending_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_pending_fast() -> u64 {
-    crate::with_raw_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
+pub(crate) fn molt_exception_pending_fast_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
 /// Explicit eval-breaker observer used only by generated call-return and loop-
 /// backedge polls. Pure exception predicates above remain non-reentrant.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_async_work_poll_and_exception_pending() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { if service_async_work(_py) { 1 } else { 0 } })
+
+pub(crate) fn molt_async_work_poll_and_exception_pending_attached_body(
+    _py: &crate::PyToken<'_>,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { if service_async_work(_py) { 1 } else { 0 } })
 }
 
 /// Fused eval-breaker and pending-exception capture for generated `finally`
 /// arbitration. The caller must continue through the existing replacement and
 /// `__context__` logic instead of branching directly to the outer handler.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_async_work_poll_and_exception_last_pending() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_async_work_poll_and_exception_last_pending_attached_body(
+    _py: &crate::PyToken<'_>,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let _ = service_async_work(_py);
         exception_last_pending_bits(_py)
     })
@@ -449,9 +450,8 @@ fn service_async_work(_py: &PyToken<'_>) -> bool {
     drain_failed || exception_pending(_py)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_stack_enter() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_exception_stack_enter_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let prev = exception_stack_baseline_get();
         let depth = exception_stack_depth();
         exception_stack_baseline_set(depth);
@@ -459,9 +459,11 @@ pub extern "C" fn molt_exception_stack_enter() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_stack_exit(prev_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_exception_stack_exit_attached_body(
+    _py: &crate::PyToken<'_>,
+    prev_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // The prev_bits value comes from exception_stack_enter and should
         // be a NaN-boxed non-negative int.  However, when the exception
         // handler is reached through SSA paths where the variable was
@@ -479,16 +481,17 @@ pub extern "C" fn molt_exception_stack_exit(prev_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_stack_depth() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_exception_stack_depth_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         int_bits_from_i64(_py, exception_stack_depth() as i64)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_stack_set_depth(depth_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_exception_stack_set_depth_attached_body(
+    _py: &crate::PyToken<'_>,
+    depth_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // Same as exception_stack_exit: SSA paths through exception
         // handlers may pass None for undefined variables. Default to 0.
         let depth = match to_i64(obj_from_bits(depth_bits)) {
@@ -500,25 +503,22 @@ pub extern "C" fn molt_exception_stack_set_depth(depth_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_push() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_exception_push_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         exception_stack_push();
         MoltObject::none().bits()
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_pop() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_exception_pop_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         exception_stack_pop(_py);
         MoltObject::none().bits()
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_stack_clear() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_exception_stack_clear_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // A callee may discard only handlers it installed above its execution
         // baseline. Clearing the whole thread stack destroys caller-owned
         // lexical handlers across any nested call or initializer. Entry
@@ -528,9 +528,8 @@ pub extern "C" fn molt_exception_stack_clear() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_raise_attached_body(_py: &crate::PyToken<'_>, exc_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let exc_obj = obj_from_bits(exc_bits);
         if exc_obj.is_none() || exc_bits == 0 {
             if exception_pending(_py) {
@@ -585,7 +584,8 @@ mod diagnostic_tests {
             assert!(pending_exception_diagnostic(py).is_none());
             for missing in [false, true] {
                 let exception = if missing {
-                    molt_exception_new_builtin_one(
+                    molt_exception_new_builtin_one_attached_body(
+                        py,
                         u64::from(crate::ExcKind::from(crate::BuiltinExc::ValueError).code()),
                         MoltObject::from_int(42).bits(),
                     )
@@ -600,7 +600,7 @@ mod diagnostic_tests {
                 let ptr = obj_from_bits(exception).as_ptr().expect("exception object");
                 let constructor_missing =
                     exception_field_is_missing(unsafe { exception_msg_bits(ptr) });
-                molt_raise(exception);
+                molt_raise_attached_body(py, exception);
                 let message = unsafe { exception_msg_bits(ptr) };
                 let args = unsafe { exception_args_bits(ptr) };
                 assert_eq!(
@@ -626,7 +626,7 @@ mod diagnostic_tests {
                     );
                     // The guarded proof enables MOLT_TRACE_LINE_PENDING before
                     // process startup, exercising the actual trace consumer too.
-                    crate::object::ops_builtins::molt_trace_set_line(41);
+                    crate::object::ops_builtins::molt_trace_set_line_attached_body(py, 41);
                     assert!(exception_pending(py));
                     assert_eq!(pending_exception_slot(py).unwrap().0, ptr);
                     assert_eq!(unsafe { exception_msg_bits(ptr) }, message);
@@ -640,3 +640,12 @@ mod diagnostic_tests {
         });
     }
 }
+
+/// A true detached host status boundary: preserves the non-initializing
+/// observation/repair contract while compiled predicates use explicit context.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_exception_pending_detached() -> u64 {
+    crate::with_raw_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
+}
+
+include!("../../attached_exports_generated/builtins/exceptions/exception_state_abi.rs");

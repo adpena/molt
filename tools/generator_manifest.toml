@@ -345,7 +345,7 @@ outputs = [
   "src/molt/cli/native_launch_abi_generated.py",
   "runtime/molt-jit/src/launch_abi_generated.rs",
 ]
-source = "runtime/native_launch_abi.toml + tools/generator_io.py"
+source = "runtime/native_launch_abi.toml + runtime/molt-backend-wasm/src/wasm_abi_manifest.toml + tools/wasm_abi_gen/execution_context.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_native_launch_abi.py --check"
 toolchains = ["rustfmt"]
@@ -401,6 +401,8 @@ discovery_only = false
 [[generator]]
 tool = "tools/gen_wasm_abi.py"
 outputs = [
+  "runtime/*/src/attached_exports_generated/**/*.rs",
+  "runtime/molt-codegen-abi/src/attached_context_generated.rs",
   "runtime/molt-backend-native/src/exception_observer_abi.rs",
   "runtime/molt-backend-wasm/src/wasm_abi_generated/callable_table.rs",
   "runtime/molt-backend-wasm/src/wasm_abi_generated/call_indirect.rs",
@@ -434,7 +436,7 @@ outputs = [
   "runtime/wasm_table_layout.inc",
   "tools/wasm_allowed_imports.txt",
 ]
-source = "src/molt/builtin_callables.py + runtime/molt-runtime/src/intrinsics/public_objects.toml + tools/public_objects.py + src/molt/_public_objects_generated.py + runtime/molt-backend-wasm/src/wasm_abi_manifest.toml + runtime/molt-ir/src/tir/op_kinds.toml + src/molt/opcode_literal_payloads.py + runtime/molt-runtime/src/intrinsics/manifest.pyi + tools/intrinsic_manifest.py + src/molt/rust_source_scan.py + tools/generator_io.py + tools/wasm_abi_gen/intrinsic_availability.py + src/molt/_host_capabilities_generated.py + tools/gen_runtime_names.py + runtime/molt-ir/src/tir/runtime_names.toml"
+source = "tools/wasm_abi_gen/execution_context.py + src/molt/builtin_callables.py + runtime/molt-runtime/src/intrinsics/public_objects.toml + tools/public_objects.py + src/molt/_public_objects_generated.py + runtime/molt-backend-wasm/src/wasm_abi_manifest.toml + runtime/molt-ir/src/tir/op_kinds.toml + src/molt/opcode_literal_payloads.py + runtime/molt-runtime/src/intrinsics/manifest.pyi + tools/intrinsic_manifest.py + src/molt/rust_source_scan.py + tools/generator_io.py + tools/wasm_abi_gen/intrinsic_availability.py + src/molt/_host_capabilities_generated.py + tools/gen_runtime_names.py + runtime/molt-ir/src/tir/runtime_names.toml"
 upstream_generators = ["tools/gen_host_capabilities.py", "tools/gen_intrinsics.py", "tools/gen_runtime_names.py"]
 check_mode = true
 check_command = "tools/gen_wasm_abi.py --check"

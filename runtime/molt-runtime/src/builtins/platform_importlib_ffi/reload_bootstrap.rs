@@ -2,9 +2,14 @@ use super::*;
 use crate::BuiltinExc;
 
 /// The Python facade owns reload discovery/reentry; this is only _exec.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_reload(module_bits: u64, spec_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_importlib_reload_attached_body(
+    _py: &crate::PyToken<'_>,
+    module_bits: u64,
+    spec_bits: u64,
+    name_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let name = match string_arg_from_bits(py, name_bits, "name") {
             Ok(name) => name,
             Err(error) => return error,
@@ -29,12 +34,12 @@ pub extern "C" fn molt_importlib_reload(module_bits: u64, spec_bits: u64, name_b
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_bootstrap_payload(
+pub(crate) fn molt_importlib_bootstrap_payload_attached_body(
+    _py: &crate::PyToken<'_>,
     search_paths_bits: u64,
     module_file_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let search_paths =
             match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
                 Ok(value) => value,
@@ -137,12 +142,12 @@ pub extern "C" fn molt_importlib_bootstrap_payload(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_search_paths(
+pub(crate) fn molt_importlib_search_paths_attached_body(
+    _py: &crate::PyToken<'_>,
     search_paths_bits: u64,
     module_file_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let search_paths =
             match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
                 Ok(value) => value,
@@ -160,13 +165,13 @@ pub extern "C" fn molt_importlib_search_paths(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_namespace_paths(
+pub(crate) fn molt_importlib_namespace_paths_attached_body(
+    _py: &crate::PyToken<'_>,
     package_bits: u64,
     search_paths_bits: u64,
     module_file_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.namespace_paths",
@@ -304,15 +309,14 @@ pub(in super::super) fn importlib_acquire_import_lock(py: &PyToken<'_>) -> Resul
     Ok(())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_imp_acquire_lock() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_imp_acquire_lock_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         importlib_acquire_import_lock(py).map_or_else(|error| error, |()| MoltObject::none().bits())
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_imp_release_lock() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_imp_release_lock_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if !platform_state(py).import_lock.release() {
             return raise_exception::<_>(
                 py,
@@ -323,9 +327,9 @@ pub extern "C" fn molt_imp_release_lock() -> u64 {
         MoltObject::none().bits()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_imp_lock_held() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_imp_lock_held_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         MoltObject::from_bool(platform_state(py).import_lock.locked()).bits()
     })
 }
@@ -513,7 +517,11 @@ pub(in super::super) fn importlib_finish_initial_defaults(
             .owned_bits(py)
             .ok_or_else(|| MoltObject::none().bits())?;
         let defaults_name = ExceptionValue::adopt(py, defaults_name);
-        let defaults = crate::object::ops::molt_getitem_builtin(machinery, defaults_name.bits());
+        let defaults = crate::object::ops::molt_getitem_builtin_attached_body(
+            py,
+            machinery,
+            defaults_name.bits(),
+        );
         let defaults = ExceptionValue::adopt(py, defaults);
         if exception_pending(py) {
             return Err(MoltObject::none().bits());
@@ -597,9 +605,11 @@ pub(in super::super) fn importlib_finish_initial_defaults(
     result.map(|_| ())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_ensure_default_meta_path(machinery: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_importlib_ensure_default_meta_path_attached_body(
+    _py: &crate::PyToken<'_>,
+    machinery: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(provider) = initial_machinery_capability() else {
             return raise_exception::<_>(
                 py,
@@ -618,3 +628,5 @@ pub extern "C" fn molt_importlib_ensure_default_meta_path(machinery: u64) -> u64
             .map_or_else(|error| error, |()| MoltObject::none().bits())
     })
 }
+
+include!("../../attached_exports_generated/builtins/platform_importlib_ffi/reload_bootstrap.rs");

@@ -83,7 +83,11 @@ pub(super) unsafe extern "C" fn hook_unicode_encode(
     encoding: u64,
     errors: u64,
 ) -> OwnedHandleResult {
-    owned_result_from_pending(crate::molt_string_encode(bits, encoding, errors))
+    crate::with_gil_entry_nopanic!(py, {
+        owned_result_from_pending(crate::molt_string_encode_attached_body(
+            py, bits, encoding, errors,
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -152,7 +156,7 @@ mod tests {
                     .unwrap()
                     .bits();
                 assert_eq!(
-                    crate::obj_from_bits(crate::molt_len(bits)).as_int(),
+                    crate::obj_from_bits(crate::molt_len_attached_body(py, bits)).as_int(),
                     Some(4)
                 );
                 assert_eq!(strings::molt_capi_unicode_data(text).cast::<u32>(), data);

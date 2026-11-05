@@ -523,7 +523,7 @@ pub enum RuntimeFn {
     CoroutineThrowMethod = 494,
     CoroutineWrapperIter = 495,
     CoroutineWrapperNext = 496,
-    CpythonAbiCextCallTrampoline = 497,
+    CpythonAbiCextCallTrampolineAdmitted = 497,
     CpythonAbiRunStaticExtensionInit = 498,
     CsvDialectLookupName = 499,
     CsvDictProject = 500,
@@ -5148,7 +5148,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
-        symbol: "molt_cpython_abi_cext_call_trampoline",
+        symbol: "molt_cpython_abi_cext_call_trampoline_admitted",
         arity: 3,
         result: RuntimeBoxedReturn::OwnedValue,
     },

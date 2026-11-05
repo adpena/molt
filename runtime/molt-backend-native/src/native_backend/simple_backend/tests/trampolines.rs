@@ -166,7 +166,7 @@ fn assert_task_allocation_guard(
         assert_eq!(calls[calls.len() - 2], wrap_calls[0], "{clif}");
         assert_eq!(calls[calls.len() - 1], release_calls[0], "{clif}");
         for (_, inst) in [wrap_calls[0], release_calls[0]] {
-            assert_eq!(function.dfg.inst_args(inst), &[task_value], "{clif}");
+            assert_eq!(attached_arguments(function, inst), &[task_value], "{clif}");
         }
         assert!(
             function.dfg.inst_results(release_calls[0].1).is_empty(),
@@ -238,7 +238,7 @@ fn task_trampolines_emit_runtime_keys_and_compiled_code_addresses() {
                 compiled.import_ids[crate::runtime_import_abi::MOLT_TASK_NEW.name],
             );
             assert_eq!(calls.len(), 1);
-            let poll = function.dfg.inst_args(calls[0].1)[0];
+            let poll = attached_arguments(function, calls[0].1)[0];
             assert_eq!(
                 constant(function, poll).map(|key| key as u64),
                 expected_key,

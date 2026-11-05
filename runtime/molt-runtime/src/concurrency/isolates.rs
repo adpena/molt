@@ -22,7 +22,7 @@ use crate::audit::AuditArgs;
 #[cfg(test)]
 use crate::builtins::attr::dynamic_attr_name_bits;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::builtins::modules::molt_module_cache_get;
+use crate::builtins::modules::molt_module_cache_get_attached_body;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::call::dispatch::call_callable1;
 #[cfg(not(target_arch = "wasm32"))]
@@ -38,13 +38,15 @@ use crate::state::{
 use crate::{
     TYPE_ID_BYTES, alloc_bytes, alloc_string, alloc_tuple, bytes_data, bytes_len, dec_ref_bits,
     exception_pending, format_exception_with_traceback, inc_ref_bits, is_truthy,
-    molt_exception_clear, molt_exception_last_pending, molt_module_get_attr, obj_from_bits,
-    object_type_id, ptr_from_bits, runtime_state, string_obj_to_owned, to_i64,
+    molt_exception_clear_attached_body, molt_exception_last_pending_attached_body,
+    molt_module_get_attr_attached_body, obj_from_bits, object_type_id, ptr_from_bits,
+    runtime_state, string_obj_to_owned, to_i64,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
 unsafe extern "C" {
-    fn molt_isolate_bootstrap() -> u64;
+    #[link_name = molt_codegen_abi::attached_symbol!("molt_isolate_bootstrap")]
+    fn molt_isolate_bootstrap(context: u64) -> u64;
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -349,25 +351,28 @@ fn call_thread_callable(
     if !has_args && !has_kwargs {
         return unsafe { crate::call_callable0(_py, callable_bits) };
     }
-    let builder_bits = crate::molt_callargs_new(0, 0);
+    let builder_bits = crate::molt_callargs_new_attached_body(_py, 0, 0);
     if builder_bits == 0 {
         return MoltObject::none().bits();
     }
     if has_args {
-        let _ = unsafe { crate::molt_callargs_expand_star(builder_bits, args_bits) };
+        let _ =
+            unsafe { crate::molt_callargs_expand_star_attached_body(_py, builder_bits, args_bits) };
         if exception_pending(_py) {
             dec_ref_bits(_py, builder_bits);
             return MoltObject::none().bits();
         }
     }
     if has_kwargs {
-        let _ = unsafe { crate::molt_callargs_expand_kwstar(builder_bits, kwargs_bits) };
+        let _ = unsafe {
+            crate::molt_callargs_expand_kwstar_attached_body(_py, builder_bits, kwargs_bits)
+        };
         if exception_pending(_py) {
             dec_ref_bits(_py, builder_bits);
             return MoltObject::none().bits();
         }
     }
-    crate::molt_call_bind(callable_bits, builder_bits)
+    crate::molt_call_bind_attached_body(_py, callable_bits, builder_bits)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -392,7 +397,7 @@ fn log_thread_exception(_py: &PyToken<'_>) {
     if !exception_pending(_py) {
         return;
     }
-    let exc_bits = molt_exception_last_pending();
+    let exc_bits = molt_exception_last_pending_attached_body(_py);
     if !obj_from_bits(exc_bits).is_none() {
         let exc_ptr = ptr_from_bits(exc_bits);
         if !exc_ptr.is_null() {
@@ -400,7 +405,7 @@ fn log_thread_exception(_py: &PyToken<'_>) {
             eprintln!("molt thread exception: {formatted}");
         }
     }
-    molt_exception_clear();
+    molt_exception_clear_attached_body(_py);
     if !obj_from_bits(exc_bits).is_none() {
         dec_ref_bits(_py, exc_bits);
     }
@@ -414,7 +419,7 @@ fn run_thread_payload(payload: Vec<u8>) {
             return;
         }
         let module_bits = MoltObject::from_ptr(module_ptr).bits();
-        let mut loaded_bits = molt_module_cache_get(module_bits);
+        let mut loaded_bits = molt_module_cache_get_attached_body(_py, module_bits);
         if obj_from_bits(loaded_bits).is_none() {
             // Import bedrock: registry resolve → molt_module_ensure (the old
             // app-owned molt_isolate_import chain is deleted on native).
@@ -429,7 +434,7 @@ fn run_thread_payload(payload: Vec<u8>) {
             dec_ref_bits(_py, loaded_bits);
             return;
         };
-        let func_bits = molt_module_get_attr(loaded_bits, attr_bits);
+        let func_bits = molt_module_get_attr_attached_body(_py, loaded_bits, attr_bits);
         if obj_from_bits(func_bits).is_none() {
             dec_ref_bits(_py, loaded_bits);
             return;
@@ -465,7 +470,7 @@ fn thread_main(payload: Vec<u8>, handle: Arc<MoltThreadHandle>, lifetime: Runtim
     run_isolate_thread(
         lifetime,
         handle,
-        || unsafe { molt_isolate_bootstrap() },
+        |_py| unsafe { molt_isolate_bootstrap(_py.attached_context()) },
         || run_thread_payload(payload),
     );
 }
@@ -489,7 +494,7 @@ pub(crate) fn isolate_teardown_failure_count() -> usize {
 fn run_isolate_thread(
     lifetime: RuntimeLifetimeLease,
     handle: Arc<MoltThreadHandle>,
-    bootstrap: impl FnOnce() -> u64,
+    bootstrap: impl FnOnce(&PyToken<'_>) -> u64,
     payload: impl FnOnce(),
 ) {
     // Once execution starts, unexpected unwind must preserve primary custody
@@ -515,7 +520,7 @@ fn run_isolate_thread(
                 log_thread_exception(_py);
                 return false;
             }
-            let result = bootstrap();
+            let result = bootstrap(_py);
             // The application ABI returns an owned Molt result, including on
             // exceptional paths. Discarding it must release that ownership.
             dec_ref_bits(_py, result);
@@ -572,7 +577,14 @@ mod bootstrap_failure_tests {
 
     static THREAD_LIFETIME_TEARDOWN_CALLS: AtomicUsize = AtomicUsize::new(0);
 
-    extern "C" fn thread_lifetime_teardown_probe() -> u64 {
+    extern "C" fn thread_lifetime_teardown_probe(__context: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         THREAD_LIFETIME_TEARDOWN_CALLS.fetch_add(1, AtomicOrdering::SeqCst);
         println!("native thread lifetime teardown callback ran");
         MoltObject::none().bits()
@@ -591,7 +603,8 @@ mod bootstrap_failure_tests {
         let callback = MoltObject::from_ptr(callback).bits();
         // The registry owns its reference; the result carries none.
         assert!(
-            obj_from_bits(crate::builtins::atexit::molt_atexit_register(
+            obj_from_bits(crate::builtins::atexit::molt_atexit_register_attached_body(
+                py,
                 callback,
                 MoltObject::none().bits(),
                 MoltObject::none().bits(),
@@ -632,7 +645,7 @@ mod bootstrap_failure_tests {
                             run_isolate_thread(
                                 lifetime,
                                 worker_handle,
-                                || MoltObject::none().bits(),
+                                |_py| MoltObject::none().bits(),
                                 || {
                                     crate::with_gil_entry_nopanic!(py, {
                                         assert_ne!(runtime_state(py).identity(), primary);
@@ -724,7 +737,8 @@ mod bootstrap_failure_tests {
                             unsafe { (*crate::header_from_obj_ptr(callable)).ref_count_snapshot() };
                         NATIVE_THREAD_SPAWN_TEST_FAIL.with(|fail| fail.set(true));
                         unsafe {
-                            molt_thread_spawn_shared(
+                            molt_thread_spawn_shared_attached_body(
+                                py,
                                 MoltObject::from_ptr(callable).bits(),
                                 MoltObject::none().bits(),
                                 MoltObject::none().bits(),
@@ -743,7 +757,12 @@ mod bootstrap_failure_tests {
                         let payload = alloc_bytes(&py, b"not-executed-after-creation-failure");
                         assert!(!payload.is_null());
                         NATIVE_THREAD_SPAWN_TEST_FAIL.with(|fail| fail.set(true));
-                        unsafe { molt_thread_spawn(MoltObject::from_ptr(payload).bits()) };
+                        unsafe {
+                            molt_thread_spawn_attached_body(
+                                py,
+                                MoltObject::from_ptr(payload).bits(),
+                            )
+                        };
                         assert!(!NATIVE_THREAD_SPAWN_TEST_FAIL.with(|fail| fail.get()));
                         dec_ref_bits(&py, MoltObject::from_ptr(payload).bits());
                     }
@@ -752,7 +771,7 @@ mod bootstrap_failure_tests {
                         error && message.contains("injected native thread creation failure"),
                         "{message}"
                     );
-                    molt_exception_clear();
+                    molt_exception_clear_attached_body(py);
                     assert_eq!(state.thread_borrow_count(), 0);
                     assert_eq!(active_runtime_execution_lease_count(), baseline);
                     drop(entry);
@@ -806,7 +825,7 @@ mod bootstrap_failure_tests {
                         run_isolate_thread(
                             lifetime,
                             Arc::new(MoltThreadHandle::new()),
-                            || MoltObject::none().bits(),
+                            |_py| MoltObject::none().bits(),
                             || {
                                 crate::with_gil_entry_nopanic!(py, {
                                     assert_ne!(runtime_state(py).identity(), primary);
@@ -879,7 +898,7 @@ mod bootstrap_failure_tests {
                         run_isolate_thread(
                             lifetime,
                             Arc::new(MoltThreadHandle::new()),
-                            || MoltObject::none().bits(),
+                            |_py| MoltObject::none().bits(),
                             || {
                                 crate::with_gil_entry_nopanic!(py, {
                                     register_thread_lifetime_probe(py);
@@ -926,19 +945,19 @@ mod bootstrap_failure_tests {
                                                     );
                                                     assert!(!callable.is_null());
                                                     let refs = unsafe { (*crate::header_from_obj_ptr(callable)).ref_count_snapshot() };
-                                                    unsafe { molt_thread_spawn_shared(
+                                                    unsafe { molt_thread_spawn_shared_attached_body(py,
                                                         MoltObject::from_ptr(callable).bits(),
                                                         MoltObject::none().bits(),
                                                         MoltObject::none().bits(),
                                                     ) };
                                                     let (error, message) = pending_runtime_error(py);
                                                     assert!(error, "{message}");
-                                                    let exception = crate::builtins::exceptions::molt_exception_last_pending();
+                                                    let exception = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                                                     let exact = crate::builtins::exceptions::format_exception_message(py, obj_from_bits(exception).as_ptr().unwrap());
                                                     dec_ref_bits(py, exception);
                                                     assert_eq!(exact, "runtime is closing thread admission");
                                                     assert_eq!(unsafe { (*crate::header_from_obj_ptr(callable)).ref_count_snapshot() }, refs);
-                                                    molt_exception_clear();
+                                                    molt_exception_clear_attached_body(py);
                                                     dec_ref_bits(py, MoltObject::from_ptr(callable).bits());
                                                     let value = alloc_string(
                                                         py,
@@ -1084,7 +1103,7 @@ mod bootstrap_failure_tests {
                     let (storage_tx, storage_rx) = std::sync::mpsc::channel();
                     let worker = spawn_runtime_thread(move || {
                         run_isolate_thread(lifetime, Arc::new(MoltThreadHandle::new()),
-                            || MoltObject::none().bits(), || {
+                            |_py| MoltObject::none().bits(), || {
                                 crate::with_gil_entry_nopanic!(py, {
                                     assert_ne!(runtime_state(py).identity(), primary);
                                     let storage = crate::state::lifecycle::tests::install_joined_service_control(py, false, false, false);
@@ -1274,7 +1293,7 @@ mod bootstrap_failure_tests {
                 run_isolate_thread(
                     lifetime,
                     Arc::new(MoltThreadHandle::new()),
-                    || MoltObject::none().bits(),
+                    |_py| MoltObject::none().bits(),
                     || {
                         assert_limited();
                         verified.store(true, AtomicOrdering::Release);
@@ -1337,7 +1356,7 @@ mod bootstrap_failure_tests {
             run_isolate_thread(
                 lifetime,
                 Arc::new(MoltThreadHandle::new()),
-                || MoltObject::none().bits(),
+                |_py| MoltObject::none().bits(),
                 || {
                     crate::with_gil_entry_nopanic!(py, {
                         let state = runtime_state(py);
@@ -1413,7 +1432,7 @@ mod bootstrap_failure_tests {
             run_isolate_thread(
                 lifetime,
                 Arc::new(MoltThreadHandle::new()),
-                || MoltObject::none().bits(),
+                |_py| MoltObject::none().bits(),
                 || {
                     crate::with_gil_entry_nopanic!(py, {
                         let state = runtime_state(py);
@@ -1487,10 +1506,18 @@ mod bootstrap_failure_tests {
         ISOLATE_DRAIN_REENTRY_CALLBACKS.fetch_add(1, AtomicOrdering::AcqRel);
     }
 
-    extern "C" fn publish_isolate_shutdown_edges() -> u64 {
+    extern "C" fn publish_isolate_shutdown_edges(__context: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         assert!(crate::concurrency::execution::current_thread_holds_shutdown_drain_custody());
         assert!(!crate::state::runtime_state::current_thread_holds_runtime_execution_lease());
-        crate::with_gil_entry_nopanic!(py, {
+        {
+            let py = __py;
             let dict = unsafe { molt_cpython_abi::api::sys::PyThreadState_GetDict() };
             assert!(
                 !dict.is_null(),
@@ -1511,7 +1538,7 @@ mod bootstrap_failure_tests {
             ));
             ISOLATE_DRAIN_ATEXIT_CALLBACKS.fetch_add(1, AtomicOrdering::AcqRel);
             MoltObject::none().bits()
-        })
+        }
     }
 
     unsafe extern "C" fn count_isolate_preserved_pending_call(_arg: *mut c_void) -> c_int {
@@ -1525,19 +1552,33 @@ mod bootstrap_failure_tests {
     static ISOLATE_GC_PHASES: AtomicUsize = AtomicUsize::new(0);
 
     #[cfg(not(feature = "free-threaded"))]
-    extern "C" fn count_primary_gc_phase(_phase: u64, _info: u64) -> u64 {
+    extern "C" fn count_primary_gc_phase(__context: u64, _phase: u64, _info: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         PRIMARY_GC_PHASES.fetch_add(1, AtomicOrdering::Relaxed);
         MoltObject::none().bits()
     }
 
     #[cfg(not(feature = "free-threaded"))]
-    extern "C" fn count_isolate_gc_phase(_phase: u64, _info: u64) -> u64 {
+    extern "C" fn count_isolate_gc_phase(__context: u64, _phase: u64, _info: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         ISOLATE_GC_PHASES.fetch_add(1, AtomicOrdering::Relaxed);
         MoltObject::none().bits()
     }
 
     #[cfg(not(feature = "free-threaded"))]
-    fn install_gc_callback(py: &PyToken<'_>, callback: extern "C" fn(u64, u64) -> u64) {
+    fn install_gc_callback(py: &PyToken<'_>, callback: extern "C" fn(u64, u64, u64) -> u64) {
         let callable = crate::builtins::functions::alloc_runtime_function_obj(
             py,
             crate::provenance::abi::expose_function_address(callback as *const ()),
@@ -1546,7 +1587,7 @@ mod bootstrap_failure_tests {
         assert!(!callable.is_null());
         let callable = MoltObject::from_ptr(callable).bits();
         let callbacks = runtime_state(py).gc.callbacks_bits(py);
-        crate::molt_list_append(callbacks, callable);
+        crate::molt_list_append_attached_body(py, callbacks, callable);
         dec_ref_bits(py, callbacks);
         dec_ref_bits(py, callable);
         assert!(!exception_pending(py));
@@ -1557,7 +1598,7 @@ mod bootstrap_failure_tests {
         let pointer = crate::alloc_list(py, &[]);
         assert!(!pointer.is_null());
         let bits = MoltObject::from_ptr(pointer).bits();
-        crate::molt_list_append(bits, bits);
+        crate::molt_list_append_attached_body(py, bits, bits);
         assert!(!exception_pending(py));
         dec_ref_bits(py, bits);
         pointer.expose_provenance()
@@ -1607,7 +1648,7 @@ mod bootstrap_failure_tests {
                     run_isolate_thread(
                         lifetime,
                         worker_handle,
-                        || MoltObject::none().bits(),
+                        |_py| MoltObject::none().bits(),
                         || {
                             crate::with_gil_entry_nopanic!(py, {
                                 runtime_state(py).gc.set_enabled(false);
@@ -1659,7 +1700,7 @@ mod bootstrap_failure_tests {
                                         run_isolate_thread(
                                             lifetime,
                                             Arc::new(MoltThreadHandle::new()),
-                                            || MoltObject::none().bits(),
+                                            |_py| MoltObject::none().bits(),
                                             || {
                                                 crate::with_gil_entry_nopanic!(py, {
                                                     runtime_state(py).gc.set_enabled(false);
@@ -1774,7 +1815,7 @@ mod bootstrap_failure_tests {
                 run_isolate_thread(
                     lifetime,
                     worker_handle,
-                    || {
+                    |_py| {
                         crate::with_gil_entry_nopanic!(py, {
                             isolate_identity.set(runtime_state(py).identity());
                             // Observe an existing Rust owner inside RuntimeState. Its
@@ -1904,7 +1945,7 @@ mod bootstrap_failure_tests {
         if !exception_pending(_py) {
             return (false, String::new());
         }
-        let bits = crate::builtins::exceptions::molt_exception_last_pending();
+        let bits = crate::builtins::exceptions::molt_exception_last_pending_attached_body(_py);
         let matches = !obj_from_bits(bits).is_none()
             && crate::builtins::exceptions::exception_matches_kind(
                 _py,
@@ -1956,7 +1997,7 @@ mod bootstrap_failure_tests {
             run_isolate_thread(
                 lifetime,
                 worker_handle,
-                || {
+                |_py| {
                     worker_initializations.fetch_add(1, AtomicOrdering::SeqCst);
                     crate::with_gil_entry_nopanic!(_py, {
                         if fail {
@@ -1996,7 +2037,7 @@ mod bootstrap_failure_tests {
             run_isolate_thread(
                 lifetime,
                 worker_handle,
-                || MoltObject::none().bits(),
+                |_py| MoltObject::none().bits(),
                 || {
                     crate::with_gil_entry_nopanic!(py, {
                         let roots = builtin_classes(py);
@@ -2006,7 +2047,7 @@ mod bootstrap_failure_tests {
                         let mut owners = Vec::new();
                         let mut attribute = |value, name: &[u8]| {
                             let key = dynamic_attr_name_bits(py, name).unwrap();
-                            let result = crate::molt_get_attr_name(value, key);
+                            let result = crate::molt_get_attr_name_attached_body(py, value, key);
                             dec_ref_bits(py, key);
                             assert!(!exception_pending(py), "isolate metadata lookup failed");
                             owners.push(result);
@@ -2022,7 +2063,10 @@ mod bootstrap_failure_tests {
                             Some("int")
                         );
                         let mro = attribute(roots.int, b"__mro__");
-                        assert_eq!(crate::molt_len(mro), MoltObject::from_int(2).bits());
+                        assert_eq!(
+                            crate::molt_len_attached_body(py, mro),
+                            MoltObject::from_int(2).bits()
+                        );
                         let namespace = attribute(roots.type_obj, b"__dict__");
                         let get = attribute(namespace, b"get");
                         let key = crate::NameId::DunderName.owned_bits(py).unwrap();
@@ -2079,7 +2123,7 @@ mod bootstrap_failure_tests {
             run_isolate_thread(
                 lifetime,
                 worker_handle,
-                || {
+                |_py| {
                     crate::with_gil_entry_nopanic!(py, {
                         let callback = crate::builtins::functions::alloc_runtime_function_obj(
                             py,
@@ -2095,11 +2139,14 @@ mod bootstrap_failure_tests {
                         let callback = MoltObject::from_ptr(callback).bits();
                         // The registry owns its reference; the result carries none.
                         assert!(
-                            obj_from_bits(crate::builtins::atexit::molt_atexit_register(
-                                callback,
-                                MoltObject::none().bits(),
-                                MoltObject::none().bits(),
-                            ))
+                            obj_from_bits(
+                                crate::builtins::atexit::molt_atexit_register_attached_body(
+                                    py,
+                                    callback,
+                                    MoltObject::none().bits(),
+                                    MoltObject::none().bits(),
+                                )
+                            )
                             .is_none()
                         );
                         dec_ref_bits(py, callback);
@@ -2169,7 +2216,12 @@ mod bootstrap_failure_tests {
         let worker_handle = Arc::clone(&handle);
         let lifetime = RuntimeLifetimeLease::try_acquire().expect("live process for isolate");
         std::thread::spawn(move || {
-            run_isolate_thread(lifetime, worker_handle, || MoltObject::none().bits(), || {});
+            run_isolate_thread(
+                lifetime,
+                worker_handle,
+                |_py| MoltObject::none().bits(),
+                || {},
+            );
         })
         .join()
         .expect("isolate teardown must preserve primary pending-call custody");
@@ -2227,7 +2279,7 @@ mod bootstrap_failure_tests {
             run_isolate_thread(
                 lifetime,
                 worker_handle,
-                || {
+                |_py| {
                     crate::with_gil_entry_nopanic!(py, {
                         assert!(!crate::state::runtime_state::owns_process_cpython_state(
                             runtime_state(py)
@@ -2272,7 +2324,7 @@ mod bootstrap_failure_tests {
             run_isolate_thread(
                 lifetime,
                 worker_handle,
-                || {
+                |_py| {
                     crate::with_gil_entry_nopanic!(_py, {
                         let owns_process_state =
                             crate::state::runtime_state::owns_process_cpython_state(
@@ -2288,18 +2340,20 @@ mod bootstrap_failure_tests {
                         let native_rejected = native.is_null();
                         let (native_runtime_error, native_message) = pending_runtime_error(_py);
                         unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
-                        let _ = molt_exception_clear();
+                        let _ = molt_exception_clear_attached_body(_py);
                         if !native.is_null() {
                             unsafe { molt_cpython_abi::api::refcount::Py_DECREF(native) };
                         }
                         // Admission must reject the isolate before touching a
                         // callback address or allocating initializer state.
-                        let prepare_result = crate::molt_cpython_abi_run_static_extension_init(
-                            0,
-                            MoltObject::none().bits(),
-                        );
+                        let prepare_result =
+                            crate::cpython_abi_hooks::molt_cpython_abi_run_static_extension_init_attached_body(
+                                _py,
+                                0,
+                                MoltObject::none().bits(),
+                            );
                         let (prepare_runtime_error, prepare_message) = pending_runtime_error(_py);
-                        let _ = molt_exception_clear();
+                        let _ = molt_exception_clear_attached_body(_py);
 
                         let name = b"rejected_isolate_callable";
                         let producer_result = unsafe {
@@ -2510,11 +2564,14 @@ pub(crate) fn configured_thread_stack_size() -> Option<usize> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// `payload_bits` must reference a valid thread payload tuple allocated by this runtime.
-pub unsafe extern "C" fn molt_thread_spawn(payload_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_thread_spawn_attached_body(
+    _py: &crate::PyToken<'_>,
+    payload_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let isolated_override = crate::runtime_state(_py).policy().thread_isolated;
         let operation = if isolated_override {
             crate::OperationId::ThreadSpawnIsolated
@@ -2574,16 +2631,17 @@ pub unsafe extern "C" fn molt_thread_spawn(payload_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// `callable_bits`/`args_bits`/`kwargs_bits` must be valid Molt objects owned by
 /// the current runtime. The returned native handle is the sole call identity.
-pub unsafe extern "C" fn molt_thread_spawn_shared(
+pub(crate) unsafe fn molt_thread_spawn_shared_attached_body(
+    _py: &crate::PyToken<'_>,
     callable_bits: u64,
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(err) =
             crate::require_operation(_py, crate::OperationId::ThreadSpawnShared, AuditArgs::None)
         {
@@ -2626,12 +2684,16 @@ pub unsafe extern "C" fn molt_thread_spawn_shared(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// `handle_bits` must be a live thread handle created by `molt_thread_spawn` and `timeout_bits`
 /// must be either `None` or a numeric timeout object.
-pub unsafe extern "C" fn molt_thread_join(handle_bits: u64, timeout_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_thread_join_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    timeout_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(handle) = thread_handle_from_bits(handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -2652,11 +2714,14 @@ pub unsafe extern "C" fn molt_thread_join(handle_bits: u64, timeout_bits: u64) -
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// `handle_bits` must be a live thread handle created by this runtime.
-pub unsafe extern "C" fn molt_thread_is_alive(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_thread_is_alive_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(handle) = thread_handle_from_bits(handle_bits) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -2666,11 +2731,14 @@ pub unsafe extern "C" fn molt_thread_is_alive(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// `handle_bits` must be a live thread handle created by this runtime.
-pub unsafe extern "C" fn molt_thread_ident(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_thread_ident_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(handle) = thread_handle_from_bits(handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -2687,11 +2755,14 @@ pub unsafe extern "C" fn molt_thread_ident(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// `handle_bits` must be a live thread handle created by this runtime.
-pub unsafe extern "C" fn molt_thread_native_id(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_thread_native_id_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(handle) = thread_handle_from_bits(handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -2708,36 +2779,39 @@ pub unsafe extern "C" fn molt_thread_native_id(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_current_ident() -> u64 {
+
+pub(crate) fn molt_thread_current_ident_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     let ident = current_thread_id();
     MoltObject::from_int(ident as i64).bits()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_current_native_id() -> u64 {
+
+pub(crate) fn molt_thread_current_native_id_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     let ident = current_thread_id();
     MoltObject::from_int(ident as i64).bits()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// This function must be called through the runtime FFI entrypoint while runtime state is valid.
-pub unsafe extern "C" fn molt_thread_stack_size_get() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_thread_stack_size_get_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let size = THREAD_STACK_SIZE_BYTES.load(AtomicOrdering::Acquire);
         MoltObject::from_int(size as i64).bits()
     })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// `size_bits` must be an integer object representing the requested stack size.
-pub unsafe extern "C" fn molt_thread_stack_size_set(size_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_thread_stack_size_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    size_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(size_i64) = to_i64(obj_from_bits(size_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -2763,11 +2837,14 @@ pub unsafe extern "C" fn molt_thread_stack_size_set(size_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// `handle_bits` must be a live thread handle created by this runtime and not already dropped.
-pub unsafe extern "C" fn molt_thread_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_thread_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if thread_handle_from_bits(handle_bits).is_none() {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid thread handle");
         }
@@ -2776,11 +2853,15 @@ pub unsafe extern "C" fn molt_thread_drop(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// `name_bits` must be a string object and `daemon_bits` must be a truthy-capable object.
-pub unsafe extern "C" fn molt_thread_registry_set_main(name_bits: u64, daemon_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_thread_registry_set_main_attached_body(
+    _py: &crate::PyToken<'_>,
+    name_bits: u64,
+    daemon_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "thread name must be str");
         };
@@ -2791,16 +2872,17 @@ pub unsafe extern "C" fn molt_thread_registry_set_main(name_bits: u64, daemon_bi
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// `handle_bits` must be a live thread handle owned by this runtime and
 /// `name_bits` a string object owned by this runtime.
-pub unsafe extern "C" fn molt_thread_registry_register(
+pub(crate) unsafe fn molt_thread_registry_register_attached_body(
+    _py: &crate::PyToken<'_>,
     handle_bits: u64,
     name_bits: u64,
     daemon_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(handle) = thread_handle_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid thread handle");
         };
@@ -2814,12 +2896,15 @@ pub unsafe extern "C" fn molt_thread_registry_register(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// `handle_bits` must be a live native thread handle owned by this runtime.
 /// Forgetting display metadata does not cancel an admitted worker or its call.
-pub unsafe extern "C" fn molt_thread_registry_forget(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_thread_registry_forget_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(handle) = thread_handle_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid thread handle");
         };
@@ -2829,12 +2914,12 @@ pub unsafe extern "C" fn molt_thread_registry_forget(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// This function must be called through the runtime FFI entrypoint while the thread registry is
 /// initialized for the current runtime.
-pub unsafe extern "C" fn molt_thread_registry_snapshot() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_thread_registry_snapshot_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let mut tuple_bits = Vec::new();
         {
             let mut registry = thread_registry(_py).lock().unwrap();
@@ -2897,12 +2982,12 @@ pub unsafe extern "C" fn molt_thread_registry_snapshot() -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// This function must be called through the runtime FFI entrypoint while the thread registry is
 /// initialized for the current runtime.
-pub unsafe extern "C" fn molt_thread_registry_current() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_thread_registry_current_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let current_ident = current_thread_id();
         let mut fallback = (
             "MainThread".to_string(),
@@ -2970,12 +3055,14 @@ pub unsafe extern "C" fn molt_thread_registry_current() -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// This function must be called through the runtime FFI entrypoint while the thread registry is
 /// initialized for the current runtime.
-pub unsafe extern "C" fn molt_thread_registry_active_count() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_thread_registry_active_count_attached_body(
+    _py: &crate::PyToken<'_>,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let current_ident = current_thread_id();
         let mut count: usize = 1;
         {
@@ -3001,14 +3088,19 @@ pub unsafe extern "C" fn molt_thread_registry_active_count() -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_registry_set_main(_name_bits: u64, _daemon_bits: u64) -> u64 {
+
+pub(crate) fn molt_thread_registry_set_main_attached_body(
+    _py: &crate::PyToken<'_>,
+    _name_bits: u64,
+    _daemon_bits: u64,
+) -> u64 {
     MoltObject::none().bits()
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_registry_register(
+
+pub(crate) fn molt_thread_registry_register_attached_body(
+    _py: &crate::PyToken<'_>,
     _handle_bits: u64,
     _name_bits: u64,
     _daemon_bits: u64,
@@ -3017,15 +3109,18 @@ pub extern "C" fn molt_thread_registry_register(
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_registry_forget(_handle_bits: u64) -> u64 {
+
+pub(crate) fn molt_thread_registry_forget_attached_body(
+    _py: &crate::PyToken<'_>,
+    _handle_bits: u64,
+) -> u64 {
     MoltObject::none().bits()
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_registry_snapshot() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_thread_registry_snapshot_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let list_ptr = alloc_list(_py, &[]);
         if list_ptr.is_null() {
             MoltObject::none().bits()
@@ -3036,8 +3131,8 @@ pub extern "C" fn molt_thread_registry_snapshot() -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_registry_current() -> u64 {
+
+pub(crate) fn molt_thread_registry_current_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     MoltObject::none().bits()
 }
 
@@ -3045,15 +3140,15 @@ pub extern "C" fn molt_thread_registry_current() -> u64 {
 const WASM_MAIN_THREAD_IDENT: i64 = 1;
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_registry_active_count() -> u64 {
+
+pub(crate) fn molt_thread_registry_active_count_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     MoltObject::from_int(WASM_MAIN_THREAD_IDENT).bits()
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_spawn(_payload_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_thread_spawn_attached_body(_py: &crate::PyToken<'_>, _payload_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_exception::<_>(
             _py,
             BuiltinExc::NotImplementedError,
@@ -3063,13 +3158,14 @@ pub extern "C" fn molt_thread_spawn(_payload_bits: u64) -> u64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_spawn_shared(
+
+pub(crate) fn molt_thread_spawn_shared_attached_body(
+    _py: &crate::PyToken<'_>,
     _callable_bits: u64,
     _args_bits: u64,
     _kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_exception::<_>(
             _py,
             BuiltinExc::NotImplementedError,
@@ -3079,57 +3175,72 @@ pub extern "C" fn molt_thread_spawn_shared(
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_join(_handle_bits: u64, _timeout_bits: u64) -> u64 {
+
+pub(crate) fn molt_thread_join_attached_body(
+    _py: &crate::PyToken<'_>,
+    _handle_bits: u64,
+    _timeout_bits: u64,
+) -> u64 {
     MoltObject::none().bits()
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_is_alive(_handle_bits: u64) -> u64 {
+
+pub(crate) fn molt_thread_is_alive_attached_body(
+    _py: &crate::PyToken<'_>,
+    _handle_bits: u64,
+) -> u64 {
     MoltObject::from_bool(false).bits()
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_ident(_handle_bits: u64) -> u64 {
+
+pub(crate) fn molt_thread_ident_attached_body(_py: &crate::PyToken<'_>, _handle_bits: u64) -> u64 {
     MoltObject::none().bits()
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_native_id(_handle_bits: u64) -> u64 {
+
+pub(crate) fn molt_thread_native_id_attached_body(
+    _py: &crate::PyToken<'_>,
+    _handle_bits: u64,
+) -> u64 {
     MoltObject::none().bits()
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_current_ident() -> u64 {
+
+pub(crate) fn molt_thread_current_ident_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     MoltObject::from_int(WASM_MAIN_THREAD_IDENT).bits()
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_current_native_id() -> u64 {
+
+pub(crate) fn molt_thread_current_native_id_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     // WASM has no OS TID, but CPython's API contract is a stable non-zero int.
     // Use the same single-thread identity authority as get_ident().
     MoltObject::from_int(WASM_MAIN_THREAD_IDENT).bits()
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_stack_size_get() -> u64 {
+
+pub(crate) fn molt_thread_stack_size_get_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     MoltObject::from_int(0).bits()
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_stack_size_set(_size_bits: u64) -> u64 {
+
+pub(crate) fn molt_thread_stack_size_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    _size_bits: u64,
+) -> u64 {
     MoltObject::from_int(0).bits()
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_drop(_handle_bits: u64) -> u64 {
+
+pub(crate) fn molt_thread_drop_attached_body(_py: &crate::PyToken<'_>, _handle_bits: u64) -> u64 {
     MoltObject::none().bits()
 }
+
+include!("../attached_exports_generated/concurrency/isolates.rs");

@@ -163,9 +163,9 @@ impl CompatibilityError<'_> {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_compatibility_error(outcome_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+
+pub(crate) fn molt_compatibility_error_attached_body(_py: &crate::PyToken<'_>, outcome_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let outcome = match obj_from_bits(outcome_bits).as_int() {
             Some(1) => CompatibilityError::CounterFromkeys,
             Some(2) => CompatibilityError::WindowsSignalHandler,
@@ -305,3 +305,5 @@ mod tests {
         });
     }
 }
+
+include!("../attached_exports_generated/builtins/compatibility_error.rs");

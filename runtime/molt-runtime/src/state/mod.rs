@@ -23,8 +23,10 @@ pub(crate) use metrics::{
 // The extern "C" profiling entrypoints only exist on non-wasm32 targets.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use metrics::{
-    molt_profile_enabled, molt_profile_handle_resolve, molt_profile_snapshot,
-    molt_profile_struct_field_store,
+    molt_profile_enabled, molt_profile_enabled_attached_body, molt_profile_handle_resolve,
+    molt_profile_handle_resolve_attached_body, molt_profile_snapshot,
+    molt_profile_snapshot_attached_body, molt_profile_struct_field_store,
+    molt_profile_struct_field_store_attached_body,
 };
 pub(crate) use recursion::{
     DEFAULT_RECURSION_LIMIT, recursion_guard_enter, recursion_guard_exit, recursion_limit_get,
@@ -36,7 +38,7 @@ pub(crate) use runtime_state::{
     set_thread_runtime_state,
 };
 #[cfg(test)]
-pub(crate) use tls::molt_thread_record;
+pub(crate) use tls::molt_attached_context;
 pub(crate) use tls::{
     CONTEXT_STACK, ExecutionTls, FRAME_STACK, PARSE_ARENA, REPR_DEPTH, REPR_SET, REPR_STACK,
     TRACE_FRAME_PUSH_STACK, TRACEBACK_SUPPRESS, execution_tls,

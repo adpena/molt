@@ -46,8 +46,10 @@ pub(super) fn count(py: &PyToken<'_>, result: u64) -> Option<i64> {
     }
 }
 
-pub(crate) extern "C" fn raw_io_base_read(self_bits: u64, size_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn raw_io_base_read(__context: u64, self_bits: u64, size_bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let _self = OwnedRuntimeValue::retain(py.core_token(), self_bits);
         let size = crate::builtins::numbers::index_ssize_from_obj(py, size_bits);
         if exception_pending(py) {
@@ -155,8 +157,10 @@ impl Drop for ReadChunks<'_> {
     }
 }
 
-pub(crate) extern "C" fn raw_io_base_readall(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn raw_io_base_readall(__context: u64, self_bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let _self = OwnedRuntimeValue::retain(py.core_token(), self_bits);
         let modern = crate::object::ops_sys::runtime_target_at_least(py, 3, 15);
         let size = MoltObject::from_int(default_buffer_size(py)).bits();
@@ -224,8 +228,10 @@ pub(crate) extern "C" fn raw_io_base_readall(self_bits: u64) -> u64 {
 
 /// CPython publishes this abstract default as METH_VARARGS: positional arity is
 /// intentionally unrestricted, while keywords are refused before the body.
-pub(crate) extern "C" fn raw_io_base_readinto(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn raw_io_base_readinto(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) =
             crate::builtins::native_arguments::NativeArguments::read(py, "readinto", args, kwargs)
         else {

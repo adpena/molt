@@ -579,7 +579,7 @@ fn worker_loop(
                 unsafe { call_callable1(py, item.fn_bits, item.args_bits) }
             };
             if exception_pending(py) {
-                let exc_bits = molt_exception_last_pending();
+                let exc_bits = molt_exception_last_pending_attached_body(token);
                 clear_exception(py);
                 dec_ref_bits(py, bits);
                 FutureOutcome::Exception(exc_bits)
@@ -625,9 +625,11 @@ fn worker_loop(
 
 // ── ThreadPoolExecutor intrinsics ─────────────────────────────────────────
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_concurrent_threadpool_new(max_workers_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_concurrent_threadpool_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    max_workers_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(error) =
             require_operation(_py, crate::OperationId::ThreadSpawnShared, AuditArgs::None)
         {
@@ -695,13 +697,13 @@ pub extern "C" fn molt_concurrent_threadpool_new(max_workers_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_concurrent_threadpool_submit(
+pub(crate) fn molt_concurrent_threadpool_submit_attached_body(
+    _py: &crate::PyToken<'_>,
     handle_bits: u64,
     fn_bits: u64,
     args_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let runtime = runtime_state(_py);
         #[cfg(not(target_arch = "wasm32"))]
         if !runtime.thread_borrow_admission_is_open() {
@@ -887,13 +889,13 @@ pub extern "C" fn molt_concurrent_threadpool_submit(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_concurrent_threadpool_shutdown(
+pub(crate) fn molt_concurrent_threadpool_shutdown_attached_body(
+    _py: &crate::PyToken<'_>,
     handle_bits: u64,
     wait_bits: u64,
     cancel_futures_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let pool_id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -941,11 +943,13 @@ pub extern "C" fn molt_concurrent_threadpool_shutdown(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_concurrent_threadpool_drop(handle_bits: u64) -> u64 {
+pub(crate) fn molt_concurrent_threadpool_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
     // Forward to shutdown(wait=False).
     let false_bits = MoltObject::from_bool(false).bits();
-    molt_concurrent_threadpool_shutdown(handle_bits, false_bits, false_bits)
+    molt_concurrent_threadpool_shutdown_attached_body(_py, handle_bits, false_bits, false_bits)
 }
 
 // ── Future intrinsics ─────────────────────────────────────────────────────
@@ -1045,7 +1049,7 @@ fn raise_future_error(py: &PyToken<'_>, error_class: u64) -> u64 {
         dec_ref_bits(py, exception);
         return MoltObject::none().bits();
     }
-    let result = molt_raise(exception);
+    let result = molt_raise_attached_body(py, exception);
     dec_ref_bits(py, exception);
     result
 }
@@ -1075,7 +1079,7 @@ fn read_future(
     match outcome {
         FutureReadOutcome::Return(bits) => bits,
         FutureReadOutcome::Raise(bits) => {
-            let result = molt_raise(bits);
+            let result = molt_raise_attached_body(py, bits);
             dec_ref_bits(py, bits);
             result
         }
@@ -1084,14 +1088,14 @@ fn read_future(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_concurrent_future_result(
+pub(crate) fn molt_concurrent_future_result_attached_body(
+    _py: &crate::PyToken<'_>,
     handle_bits: u64,
     timeout_bits: u64,
     cancelled_error: u64,
     timeout_error: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         read_future(
             py,
             handle_bits,
@@ -1103,14 +1107,14 @@ pub extern "C" fn molt_concurrent_future_result(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_concurrent_future_exception(
+pub(crate) fn molt_concurrent_future_exception_attached_body(
+    _py: &crate::PyToken<'_>,
     handle_bits: u64,
     timeout_bits: u64,
     cancelled_error: u64,
     timeout_error: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         read_future(
             py,
             handle_bits,
@@ -1122,9 +1126,11 @@ pub extern "C" fn molt_concurrent_future_exception(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_concurrent_future_done(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_concurrent_future_done_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -1145,9 +1151,11 @@ pub extern "C" fn molt_concurrent_future_done(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_concurrent_future_cancelled(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_concurrent_future_cancelled_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -1168,9 +1176,11 @@ pub extern "C" fn molt_concurrent_future_cancelled(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_concurrent_future_cancel(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_concurrent_future_cancel_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -1212,9 +1222,11 @@ fn cancel_future(py: &PyToken<'_>, future: &SharedFuture, handle: u64) -> bool {
     true
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_concurrent_future_running(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_concurrent_future_running_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -1235,9 +1247,12 @@ pub extern "C" fn molt_concurrent_future_running(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_concurrent_future_add_done_callback(handle_bits: u64, fn_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_concurrent_future_add_done_callback_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    fn_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -1270,9 +1285,11 @@ pub extern "C" fn molt_concurrent_future_add_done_callback(handle_bits: u64, fn_
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_concurrent_future_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_concurrent_future_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Some(id) = to_i64(obj_from_bits(handle_bits)) {
             let future = future_registry(_py).lock().unwrap().remove(&id);
             if let Some(future) = future {
@@ -1285,9 +1302,12 @@ pub extern "C" fn molt_concurrent_future_drop(handle_bits: u64) -> u64 {
 
 // ── Module-level functions ────────────────────────────────────────────────
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_concurrent_as_completed(futures_bits: u64, timeout_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_concurrent_as_completed_attached_body(
+    _py: &crate::PyToken<'_>,
+    futures_bits: u64,
+    timeout_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // Collect future IDs from a list/tuple of handle bits.
         let futures_obj = obj_from_bits(futures_bits);
         let timeout = {
@@ -1375,13 +1395,13 @@ fn int_bits_from_i64_raw(v: i64) -> u64 {
     MoltObject::from_int(v).bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_concurrent_wait(
+pub(crate) fn molt_concurrent_wait_attached_body(
+    _py: &crate::PyToken<'_>,
     futures_bits: u64,
     timeout_bits: u64,
     return_when_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let futures_obj = obj_from_bits(futures_bits);
         let timeout = {
             let obj = obj_from_bits(timeout_bits);
@@ -1555,15 +1575,31 @@ mod tests {
         MoltObject::from_ptr(ptr).bits()
     }
 
-    extern "C" fn retained_argument(bits: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn retained_argument(__context: u64, bits: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             inc_ref_bits(py, bits);
             bits
-        })
+        }
     }
 
-    extern "C" fn blocked_argument(bits: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn blocked_argument(__context: u64, bits: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             DEMAND_STARTED.fetch_add(1, Ordering::AcqRel);
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             while !DEMAND_RELEASE.load(Ordering::Acquire) {
@@ -1577,21 +1613,31 @@ mod tests {
                 let _release = GilReleaseGuard::suspend();
                 thread::yield_now();
             }
-            retained_argument(bits)
-        })
+            retained_argument(__context, bits)
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    extern "C" fn nested_submit_callback(_bits: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn nested_submit_callback(__context: u64, _bits: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             let pool_id = CALLBACK_POOL.load(Ordering::Acquire);
             let callable = native_callable(py, retained_argument as *const ());
-            let future = molt_concurrent_threadpool_submit(
+            let future = molt_concurrent_threadpool_submit_attached_body(
+                py,
                 MoltObject::from_int(pool_id).bits(),
                 callable,
                 MoltObject::from_int(7).bits(),
             );
-            let result = molt_concurrent_future_result(
+            let result = molt_concurrent_future_result_attached_body(
+                py,
                 future,
                 MoltObject::from_float(5.0).bits(),
                 builtin_classes(py).exception,
@@ -1607,14 +1653,22 @@ mod tests {
                 clear_exception(py);
             }
             dec_ref_bits(py, result);
-            molt_concurrent_future_drop(future);
+            molt_concurrent_future_drop_attached_body(py, future);
             dec_ref_bits(py, callable);
             MoltObject::none().bits()
-        })
+        }
     }
 
-    extern "C" fn limit_greater_than(_limit: u64, count: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn limit_greater_than(__context: u64, _limit: u64, count: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             LIMIT_CALLS.fetch_add(1, Ordering::AcqRel);
             match LIMIT_BEHAVIOR.load(Ordering::Acquire) {
                 1 => {
@@ -1623,7 +1677,10 @@ mod tests {
                         BuiltinExc::LookupError,
                         "original limit comparison failure",
                     );
-                    LIMIT_ERROR.store(molt_exception_last_pending(), Ordering::Release);
+                    LIMIT_ERROR.store(
+                        molt_exception_last_pending_attached_body(py),
+                        Ordering::Release,
+                    );
                     return result;
                 }
                 2 => {
@@ -1634,7 +1691,8 @@ mod tests {
                     });
                     // This waits for another real pool and releases the GIL while
                     // retaining only this executor's callback-bearing gate.
-                    molt_concurrent_threadpool_shutdown(
+                    molt_concurrent_threadpool_shutdown_attached_body(
+                        py,
                         MoltObject::from_int(LIMIT_OTHER_POOL.load(Ordering::Acquire)).bits(),
                         MoltObject::from_bool(true).bits(),
                         MoltObject::none().bits(),
@@ -1647,25 +1705,34 @@ mod tests {
             }
             MoltObject::from_bool(to_i64(obj_from_bits(count)).is_some_and(|count| count < 4))
                 .bits()
-        })
+        }
     }
 
-    extern "C" fn limit_destructor_creates_pool(_limit: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(_py, {
-            let handle = molt_concurrent_threadpool_new(MoltObject::from_int(1).bits());
+    extern "C" fn limit_destructor_creates_pool(__context: u64, _limit: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let _py = __py;
+            let handle =
+                molt_concurrent_threadpool_new_attached_body(_py, MoltObject::from_int(1).bits());
             LIMIT_CREATED_POOL.store(
                 to_i64(obj_from_bits(handle)).unwrap_or(-1),
                 Ordering::Release,
             );
             MoltObject::none().bits()
-        })
+        }
     }
 
     fn dynamic_limit(py: &PyToken<'_>, create_on_drop: bool) -> (u64, u64) {
         let name = dynamic_attr_name_bits(py, b"ExecutorLimitContract").unwrap();
-        let class = molt_class_new(name);
+        let class = molt_class_new_attached_body(py, name);
         dec_ref_bits(py, name);
-        molt_class_set_base(class, builtin_classes(py).object);
+        molt_class_set_base_attached_body(py, class, builtin_classes(py).object);
         let mut methods = vec![(b"__gt__".as_slice(), limit_greater_than as *const (), 2)];
         if create_on_drop {
             methods.push((
@@ -1683,7 +1750,7 @@ mod tests {
             );
             assert!(!function.is_null());
             let function = MoltObject::from_ptr(function).bits();
-            molt_set_attr_name(class, name, function);
+            molt_set_attr_name_attached_body(py, class, name, function);
             dec_ref_bits(py, name);
             dec_ref_bits(py, function);
         }
@@ -1703,37 +1770,59 @@ mod tests {
         (class, value)
     }
 
-    extern "C" fn reentrant_argument(bits: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn reentrant_argument(__context: u64, bits: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             let id = REENTRANT_FUTURE.load(Ordering::Acquire);
             if let Some(future) = get_future(py, id) {
                 // Fail observably instead of hanging the test on the old
                 // dispatch-with-future-lock-held implementation.
                 let unlocked = future.try_lock().is_ok();
                 if unlocked {
-                    let running = molt_concurrent_future_running(MoltObject::from_int(id).bits());
+                    let running = molt_concurrent_future_running_attached_body(
+                        py,
+                        MoltObject::from_int(id).bits(),
+                    );
                     REENTRANT_DISPATCH_OK.store(
                         running == MoltObject::from_bool(true).bits(),
                         Ordering::Release,
                     );
                 }
             }
-            retained_argument(bits)
-        })
+            retained_argument(__context, bits)
+        }
     }
 
-    extern "C" fn reentrant_done_callback(_callable_bits: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn reentrant_done_callback(__context: u64, _callable_bits: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             // A completed future callback is still running on its pool worker.
             // The canonical poll must preserve self-join refusal and custody.
-            crate::molt_async_work_poll_and_exception_pending();
+            crate::builtins::exceptions::molt_async_work_poll_and_exception_pending_attached_body(
+                py,
+            );
             let id = REENTRANT_FUTURE.load(Ordering::Acquire);
             if let Some(future) = get_future(py, id) {
                 let unlocked = future.try_lock().is_ok();
                 if unlocked {
                     let handle = MoltObject::from_int(id).bits();
-                    let done = molt_concurrent_future_done(handle);
-                    let result = molt_concurrent_future_result(
+                    let done = molt_concurrent_future_done_attached_body(py, handle);
+                    let result = molt_concurrent_future_result_attached_body(
+                        py,
                         handle,
                         MoltObject::none().bits(),
                         builtin_classes(py).exception,
@@ -1748,18 +1837,33 @@ mod tests {
             }
             CALLBACK_CALLS.fetch_add(1, Ordering::AcqRel);
             MoltObject::none().bits()
-        })
+        }
     }
 
-    extern "C" fn owned_callback_result(callable_bits: u64) -> u64 {
+    extern "C" fn owned_callback_result(__context: u64, callable_bits: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         CALLBACK_CALLS.fetch_add(1, Ordering::AcqRel);
-        retained_argument(callable_bits)
+        retained_argument(__context, callable_bits)
     }
 
-    extern "C" fn worker_failure(_bits: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn worker_failure(__context: u64, _bits: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             raise_exception::<u64>(py, BuiltinExc::ValueError, "original worker failure")
-        })
+        }
     }
 
     #[test]
@@ -1768,18 +1872,24 @@ mod tests {
             crate::with_gil_entry_nopanic!(py, {
                 concurrent_clear_runtime_state(py, runtime_state(py));
                 let callable = native_callable(py, worker_failure as *const ());
-                let pool = molt_concurrent_threadpool_new(MoltObject::from_int(1).bits());
-                let future = molt_concurrent_threadpool_submit(
+                let pool = molt_concurrent_threadpool_new_attached_body(
+                    py,
+                    MoltObject::from_int(1).bits(),
+                );
+                let future = molt_concurrent_threadpool_submit_attached_body(
+                    py,
                     pool,
                     callable,
                     MoltObject::from_int(0).bits(),
                 );
-                molt_concurrent_threadpool_shutdown(
+                molt_concurrent_threadpool_shutdown_attached_body(
+                    py,
                     pool,
                     MoltObject::from_bool(true).bits(),
                     MoltObject::none().bits(),
                 );
-                let exception = molt_concurrent_future_exception(
+                let exception = molt_concurrent_future_exception_attached_body(
+                    py,
                     future,
                     MoltObject::none().bits(),
                     builtin_classes(py).exception,
@@ -1787,7 +1897,8 @@ mod tests {
                 );
                 assert!(!exception_pending(py));
                 let baseline = owner_count(exception);
-                let second = molt_concurrent_future_exception(
+                let second = molt_concurrent_future_exception_attached_body(
+                    py,
                     future,
                     MoltObject::none().bits(),
                     builtin_classes(py).exception,
@@ -1796,18 +1907,19 @@ mod tests {
                 assert_eq!(second, exception);
                 assert_eq!(owner_count(exception), baseline + 1);
                 dec_ref_bits(py, second);
-                molt_concurrent_future_result(
+                molt_concurrent_future_result_attached_body(
+                    py,
                     future,
                     MoltObject::none().bits(),
                     builtin_classes(py).exception,
                     builtin_classes(py).exception,
                 );
                 assert!(exception_pending(py));
-                let pending = molt_exception_last_pending();
+                let pending = molt_exception_last_pending_attached_body(py);
                 assert_eq!(pending, exception);
                 clear_exception(py);
                 dec_ref_bits(py, pending);
-                molt_concurrent_future_drop(future);
+                molt_concurrent_future_drop_attached_body(py, future);
                 // The caller still owns a live exception after its future is gone.
                 assert!(obj_from_bits(exception).as_ptr().is_some());
                 dec_ref_bits(py, exception);
@@ -1823,9 +1935,9 @@ mod tests {
             concurrent_clear_runtime_state(py, runtime_state(py));
             let new_error_class = |name: &[u8]| {
                 let name_bits = MoltObject::from_ptr(alloc_string(py, name)).bits();
-                let class = molt_class_new(name_bits);
+                let class = molt_class_new_attached_body(py, name_bits);
                 dec_ref_bits(py, name_bits);
-                molt_class_set_base(class, builtin_classes(py).exception);
+                molt_class_set_base_attached_body(py, class, builtin_classes(py).exception);
                 unsafe {
                     crate::object::class_finish_definition(
                         py,
@@ -1846,22 +1958,30 @@ mod tests {
                 .unwrap()
                 .insert(id, future.clone());
             let zero_timeout = MoltObject::from_int(0).bits();
-            let readers: [extern "C" fn(u64, u64, u64, u64) -> u64; 2] = [
+            let readers: [unsafe extern "C" fn(u64, u64, u64, u64, u64) -> u64; 2] = [
                 molt_concurrent_future_result,
                 molt_concurrent_future_exception,
             ];
             for cancelled in [false, true] {
                 if cancelled {
                     assert_eq!(
-                        molt_concurrent_future_cancel(handle),
+                        molt_concurrent_future_cancel_attached_body(py, handle),
                         MoltObject::from_bool(true).bits()
                     );
                 }
                 for read in readers {
-                    let result = read(handle, zero_timeout, cancelled_error, timeout_error);
+                    let result = unsafe {
+                        read(
+                            py.attached_context(),
+                            handle,
+                            zero_timeout,
+                            cancelled_error,
+                            timeout_error,
+                        )
+                    };
                     assert_eq!(result, MoltObject::none().bits());
                     assert!(exception_pending(py));
-                    let pending = molt_exception_last_pending();
+                    let pending = molt_exception_last_pending_attached_body(py);
                     let pending_ptr = obj_from_bits(pending).as_ptr().unwrap();
                     assert_eq!(
                         unsafe { object_class_bits(pending_ptr) },
@@ -1893,7 +2013,7 @@ mod tests {
                     assert_eq!(future.lock().unwrap().is_done(), cancelled);
                 }
             }
-            molt_concurrent_future_drop(handle);
+            molt_concurrent_future_drop_attached_body(py, handle);
             dec_ref_bits(py, cancelled_error);
             dec_ref_bits(py, timeout_error);
         });
@@ -1907,33 +2027,38 @@ mod tests {
                 CALLBACK_CALLS.store(0, Ordering::Release);
                 let callable = native_callable(py, retained_argument as *const ());
                 let callback = native_callable(py, owned_callback_result as *const ());
-                let pool = molt_concurrent_threadpool_new(MoltObject::from_int(1).bits());
-                let future = molt_concurrent_threadpool_submit(
+                let pool = molt_concurrent_threadpool_new_attached_body(
+                    py,
+                    MoltObject::from_int(1).bits(),
+                );
+                let future = molt_concurrent_threadpool_submit_attached_body(
+                    py,
                     pool,
                     callable,
                     MoltObject::from_int(7).bits(),
                 );
-                molt_concurrent_future_add_done_callback(future, callback);
+                molt_concurrent_future_add_done_callback_attached_body(py, future, callback);
                 assert_eq!(
-                    molt_concurrent_future_cancel(future),
+                    molt_concurrent_future_cancel_attached_body(py, future),
                     MoltObject::from_bool(true).bits()
                 );
                 assert_eq!(CALLBACK_CALLS.load(Ordering::Acquire), 1);
                 assert_eq!(
-                    molt_concurrent_future_cancel(future),
+                    molt_concurrent_future_cancel_attached_body(py, future),
                     MoltObject::from_bool(true).bits()
                 );
-                molt_concurrent_threadpool_shutdown(
+                molt_concurrent_threadpool_shutdown_attached_body(
+                    py,
                     pool,
                     MoltObject::from_bool(true).bits(),
                     MoltObject::from_bool(true).bits(),
                 );
                 assert_eq!(CALLBACK_CALLS.load(Ordering::Acquire), 1);
                 assert_eq!(
-                    molt_concurrent_future_cancelled(future),
+                    molt_concurrent_future_cancelled_attached_body(py, future),
                     MoltObject::from_bool(true).bits()
                 );
-                molt_concurrent_future_drop(future);
+                molt_concurrent_future_drop_attached_body(py, future);
                 dec_ref_bits(py, callable);
                 dec_ref_bits(py, callback);
             });
@@ -1948,9 +2073,14 @@ mod tests {
                 let callable = native_callable(py, retained_argument as *const ());
                 let payload = MoltObject::from_ptr(alloc_list(py, &[])).bits();
                 let baseline = owner_count(payload);
-                let pool = molt_concurrent_threadpool_new(MoltObject::from_int(1).bits());
-                let future = molt_concurrent_threadpool_submit(pool, callable, payload);
-                molt_concurrent_threadpool_shutdown(
+                let pool = molt_concurrent_threadpool_new_attached_body(
+                    py,
+                    MoltObject::from_int(1).bits(),
+                );
+                let future =
+                    molt_concurrent_threadpool_submit_attached_body(py, pool, callable, payload);
+                molt_concurrent_threadpool_shutdown_attached_body(
+                    py,
                     pool,
                     MoltObject::from_bool(true).bits(),
                     MoltObject::none().bits(),
@@ -1961,7 +2091,8 @@ mod tests {
                     baseline + 1,
                     "completed future owns its result"
                 );
-                let exception = molt_concurrent_future_exception(
+                let exception = molt_concurrent_future_exception_attached_body(
+                    py,
                     future,
                     MoltObject::none().bits(),
                     builtin_classes(py).exception,
@@ -1974,13 +2105,15 @@ mod tests {
                     baseline + 1,
                     "exception() does not retain a successful result"
                 );
-                let first = molt_concurrent_future_result(
+                let first = molt_concurrent_future_result_attached_body(
+                    py,
                     future,
                     MoltObject::none().bits(),
                     builtin_classes(py).exception,
                     builtin_classes(py).exception,
                 );
-                let second = molt_concurrent_future_result(
+                let second = molt_concurrent_future_result_attached_body(
+                    py,
                     future,
                     MoltObject::none().bits(),
                     builtin_classes(py).exception,
@@ -1990,7 +2123,7 @@ mod tests {
                 assert_eq!(owner_count(payload), baseline + 3);
                 dec_ref_bits(py, first);
                 assert_eq!(owner_count(payload), baseline + 2);
-                molt_concurrent_future_drop(future);
+                molt_concurrent_future_drop_attached_body(py, future);
                 assert_eq!(
                     owner_count(payload),
                     baseline + 1,
@@ -2018,14 +2151,19 @@ mod tests {
                 let callable_base = owner_count(callable);
                 let callback_base = owner_count(callback);
                 let payload_base = owner_count(payload);
-                let pool = molt_concurrent_threadpool_new(MoltObject::from_int(1).bits());
-                let future = molt_concurrent_threadpool_submit(pool, callable, payload);
+                let pool = molt_concurrent_threadpool_new_attached_body(
+                    py,
+                    MoltObject::from_int(1).bits(),
+                );
+                let future =
+                    molt_concurrent_threadpool_submit_attached_body(py, pool, callable, payload);
                 REENTRANT_FUTURE.store(to_i64(obj_from_bits(future)).unwrap(), Ordering::Release);
-                molt_concurrent_future_add_done_callback(future, callback);
+                molt_concurrent_future_add_done_callback_attached_body(py, future, callback);
                 assert_eq!(owner_count(callable), callable_base + 1);
                 assert_eq!(owner_count(payload), payload_base + 1);
                 assert_eq!(owner_count(callback), callback_base + 1);
-                molt_concurrent_threadpool_shutdown(
+                molt_concurrent_threadpool_shutdown_attached_body(
+                    py,
                     pool,
                     MoltObject::from_bool(true).bits(),
                     MoltObject::none().bits(),
@@ -2036,7 +2174,7 @@ mod tests {
                 assert_eq!(owner_count(callable), callable_base);
                 assert_eq!(owner_count(callback), callback_base);
                 assert_eq!(owner_count(payload), payload_base + 1);
-                molt_concurrent_future_drop(future);
+                molt_concurrent_future_drop_attached_body(py, future);
                 assert_eq!(owner_count(payload), payload_base);
                 for bits in [callable, callback, payload] {
                     dec_ref_bits(py, bits);
@@ -2058,7 +2196,10 @@ mod tests {
                 std::thread::yield_now();
             }
             // Exercise the actual generated-code safepoint consumer.
-            assert_eq!(crate::molt_async_work_poll_and_exception_pending(), 0);
+            assert_eq!(
+                crate::builtins::exceptions::molt_async_work_poll_and_exception_pending_attached_body(py),
+                0
+            );
             assert!(!exception_pending(py));
         }
     }
@@ -2072,7 +2213,7 @@ mod tests {
                 LIMIT_CALLS.store(0, Ordering::Release);
                 let (class, limit) = dynamic_limit(py, false);
                 let baseline = owner_count(limit);
-                let handle = molt_concurrent_threadpool_new(limit);
+                let handle = molt_concurrent_threadpool_new_attached_body(py, limit);
                 let pool = state_pool_for_test(py, to_i64(obj_from_bits(handle)).unwrap());
                 assert_eq!(
                     LIMIT_CALLS.load(Ordering::Acquire),
@@ -2082,9 +2223,14 @@ mod tests {
                 assert_eq!(owner_count(limit), baseline + 1);
                 let callable = native_callable(py, retained_argument as *const ());
                 let failed_id = concurrent_state(py).next_future_id.load(Ordering::Relaxed);
-                molt_concurrent_threadpool_submit(handle, callable, MoltObject::from_int(7).bits());
+                molt_concurrent_threadpool_submit_attached_body(
+                    py,
+                    handle,
+                    callable,
+                    MoltObject::from_int(7).bits(),
+                );
                 assert!(exception_pending(py));
-                let error = molt_exception_last_pending();
+                let error = molt_exception_last_pending_attached_body(py);
                 let original = LIMIT_ERROR.swap(0, Ordering::AcqRel);
                 assert_eq!(error, original);
                 assert_eq!(class_name_for_error(type_of_bits(py, error)), "LookupError");
@@ -2095,12 +2241,14 @@ mod tests {
                 assert_eq!(pool.unfinished.load(Ordering::Relaxed), 1);
                 assert_eq!(pool.workers.count(), 0);
                 LIMIT_BEHAVIOR.store(0, Ordering::Release);
-                let future = molt_concurrent_threadpool_submit(
+                let future = molt_concurrent_threadpool_submit_attached_body(
+                    py,
                     handle,
                     callable,
                     MoltObject::from_int(9).bits(),
                 );
-                molt_concurrent_threadpool_shutdown(
+                molt_concurrent_threadpool_shutdown_attached_body(
+                    py,
                     handle,
                     MoltObject::from_bool(true).bits(),
                     MoltObject::none().bits(),
@@ -2109,13 +2257,15 @@ mod tests {
                 assert_eq!(pool.unfinished.load(Ordering::Relaxed), 0);
                 assert!(pool.pending.lock().unwrap().is_empty());
                 assert_eq!(owner_count(limit), baseline);
-                molt_concurrent_threadpool_shutdown(
+                molt_concurrent_threadpool_shutdown_attached_body(
+                    py,
                     handle,
                     MoltObject::from_bool(true).bits(),
                     MoltObject::none().bits(),
                 );
                 assert_eq!(owner_count(limit), baseline);
-                let result = molt_concurrent_future_result(
+                let result = molt_concurrent_future_result_attached_body(
+                    py,
                     future,
                     MoltObject::none().bits(),
                     builtin_classes(py).exception,
@@ -2123,7 +2273,7 @@ mod tests {
                 );
                 assert_eq!(to_i64(obj_from_bits(result)), Some(9));
                 dec_ref_bits(py, result);
-                molt_concurrent_future_drop(future);
+                molt_concurrent_future_drop_attached_body(py, future);
                 for bits in [callable, limit, class] {
                     dec_ref_bits(py, bits);
                 }
@@ -2139,16 +2289,20 @@ mod tests {
             crate::with_gil_entry_nopanic!(py, {
                 LIMIT_BEHAVIOR.store(2, Ordering::Release);
                 DEMAND_RELEASE.store(false, Ordering::Release);
-                let other = molt_concurrent_threadpool_new(MoltObject::from_int(1).bits());
+                let other = molt_concurrent_threadpool_new_attached_body(
+                    py,
+                    MoltObject::from_int(1).bits(),
+                );
                 LIMIT_OTHER_POOL.store(to_i64(obj_from_bits(other)).unwrap(), Ordering::Release);
                 let blocked = native_callable(py, blocked_argument as *const ());
-                let other_future = molt_concurrent_threadpool_submit(
+                let other_future = molt_concurrent_threadpool_submit_attached_body(
+                    py,
                     other,
                     blocked,
                     MoltObject::from_int(1).bits(),
                 );
                 let (class, limit) = dynamic_limit(py, false);
-                let primary = molt_concurrent_threadpool_new(limit);
+                let primary = molt_concurrent_threadpool_new_attached_body(py, limit);
                 let callable = native_callable(py, retained_argument as *const ());
                 let origin =
                     crate::state::runtime_state::RuntimeWorkerOrigin::new(runtime_state(py));
@@ -2157,7 +2311,8 @@ mod tests {
                     run_runtime_worker(origin, || {
                         crate::with_gil_entry_nopanic!(py, {
                             LIMIT_ENTERED.with(|slot| *slot.borrow_mut() = Some(entered_tx));
-                            let future = molt_concurrent_threadpool_submit(
+                            let future = molt_concurrent_threadpool_submit_attached_body(
+                                py,
                                 primary,
                                 callable,
                                 MoltObject::from_int(7).bits(),
@@ -2176,7 +2331,8 @@ mod tests {
                     run_runtime_worker(origin, || {
                         crate::with_gil_entry_nopanic!(py, {
                             SUBMISSION_WAITING.with(|slot| *slot.borrow_mut() = Some(waiting_tx));
-                            let future = molt_concurrent_threadpool_submit(
+                            let future = molt_concurrent_threadpool_submit_attached_body(
+                                py,
                                 primary,
                                 callable,
                                 MoltObject::from_int(7).bits(),
@@ -2197,14 +2353,16 @@ mod tests {
                     let _release = GilReleaseGuard::suspend();
                     [first.join().unwrap(), second.join().unwrap()]
                 };
-                molt_concurrent_threadpool_shutdown(
+                molt_concurrent_threadpool_shutdown_attached_body(
+                    py,
                     primary,
                     MoltObject::from_bool(true).bits(),
                     MoltObject::none().bits(),
                 );
                 assert!(!exception_pending(py));
                 for future in futures {
-                    let result = molt_concurrent_future_result(
+                    let result = molt_concurrent_future_result_attached_body(
+                        py,
                         future,
                         MoltObject::none().bits(),
                         builtin_classes(py).exception,
@@ -2212,9 +2370,9 @@ mod tests {
                     );
                     assert_eq!(to_i64(obj_from_bits(result)), Some(7));
                     dec_ref_bits(py, result);
-                    molt_concurrent_future_drop(future);
+                    molt_concurrent_future_drop_attached_body(py, future);
                 }
-                molt_concurrent_future_drop(other_future);
+                molt_concurrent_future_drop_attached_body(py, other_future);
                 for bits in [blocked, callable, limit, class] {
                     dec_ref_bits(py, bits);
                 }
@@ -2231,7 +2389,7 @@ mod tests {
             crate::with_gil_entry_nopanic!(py, {
                 LIMIT_CREATED_POOL.store(0, Ordering::Release);
                 let (class, limit) = dynamic_limit(py, true);
-                let old = molt_concurrent_threadpool_new(limit);
+                let old = molt_concurrent_threadpool_new_attached_body(py, limit);
                 dec_ref_bits(py, limit); // Pool is now the sole limit owner.
                 assert!(concurrent_clear_runtime_state(py, runtime_state(py)));
                 let replacement = LIMIT_CREATED_POOL.load(Ordering::Acquire);
@@ -2265,7 +2423,7 @@ mod tests {
                     (MoltObject::from_float(f64::INFINITY).bits(), usize::MAX),
                     (nan, 0),
                 ] {
-                    let handle = molt_concurrent_threadpool_new(limit);
+                    let handle = molt_concurrent_threadpool_new_attached_body(py, limit);
                     assert!(!exception_pending(py));
                     let pool = state_pool_for_test(py, to_i64(obj_from_bits(handle)).unwrap());
                     assert!(matches!(pool.limit, WorkerLimit::Native(value) if value == expected));
@@ -2274,21 +2432,23 @@ mod tests {
                         0,
                         "unused capacity started native workers"
                     );
-                    molt_concurrent_threadpool_shutdown(
+                    molt_concurrent_threadpool_shutdown_attached_body(
+                        py,
                         handle,
                         MoltObject::from_bool(true).bits(),
                         MoltObject::none().bits(),
                     );
                 }
-                let handle = molt_concurrent_threadpool_new(nan);
+                let handle = molt_concurrent_threadpool_new_attached_body(py, nan);
                 let callable = native_callable(py, retained_argument as *const ());
-                let future = molt_concurrent_threadpool_submit(
+                let future = molt_concurrent_threadpool_submit_attached_body(
+                    py,
                     handle,
                     callable,
                     MoltObject::from_int(1).bits(),
                 );
                 assert_eq!(
-                    molt_concurrent_future_done(future),
+                    molt_concurrent_future_done_attached_body(py, future),
                     MoltObject::from_bool(false).bits()
                 );
                 assert_eq!(
@@ -2297,33 +2457,42 @@ mod tests {
                         .count(),
                     0
                 );
-                molt_concurrent_threadpool_shutdown(
+                molt_concurrent_threadpool_shutdown_attached_body(
+                    py,
                     handle,
                     MoltObject::from_bool(true).bits(),
                     MoltObject::from_bool(true).bits(),
                 );
                 assert_eq!(
-                    molt_concurrent_future_cancelled(future),
+                    molt_concurrent_future_cancelled_attached_body(py, future),
                     MoltObject::from_bool(true).bits()
                 );
-                molt_concurrent_future_drop(future);
+                molt_concurrent_future_drop_attached_body(py, future);
                 dec_ref_bits(py, callable);
                 dec_ref_bits(py, nan);
                 dec_ref_bits(py, huge);
                 for value in [0, -1] {
-                    molt_concurrent_threadpool_new(MoltObject::from_int(value).bits());
+                    molt_concurrent_threadpool_new_attached_body(
+                        py,
+                        MoltObject::from_int(value).bits(),
+                    );
                     assert_pending_class(py, "ValueError");
                 }
-                let handle = molt_concurrent_threadpool_new(MoltObject::from_int(4).bits());
+                let handle = molt_concurrent_threadpool_new_attached_body(
+                    py,
+                    MoltObject::from_int(4).bits(),
+                );
                 let pool = state_pool_for_test(py, to_i64(obj_from_bits(handle)).unwrap());
                 let callable = native_callable(py, retained_argument as *const ());
                 for _ in 0..3 {
-                    let future = molt_concurrent_threadpool_submit(
+                    let future = molt_concurrent_threadpool_submit_attached_body(
+                        py,
                         handle,
                         callable,
                         MoltObject::from_int(7).bits(),
                     );
-                    let result = molt_concurrent_future_result(
+                    let result = molt_concurrent_future_result_attached_body(
+                        py,
                         future,
                         MoltObject::none().bits(),
                         builtin_classes(py).exception,
@@ -2331,7 +2500,7 @@ mod tests {
                     );
                     assert_eq!(to_i64(obj_from_bits(result)), Some(7));
                     dec_ref_bits(py, result);
-                    molt_concurrent_future_drop(future);
+                    molt_concurrent_future_drop_attached_body(py, future);
                     // Completion notification precedes callbacks/cleanup. Wait for
                     // the actual owner boundary before asserting idle reuse.
                     poll_until(py, || pool.unfinished.load(Ordering::Relaxed) == 0);
@@ -2343,7 +2512,8 @@ mod tests {
                 let callable = native_callable(py, blocked_argument as *const ());
                 let futures: Vec<_> = (0..8)
                     .map(|_| {
-                        molt_concurrent_threadpool_submit(
+                        molt_concurrent_threadpool_submit_attached_body(
+                            py,
                             handle,
                             callable,
                             MoltObject::from_int(9).bits(),
@@ -2358,7 +2528,8 @@ mod tests {
                 assert_eq!(pool.unfinished.load(Ordering::Relaxed), 8);
                 poll_until(py, || DEMAND_STARTED.load(Ordering::Acquire) == 4);
                 DEMAND_RELEASE.store(true, Ordering::Release);
-                molt_concurrent_threadpool_shutdown(
+                molt_concurrent_threadpool_shutdown_attached_body(
+                    py,
                     handle,
                     MoltObject::from_bool(true).bits(),
                     MoltObject::none().bits(),
@@ -2367,7 +2538,8 @@ mod tests {
                 assert_eq!(DEMAND_STARTED.load(Ordering::Acquire), 8);
                 assert_eq!(pool.unfinished.load(Ordering::Relaxed), 0);
                 for future in futures {
-                    let result = molt_concurrent_future_result(
+                    let result = molt_concurrent_future_result_attached_body(
+                        py,
                         future,
                         MoltObject::none().bits(),
                         builtin_classes(py).exception,
@@ -2375,7 +2547,7 @@ mod tests {
                     );
                     assert_eq!(to_i64(obj_from_bits(result)), Some(9));
                     dec_ref_bits(py, result);
-                    molt_concurrent_future_drop(future);
+                    molt_concurrent_future_drop_attached_body(py, future);
                 }
                 dec_ref_bits(py, callable);
             });
@@ -2384,7 +2556,7 @@ mod tests {
 
     fn assert_pending_class(py: &PyToken<'_>, name: &str) {
         assert!(exception_pending(py));
-        let error = molt_exception_last_pending();
+        let error = molt_exception_last_pending_attached_body(py);
         assert_eq!(class_name_for_error(type_of_bits(py, error)), name);
         clear_exception(py);
         dec_ref_bits(py, error);
@@ -2412,7 +2584,10 @@ mod tests {
                     ] {
                         DEMAND_RELEASE.store(false, Ordering::Release);
                         DEMAND_STARTED.store(0, Ordering::Release);
-                        let handle = molt_concurrent_threadpool_new(MoltObject::from_int(2).bits());
+                        let handle = molt_concurrent_threadpool_new_attached_body(
+                            py,
+                            MoltObject::from_int(2).bits(),
+                        );
                         let pool = state_pool_for_test(py, to_i64(obj_from_bits(handle)).unwrap());
                         let callable = native_callable(py, blocked_argument as *const ());
                         let payload =
@@ -2421,12 +2596,15 @@ mod tests {
                         let payload_base = owner_count(payload);
                         let mut returned = Vec::new();
                         for _ in 0..existing {
-                            returned
-                                .push(molt_concurrent_threadpool_submit(handle, callable, payload));
+                            returned.push(molt_concurrent_threadpool_submit_attached_body(
+                                py, handle, callable, payload,
+                            ));
                         }
                         let failed_id = concurrent_state(py).next_future_id.load(Ordering::Relaxed);
                         with_service_spawn_failure_for_test(kind, || {
-                            molt_concurrent_threadpool_submit(handle, callable, payload)
+                            molt_concurrent_threadpool_submit_attached_body(
+                                py, handle, callable, payload,
+                            )
                         });
                         assert_pending_class(py, "RuntimeError");
                         assert!(!pool.shutdown.load(Ordering::Acquire));
@@ -2442,8 +2620,9 @@ mod tests {
                         assert_eq!(owner_count(callable), callable_base + existing as u32 + 1);
                         assert_eq!(owner_count(payload), payload_base + existing as u32 + 1);
                         if retry {
-                            returned
-                                .push(molt_concurrent_threadpool_submit(handle, callable, payload));
+                            returned.push(molt_concurrent_threadpool_submit_attached_body(
+                                py, handle, callable, payload,
+                            ));
                             assert!(
                                 !exception_pending(py),
                                 "transient failure poisoned later startup"
@@ -2451,7 +2630,8 @@ mod tests {
                             assert_eq!(pool.workers.count(), existing + 1);
                         }
                         DEMAND_RELEASE.store(true, Ordering::Release);
-                        molt_concurrent_threadpool_shutdown(
+                        molt_concurrent_threadpool_shutdown_attached_body(
+                            py,
                             handle,
                             MoltObject::from_bool(wait).bits(),
                             MoltObject::from_bool(cancel).bits(),
@@ -2463,7 +2643,8 @@ mod tests {
                             if retry { existing + 2 } else { 0 }
                         );
                         for future in returned {
-                            let result = molt_concurrent_future_result(
+                            let result = molt_concurrent_future_result_attached_body(
+                                py,
                                 future,
                                 MoltObject::none().bits(),
                                 builtin_classes(py).exception,
@@ -2471,7 +2652,7 @@ mod tests {
                             );
                             assert_eq!(result, payload);
                             dec_ref_bits(py, result);
-                            molt_concurrent_future_drop(future);
+                            molt_concurrent_future_drop_attached_body(py, future);
                         }
                         assert!(
                             failed.upgrade().is_none(),
@@ -2496,27 +2677,32 @@ mod tests {
             crate::with_gil_entry_nopanic!(py, {
                 NESTED_CALLBACK_OK.store(false, Ordering::Release);
                 DEMAND_RELEASE.store(false, Ordering::Release);
-                let handle = molt_concurrent_threadpool_new(MoltObject::from_int(2).bits());
+                let handle = molt_concurrent_threadpool_new_attached_body(
+                    py,
+                    MoltObject::from_int(2).bits(),
+                );
                 let id = to_i64(obj_from_bits(handle)).unwrap();
                 CALLBACK_POOL.store(id, Ordering::Release);
                 let pool = state_pool_for_test(py, id);
                 let callable = native_callable(py, blocked_argument as *const ());
                 let callback = native_callable(py, nested_submit_callback as *const ());
-                let future = molt_concurrent_threadpool_submit(
+                let future = molt_concurrent_threadpool_submit_attached_body(
+                    py,
                     handle,
                     callable,
                     MoltObject::from_int(3).bits(),
                 );
-                molt_concurrent_future_add_done_callback(future, callback);
+                molt_concurrent_future_add_done_callback_attached_body(py, future, callback);
                 DEMAND_RELEASE.store(true, Ordering::Release);
                 poll_until(py, || pool.unfinished.load(Ordering::Relaxed) == 0);
                 assert!(NESTED_CALLBACK_OK.load(Ordering::Acquire));
-                molt_concurrent_threadpool_shutdown(
+                molt_concurrent_threadpool_shutdown_attached_body(
+                    py,
                     handle,
                     MoltObject::from_bool(true).bits(),
                     MoltObject::none().bits(),
                 );
-                molt_concurrent_future_drop(future);
+                molt_concurrent_future_drop_attached_body(py, future);
                 dec_ref_bits(py, callable);
                 dec_ref_bits(py, callback);
             });
@@ -2536,12 +2722,16 @@ mod tests {
                     DEMAND_RELEASE.store(false, Ordering::Release);
                     // Actual demand creates 33 workers, exceeding the old two
                     // cold polls' 16-record budget. No capacity-only fixture.
-                    let handle = molt_concurrent_threadpool_new(MoltObject::from_int(33).bits());
+                    let handle = molt_concurrent_threadpool_new_attached_body(
+                        py,
+                        MoltObject::from_int(33).bits(),
+                    );
                     let id = to_i64(obj_from_bits(handle)).unwrap();
                     let pool = state_pool_for_test(py, id);
                     let futures: Vec<_> = (0..33)
                         .map(|_| {
-                            molt_concurrent_threadpool_submit(
+                            molt_concurrent_threadpool_submit_attached_body(
+                                py,
                                 handle,
                                 callable,
                                 MoltObject::from_int(1).bits(),
@@ -2558,11 +2748,12 @@ mod tests {
                     }
                     assert_eq!(state.pools.lock().unwrap().len(), baseline + 1);
                     for future in futures {
-                        molt_concurrent_future_drop(future);
+                        molt_concurrent_future_drop_attached_body(py, future);
                     }
                     DEMAND_RELEASE.store(true, Ordering::Release);
                     if cycle == 24 {
-                        molt_concurrent_threadpool_shutdown(
+                        molt_concurrent_threadpool_shutdown_attached_body(
+                            py,
                             handle,
                             MoltObject::from_bool(true).bits(),
                             MoltObject::none().bits(),
@@ -2570,7 +2761,7 @@ mod tests {
                         break;
                     }
                     previous = Some(Arc::downgrade(&pool));
-                    molt_concurrent_threadpool_drop(handle);
+                    molt_concurrent_threadpool_drop_attached_body(py, handle);
                     // No cleanup polls: subsequent public creation/submission
                     // must repay the previous completed native-handle debt.
                     let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -2633,11 +2824,15 @@ mod tests {
         };
         crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
             crate::with_gil_entry_nopanic!(py, {
-                let handle = molt_concurrent_threadpool_new(MoltObject::from_int(1).bits());
+                let handle = molt_concurrent_threadpool_new_attached_body(
+                    py,
+                    MoltObject::from_int(1).bits(),
+                );
                 let id = to_i64(obj_from_bits(handle)).unwrap();
                 let pool = state_pool_for_test(py, id);
                 let callable = native_callable(py, retained_argument as *const ());
-                let future = molt_concurrent_threadpool_submit(
+                let future = molt_concurrent_threadpool_submit_attached_body(
+                    py,
                     handle,
                     callable,
                     MoltObject::from_int(7).bits(),
@@ -2660,7 +2855,7 @@ mod tests {
                         let deadline = std::time::Instant::now() + Duration::from_secs(5);
                         loop {
                             let done = crate::with_gil_entry_nopanic!(py, {
-                                crate::molt_async_work_poll_and_exception_pending();
+                                crate::builtins::exceptions::molt_async_work_poll_and_exception_pending_attached_body(py);
                                 !pool_registry(py).lock().unwrap().contains_key(&id)
                             });
                             if done {
@@ -2688,7 +2883,8 @@ mod tests {
                         waiting.is_ok()
                     })
                 });
-                molt_concurrent_threadpool_shutdown(
+                molt_concurrent_threadpool_shutdown_attached_body(
+                    py,
                     handle,
                     MoltObject::from_bool(true).bits(),
                     MoltObject::none().bits(),
@@ -2710,7 +2906,7 @@ mod tests {
                 assert!(!pool_registry(py).lock().unwrap().contains_key(&id));
                 assert!(pool.workers.join());
                 assert_eq!(pool.unfinished.load(Ordering::Relaxed), 0);
-                molt_concurrent_future_drop(future);
+                molt_concurrent_future_drop_attached_body(py, future);
                 dec_ref_bits(py, callable);
             });
         });
@@ -2732,7 +2928,8 @@ mod tests {
                 let (id, pool) = controlled_pool(py, move || {
                     let id = pool_rx.recv_timeout(Duration::from_secs(5)).unwrap();
                     crate::with_gil_entry_nopanic!(py, {
-                        molt_concurrent_threadpool_shutdown(
+                        molt_concurrent_threadpool_shutdown_attached_body(
+                            py,
                             MoltObject::from_int(id).bits(),
                             MoltObject::from_bool(true).bits(),
                             MoltObject::none().bits(),
@@ -2762,7 +2959,8 @@ mod tests {
                     refused.unwrap()
                 };
                 assert!(refused, "worker waited for its own extracted join handle");
-                molt_concurrent_threadpool_shutdown(
+                molt_concurrent_threadpool_shutdown_attached_body(
+                    py,
                     MoltObject::from_int(id).bits(),
                     MoltObject::from_bool(true).bits(),
                     MoltObject::none().bits(),
@@ -2786,9 +2984,12 @@ mod tests {
                 ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
                 let weak = Arc::downgrade(&pool);
                 drop(pool);
-                molt_concurrent_threadpool_drop(MoltObject::from_int(id).bits());
+                molt_concurrent_threadpool_drop_attached_body(py, MoltObject::from_int(id).bits());
                 for _ in 0..16 {
-                    assert_eq!(crate::molt_async_work_poll_and_exception_pending(), 0);
+                    assert_eq!(
+                        crate::builtins::exceptions::molt_async_work_poll_and_exception_pending_attached_body(py),
+                        0
+                    );
                 }
                 assert!(
                     weak.upgrade().is_some(),
@@ -2813,7 +3014,7 @@ mod tests {
                 });
                 let weak = Arc::downgrade(&pool);
                 drop(pool);
-                molt_concurrent_threadpool_drop(MoltObject::from_int(id).bits());
+                molt_concurrent_threadpool_drop_attached_body(py, MoltObject::from_int(id).bits());
                 let state = concurrent_state(py);
                 poll_until(py, || !state.stopped_pending.load(Ordering::Acquire));
                 assert!(
@@ -2822,7 +3023,10 @@ mod tests {
                 );
                 assert!(state.stopped.lock().unwrap().ids.is_empty());
                 for _ in 0..16 {
-                    assert_eq!(crate::molt_async_work_poll_and_exception_pending(), 0);
+                    assert_eq!(
+                        crate::builtins::exceptions::molt_async_work_poll_and_exception_pending_attached_body(py),
+                        0
+                    );
                 }
                 let retained = state.pools.lock().unwrap().get(&id).cloned().unwrap();
                 assert!(!retained.workers.join(), "failure was relabeled successful");
@@ -2843,17 +3047,25 @@ mod tests {
     static RETIRE_REENTRY_OK: AtomicBool = AtomicBool::new(false);
 
     #[cfg(not(target_arch = "wasm32"))]
-    extern "C" fn retirement_finalizer(_self: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn retirement_finalizer(__context: u64, _self: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             let state = concurrent_state(py);
             let unlocked = state.pools.try_lock().is_ok() && state.stopped.try_lock().is_ok();
             if unlocked {
-                let result = crate::molt_async_work_poll_and_exception_pending();
+                let result = crate::builtins::exceptions::molt_async_work_poll_and_exception_pending_attached_body(py);
                 RETIRE_REENTRY_OK.store(result == 0, Ordering::Release);
             }
             RETIRE_FINALIZERS.fetch_add(1, Ordering::AcqRel);
             MoltObject::none().bits()
-        })
+        }
     }
 
     #[test]
@@ -2864,37 +3076,45 @@ mod tests {
                 RETIRE_FINALIZERS.store(0, Ordering::Release);
                 RETIRE_REENTRY_OK.store(false, Ordering::Release);
                 let name = dynamic_attr_name_bits(py, b"ExecutorRetireReentry").unwrap();
-                let class = molt_class_new(name);
+                let class = molt_class_new_attached_body(py, name);
                 dec_ref_bits(py, name);
-                molt_class_set_base(class, builtin_classes(py).object);
+                molt_class_set_base_attached_body(py, class, builtin_classes(py).object);
                 let class_ptr = obj_from_bits(class).as_ptr().unwrap();
                 unsafe { crate::object::class_finish_definition(py, class_ptr) }.unwrap();
                 let method = native_callable(py, retirement_finalizer as *const ());
                 let key = dynamic_attr_name_bits(py, b"__del__").unwrap();
-                molt_set_attr_name(class, key, method);
+                molt_set_attr_name_attached_body(py, class, key, method);
                 dec_ref_bits(py, key);
                 dec_ref_bits(py, method);
                 let payload = unsafe { crate::alloc_instance_for_class(py, class_ptr) };
                 assert!(obj_from_bits(payload).as_ptr().is_some());
                 let callable = native_callable(py, retained_argument as *const ());
                 let baseline = owner_count(callable);
-                let handle = molt_concurrent_threadpool_new(MoltObject::from_int(1).bits());
+                let handle = molt_concurrent_threadpool_new_attached_body(
+                    py,
+                    MoltObject::from_int(1).bits(),
+                );
                 let id = to_i64(obj_from_bits(handle)).unwrap();
                 let pool = pool_registry(py).lock().unwrap().get(&id).cloned().unwrap();
                 let weak = Arc::downgrade(&pool);
                 for _ in 0..20 {
-                    let future = molt_concurrent_threadpool_submit(handle, callable, payload);
-                    molt_concurrent_future_drop(future);
+                    let future = molt_concurrent_threadpool_submit_attached_body(
+                        py, handle, callable, payload,
+                    );
+                    molt_concurrent_future_drop_attached_body(py, future);
                 }
                 dec_ref_bits(py, payload);
                 // Main still owns GIL, so no callable can have run. Closure
                 // returns the claimed item to the pool, then joins normally.
                 runtime_state(py).close_thread_borrow_admission();
-                molt_concurrent_threadpool_drop(handle);
+                molt_concurrent_threadpool_drop_attached_body(py, handle);
                 assert!(pool.workers.join());
                 drop(pool);
                 assert_eq!(RETIRE_FINALIZERS.load(Ordering::Acquire), 0);
-                assert_eq!(crate::molt_async_work_poll_and_exception_pending(), 0);
+                assert_eq!(
+                    crate::builtins::exceptions::molt_async_work_poll_and_exception_pending_attached_body(py),
+                    0
+                );
                 assert_eq!(
                     RETIRE_FINALIZERS.load(Ordering::Acquire),
                     0,
@@ -2928,16 +3148,21 @@ mod tests {
                         owner_count(callback),
                         owner_count(payload),
                     ];
-                    let pool = molt_concurrent_threadpool_new(MoltObject::from_int(1).bits());
+                    let pool = molt_concurrent_threadpool_new_attached_body(
+                        py,
+                        MoltObject::from_int(1).bits(),
+                    );
                     let id = to_i64(obj_from_bits(pool)).unwrap();
                     let weak =
                         Arc::downgrade(state.concurrent.pools.lock().unwrap().get(&id).unwrap());
-                    let future = molt_concurrent_threadpool_submit(pool, callable, payload);
-                    molt_concurrent_future_add_done_callback(future, callback);
-                    molt_concurrent_threadpool_drop(pool);
+                    let future = molt_concurrent_threadpool_submit_attached_body(
+                        py, pool, callable, payload,
+                    );
+                    molt_concurrent_future_add_done_callback_attached_body(py, future, callback);
+                    molt_concurrent_threadpool_drop_attached_body(py, pool);
                     // Future drop leaves the worker's pending callback owners
                     // intact; completion/reaping must retire them exactly once.
-                    molt_concurrent_future_drop(future);
+                    molt_concurrent_future_drop_attached_body(py, future);
                     if close_origin {
                         state.close_thread_borrow_admission();
                     }
@@ -2971,8 +3196,8 @@ mod tests {
                 concurrent_clear_runtime_state(_py, state);
 
                 let one_worker = MoltObject::from_int(1).bits();
-                let first_pool = molt_concurrent_threadpool_new(one_worker);
-                let second_pool = molt_concurrent_threadpool_new(one_worker);
+                let first_pool = molt_concurrent_threadpool_new_attached_body(_py, one_worker);
+                let second_pool = molt_concurrent_threadpool_new_attached_body(_py, one_worker);
                 let first_pool_id = to_i64(obj_from_bits(first_pool)).unwrap();
                 let second_pool_id = to_i64(obj_from_bits(second_pool)).unwrap();
                 assert_eq!(second_pool_id, first_pool_id + 1);
@@ -2999,7 +3224,7 @@ mod tests {
                     future_id + 1
                 );
 
-                let new_pool = molt_concurrent_threadpool_new(one_worker);
+                let new_pool = molt_concurrent_threadpool_new_attached_body(_py, one_worker);
                 assert_eq!(to_i64(obj_from_bits(new_pool)), Some(second_pool_id + 1));
                 assert_eq!(next_future_id(&state.concurrent), future_id + 1);
                 assert!(get_future(_py, future_id).is_none());
@@ -3013,7 +3238,9 @@ mod tests {
                 );
                 let true_bits = MoltObject::from_bool(true).bits();
                 let false_bits = MoltObject::from_bool(false).bits();
-                let _ = molt_concurrent_threadpool_shutdown(new_pool, true_bits, false_bits);
+                let _ = molt_concurrent_threadpool_shutdown_attached_body(
+                    _py, new_pool, true_bits, false_bits,
+                );
             });
         });
     }
@@ -3092,7 +3319,9 @@ mod tests {
                 assert!(pool_registry(py).lock().unwrap().is_empty());
                 let empty = measure("empty_public_async_safepoint", || {
                     assert_eq!(
-                        black_box(crate::molt_async_work_poll_and_exception_pending()),
+                        black_box(
+                            crate::builtins::exceptions::molt_async_work_poll_and_exception_pending_attached_body(py)
+                        ),
                         0
                     );
                 });
@@ -3102,11 +3331,13 @@ mod tests {
                 let yes = MoltObject::from_bool(true).bits();
                 let no = MoltObject::from_bool(false).bits();
                 let pool = measure("one_worker_pool_create_and_waiting_shutdown", || {
-                    let handle = black_box(molt_concurrent_threadpool_new(one));
+                    let handle = black_box(molt_concurrent_threadpool_new_attached_body(py, one));
                     assert!(to_i64(obj_from_bits(handle)).is_some_and(|id| id > 0));
                     assert!(!exception_pending(py));
                     assert_eq!(
-                        black_box(molt_concurrent_threadpool_shutdown(handle, yes, no)),
+                        black_box(molt_concurrent_threadpool_shutdown_attached_body(
+                            py, handle, yes, no
+                        )),
                         MoltObject::none().bits(),
                     );
                     assert!(!exception_pending(py));
@@ -3116,12 +3347,16 @@ mod tests {
                 let callable = native_callable(py, retained_argument as *const ());
                 let callable_base = owner_count(callable);
                 let active = measure("one_job_pool_create_submit_and_waiting_shutdown", || {
-                    let handle = black_box(molt_concurrent_threadpool_new(one));
-                    let future =
-                        black_box(molt_concurrent_threadpool_submit(handle, callable, one));
+                    let handle = black_box(molt_concurrent_threadpool_new_attached_body(py, one));
+                    let future = black_box(molt_concurrent_threadpool_submit_attached_body(
+                        py, handle, callable, one,
+                    ));
                     assert!(!exception_pending(py));
-                    black_box(molt_concurrent_threadpool_shutdown(handle, yes, no));
-                    let result = black_box(molt_concurrent_future_result(
+                    black_box(molt_concurrent_threadpool_shutdown_attached_body(
+                        py, handle, yes, no,
+                    ));
+                    let result = black_box(molt_concurrent_future_result_attached_body(
+                        py,
                         future,
                         MoltObject::none().bits(),
                         builtin_classes(py).exception,
@@ -3130,13 +3365,15 @@ mod tests {
                     assert_eq!(result, one);
                     assert!(!exception_pending(py));
                     dec_ref_bits(py, result);
-                    molt_concurrent_future_drop(future);
+                    molt_concurrent_future_drop_attached_body(py, future);
                 });
                 // Warm one actual worker once; this case measures the common
                 // submission/result path, excluding startup and waiting shutdown.
-                let steady_pool = molt_concurrent_threadpool_new(one);
-                let warm_future = molt_concurrent_threadpool_submit(steady_pool, callable, one);
-                let warm_result = molt_concurrent_future_result(
+                let steady_pool = molt_concurrent_threadpool_new_attached_body(py, one);
+                let warm_future =
+                    molt_concurrent_threadpool_submit_attached_body(py, steady_pool, callable, one);
+                let warm_result = molt_concurrent_future_result_attached_body(
+                    py,
                     warm_future,
                     MoltObject::none().bits(),
                     builtin_classes(py).exception,
@@ -3144,14 +3381,16 @@ mod tests {
                 );
                 assert_eq!(warm_result, one);
                 dec_ref_bits(py, warm_result);
-                molt_concurrent_future_drop(warm_future);
+                molt_concurrent_future_drop_attached_body(py, warm_future);
                 let steady = measure("one_worker_steady_submit_result_and_future_drop", || {
-                    let future = black_box(molt_concurrent_threadpool_submit(
+                    let future = black_box(molt_concurrent_threadpool_submit_attached_body(
+                        py,
                         steady_pool,
                         callable,
                         one,
                     ));
-                    let result = black_box(molt_concurrent_future_result(
+                    let result = black_box(molt_concurrent_future_result_attached_body(
+                        py,
                         future,
                         MoltObject::none().bits(),
                         builtin_classes(py).exception,
@@ -3160,9 +3399,9 @@ mod tests {
                     assert_eq!(result, one);
                     assert!(!exception_pending(py));
                     dec_ref_bits(py, result);
-                    molt_concurrent_future_drop(future);
+                    molt_concurrent_future_drop_attached_body(py, future);
                 });
-                molt_concurrent_threadpool_shutdown(steady_pool, yes, no);
+                molt_concurrent_threadpool_shutdown_attached_body(py, steady_pool, yes, no);
                 assert!(!exception_pending(py));
                 assert_eq!(owner_count(callable), callable_base);
                 dec_ref_bits(py, callable);
@@ -3188,3 +3427,5 @@ mod tests {
         });
     }
 }
+
+include!("../attached_exports_generated/builtins/concurrent.rs");

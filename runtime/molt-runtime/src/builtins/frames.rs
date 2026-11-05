@@ -29,9 +29,9 @@ pub(crate) use activation::{
     activation_locals_bits, empty_locals_bits,
 };
 #[cfg(test)]
-pub(crate) use activation::{molt_frame_cell_publish, molt_frame_locals_begin};
-#[cfg(test)]
-pub(crate) use bindings::molt_frame_homes;
+pub(crate) use activation::{
+    molt_frame_cell_publish_attached_body, molt_frame_locals_begin_attached_body,
+};
 pub(crate) use bindings::{
     FramePlan, FrameRelease, clear_frame_home_tls_storage, frame_argument_zero,
     frame_bindings_detach, frame_bindings_visit, touch_frame_home_tls_lifetime,
@@ -39,12 +39,22 @@ pub(crate) use bindings::{
 pub(crate) use locals_proxy::{
     frame_locals_proxy_detach, frame_locals_proxy_visit, frame_object_detach, frame_object_visit,
     molt_frame_clear, molt_frame_f_locals_get, molt_frame_locals_proxy_contains,
-    molt_frame_locals_proxy_copy, molt_frame_locals_proxy_delitem, molt_frame_locals_proxy_eq,
-    molt_frame_locals_proxy_get, molt_frame_locals_proxy_getitem, molt_frame_locals_proxy_items,
-    molt_frame_locals_proxy_iter, molt_frame_locals_proxy_keys, molt_frame_locals_proxy_len,
-    molt_frame_locals_proxy_pop, molt_frame_locals_proxy_repr, molt_frame_locals_proxy_setdefault,
-    molt_frame_locals_proxy_setitem, molt_frame_locals_proxy_update,
-    molt_frame_locals_proxy_values,
+    molt_frame_locals_proxy_contains_attached_body, molt_frame_locals_proxy_copy,
+    molt_frame_locals_proxy_copy_attached_body, molt_frame_locals_proxy_delitem,
+    molt_frame_locals_proxy_delitem_attached_body, molt_frame_locals_proxy_eq,
+    molt_frame_locals_proxy_eq_attached_body, molt_frame_locals_proxy_get,
+    molt_frame_locals_proxy_get_attached_body, molt_frame_locals_proxy_getitem,
+    molt_frame_locals_proxy_getitem_attached_body, molt_frame_locals_proxy_items,
+    molt_frame_locals_proxy_items_attached_body, molt_frame_locals_proxy_iter,
+    molt_frame_locals_proxy_iter_attached_body, molt_frame_locals_proxy_keys,
+    molt_frame_locals_proxy_keys_attached_body, molt_frame_locals_proxy_len,
+    molt_frame_locals_proxy_len_attached_body, molt_frame_locals_proxy_pop,
+    molt_frame_locals_proxy_pop_attached_body, molt_frame_locals_proxy_repr,
+    molt_frame_locals_proxy_repr_attached_body, molt_frame_locals_proxy_setdefault,
+    molt_frame_locals_proxy_setdefault_attached_body, molt_frame_locals_proxy_setitem,
+    molt_frame_locals_proxy_setitem_attached_body, molt_frame_locals_proxy_update,
+    molt_frame_locals_proxy_update_attached_body, molt_frame_locals_proxy_values,
+    molt_frame_locals_proxy_values_attached_body,
 };
 pub(crate) use namespace::{
     CodeNamespace, CompiledCodeSlot, FrameInvocationGuard, acquire_pending_invocation_context,
@@ -156,13 +166,13 @@ fn frame_context_cell_is_valid(bits: u64) -> bool {
     crate::object::cells::cell_ptr_from_bits(bits).is_some()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_context_set(
+pub(crate) fn molt_frame_context_set_attached_body(
+    _py: &crate::PyToken<'_>,
     argument_zero_bits: u64,
     argument_kind_bits: u64,
     class_cell_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let argument_zero = match to_i64(obj_from_bits(argument_kind_bits)) {
             Some(0) => PythonArgumentZero::NoArgument,
             Some(1) => PythonArgumentZero::Value(argument_zero_bits),
@@ -473,7 +483,7 @@ impl<'a, 'py> PythonFunctionFrame<'a, 'py> {
             crate::record_memory_error_without_allocation(py);
             return Err(());
         }
-        let homes = bindings::molt_frame_homes(plan.homes as u64);
+        let homes = bindings::molt_frame_homes_attached_body(py, plan.homes as u64);
         if exception_pending(py) {
             return Err(());
         }
@@ -518,7 +528,7 @@ impl<'a, 'py> PythonFunctionFrame<'a, 'py> {
     /// A fresh owned read observes PEP 667 writes made by an earlier callback.
     pub(crate) fn argument(&self, slot: usize) -> Result<u64, ()> {
         let home = unsafe { self.homes.add(slot * molt_codegen_abi::FRAME_HOME_WORDS) };
-        let value = bindings::molt_frame_home_load(home as usize as u64);
+        let value = bindings::molt_frame_home_load_attached_body(self.py, home as usize as u64);
         if exception_pending(self.py) {
             return Err(());
         }
@@ -827,9 +837,8 @@ pub(crate) fn frame_stack_set_locals_dict(_py: &PyToken<'_>, dict_bits: u64) {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_locals_set(dict_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_frame_locals_set_attached_body(_py: &crate::PyToken<'_>, dict_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // This operation publishes an executable module's namespace, not an
         // optimized function's locals. CPython prepares __builtins__ once at
         // execution entry; neither global reads nor FunctionType may fill it.
@@ -911,24 +920,33 @@ struct FrameField {
 
 /// Update the current line number on the top frame stack entry.
 /// Called by `line` ops in module chunk functions for accurate tracebacks.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_set_line(line: i64) -> u64 {
+
+pub(crate) fn molt_frame_set_line_attached_body(_py: &crate::PyToken<'_>, line: i64) -> u64 {
     frame_stack_set_line(line);
     0
 }
 
 /// Update line and column offsets on the top frame stack entry.
 /// Called by `line` ops that carry column offset info for caret annotations.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_set_line_col(line: i64, col_offset: i64, end_col_offset: i64) -> u64 {
+
+pub(crate) fn molt_frame_set_line_col_attached_body(
+    _py: &crate::PyToken<'_>,
+    line: i64,
+    col_offset: i64,
+    end_col_offset: i64,
+) -> u64 {
     frame_stack_set_line_col(line, col_offset, end_col_offset);
     0
 }
 
 /// Update only column offsets on the top frame entry (line unchanged).
 /// Called before potentially-raising ops that carry expression-level col info.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_set_col(col_offset: i64, end_col_offset: i64) -> u64 {
+
+pub(crate) fn molt_frame_set_col_attached_body(
+    _py: &crate::PyToken<'_>,
+    col_offset: i64,
+    end_col_offset: i64,
+) -> u64 {
     FRAME_STACK.with(|stack| {
         if let Some(entry) = stack.borrow_mut().last_mut() {
             entry.col_offset = col_offset;
@@ -1547,9 +1565,8 @@ pub(crate) fn exception_materialize_traceback_bits(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_getframe(depth_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_getframe_attached_body(_py: &crate::PyToken<'_>, depth_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let depth = if let Some(value) = index_i64_integral_bits(depth_bits) {
             value.to_i32()
         } else {
@@ -1597,9 +1614,9 @@ fn top_user_frame_entry() -> Option<FrameEntry> {
 /// synchronous or stateful, answers through its bindings payload: before
 /// PEP 667 the activation's one refreshed dict, afterwards an independent
 /// snapshot. A module body's locals are its namespace mapping.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_locals_builtin() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_locals_builtin_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Some(index) = FRAME_STACK.with(|stack| stack.borrow().len().checked_sub(1)) {
             match bindings::frame_bindings_observe(_py, index) {
                 Ok(0) => {}
@@ -1635,9 +1652,8 @@ pub extern "C" fn molt_locals_builtin() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_globals_builtin() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_globals_builtin_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let entry = top_user_frame_entry();
         let Some(entry) = entry else {
             return empty_dict_bits(_py);
@@ -1761,14 +1777,19 @@ mod tests {
             let none = MoltObject::none().bits();
             let _ =
                 crate::raise_exception::<u64>(py, crate::BuiltinExc::ValueError, "frame unwind");
-            let before = crate::builtins::exceptions::molt_exception_last_pending();
+            let before = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
             assert!(crate::exception_pending(py));
-            let result = super::molt_frame_context_set(none, MoltObject::from_int(1).bits(), none);
+            let result = super::molt_frame_context_set_attached_body(
+                py,
+                none,
+                MoltObject::from_int(1).bits(),
+                none,
+            );
             assert!(crate::obj_from_bits(result).is_none());
             assert!(crate::exception_pending(py));
-            let after = crate::builtins::exceptions::molt_exception_last_pending();
+            let after = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
             assert_eq!(before, after);
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             frame_stack_pop(py);
             dec_ref_bits(py, before);
             dec_ref_bits(py, after);
@@ -1884,3 +1905,5 @@ mod tests {
         });
     }
 }
+
+include!("../attached_exports_generated/builtins/frames.rs");

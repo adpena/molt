@@ -705,23 +705,24 @@ fn qp_encode(input: &[u8]) -> Vec<u8> {
     out
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_binascii_error_type() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        molt_runtime_core::rt_exception_class(BuiltinExc::BinasciiError)
+pub fn molt_binascii_error_type_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        molt_runtime_core::rt_exception_class(_py, BuiltinExc::BinasciiError)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_binascii_incomplete_type() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        molt_runtime_core::rt_exception_class(BuiltinExc::BinasciiIncomplete)
+pub fn molt_binascii_incomplete_type_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        molt_runtime_core::rt_exception_class(_py, BuiltinExc::BinasciiIncomplete)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_binascii_a2b_base64(data_bits: u64, strict_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(py, {
+pub fn molt_binascii_a2b_base64_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+    strict_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, py, {
         a2b_base64(py, data_bits, Base64Strictness::PythonObject(strict_bits))
     })
 }
@@ -757,9 +758,11 @@ pub(crate) fn a2b_base64(py: &PyToken, data_bits: u64, strict: Base64Strictness)
     alloc_bytes_or_oom(py, &decoded, "a2b_base64")
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_binascii_b2a_base64(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_binascii_b2a_base64_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let input_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
             Ok(export) => export,
             Err(_) => return MoltObject::none().bits(),
@@ -769,9 +772,11 @@ pub extern "C" fn molt_binascii_b2a_base64(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_binascii_a2b_hex(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_binascii_a2b_hex_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let input = match AsciiInput::acquire(_py, data_bits) {
             Ok(input) => input,
             Err(error) => return error,
@@ -791,9 +796,11 @@ pub extern "C" fn molt_binascii_a2b_hex(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_binascii_b2a_hex(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_binascii_b2a_hex_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let input_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
             Ok(export) => export,
             Err(_) => return MoltObject::none().bits(),
@@ -804,9 +811,8 @@ pub extern "C" fn molt_binascii_b2a_hex(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_binascii_a2b_qp(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_binascii_a2b_qp_attached_body(_py: &molt_runtime_core::PyToken, data_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let input = match AsciiInput::acquire(_py, data_bits) {
             Ok(input) => input,
             Err(error) => return error,
@@ -817,9 +823,8 @@ pub extern "C" fn molt_binascii_a2b_qp(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_binascii_b2a_qp(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_binascii_b2a_qp_attached_body(_py: &molt_runtime_core::PyToken, data_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let input_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
             Ok(export) => export,
             Err(_) => return MoltObject::none().bits(),
@@ -829,9 +834,8 @@ pub extern "C" fn molt_binascii_b2a_qp(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_binascii_a2b_uu(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_binascii_a2b_uu_attached_body(_py: &molt_runtime_core::PyToken, data_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let input = match AsciiInput::acquire(_py, data_bits) {
             Ok(input) => input,
             Err(error) => return error,
@@ -845,9 +849,8 @@ pub extern "C" fn molt_binascii_a2b_uu(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_binascii_b2a_uu(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_binascii_b2a_uu_attached_body(_py: &molt_runtime_core::PyToken, data_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let input_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
             Ok(export) => export,
             Err(_) => return MoltObject::none().bits(),
@@ -860,9 +863,12 @@ pub extern "C" fn molt_binascii_b2a_uu(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_binascii_crc32(data_bits: u64, value_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_binascii_crc32_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let input_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
             Ok(export) => export,
             Err(_) => return MoltObject::none().bits(),
@@ -881,9 +887,12 @@ pub extern "C" fn molt_binascii_crc32(data_bits: u64, value_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_binascii_crc_hqx(data_bits: u64, value_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_binascii_crc_hqx_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let input_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
             Ok(export) => export,
             Err(_) => return MoltObject::none().bits(),
@@ -913,9 +922,14 @@ pub extern "C" fn molt_binascii_crc_hqx(data_bits: u64, value_bits: u64) -> u64 
 
 /// `molt_uu_codec_encode(data, filename, mode)` — full UU-encoded message with
 /// begin/end framing.  Reuses the internal `uu_encode` per-line function.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_uu_codec_encode(data_bits: u64, filename_bits: u64, mode_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_uu_codec_encode_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+    filename_bits: u64,
+    mode_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let input_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
             Ok(export) => export,
             Err(_) => return MoltObject::none().bits(),
@@ -952,9 +966,9 @@ pub extern "C" fn molt_uu_codec_encode(data_bits: u64, filename_bits: u64, mode_
 
 /// `molt_uu_codec_decode(data)` — decode a full UU-encoded message (find begin,
 /// decode lines, expect end).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_uu_codec_decode(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_uu_codec_decode_attached_body(_py: &molt_runtime_core::PyToken, data_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let input_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
             Ok(export) => export,
             Err(_) => return MoltObject::none().bits(),
@@ -1054,3 +1068,5 @@ mod tests {
         assert_eq!(uu_decode(b"#8\x016)C"), Err("Illegal char"));
     }
 }
+
+include!("attached_exports_generated/binascii.rs");

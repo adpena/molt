@@ -1,5 +1,6 @@
 use crate::wasm::frame_locals::WasmDispatchFrameLocals;
-use wasm_encoder::{Function, Instruction};
+use crate::wasm_binary::Function;
+use wasm_encoder::Instruction;
 
 pub(in crate::wasm::state_dispatch) fn emit_obj_set_state_arg(
     func: &mut Function,

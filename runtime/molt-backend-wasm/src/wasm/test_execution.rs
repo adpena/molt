@@ -118,9 +118,30 @@ fn node_test_command(
 ) -> Command {
     const DRIVER: &str = r#"
 const vm = require('node:vm');
-const [source, purpose, timeout] = process.argv.splice(1, 3);
+const [source, purpose, timeout, abiJson] = process.argv.splice(1, 4);
+const abi = JSON.parse(abiJson);
+const executionContext = 32768n;
+const attachedNames = new Set(abi.attached);
+const runtimeNames = new Map(abi.runtime_names);
+const runtimeImportName = physical => runtimeNames.get(physical) ?? physical;
+const compiledSymbol = logical => logical + abi.suffix;
+// These are executable fixture providers for the real physical ABI. Validate
+// context identity before invoking each fixture's independent semantic oracle.
+const attachedImports = imports => Object.fromEntries(Object.entries(imports).map(([module, entries]) => [
+  module, Object.fromEntries(Object.entries(entries).map(([name, value]) => [name,
+    typeof value === 'function' && (module === 'env' || (module === 'molt_runtime' && attachedNames.has(name)))
+      ? (context, ...args) => {
+          if (context !== executionContext) throw new Error('attached context mismatch at ' + module + '.' + name);
+          return value(...args);
+        } : value
+  ]))
+]));
+const initializeExecutionRecord = (memory, record) => {
+  new DataView(memory.buffer).setBigUint64(Number(executionContext), BigInt(record), true);
+};
 console.error('WASM execution: ' + purpose);
-vm.runInNewContext(source, {require, process, console, Buffer, WebAssembly}, {
+vm.runInNewContext(source, {require, process, console, Buffer, WebAssembly,
+  compiledSymbol, executionContext, attachedImports, initializeExecutionRecord, runtimeImportName}, {
   filename: purpose, timeout: Number(timeout), microtaskMode: 'afterEvaluate'
 });
 "#;
@@ -131,6 +152,15 @@ vm.runInNewContext(source, {require, process, console, Buffer, WebAssembly}, {
         .arg(script)
         .arg(purpose)
         .arg(timeout_ms.to_string())
+        .arg(serde_json::json!({
+            "suffix": molt_ir::runtime_callable_abi_generated::ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX,
+            "attached": crate::wasm_abi_generated::WasmRuntimeImport::ALL.iter()
+                .filter(|import| import.execution_abi().context == molt_ir::runtime_callable_abi_generated::RuntimeExecutionContext::Attached)
+                .flat_map(|import| [import.name(), import.execution_abi().physical_symbol]).collect::<Vec<_>>(),
+            "runtime_names": crate::wasm_abi_generated::WasmRuntimeImport::ALL.iter()
+                .flat_map(|import| [[import.execution_abi().physical_symbol, import.name()], [import.runtime_export_name(), import.name()]])
+                .collect::<Vec<_>>(),
+        }).to_string())
         .args(args);
     command
 }

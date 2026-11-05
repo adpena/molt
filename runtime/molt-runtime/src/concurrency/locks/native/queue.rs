@@ -87,7 +87,7 @@ impl MoltQueue {
     ) -> Result<(), u64> {
         let mut insert_index = guard.items.len();
         for (idx, existing_bits) in guard.items.iter().copied().enumerate() {
-            let lt_bits = crate::molt_lt(item_bits, existing_bits);
+            let lt_bits = crate::molt_lt_attached_body(_py, item_bits, existing_bits);
             if exception_pending(_py) {
                 return Err(MoltObject::none().bits());
             }
@@ -399,9 +399,12 @@ fn parse_queue_timeout(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_queue_new(maxsize_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_queue_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    maxsize_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(maxsize) = crate::to_i64(obj_from_bits(maxsize_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "maxsize must be an integer");
         };
@@ -412,9 +415,12 @@ pub unsafe extern "C" fn molt_queue_new(maxsize_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_queue_lifo_new(maxsize_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_queue_lifo_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    maxsize_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(maxsize) = crate::to_i64(obj_from_bits(maxsize_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "maxsize must be an integer");
         };
@@ -425,9 +431,12 @@ pub unsafe extern "C" fn molt_queue_lifo_new(maxsize_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_queue_priority_new(maxsize_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_queue_priority_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    maxsize_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(maxsize) = crate::to_i64(obj_from_bits(maxsize_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "maxsize must be an integer");
         };
@@ -438,9 +447,12 @@ pub unsafe extern "C" fn molt_queue_priority_new(maxsize_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_queue_qsize(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_queue_qsize_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid queue handle");
         };
@@ -449,9 +461,12 @@ pub unsafe extern "C" fn molt_queue_qsize(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_queue_empty(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_queue_empty_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid queue handle");
         };
@@ -460,9 +475,12 @@ pub unsafe extern "C" fn molt_queue_empty(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_queue_full(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_queue_full_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid queue handle");
         };
@@ -471,14 +489,15 @@ pub unsafe extern "C" fn molt_queue_full(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_queue_put(
+
+pub(crate) unsafe fn molt_queue_put_attached_body(
+    _py: &crate::PyToken<'_>,
     handle_bits: u64,
     item_bits: u64,
     blocking_bits: u64,
     timeout_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid queue handle");
         };
@@ -510,14 +529,15 @@ pub unsafe extern "C" fn molt_queue_put(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_queue_get(
+
+pub(crate) unsafe fn molt_queue_get_attached_body(
+    _py: &crate::PyToken<'_>,
     handle_bits: u64,
     blocking_bits: u64,
     timeout_bits: u64,
     sentinel_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid queue handle");
         };
@@ -541,9 +561,13 @@ pub unsafe extern "C" fn molt_queue_get(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_queue_shutdown(handle_bits: u64, immediate_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_queue_shutdown_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    immediate_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid queue handle");
         };
@@ -554,9 +578,12 @@ pub unsafe extern "C" fn molt_queue_shutdown(handle_bits: u64, immediate_bits: u
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_queue_is_shutdown(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_queue_is_shutdown_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid queue handle");
         };
@@ -565,9 +592,12 @@ pub unsafe extern "C" fn molt_queue_is_shutdown(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_queue_task_done(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_queue_task_done_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid queue handle");
         };
@@ -576,9 +606,12 @@ pub unsafe extern "C" fn molt_queue_task_done(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_queue_join(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_queue_join_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid queue handle");
         };
@@ -591,10 +624,13 @@ pub unsafe extern "C" fn molt_queue_join(handle_bits: u64) -> u64 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_queue_drop(handle_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_queue_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let ptr = ptr_from_bits(handle_bits);
             if ptr.is_null() {
                 return MoltObject::none().bits();
@@ -606,3 +642,5 @@ pub unsafe extern "C" fn molt_queue_drop(handle_bits: u64) -> u64 {
         })
     }
 }
+
+include!("../../../attached_exports_generated/concurrency/locks/native/queue.rs");

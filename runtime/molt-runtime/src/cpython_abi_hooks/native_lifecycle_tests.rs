@@ -22,11 +22,11 @@ unsafe extern "C" fn buffer_constructor_probe(
             return ptr::null_mut();
         };
         let result = if kind == 0 {
-            crate::object::ops_bytes::molt_bytes_from_obj(bits)
+            crate::object::ops_bytes::molt_bytes_from_obj_attached_body(_py, bits)
         } else if kind == 1 {
-            crate::object::ops_bytes::molt_bytearray_from_obj(bits)
+            crate::object::ops_bytes::molt_bytearray_from_obj_attached_body(_py, bits)
         } else {
-            crate::object::ops_memoryview::molt_memoryview_new(bits)
+            crate::object::ops_memoryview::molt_memoryview_new_attached_body(_py, bits)
         };
         molt_cpython_abi::api::errors::with_preserved_error(|| crate::dec_ref_bits(&_py, bits));
         molt_cpython_abi::bridge::GLOBAL_BRIDGE

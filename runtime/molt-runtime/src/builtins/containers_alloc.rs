@@ -7,9 +7,8 @@ use crate::{
     usize_from_bits,
 };
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_new(capacity_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dict_new_attached_body(_py: &crate::PyToken<'_>, capacity_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Ok(capacity_hint) = usize::try_from(capacity_bits) else {
             crate::record_memory_error_without_allocation(_py);
             return MoltObject::none().bits();
@@ -31,7 +30,7 @@ pub(crate) enum DictSeqError {
 }
 
 fn dict_pair_iteration_error(py: &PyToken<'_>, acquisition: bool) -> DictSeqError {
-    let error = crate::builtins::exceptions::molt_exception_last_pending();
+    let error = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
     let type_error = crate::builtins::exceptions::exception_matches_kind(
         py,
         error,
@@ -40,11 +39,11 @@ fn dict_pair_iteration_error(py: &PyToken<'_>, acquisition: bool) -> DictSeqErro
     dec_ref_bits(py, error);
     if type_error {
         if !crate::object::ops_sys::runtime_target_at_least(py, 3, 14) {
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             return DictSeqError::NotIterable;
         }
         if acquisition {
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
             raise_exception::<()>(py, BuiltinExc::TypeError, "object is not iterable");
         }
     }
@@ -96,12 +95,11 @@ pub(crate) fn dict_pair_from_item(
     Ok((key, value))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_from_obj(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dict_from_obj_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // Direct mapping merge owns its clone/presize policy; generic mappings
         // begin empty and grow while consuming their real protocol.
-        let dict_bits = molt_dict_new(0);
+        let dict_bits = molt_dict_new_attached_body(_py, 0);
         if obj_from_bits(dict_bits).is_none() {
             return MoltObject::none().bits();
         }
@@ -130,14 +128,17 @@ fn set_like_new(py: &PyToken<'_>, capacity_bits: u64, type_id: u32) -> u64 {
     MoltObject::from_ptr(ptr).bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_set_new(capacity_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { set_like_new(py, capacity_bits, TYPE_ID_SET) })
+pub(crate) fn molt_set_new_attached_body(_py: &crate::PyToken<'_>, capacity_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { set_like_new(py, capacity_bits, TYPE_ID_SET) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frozenset_new(capacity_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { set_like_new(py, capacity_bits, TYPE_ID_FROZENSET) })
+pub(crate) fn molt_frozenset_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    capacity_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        set_like_new(py, capacity_bits, TYPE_ID_FROZENSET)
+    })
 }
 
 #[cfg(test)]
@@ -170,12 +171,15 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             for (constructor, expected_type) in [
-                (molt_dict_new as extern "C" fn(u64) -> u64, TYPE_ID_DICT),
+                (
+                    molt_dict_new as unsafe extern "C" fn(u64, u64) -> u64,
+                    TYPE_ID_DICT,
+                ),
                 (molt_set_new, TYPE_ID_SET),
                 (molt_frozenset_new, TYPE_ID_FROZENSET),
             ] {
                 for capacity in [0, 1, 2] {
-                    let bits = constructor(capacity);
+                    let bits = unsafe { constructor(_py.attached_context(), capacity) };
                     assert!(!exception_pending(_py), "capacity={capacity}");
                     let ptr = obj_from_bits(bits)
                         .as_ptr()
@@ -213,7 +217,7 @@ mod tests {
                 (87_382, 131_072, 87_381),
                 (usize::MAX, 131_072, 87_381),
             ] {
-                let bits = molt_dict_new(hint as u64);
+                let bits = molt_dict_new_attached_body(py, hint as u64);
                 let ptr = obj_from_bits(bits)
                     .as_ptr()
                     .expect("representable dictionary hints are bounded, not rejected");
@@ -234,11 +238,11 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             for (name, constructor) in [
-                ("set", molt_set_new as extern "C" fn(u64) -> u64),
+                ("set", molt_set_new as unsafe extern "C" fn(u64, u64) -> u64),
                 ("frozenset", molt_frozenset_new),
             ] {
                 for capacity in [usize::MAX, usize::MAX / 2] {
-                    let bits = constructor(capacity as u64);
+                    let bits = unsafe { constructor(py.attached_context(), capacity as u64) };
                     assert!(obj_from_bits(bits).is_none(), "{name}: capacity={capacity}");
                     crate::test_support::assert_and_clear_emergency_memory_error(py);
                 }
@@ -253,7 +257,7 @@ mod tests {
             for (name, constructor, capacity) in [
                 (
                     "dict",
-                    molt_dict_new as extern "C" fn(u64) -> u64,
+                    molt_dict_new as unsafe extern "C" fn(u64, u64) -> u64,
                     usize::MAX as u64,
                 ),
                 ("set", molt_set_new, 6),
@@ -270,7 +274,7 @@ mod tests {
                         );
                     }
                     let budget = DenyAllocations::enter();
-                    let bits = constructor(capacity);
+                    let bits = unsafe { constructor(py.attached_context(), capacity) };
                     assert!(
                         obj_from_bits(bits).is_none(),
                         "{name}: prior_error={prior_error}"
@@ -288,14 +292,14 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             for constructor in [
-                molt_dict_new as extern "C" fn(u64) -> u64,
+                molt_dict_new as unsafe extern "C" fn(u64, u64) -> u64,
                 molt_set_new,
                 molt_frozenset_new,
             ] {
                 // This is an unrepresentable raw extent, unlike usize::MAX's
                 // representable dictionary hint on either 32- or 64-bit hosts.
                 for capacity in [u64::from(u32::MAX) + 1, u64::MAX] {
-                    let bits = constructor(capacity);
+                    let bits = unsafe { constructor(py.attached_context(), capacity) };
                     assert!(obj_from_bits(bits).is_none());
                     crate::test_support::assert_and_clear_emergency_memory_error(py);
                 }
@@ -303,3 +307,5 @@ mod tests {
         });
     }
 }
+
+include!("../attached_exports_generated/builtins/containers_alloc.rs");

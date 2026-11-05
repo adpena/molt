@@ -25,7 +25,8 @@ fn super_receiver_class(_py: &PyToken<'_>, type_bits: u64, obj_bits: u64) -> Opt
     // CPython's supercheck uses the real subtype relationship first, then the
     // receiver's __class__ attribute. Metaclass __instancecheck__ is not involved.
     let name_bits = crate::NameId::DunderClass.owned_bits(_py)?;
-    let claimed_class = molt_getattr_builtin(obj_bits, name_bits, MoltObject::none().bits());
+    let claimed_class =
+        molt_getattr_builtin_attached_body(_py, obj_bits, name_bits, MoltObject::none().bits());
     dec_ref_bits(_py, name_bits);
     if exception_pending(_py) {
         dec_ref_bits(_py, claimed_class);
@@ -112,9 +113,12 @@ fn super_construct(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_super_new(type_bits: u64, obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_super_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    type_bits: u64,
+    obj_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         super_construct(_py, type_bits, obj_bits, SuperConstructionMode::Explicit)
     })
 }
@@ -198,9 +202,8 @@ pub(crate) fn super_from_current_frame(_py: &PyToken<'_>) -> u64 {
     result
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_super_from_frame() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { super_from_current_frame(_py) })
+pub(crate) fn molt_super_from_frame_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { super_from_current_frame(_py) })
 }
 
 /// One arity/keyword and frame-observation authority for all builtin call transports.
@@ -231,9 +234,12 @@ pub(crate) fn super_call(_py: &PyToken<'_>, args: &[u64], has_keywords: bool) ->
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_generic_alias_new(origin_bits: u64, args_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_generic_alias_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    origin_bits: u64,
+    args_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let args_obj = obj_from_bits(args_bits);
         // Always create a fresh heap-allocated args tuple.  This is
         // necessary because the incoming tuple may be stack-allocated
@@ -282,9 +288,12 @@ pub extern "C" fn molt_generic_alias_new(origin_bits: u64, args_bits: u64) -> u6
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_generic_alias_mro_entries(alias_bits: u64, _bases_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_generic_alias_mro_entries_attached_body(
+    _py: &crate::PyToken<'_>,
+    alias_bits: u64,
+    _bases_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(alias_ptr) = obj_from_bits(alias_bits).as_ptr() else {
             return raise_exception::<_>(
                 _py,
@@ -315,8 +324,14 @@ pub extern "C" fn molt_generic_alias_mro_entries(alias_bits: u64, _bases_bits: u
 /// generic is never class information, as CPython's `ga_instancecheck` and
 /// `ga_subclasscheck` refuse it. Tuple and union traversal reach these in
 /// member order, so an earlier match still succeeds.
-pub(crate) extern "C" fn generic_alias_instancecheck(_alias_bits: u64, _value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn generic_alias_instancecheck(
+    __context: u64,
+    _alias_bits: u64,
+    _value_bits: u64,
+) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         raise_exception::<_>(
             py,
             BuiltinExc::TypeError,
@@ -325,8 +340,14 @@ pub(crate) extern "C" fn generic_alias_instancecheck(_alias_bits: u64, _value_bi
     })
 }
 
-pub(crate) extern "C" fn generic_alias_subclasscheck(_alias_bits: u64, _value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn generic_alias_subclasscheck(
+    __context: u64,
+    _alias_bits: u64,
+    _value_bits: u64,
+) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         raise_exception::<_>(
             py,
             BuiltinExc::TypeError,
@@ -335,13 +356,13 @@ pub(crate) extern "C" fn generic_alias_subclasscheck(_alias_bits: u64, _value_bi
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_generic_alias_type_new(
+pub(crate) fn molt_generic_alias_type_new_attached_body(
+    _py: &crate::PyToken<'_>,
     cls_bits: u64,
     origin_bits: u64,
     args_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let cls_obj = obj_from_bits(cls_bits);
         let Some(cls_ptr) = cls_obj.as_ptr() else {
             return raise_exception::<_>(
@@ -370,7 +391,7 @@ pub extern "C" fn molt_generic_alias_type_new(
             );
         }
 
-        let out_bits = molt_generic_alias_new(origin_bits, args_bits);
+        let out_bits = molt_generic_alias_new_attached_body(_py, origin_bits, args_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -392,9 +413,12 @@ pub extern "C" fn molt_generic_alias_type_new(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_typing_type_param(typevar_ctor_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_typing_type_param_attached_body(
+    _py: &crate::PyToken<'_>,
+    typevar_ctor_bits: u64,
+    name_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
             return raise_exception::<_>(
@@ -412,21 +436,22 @@ pub extern "C" fn molt_typing_type_param(typevar_ctor_bits: u64, name_bits: u64)
                 );
             }
         }
-        let builder_bits = molt_callargs_new(1, 0);
+        let builder_bits = molt_callargs_new_attached_body(_py, 1, 0);
         if builder_bits == 0 {
             return MoltObject::none().bits();
         }
         unsafe {
-            let _ = molt_callargs_push_pos(builder_bits, name_bits);
+            let _ = molt_callargs_push_pos_attached_body(_py, builder_bits, name_bits);
         }
-        let typevar_bits = molt_call_bind(typevar_ctor_bits, builder_bits);
+        let typevar_bits = molt_call_bind_attached_body(_py, typevar_ctor_bits, builder_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
         let Some(flag_name_bits) = crate::NameId::PrivatePep695.owned_bits(_py) else {
             return MoltObject::none().bits();
         };
-        let _ = molt_set_attr_name(
+        let _ = molt_set_attr_name_attached_body(
+            _py,
             typevar_bits,
             flag_name_bits,
             MoltObject::from_bool(true).bits(),
@@ -455,13 +480,13 @@ mod super_frame_tests {
 
     fn assert_error(py: &PyToken<'_>, result: u64, kind: crate::BuiltinExc, expected: &str) {
         assert!(obj_from_bits(result).is_none());
-        let error = crate::builtins::exceptions::molt_exception_last_pending();
+        let error = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
         assert!(crate::builtins::exceptions::exception_matches_kind(
             py, error, kind
         ));
         let message = crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap());
         assert!(message.contains(expected), "{message}");
-        crate::molt_exception_clear();
+        crate::molt_exception_clear_attached_body(py);
         dec_ref_bits(py, error);
         dec_ref_bits(py, result);
     }
@@ -518,7 +543,7 @@ mod super_frame_tests {
                 ));
                 assert_error(
                     py,
-                    molt_super_from_frame(),
+                    molt_super_from_frame_attached_body(py),
                     crate::BuiltinExc::RuntimeError,
                     message,
                 );
@@ -555,11 +580,15 @@ mod super_frame_tests {
                 );
                 dec_ref_bits(py, direct);
                 // Mutate the existing argument cell; no snapshot republishing is needed.
-                let changed = crate::molt_cell_set(argument_cell, MoltObject::none().bits());
+                let changed = crate::object::cells::molt_cell_set_attached_body(
+                    py,
+                    argument_cell,
+                    MoltObject::none().bits(),
+                );
                 assert!(!exception_pending(py));
                 assert!(obj_from_bits(changed).is_none());
-                let args = molt_callargs_new(0, 0);
-                let bound = molt_call_bind(classes.super_type, args);
+                let args = molt_callargs_new_attached_body(py, 0, 0);
+                let bound = molt_call_bind_attached_body(py, classes.super_type, args);
                 assert!(!exception_pending(py));
                 let bound_ptr = obj_from_bits(bound).as_ptr().unwrap();
                 assert!(
@@ -567,7 +596,11 @@ mod super_frame_tests {
                         .is_none()
                 );
                 dec_ref_bits(py, bound);
-                let changed = crate::molt_cell_set(class_cell, MoltObject::from_int(42).bits());
+                let changed = crate::object::cells::molt_cell_set_attached_body(
+                    py,
+                    class_cell,
+                    MoltObject::from_int(42).bits(),
+                );
                 assert!(!exception_pending(py));
                 assert!(obj_from_bits(changed).is_none());
                 assert_error(
@@ -602,9 +635,9 @@ mod super_frame_tests {
         crate::with_gil_entry_nopanic!(py, {
             let classes = builtin_classes(py);
             let receiver = MoltObject::from_int(3).bits();
-            let result = molt_super_new(classes.object, receiver);
+            let result = molt_super_new_attached_body(py, classes.object, receiver);
             assert!(!exception_pending(py));
-            let repr = crate::molt_repr_from_obj(result);
+            let repr = crate::molt_repr_from_obj_attached_body(py, result);
             assert_eq!(
                 string_obj_to_owned(obj_from_bits(repr)).as_deref(),
                 Some("<super: <class 'object'>, <int object>>"),
@@ -616,7 +649,7 @@ mod super_frame_tests {
                 (b"__self_class__".as_slice(), classes.int),
             ] {
                 let name_bits = dynamic_attr_name_bits(py, name).unwrap();
-                let actual = crate::molt_get_attr_name(result, name_bits);
+                let actual = crate::molt_get_attr_name_attached_body(py, result, name_bits);
                 assert!(!exception_pending(py));
                 assert_eq!(actual, expected);
                 dec_ref_bits(py, actual);
@@ -625,10 +658,12 @@ mod super_frame_tests {
             dec_ref_bits(py, result);
             assert_error(
                 py,
-                molt_super_new(MoltObject::from_int(42).bits(), receiver),
+                molt_super_new_attached_body(py, MoltObject::from_int(42).bits(), receiver),
                 crate::BuiltinExc::TypeError,
                 "super() argument 1 must be a type, not int",
             );
         });
     }
 }
+
+include!("../../attached_exports_generated/builtins/types/descriptor_objects.rs");

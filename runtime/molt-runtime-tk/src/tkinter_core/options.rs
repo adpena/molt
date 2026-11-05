@@ -14,16 +14,16 @@ use super::common::{
 ///
 /// Recursively descends into list/tuple elements, collecting non-None leaf
 /// values into a flat list. None values are skipped.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_flatten_args(args_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_flatten_args_attached_body(_py: &molt_runtime_core::PyToken, args_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let mut out: Vec<u64> = Vec::new();
         let mut snapshots = Vec::new();
-        flatten_recursive(args_bits, &mut out, &mut snapshots);
-        if rt_exception_pending() {
+        flatten_recursive(_py, args_bits, &mut out, &mut snapshots);
+        if rt_exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        match alloc_list_bits(&out) {
+        match alloc_list_bits(_py, &out) {
             Ok(bits) => bits,
             Err(bits) => bits,
         }
@@ -31,17 +31,18 @@ pub extern "C" fn molt_tk_flatten_args(args_bits: u64) -> u64 {
 }
 
 /// Recursive helper for flatten_args.
-fn flatten_recursive(
+fn flatten_recursive<'py>(
+    py: &'py molt_runtime_core::PyToken,
     bits: u64,
     out: &mut Vec<u64>,
-    snapshots: &mut Vec<OwnedBridgeHandleSnapshot>,
+    snapshots: &mut Vec<OwnedBridgeHandleSnapshot<'py>>,
 ) {
     if bits_is_none(bits) {
         return;
     }
-    if let Some(elems) = decode_value_list_bits(bits) {
+    if let Some(elems) = decode_value_list_bits(py, bits) {
         for &elem_bits in elems.iter() {
-            flatten_recursive(elem_bits, out, snapshots);
+            flatten_recursive(py, elem_bits, out, snapshots);
         }
         // Keep nested leaves pinned until allocation adopts the flattened list.
         snapshots.push(elems);
@@ -63,19 +64,23 @@ fn flatten_recursive(
 ///   - Append "-key" and value to output list
 ///
 /// Returns a Molt list of alternating "-key", value elements.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_cnfmerge(cnf_bits: u64, kw_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_cnfmerge_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    cnf_bits: u64,
+    kw_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let mut out: Vec<u64> = Vec::new();
 
         // Process cnf dict
         if !bits_is_none(cnf_bits)
             && let Some(ptr) = obj_from_bits(cnf_bits).as_ptr()
         {
-            let type_id = object_type_id(ptr);
+            let type_id = object_type_id(_py, ptr);
             if type_id == TYPE_ID_DICT {
-                let Some(order_snapshot) = dict_snapshot(ptr) else {
-                    cleanup_list(&out);
+                let Some(order_snapshot) = dict_snapshot(_py, ptr) else {
+                    cleanup_list(_py, &out);
                     return MoltObject::none().bits();
                 };
                 let mut i = 0;
@@ -83,9 +88,9 @@ pub extern "C" fn molt_tk_cnfmerge(cnf_bits: u64, kw_bits: u64) -> u64 {
                     let key_bits = order_snapshot[i];
                     let value_bits = order_snapshot[i + 1];
                     if !bits_is_none(value_bits)
-                        && let Err(bits) = emit_option_pair(key_bits, value_bits, &mut out)
+                        && let Err(bits) = emit_option_pair(_py, key_bits, value_bits, &mut out)
                     {
-                        cleanup_list(&out);
+                        cleanup_list(_py, &out);
                         return bits;
                     }
                     i += 2;
@@ -97,10 +102,10 @@ pub extern "C" fn molt_tk_cnfmerge(cnf_bits: u64, kw_bits: u64) -> u64 {
         if !bits_is_none(kw_bits)
             && let Some(ptr) = obj_from_bits(kw_bits).as_ptr()
         {
-            let type_id = object_type_id(ptr);
+            let type_id = object_type_id(_py, ptr);
             if type_id == TYPE_ID_DICT {
-                let Some(order_snapshot) = dict_snapshot(ptr) else {
-                    cleanup_list(&out);
+                let Some(order_snapshot) = dict_snapshot(_py, ptr) else {
+                    cleanup_list(_py, &out);
                     return MoltObject::none().bits();
                 };
                 let mut i = 0;
@@ -108,9 +113,9 @@ pub extern "C" fn molt_tk_cnfmerge(cnf_bits: u64, kw_bits: u64) -> u64 {
                     let key_bits = order_snapshot[i];
                     let value_bits = order_snapshot[i + 1];
                     if !bits_is_none(value_bits)
-                        && let Err(bits) = emit_option_pair(key_bits, value_bits, &mut out)
+                        && let Err(bits) = emit_option_pair(_py, key_bits, value_bits, &mut out)
                     {
-                        cleanup_list(&out);
+                        cleanup_list(_py, &out);
                         return bits;
                     }
                     i += 2;
@@ -118,16 +123,16 @@ pub extern "C" fn molt_tk_cnfmerge(cnf_bits: u64, kw_bits: u64) -> u64 {
             }
         }
 
-        match alloc_list_bits(&out) {
+        match alloc_list_bits(_py, &out) {
             Ok(list_bits) => {
                 // alloc_list inc-refs each element; release our local string refs
                 for &elem_bits in &out {
-                    rt_dec_ref(elem_bits);
+                    rt_dec_ref(_py, elem_bits);
                 }
                 list_bits
             }
             Err(bits) => {
-                cleanup_list(&out);
+                cleanup_list(_py, &out);
                 bits
             }
         }
@@ -137,8 +142,13 @@ pub extern "C" fn molt_tk_cnfmerge(cnf_bits: u64, kw_bits: u64) -> u64 {
 /// Emit a normalized "-key", value pair into the output vec.
 /// The key is converted to string, normalized with leading "-", and
 /// underscores in the key name are preserved (matching CPython tkinter behavior).
-fn emit_option_pair(key_bits: u64, value_bits: u64, out: &mut Vec<u64>) -> Result<(), u64> {
-    let key_str = bits_to_string(key_bits).unwrap_or_else(|| {
+fn emit_option_pair(
+    py: &molt_runtime_core::PyToken,
+    key_bits: u64,
+    value_bits: u64,
+    out: &mut Vec<u64>,
+) -> Result<(), u64> {
+    let key_str = bits_to_string(py, key_bits).unwrap_or_else(|| {
         // If key is not a string, try int/float rendering
         if let Some(i) = bits_as_i64(key_bits) {
             i.to_string()
@@ -150,7 +160,7 @@ fn emit_option_pair(key_bits: u64, value_bits: u64, out: &mut Vec<u64>) -> Resul
     });
 
     let normalized = normalize_option_str(&key_str);
-    let key_str_bits = alloc_str_bits(&normalized)?;
+    let key_str_bits = alloc_str_bits(py, &normalized)?;
     out.push(key_str_bits);
     // Push the value as-is (could be string, int, etc.)
     out.push(value_bits);
@@ -160,7 +170,7 @@ fn emit_option_pair(key_bits: u64, value_bits: u64, out: &mut Vec<u64>) -> Resul
     // then we dec-ref out elements. For the key_str_bits, that's correct.
     // For value_bits we need to inc-ref here so the dec-ref after alloc_list
     // doesn't drop the caller's reference.
-    rt_inc_ref(value_bits);
+    rt_inc_ref(py, value_bits);
     Ok(())
 }
 
@@ -172,3 +182,5 @@ fn normalize_option_str(name: &str) -> String {
         format!("-{name}")
     }
 }
+
+include!("../attached_exports_generated/tkinter_core/options.rs");

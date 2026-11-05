@@ -29,6 +29,7 @@ from molt.llvm_linker_roles import (
     is_llvm_linker_role,
 )
 from molt.cli.native_link_deps import _collect_cargo_native_link_deps
+from molt.cli.native_launch_abi_generated import COMPILED_ISOLATE_BOOTSTRAP_SYMBOL
 from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.native_link_plan import (
@@ -495,7 +496,6 @@ def _build_native_link_plan(
 
 # The runtime leaves the application initializer to the final image. A JIT
 # runner exports it, so a runtime image binds it when the runner loads it.
-APP_ISOLATE_BOOTSTRAP_SYMBOL = "molt_isolate_bootstrap"
 
 
 def runtime_image_suffix(target: NativeTargetSpec) -> str:
@@ -546,7 +546,7 @@ def _build_native_runtime_image_link_plan(
             [
                 "-dynamiclib",
                 f"-Wl,-force_load,{runtime_lib_str}",
-                f"-Wl,-U,_{APP_ISOLATE_BOOTSTRAP_SYMBOL}",
+                f"-Wl,-U,_{COMPILED_ISOLATE_BOOTSTRAP_SYMBOL}",
                 "-o",
                 str(output_image),
                 *native_link_output_flags(

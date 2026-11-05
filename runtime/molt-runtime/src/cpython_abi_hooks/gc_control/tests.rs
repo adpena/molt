@@ -288,8 +288,8 @@ fn public_traversal_omits_internal_owners_but_keeps_physical_edges_and_errors() 
             }
             0
         }
-        let items = crate::molt_dict_items(hidden_bits);
-        let iterator = crate::molt_iter(items);
+        let items = crate::molt_dict_items_attached_body(py, hidden_bits);
+        let iterator = crate::molt_iter_attached_body(py, items);
         let mut edges = Vec::<u64>::new();
         assert_eq!(
             super::hook_managed_gc_traverse(iterator, record_managed_edge, (&raw mut edges).cast(),),
@@ -1051,7 +1051,7 @@ fn promoted_scalar_lists_keep_one_gc_claim_through_both_c_control_facades() {
                 assert!(!crate::object::gc::gc_is_tracked(ptr));
                 assert_eq!(state.counts()[0], allocation_count);
                 if promote_before_view {
-                    crate::molt_list_append(bits, MoltObject::none().bits());
+                    crate::molt_list_append_attached_body(py, bits, MoltObject::none().bits());
                     assert!(!crate::exception_pending(&py));
                     assert!(crate::object::gc::gc_is_tracked(ptr));
                     assert_eq!(state.counts()[0], allocation_count + 1);
@@ -1079,9 +1079,19 @@ fn promoted_scalar_lists_keep_one_gc_claim_through_both_c_control_facades() {
 static FINALIZER_CALLS: AtomicUsize = AtomicUsize::new(0);
 static RESURRECTED: AtomicU64 = AtomicU64::new(0);
 
-extern "C" fn finalized(receiver: u64) -> u64 {
+extern "C" fn finalized(__context: u64, receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     FINALIZER_CALLS.fetch_add(1, Ordering::SeqCst);
-    with_gil(|py| crate::inc_ref_bits(&py, receiver));
+    {
+        let py = __py;
+        crate::inc_ref_bits(&py, receiver)
+    };
     RESURRECTED.store(receiver, Ordering::SeqCst);
     MoltObject::none().bits()
 }
@@ -1094,8 +1104,8 @@ fn c_gc_finalized_query_survives_untracking_and_retracking_real_finalization() {
         FINALIZER_CALLS.store(0, Ordering::SeqCst);
         assert_eq!(RESURRECTED.load(Ordering::SeqCst), 0);
         let name = crate::dynamic_attr_name_bits(&py, b"ManagedGcFinalization").unwrap();
-        let class = crate::molt_class_new(name);
-        crate::molt_class_set_base(class, crate::builtin_classes(&py).object);
+        let class = crate::molt_class_new_attached_body(py, name);
+        crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(&py).object);
         let class_ptr = MoltObject::from_bits(class).as_ptr().unwrap();
         let del = crate::dynamic_attr_name_bits(&py, b"__del__").unwrap();
         let callback =
@@ -1108,7 +1118,7 @@ fn c_gc_finalized_query_survives_untracking_and_retracking_real_finalization() {
                 1,
             ))
             .bits();
-        crate::molt_set_attr_name(class, del, callback);
+        crate::molt_set_attr_name_attached_body(py, class, del, callback);
         crate::object::class_finish_definition(&py, class_ptr).unwrap();
         let bits = crate::alloc_instance_for_class(&py, class_ptr);
         let view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits);
@@ -1118,7 +1128,7 @@ fn c_gc_finalized_query_survives_untracking_and_retracking_real_finalization() {
         assert_eq!(FINALIZER_CALLS.load(Ordering::SeqCst), 1);
         assert_eq!(RESURRECTED.load(Ordering::SeqCst), bits);
         assert_eq!(
-            crate::object::ops_sys::molt_gc_is_finalized(bits),
+            crate::object::ops_sys::molt_gc_is_finalized_attached_body(py, bits),
             MoltObject::from_bool(true).bits()
         );
         for probe in CONTROL_PROBES {
@@ -1174,7 +1184,7 @@ fn both_c_headers_use_native_gc_allocation_and_the_runtime_collector() {
         ] {
             let ptr = crate::alloc_list(&py, &[]);
             let bits = MoltObject::from_ptr(ptr).bits();
-            crate::molt_list_append(bits, bits);
+            crate::molt_list_append_attached_body(py, bits, bits);
             dec_ref_bits(&py, bits);
             let enabled = memory::PyGC_IsEnabled();
             assert!(collect() >= 1);

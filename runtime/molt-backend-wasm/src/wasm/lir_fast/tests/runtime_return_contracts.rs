@@ -272,7 +272,7 @@ module_new:fresh, dict_setitem:(value)=>value, int_from_i64:fresh,
   int_as_i64:()=>72n, handle_resolve:()=>1, inc_ref_obj:retain, dec_ref_obj:release, eq:()=>yes};
 function run(name, ...args) {
   const module = new WebAssembly.Module(fs.readFileSync(config.modules[name]));
-  return new WebAssembly.Instance(module, {molt_runtime:host}).exports.run(...args);
+  return new WebAssembly.Instance(module, attachedImports({molt_runtime:host})).exports.run(executionContext, ...args);
 }
 let value = run('owned_bound', none); counts(1,0,0,1); release(value); counts(1,0,1,0); reset();
 run('owned_discard', none); counts(1,0,1,0); reset();

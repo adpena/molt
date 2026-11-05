@@ -225,8 +225,8 @@ fn thread_worker(
                 }
                 let cancelled = task.cancelled.load(AtomicOrdering::Acquire);
                 if exception_pending(_py) {
-                    let exc_bits = molt_exception_last_pending();
-                    molt_exception_clear();
+                    let exc_bits = molt_exception_last_pending_attached_body(_py);
+                    molt_exception_clear_attached_body(_py);
                     if cancelled {
                         dec_ref_bits(_py, exc_bits);
                     } else {
@@ -270,38 +270,40 @@ fn call_thread_callable(
     if !has_args && !has_kwargs {
         return unsafe { call_callable0(_py, callable_bits) };
     }
-    let builder_bits = molt_callargs_new(0, 0);
+    let builder_bits = molt_callargs_new_attached_body(_py, 0, 0);
     if builder_bits == 0 {
         return MoltObject::none().bits();
     }
     if has_args {
-        let _ = unsafe { molt_callargs_expand_star(builder_bits, args_bits) };
+        let _ = unsafe { molt_callargs_expand_star_attached_body(_py, builder_bits, args_bits) };
         if exception_pending(_py) {
             dec_ref_bits(_py, builder_bits);
             return MoltObject::none().bits();
         }
     }
     if has_kwargs {
-        let _ = unsafe { molt_callargs_expand_kwstar(builder_bits, kwargs_bits) };
+        let _ =
+            unsafe { molt_callargs_expand_kwstar_attached_body(_py, builder_bits, kwargs_bits) };
         if exception_pending(_py) {
             dec_ref_bits(_py, builder_bits);
             return MoltObject::none().bits();
         }
     }
-    molt_call_bind(callable_bits, builder_bits)
+    molt_call_bind_attached_body(_py, callable_bits, builder_bits)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `callable_bits`, `args_bits`, and `kwargs_bits` must be valid runtime objects.
 /// The runtime must be initialized and the call must be allowed to enter the GIL.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_thread_submit(
+
+pub(crate) unsafe fn molt_thread_submit_attached_body(
+    _py: &crate::PyToken<'_>,
     callable_bits: u64,
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if !runtime_state(_py).thread_borrow_admission_is_open() {
             return raise_exception::<u64>(
                 _py,
@@ -311,7 +313,7 @@ pub unsafe extern "C" fn molt_thread_submit(
         }
         // Complete startup before publishing future or callable ownership.
         let pool = runtime_state(_py).thread_pool();
-        let future_bits = molt_future_new(thread_poll_fn_addr(), 0);
+        let future_bits = molt_future_new_attached_body(_py, thread_poll_fn_addr(), 0);
         let Some(future_ptr) = resolve_obj_ptr(future_bits) else {
             return MoltObject::none().bits();
         };
@@ -354,13 +356,14 @@ pub unsafe extern "C" fn molt_thread_submit(
 #[cfg(target_arch = "wasm32")]
 /// # Safety
 /// `callable_bits`, `args_bits`, and `kwargs_bits` must be valid runtime objects.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_thread_submit(
+
+pub(crate) unsafe fn molt_thread_submit_attached_body(
+    _py: &crate::PyToken<'_>,
     _callable_bits: u64,
     _args_bits: u64,
     _kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_exception::<u64>(
             _py,
             BuiltinExc::RuntimeError,
@@ -372,9 +375,12 @@ pub unsafe extern "C" fn molt_thread_submit(
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `obj_bits` must be a valid thread wait future object from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_thread_poll(obj_bits: u64) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_thread_poll_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> i64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj_ptr = ptr_from_bits(obj_bits);
         if obj_ptr.is_null() {
             return MoltObject::none().bits() as i64;
@@ -399,7 +405,7 @@ pub unsafe extern "C" fn molt_thread_poll(obj_bits: u64) -> i64 {
             return pending_bits_i64();
         }
         if let Some(exc_bits) = state.exception.lock().unwrap().as_ref().copied() {
-            let res_bits = molt_raise(exc_bits);
+            let res_bits = molt_raise_attached_body(_py, exc_bits);
             return res_bits as i64;
         }
         if let Some(result_bits) = state.result.lock().unwrap().as_ref().copied() {
@@ -411,11 +417,14 @@ pub unsafe extern "C" fn molt_thread_poll(obj_bits: u64) -> i64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// Caller must ensure `_obj_bits` is a valid thread object pointer or zero.
-pub unsafe extern "C" fn molt_thread_poll(_obj_bits: u64) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, { pending_bits_i64() })
+pub(crate) unsafe fn molt_thread_poll_attached_body(
+    _py: &crate::PyToken<'_>,
+    _obj_bits: u64,
+) -> i64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { pending_bits_i64() })
 }
 
 // ---------------------------------------------------------------------------
@@ -424,14 +433,14 @@ pub unsafe extern "C" fn molt_thread_poll(_obj_bits: u64) -> i64 {
 // ---------------------------------------------------------------------------
 
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_threading_available() -> u64 {
+
+pub(crate) fn molt_threading_available_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     MoltObject::from_bool(true).bits()
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_threading_available() -> u64 {
+
+pub(crate) fn molt_threading_available_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     MoltObject::from_bool(false).bits()
 }
 
@@ -456,9 +465,12 @@ const WASM_THREAD_BLOCKED_MODULES: &[&str] = &[
 /// # Safety
 /// `name_bits` must be a valid NaN-boxed string object.
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_wasm_check_module_gate(name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) unsafe fn molt_wasm_check_module_gate_attached_body(
+    _py: &crate::PyToken<'_>,
+    name_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name) = crate::string_obj_to_owned(name_obj) else {
             return MoltObject::none().bits();
@@ -482,8 +494,11 @@ pub unsafe extern "C" fn molt_wasm_check_module_gate(name_bits: u64) -> u64 {
 /// # Safety
 /// `name_bits` must be a valid NaN-boxed string object.
 #[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_wasm_check_module_gate(_name_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_wasm_check_module_gate_attached_body(
+    _py: &crate::PyToken<'_>,
+    _name_bits: u64,
+) -> u64 {
     MoltObject::none().bits()
 }
 
@@ -493,9 +508,12 @@ pub unsafe extern "C" fn molt_wasm_check_module_gate(_name_bits: u64) -> u64 {
 // ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_thread_start(_callable_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_thread_start_attached_body(
+    _py: &crate::PyToken<'_>,
+    _callable_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         raise_exception::<u64>(
             _py,
             BuiltinExc::RuntimeError,
@@ -509,15 +527,21 @@ pub extern "C" fn molt_thread_start(_callable_bits: u64) -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `callable_bits` must be a valid runtime callable object.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_thread_start(callable_bits: u64) -> u64 {
+
+pub(crate) unsafe fn molt_thread_start_attached_body(
+    _py: &crate::PyToken<'_>,
+    callable_bits: u64,
+) -> u64 {
     // On native, this is a simple alias for molt_thread_submit with no
     // args/kwargs.
     unsafe {
-        molt_thread_submit(
+        molt_thread_submit_attached_body(
+            _py,
             callable_bits,
             MoltObject::none().bits(),
             MoltObject::none().bits(),
         )
     }
 }
+
+include!("../attached_exports_generated/async_rt/threads.rs");

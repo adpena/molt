@@ -19,9 +19,13 @@ fn return_bytes(_py: &PyToken, data: &[u8]) -> u64 {
 }
 
 // ── Existing raw deflate/inflate ─────────────────────────────────────────────
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deflate_raw(data_bits: u64, level_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_deflate_raw_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+    level_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let export = match unsafe { ByteInput::acquire(_py, data_bits) } {
             Ok(export) => export,
             Err(_) => return MoltObject::none().bits(),
@@ -59,16 +63,15 @@ pub extern "C" fn molt_deflate_raw(data_bits: u64, level_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inflate_raw(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_inflate_raw_attached_body(_py: &molt_runtime_core::PyToken, data_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         // Internal ZIP storage accepts only physical bytes/bytearray here.
         let obj = obj_from_bits(data_bits);
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception(_py, BuiltinExc::TypeError, "inflate expects bytes");
         };
         unsafe {
-            let type_id = object_type_id(ptr);
+            let type_id = object_type_id(_py, ptr);
             if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
                 return raise_exception(
                     _py,
@@ -76,7 +79,7 @@ pub extern "C" fn molt_inflate_raw(data_bits: u64) -> u64 {
                     &format!("inflate expects bytes, got {}", type_name(_py, obj)),
                 );
             }
-            let input = std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr));
+            let input = std::slice::from_raw_parts(bytes_data(_py, ptr), bytes_len(_py, ptr));
             match decompress_bytes(input, -15, 16384) {
                 Ok(out) => return_bytes(_py, &out),
                 Err(ZlibFailure::Memory) => {
@@ -88,14 +91,14 @@ pub extern "C" fn molt_inflate_raw(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_compress(
+pub fn molt_zlib_compress_attached_body(
+    _py: &molt_runtime_core::PyToken,
     error_class: u64,
     data_bits: u64,
     level_bits: u64,
     wbits_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
         let export = match unsafe { ByteInput::acquire(_py, data_bits) } {
             Ok(export) => export,
@@ -137,14 +140,14 @@ pub extern "C" fn molt_zlib_compress(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_decompress(
+pub fn molt_zlib_decompress_attached_body(
+    _py: &molt_runtime_core::PyToken,
     error_class: u64,
     data_bits: u64,
     wbits_bits: u64,
     bufsize_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
         let export = match unsafe { ByteInput::acquire(_py, data_bits) } {
             Ok(export) => export,
@@ -277,9 +280,13 @@ pub(crate) fn decompress_bytes(
 // ── zlib.crc32 ───────────────────────────────────────────────────────────────
 
 /// `zlib.crc32(data, value=0) -> int`
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_crc32(data_bits: u64, value_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_zlib_crc32_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let data_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
             Ok(export) => export,
             Err(_) => return MoltObject::none().bits(),
@@ -383,9 +390,13 @@ fn adler32_compute(data: &[u8], initial: u32) -> u32 {
 }
 
 /// `zlib.adler32(data, value=1) -> int`
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_adler32(data_bits: u64, value_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_zlib_adler32_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let data_export = match unsafe { ByteInput::acquire(_py, data_bits) } {
             Ok(export) => export,
             Err(_) => return MoltObject::none().bits(),
@@ -417,61 +428,61 @@ pub extern "C" fn molt_zlib_adler32(data_bits: u64, value_bits: u64) -> u64 {
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_max_wbits() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 15))
+
+pub fn molt_zlib_max_wbits_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, 15))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_def_mem_level() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 8))
+
+pub fn molt_zlib_def_mem_level_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, 8))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_def_buf_size() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 16384))
+
+pub fn molt_zlib_def_buf_size_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, 16384))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_z_default_compression() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, -1))
+
+pub fn molt_zlib_z_default_compression_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, -1))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_z_best_speed() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 1))
+
+pub fn molt_zlib_z_best_speed_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, 1))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_z_best_compression() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 9))
+
+pub fn molt_zlib_z_best_compression_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, 9))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_z_no_compression() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 0))
+
+pub fn molt_zlib_z_no_compression_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, 0))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_z_filtered() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 1))
+
+pub fn molt_zlib_z_filtered_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, 1))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_z_huffman_only() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 2))
+
+pub fn molt_zlib_z_huffman_only_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, 2))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_z_default_strategy() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 0))
+
+pub fn molt_zlib_z_default_strategy_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, 0))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_z_finish() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 4))
+
+pub fn molt_zlib_z_finish_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, 4))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_z_no_flush() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 0))
+
+pub fn molt_zlib_z_no_flush_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, 0))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_z_sync_flush() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 2))
+
+pub fn molt_zlib_z_sync_flush_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, 2))
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_z_full_flush() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, 3))
+
+pub fn molt_zlib_z_full_flush_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, int_bits_from_i64(_py, 3))
 }
 
 // ── Streaming compressobj ────────────────────────────────────────────────────
@@ -629,17 +640,25 @@ impl CompressorHandle {
     }
 }
 
-fn compressor_from_bits(bits: u64) -> Option<Arc<Mutex<CompressorHandle>>> {
+fn compressor_from_bits(
+    py: &molt_runtime_core::PyToken,
+    bits: u64,
+) -> Option<Arc<Mutex<CompressorHandle>>> {
     unsafe {
-        molt_runtime_core::clone_native_arc(bits, __molt_compression_zlib_compressor_owner_clone)
+        molt_runtime_core::clone_native_arc(
+            py,
+            bits,
+            __molt_compression_zlib_compressor_owner_clone,
+        )
     }
 }
 
 /// Options are converted in Clinic order before backend validation. Supplied
 /// dictionary bytes are borrowed only through deflateSetDictionary, never saved
 /// as an untraced Python edge in the native owner.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_compressobj_new(
+
+pub fn molt_zlib_compressobj_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
     error_class: u64,
     level_bits: u64,
     method_bits: u64,
@@ -649,7 +668,7 @@ pub extern "C" fn molt_zlib_compressobj_new(
     zdict_bits: u64,
     zdict_present_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
         let Some(zdict_present) = obj_from_bits(zdict_present_bits).as_bool() else {
             return raise_exception(_py, BuiltinExc::SystemError, "invalid zdict presence flag");
@@ -742,6 +761,7 @@ pub extern "C" fn molt_zlib_compressobj_new(
         }));
         unsafe {
             molt_runtime_core::transfer_native_arc(
+                _py,
                 owner,
                 __molt_compression_zlib_compressor_owner_new,
             )
@@ -749,15 +769,15 @@ pub extern "C" fn molt_zlib_compressobj_new(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_compressobj_compress(
+pub fn molt_zlib_compressobj_compress_attached_body(
+    _py: &molt_runtime_core::PyToken,
     error_class: u64,
     handle_bits: u64,
     data_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
-        let Some(handle_owner) = compressor_from_bits(handle_bits) else {
+        let Some(handle_owner) = compressor_from_bits(_py, handle_bits) else {
             return molt_runtime_core::rt_raise_class(
                 _py,
                 error_owner.bits(),
@@ -792,15 +812,15 @@ pub extern "C" fn molt_zlib_compressobj_compress(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_compressobj_flush(
+pub fn molt_zlib_compressobj_flush_attached_body(
+    _py: &molt_runtime_core::PyToken,
     error_class: u64,
     handle_bits: u64,
     mode_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
-        let Some(handle_owner) = compressor_from_bits(handle_bits) else {
+        let Some(handle_owner) = compressor_from_bits(_py, handle_bits) else {
             return molt_runtime_core::rt_raise_class(
                 _py,
                 error_owner.bits(),
@@ -1174,16 +1194,26 @@ fn zlib_error_message(code: i32, message: Option<&ZlibMessage>, phase: &str) -> 
     }
 }
 
-fn decompressor_from_bits(bits: u64) -> Option<Arc<Mutex<DecompressorHandle>>> {
+fn decompressor_from_bits(
+    py: &molt_runtime_core::PyToken,
+    bits: u64,
+) -> Option<Arc<Mutex<DecompressorHandle>>> {
     unsafe {
-        molt_runtime_core::clone_native_arc(bits, __molt_compression_zlib_decompressor_owner_clone)
+        molt_runtime_core::clone_native_arc(
+            py,
+            bits,
+            __molt_compression_zlib_decompressor_owner_clone,
+        )
     }
 }
 
 /// `zlib.decompressobj(wbits=MAX_WBITS) -> handle`
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_decompressobj_new(wbits_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_zlib_decompressobj_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    wbits_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let wbits = match codec_index(_py, wbits_bits, CodecIndexRole::CInt) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1220,6 +1250,7 @@ pub extern "C" fn molt_zlib_decompressobj_new(wbits_bits: u64) -> u64 {
         }));
         unsafe {
             molt_runtime_core::transfer_native_arc(
+                _py,
                 handle,
                 __molt_compression_zlib_decompressor_owner_new,
             )
@@ -1228,17 +1259,18 @@ pub extern "C" fn molt_zlib_decompressobj_new(wbits_bits: u64) -> u64 {
 }
 
 /// `decompressobj.decompress(data, max_length=0) -> bytes`
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_decompressobj_decompress(
+
+pub fn molt_zlib_decompressobj_decompress_attached_body(
+    _py: &molt_runtime_core::PyToken,
     error_class: u64,
     handle_bits: u64,
     data_bits: u64,
     max_length_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
         let error_class = error_owner.bits();
-        let Some(handle_owner) = decompressor_from_bits(handle_bits) else {
+        let Some(handle_owner) = decompressor_from_bits(_py, handle_bits) else {
             return molt_runtime_core::rt_raise_class(
                 _py,
                 error_class,
@@ -1306,16 +1338,17 @@ pub extern "C" fn molt_zlib_decompressobj_decompress(
 }
 
 /// `decompressobj.flush(length=DEF_BUF_SIZE) -> bytes`
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_decompressobj_flush(
+
+pub fn molt_zlib_decompressobj_flush_attached_body(
+    _py: &molt_runtime_core::PyToken,
     error_class: u64,
     handle_bits: u64,
     _length_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
         let error_class = error_owner.bits();
-        let Some(handle_owner) = decompressor_from_bits(handle_bits) else {
+        let Some(handle_owner) = decompressor_from_bits(_py, handle_bits) else {
             return molt_runtime_core::rt_raise_class(
                 _py,
                 error_class,
@@ -1372,12 +1405,16 @@ pub extern "C" fn molt_zlib_decompressobj_flush(
 }
 
 /// `decompressobj.eof` property
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_decompressobj_eof(error_class: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_zlib_decompressobj_eof_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    error_class: u64,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
         let error_class = error_owner.bits();
-        let Some(handle_owner) = decompressor_from_bits(handle_bits) else {
+        let Some(handle_owner) = decompressor_from_bits(_py, handle_bits) else {
             return molt_runtime_core::rt_raise_class(
                 _py,
                 error_class,
@@ -1393,15 +1430,16 @@ pub extern "C" fn molt_zlib_decompressobj_eof(error_class: u64, handle_bits: u64
 }
 
 /// `decompressobj.unconsumed_tail` property
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_decompressobj_unconsumed_tail(
+
+pub fn molt_zlib_decompressobj_unconsumed_tail_attached_body(
+    _py: &molt_runtime_core::PyToken,
     error_class: u64,
     handle_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
         let error_class = error_owner.bits();
-        let Some(handle_owner) = decompressor_from_bits(handle_bits) else {
+        let Some(handle_owner) = decompressor_from_bits(_py, handle_bits) else {
             return molt_runtime_core::rt_raise_class(
                 _py,
                 error_class,
@@ -1425,12 +1463,16 @@ pub extern "C" fn molt_zlib_decompressobj_unconsumed_tail(
 /// Per CPython zlib semantics, this is b"" until the last byte of compressed
 /// data has been processed; once the stream ends it holds any bytes found
 /// past the end of the compressed data (e.g. trailing/concatenated streams).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_decompressobj_unused_data(error_class: u64, handle_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_zlib_decompressobj_unused_data_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    error_class: u64,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
         let error_class = error_owner.bits();
-        let Some(handle_owner) = decompressor_from_bits(handle_bits) else {
+        let Some(handle_owner) = decompressor_from_bits(_py, handle_bits) else {
             return molt_runtime_core::rt_raise_class(
                 _py,
                 error_class,
@@ -1740,3 +1782,5 @@ mod stream_tests {
         );
     }
 }
+
+include!("attached_exports_generated/zlib.rs");

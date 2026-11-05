@@ -10,10 +10,14 @@ use std::io::Cursor;
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure ptr is valid UTF-8 of at least len bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_json_parse_int(ptr: *const u8, len_bits: u64) -> i64 {
+
+pub(crate) unsafe fn molt_json_parse_int_attached_body(
+    _py: &crate::PyToken<'_>,
+    ptr: *const u8,
+    len_bits: u64,
+) -> i64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(len) = usize_from_bits(len_bits) else {
                 return 0;
             };
@@ -449,9 +453,11 @@ fn json_scanstring_decode(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_json_encode_basestring_obj(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_json_encode_basestring_obj_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(value) = string_obj_to_owned(obj_from_bits(obj_bits)) else {
             let type_name = type_name(_py, obj_from_bits(obj_bits));
             let msg = format!("first argument must be a string, not {type_name}");
@@ -466,9 +472,11 @@ pub extern "C" fn molt_json_encode_basestring_obj(obj_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_json_encode_basestring_ascii_obj(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_json_encode_basestring_ascii_obj_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(value) = string_obj_to_owned(obj_from_bits(obj_bits)) else {
             let type_name = type_name(_py, obj_from_bits(obj_bits));
             let msg = format!("first argument must be a string, not {type_name}");
@@ -483,9 +491,13 @@ pub extern "C" fn molt_json_encode_basestring_ascii_obj(obj_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_json_scanstring_obj(text_bits: u64, end_bits: u64, strict_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_json_scanstring_obj_attached_body(
+    _py: &crate::PyToken<'_>,
+    text_bits: u64,
+    end_bits: u64,
+    strict_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(text) = crate::object::ops_format::string_obj_bytes(obj_from_bits(text_bits))
         else {
             let type_name = type_name(_py, obj_from_bits(text_bits));
@@ -918,14 +930,15 @@ unsafe fn parse_json_scalar(
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure ptr is valid UTF-8 of at least len bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_json_parse_scalar(
+
+pub(crate) unsafe fn molt_json_parse_scalar_attached_body(
+    _py: &crate::PyToken<'_>,
     ptr: *const u8,
     len_bits: u64,
     out: *mut u64,
 ) -> i32 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(len) = usize_from_bits(len_bits) else {
                 return 1;
             };
@@ -951,14 +964,15 @@ pub unsafe extern "C" fn molt_json_parse_scalar(
 /// # Safety
 /// Caller must ensure ptr is valid for len bytes.
 #[cfg(feature = "stdlib_serialization")]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_msgpack_parse_scalar(
+
+pub(crate) unsafe fn molt_msgpack_parse_scalar_attached_body(
+    _py: &crate::PyToken<'_>,
     ptr: *const u8,
     len_bits: u64,
     out: *mut u64,
 ) -> i32 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(len) = usize_from_bits(len_bits) else {
                 return 1;
             };
@@ -990,14 +1004,15 @@ pub unsafe extern "C" fn molt_msgpack_parse_scalar(
 /// # Safety
 /// Caller must ensure ptr is valid for len bytes.
 #[cfg(feature = "stdlib_serialization")]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_cbor_parse_scalar(
+
+pub(crate) unsafe fn molt_cbor_parse_scalar_attached_body(
+    _py: &crate::PyToken<'_>,
     ptr: *const u8,
     len_bits: u64,
     out: *mut u64,
 ) -> i32 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(len) = usize_from_bits(len_bits) else {
                 return 1;
             };
@@ -1025,9 +1040,11 @@ pub unsafe extern "C" fn molt_cbor_parse_scalar(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_json_parse_scalar_obj(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_json_parse_scalar_obj_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(obj_bits);
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "json.parse expects str");
@@ -1054,9 +1071,12 @@ pub extern "C" fn molt_json_parse_scalar_obj(obj_bits: u64) -> u64 {
 }
 
 #[cfg(feature = "stdlib_serialization")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_msgpack_parse_scalar_obj(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_msgpack_parse_scalar_obj_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(obj_bits);
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "msgpack.parse expects bytes");
@@ -1098,9 +1118,12 @@ pub extern "C" fn molt_msgpack_parse_scalar_obj(obj_bits: u64) -> u64 {
 }
 
 #[cfg(feature = "stdlib_serialization")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cbor_parse_scalar_obj(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_cbor_parse_scalar_obj_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(obj_bits);
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "cbor.parse expects bytes");
@@ -2101,14 +2124,15 @@ fn raise_json_parse_error(_py: &PyToken<'_>, text: &[u8], err: JsonParseError) -
 ///   indent_bits       — None for compact, int for number of spaces
 ///   sort_keys_bits    — boolean
 ///   ensure_ascii_bits — boolean
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_json_dumps(
+
+pub(crate) fn molt_json_dumps_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     indent_bits: u64,
     sort_keys_bits: u64,
     ensure_ascii_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let indent_text = match parse_json_indent_text(_py, indent_bits) {
             Ok(text) => text,
             Err(bits) => return bits,
@@ -2158,8 +2182,8 @@ pub extern "C" fn molt_json_dumps(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_json_dumps_ex(
+pub(crate) fn molt_json_dumps_ex_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     skipkeys_bits: u64,
     ensure_ascii_bits: u64,
@@ -2171,7 +2195,7 @@ pub extern "C" fn molt_json_dumps_ex(
     key_separator_bits: u64,
     default_fn_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let indent_text = match parse_json_indent_text(_py, indent_bits) {
             Ok(text) => text,
             Err(bits) => return bits,
@@ -2227,8 +2251,8 @@ pub extern "C" fn molt_json_dumps_ex(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_json_loads_ex(
+pub(crate) fn molt_json_loads_ex_attached_body(
+    _py: &crate::PyToken<'_>,
     text_bits: u64,
     parse_float_bits: u64,
     parse_int_bits: u64,
@@ -2237,7 +2261,7 @@ pub extern "C" fn molt_json_loads_ex(
     object_pairs_hook_bits: u64,
     strict_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let payload_obj = obj_from_bits(text_bits);
         let text = if let Some(text) = crate::object::ops_format::string_obj_bytes(payload_obj) {
             text
@@ -2278,8 +2302,8 @@ pub extern "C" fn molt_json_loads_ex(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_json_raw_decode_ex(
+pub(crate) fn molt_json_raw_decode_ex_attached_body(
+    _py: &crate::PyToken<'_>,
     text_bits: u64,
     idx_bits: u64,
     parse_float_bits: u64,
@@ -2289,7 +2313,7 @@ pub extern "C" fn molt_json_raw_decode_ex(
     object_pairs_hook_bits: u64,
     strict_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(text) = crate::object::ops_format::string_obj_bytes(obj_from_bits(text_bits))
         else {
             let tn = type_name(_py, obj_from_bits(text_bits));
@@ -2336,9 +2360,13 @@ pub extern "C" fn molt_json_raw_decode_ex(
 
 /// Compute (lineno, colno) for a given position in a JSON document string.
 /// Returns a 2-tuple (lineno, colno).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_json_calc_lineno_col(doc_bits: u64, pos_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_json_calc_lineno_col_attached_body(
+    _py: &crate::PyToken<'_>,
+    doc_bits: u64,
+    pos_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(doc) = crate::object::ops_format::string_obj_bytes(obj_from_bits(doc_bits)) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "doc must be str");
         };
@@ -2365,9 +2393,12 @@ pub extern "C" fn molt_json_calc_lineno_col(doc_bits: u64, pos_bits: u64) -> u64
 /// If the input is already a string, returns it directly.
 /// If bytes/bytearray, detects encoding and decodes.
 /// Raises TypeError for other types.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_json_coerce_text(payload_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_json_coerce_text_attached_body(
+    _py: &crate::PyToken<'_>,
+    payload_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj = obj_from_bits(payload_bits);
         if let Some(ptr) = obj.as_ptr() {
             let kind = unsafe { object_type_id(ptr) };
@@ -2400,9 +2431,12 @@ pub extern "C" fn molt_json_coerce_text(payload_bits: u64) -> u64 {
 
 /// Return default separators based on indent value.
 /// If indent is None -> (", ", ": "), otherwise -> (",", ": ").
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_json_default_separators(indent_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_json_default_separators_attached_body(
+    _py: &crate::PyToken<'_>,
+    indent_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let is_none = obj_from_bits(indent_bits).is_none();
         let (item_sep, key_sep) = if is_none { (", ", ": ") } else { (",", ": ") };
         let item_ptr = alloc_string(_py, item_sep.as_bytes());
@@ -2423,13 +2457,14 @@ pub extern "C" fn molt_json_default_separators(indent_bits: u64) -> u64 {
 }
 
 /// Format a JSONDecodeError message string: "{msg}: line {lineno} column {colno} (char {pos})"
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_json_format_decode_error(
+
+pub(crate) fn molt_json_format_decode_error_attached_body(
+    _py: &crate::PyToken<'_>,
     msg_bits: u64,
     doc_bits: u64,
     pos_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(msg) = string_obj_to_owned(obj_from_bits(msg_bits)) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "msg must be str");
         };
@@ -2452,9 +2487,12 @@ pub extern "C" fn molt_json_format_decode_error(
 
 /// Parse a ValueError message to extract (msg, pos) for JSONDecodeError construction.
 /// Returns (msg, pos) tuple if the message matches the pattern, or None if not.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_json_parse_error_msg(exc_msg_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_json_parse_error_msg_attached_body(
+    _py: &crate::PyToken<'_>,
+    exc_msg_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(exc_msg_bits)) else {
             return MoltObject::none().bits();
         };
@@ -2491,3 +2529,5 @@ pub extern "C" fn molt_json_parse_error_msg(exc_msg_bits: u64) -> u64 {
 #[cfg(test)]
 #[path = "json_tests.rs"]
 mod float_text_tests;
+
+include!("../attached_exports_generated/builtins/json.rs");

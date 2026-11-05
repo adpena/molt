@@ -28,8 +28,8 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 // ─── Handle counters ──────────────────────────────────────────────────────────
 
-fn next_ordereddict_handle() -> i64 {
-    collections_state()
+fn next_ordereddict_handle(py: &molt_runtime_core::PyToken) -> i64 {
+    collections_state(py)
         .next_ordereddict_handle
         .fetch_add(1, Ordering::Relaxed)
 }
@@ -178,11 +178,11 @@ fn od_handle_from_bits(_py: &CoreGilToken, handle_bits: u64) -> Option<i64> {
 // ─── Public intrinsics: OrderedDict ──────────────────────────────────────────
 
 /// Create a new empty OrderedDict. Returns an integer handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ordereddict_new() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let id = next_ordereddict_handle();
-        collections_state()
+
+pub fn molt_ordereddict_new_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let id = next_ordereddict_handle(_py);
+        collections_state(_py)
             .ordereddict_registry
             .lock()
             .unwrap()
@@ -192,9 +192,12 @@ pub extern "C" fn molt_ordereddict_new() -> u64 {
 }
 
 /// Create an OrderedDict from a list of (k, v) 2-tuples. Returns handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ordereddict_from_pairs(pairs_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_ordereddict_from_pairs_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    pairs_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let obj = obj_from_bits(pairs_bits);
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected a list of pairs");
@@ -203,7 +206,7 @@ pub extern "C" fn molt_ordereddict_from_pairs(pairs_bits: u64) -> u64 {
         if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected a list of pairs");
         }
-        let elems = unsafe { seq_snapshot(ptr) };
+        let elems = unsafe { seq_snapshot(_py, ptr) };
         let mut state = OrderedDictState::new();
         for &elem_bits in elems.iter() {
             let elem_obj = obj_from_bits(elem_bits);
@@ -222,7 +225,7 @@ pub extern "C" fn molt_ordereddict_from_pairs(pairs_bits: u64) -> u64 {
                     "each pair must be a tuple",
                 );
             }
-            let pair = unsafe { seq_snapshot(elem_ptr) };
+            let pair = unsafe { seq_snapshot(_py, elem_ptr) };
             if pair.len() < 2 {
                 return raise_exception::<_>(
                     _py,
@@ -232,8 +235,8 @@ pub extern "C" fn molt_ordereddict_from_pairs(pairs_bits: u64) -> u64 {
             }
             state.insert(pair[0], pair[1]);
         }
-        let id = next_ordereddict_handle();
-        collections_state()
+        let id = next_ordereddict_handle(_py);
+        collections_state(_py)
             .ordereddict_registry
             .lock()
             .unwrap()
@@ -243,18 +246,19 @@ pub extern "C" fn molt_ordereddict_from_pairs(pairs_bits: u64) -> u64 {
 }
 
 /// Set key → value. Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ordereddict_setitem(
+
+pub fn molt_ordereddict_setitem_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     key_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
         {
-            let mut map = collections_state().ordereddict_registry.lock().unwrap();
+            let mut map = collections_state(_py).ordereddict_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 state.insert(key_bits, value_bits);
             }
@@ -264,13 +268,17 @@ pub extern "C" fn molt_ordereddict_setitem(
 }
 
 /// Get value for key. Raises KeyError if missing.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ordereddict_getitem(handle_bits: u64, key_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_ordereddict_getitem_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let val = collections_state()
+        let val = collections_state(_py)
             .ordereddict_registry
             .lock()
             .unwrap()
@@ -284,13 +292,17 @@ pub extern "C" fn molt_ordereddict_getitem(handle_bits: u64, key_bits: u64) -> u
 }
 
 /// Delete key. Raises KeyError if missing. Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ordereddict_delitem(handle_bits: u64, key_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_ordereddict_delitem_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let removed = collections_state()
+        let removed = collections_state(_py)
             .ordereddict_registry
             .lock()
             .unwrap()
@@ -304,14 +316,18 @@ pub extern "C" fn molt_ordereddict_delitem(handle_bits: u64, key_bits: u64) -> u
 }
 
 /// Return True if key is present.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ordereddict_contains(handle_bits: u64, key_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_ordereddict_contains_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
         let found = {
-            collections_state()
+            collections_state(_py)
                 .ordereddict_registry
                 .lock()
                 .unwrap()
@@ -324,13 +340,16 @@ pub extern "C" fn molt_ordereddict_contains(handle_bits: u64, key_bits: u64) -> 
 }
 
 /// Return number of entries.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ordereddict_len(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_ordereddict_len_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let len = collections_state()
+        let len = collections_state(_py)
             .ordereddict_registry
             .lock()
             .unwrap()
@@ -342,14 +361,17 @@ pub extern "C" fn molt_ordereddict_len(handle_bits: u64) -> u64 {
 }
 
 /// Return list of keys in insertion order.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ordereddict_keys(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_ordereddict_keys_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
         let keys: Vec<u64> = {
-            collections_state()
+            collections_state(_py)
                 .ordereddict_registry
                 .lock()
                 .unwrap()
@@ -366,14 +388,17 @@ pub extern "C" fn molt_ordereddict_keys(handle_bits: u64) -> u64 {
 }
 
 /// Return list of values in insertion order.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ordereddict_values(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_ordereddict_values_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
         let vals: Vec<u64> = {
-            collections_state()
+            collections_state(_py)
                 .ordereddict_registry
                 .lock()
                 .unwrap()
@@ -390,14 +415,17 @@ pub extern "C" fn molt_ordereddict_values(handle_bits: u64) -> u64 {
 }
 
 /// Return list of (key, value) 2-tuples in insertion order.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ordereddict_items(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_ordereddict_items_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
         let pairs: Vec<(u64, u64)> = {
-            collections_state()
+            collections_state(_py)
                 .ordereddict_registry
                 .lock()
                 .unwrap()
@@ -426,19 +454,20 @@ pub extern "C" fn molt_ordereddict_items(handle_bits: u64) -> u64 {
 }
 
 /// Move key to end (last=True) or front (last=False). Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ordereddict_move_to_end(
+
+pub fn molt_ordereddict_move_to_end_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     key_bits: u64,
     last_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
         let last = is_truthy(_py, obj_from_bits(last_bits));
         let found = {
-            let mut map = collections_state().ordereddict_registry.lock().unwrap();
+            let mut map = collections_state(_py).ordereddict_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 if state.contains(key_bits) {
                     state.move_to_end(key_bits, last);
@@ -458,14 +487,18 @@ pub extern "C" fn molt_ordereddict_move_to_end(
 }
 
 /// Remove and return (key, value) from end (last=True) or front (last=False).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ordereddict_popitem(handle_bits: u64, last_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_ordereddict_popitem_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    last_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
         let last = is_truthy(_py, obj_from_bits(last_bits));
-        let item = collections_state()
+        let item = collections_state(_py)
             .ordereddict_registry
             .lock()
             .unwrap()
@@ -484,13 +517,18 @@ pub extern "C" fn molt_ordereddict_popitem(handle_bits: u64, last_bits: u64) -> 
 
 /// Pop key, returning value or default. Returns None sentinel if key missing
 /// and no default provided (default_bits must be None sentinel or a value).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ordereddict_pop(handle_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_ordereddict_pop_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    key_bits: u64,
+    default_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let removed = collections_state()
+        let removed = collections_state(_py)
             .ordereddict_registry
             .lock()
             .unwrap()
@@ -517,9 +555,13 @@ pub extern "C" fn molt_ordereddict_pop(handle_bits: u64, key_bits: u64, default_
 }
 
 /// Update from another OrderedDict handle or a regular dict object. Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ordereddict_update(handle_bits: u64, other_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_ordereddict_update_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    other_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -528,7 +570,7 @@ pub extern "C" fn molt_ordereddict_update(handle_bits: u64, other_bits: u64) -> 
         if let Some(other_id) = to_i64(other_obj) {
             // Treat as another OrderedDict handle.
             let pairs: Vec<(u64, u64)> = {
-                collections_state()
+                collections_state(_py)
                     .ordereddict_registry
                     .lock()
                     .unwrap()
@@ -537,7 +579,7 @@ pub extern "C" fn molt_ordereddict_update(handle_bits: u64, other_bits: u64) -> 
                     .unwrap_or_default()
             };
             {
-                let mut map = collections_state().ordereddict_registry.lock().unwrap();
+                let mut map = collections_state(_py).ordereddict_registry.lock().unwrap();
                 if let Some(state) = map.get_mut(&id) {
                     for (k, v) in pairs {
                         state.insert(k, v);
@@ -558,7 +600,7 @@ pub extern "C" fn molt_ordereddict_update(handle_bits: u64, other_bits: u64) -> 
                     .map(|&[k, v]| (k, v))
                     .collect();
                 {
-                    let mut map = collections_state().ordereddict_registry.lock().unwrap();
+                    let mut map = collections_state(_py).ordereddict_registry.lock().unwrap();
                     if let Some(state) = map.get_mut(&id) {
                         for (k, v) in kv_pairs {
                             state.insert(k, v);
@@ -576,14 +618,17 @@ pub extern "C" fn molt_ordereddict_update(handle_bits: u64, other_bits: u64) -> 
 }
 
 /// Clear all entries. Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ordereddict_clear(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_ordereddict_clear_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
         {
-            let mut map = collections_state().ordereddict_registry.lock().unwrap();
+            let mut map = collections_state(_py).ordereddict_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 state.clear();
             }
@@ -593,13 +638,16 @@ pub extern "C" fn molt_ordereddict_clear(handle_bits: u64) -> u64 {
 }
 
 /// Return a shallow copy as a new handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ordereddict_copy(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_ordereddict_copy_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let cloned = collections_state()
+        let cloned = collections_state(_py)
             .ordereddict_registry
             .lock()
             .unwrap()
@@ -612,8 +660,8 @@ pub extern "C" fn molt_ordereddict_copy(handle_bits: u64) -> u64 {
                 "invalid OrderedDict handle",
             );
         };
-        let new_id = next_ordereddict_handle();
-        collections_state()
+        let new_id = next_ordereddict_handle(_py);
+        collections_state(_py)
             .ordereddict_registry
             .lock()
             .unwrap()
@@ -623,13 +671,16 @@ pub extern "C" fn molt_ordereddict_copy(handle_bits: u64) -> u64 {
 }
 
 /// Release handle resources. Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ordereddict_drop(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_ordereddict_drop_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = od_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        collections_state()
+        collections_state(_py)
             .ordereddict_registry
             .lock()
             .unwrap()
@@ -640,8 +691,8 @@ pub extern "C" fn molt_ordereddict_drop(handle_bits: u64) -> u64 {
 
 // ─── Handle counter ─────────────────────────────────────────────────────────
 
-fn next_deque_handle() -> i64 {
-    collections_state()
+fn next_deque_handle(py: &molt_runtime_core::PyToken) -> i64 {
+    collections_state(py)
         .next_deque_handle
         .fetch_add(1, Ordering::Relaxed)
 }
@@ -720,8 +771,8 @@ fn deque_handle_from_bits(_py: &CoreGilToken, handle_bits: u64) -> Option<i64> {
 /// Comparison cursors hold no registry guard across a Python callback. Element
 /// replacement keeps the structural version but must be observed at the next
 /// position, so each item is retained from current storage independently.
-fn deque_comparison_start(id: i64) -> (usize, u64) {
-    collections_state()
+fn deque_comparison_start(py: &molt_runtime_core::PyToken, id: i64) -> (usize, u64) {
+    collections_state(py)
         .deque_registry
         .lock()
         .unwrap()
@@ -731,7 +782,7 @@ fn deque_comparison_start(id: i64) -> (usize, u64) {
 }
 
 fn deque_comparison_item(py: &CoreGilToken, id: i64, index: usize) -> Option<u64> {
-    collections_state()
+    collections_state(py)
         .deque_registry
         .lock()
         .unwrap()
@@ -739,8 +790,8 @@ fn deque_comparison_item(py: &CoreGilToken, id: i64, index: usize) -> Option<u64
         .and_then(|state| state.data.get(index).copied())
         .map(|bits| retain_handle_value(py, bits))
 }
-fn deque_mutated_since(id: i64, expected_version: u64) -> bool {
-    collections_state()
+fn deque_mutated_since(py: &molt_runtime_core::PyToken, id: i64, expected_version: u64) -> bool {
+    collections_state(py)
         .deque_registry
         .lock()
         .unwrap()
@@ -776,7 +827,7 @@ fn parse_maxlen(
 fn extract_iterable_elements(
     _py: &CoreGilToken,
     iterable_bits: u64,
-) -> Option<OwnedBridgeHandleSnapshot> {
+) -> Option<OwnedBridgeHandleSnapshot<'_>> {
     let obj = obj_from_bits(iterable_bits);
     let Some(ptr) = obj.as_ptr() else {
         let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "argument must be an iterable");
@@ -787,7 +838,7 @@ fn extract_iterable_elements(
         let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "argument must be an iterable");
         return None;
     }
-    Some(unsafe { seq_snapshot(ptr) })
+    Some(unsafe { seq_snapshot(_py, ptr) })
 }
 
 /// Resolve a potentially negative index against a given length.
@@ -804,15 +855,15 @@ fn resolve_index(index: i64, len: usize) -> Option<usize> {
 // ─── Public intrinsics: deque ───────────────────────────────────────────────
 
 /// Create a new empty deque with optional maxlen. Returns an integer handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_new(maxlen_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_deque_new_attached_body(_py: &molt_runtime_core::PyToken, maxlen_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let maxlen = match parse_maxlen(_py, maxlen_bits) {
             Ok(m) => m,
             Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
         };
-        let id = next_deque_handle();
-        collections_state()
+        let id = next_deque_handle(_py);
+        collections_state(_py)
             .deque_registry
             .lock()
             .unwrap()
@@ -824,9 +875,13 @@ pub extern "C" fn molt_deque_new(maxlen_bits: u64) -> u64 {
 /// Create a deque from an iterable (list/tuple) with optional maxlen.
 /// If maxlen is set and the iterable is longer, keeps only the last maxlen elements.
 /// Returns handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_from_iterable(iterable_bits: u64, maxlen_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_deque_from_iterable_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    iterable_bits: u64,
+    maxlen_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let maxlen = match parse_maxlen(_py, maxlen_bits) {
             Ok(m) => m,
             Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
@@ -835,8 +890,8 @@ pub extern "C" fn molt_deque_from_iterable(iterable_bits: u64, maxlen_bits: u64)
             return MoltObject::none().bits();
         };
         let state = DequeState::from_iterable_elements(_py, elems.as_ref(), maxlen);
-        let id = next_deque_handle();
-        collections_state()
+        let id = next_deque_handle(_py);
+        collections_state(_py)
             .deque_registry
             .lock()
             .unwrap()
@@ -847,15 +902,19 @@ pub extern "C" fn molt_deque_from_iterable(iterable_bits: u64, maxlen_bits: u64)
 
 /// Append item to the right end. If bounded and full, pop from the left.
 /// Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_append(handle_bits: u64, item_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_deque_append_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    item_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
         let mut evicted = None;
         {
-            let mut map = collections_state().deque_registry.lock().unwrap();
+            let mut map = collections_state(_py).deque_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 if let Some(ml) = state.maxlen {
                     if ml == 0 {
@@ -880,15 +939,19 @@ pub extern "C" fn molt_deque_append(handle_bits: u64, item_bits: u64) -> u64 {
 
 /// Append item to the left end. If bounded and full, pop from the right.
 /// Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_appendleft(handle_bits: u64, item_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_deque_appendleft_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    item_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
         let mut evicted = None;
         {
-            let mut map = collections_state().deque_registry.lock().unwrap();
+            let mut map = collections_state(_py).deque_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 if let Some(ml) = state.maxlen {
                     if ml == 0 {
@@ -912,13 +975,13 @@ pub extern "C" fn molt_deque_appendleft(handle_bits: u64, item_bits: u64) -> u64
 
 /// Remove and return the rightmost element.
 /// Raises IndexError if the deque is empty.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_pop(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_deque_pop_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let result = collections_state()
+        let result = collections_state(_py)
             .deque_registry
             .lock()
             .unwrap()
@@ -939,13 +1002,13 @@ pub extern "C" fn molt_deque_pop(handle_bits: u64) -> u64 {
 
 /// Remove and return the leftmost element.
 /// Raises IndexError if the deque is empty.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_popleft(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_deque_popleft_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let result = collections_state()
+        let result = collections_state(_py)
             .deque_registry
             .lock()
             .unwrap()
@@ -967,9 +1030,13 @@ pub extern "C" fn molt_deque_popleft(handle_bits: u64) -> u64 {
 /// Extend the right side from an iterable (list/tuple).
 /// For bounded deques, evicts from the left as needed.
 /// Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_extend(handle_bits: u64, iterable_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_deque_extend_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    iterable_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -978,7 +1045,7 @@ pub extern "C" fn molt_deque_extend(handle_bits: u64, iterable_bits: u64) -> u64
         };
         let mut evicted = Vec::new();
         {
-            let mut map = collections_state().deque_registry.lock().unwrap();
+            let mut map = collections_state(_py).deque_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 let mut mutated = false;
                 for &item in elems.iter() {
@@ -1012,9 +1079,13 @@ pub extern "C" fn molt_deque_extend(handle_bits: u64, iterable_bits: u64) -> u64
 /// iterable (equivalent to appendleft() for each element in order).
 /// For bounded deques, evicts from the right as needed.
 /// Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_extendleft(handle_bits: u64, iterable_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_deque_extendleft_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    iterable_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1023,7 +1094,7 @@ pub extern "C" fn molt_deque_extendleft(handle_bits: u64, iterable_bits: u64) ->
         };
         let mut evicted = Vec::new();
         {
-            let mut map = collections_state().deque_registry.lock().unwrap();
+            let mut map = collections_state(_py).deque_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 let mut mutated = false;
                 // Each element is prepended in order, which reverses the iterable.
@@ -1059,9 +1130,13 @@ pub extern "C" fn molt_deque_extendleft(handle_bits: u64, iterable_bits: u64) ->
 /// n == 0 or empty deque: no-op.
 /// Uses VecDeque::rotate_right/rotate_left for O(min(n, len)) performance.
 /// Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_rotate(handle_bits: u64, n_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_deque_rotate_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    n_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1070,7 +1145,7 @@ pub extern "C" fn molt_deque_rotate(handle_bits: u64, n_bits: u64) -> u64 {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "integer argument expected");
         };
         {
-            let mut map = collections_state().deque_registry.lock().unwrap();
+            let mut map = collections_state(_py).deque_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 let len = state.data.len();
                 if len > 0 {
@@ -1094,13 +1169,13 @@ pub extern "C" fn molt_deque_rotate(handle_bits: u64, n_bits: u64) -> u64 {
 }
 
 /// Return the length of the deque as a NaN-boxed int.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_len(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_deque_len_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let len = collections_state()
+        let len = collections_state(_py)
             .deque_registry
             .lock()
             .unwrap()
@@ -1113,9 +1188,13 @@ pub extern "C" fn molt_deque_len(handle_bits: u64) -> u64 {
 
 /// Get element at index. Supports negative indexing.
 /// Raises IndexError "deque index out of range" if out of bounds.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_getitem(handle_bits: u64, index_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_deque_getitem_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    index_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1127,7 +1206,7 @@ pub extern "C" fn molt_deque_getitem(handle_bits: u64, index_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         let result = {
-            let map = collections_state().deque_registry.lock().unwrap();
+            let map = collections_state(_py).deque_registry.lock().unwrap();
             map.get(&id).and_then(|state| {
                 let resolved = resolve_index(index, state.data.len())?;
                 state.data.get(resolved).copied()
@@ -1143,9 +1222,14 @@ pub extern "C" fn molt_deque_getitem(handle_bits: u64, index_bits: u64) -> u64 {
 /// Set element at index. Supports negative indexing.
 /// Raises IndexError if out of bounds.
 /// Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_setitem(handle_bits: u64, index_bits: u64, value_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_deque_setitem_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    index_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1157,7 +1241,7 @@ pub extern "C" fn molt_deque_setitem(handle_bits: u64, index_bits: u64, value_bi
             return MoltObject::none().bits();
         };
         let replaced = {
-            let mut map = collections_state().deque_registry.lock().unwrap();
+            let mut map = collections_state(_py).deque_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 if let Some(resolved) = resolve_index(index, state.data.len()) {
                     let retained = retain_handle_value(_py, value_bits);
@@ -1183,9 +1267,13 @@ pub extern "C" fn molt_deque_setitem(handle_bits: u64, index_bits: u64, value_bi
 /// Uses VecDeque::remove() which is O(min(i, n-i)).
 /// Raises IndexError if out of bounds.
 /// Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_delitem(handle_bits: u64, index_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_deque_delitem_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    index_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1197,7 +1285,7 @@ pub extern "C" fn molt_deque_delitem(handle_bits: u64, index_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         let removed = {
-            let mut map = collections_state().deque_registry.lock().unwrap();
+            let mut map = collections_state(_py).deque_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 if let Some(resolved) = resolve_index(index, state.data.len()) {
                     let removed = state.data.remove(resolved);
@@ -1224,13 +1312,17 @@ pub extern "C" fn molt_deque_delitem(handle_bits: u64, index_bits: u64) -> u64 {
 
 /// Return True if item is found in the deque via rich equality comparison.
 /// Uses iterator, no allocation.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_contains(handle_bits: u64, item_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_deque_contains_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    item_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let (len, mutation_version) = deque_comparison_start(id);
+        let (len, mutation_version) = deque_comparison_start(_py, id);
         let target = obj_from_bits(item_bits);
         for index in 0..len {
             let Some(elem_bits) = deque_comparison_item(_py, id, index) else {
@@ -1249,7 +1341,7 @@ pub extern "C" fn molt_deque_contains(handle_bits: u64, item_bits: u64) -> u64 {
             if matched {
                 return MoltObject::from_bool(true).bits();
             }
-            if deque_mutated_since(id, mutation_version) {
+            if deque_mutated_since(_py, id, mutation_version) {
                 return raise_exception::<_>(
                     _py,
                     BuiltinExc::RuntimeError,
@@ -1263,13 +1355,17 @@ pub extern "C" fn molt_deque_contains(handle_bits: u64, item_bits: u64) -> u64 {
 
 /// Count elements equal to item via rich equality. Returns count as NaN-boxed int.
 /// Reloads and retains one live element per comparison.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_count(handle_bits: u64, item_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_deque_count_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    item_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let (len, mutation_version) = deque_comparison_start(id);
+        let (len, mutation_version) = deque_comparison_start(_py, id);
         let target = obj_from_bits(item_bits);
         let mut count: i64 = 0;
         for index in 0..len {
@@ -1286,7 +1382,7 @@ pub extern "C" fn molt_deque_count(handle_bits: u64, item_bits: u64) -> u64 {
                 Ok(value) => value,
                 Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
-            if deque_mutated_since(id, mutation_version) {
+            if deque_mutated_since(_py, id, mutation_version) {
                 return raise_exception::<_>(
                     _py,
                     BuiltinExc::RuntimeError,
@@ -1304,14 +1400,15 @@ pub extern "C" fn molt_deque_count(handle_bits: u64, item_bits: u64) -> u64 {
 /// Search for item in range [start, stop). Negative indices resolved relative
 /// to length, clamped to [0, len].
 /// Raises ValueError "x is not in deque" if not found.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_index(
+
+pub fn molt_deque_index_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     item_bits: u64,
     start_bits: u64,
     stop_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1323,7 +1420,7 @@ pub extern "C" fn molt_deque_index(
         let Some(stop_raw) = to_i64(stop_obj) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "integer argument expected");
         };
-        let (len, mutation_version) = deque_comparison_start(id);
+        let (len, mutation_version) = deque_comparison_start(_py, id);
         let len = len as i64;
         // Resolve negative indices.
         let mut start = if start_raw < 0 {
@@ -1369,7 +1466,7 @@ pub extern "C" fn molt_deque_index(
             if matched {
                 return MoltObject::from_int(i as i64).bits();
             }
-            if deque_mutated_since(id, mutation_version) {
+            if deque_mutated_since(_py, id, mutation_version) {
                 return raise_exception::<_>(
                     _py,
                     BuiltinExc::RuntimeError,
@@ -1385,9 +1482,14 @@ pub extern "C" fn molt_deque_index(
 /// IndexError "deque already at its maximum size".
 /// Negative indices resolve but clamp to 0. Index beyond len clamps to len.
 /// Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_insert(handle_bits: u64, index_bits: u64, item_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_deque_insert_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    index_bits: u64,
+    item_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
@@ -1396,7 +1498,7 @@ pub extern "C" fn molt_deque_insert(handle_bits: u64, index_bits: u64, item_bits
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "integer argument expected");
         };
         let ok = {
-            let mut map = collections_state().deque_registry.lock().unwrap();
+            let mut map = collections_state(_py).deque_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 // Check maxlen constraint before insertion.
                 if let Some(ml) = state.maxlen {
@@ -1450,13 +1552,17 @@ pub extern "C" fn molt_deque_insert(handle_bits: u64, index_bits: u64, item_bits
 /// Remove first occurrence of item. Raises ValueError
 /// "deque.remove(x): x not in deque" if not found.
 /// Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_remove(handle_bits: u64, item_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_deque_remove_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    item_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let (len, mutation_version) = deque_comparison_start(id);
+        let (len, mutation_version) = deque_comparison_start(_py, id);
         let target = obj_from_bits(item_bits);
         let mut found_idx: Option<usize> = None;
         for i in 0..len {
@@ -1473,7 +1579,7 @@ pub extern "C" fn molt_deque_remove(handle_bits: u64, item_bits: u64) -> u64 {
                 Ok(value) => value,
                 Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
-            if deque_mutated_since(id, mutation_version) {
+            if deque_mutated_since(_py, id, mutation_version) {
                 return raise_exception::<_>(
                     _py,
                     BuiltinExc::IndexError,
@@ -1493,7 +1599,7 @@ pub extern "C" fn molt_deque_remove(handle_bits: u64, item_bits: u64) -> u64 {
             );
         };
         let removed = {
-            let mut map = collections_state().deque_registry.lock().unwrap();
+            let mut map = collections_state(_py).deque_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 let removed = state.data.remove(idx);
                 if removed.is_some() {
@@ -1513,14 +1619,14 @@ pub extern "C" fn molt_deque_remove(handle_bits: u64, item_bits: u64) -> u64 {
 /// Reverse the deque in place.
 /// Uses make_contiguous() + reverse() for performance.
 /// Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_reverse(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_deque_reverse_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
         {
-            let mut map = collections_state().deque_registry.lock().unwrap();
+            let mut map = collections_state(_py).deque_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 state.data.make_contiguous().reverse();
             }
@@ -1530,14 +1636,14 @@ pub extern "C" fn molt_deque_reverse(handle_bits: u64) -> u64 {
 }
 
 /// Clear all elements. Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_clear(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_deque_clear_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
         let removed: Vec<u64> = {
-            let mut map = collections_state().deque_registry.lock().unwrap();
+            let mut map = collections_state(_py).deque_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 if !state.data.is_empty() {
                     state.mark_size_or_order_mutation();
@@ -1556,13 +1662,13 @@ pub extern "C" fn molt_deque_clear(handle_bits: u64) -> u64 {
 
 /// Create a shallow copy. The new deque owns retained references to the same elements.
 /// Returns a new handle with the same maxlen.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_copy(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_deque_copy_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let cloned = collections_state()
+        let cloned = collections_state(_py)
             .deque_registry
             .lock()
             .unwrap()
@@ -1571,8 +1677,8 @@ pub extern "C" fn molt_deque_copy(handle_bits: u64) -> u64 {
         let Some(new_state) = cloned else {
             return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "invalid deque handle");
         };
-        let new_id = next_deque_handle();
-        collections_state()
+        let new_id = next_deque_handle(_py);
+        collections_state(_py)
             .deque_registry
             .lock()
             .unwrap()
@@ -1582,13 +1688,13 @@ pub extern "C" fn molt_deque_copy(handle_bits: u64) -> u64 {
 }
 
 /// Return maxlen as NaN-boxed int, or None if unbounded.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_maxlen(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_deque_maxlen_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let maxlen = collections_state()
+        let maxlen = collections_state(_py)
             .deque_registry
             .lock()
             .unwrap()
@@ -1602,14 +1708,14 @@ pub extern "C" fn molt_deque_maxlen(handle_bits: u64) -> u64 {
 }
 
 /// Remove handle from the global registry. Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_deque_drop(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_deque_drop_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
         let removed = {
-            let mut map = collections_state().deque_registry.lock().unwrap();
+            let mut map = collections_state(_py).deque_registry.lock().unwrap();
             map.remove(&id)
         };
         if let Some(mut state) = removed {
@@ -1681,11 +1787,13 @@ unsafe extern "C" fn collections_runtime_state_init() -> *mut u8 {
     Box::into_raw(Box::new(CollectionsRuntimeState::new())) as *mut u8
 }
 
-unsafe extern "C" fn collections_runtime_state_clear(ptr: *mut u8) {
+unsafe extern "C" fn collections_runtime_state_clear(__context: u64, ptr: *mut u8) {
+    let _py = unsafe { molt_runtime_core::PyToken::from_attached_context(__context) };
+
     if ptr.is_null() {
         return;
     }
-    molt_runtime_core::with_core_gil!(py, unsafe {
+    molt_runtime_core::with_attached_entry_nopanic!(_py, py, unsafe {
         (&*(ptr as *const CollectionsRuntimeState)).clear(py);
     });
 }
@@ -1701,8 +1809,9 @@ unsafe extern "C" fn collections_runtime_state_drop(ptr: *mut u8) {
     });
 }
 
-fn collections_state() -> &'static CollectionsRuntimeState {
+fn collections_state(py: &molt_runtime_core::PyToken) -> &'static CollectionsRuntimeState {
     let ptr = crate::bridge::runtime_state_get_or_init(
+        py,
         b"molt-runtime-collections/v1",
         collections_runtime_state_init,
         collections_runtime_state_clear,
@@ -1717,8 +1826,8 @@ fn collections_state() -> &'static CollectionsRuntimeState {
 
 // ─── Handle counters ────────────────────────────────────────────────────────
 
-fn next_defaultdict_handle() -> i64 {
-    collections_state()
+fn next_defaultdict_handle(py: &molt_runtime_core::PyToken) -> i64 {
+    collections_state(py)
         .next_defaultdict_handle
         .fetch_add(1, Ordering::Relaxed)
 }
@@ -1742,7 +1851,7 @@ fn defaultdict_missing_value(_py: &CoreGilToken, handle_bits: u64, key_bits: u64
     let Some(id) = dd_handle_from_bits(_py, handle_bits) else {
         return MoltObject::none().bits();
     };
-    let factory = collections_state()
+    let factory = collections_state(_py)
         .defaultdict_registry
         .lock()
         .unwrap()
@@ -1769,12 +1878,15 @@ fn defaultdict_missing_value(_py: &CoreGilToken, handle_bits: u64, key_bits: u64
 
 /// Create a new defaultdict handle storing the factory callable (or None).
 /// Returns integer handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_defaultdict_new(factory_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let id = next_defaultdict_handle();
+
+pub fn molt_defaultdict_new_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    factory_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let id = next_defaultdict_handle(_py);
         let factory_bits = retain_handle_value(_py, factory_bits);
-        collections_state()
+        collections_state(_py)
             .defaultdict_registry
             .lock()
             .unwrap()
@@ -1788,21 +1900,28 @@ pub extern "C" fn molt_defaultdict_new(factory_bits: u64) -> u64 {
 /// If factory is not None, call it with 0 args and return the default value
 /// bits.  The Python caller is responsible for inserting the value into the
 /// underlying dict.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_defaultdict_missing(handle_bits: u64, key_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_defaultdict_missing_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         defaultdict_missing_value(_py, handle_bits, key_bits)
     })
 }
 
 /// Return the factory_bits.  If None, return None bits.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_defaultdict_factory(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_defaultdict_factory_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = dd_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let factory_bits = collections_state()
+        let factory_bits = collections_state(_py)
             .defaultdict_registry
             .lock()
             .unwrap()
@@ -1814,13 +1933,16 @@ pub extern "C" fn molt_defaultdict_factory(handle_bits: u64) -> u64 {
 }
 
 /// Release defaultdict handle.  Returns None.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_defaultdict_drop(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_defaultdict_drop_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(id) = dd_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let removed = collections_state()
+        let removed = collections_state(_py)
             .defaultdict_registry
             .lock()
             .unwrap()
@@ -1895,25 +2017,26 @@ mod identifier_tests;
 /// - rename_bits: bool — whether to auto-rename invalid names
 ///
 /// Returns: tuple[str, ...] of validated/normalized field names.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_namedtuple_validate_fields(
+
+pub fn molt_namedtuple_validate_fields_attached_body(
+    _py: &molt_runtime_core::PyToken,
     typename_bits: u64,
     fields_bits: u64,
     rename_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         // Validate typename
         let Some(typename) = string_obj_to_owned(obj_from_bits(typename_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "typename must be a string");
         };
-        let Some(data) = molt_runtime_core::unicode_target::for_runtime_target() else {
+        let Some(data) = molt_runtime_core::unicode_target::for_runtime_target(_py) else {
             return raise_exception::<_>(
                 _py,
                 BuiltinExc::SystemError,
                 "unsupported target Python Unicode facts",
             );
         };
-        let typename_bytes = unsafe { molt_runtime_core::rt_string_as_bytes(typename_bits) }
+        let typename_bytes = unsafe { molt_runtime_core::rt_string_as_bytes(_py, typename_bits) }
             .expect("validated string storage");
         if !is_valid_identifier(data, typename_bytes) || is_python_keyword(&typename) {
             let msg = format!("Type names and field names must be valid identifiers: {typename:?}");
@@ -1939,10 +2062,10 @@ pub extern "C" fn molt_namedtuple_validate_fields(
                 "field_names must be a sequence",
             );
         }
-        let elems = unsafe { seq_snapshot(fields_ptr) };
+        let elems = unsafe { seq_snapshot(_py, fields_ptr) };
 
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut normalized: Vec<OwnedRuntimeValue<'_>> = Vec::new();
+        let mut normalized = molt_runtime_core::RuntimeValueCollection::new(_py);
 
         for (idx, &elem_bits) in elems.iter().enumerate() {
             let Some(name) = string_obj_to_owned(obj_from_bits(elem_bits)) else {
@@ -1953,7 +2076,7 @@ pub extern "C" fn molt_namedtuple_validate_fields(
                 );
             };
 
-            let name_bytes = unsafe { molt_runtime_core::rt_string_as_bytes(elem_bits) }
+            let name_bytes = unsafe { molt_runtime_core::rt_string_as_bytes(_py, elem_bits) }
                 .expect("validated string storage");
             let invalid = !is_valid_identifier(data, name_bytes)
                 || is_python_keyword(&name)
@@ -2000,7 +2123,7 @@ pub extern "C" fn molt_namedtuple_validate_fields(
             });
         }
 
-        let result_ptr = alloc_tuple(_py, OwnedRuntimeValue::as_bits_slice(&normalized));
+        let result_ptr = alloc_tuple(_py, normalized.as_bits_slice());
         // Exact-string temporaries retire on validation/allocation failure too.
         drop(normalized);
         if result_ptr.is_null() {
@@ -2041,3 +2164,5 @@ mod tests {
         assert_eq!(state.mutation_version, snapshot_version);
     }
 }
+
+include!("attached_exports_generated/collections_ext.rs");

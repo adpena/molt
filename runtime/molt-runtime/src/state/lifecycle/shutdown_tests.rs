@@ -20,8 +20,11 @@ fn observe_callback(stage: &'static str) {
     let leases = active_runtime_execution_lease_count();
     let inherited = current_thread_holds_runtime_execution_lease();
     assert!(inherited || current_thread_holds_shutdown_drain_custody());
+    let context = crate::state::molt_attached_context();
+    assert_ne!(context, 0, "finalization callback must already be attached");
+    let py = unsafe { crate::PyToken::from_attached_context(context) };
     assert!(
-        obj_from_bits(crate::molt_getrecursionlimit())
+        obj_from_bits(crate::object::ops_sys::molt_getrecursionlimit_attached_body(py))
             .as_int()
             .unwrap()
             > 0
@@ -36,12 +39,26 @@ unsafe extern "C" fn pending_callback(_arg: *mut std::ffi::c_void) -> std::ffi::
     0
 }
 
-extern "C" fn atexit_callback() -> u64 {
+extern "C" fn atexit_callback(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     observe_callback("atexit");
     MoltObject::none().bits()
 }
 
-extern "C" fn flush_callback(_self: u64) -> u64 {
+extern "C" fn flush_callback(__context: u64, _self: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     observe_callback("flush");
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(mode) = std::env::var_os("MOLT_SHUTDOWN_CUSTODY_TEST_CHILD") {
@@ -57,14 +74,29 @@ extern "C" fn flush_callback(_self: u64) -> u64 {
     MoltObject::none().bits()
 }
 
-extern "C" fn cycle_callback(_self: u64) -> u64 {
+extern "C" fn cycle_callback(__context: u64, _self: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     observe_callback("cycle");
     MoltObject::none().bits()
 }
 
-extern "C" fn module_cycle_callback(_self: u64) -> u64 {
+extern "C" fn module_cycle_callback(__context: u64, _self: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     observe_callback("module-cycle");
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = __py;
         // Cycles released by ordinary module retirement must finalize before
         // the real sys namespace advances to its own retirement phase.
         let sys = crate::runtime_state(py)
@@ -72,13 +104,13 @@ extern "C" fn module_cycle_callback(_self: u64) -> u64 {
             .module(py)
             .expect("module-cycle finalizer lost the live sys namespace");
         let stdout = crate::dynamic_attr_name_bits(py, b"stdout").unwrap();
-        let stream = crate::molt_get_attr_name(sys, stdout);
+        let stream = crate::molt_get_attr_name_attached_body(py, sys, stdout);
         assert!(obj_from_bits(stream).as_ptr().is_some());
         dec_ref_bits(py, stream);
         dec_ref_bits(py, stdout);
         assert!(!crate::exception_pending(py));
         MoltObject::none().bits()
-    })
+    }
 }
 
 fn detach_finalizer_field(py: &PyToken<'_>, receiver: u64) {
@@ -86,7 +118,8 @@ fn detach_finalizer_field(py: &PyToken<'_>, receiver: u64) {
     // finalizer does. Calling molt_object_setattr directly would bypass the
     // namespace whose premature retirement this control must detect.
     let name = crate::dynamic_attr_name_bits(py, b"__setattr__").unwrap();
-    let setter = crate::molt_get_attr_name(crate::builtin_classes(py).object, name);
+    let setter =
+        crate::molt_get_attr_name_attached_body(py, crate::builtin_classes(py).object, name);
     dec_ref_bits(py, name);
     assert!(
         !crate::exception_pending(py),
@@ -99,19 +132,27 @@ fn detach_finalizer_field(py: &PyToken<'_>, receiver: u64) {
     dec_ref_bits(py, setter);
     dec_ref_bits(py, result);
     assert!(!crate::exception_pending(py));
-    let observed = crate::molt_get_attr_name(receiver, field);
+    let observed = crate::molt_get_attr_name_attached_body(py, receiver, field);
     dec_ref_bits(py, field);
     assert!(!crate::exception_pending(py));
     assert!(obj_from_bits(observed).is_none());
     dec_ref_bits(py, observed);
 }
 
-extern "C" fn tls_dictionary_callback(receiver: u64) -> u64 {
+extern "C" fn tls_dictionary_callback(__context: u64, receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     observe_callback("tls-dictionary");
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = __py;
         detach_finalizer_field(py, receiver);
         MoltObject::none().bits()
-    })
+    }
 }
 
 fn publish_tls_dictionary_callback(py: &PyToken<'_>) {
@@ -138,15 +179,23 @@ fn publish_tls_dictionary_callback(py: &PyToken<'_>) {
     assert!(!crate::exception_pending(py));
 }
 
-extern "C" fn heap_namespace_callback(receiver: u64) -> u64 {
+extern "C" fn heap_namespace_callback(__context: u64, receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     observe_callback("heap-namespace");
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = __py;
         detach_finalizer_field(py, receiver);
         // The heap-namespace phase must repeat the existing two-domain drain,
         // not retire static methods immediately after clearing that namespace.
         publish_tls_dictionary_callback(py);
         MoltObject::none().bits()
-    })
+    }
 }
 
 fn runtime_function(py: &PyToken<'_>, address: *const (), arity: u64) -> u64 {
@@ -161,14 +210,14 @@ fn runtime_function(py: &PyToken<'_>, address: *const (), arity: u64) -> u64 {
 
 fn instance_with_method(py: &PyToken<'_>, name: &[u8], method: &[u8], address: *const ()) -> u64 {
     let name = crate::dynamic_attr_name_bits(py, name).unwrap();
-    let class = crate::molt_class_new(name);
+    let class = crate::molt_class_new_attached_body(py, name);
     dec_ref_bits(py, name);
-    crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+    crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).object);
     let class_ptr = obj_from_bits(class).as_ptr().unwrap();
     unsafe { crate::object::class_finish_definition(py, class_ptr) }.unwrap();
     let key = crate::dynamic_attr_name_bits(py, method).unwrap();
     let function = runtime_function(py, address, 1);
-    crate::molt_set_attr_name(class, key, function);
+    crate::molt_set_attr_name_attached_body(py, class, key, function);
     dec_ref_bits(py, key);
     dec_ref_bits(py, function);
     let instance = unsafe { crate::alloc_instance_for_class(py, class_ptr) };
@@ -214,7 +263,7 @@ fn prepare_native_type_cycles(py: &PyToken<'_>) -> [usize; 2] {
         assert!(!owner_ptr.is_null());
         let owner = MoltObject::from_ptr(owner_ptr).bits();
         let key = crate::dynamic_attr_name_bits(py, b"native_type").unwrap();
-        crate::builtins::modules::molt_module_set_attr(owner, key, rooted_bits);
+        crate::builtins::modules::molt_module_set_attr_attached_body(py, owner, key, rooted_bits);
         dec_ref_bits(py, key);
         dec_ref_bits(py, rooted_bits);
         drop(rooted);
@@ -226,10 +275,10 @@ fn prepare_native_type_cycles(py: &PyToken<'_>) -> [usize; 2] {
             module_cycle_callback as *const (),
         );
         let edge = crate::dynamic_attr_name_bits(py, b"edge").unwrap();
-        crate::molt_set_attr_name(cycle, edge, cycle);
+        crate::molt_set_attr_name_attached_body(py, cycle, edge, cycle);
         dec_ref_bits(py, edge);
         let key = crate::dynamic_attr_name_bits(py, b"cycle").unwrap();
-        crate::builtins::modules::molt_module_set_attr(owner, key, cycle);
+        crate::builtins::modules::molt_module_set_attr_attached_body(py, owner, key, cycle);
         dec_ref_bits(py, key);
         dec_ref_bits(py, cycle);
         // Transfer the actual module owner into the production cache. Clearing
@@ -253,7 +302,12 @@ fn prepare_native_type_cycles(py: &PyToken<'_>) -> [usize; 2] {
         let key = crate::dynamic_attr_name_bits(py, b"late_finalizer").unwrap();
         // ExceptionGroup is a real mutable canonical heap type in CPython,
         // unlike an artificial test class injected into the runtime root list.
-        crate::molt_set_attr_name(crate::builtin_classes(py).exception_group, key, heap_value);
+        crate::molt_set_attr_name_attached_body(
+            py,
+            crate::builtin_classes(py).exception_group,
+            key,
+            heap_value,
+        );
         dec_ref_bits(py, key);
         dec_ref_bits(py, heap_value);
         assert!(!crate::exception_pending(py));
@@ -272,7 +326,8 @@ fn prepare_callbacks(with_cycle: bool, with_native_cycles: bool) -> [usize; 2] {
         let callback = runtime_function(&py, atexit_callback as *const (), 0);
         // The registry owns its reference; the result carries none.
         assert!(
-            obj_from_bits(crate::builtins::atexit::molt_atexit_register(
+            obj_from_bits(crate::builtins::atexit::molt_atexit_register_attached_body(
+                py,
                 callback,
                 MoltObject::none().bits(),
                 MoltObject::none().bits(),
@@ -288,14 +343,14 @@ fn prepare_callbacks(with_cycle: bool, with_native_cycles: bool) -> [usize; 2] {
             flush_callback as *const (),
         );
         let sys_name = crate::dynamic_attr_name_bits(&py, b"sys").unwrap();
-        let sys = crate::builtins::modules::molt_module_new(sys_name);
+        let sys = crate::builtins::modules::molt_module_new_attached_body(py, sys_name);
         crate::builtins::module_table::publish_interpreter_sys_for_test(&py, sys);
         let stdout = crate::dynamic_attr_name_bits(&py, b"stdout").unwrap();
-        crate::builtins::modules::molt_module_set_attr(sys, stdout, stream);
+        crate::builtins::modules::molt_module_set_attr_attached_body(py, sys, stdout, stream);
         // Keep the bootstrap file-handle sibling live: teardown must traverse
         // both direct molt_file_flush and custom flush lookup/call branches.
         let stderr_name = crate::dynamic_attr_name_bits(&py, b"stderr").unwrap();
-        let stderr = crate::molt_get_attr_name(sys, stderr_name);
+        let stderr = crate::molt_get_attr_name_attached_body(py, sys, stderr_name);
         assert_eq!(
             unsafe { crate::object_type_id(obj_from_bits(stderr).as_ptr().unwrap()) },
             crate::TYPE_ID_FILE_HANDLE,
@@ -313,7 +368,7 @@ fn prepare_callbacks(with_cycle: bool, with_native_cycles: bool) -> [usize; 2] {
                 cycle_callback as *const (),
             );
             let edge = crate::dynamic_attr_name_bits(&py, b"edge").unwrap();
-            crate::molt_set_attr_name(cycle, edge, cycle);
+            crate::molt_set_attr_name_attached_body(py, cycle, edge, cycle);
             dec_ref_bits(&py, edge);
             dec_ref_bits(&py, cycle);
         }
@@ -630,9 +685,13 @@ pub(crate) fn inflight_joined_service_finishes_under_retained_origin(foreign_c: 
                     );
                     assert_eq!(origin.state().thread_borrow_count(), 1);
                     assert!(
-                        obj_from_bits(crate::molt_getrecursionlimit())
-                            .as_int()
-                            .unwrap()
+                        obj_from_bits(
+                            crate::object::ops_sys::molt_getrecursionlimit_attached_body(
+                                work.token()
+                            )
+                        )
+                        .as_int()
+                        .unwrap()
                             > 0
                     );
                     assert_eq!(
@@ -665,9 +724,11 @@ pub(crate) fn inflight_joined_service_finishes_under_retained_origin(foreign_c: 
                 assert!(current_thread_holds_runtime_execution_lease());
                 let count = active_runtime_execution_lease_count();
                 assert!(
-                    obj_from_bits(crate::molt_getrecursionlimit())
-                        .as_int()
-                        .unwrap()
+                    obj_from_bits(
+                        crate::object::ops_sys::molt_getrecursionlimit_attached_body(work.token())
+                    )
+                    .as_int()
+                    .unwrap()
                         > 0
                 );
                 assert_eq!(active_runtime_execution_lease_count(), count);

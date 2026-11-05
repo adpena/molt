@@ -177,7 +177,7 @@ for (const test of config.cases) {
       const callerDepth = frameDepth;
       contexts.push(ctx);
       let thrown = null, result;
-      try { result = app.molt_main(); } catch (error) { thrown = error; }
+      try { result = app[compiledSymbol('molt_main')](executionContext); } catch (error) { thrown = error; }
       contexts.pop();
       const foreignExpected = scenario.startsWith('foreign-');
       if (test.wrong_slot) {
@@ -301,9 +301,9 @@ for (const test of config.cases) {
       imports[entry.module] ??= {};
       if (entry.kind==='tag') {imports[entry.module][entry.name]=new WebAssembly.Tag({parameters:['i64']});continue;}
       if (entry.kind!=='function') {assert.ok(entry.name in imports[entry.module]);continue;}
-      imports[entry.module][entry.name]=hooks[entry.name] ?? (()=>{throw new Error('unexpected call '+entry.name);});
+      imports[entry.module][entry.name]=hooks[runtimeImportName(entry.name)] ?? (()=>{throw new Error('unexpected call '+entry.name);});
     }
-    app=new WebAssembly.Instance(module,imports).exports;
+    app=new WebAssembly.Instance(module, attachedImports(imports)).exports;
     invoke(mode);
     // Repeated calls use the same instance after failure, including EH cleanup.
     invoke('normal');

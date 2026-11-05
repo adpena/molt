@@ -12,14 +12,14 @@ use crate::bridge::raise_exception_u64;
 use molt_runtime_core::BuiltinExc;
 use molt_runtime_core::prelude::MoltObject;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_trace_add(
+pub fn molt_tk_trace_add_attached_body(
+    _py: &molt_runtime_core::PyToken,
     app_bits: u64,
     variable_name_bits: u64,
     mode_bits: u64,
     callback_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
             return bits;
         }
@@ -82,14 +82,15 @@ pub extern "C" fn molt_tk_trace_add(
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_trace_remove(
+
+pub fn molt_tk_trace_remove_attached_body(
+    _py: &molt_runtime_core::PyToken,
     app_bits: u64,
     variable_name_bits: u64,
     mode_bits: u64,
     cbname_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
             return bits;
         }
@@ -123,9 +124,13 @@ pub extern "C" fn molt_tk_trace_remove(
         MoltObject::none().bits()
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_trace_info(app_bits: u64, variable_name_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_trace_info_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    app_bits: u64,
+    variable_name_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
             return bits;
         }
@@ -148,9 +153,13 @@ pub extern "C" fn molt_tk_trace_info(app_bits: u64, variable_name_bits: u64) -> 
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tk_trace_clear(app_bits: u64, variable_name_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_tk_trace_clear_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    app_bits: u64,
+    variable_name_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if let Err(bits) = require_tk_operation(_py, TkOperation::Call) {
             return bits;
         }
@@ -171,3 +180,5 @@ pub extern "C" fn molt_tk_trace_clear(app_bits: u64, variable_name_bits: u64) ->
         MoltObject::none().bits()
     })
 }
+
+include!("../../attached_exports_generated/tk/callback_intrinsics/traces.rs");

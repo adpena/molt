@@ -207,11 +207,25 @@ unsafe extern "C" fn mutation_failure_without_error(
     -1
 }
 
-extern "C" fn subclass_truth(_self_bits: u64) -> u64 {
+extern "C" fn subclass_truth(__context: u64, _self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::from_bool(true).bits()
 }
 
-extern "C" fn subclass_length(_self_bits: u64) -> u64 {
+extern "C" fn subclass_length(__context: u64, _self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::from_int(13).bits()
 }
 
@@ -241,7 +255,7 @@ fn native_storage_does_not_bypass_subclass_truth_or_specialized_length() {
             1,
         ))
         .bits();
-        type Length = extern "C" fn(u64) -> u64;
+        type Length = unsafe extern "C" fn(u64, u64) -> u64;
         let families: [(u64, Option<Length>); 11] = [
             (classes.str, Some(crate::object::ops_sys::molt_len_str)),
             (classes.tuple, Some(crate::object::ops_sys::molt_len_tuple)),
@@ -259,20 +273,23 @@ fn native_storage_does_not_bypass_subclass_truth_or_specialized_length() {
             (classes.complex, None),
         ];
         for (base, specialized_len) in families {
-            let class = crate::molt_class_new(name);
-            let status = crate::molt_class_set_base(class, base);
+            let class = crate::molt_class_new_attached_body(py, name);
+            let status = crate::molt_class_set_base_attached_body(py, class, base);
             dec_ref_bits(&py, status);
             crate::object::class_finish_definition(&py, obj_from_bits(class).as_ptr().unwrap())
                 .unwrap();
-            let status = crate::molt_set_attr_name(class, bool_name, truth);
+            let status = crate::molt_set_attr_name_attached_body(py, class, bool_name, truth);
             dec_ref_bits(&py, status);
-            let status = crate::molt_set_attr_name(class, len_name, length);
+            let status = crate::molt_set_attr_name_attached_body(py, class, len_name, length);
             dec_ref_bits(&py, status);
             let instance = crate::call_callable0(&py, class);
             assert!(!exception_pending(&py));
             assert!(crate::object::ops::is_truthy(&py, obj_from_bits(instance)));
             if let Some(length) = specialized_len {
-                assert_eq!(obj_from_bits(length(instance)).as_int(), Some(13));
+                assert_eq!(
+                    obj_from_bits(length(py.attached_context(), instance)).as_int(),
+                    Some(13)
+                );
             }
             assert!(!exception_pending(&py));
             dec_ref_bits(&py, instance);
@@ -723,8 +740,8 @@ fn capi_native_family_checks_distinguish_semantic_subclasses_from_storage() {
             ),
         ];
         for (base, inclusive, exact, argument) in families {
-            let class = crate::molt_class_new(name);
-            let status = crate::molt_class_set_base(class, base);
+            let class = crate::molt_class_new_attached_body(py, name);
+            let status = crate::molt_class_set_base_attached_body(py, class, base);
             dec_ref_bits(&py, status);
             crate::object::class_finish_definition(&py, obj_from_bits(class).as_ptr().unwrap())
                 .unwrap();

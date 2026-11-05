@@ -4,10 +4,11 @@
 //! until reverse exit cleanup, independently of each constant result owner.
 
 use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::emit_boxed_none;
-use wasm_encoder::{BlockType, Function, Instruction, MemArg};
+use wasm_encoder::{BlockType, Instruction, MemArg};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::wasm) struct WasmConstAnchorSlot(usize);

@@ -39,6 +39,15 @@ from tools.generator_io import (  # noqa: E402
 )
 
 from tools.op_kinds.render_wire import variant as _wire_kind_variant  # noqa: E402
+from tools.wasm_abi_gen.attached_entries import render_attached_entries  # noqa: E402
+from tools.wasm_abi_gen.execution_context import (  # noqa: E402
+    render_rust_context_abi,
+    render_context_storage,
+    render_python_context_abi,
+    render_physical_symbol_macro,
+    context_json,
+    runtime_execution_specs,
+)
 from tools.wasm_abi_gen import render_python as _render_python  # noqa: E402
 from tools.wasm_abi_gen.manifest import (  # noqa: E402
     CONTAINER_RUNTIME_SELECTOR_FACTS,
@@ -98,8 +107,26 @@ NATIVE_RUNTIME_CALLABLE_KEY_BASE = 0xFFFF_FF00_0000_0000
 NATIVE_RUNTIME_POLL_KEY_OFFSET = 0x100
 
 GENERATOR_CACHE_VERSION = "wasm-abi-render-v8"
+
+
+def _attached_entry_output_paths() -> tuple[Path, ...]:
+    from tools.wasm_abi_gen.attached_entries import typed_bodies
+
+    paths = set()
+    for path, _text, _function in typed_bodies(ROOT):
+        crate = next(
+            parent for parent in path.parents if (parent / "Cargo.toml").is_file()
+        )
+        paths.add(
+            crate / "src/attached_exports_generated" / path.relative_to(crate / "src")
+        )
+    return tuple(sorted(paths))
+
+
 # Every path this generator renders; the render cache holds exactly these.
 OUTPUT_PATHS: tuple[Path, ...] = (
+    ROOT / "runtime/molt-codegen-abi/src/attached_context_generated.rs",
+    *_attached_entry_output_paths(),
     *OUT_RS_FILES.values(),
     OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
     OUT_RUNTIME_CALLABLES_RS,
@@ -159,6 +186,7 @@ def _cache_input_files() -> tuple[Path, ...]:
         BUILTIN_CALLABLES.resolve(),
         ROOT / "tools/gen_runtime_names.py",
         ROOT / "runtime/molt-ir/src/tir/runtime_names.toml",
+        ROOT / "include/molt/molt.h",
         *(path.resolve() for path in generator_pkg.glob("*.py")),
         *(path.resolve() for path in op_kinds_pkg.glob("*.py")),
         *(path.resolve() for path in generator_input_files()),
@@ -198,6 +226,24 @@ def _render_cache_key(rustfmt_version: str) -> str:
             ).encode()
         )
         digest.update(b"\n")
+    from tools.wasm_abi_gen.attached_entries import typed_bodies, exported_macro_symbols
+
+    for path, _text, function in typed_bodies(ROOT):
+        digest.update(
+            json.dumps(
+                (
+                    str(path.relative_to(ROOT)),
+                    function.name,
+                    function.params,
+                    function.result,
+                    function.unsafe,
+                    function.attrs,
+                ),
+                separators=(",", ":"),
+            ).encode()
+        )
+        digest.update(b"\n")
+    digest.update(json.dumps(sorted(exported_macro_symbols(ROOT))).encode())
     for name, symbol_kind in generator_cpython_abi_link_import_kinds():
         digest.update(
             json.dumps(
@@ -336,6 +382,7 @@ def _render_rs_mod() -> str:
             "mod numeric_runtime_selector;\n",
             "mod pure_profile;\n",
             "mod runtime_callables;\n",
+            "#[cfg(test)]\n",
             "mod runtime_surface;\n",
             "mod static_types;\n\n",
             "pub(crate) use call_indirect::CALL_INDIRECT_IMPORTS;\n",
@@ -349,9 +396,11 @@ def _render_rs_mod() -> str:
             "    WasmConstRawIntEffect, WasmConstScalarValue,\n",
             "};\n",
             "pub(crate) use import_registry::{\n",
-            "    wasm_runtime_export_name, wasm_runtime_import, IMPORT_REGISTRY,\n",
+            "    wasm_runtime_import, IMPORT_REGISTRY,\n",
             "    RuntimeImportSpec,\n",
             "};\n",
+            "#[cfg(test)]\n",
+            "pub(crate) use import_registry::wasm_runtime_export_name;\n",
             "pub(crate) use import_tokens::WasmRuntimeImport;\n",
             "pub(crate) use import_metadata::WasmRuntimeReturn;\n",
             "pub(crate) use lir_runtime_calls::{\n",
@@ -677,6 +726,13 @@ def _render_rs_import_metadata(data: dict, import_variants: Mapping[str, str]) -
         [
             "use super::import_tokens::WasmRuntimeImport;\n\n",
             "impl WasmRuntimeImport {\n",
+            "    #[cfg(test)]\n",
+            "    pub(crate) const ALL: &'static [Self] = &[\n",
+            *(
+                f"        Self::{import_variants[entry['name']]},\n"
+                for entry in data["import"]
+            ),
+            "    ];\n\n",
             "    pub(crate) const fn name(self) -> &'static str {\n",
             "        match self {\n",
         ]
@@ -701,6 +757,9 @@ def _render_rs_import_metadata(data: dict, import_variants: Mapping[str, str]) -
     lines.extend(
         [
             "        }\n",
+            "    }\n\n",
+            "    pub(crate) fn execution_abi(self) -> molt_ir::runtime_callable_abi_generated::RuntimeExecutionAbi {\n",
+            '        molt_ir::runtime_callable_abi_generated::runtime_execution_abi(self.runtime_export_name()).expect("generated runtime import lacks its execution ABI")\n',
             "    }\n\n",
             "    pub(crate) fn machine_signature(self) -> (&'static [wasm_encoder::ValType], &'static [wasm_encoder::ValType]) {\n",
             "        let signature = &super::STATIC_FUNC_TYPES[match self {\n",
@@ -739,6 +798,7 @@ def _render_rs_import_registry(data: dict, import_variants: Mapping[str, str]) -
     lines.extend(
         [
             "use super::import_tokens::WasmRuntimeImport;\n",
+            "#[cfg(test)]\n",
             "use super::runtime_surface::RUNTIME_HOST_EXPORTS;\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct RuntimeImportSpec {\n",
@@ -785,6 +845,7 @@ def _render_rs_import_registry(data: dict, import_variants: Mapping[str, str]) -
     lines.extend(["        _ => None,\n", "    }\n", "}\n\n"])
     lines.extend(
         [
+            "#[cfg(test)]\n",
             "#[inline]\n",
             "pub(crate) fn wasm_runtime_export_name(name: &str) -> Option<&'static str> {\n",
             "    if let Some(import) = wasm_runtime_import(name) {\n",
@@ -1461,7 +1522,7 @@ def render_runtime_callable_abi_rs(data: dict) -> str:
     for slot, import_name in _runtime_poll_imports(data):
         lines.append(f'        "molt_{import_name}" => Some(BASE + {slot}),\n')
     lines.extend(["        _ => None,\n", "    }\n", "}\n"])
-    return "".join(lines)
+    return "".join(lines) + render_rust_context_abi(data)
 
 
 def render_runtime_raw_abi_rs(data: dict) -> str:
@@ -2310,8 +2371,11 @@ def render_table_layout_inc(data: dict) -> str:
 
 def render_allowed_imports(data: dict) -> str:
     lines = [_header("#")]
+    physical = {
+        row["symbol"]: row["physical_symbol"] for row in runtime_execution_specs(data)
+    }
     for entry in data.get("link_allowed_import", []):
-        lines.append(f"{entry['name']}\n")
+        lines.append(f"{physical.get(entry['name'], entry['name'])}\n")
     return "".join(lines)
 
 
@@ -2338,7 +2402,29 @@ def render_js_abi(data: dict) -> str:
         runtime_export_by_import.setdefault(name, split_export_name)
         runtime_export_by_import.setdefault(split_export_name, split_export_name)
 
+    execution_abis = {
+        row["symbol"]: {
+            "context": row["context"],
+            "physical_symbol": row["physical_symbol"],
+        }
+        for row in runtime_execution_specs(data)
+    }
+    runtime_export_by_import = {
+        name: execution_abis.get(symbol, {}).get("physical_symbol", symbol)
+        for name, symbol in runtime_export_by_import.items()
+    }
+    from tools.wasm_abi_gen.manifest import _public_c_api_signatures
+
+    runtime_export_by_import.update({name: name for name in _public_c_api_signatures()})
+    runtime_export_by_import.update(
+        {
+            row["physical_symbol"]: row["physical_symbol"]
+            for row in runtime_execution_specs(data)
+        }
+    )
     payload = {
+        "execution_context_abi": context_json(data),
+        "runtime_execution_abis": execution_abis,
         "execution_manifest_version": data["deployment_manifest"]["version"],
         "execution_manifest_required_environment": data["deployment_manifest"][
             "launch_environment_required_names"
@@ -2359,6 +2445,9 @@ def render_js_abi(data: dict) -> str:
 def _js_runtime_callable_abi(data: dict) -> dict[str, object]:
     """The reserved runtime callable layout, in the manifest browser_embed shape."""
     reserved_callables = _shared_runtime_callables(data)
+    physical = {
+        row["symbol"]: row["physical_symbol"] for row in runtime_execution_specs(data)
+    }
     return {
         "table_layout": {
             "default_app_table_base": data["table_layout"]["default_app_table_base"],
@@ -2368,7 +2457,7 @@ def _js_runtime_callable_abi(data: dict) -> dict[str, object]:
         "reserved_runtime_callables": [
             {
                 "index": entry["index"],
-                "runtime_export": entry["runtime_name"],
+                "runtime_export": physical[entry["runtime_name"]],
                 "import_name": entry["import_name"],
                 "arity": entry["callable_arity"],
                 "dispatch": entry.get("callable_dispatch", "direct"),
@@ -2388,6 +2477,14 @@ def render_js_callable_table_abi(data: dict) -> str:
                 "launch_environment_required_names"
             ],
             "runtime_callables": _js_runtime_callable_abi(data),
+            "execution_context_abi": context_json(data),
+            "runtime_execution_abis": {
+                row["symbol"]: {
+                    "context": row["context"],
+                    "physical_symbol": row["physical_symbol"],
+                }
+                for row in runtime_execution_specs(data)
+            },
         },
         sort_keys=True,
     )
@@ -2739,7 +2836,18 @@ def render_outputs(data: dict) -> dict[Path, str]:
         _render_rs_callable_table(data, include_active_element_role=False),
         label="callable_table_generated.rs",
     )
-    outputs[OUT_PY] = render_py(data)
+    outputs[ROOT / "runtime/molt-codegen-abi/src/attached_context_generated.rs"] = (
+        rustfmt_source(
+            render_context_storage(data) + render_physical_symbol_macro(data),
+            label="attached_context_generated.rs",
+        )
+    )
+    outputs.update(
+        rustfmt_sources(
+            render_attached_entries(data, ROOT), label="attached runtime entries"
+        )
+    )
+    outputs[OUT_PY] = render_py(data) + render_python_context_abi(data)
     outputs[OUT_JS_ABI] = render_js_abi(data)
     outputs[OUT_JS_CALLABLE_TABLE_ABI] = render_js_callable_table_abi(data)
     outputs[OUT_JS_WASI_ERRNO] = render_js_wasi_errno(data)
@@ -2788,6 +2896,12 @@ def _stale_generated_files() -> list[Path]:
         path for path in (LEGACY_OUT_RS, *REMOVED_GENERATED_FILES) if path.exists()
     ]
     stale.extend(_unexpected_rs_files())
+    expected_attached = set(_attached_entry_output_paths())
+    stale.extend(
+        path
+        for path in ROOT.glob("runtime/*/src/attached_exports_generated/**/*.rs")
+        if path not in expected_attached
+    )
     return stale
 
 

@@ -7,7 +7,8 @@
 //! A shared scratch region is therefore safe: nested compiled code may reuse
 //! it during the call, but the entry's final store follows every such use.
 
-use wasm_encoder::{Function, Instruction, MemArg};
+use crate::wasm_binary::Function;
+use wasm_encoder::{Instruction, MemArg};
 
 /// The scratch word an entry writes its out-parameter to.
 #[derive(Clone, Copy, Debug)]

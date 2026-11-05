@@ -38,10 +38,15 @@ fn alloc_text_units(py: &CoreGilToken, units: &[u32]) -> *mut u8 {
 ///
 /// Zero-length matches are handled per CPython 3.7+ semantics: they split at
 /// every position but do not split at the same position twice.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_re_split(handle_bits: u64, text_bits: u64, maxsplit_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(compiled) = pattern_handle_arc(handle_bits) else {
+
+pub fn molt_re_split_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    text_bits: u64,
+    maxsplit_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(compiled) = pattern_handle_arc(_py, handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::ValueError, "invalid regex handle");
         };
         let text_obj = obj_from_bits(text_bits);
@@ -76,7 +81,7 @@ pub extern "C" fn molt_re_split(handle_bits: u64, text_bits: u64, maxsplit_bits:
         let text_len = bytes.map_or(units.len(), <[u8]>::len);
         let limit = match_limit(maxsplit);
 
-        let mut result_parts = Vec::new();
+        let mut result_parts = molt_runtime_core::RuntimeValueCollection::new(_py);
         let mut last: usize = 0;
         let mut splits: usize = 0;
         let subject = if let Some(bytes) = bytes {
@@ -157,7 +162,7 @@ pub extern "C" fn molt_re_split(handle_bits: u64, text_bits: u64, maxsplit_bits:
             OwnedRuntimeValue::from_owned_bits(_py, MoltObject::from_ptr(tail_ptr).bits())
         });
 
-        let list_ptr = alloc_list(_py, OwnedRuntimeValue::as_bits_slice(&result_parts));
+        let list_ptr = alloc_list(_py, result_parts.as_bits_slice());
         if list_ptr.is_null() {
             MoltObject::none().bits()
         } else {
@@ -181,15 +186,16 @@ pub extern "C" fn molt_re_split(handle_bits: u64, text_bits: u64, maxsplit_bits:
 /// `count` of 0 means replace all occurrences.
 ///
 /// Returns a tuple `(result_string, num_replacements)`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_re_sub(
+
+pub fn molt_re_sub_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     repl_bits: u64,
     text_bits: u64,
     count_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(compiled) = pattern_handle_arc(handle_bits) else {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        let Some(compiled) = pattern_handle_arc(_py, handle_bits) else {
             return raise_exception::<_>(_py, BuiltinExc::ValueError, "invalid regex handle");
         };
         let Some(count) = to_i64(obj_from_bits(count_bits)) else {
@@ -393,9 +399,9 @@ pub(super) fn expand_match_replacement(
 ///
 /// Escape all special regex characters in `pattern` so it can be used as a
 /// literal string in a regex.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_re_escape(pattern_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_re_escape_attached_body(_py: &molt_runtime_core::PyToken, pattern_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let object = obj_from_bits(pattern_bits);
         let is_bytes = object
             .as_ptr()
@@ -469,3 +475,5 @@ pub(super) fn re_escape_impl(pattern: &[u8]) -> Vec<u8> {
     }
     escaped
 }
+
+include!("../attached_exports_generated/regex/substitution.rs");

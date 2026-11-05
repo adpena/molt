@@ -1,9 +1,10 @@
 use crate::wasm::{WasmFrameLocals, WasmFrameSyntheticLocal};
 use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::box_none;
-use wasm_encoder::{BlockType, Function, Instruction, MemArg, ValType};
+use wasm_encoder::{BlockType, Instruction, MemArg, ValType};
 
 const I64_ALIGN_EXPONENT: u32 = 3;
 

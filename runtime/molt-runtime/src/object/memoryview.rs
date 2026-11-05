@@ -1352,7 +1352,9 @@ unsafe fn memoryview_write_scalar_at(
 /// CPython pack_single translates numeric protocol type/value/range failures, but
 /// preserves other callback exceptions. This is distinct from scalar coercion.
 fn memoryview_pack_error(_py: &PyToken<'_>, fmt: MemoryViewFormat) -> Option<()> {
-    use crate::builtins::exceptions::{exception_matches_kind, molt_exception_last_pending};
+    use crate::builtins::exceptions::{
+        exception_matches_kind, molt_exception_last_pending_attached_body,
+    };
     if !crate::exception_pending(_py) {
         return raise_exception(
             _py,
@@ -1368,7 +1370,7 @@ fn memoryview_pack_error(_py: &PyToken<'_>, fmt: MemoryViewFormat) -> Option<()>
         // packing; char admission already supplies its exact diagnostic.
         return None;
     }
-    let error = molt_exception_last_pending();
+    let error = molt_exception_last_pending_attached_body(_py);
     let translation = if exception_matches_kind(_py, error, crate::BuiltinExc::TypeError) {
         Some((BuiltinExc::TypeError, "type"))
     } else if exception_matches_kind(_py, error, crate::BuiltinExc::OverflowError)
@@ -1693,10 +1695,18 @@ mod split_buffer_contract_tests {
     static SCALAR_CONVERSION_CALLS: AtomicU64 = AtomicU64::new(0);
     static SCALAR_RESIZE_OWNER: AtomicU64 = AtomicU64::new(0);
 
-    extern "C" fn release_during_scalar_conversion(_self: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn release_during_scalar_conversion(__context: u64, _self: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             SCALAR_CONVERSION_CALLS.fetch_add(1, Ordering::SeqCst);
-            molt_memoryview_release(SCALAR_RELEASE_VIEW.load(Ordering::SeqCst));
+            molt_memoryview_release_attached_body(py, SCALAR_RELEASE_VIEW.load(Ordering::SeqCst));
             assert!(!exception_pending(py));
             match SCALAR_KIND.load(Ordering::SeqCst) {
                 0 => MoltObject::from_int(120).bits(),
@@ -1706,7 +1716,8 @@ mod split_buffer_contract_tests {
                 5 => crate::int_bits_from_i128(py, i128::MAX),
                 6 => MoltObject::from_int(-1).bits(),
                 7 => {
-                    crate::object::ops_bytes::molt_bytearray_append(
+                    crate::object::ops_bytes::molt_bytearray_append_attached_body(
+                        py,
                         SCALAR_RESIZE_OWNER.load(Ordering::SeqCst),
                         MoltObject::from_int(99).bits(),
                     );
@@ -1715,13 +1726,13 @@ mod split_buffer_contract_tests {
                 }
                 _ => MoltObject::from_float(1.25).bits(),
             }
-        })
+        }
     }
 
     fn releasing_scalar(py: &PyToken<'_>, protocol: &[u8]) -> u64 {
         let name = dynamic_attr_name_bits(py, b"ReleasingBufferScalar").unwrap();
-        let class = molt_class_new(name);
-        molt_class_set_base(class, builtin_classes(py).object);
+        let class = molt_class_new_attached_body(py, name);
+        molt_class_set_base_attached_body(py, class, builtin_classes(py).object);
         let method = dynamic_attr_name_bits(py, protocol).unwrap();
         let function = alloc_runtime_function_obj(
             py,
@@ -1733,7 +1744,7 @@ mod split_buffer_contract_tests {
         );
         assert!(!function.is_null());
         let function = MoltObject::from_ptr(function).bits();
-        molt_set_attr_name(class, method, function);
+        molt_set_attr_name_attached_body(py, class, method, function);
         let class_ptr = obj_from_bits(class).as_ptr().unwrap();
         unsafe { crate::object::class_finish_definition(py, class_ptr).unwrap() };
         let size = unsafe { crate::object::layout::class_cached_layout_size(class_ptr).unwrap() };
@@ -1786,13 +1797,15 @@ mod split_buffer_contract_tests {
                 SCALAR_RELEASE_VIEW.store(view_bits, Ordering::SeqCst);
                 SCALAR_KIND.store(kind, Ordering::SeqCst);
                 let value = releasing_scalar(py, protocol);
-                crate::object::ops::molt_store_index(
+                crate::object::ops::molt_store_index_attached_body(
+                    py,
                     view_bits,
                     MoltObject::from_int(0).bits(),
                     value,
                 );
                 assert!(exception_pending(py));
-                let error = crate::builtins::exceptions::molt_exception_last_pending();
+                let error =
+                    crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                 assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     error,
@@ -1828,16 +1841,21 @@ mod split_buffer_contract_tests {
             let base = alloc_bytes(py, &[0]);
             assert!(!base.is_null());
             let base_bits = MoltObject::from_ptr(base).bits();
-            let view_bits = molt_memoryview_new(base_bits);
+            let view_bits = molt_memoryview_new_attached_body(py, base_bits);
             let view = obj_from_bits(view_bits).as_ptr().unwrap();
             let value = releasing_scalar(py, b"__index__");
             SCALAR_RELEASE_VIEW.store(view_bits, Ordering::SeqCst);
             SCALAR_CONVERSION_CALLS.store(0, Ordering::SeqCst);
             // If the callback executes on this readonly view, it releases it.
-            crate::object::ops::molt_store_index(view_bits, MoltObject::from_int(0).bits(), value);
+            crate::object::ops::molt_store_index_attached_body(
+                py,
+                view_bits,
+                MoltObject::from_int(0).bits(),
+                value,
+            );
             assert!(!unsafe { memoryview_released(view) });
             assert!(exception_pending(py));
-            let error = crate::builtins::exceptions::molt_exception_last_pending();
+            let error = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
             assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
@@ -1852,11 +1870,16 @@ mod split_buffer_contract_tests {
             );
             clear_exception(py);
             dec_ref_bits(py, error);
-            molt_memoryview_release(view_bits);
+            molt_memoryview_release_attached_body(py, view_bits);
             // A second invocation must reject the released view before callback.
-            crate::object::ops::molt_store_index(view_bits, MoltObject::from_int(0).bits(), value);
+            crate::object::ops::molt_store_index_attached_body(
+                py,
+                view_bits,
+                MoltObject::from_int(0).bits(),
+                value,
+            );
             assert_eq!(SCALAR_CONVERSION_CALLS.load(Ordering::SeqCst), 0);
-            let error = crate::builtins::exceptions::molt_exception_last_pending();
+            let error = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
             assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
@@ -1901,9 +1924,9 @@ mod split_buffer_contract_tests {
             SCALAR_RESIZE_OWNER.store(base_bits, Ordering::SeqCst);
             SCALAR_KIND.store(7, Ordering::SeqCst);
             SCALAR_CONVERSION_CALLS.store(0, Ordering::SeqCst);
-            crate::object::ops::molt_store_index(view_bits, key, value_bits);
+            crate::object::ops::molt_store_index_attached_body(py, view_bits, key, value_bits);
             assert_eq!(SCALAR_CONVERSION_CALLS.load(Ordering::SeqCst), 1);
-            let error = crate::builtins::exceptions::molt_exception_last_pending();
+            let error = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
             assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
@@ -2001,7 +2024,8 @@ mod split_buffer_contract_tests {
                     };
                     let _ = raise_exception::<u64>(py, input, "scalar callback");
                     assert!(memoryview_pack_error(py, fmt).is_none());
-                    let error = crate::builtins::exceptions::molt_exception_last_pending();
+                    let error =
+                        crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                     assert!(crate::builtins::exceptions::exception_matches_kind(
                         py, error, output
                     ));
@@ -2043,24 +2067,28 @@ mod split_buffer_contract_tests {
                     let view_bits = MoltObject::from_ptr(view).bits();
                     let mut iterator = MoltObject::none().bits();
                     let result = match operation {
-                        0 => molt_index(view_bits, MoltObject::from_int(0).bits()),
-                        1 => molt_store_index(
+                        0 => {
+                            molt_index_attached_body(py, view_bits, MoltObject::from_int(0).bits())
+                        }
+                        1 => molt_store_index_attached_body(
+                            py,
                             view_bits,
                             MoltObject::from_int(0).bits(),
                             MoltObject::from_int(1).bits(),
                         ),
-                        2 => molt_memoryview_tolist(view_bits),
+                        2 => molt_memoryview_tolist_attached_body(py, view_bits),
                         _ => {
-                            iterator = molt_iter(view_bits);
+                            iterator = molt_iter_attached_body(py, view_bits);
                             if exception_pending(py) {
                                 MoltObject::none().bits()
                             } else {
-                                molt_iter_next(iterator)
+                                molt_iter_next_attached_body(py, iterator)
                             }
                         }
                     };
                     assert!(exception_pending(py), "{format}: consumer {operation}");
-                    let error = crate::builtins::exceptions::molt_exception_last_pending();
+                    let error =
+                        crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                     assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         error,
@@ -2148,7 +2176,7 @@ mod split_buffer_contract_tests {
                     assert_eq!(bytes_like_slice_checked(view), expected);
                     assert_eq!(memoryview_bytes_slice(view), expected.ok());
                 }
-                molt_memoryview_release(view_bits);
+                molt_memoryview_release_attached_body(py, view_bits);
                 unsafe {
                     assert!(!memoryview_is_c_contiguous_view(view));
                     assert_eq!(
@@ -2307,7 +2335,7 @@ mod split_buffer_contract_tests {
             let base = alloc_bytearray(py, b"abcd");
             assert!(!base.is_null());
             let base_bits = MoltObject::from_ptr(base).bits();
-            let view_bits = molt_memoryview_new(base_bits);
+            let view_bits = molt_memoryview_new_attached_body(py, base_bits);
             assert!(!exception_pending(py));
             let view = obj_from_bits(view_bits).as_ptr().unwrap();
             unsafe {
@@ -2335,7 +2363,7 @@ mod split_buffer_contract_tests {
                 assert!(memoryview_collect_bytes(view).is_none());
                 (&mut *strides)[0] = 1;
             }
-            molt_memoryview_release(view_bits);
+            molt_memoryview_release_attached_body(py, view_bits);
             unsafe {
                 assert!(memoryview_collect_bytes(view).is_none());
             }

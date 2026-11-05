@@ -389,7 +389,7 @@ mod custody_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let queue = Arc::new(SleepQueue::new());
-            let task = crate::molt_future_new(0, 0);
+            let task = crate::molt_future_new_attached_body(py, 0, 0);
             let task_ptr = crate::ptr_from_bits(task);
             queue.register_scheduler(py, task_ptr, Instant::now());
             let worker_queue = Arc::clone(&queue);

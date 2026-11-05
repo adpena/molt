@@ -23,10 +23,10 @@ pub(crate) unsafe fn publish_registered_wait(
 /// # Safety
 /// Caller must pass a valid io-wait awaitable object bits value and ensure the
 /// runtime is initialized. The function enters the GIL-guarded runtime state.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
+
+pub(crate) unsafe fn molt_io_wait_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -143,9 +143,14 @@ pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
 }
 
 #[cfg(molt_has_net_io)]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_io_wait_new(socket_bits: u64, events_bits: u64, timeout_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_io_wait_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    socket_bits: u64,
+    events_bits: u64,
+    timeout_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if require_net_capability::<u64>(_py, crate::OperationId::NetPoll).is_err() {
             return MoltObject::none().bits();
         }
@@ -160,7 +165,8 @@ pub extern "C" fn molt_io_wait_new(socket_bits: u64, events_bits: u64, timeout_b
         if events == 0 {
             return raise_exception::<_>(_py, BuiltinExc::ValueError, "events must be non-zero");
         }
-        let obj_bits = molt_future_new(
+        let obj_bits = molt_future_new_attached_body(
+            _py,
             io_wait_poll_fn_addr(),
             (3 * std::mem::size_of::<u64>()) as u64,
         );
@@ -181,9 +187,14 @@ pub extern "C" fn molt_io_wait_new(socket_bits: u64, events_bits: u64, timeout_b
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_io_wait_new(socket_bits: u64, events_bits: u64, timeout_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_io_wait_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    socket_bits: u64,
+    events_bits: u64,
+    timeout_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if require_net_capability::<u64>(_py, crate::OperationId::NetPoll).is_err() {
             return MoltObject::none().bits();
         }
@@ -201,7 +212,8 @@ pub extern "C" fn molt_io_wait_new(socket_bits: u64, events_bits: u64, timeout_b
         if events == 0 {
             return raise_exception::<_>(_py, BuiltinExc::ValueError, "events must be non-zero");
         }
-        let obj_bits = molt_future_new(
+        let obj_bits = molt_future_new_attached_body(
+            _py,
             io_wait_poll_fn_addr(),
             (3 * std::mem::size_of::<u64>()) as u64,
         );
@@ -221,12 +233,12 @@ pub extern "C" fn molt_io_wait_new(socket_bits: u64, events_bits: u64, timeout_b
 }
 
 #[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
+
 /// # Safety
 /// Caller must ensure `obj_bits` is a valid I/O object pointer.
-pub unsafe extern "C" fn molt_io_wait(obj_bits: u64) -> i64 {
+pub(crate) unsafe fn molt_io_wait_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> i64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -354,12 +366,16 @@ mod deadline_publication_tests {
         }
     }
 
-    extern "C" fn timeout_probe(_argument: u64) -> u64 {
+    extern "C" fn timeout_probe(__context: u64, _argument: u64) -> u64 {
+        let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         MoltObject::none().bits()
     }
 
-    extern "C" fn timeout_released(_weak: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn timeout_released(__context: u64, _weak: u64) -> u64 {
+        let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        crate::with_attached_entry_nopanic!(__attached_py, py, {
             let bits = OWNER.swap(0, Ordering::Relaxed);
             if bits == 0 {
                 return MoltObject::none().bits();
@@ -397,13 +413,17 @@ mod deadline_publication_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let _callbacks = CallbackScope::new();
-            let owner = crate::molt_alloc((3 * std::mem::size_of::<u64>()) as u64);
+            let owner =
+                crate::molt_alloc_attached_body(py, (3 * std::mem::size_of::<u64>()) as u64);
             let ptr = ptr_from_bits(owner);
             assert!(!ptr.is_null());
             let timeout = function(py, timeout_probe as *const ());
             let hook = function(py, timeout_released as *const ());
-            let class = crate::molt_weakref_reference_type();
-            let weak = crate::molt_weakref_new(class, timeout, hook);
+            let class =
+                crate::builtins::weakref_type::molt_weakref_reference_type_attached_body(py);
+            let weak = crate::builtins::weakref_type::molt_weakref_new_attached_body(
+                py, class, timeout, hook,
+            );
             dec_ref_bits(py, class);
             unsafe {
                 for index in 0..3 {
@@ -419,7 +439,7 @@ mod deadline_publication_tests {
                     timeout,
                 );
             }
-            crate::molt_object_publish_initialized(owner);
+            crate::molt_object_publish_initialized_attached_body(py, owner);
             OWNER.store(owner, Ordering::Relaxed);
             unsafe { publish_registered_wait(py, ptr, Some(MoltObject::from_float(123.0).bits())) };
             assert_eq!(CALLS.load(Ordering::Relaxed), 1);
@@ -441,7 +461,12 @@ mod deadline_publication_tests {
                 unsafe { *ptr.cast::<u64>().add(2) },
                 MoltObject::from_float(456.0).bits()
             );
-            assert!(obj_from_bits(crate::molt_weakref_call(weak)).is_none());
+            assert!(
+                obj_from_bits(
+                    crate::builtins::weakref_type::molt_weakref_call_attached_body(py, weak)
+                )
+                .is_none()
+            );
             dec_ref_bits(py, weak);
             dec_ref_bits(py, hook);
             dec_ref_bits(py, owner);
@@ -453,7 +478,7 @@ mod deadline_publication_tests {
     fn deadline_callback_records_bad_publication_and_disarms_on_unwind() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let owner = crate::molt_alloc(24);
+            let owner = crate::molt_alloc_attached_body(py, 24);
             let ptr = ptr_from_bits(owner);
             assert!(!ptr.is_null());
             unsafe {
@@ -464,11 +489,11 @@ mod deadline_publication_tests {
                 }
                 assert!(crate::object::object_init_state_unpublished(ptr, 0));
             }
-            crate::molt_object_publish_initialized(owner);
+            crate::molt_object_publish_initialized_attached_body(py, owner);
             let failure = crate::test_support::catch_expected_unwind(|| {
                 let _callbacks = CallbackScope::new();
                 OWNER.store(owner, Ordering::Relaxed);
-                let result = timeout_released(0);
+                let result = timeout_released(py.attached_context(), 0);
                 dec_ref_bits(py, result);
                 assert_eq!(OBSERVED_STATE.load(Ordering::Relaxed), 0);
                 assert_eq!(
@@ -492,3 +517,5 @@ mod deadline_publication_tests {
         });
     }
 }
+
+include!("../../attached_exports_generated/async_rt/io_poller/wait_api.rs");

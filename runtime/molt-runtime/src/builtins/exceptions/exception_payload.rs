@@ -543,7 +543,7 @@ pub(crate) fn format_exception_message(py: &PyToken<'_>, ptr: *mut u8) -> String
 pub(crate) fn format_exception_message_bytes(py: &PyToken<'_>, ptr: *mut u8) -> Vec<u8> {
     let mut rendered = Vec::new();
     with_saved_raised_exception(py, || {
-        let bits = molt_exception_message(MoltObject::from_ptr(ptr).bits());
+        let bits = molt_exception_message_attached_body(py, MoltObject::from_ptr(ptr).bits());
         if exception_pending(py) {
             dec_ref_bits(py, bits);
             return false;

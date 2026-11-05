@@ -75,7 +75,7 @@ pub(super) fn socketserver_extract_handle_request_tuple(
             "get_request() must return a 3-item tuple",
         ));
     }
-    let fields = unsafe { seq_snapshot(ptr) };
+    let fields = unsafe { seq_snapshot(_py, ptr) };
     if fields.len() != 3 {
         return Err(raise_exception::<u64>(
             _py,
@@ -100,7 +100,7 @@ pub(super) fn socketserver_call_service_actions(
     let Some(method_bits) = attr_optional(_py, server_bits, b"service_actions")? else {
         return Ok(());
     };
-    if !molt_is_callable(method_bits) {
+    if !molt_is_callable(_py, method_bits) {
         dec_ref_bits(_py, method_bits);
         return Ok(());
     }
@@ -342,13 +342,13 @@ pub(super) fn http_server_write_bytes(
         return Err(MoltObject::none().bits());
     };
     let missing = missing_bits(_py);
-    let write_bits = molt_getattr_builtin(wfile_bits, write_name_bits, missing);
+    let write_bits = molt_getattr_builtin(_py, wfile_bits, write_name_bits, missing);
     dec_ref_bits(_py, write_name_bits);
     dec_ref_bits(_py, wfile_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
-    if write_bits == missing || !molt_is_callable(write_bits) {
+    if write_bits == missing || !molt_is_callable(_py, write_bits) {
         if write_bits != missing {
             dec_ref_bits(_py, write_bits);
         }
@@ -388,7 +388,7 @@ pub(super) fn http_server_flush(
         dec_ref_bits(_py, wfile_bits);
         return Err(MoltObject::none().bits());
     };
-    let lookup = lookup_attribute(wfile_bits, flush_name_bits);
+    let lookup = lookup_attribute(_py, wfile_bits, flush_name_bits);
     dec_ref_bits(_py, flush_name_bits);
     dec_ref_bits(_py, wfile_bits);
     let Some(flush_bits) = lookup
@@ -397,7 +397,7 @@ pub(super) fn http_server_flush(
     else {
         return Ok(());
     };
-    if !molt_is_callable(flush_bits) {
+    if !molt_is_callable(_py, flush_bits) {
         dec_ref_bits(_py, flush_bits);
         return Ok(());
     }
@@ -425,13 +425,13 @@ pub(super) fn http_server_readline(
         return Err(MoltObject::none().bits());
     };
     let missing = missing_bits(_py);
-    let readline_bits = molt_getattr_builtin(rfile_bits, readline_name_bits, missing);
+    let readline_bits = molt_getattr_builtin(_py, rfile_bits, readline_name_bits, missing);
     dec_ref_bits(_py, readline_name_bits);
     dec_ref_bits(_py, rfile_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
-    if readline_bits == missing || !molt_is_callable(readline_bits) {
+    if readline_bits == missing || !molt_is_callable(_py, readline_bits) {
         if readline_bits != missing {
             dec_ref_bits(_py, readline_bits);
         }
@@ -701,13 +701,13 @@ pub(super) fn http_server_handle_one_request_impl(
     else {
         return Err(MoltObject::none().bits());
     };
-    let lookup = lookup_attribute(handler_bits, prepare_headers_name_bits);
+    let lookup = lookup_attribute(_py, handler_bits, prepare_headers_name_bits);
     dec_ref_bits(_py, prepare_headers_name_bits);
     if let Some(prepare_headers_bits) = lookup
         .into_result()
         .map_err(|()| MoltObject::none().bits())?
     {
-        if molt_is_callable(prepare_headers_bits) {
+        if molt_is_callable(_py, prepare_headers_bits) {
             let _ = unsafe { call_callable0(_py, prepare_headers_bits) };
             dec_ref_bits(_py, prepare_headers_bits);
             if exception_pending(_py) {
@@ -724,7 +724,7 @@ pub(super) fn http_server_handle_one_request_impl(
     let Some(method_name_bits) = alloc_string_bits(_py, &method_name) else {
         return Err(MoltObject::none().bits());
     };
-    let lookup = lookup_attribute(handler_bits, method_name_bits);
+    let lookup = lookup_attribute(_py, handler_bits, method_name_bits);
     dec_ref_bits(_py, method_name_bits);
     let method = lookup
         .into_result()
