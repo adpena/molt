@@ -26,6 +26,8 @@ CLI_MEMORY_GUARD_PREFIX: GuardStem = "MOLT_CLI"
 # HF-780, 2026-11-05: fresh native images hit 10 s, then 60 s, while
 # serial syspolicyd scans took 18/41/97 s. Ten times the latest fired bound;
 # correctness-only first execs use this, never deliberate hang witnesses.
+# The same loaded precheck also exhausted 30 s in a freshly written
+# cargo -> sccache shell-wrapper chain; it uses this first-exec family too.
 FRESH_EXECUTABLE_TIMEOUT_S: Final[float] = 600.0
 
 

@@ -295,7 +295,7 @@ def create_owned_python_venv(root: Path, *, environment: Path | None = None) -> 
             link_mode,
             str(environment),
         ],
-        timeout=120,
+        timeout=python_environment_identity.PYTHON_IDENTITY_PROBE_TIMEOUT_S,
     )
     if completed.returncode != 0:
         raise RuntimeError(f"owned interpreter venv failed: {completed.stderr}")
