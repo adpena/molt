@@ -571,7 +571,18 @@ def main(argv: list[str] | None = None) -> int:
         print(line)
     if not selection.cells and selection.runner is None:
         print("changed-crate-tests: no lib test cell reached; nothing to run")
-        print(json.dumps({"schema": SCHEMA, "cells": [], "status": "passed"}))
+        print(
+            json.dumps(
+                {
+                    "schema": SCHEMA,
+                    "status": "passed",
+                    "cells": [],
+                    "unverified": list(selection.unverified),
+                    "failures": [],
+                },
+                sort_keys=True,
+            )
+        )
         return 0
     if args.dry_run:
         return 0
