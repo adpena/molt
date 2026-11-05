@@ -240,16 +240,15 @@ if sys.implementation.name == "molt":
 # round trip to prove interoperability. The external proof driver writes these
 # rows with the exact target CPython and validates emitted rows with CPython.
 if len(sys.argv) == 2:
-    with open(sys.argv[1], "r") as fixtures:
-        rows = fixtures.read().splitlines()
     cross_checks = 0
-    for row in rows:
-        version_text, index_text, payload_hex = row.split(" ")
-        version, index = int(version_text), int(index_text)
-        result = marshal.loads(bytes.fromhex(payload_hex))
-        assert equivalent(values[index], result, version >= 3), (version, index)
-        print("cross", version, index, marshal.dumps(values[index], version).hex())
-        cross_checks += 1
+    with open(sys.argv[1], "r") as fixtures:
+        for row in fixtures:
+            version_text, index_text, payload_hex = row.split(" ")
+            version, index = int(version_text), int(index_text)
+            result = marshal.loads(bytes.fromhex(payload_hex))
+            assert equivalent(values[index], result, version >= 3), (version, index)
+            print("cross", version, index, marshal.dumps(values[index], version).hex())
+            cross_checks += 1
     # CPython's shared scalar record is deliberately outside exact-byte scope.
     result = marshal.loads(bytes.fromhex("db02000000e7000000000000f43f7201000000"))
     assert equivalent([1.25, 1.25], result, True)
