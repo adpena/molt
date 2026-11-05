@@ -382,12 +382,19 @@ fn build_initializer(
         let positional = require_index(py, spec[1], parameters.len() + 1)?;
         let name = DcValue::owned(crate::NameId::DunderInit.owned_bits(py).ok_or(())?);
         let filename = text(py, b"<string>")?;
+        // The native body executes at LocationId 0. Publish its entry in the
+        // code-owned table so frame observations and escaping Origin capture
+        // resolve the same declared source line (without invented columns).
+        let locations = dc_result(
+            py,
+            MoltObject::from_ptr(crate::alloc_bytes(py, b"\xe8\x00")).bits(),
+        )?;
         let code = crate::alloc_code_obj(
             py,
             filename.bits,
             name.bits,
             2,
-            MoltObject::none().bits(),
+            locations.bits,
             spec[0],
             names_tuple.bits,
             positional as u64,
