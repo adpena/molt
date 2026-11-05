@@ -53,11 +53,7 @@ def _premise_ops(
 
 def _global_reads(ops: list[dict]) -> list[str]:
     names = {op["out"]: op.get("s_value") for op in ops if op["kind"] == "const_str"}
-    return [
-        names.get(op["args"][1])
-        for op in ops
-        if op["kind"] == "module_get_global"
-    ]
+    return [names.get(op["args"][1]) for op in ops if op["kind"] == "module_get_global"]
 
 
 def _guards(ops: list[dict]) -> list[dict]:
@@ -270,7 +266,11 @@ def test_closed_premise_proves_builtins_without_guard_or_lookup() -> None:
         (
             "",
             PythonNamespacePremise(
-                (), int(PythonMember.BUILTINS_STR), int(PythonMember.BUILTINS_STR), (), ()
+                (),
+                int(PythonMember.BUILTINS_STR),
+                int(PythonMember.BUILTINS_STR),
+                (),
+                (),
             ),
         ),
     ],

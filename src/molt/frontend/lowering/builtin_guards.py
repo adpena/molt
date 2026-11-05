@@ -262,9 +262,9 @@ class BuiltinGuardMixin(GeneratorMixinBase):
         arm = self._builtin_guard_arm
         if arm is not None and arm[0] == "slow":
             return False
-        return bool(self._builtin_guard_bit(callee)) and not self._builtin_binding_proven(
-            callee
-        )
+        return bool(
+            self._builtin_guard_bit(callee)
+        ) and not self._builtin_binding_proven(callee)
 
     def _expression_runs_no_python(self, node: ast.expr) -> bool:
         if self.python_binding_index is None:
