@@ -14,6 +14,7 @@ import shlex
 import sqlite3
 import stat
 import subprocess
+import sys
 import time
 from typing import Any, BinaryIO
 
@@ -22,6 +23,7 @@ from molt.durable_file_identity import (
 )
 from molt.default_paths import executable_environment_value, expand_user_path
 from molt.process_environment import ProcessEnvironment
+from molt.sqlite_failure import SqliteFailure, classify_sqlite_failure
 
 from molt.file_hashing import (
     DIGEST_RACY_WINDOW_NS,
@@ -845,11 +847,23 @@ class FileDigestCache:
         self._started_ns = time.time_ns()
         self._recorded: dict[str, tuple[StatToken, str, int] | None] = {}
         self._pending: dict[str, tuple[StatToken, str]] = {}
-        # Set when the shared store reports contention (SQLITE_BUSY after the
-        # timeout, SQLITE_PROTOCOL from WAL-index races). The store only saves
-        # rehashing: every miss is hashed, so identities do not change, and this
-        # process stops adding load to a contended store.
+        # Set when the shared store reports contention (SqliteFailure.CONTENTION:
+        # SQLITE_BUSY past the timeout, SQLITE_PROTOCOL from WAL-index races).
+        # The store only saves rehashing: every miss is hashed, so identities do
+        # not change, and this process stops adding load to a contended store.
+        # Every other SQLite failure, a statement defect included, stays loud.
         self._unavailable = False
+
+    def _contended(self, error: sqlite3.OperationalError) -> None:
+        if classify_sqlite_failure(error) is not SqliteFailure.CONTENTION:
+            raise error
+        self._unavailable = True
+        print(
+            f"[molt digest-cache] {self.store} is contended ({error}); "
+            "this process hashes every file it needs",
+            file=sys.stderr,
+            flush=True,
+        )
 
     def _connect(self) -> sqlite3.Connection:
         self.store.parent.mkdir(parents=True, exist_ok=True)
@@ -894,8 +908,8 @@ class FileDigestCache:
                             " ORDER BY path LIMIT 64",
                             (key,),
                         ).fetchall()
-                except sqlite3.OperationalError:
-                    self._unavailable = True
+                except sqlite3.OperationalError as error:
+                    self._contended(error)
             for row in rows:
                 self._recorded.setdefault(
                     row[0],
@@ -986,8 +1000,8 @@ class FileDigestCache:
                         "DELETE FROM digests WHERE recorded_ns < ?",
                         (self._started_ns - self._max_age_ns,),
                     )
-            except sqlite3.OperationalError:
-                self._unavailable = True
+            except sqlite3.OperationalError as error:
+                self._contended(error)
         for path, (token, sha256) in self._pending.items():
             self._recorded[path] = (token, sha256, self._started_ns)
         self._pending.clear()
