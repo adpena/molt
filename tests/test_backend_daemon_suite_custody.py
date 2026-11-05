@@ -2417,3 +2417,40 @@ def test_current_suite_reader_never_adopts_or_rekeys_old_scratch(
         for p in old.parent.rglob("*")
         if p.is_file()
     } == before
+
+
+class _GuardianStub:
+    def __init__(self, pid: int, returncode: int | None) -> None:
+        self.pid = pid
+        self._returncode = returncode
+
+    def poll(self) -> int | None:
+        return self._returncode
+
+
+def test_guardian_handoff_failure_names_an_exit_and_its_log_tail(
+    tmp_path: Path,
+) -> None:
+    log = tmp_path / "guardian.log"
+    log.write_bytes(b"x" * 4096 + b"\nTraceback: guardian import failed\n")
+    error = suite._guardian_handoff_failure(
+        _GuardianStub(4242, 3), "use acknowledgement", 30.0, log
+    )
+    message = str(error)
+    assert "use acknowledgement unavailable" in message
+    assert "guardian pid 4242 exited with 3" in message
+    assert "still running" not in message
+    assert str(log) in message
+    assert message.endswith("Traceback: guardian import failed")
+    # Only the tail is carried, never the whole log.
+    assert len(message) < 4096
+
+
+def test_guardian_handoff_failure_names_a_missed_bound(tmp_path: Path) -> None:
+    error = suite._guardian_handoff_failure(
+        _GuardianStub(4243, None), "birth", 2.0, tmp_path / "absent.log"
+    )
+    message = str(error)
+    assert "birth unavailable: guardian pid 4243 still running after 2 s" in message
+    assert "exited" not in message
+    assert "<unreadable:" in message

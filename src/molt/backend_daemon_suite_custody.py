@@ -156,6 +156,36 @@ def _source_digest() -> str:
     return value.hexdigest()
 
 
+_GUARDIAN_LOG_TAIL_BYTES = 2048
+
+
+def _guardian_handoff_failure(
+    guardian: subprocess.Popen[bytes], stage: str, bound_s: float, log_path: Path
+) -> RuntimeError:
+    """Name what a failed guardian handoff found: an exit or a missed bound.
+
+    A guardian that exited reports its return code; one still running ran past
+    the handoff bound. Both carry the log path and its tail, because the
+    guardian writes nothing else a caller can read.
+    """
+    returncode = guardian.poll()
+    if returncode is None:
+        cause = f"guardian pid {guardian.pid} still running after {bound_s:g} s"
+    else:
+        cause = f"guardian pid {guardian.pid} exited with {returncode}"
+    try:
+        with log_path.open("rb") as log:
+            log.seek(0, os.SEEK_END)
+            log.seek(max(0, log.tell() - _GUARDIAN_LOG_TAIL_BYTES))
+            tail = log.read().decode("utf-8", "replace").strip()
+    except OSError as exc:
+        tail = f"<unreadable: {exc}>"
+    return RuntimeError(
+        f"suite guardian {stage} unavailable: {cause}; log {log_path}"
+        + (f"; log tail:\n{tail}" if tail else "; log empty")
+    )
+
+
 def _allocate_scratch(directory: Path) -> dict:
     """Bind scratch to this lease before any daemon can receive its path."""
     target = resolve_owned_path(directory / "scratch")
@@ -1057,19 +1087,21 @@ class SuiteDaemonLease:
                     _LEASE_PIPE_FDS.discard(read_fd)
                     os.close(read_fd)
                     read_fd = -1
-                deadline = time.perf_counter() + 2.0
+                guardian_log = directory / "guardian.log"
+                birth_bound_s = 2.0
+                deadline = time.perf_counter() + birth_bound_s
                 guardian_birth = None
                 while guardian_birth is None and time.perf_counter() < deadline:
                     if guardian.poll() is not None:
-                        raise RuntimeError(
-                            "suite daemon guardian exited before lease admission"
+                        raise _guardian_handoff_failure(
+                            guardian, "birth", birth_bound_s, guardian_log
                         )
                     guardian_birth = daemon.process_started_at_ns(guardian.pid)
                     if guardian_birth is None:
                         time.sleep(0.01)
                 if guardian_birth is None:
-                    raise RuntimeError(
-                        "suite daemon guardian birth could not be established"
+                    raise _guardian_handoff_failure(
+                        guardian, "birth", birth_bound_s, guardian_log
                     )
                 record = {
                     "schema": SCHEMA,
@@ -1116,8 +1148,11 @@ class SuiteDaemonLease:
                             )
                         break
                     if guardian.poll() is not None or time.perf_counter() >= deadline:
-                        raise RuntimeError(
-                            "suite guardian use acknowledgement unavailable"
+                        raise _guardian_handoff_failure(
+                            guardian,
+                            "use acknowledgement",
+                            PROCESS_STATE_HANDOFF_TIMEOUT_S,
+                            guardian_log,
                         )
                     time.sleep(0.01)
                 owned = cls(path, record, lock, write_fd, guardian, state_use)
