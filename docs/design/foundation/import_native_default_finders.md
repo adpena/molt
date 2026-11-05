@@ -572,3 +572,39 @@ the parent's 144-program census with no per-program admission additions over mai
 the existing dataclass exclusion test, static landing gates and the original
 hello/import-tiny instruction budget. The parent owns integration and the V1
 ledger; private receipts remain in the assigned lane artifact directory.
+
+### 12.1 Immutable membership and release custody
+
+The publication correction retains immutable membership, not ownership of mutable
+descendants. The release-custody authority remains
+[lowering rules](../../spec/areas/compiler/0190_LOWERING_RULES.md): cached recursive
+publication-release stability is false for an unrooted object-bearing mutable or
+unknown leaf and therefore for every containing tuple/frozenset. Publication
+widens release risk before rebuilding edges. Exact bytearray payloads cannot
+contain Python objects and retain their independent release proof. Member
+selection, joins and repeated publication must transport these facts without
+inventing a retained lifetime root. Frozenset members never imply positions.
+
+This agrees with [Python's data model](https://docs.python.org/3.12/reference/datamodel.html):
+immutable containers retain their immediate referenced objects while mutable
+referents can change. Erasing immutable edges is unnecessary; erasing mutable
+contents at callback boundaries is mandatory. No release assertion is relaxed.
+
+Two independent correction reviews identified consumers where publication had
+been used as callback expiry. A loop could restore a mutable child's old scalar
+element fact after an opaque callback inserted a finalizable object; a later
+`pop()` then appeared release-safe. An earlier explicit `dict.get` argument could
+similarly retain scalar key facts while a later argument installed a colliding
+user key, hiding its comparison callback. The existing recursive mutable-content
+expiry authority must handle loop and comprehension yields, retained temporaries,
+and earlier call arguments. Ordinary binding/selection publication remains
+distinct, preserving the namespace-mapping precision from section 12.
+
+The owning shape tests use CPython witnesses whose nested mutable-leaf release
+runs `__del__`, and whose changed dictionary key runs `__eq__`. They retain
+conservative finalizer/weakref and invocation-effect assertions, plus bytearray,
+selection, repeated-publication and compact shared-DAG controls. The correction's
+qualification is the whole shape suite, affected binding readers, the supplied
+144-program no-gain census, the four selected native/LLVM/WASM differentials and
+static gates. Earlier cost evidence and the parent-owned landing gate remain
+separate facts; this correction makes no new instruction-cost claim.
