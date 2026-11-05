@@ -1738,3 +1738,52 @@ def test_unchanged_cache_lookup_never_publishes_a_sqlite_transaction(
         # SQLite's independent connection counter observes committed writes,
         # including an unchanged PRAGMA user_version assignment.
         assert observer.execute("PRAGMA data_version").fetchone()[0] == before
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows never consults the cache")
+def test_digest_cache_contention_is_a_miss_not_a_build_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SQLITE_PROTOCOL ("locking protocol") under WAL contention failed builds that
+    only needed a digest; the store saves rehashing, so contention must hash."""
+    import sqlite3
+
+    monkeypatch.setattr(identity, "DIGEST_RACY_WINDOW_NS", 0)
+    first_data, second_data = b"first runtime header", b"second runtime header"
+    first = _settled_file(tmp_path / "first.h", first_data)
+    second = _settled_file(tmp_path / "second.h", second_data)
+    cache = identity.FileDigestCache(tmp_path / "digests.sqlite", max_age_ns=10**18)
+    connects = 0
+
+    def contended() -> sqlite3.Connection:
+        nonlocal connects
+        connects += 1
+        raise sqlite3.OperationalError("locking protocol")
+
+    monkeypatch.setattr(cache, "_connect", contended)
+
+    assert cache.identity(first, label="header").sha256 == (
+        hashlib.sha256(first_data).hexdigest()
+    )
+    assert cache.identity(second, label="header").sha256 == (
+        hashlib.sha256(second_data).hexdigest()
+    )
+    cache.flush()
+    assert connects == 1, "a contended store must not be retried by this process"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows never consults the cache")
+def test_digest_cache_corruption_stays_loud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sqlite3
+
+    header = _settled_file(tmp_path / "api.h", b"header")
+    cache = identity.FileDigestCache(tmp_path / "digests.sqlite", max_age_ns=10**18)
+
+    def corrupt() -> sqlite3.Connection:
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+    monkeypatch.setattr(cache, "_connect", corrupt)
+    with pytest.raises(sqlite3.DatabaseError, match="malformed"):
+        cache.identity(header, label="header")

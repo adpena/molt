@@ -15,7 +15,7 @@ import sqlite3
 import stat
 import subprocess
 import time
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 from molt.durable_file_identity import (
     StatToken,
@@ -845,6 +845,11 @@ class FileDigestCache:
         self._started_ns = time.time_ns()
         self._recorded: dict[str, tuple[StatToken, str, int] | None] = {}
         self._pending: dict[str, tuple[StatToken, str]] = {}
+        # Set when the shared store reports contention (SQLITE_BUSY after the
+        # timeout, SQLITE_PROTOCOL from WAL-index races). The store only saves
+        # rehashing: every miss is hashed, so identities do not change, and this
+        # process stops adding load to a contended store.
+        self._unavailable = False
 
     def _connect(self) -> sqlite3.Connection:
         self.store.parent.mkdir(parents=True, exist_ok=True)
@@ -879,13 +884,18 @@ class FileDigestCache:
         # paths together, amortizing connection/WAL teardown without loading the
         # whole host store or keeping native SQLite handles between calls.
         if key not in self._recorded:
-            with closing(self._connect()) as connection:
-                rows = connection.execute(
-                    "SELECT path, inode, mode, size, mtime_ns, ctime_ns,"
-                    " sha256, recorded_ns FROM digests WHERE path >= ?"
-                    " ORDER BY path LIMIT 64",
-                    (key,),
-                ).fetchall()
+            rows: list[Any] = []
+            if not self._unavailable:
+                try:
+                    with closing(self._connect()) as connection:
+                        rows = connection.execute(
+                            "SELECT path, inode, mode, size, mtime_ns, ctime_ns,"
+                            " sha256, recorded_ns FROM digests WHERE path >= ?"
+                            " ORDER BY path LIMIT 64",
+                            (key,),
+                        ).fetchall()
+                except sqlite3.OperationalError:
+                    self._unavailable = True
             for row in rows:
                 self._recorded.setdefault(
                     row[0],
@@ -965,15 +975,19 @@ class FileDigestCache:
             (path, str(token.inode), *token.payload()[1:], sha256, self._started_ns)
             for path, (token, sha256) in self._pending.items()
         ]
-        with closing(self._connect()) as connection, connection:
-            connection.executemany(
-                "INSERT OR REPLACE INTO digests VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                rows,
-            )
-            connection.execute(
-                "DELETE FROM digests WHERE recorded_ns < ?",
-                (self._started_ns - self._max_age_ns,),
-            )
+        if not self._unavailable:
+            try:
+                with closing(self._connect()) as connection, connection:
+                    connection.executemany(
+                        "INSERT OR REPLACE INTO digests VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        rows,
+                    )
+                    connection.execute(
+                        "DELETE FROM digests WHERE recorded_ns < ?",
+                        (self._started_ns - self._max_age_ns,),
+                    )
+            except sqlite3.OperationalError:
+                self._unavailable = True
         for path, (token, sha256) in self._pending.items():
             self._recorded[path] = (token, sha256, self._started_ns)
         self._pending.clear()
