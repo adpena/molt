@@ -85,6 +85,41 @@ INTRINSIC_DATACLASSES_INIT_GLOBALS = 78
 INTRINSIC_DATACLASSES_INIT = 79
 BUILTIN_ISINSTANCE = 80
 BUILTIN_ISSUBCLASS = 81
+BUILTIN_ABS = 82
+BUILTIN_AITER = 83
+BUILTIN_ALL = 84
+BUILTIN_ANEXT = 85
+BUILTIN_ANY = 86
+BUILTIN_ASCII = 87
+BUILTIN_BIN = 88
+BUILTIN_CALLABLE = 89
+BUILTIN_CHR = 90
+BUILTIN_COMPILE = 91
+BUILTIN_DIR = 92
+BUILTIN_DIVMOD = 93
+BUILTIN_ENUMERATE = 94
+BUILTIN_FILTER = 95
+BUILTIN_FORMAT = 96
+BUILTIN_HASH = 97
+BUILTIN_HEX = 98
+BUILTIN_ID = 99
+BUILTIN_ITER = 100
+BUILTIN_MAP = 101
+BUILTIN_MAX = 102
+BUILTIN_MIN = 103
+BUILTIN_NEXT = 104
+BUILTIN_OBJECT = 105
+BUILTIN_OCT = 106
+BUILTIN_ORD = 107
+BUILTIN_PRINT = 108
+BUILTIN_REPR = 109
+BUILTIN_REVERSED = 110
+BUILTIN_SLICE = 111
+BUILTIN_SORTED = 112
+BUILTIN_SUM = 113
+BUILTIN_SUPER = 114
+BUILTIN_TYPE = 115
+BUILTIN_ZIP = 116
 
 [native_initializer]
 DATACLASS = ["PARAMETERS", "POSITIONAL", "DEFAULTS", "KWDEFAULTS", "CAPTURE_NAMES", "CAPTURES", "STORES", "POST_INIT_INPUTS", "FACTORY_MARKER", "FROZEN_OBJECT", "ANNOTATIONS", "GLOBALS", "MODULE", "BUILTINS"]
@@ -261,6 +296,41 @@ BUILTINS_HASATTR = 47
 BUILTINS_DELATTR = 48
 BUILTINS_ISINSTANCE = 49
 BUILTINS_ISSUBCLASS = 50
+BUILTINS_ABS = 51
+BUILTINS_AITER = 52
+BUILTINS_ALL = 53
+BUILTINS_ANEXT = 54
+BUILTINS_ANY = 55
+BUILTINS_ASCII = 56
+BUILTINS_BIN = 57
+BUILTINS_CALLABLE = 58
+BUILTINS_CHR = 59
+BUILTINS_COMPILE = 60
+BUILTINS_DIR = 61
+BUILTINS_DIVMOD = 62
+BUILTINS_ENUMERATE = 63
+BUILTINS_FILTER = 64
+BUILTINS_FORMAT = 65
+BUILTINS_HASH = 66
+BUILTINS_HEX = 67
+BUILTINS_ID = 68
+BUILTINS_ITER = 69
+BUILTINS_MAP = 70
+BUILTINS_MAX = 71
+BUILTINS_MIN = 72
+BUILTINS_NEXT = 73
+BUILTINS_OBJECT = 74
+BUILTINS_OCT = 75
+BUILTINS_ORD = 76
+BUILTINS_PRINT = 77
+BUILTINS_REPR = 78
+BUILTINS_REVERSED = 79
+BUILTINS_SLICE = 80
+BUILTINS_SORTED = 81
+BUILTINS_SUM = 82
+BUILTINS_SUPER = 83
+BUILTINS_TYPE = 84
+BUILTINS_ZIP = 85
 
 [[builtin]]
 name = "__import__"
@@ -660,3 +730,213 @@ owner = "DATACLASSES_MODULE"
 name = "field"
 identity = "DATACLASSES_FIELD"
 guard = "DATACLASSES_FIELD"
+
+[[builtin]]
+name = "abs"
+identity = "BUILTIN_ABS"
+guard = "BUILTINS_ABS"
+shape = false
+
+[[builtin]]
+name = "aiter"
+identity = "BUILTIN_AITER"
+guard = "BUILTINS_AITER"
+shape = false
+
+[[builtin]]
+name = "all"
+identity = "BUILTIN_ALL"
+guard = "BUILTINS_ALL"
+shape = false
+
+[[builtin]]
+name = "anext"
+identity = "BUILTIN_ANEXT"
+guard = "BUILTINS_ANEXT"
+shape = false
+
+[[builtin]]
+name = "any"
+identity = "BUILTIN_ANY"
+guard = "BUILTINS_ANY"
+shape = false
+
+[[builtin]]
+name = "ascii"
+identity = "BUILTIN_ASCII"
+guard = "BUILTINS_ASCII"
+shape = false
+
+[[builtin]]
+name = "bin"
+identity = "BUILTIN_BIN"
+guard = "BUILTINS_BIN"
+shape = false
+
+[[builtin]]
+name = "callable"
+identity = "BUILTIN_CALLABLE"
+guard = "BUILTINS_CALLABLE"
+shape = false
+
+[[builtin]]
+name = "chr"
+identity = "BUILTIN_CHR"
+guard = "BUILTINS_CHR"
+shape = false
+
+[[builtin]]
+name = "compile"
+identity = "BUILTIN_COMPILE"
+guard = "BUILTINS_COMPILE"
+shape = false
+
+[[builtin]]
+name = "dir"
+identity = "BUILTIN_DIR"
+guard = "BUILTINS_DIR"
+shape = false
+
+[[builtin]]
+name = "divmod"
+identity = "BUILTIN_DIVMOD"
+guard = "BUILTINS_DIVMOD"
+shape = false
+
+[[builtin]]
+name = "enumerate"
+identity = "BUILTIN_ENUMERATE"
+guard = "BUILTINS_ENUMERATE"
+shape = false
+
+[[builtin]]
+name = "filter"
+identity = "BUILTIN_FILTER"
+guard = "BUILTINS_FILTER"
+shape = false
+
+[[builtin]]
+name = "format"
+identity = "BUILTIN_FORMAT"
+guard = "BUILTINS_FORMAT"
+shape = false
+
+[[builtin]]
+name = "hash"
+identity = "BUILTIN_HASH"
+guard = "BUILTINS_HASH"
+shape = false
+
+[[builtin]]
+name = "hex"
+identity = "BUILTIN_HEX"
+guard = "BUILTINS_HEX"
+shape = false
+
+[[builtin]]
+name = "id"
+identity = "BUILTIN_ID"
+guard = "BUILTINS_ID"
+shape = false
+
+[[builtin]]
+name = "iter"
+identity = "BUILTIN_ITER"
+guard = "BUILTINS_ITER"
+shape = false
+
+[[builtin]]
+name = "map"
+identity = "BUILTIN_MAP"
+guard = "BUILTINS_MAP"
+shape = false
+
+[[builtin]]
+name = "max"
+identity = "BUILTIN_MAX"
+guard = "BUILTINS_MAX"
+shape = false
+
+[[builtin]]
+name = "min"
+identity = "BUILTIN_MIN"
+guard = "BUILTINS_MIN"
+shape = false
+
+[[builtin]]
+name = "next"
+identity = "BUILTIN_NEXT"
+guard = "BUILTINS_NEXT"
+shape = false
+
+[[builtin]]
+name = "object"
+identity = "BUILTIN_OBJECT"
+guard = "BUILTINS_OBJECT"
+shape = false
+
+[[builtin]]
+name = "oct"
+identity = "BUILTIN_OCT"
+guard = "BUILTINS_OCT"
+shape = false
+
+[[builtin]]
+name = "ord"
+identity = "BUILTIN_ORD"
+guard = "BUILTINS_ORD"
+shape = false
+
+[[builtin]]
+name = "print"
+identity = "BUILTIN_PRINT"
+guard = "BUILTINS_PRINT"
+shape = false
+
+[[builtin]]
+name = "repr"
+identity = "BUILTIN_REPR"
+guard = "BUILTINS_REPR"
+shape = false
+
+[[builtin]]
+name = "reversed"
+identity = "BUILTIN_REVERSED"
+guard = "BUILTINS_REVERSED"
+shape = false
+
+[[builtin]]
+name = "slice"
+identity = "BUILTIN_SLICE"
+guard = "BUILTINS_SLICE"
+shape = false
+
+[[builtin]]
+name = "sorted"
+identity = "BUILTIN_SORTED"
+guard = "BUILTINS_SORTED"
+shape = false
+
+[[builtin]]
+name = "sum"
+identity = "BUILTIN_SUM"
+guard = "BUILTINS_SUM"
+shape = false
+
+[[builtin]]
+name = "super"
+identity = "BUILTIN_SUPER"
+guard = "BUILTINS_SUPER"
+shape = false
+
+[[builtin]]
+name = "type"
+identity = "BUILTIN_TYPE"
+guard = "BUILTINS_TYPE"
+shape = false
+
+[[builtin]]
+name = "zip"
+identity = "BUILTIN_ZIP"
+guard = "BUILTINS_ZIP"
+shape = false

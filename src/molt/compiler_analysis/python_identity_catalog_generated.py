@@ -93,6 +93,41 @@ class PythonIdentity(IntFlag):
     INTRINSIC_DATACLASSES_INIT = 1 << 79
     BUILTIN_ISINSTANCE = 1 << 80
     BUILTIN_ISSUBCLASS = 1 << 81
+    BUILTIN_ABS = 1 << 82
+    BUILTIN_AITER = 1 << 83
+    BUILTIN_ALL = 1 << 84
+    BUILTIN_ANEXT = 1 << 85
+    BUILTIN_ANY = 1 << 86
+    BUILTIN_ASCII = 1 << 87
+    BUILTIN_BIN = 1 << 88
+    BUILTIN_CALLABLE = 1 << 89
+    BUILTIN_CHR = 1 << 90
+    BUILTIN_COMPILE = 1 << 91
+    BUILTIN_DIR = 1 << 92
+    BUILTIN_DIVMOD = 1 << 93
+    BUILTIN_ENUMERATE = 1 << 94
+    BUILTIN_FILTER = 1 << 95
+    BUILTIN_FORMAT = 1 << 96
+    BUILTIN_HASH = 1 << 97
+    BUILTIN_HEX = 1 << 98
+    BUILTIN_ID = 1 << 99
+    BUILTIN_ITER = 1 << 100
+    BUILTIN_MAP = 1 << 101
+    BUILTIN_MAX = 1 << 102
+    BUILTIN_MIN = 1 << 103
+    BUILTIN_NEXT = 1 << 104
+    BUILTIN_OBJECT = 1 << 105
+    BUILTIN_OCT = 1 << 106
+    BUILTIN_ORD = 1 << 107
+    BUILTIN_PRINT = 1 << 108
+    BUILTIN_REPR = 1 << 109
+    BUILTIN_REVERSED = 1 << 110
+    BUILTIN_SLICE = 1 << 111
+    BUILTIN_SORTED = 1 << 112
+    BUILTIN_SUM = 1 << 113
+    BUILTIN_SUPER = 1 << 114
+    BUILTIN_TYPE = 1 << 115
+    BUILTIN_ZIP = 1 << 116
 
 
 class PythonMember(IntFlag):
@@ -147,6 +182,41 @@ class PythonMember(IntFlag):
     BUILTINS_DELATTR = 1 << 48
     BUILTINS_ISINSTANCE = 1 << 49
     BUILTINS_ISSUBCLASS = 1 << 50
+    BUILTINS_ABS = 1 << 51
+    BUILTINS_AITER = 1 << 52
+    BUILTINS_ALL = 1 << 53
+    BUILTINS_ANEXT = 1 << 54
+    BUILTINS_ANY = 1 << 55
+    BUILTINS_ASCII = 1 << 56
+    BUILTINS_BIN = 1 << 57
+    BUILTINS_CALLABLE = 1 << 58
+    BUILTINS_CHR = 1 << 59
+    BUILTINS_COMPILE = 1 << 60
+    BUILTINS_DIR = 1 << 61
+    BUILTINS_DIVMOD = 1 << 62
+    BUILTINS_ENUMERATE = 1 << 63
+    BUILTINS_FILTER = 1 << 64
+    BUILTINS_FORMAT = 1 << 65
+    BUILTINS_HASH = 1 << 66
+    BUILTINS_HEX = 1 << 67
+    BUILTINS_ID = 1 << 68
+    BUILTINS_ITER = 1 << 69
+    BUILTINS_MAP = 1 << 70
+    BUILTINS_MAX = 1 << 71
+    BUILTINS_MIN = 1 << 72
+    BUILTINS_NEXT = 1 << 73
+    BUILTINS_OBJECT = 1 << 74
+    BUILTINS_OCT = 1 << 75
+    BUILTINS_ORD = 1 << 76
+    BUILTINS_PRINT = 1 << 77
+    BUILTINS_REPR = 1 << 78
+    BUILTINS_REVERSED = 1 << 79
+    BUILTINS_SLICE = 1 << 80
+    BUILTINS_SORTED = 1 << 81
+    BUILTINS_SUM = 1 << 82
+    BUILTINS_SUPER = 1 << 83
+    BUILTINS_TYPE = 1 << 84
+    BUILTINS_ZIP = 1 << 85
 
 
 class PythonTargetProperty(Enum):
@@ -203,7 +273,7 @@ UNBOUND_IDENTITY: Final[IdentityMask] = int(PythonIdentity.UNBOUND)
 UNKNOWN_IDENTITY: Final[IdentityMask] = OTHER_IDENTITY | UNBOUND_IDENTITY
 SENTINEL_IDENTITIES: Final[IdentityMask] = UNKNOWN_IDENTITY
 NO_INVALID_MEMBERS: Final[MemberMask] = 0
-ALL_INVALID_MEMBERS: Final[MemberMask] = 2251799813685247
+ALL_INVALID_MEMBERS: Final[MemberMask] = 77371252455336267181195263
 
 class PythonImportCallable(NamedTuple):
     behavior: PythonImportBehavior
@@ -419,6 +489,41 @@ BUILTIN_IDENTITIES: Final[Mapping[str, tuple[PythonIdentity, PythonMember]]] = M
         'property': (PythonIdentity.BUILTIN_PROPERTY, PythonMember.BUILTINS_PROPERTY),
         'isinstance': (PythonIdentity.BUILTIN_ISINSTANCE, PythonMember.BUILTINS_ISINSTANCE),
         'issubclass': (PythonIdentity.BUILTIN_ISSUBCLASS, PythonMember.BUILTINS_ISSUBCLASS),
+        'abs': (PythonIdentity.BUILTIN_ABS, PythonMember.BUILTINS_ABS),
+        'aiter': (PythonIdentity.BUILTIN_AITER, PythonMember.BUILTINS_AITER),
+        'all': (PythonIdentity.BUILTIN_ALL, PythonMember.BUILTINS_ALL),
+        'anext': (PythonIdentity.BUILTIN_ANEXT, PythonMember.BUILTINS_ANEXT),
+        'any': (PythonIdentity.BUILTIN_ANY, PythonMember.BUILTINS_ANY),
+        'ascii': (PythonIdentity.BUILTIN_ASCII, PythonMember.BUILTINS_ASCII),
+        'bin': (PythonIdentity.BUILTIN_BIN, PythonMember.BUILTINS_BIN),
+        'callable': (PythonIdentity.BUILTIN_CALLABLE, PythonMember.BUILTINS_CALLABLE),
+        'chr': (PythonIdentity.BUILTIN_CHR, PythonMember.BUILTINS_CHR),
+        'compile': (PythonIdentity.BUILTIN_COMPILE, PythonMember.BUILTINS_COMPILE),
+        'dir': (PythonIdentity.BUILTIN_DIR, PythonMember.BUILTINS_DIR),
+        'divmod': (PythonIdentity.BUILTIN_DIVMOD, PythonMember.BUILTINS_DIVMOD),
+        'enumerate': (PythonIdentity.BUILTIN_ENUMERATE, PythonMember.BUILTINS_ENUMERATE),
+        'filter': (PythonIdentity.BUILTIN_FILTER, PythonMember.BUILTINS_FILTER),
+        'format': (PythonIdentity.BUILTIN_FORMAT, PythonMember.BUILTINS_FORMAT),
+        'hash': (PythonIdentity.BUILTIN_HASH, PythonMember.BUILTINS_HASH),
+        'hex': (PythonIdentity.BUILTIN_HEX, PythonMember.BUILTINS_HEX),
+        'id': (PythonIdentity.BUILTIN_ID, PythonMember.BUILTINS_ID),
+        'iter': (PythonIdentity.BUILTIN_ITER, PythonMember.BUILTINS_ITER),
+        'map': (PythonIdentity.BUILTIN_MAP, PythonMember.BUILTINS_MAP),
+        'max': (PythonIdentity.BUILTIN_MAX, PythonMember.BUILTINS_MAX),
+        'min': (PythonIdentity.BUILTIN_MIN, PythonMember.BUILTINS_MIN),
+        'next': (PythonIdentity.BUILTIN_NEXT, PythonMember.BUILTINS_NEXT),
+        'object': (PythonIdentity.BUILTIN_OBJECT, PythonMember.BUILTINS_OBJECT),
+        'oct': (PythonIdentity.BUILTIN_OCT, PythonMember.BUILTINS_OCT),
+        'ord': (PythonIdentity.BUILTIN_ORD, PythonMember.BUILTINS_ORD),
+        'print': (PythonIdentity.BUILTIN_PRINT, PythonMember.BUILTINS_PRINT),
+        'repr': (PythonIdentity.BUILTIN_REPR, PythonMember.BUILTINS_REPR),
+        'reversed': (PythonIdentity.BUILTIN_REVERSED, PythonMember.BUILTINS_REVERSED),
+        'slice': (PythonIdentity.BUILTIN_SLICE, PythonMember.BUILTINS_SLICE),
+        'sorted': (PythonIdentity.BUILTIN_SORTED, PythonMember.BUILTINS_SORTED),
+        'sum': (PythonIdentity.BUILTIN_SUM, PythonMember.BUILTINS_SUM),
+        'super': (PythonIdentity.BUILTIN_SUPER, PythonMember.BUILTINS_SUPER),
+        'type': (PythonIdentity.BUILTIN_TYPE, PythonMember.BUILTINS_TYPE),
+        'zip': (PythonIdentity.BUILTIN_ZIP, PythonMember.BUILTINS_ZIP),
     }
 )
 
@@ -454,6 +559,41 @@ BUILTIN_NAMES_BY_IDENTITY: Final[Mapping[IdentityMask, str]] = MappingProxyType(
         int(PythonIdentity.BUILTIN_PROPERTY): 'property',
         int(PythonIdentity.BUILTIN_ISINSTANCE): 'isinstance',
         int(PythonIdentity.BUILTIN_ISSUBCLASS): 'issubclass',
+        int(PythonIdentity.BUILTIN_ABS): 'abs',
+        int(PythonIdentity.BUILTIN_AITER): 'aiter',
+        int(PythonIdentity.BUILTIN_ALL): 'all',
+        int(PythonIdentity.BUILTIN_ANEXT): 'anext',
+        int(PythonIdentity.BUILTIN_ANY): 'any',
+        int(PythonIdentity.BUILTIN_ASCII): 'ascii',
+        int(PythonIdentity.BUILTIN_BIN): 'bin',
+        int(PythonIdentity.BUILTIN_CALLABLE): 'callable',
+        int(PythonIdentity.BUILTIN_CHR): 'chr',
+        int(PythonIdentity.BUILTIN_COMPILE): 'compile',
+        int(PythonIdentity.BUILTIN_DIR): 'dir',
+        int(PythonIdentity.BUILTIN_DIVMOD): 'divmod',
+        int(PythonIdentity.BUILTIN_ENUMERATE): 'enumerate',
+        int(PythonIdentity.BUILTIN_FILTER): 'filter',
+        int(PythonIdentity.BUILTIN_FORMAT): 'format',
+        int(PythonIdentity.BUILTIN_HASH): 'hash',
+        int(PythonIdentity.BUILTIN_HEX): 'hex',
+        int(PythonIdentity.BUILTIN_ID): 'id',
+        int(PythonIdentity.BUILTIN_ITER): 'iter',
+        int(PythonIdentity.BUILTIN_MAP): 'map',
+        int(PythonIdentity.BUILTIN_MAX): 'max',
+        int(PythonIdentity.BUILTIN_MIN): 'min',
+        int(PythonIdentity.BUILTIN_NEXT): 'next',
+        int(PythonIdentity.BUILTIN_OBJECT): 'object',
+        int(PythonIdentity.BUILTIN_OCT): 'oct',
+        int(PythonIdentity.BUILTIN_ORD): 'ord',
+        int(PythonIdentity.BUILTIN_PRINT): 'print',
+        int(PythonIdentity.BUILTIN_REPR): 'repr',
+        int(PythonIdentity.BUILTIN_REVERSED): 'reversed',
+        int(PythonIdentity.BUILTIN_SLICE): 'slice',
+        int(PythonIdentity.BUILTIN_SORTED): 'sorted',
+        int(PythonIdentity.BUILTIN_SUM): 'sum',
+        int(PythonIdentity.BUILTIN_SUPER): 'super',
+        int(PythonIdentity.BUILTIN_TYPE): 'type',
+        int(PythonIdentity.BUILTIN_ZIP): 'zip',
     }
 )
 
@@ -572,6 +712,41 @@ CANONICAL_FROM_IMPORT_IDENTITIES: Final[Mapping[tuple[str, str], tuple[PythonIde
         ('builtins', 'property'): (PythonIdentity.BUILTIN_PROPERTY, PythonMember.BUILTINS_PROPERTY),
         ('builtins', 'isinstance'): (PythonIdentity.BUILTIN_ISINSTANCE, PythonMember.BUILTINS_ISINSTANCE),
         ('builtins', 'issubclass'): (PythonIdentity.BUILTIN_ISSUBCLASS, PythonMember.BUILTINS_ISSUBCLASS),
+        ('builtins', 'abs'): (PythonIdentity.BUILTIN_ABS, PythonMember.BUILTINS_ABS),
+        ('builtins', 'aiter'): (PythonIdentity.BUILTIN_AITER, PythonMember.BUILTINS_AITER),
+        ('builtins', 'all'): (PythonIdentity.BUILTIN_ALL, PythonMember.BUILTINS_ALL),
+        ('builtins', 'anext'): (PythonIdentity.BUILTIN_ANEXT, PythonMember.BUILTINS_ANEXT),
+        ('builtins', 'any'): (PythonIdentity.BUILTIN_ANY, PythonMember.BUILTINS_ANY),
+        ('builtins', 'ascii'): (PythonIdentity.BUILTIN_ASCII, PythonMember.BUILTINS_ASCII),
+        ('builtins', 'bin'): (PythonIdentity.BUILTIN_BIN, PythonMember.BUILTINS_BIN),
+        ('builtins', 'callable'): (PythonIdentity.BUILTIN_CALLABLE, PythonMember.BUILTINS_CALLABLE),
+        ('builtins', 'chr'): (PythonIdentity.BUILTIN_CHR, PythonMember.BUILTINS_CHR),
+        ('builtins', 'compile'): (PythonIdentity.BUILTIN_COMPILE, PythonMember.BUILTINS_COMPILE),
+        ('builtins', 'dir'): (PythonIdentity.BUILTIN_DIR, PythonMember.BUILTINS_DIR),
+        ('builtins', 'divmod'): (PythonIdentity.BUILTIN_DIVMOD, PythonMember.BUILTINS_DIVMOD),
+        ('builtins', 'enumerate'): (PythonIdentity.BUILTIN_ENUMERATE, PythonMember.BUILTINS_ENUMERATE),
+        ('builtins', 'filter'): (PythonIdentity.BUILTIN_FILTER, PythonMember.BUILTINS_FILTER),
+        ('builtins', 'format'): (PythonIdentity.BUILTIN_FORMAT, PythonMember.BUILTINS_FORMAT),
+        ('builtins', 'hash'): (PythonIdentity.BUILTIN_HASH, PythonMember.BUILTINS_HASH),
+        ('builtins', 'hex'): (PythonIdentity.BUILTIN_HEX, PythonMember.BUILTINS_HEX),
+        ('builtins', 'id'): (PythonIdentity.BUILTIN_ID, PythonMember.BUILTINS_ID),
+        ('builtins', 'iter'): (PythonIdentity.BUILTIN_ITER, PythonMember.BUILTINS_ITER),
+        ('builtins', 'map'): (PythonIdentity.BUILTIN_MAP, PythonMember.BUILTINS_MAP),
+        ('builtins', 'max'): (PythonIdentity.BUILTIN_MAX, PythonMember.BUILTINS_MAX),
+        ('builtins', 'min'): (PythonIdentity.BUILTIN_MIN, PythonMember.BUILTINS_MIN),
+        ('builtins', 'next'): (PythonIdentity.BUILTIN_NEXT, PythonMember.BUILTINS_NEXT),
+        ('builtins', 'object'): (PythonIdentity.BUILTIN_OBJECT, PythonMember.BUILTINS_OBJECT),
+        ('builtins', 'oct'): (PythonIdentity.BUILTIN_OCT, PythonMember.BUILTINS_OCT),
+        ('builtins', 'ord'): (PythonIdentity.BUILTIN_ORD, PythonMember.BUILTINS_ORD),
+        ('builtins', 'print'): (PythonIdentity.BUILTIN_PRINT, PythonMember.BUILTINS_PRINT),
+        ('builtins', 'repr'): (PythonIdentity.BUILTIN_REPR, PythonMember.BUILTINS_REPR),
+        ('builtins', 'reversed'): (PythonIdentity.BUILTIN_REVERSED, PythonMember.BUILTINS_REVERSED),
+        ('builtins', 'slice'): (PythonIdentity.BUILTIN_SLICE, PythonMember.BUILTINS_SLICE),
+        ('builtins', 'sorted'): (PythonIdentity.BUILTIN_SORTED, PythonMember.BUILTINS_SORTED),
+        ('builtins', 'sum'): (PythonIdentity.BUILTIN_SUM, PythonMember.BUILTINS_SUM),
+        ('builtins', 'super'): (PythonIdentity.BUILTIN_SUPER, PythonMember.BUILTINS_SUPER),
+        ('builtins', 'type'): (PythonIdentity.BUILTIN_TYPE, PythonMember.BUILTINS_TYPE),
+        ('builtins', 'zip'): (PythonIdentity.BUILTIN_ZIP, PythonMember.BUILTINS_ZIP),
     }
 )
 
@@ -627,6 +802,41 @@ CANONICAL_MEMBER_IDENTITIES: Final[Mapping[str, tuple[tuple[PythonIdentity, Pyth
         'property': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_PROPERTY, PythonMember.BUILTINS_PROPERTY),),
         'isinstance': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ISINSTANCE, PythonMember.BUILTINS_ISINSTANCE),),
         'issubclass': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ISSUBCLASS, PythonMember.BUILTINS_ISSUBCLASS),),
+        'abs': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ABS, PythonMember.BUILTINS_ABS),),
+        'aiter': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_AITER, PythonMember.BUILTINS_AITER),),
+        'all': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ALL, PythonMember.BUILTINS_ALL),),
+        'anext': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ANEXT, PythonMember.BUILTINS_ANEXT),),
+        'any': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ANY, PythonMember.BUILTINS_ANY),),
+        'ascii': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ASCII, PythonMember.BUILTINS_ASCII),),
+        'bin': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_BIN, PythonMember.BUILTINS_BIN),),
+        'callable': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_CALLABLE, PythonMember.BUILTINS_CALLABLE),),
+        'chr': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_CHR, PythonMember.BUILTINS_CHR),),
+        'compile': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_COMPILE, PythonMember.BUILTINS_COMPILE),),
+        'dir': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_DIR, PythonMember.BUILTINS_DIR),),
+        'divmod': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_DIVMOD, PythonMember.BUILTINS_DIVMOD),),
+        'enumerate': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ENUMERATE, PythonMember.BUILTINS_ENUMERATE),),
+        'filter': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_FILTER, PythonMember.BUILTINS_FILTER),),
+        'format': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_FORMAT, PythonMember.BUILTINS_FORMAT),),
+        'hash': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_HASH, PythonMember.BUILTINS_HASH),),
+        'hex': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_HEX, PythonMember.BUILTINS_HEX),),
+        'id': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ID, PythonMember.BUILTINS_ID),),
+        'iter': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ITER, PythonMember.BUILTINS_ITER),),
+        'map': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_MAP, PythonMember.BUILTINS_MAP),),
+        'max': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_MAX, PythonMember.BUILTINS_MAX),),
+        'min': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_MIN, PythonMember.BUILTINS_MIN),),
+        'next': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_NEXT, PythonMember.BUILTINS_NEXT),),
+        'object': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_OBJECT, PythonMember.BUILTINS_OBJECT),),
+        'oct': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_OCT, PythonMember.BUILTINS_OCT),),
+        'ord': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ORD, PythonMember.BUILTINS_ORD),),
+        'print': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_PRINT, PythonMember.BUILTINS_PRINT),),
+        'repr': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_REPR, PythonMember.BUILTINS_REPR),),
+        'reversed': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_REVERSED, PythonMember.BUILTINS_REVERSED),),
+        'slice': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_SLICE, PythonMember.BUILTINS_SLICE),),
+        'sorted': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_SORTED, PythonMember.BUILTINS_SORTED),),
+        'sum': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_SUM, PythonMember.BUILTINS_SUM),),
+        'super': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_SUPER, PythonMember.BUILTINS_SUPER),),
+        'type': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_TYPE, PythonMember.BUILTINS_TYPE),),
+        'zip': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_ZIP, PythonMember.BUILTINS_ZIP),),
     }
 )
 
@@ -682,6 +892,41 @@ CANONICAL_MEMBER_WRITES: Final[Mapping[str, tuple[tuple[PythonIdentity, MemberMa
         'property': ((PythonIdentity.BUILTINS_MODULE, 2199023255552),),
         'isinstance': ((PythonIdentity.BUILTINS_MODULE, 562949953421312),),
         'issubclass': ((PythonIdentity.BUILTINS_MODULE, 1125899906842624),),
+        'abs': ((PythonIdentity.BUILTINS_MODULE, 2251799813685248),),
+        'aiter': ((PythonIdentity.BUILTINS_MODULE, 4503599627370496),),
+        'all': ((PythonIdentity.BUILTINS_MODULE, 9007199254740992),),
+        'anext': ((PythonIdentity.BUILTINS_MODULE, 18014398509481984),),
+        'any': ((PythonIdentity.BUILTINS_MODULE, 36028797018963968),),
+        'ascii': ((PythonIdentity.BUILTINS_MODULE, 72057594037927936),),
+        'bin': ((PythonIdentity.BUILTINS_MODULE, 144115188075855872),),
+        'callable': ((PythonIdentity.BUILTINS_MODULE, 288230376151711744),),
+        'chr': ((PythonIdentity.BUILTINS_MODULE, 576460752303423488),),
+        'compile': ((PythonIdentity.BUILTINS_MODULE, 1152921504606846976),),
+        'dir': ((PythonIdentity.BUILTINS_MODULE, 2305843009213693952),),
+        'divmod': ((PythonIdentity.BUILTINS_MODULE, 4611686018427387904),),
+        'enumerate': ((PythonIdentity.BUILTINS_MODULE, 9223372036854775808),),
+        'filter': ((PythonIdentity.BUILTINS_MODULE, 18446744073709551616),),
+        'format': ((PythonIdentity.BUILTINS_MODULE, 36893488147419103232),),
+        'hash': ((PythonIdentity.BUILTINS_MODULE, 73786976294838206464),),
+        'hex': ((PythonIdentity.BUILTINS_MODULE, 147573952589676412928),),
+        'id': ((PythonIdentity.BUILTINS_MODULE, 295147905179352825856),),
+        'iter': ((PythonIdentity.BUILTINS_MODULE, 590295810358705651712),),
+        'map': ((PythonIdentity.BUILTINS_MODULE, 1180591620717411303424),),
+        'max': ((PythonIdentity.BUILTINS_MODULE, 2361183241434822606848),),
+        'min': ((PythonIdentity.BUILTINS_MODULE, 4722366482869645213696),),
+        'next': ((PythonIdentity.BUILTINS_MODULE, 9444732965739290427392),),
+        'object': ((PythonIdentity.BUILTINS_MODULE, 18889465931478580854784),),
+        'oct': ((PythonIdentity.BUILTINS_MODULE, 37778931862957161709568),),
+        'ord': ((PythonIdentity.BUILTINS_MODULE, 75557863725914323419136),),
+        'print': ((PythonIdentity.BUILTINS_MODULE, 151115727451828646838272),),
+        'repr': ((PythonIdentity.BUILTINS_MODULE, 302231454903657293676544),),
+        'reversed': ((PythonIdentity.BUILTINS_MODULE, 604462909807314587353088),),
+        'slice': ((PythonIdentity.BUILTINS_MODULE, 1208925819614629174706176),),
+        'sorted': ((PythonIdentity.BUILTINS_MODULE, 2417851639229258349412352),),
+        'sum': ((PythonIdentity.BUILTINS_MODULE, 4835703278458516698824704),),
+        'super': ((PythonIdentity.BUILTINS_MODULE, 9671406556917033397649408),),
+        'type': ((PythonIdentity.BUILTINS_MODULE, 19342813113834066795298816),),
+        'zip': ((PythonIdentity.BUILTINS_MODULE, 38685626227668133590597632),),
         'meta_path': ((PythonIdentity.SYS_MODULE, 128),),
         'path_hooks': ((PythonIdentity.SYS_MODULE, 128),),
         'path_importer_cache': ((PythonIdentity.SYS_MODULE, 128),),
