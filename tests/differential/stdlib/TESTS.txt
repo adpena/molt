@@ -1480,6 +1480,7 @@ tests/differential/stdlib/mailbox_basic.py
 tests/differential/stdlib/marshal_basic.py
 tests/differential/stdlib/marshal_edge_cases.py
 tests/differential/stdlib/marshal_version_basic.py
+tests/differential/stdlib/marshal_wire_format.py
 tests/differential/stdlib/math_basic_more.py
 tests/differential/stdlib/math_copysign_factorial.py
 tests/differential/stdlib/math_copysign_modf_frexp.py

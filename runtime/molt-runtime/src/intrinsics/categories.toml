@@ -86,6 +86,8 @@ prefixes = [
 
 [stdlib.math]
 prefixes = ["math_"]
+[stdlib.marshal]
+prefixes = ["marshal_"]
 [stdlib.cmath]
 prefixes = ["cmath_"]
 

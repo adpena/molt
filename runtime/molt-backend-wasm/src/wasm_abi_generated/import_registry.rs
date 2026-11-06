@@ -1974,6 +1974,26 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "sys_version_info",
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::MarshalVersion,
+        name: "marshal_version",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::MarshalDumps,
+        name: "marshal_dumps",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::MarshalLoads,
+        name: "marshal_loads",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::MarshalDump,
+        name: "marshal_dump",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::MarshalLoad,
+        name: "marshal_load",
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassesInitTrampoline,
         name: "dataclasses_init_trampoline",
     },
@@ -12140,6 +12160,16 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_sys_version" => Some(WasmRuntimeImport::SysVersion),
         "sys_version_info" => Some(WasmRuntimeImport::SysVersionInfo),
         "molt_sys_version_info" => Some(WasmRuntimeImport::SysVersionInfo),
+        "marshal_version" => Some(WasmRuntimeImport::MarshalVersion),
+        "molt_marshal_version" => Some(WasmRuntimeImport::MarshalVersion),
+        "marshal_dumps" => Some(WasmRuntimeImport::MarshalDumps),
+        "molt_marshal_dumps" => Some(WasmRuntimeImport::MarshalDumps),
+        "marshal_loads" => Some(WasmRuntimeImport::MarshalLoads),
+        "molt_marshal_loads" => Some(WasmRuntimeImport::MarshalLoads),
+        "marshal_dump" => Some(WasmRuntimeImport::MarshalDump),
+        "molt_marshal_dump" => Some(WasmRuntimeImport::MarshalDump),
+        "marshal_load" => Some(WasmRuntimeImport::MarshalLoad),
+        "molt_marshal_load" => Some(WasmRuntimeImport::MarshalLoad),
         "dataclasses_init_trampoline" => Some(WasmRuntimeImport::DataclassesInitTrampoline),
         "molt_dataclasses_init_trampoline" => Some(WasmRuntimeImport::DataclassesInitTrampoline),
         "chan_drop" => Some(WasmRuntimeImport::ChanDrop),

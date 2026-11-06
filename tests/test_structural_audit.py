@@ -2903,6 +2903,24 @@ def test_compatibility_protocol_inventory_fails_closed(tmp_path):
 
 
 def _compatibility_source_policy_fixture(tmp_path):
+    import json
+
+    receipt = tmp_path / SA.compatibility_errors.SOURCE_RECEIPTS
+    if not receipt.exists():
+        authority = json.loads(
+            (ROOT / SA.compatibility_errors.SOURCE_RECEIPTS).read_text(encoding="utf-8")
+        )
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "aot_boundaries": authority["aot_boundaries"],
+                    "sources": [],
+                }
+            ),
+            encoding="utf-8",
+        )
     for relative in (
         "config/verified_subset.toml",
         "config/cpython_regrtest_sources.toml",
@@ -2983,7 +3001,7 @@ def test_compatibility_source_refresh_is_atomic_and_deterministic(tmp_path):
     assert receipt.read_bytes() == before
 
 
-@pytest.mark.parametrize("changed", ["policy", "pins", "receipt", "appeared"])
+@pytest.mark.parametrize("changed", ["policy", "pins", "receipt"])
 def test_compatibility_source_refresh_rejects_authority_drift(tmp_path, changed):
     protocol = SA.compatibility_errors
     _compatibility_source_policy_fixture(tmp_path)
@@ -2994,17 +3012,12 @@ def test_compatibility_source_refresh_rejects_authority_drift(tmp_path, changed)
     protocol.refresh_sources(fetch, root=tmp_path)
     receipt = tmp_path / protocol.SOURCE_RECEIPTS
     expected_receipt = receipt.read_bytes()
-    if changed == "appeared":
-        receipt.unlink()
     visited = False
 
     def mutate(version, paths, revision, git_url):
         nonlocal visited, expected_receipt
         if not visited:
             visited = True
-            if changed == "appeared":
-                receipt.write_bytes(expected_receipt)
-                return fetch(version, paths, revision, git_url)
             name = {
                 "policy": "config/verified_subset.toml",
                 "pins": "config/cpython_regrtest_sources.toml",
@@ -3019,12 +3032,58 @@ def test_compatibility_source_refresh_rejects_authority_drift(tmp_path, changed)
                 expected_receipt = path.read_bytes()
         return fetch(version, paths, revision, git_url)
 
-    with pytest.raises(
-        ValueError, match="changed since identity capture|appeared during capture"
-    ):
+    with pytest.raises(ValueError, match="changed since identity capture"):
         protocol.refresh_sources(mutate, root=tmp_path)
     assert visited
     assert receipt.read_bytes() == expected_receipt
+
+
+def test_compatibility_aot_inventory_preserves_policy_provenance():
+    protocol = SA.compatibility_errors
+    source = (
+        "use crate::builtins::compatibility_error::CompatibilityError; "
+        "CompatibilityError::MarshalCodeObject.raise::<()>(py);"
+    )
+    inventory = protocol.rust_inventory(
+        source, SA.mask_rust_comments_and_strings(source), True
+    )
+    assert len(inventory) == 1 and inventory[0].proved
+    assert "AOT contract=docs/design/marshal.md" in inventory[0].detail
+    assert "CPython=" not in inventory[0].detail
+    findings = SA._compatibility_findings(ROOT / "reader.rs", ROOT, inventory)
+    assert findings[0].title == "proved compatibility outcome: MarshalCodeObject"
+    assert findings[0].metric == 0
+
+
+def test_compatibility_refresh_requires_explicit_aot_authority_before_network(tmp_path):
+    protocol = SA.compatibility_errors
+    _compatibility_source_policy_fixture(tmp_path)
+    receipt = tmp_path / protocol.SOURCE_RECEIPTS
+    receipt.unlink()
+    calls = []
+
+    def fetch(*args):
+        calls.append(args)
+        raise AssertionError("missing policy must refuse before fetching")
+
+    with pytest.raises(ValueError, match="compatibility source receipt is unavailable"):
+        protocol.refresh_sources(fetch, root=tmp_path)
+    assert calls == []
+    assert not receipt.exists()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("exception", "RuntimeError"), ("contract", "missing.md"), ("message", "")],
+)
+def test_compatibility_aot_outcomes_reject_invalid_contracts(field, value):
+    import json
+
+    protocol = SA.compatibility_errors
+    data = json.loads((ROOT / protocol.SOURCE_RECEIPTS).read_text(encoding="utf-8"))
+    data["aot_boundaries"]["MarshalCodeObject"][field] = value
+    with pytest.raises(ValueError, match="invalid AOT compatibility outcome"):
+        protocol._parse_aot_boundaries(data)
 
 
 @pytest.mark.parametrize("fault", [None, "commit", "version", "content"])

@@ -17,6 +17,35 @@ from tools import cpython_regrtest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize("version", ["3.12", "3.13", "3.14"])
+def test_admitted_uv_oracle_does_not_require_a_system_python(
+    monkeypatch, tmp_path, version
+):
+    # Supported target capability is decided by the selected interpreter, not
+    # an old platform-wide exclusion or the presence of a system executable.
+    from tests.process_guard_common import install_module_view
+
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        cpython_regrtest.shutil,
+        cpython_regrtest,
+        which=lambda _name: None,
+    )
+    config = cpython_regrtest.parse_args(
+        [
+            "--uv",
+            "--uv-python",
+            version,
+            "--uv-project",
+            str(tmp_path),
+        ]
+    )
+    command = cpython_regrtest.host_python_cmd(config, version)
+    assert command[command.index("--python") + 1] == version
+    assert "--no-managed-python" not in command
+
+
 def test_cpython_source_authority_is_commit_pinned() -> None:
     module = cpython_regrtest
     sources = module.load_cpython_sources()
