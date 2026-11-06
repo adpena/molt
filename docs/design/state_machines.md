@@ -102,8 +102,10 @@ writes `run.json` before any remote work; `collect` reads the worker's
   runs keep their stage and worktrees; no run retires its allocations. On
   2026-11-06 molt-gate held 26 worktrees and 13 stages of collected runs
   (~7.5 GB). The reviewed retention design is
-  `logs/agents/lane-trunk-retention/artifacts/design.md`; it must add a
-  `RETIRED` fact through `transition()`, not a second state field.
+  `logs/agents/lane-trunk-retention/artifacts/design.md`. Retirement is
+  orthogonal to the lifecycle (a run is collected, then retired): record it as
+  a typed field of a terminal record, never as a new lifecycle state, and never
+  re-enter the lifecycle to retire.
 
 ## Landing request (`tools/molt_dev_queue.py`)
 
