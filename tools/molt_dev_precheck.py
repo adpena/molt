@@ -28,6 +28,7 @@ cohorts stay with the batch.
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from enum import StrEnum
@@ -405,6 +406,23 @@ def precheck_landing(
         _say(gate_time_summary(gate_seconds))
         return PrecheckResult(
             passed, None, budget, tuple(runs), seconds(), waived=waived
+        )
+    from tools.trunk_landing import HOST_SETTING
+
+    farm_host = os.environ.get(HOST_SETTING, "").strip()
+    if farm_host:
+        # The farm host runs the try run on the exact commit and returns its
+        # gate logs in the same layout; merge, receipt and push stay here
+        # (docs/design/trunk_loop.md, "Opt-in remote landing gates").
+        from tools.trunk_landing import run_remote
+
+        drv._assert_integration_source(git, head)
+        remote_seconds, remote_logs = run_remote(repo, head, trial, host=farm_host)
+        gate_seconds.extend(remote_seconds)
+        runs.append(GateRun("try-run", remote_logs, tuple(trial)))
+        _say(gate_time_summary(gate_seconds))
+        return PrecheckResult(
+            (*passed, *trial), None, budget, tuple(runs), seconds(), waived=waived
         )
     from molt.disk_capacity import DiskCapacityError
 
