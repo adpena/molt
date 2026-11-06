@@ -16,7 +16,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
-| Hashed executable authority inputs | 1 | 458 |
+| Hashed executable authority inputs | 1 | 459 |
 | Local path rules | 35 | 86 |
 | Unique local commands | 73 | 86 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -397,12 +397,12 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `backend-daemon-custody` | 11 | 0 |
 | `build-early-cutoff` | 10 | 0 |
 | `runtime-wasm-signatures` | 28 | 1 |
-| `runtime-cargo-input-custody` | 58 | 0 |
+| `runtime-cargo-input-custody` | 59 | 0 |
 | `rust-toolchain` | 11 | 1 |
 | `table-drift` | 20 | 1 |
 | `target-python-extension-release-identity` | 5 | 0 |
 | `memory-graph` | 4 | 1 |
-| `native-toolchain-transfer` | 39 | 0 |
+| `native-toolchain-transfer` | 40 | 0 |
 | `proof-plan-tests` | 1 | 0 |
 | `ci-wiring` | 53 | 0 |
 | `apparatus-hooks` | 11 | 2 |
