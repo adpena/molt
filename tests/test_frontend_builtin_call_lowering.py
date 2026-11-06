@@ -1377,11 +1377,14 @@ def test_sync_try_except_uses_split_label_valued_handler_entry() -> None:
     )
 
     raise_idx = next(i for i, op in enumerate(func_ops) if op.get("kind") == "raise")
-    next_control = next(
+    # An authored raise publishes its exceptional edge before the terminal
+    # jump. Both transfers must enter this handler, preserving the raise site.
+    transfers = [
         op for op in func_ops[raise_idx + 1 :] if op.get("kind") != "line"
-    )
-    assert next_control["kind"] == "jump"
-    assert next_control["value"] == handler_label
+    ][:2]
+    assert [op["kind"] for op in transfers] == ["check_exception", "jump"]
+    assert [op["value"] for op in transfers] == [handler_label, handler_label]
+    assert transfers[0]["exception_edge"] == "unwind"
 
     handler_idx = next(
         i
