@@ -1195,3 +1195,55 @@ def test_nonobject_rich_metadata_refuses_without_refresh(tmp_path, metadata_resu
     )
     after = _record("module-lowering", digest)
     assert (after.revision, after.used_ns) == (before.revision, before.used_ns)
+
+
+def test_lowering_record_persists_and_restores_a_dataclass_projection(
+    tmp_path, monkeypatch
+):
+    """HF-777: a module that defines a dataclass writes its lowering record on a
+    cold build and reads the initializer projection back exactly on a warm one."""
+    import ast
+
+    from molt.frontend import ClassId, SimpleTIRGenerator
+
+    source = (
+        "from dataclasses import dataclass, field\n"
+        "@dataclass\n"
+        "class Record:\n"
+        "    name: str\n"
+        "    count: int = 0\n"
+        "    tags: list = field(default_factory=list)\n"
+    )
+    path = _write_module(tmp_path, "records", source)
+    generator = SimpleTIRGenerator(module_name="records", module_source_role="user")
+    generator.visit(ast.parse(source))
+    local_classes = {
+        class_id: generator.classes[class_id] for class_id in generator.local_class_ids
+    }
+    record_id = ClassId("records", "Record")
+    projection = local_classes[record_id]["dataclass_init_projection"]
+    assert projection, "the dataclass transform recorded no initializer projection"
+    digest = "cd" * 32
+    result = {
+        "body_selection": {"kind": "complete_source", "roots": []},
+        "function_metadata": {},
+        "functions": [],
+        "local_classes": local_classes,
+    }
+    _use_session(monkeypatch, "cold")
+    MC._write_persisted_module_lowering(
+        path,
+        source_lease=_ModuleSourceLease.path_backed(path),
+        context_digest=digest,
+        result=result,
+    )
+    _use_session(monkeypatch, "warm")
+    loaded = MC._read_persisted_module_lowering(
+        path,
+        body_selection=ModuleBodySelection("complete_source"),
+        source_lease=_ModuleSourceLease.path_backed(path),
+        module_name="records",
+        context_digest=digest,
+    )
+    assert loaded is not None, "the cold build persisted no lowering record"
+    assert loaded["local_classes"][record_id]["dataclass_init_projection"] == projection

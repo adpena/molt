@@ -8,6 +8,10 @@ from typing import (
 )
 
 from molt.builtin_callables import BUILTIN_FUNC_SPECS
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    BUILTIN_NAMES_BY_IDENTITY,
+    PythonIdentity,
+)
 from molt.frontend._types import (
     MoltOp,
     MoltValue,
@@ -22,9 +26,10 @@ from molt.frontend._mixin_base import GeneratorMixinBase
 
 class CallNamedBuiltinIterDispatchMixin(GeneratorMixinBase):
     def _try_emit_named_builtin_iter_call(
-        self, node: ast.Call, func_id: str, needs_bind: bool
+        self, node: ast.Call, builtin: PythonIdentity, needs_bind: bool
     ) -> Any:
-        if func_id == "slice":
+        func_id = BUILTIN_NAMES_BY_IDENTITY[builtin]
+        if builtin is PythonIdentity.BUILTIN_SLICE:
             if len(node.args) not in (1, 2, 3):
                 return CALL_NOT_HANDLED
             if len(node.args) == 1:
@@ -45,7 +50,7 @@ class CallNamedBuiltinIterDispatchMixin(GeneratorMixinBase):
             res = MoltValue(self.next_var(), type_hint="slice")
             self.emit(MoltOp(kind="SLICE_NEW", args=[start, stop, step], result=res))
             return res
-        if func_id == "aiter":
+        if builtin is PythonIdentity.BUILTIN_AITER:
             if len(node.args) != 1:
                 return CALL_NOT_HANDLED
             iterable = self.visit(node.args[0])
@@ -54,7 +59,7 @@ class CallNamedBuiltinIterDispatchMixin(GeneratorMixinBase):
                     Diagnostic.OPERAND_VALUE, "Unsupported iterable in aiter()"
                 )
             return self._emit_aiter(iterable)
-        if func_id == "anext":
+        if builtin is PythonIdentity.BUILTIN_ANEXT:
             if node.keywords or len(node.args) not in (1, 2):
                 return CALL_NOT_HANDLED
             iter_obj = self.visit(node.args[0])
@@ -77,17 +82,17 @@ class CallNamedBuiltinIterDispatchMixin(GeneratorMixinBase):
             res = MoltValue(self.next_var(), type_hint="Future")
             self.emit(MoltOp(kind="ANEXT", args=[iter_obj], result=res))
             return res
-        if func_id in {"any", "all"}:
+        if builtin in (PythonIdentity.BUILTIN_ANY, PythonIdentity.BUILTIN_ALL):
             return self._emit_any_all_call(func_id, node, needs_bind)
-        if func_id == "sum":
+        if builtin is PythonIdentity.BUILTIN_SUM:
             return self._emit_sum_call(func_id, node, needs_bind)
-        if func_id in {"map", "zip"}:
+        if builtin in (PythonIdentity.BUILTIN_MAP, PythonIdentity.BUILTIN_ZIP):
             callee = self._emit_builtin_function(func_id)
             res = MoltValue(self.next_var(), type_hint="Any")
             callargs = self._emit_call_args_builder(node)
             self.emit(MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res))
             return res
-        if func_id in {"min", "max"}:
+        if builtin in (PythonIdentity.BUILTIN_MIN, PythonIdentity.BUILTIN_MAX):
             if not node.args:
                 return self._emit_type_error_value(
                     f"{func_id} expected at least 1 argument, got 0"
@@ -145,7 +150,7 @@ class CallNamedBuiltinIterDispatchMixin(GeneratorMixinBase):
                     [args_tuple, key_val, default_val],
                 )
             return res
-        if func_id == "iter":
+        if builtin is PythonIdentity.BUILTIN_ITER:
             if node.keywords or len(node.args) not in (1, 2):
                 # The generic binder evaluates every argument before rejecting
                 # an invalid shape, preserving effects and raised exceptions.

@@ -18,6 +18,7 @@ from molt.frontend import (
     MoltValue,
     ReceiverKind,
 )
+from molt.frontend.dataclass_init import DataclassInitField
 from molt.opcode_literal_payloads import integer_literal_bytes, literal_ast_dump
 
 from molt.cli import function_records
@@ -45,6 +46,7 @@ _CACHE_JSON_TAGS = frozenset(
         "__set__",
         "__frozenset__",
         "__molt_value__",
+        "__dataclass_init_field__",
         "__class_id__",
         "__builtin_class__",
         "__declared_class__",
@@ -235,6 +237,8 @@ def _json_ir_default(value: Any) -> Any:
                 ),
             }
         }
+    if isinstance(value, DataclassInitField):
+        return {"__dataclass_init_field__": list(value.schema())}
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 

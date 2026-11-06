@@ -347,7 +347,11 @@ def test_sccache_client_under_cargo_gets_the_durable_server_temp_dir(
         memory_guard_prefix=None,
         capture_output=True,
         text=True,
-        timeout=30,
+        # The fakes are freshly written executables: macOS assesses each one
+        # before its first exec, one at a time (HF-780), and 30 s fired under
+        # parallel landing load (2026-11-05: 0.27 s alone, 40 s at 16-way).
+        # Owner D1 raises a deadline that fired by 5-10x with its cause.
+        timeout=300,
     )
 
     assert result.returncode == 0, result.stderr

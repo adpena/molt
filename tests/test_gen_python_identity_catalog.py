@@ -534,3 +534,39 @@ def test_synthetic_intrinsic_from_catalog_rejects_unclosed_producer(
     source.write_text(text.replace(before, after), encoding="utf-8")
     with pytest.raises(gen.SchemaError):
         gen.load_schema(source)
+
+
+def test_every_guarded_builtin_needs_a_catalog_identity(tmp_path: Path) -> None:
+    """A guard's fast arm proves a name; named lowering keys on its identity."""
+    guards = tmp_path / "builtin_binding_guards.toml"
+    guards.write_text(
+        gen.BINDING_GUARDS.read_text(encoding="utf-8").replace(
+            '    "zip",\n', '    "zip",\n    "input",\n', 1
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(gen.SchemaError, match=r"\['input'\]"):
+        gen.load_schema(binding_guards=guards)
+
+
+def test_catalog_covers_every_builtin_the_frontend_lowers_by_name() -> None:
+    """HF-776: a builtin without a row can never be proved, so it loses speed.
+
+    The rows cover both builtin tables, less the names with no named lowering,
+    and exactly the exception spellings bound on every supported target. Each
+    catalogued name is bound in the running interpreter's builtins.
+    """
+    import builtins
+
+    from molt.builtin_callables import BUILTIN_FUNC_SPECS
+    from molt.frontend._types import BUILTIN_TYPE_TAGS
+    from molt.frontend.exception_kinds_generated import BUILTIN_EXCEPTION_NAMES
+
+    catalogued = set(catalog.BUILTIN_IDENTITIES)
+    assert set(BUILTIN_FUNC_SPECS) - {"pow", "round"} <= catalogued
+    assert set(BUILTIN_TYPE_TAGS) - {"memoryview"} <= catalogued
+    target_gated = {"PythonFinalizationError", "WindowsError"}
+    exceptions = set(BUILTIN_EXCEPTION_NAMES) - target_gated
+    assert exceptions <= catalogued and not target_gated & catalogued
+    assert {"NotImplemented", "Ellipsis"} <= catalogued
+    assert all(hasattr(builtins, name) for name in catalogued)

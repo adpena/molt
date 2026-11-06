@@ -63,6 +63,7 @@ from molt.frontend._types import (
     MidendTierClassification,
     MoltOp,
     MoltValue,
+    PythonIdentity,
     SCCPResult,
     ScratchCell,
     SimpleIROp,
@@ -2228,8 +2229,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _name_resolves_to_builtin(self, name: str) -> bool: ...
 
-    def _named_builtin_unproved(self, node: ast.Call, func_id: str) -> bool: ...
-
     def _named_callee_value(self, node: ast.Call) -> MoltValue: ...
 
     def _new_async_internal_slot(self) -> int: ...
@@ -2345,6 +2344,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _property_field_from_method(self, node: ast.FunctionDef) -> str | None: ...
 
     def _prove_monotonic_loop_compare(self, fact: LoopBoundFact) -> bool | None: ...
+
+    def _proven_builtin_identity(self, node: ast.AST) -> PythonIdentity | None: ...
 
     def _proven_builtin_name(self, node: ast.AST) -> str | None: ...
 
@@ -2806,19 +2807,19 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _try_emit_inline_sum_genexpr(self, node: ast.Call) -> MoltValue | None: ...
 
     def _try_emit_named_builtin_call(
-        self, node: ast.Call, func_id: str, needs_bind: bool
+        self, node: ast.Call, builtin: PythonIdentity | None, needs_bind: bool
     ) -> Any: ...
 
     def _try_emit_named_builtin_fallback_call(
-        self, node: ast.Call, func_id: str, needs_bind: bool
+        self, node: ast.Call, builtin: PythonIdentity, needs_bind: bool
     ) -> Any: ...
 
     def _try_emit_named_builtin_iter_call(
-        self, node: ast.Call, func_id: str, needs_bind: bool
+        self, node: ast.Call, builtin: PythonIdentity, needs_bind: bool
     ) -> Any: ...
 
     def _try_emit_named_builtin_scalar_call(
-        self, node: ast.Call, func_id: str, needs_bind: bool
+        self, node: ast.Call, builtin: PythonIdentity, needs_bind: bool
     ) -> Any: ...
 
     def _try_emit_named_call(self, node: ast.Call, needs_bind: bool) -> Any: ...

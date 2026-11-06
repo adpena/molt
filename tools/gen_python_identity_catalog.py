@@ -24,6 +24,7 @@ from tools.intrinsic_manifest import parse_intrinsic_manifest  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src/molt/compiler_analysis/python_identity_catalog.toml"
 INTRINSIC_MANIFEST = ROOT / "runtime/molt-runtime/src/intrinsics/manifest.pyi"
+BINDING_GUARDS = ROOT / "runtime/builtin_binding_guards.toml"
 OUT_PYTHON = ROOT / "src/molt/compiler_analysis/python_identity_catalog_generated.py"
 OUT_INIT_SPEC = (
     ROOT
@@ -152,7 +153,10 @@ def _import_argument_roles(
 
 
 def load_schema(
-    path: Path = SOURCE, *, intrinsic_manifest: Path = INTRINSIC_MANIFEST
+    path: Path = SOURCE,
+    *,
+    intrinsic_manifest: Path = INTRINSIC_MANIFEST,
+    binding_guards: Path = BINDING_GUARDS,
 ) -> Schema:
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -266,6 +270,13 @@ def load_schema(
                 shape,
             )
         )
+    # A guard's fast arm proves a builtin by name; every named lowering keys on
+    # the proved identity (HF-776), so each guarded name needs a catalog row.
+    guarded = tomllib.loads(binding_guards.read_text(encoding="utf-8")).get("names")
+    if not isinstance(guarded, list):
+        raise SchemaError("builtin binding guard table has no names array")
+    if missing := sorted(set(guarded) - builtin_names):
+        raise SchemaError(f"guarded builtins without a catalog identity: {missing}")
     modules: list[tuple[str, str]] = []
     module_names: set[str] = set()
     for row in _rows(data["module"], "module", {"name", "identity"}):

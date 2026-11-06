@@ -25,6 +25,7 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
     PythonIdentity,
 )
 from molt.compiler_analysis.python_value_identity import (
+    SOURCE_CALLABLE_IDENTITIES,
     identity_fact_is_exact,
     identity_fact_may_be,
 )
@@ -322,6 +323,16 @@ class PythonNodeKey:
     def from_node(cls, node: ast.AST) -> PythonNodeKey:
         return cls(*python_node_source_key(node))
 
+    @property
+    def source_key(self) -> PythonSourceKey:
+        return (
+            self.lineno,
+            self.col_offset,
+            self.end_lineno,
+            self.end_col_offset,
+            self.kind,
+        )
+
 
 PythonNameLookup: TypeAlias = Literal[
     "none", "lexical", "global", "class_lexical", "class_global"
@@ -389,6 +400,10 @@ class PythonExpressionFact:
     # binds the name: the read's bit in the builtin binding guard mask (HF-79).
     # It authorizes a guarded specialization, never an unguarded one.
     builtin_guard_bit: int = 0
+    # The read may select a name that a star import binds. The flow also
+    # publishes that as the read's own source origin, the key a canonical
+    # import callable's read carries as provenance (HF-776).
+    star_export_lookup: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -421,11 +436,25 @@ class PythonExpressionFact:
         neither does a read that a source value can reach: a star import
         publishes its exports as source origins of later global reads, not
         as identity bits (``tests/differential/basic/builtin_binding_guards_star.py``).
+        A class body's read that misses the class mapping is a global read
+        too: the flow gives it a builtin identity only when the mapping cannot
+        run code (no ``__prepare__`` result or reflection can bind the name)
+        and the class-local binding is unbound (HF-776).
+
+        A read of a canonical import callable (``__import__``) is its own
+        source origin: positive provenance for import discovery, not another
+        value. That one origin keeps the proof; a star lookup does not.
         """
         if (
             self.binding_invalidated
-            or self.name_lookup != "global"
-            or self.result.source_origins
+            or self.star_export_lookup
+            or self.name_lookup not in {"global", "class_global"}
+        ):
+            return None
+        origins = self.result.source_origins
+        if origins and not (
+            self.identities & SOURCE_CALLABLE_IDENTITIES
+            and origins == {self.node.source_key}
         ):
             return None
         return BUILTIN_NAMES_BY_IDENTITY.get(self.identities)

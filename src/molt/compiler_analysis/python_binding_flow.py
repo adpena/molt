@@ -3582,6 +3582,7 @@ class _Analyzer:
                 result, release_may_call=False, _publication_release_stable=True
             )
         name_lookup: PythonNameLookup = "none"
+        star_export_lookup = False
         if isinstance(node, ast.Name):
             slot = self._slot_for_name(scope, node.id)
             if (owner := scope.namespace_lookup_owner(node.id)) is not None:
@@ -3620,6 +3621,7 @@ class _Analyzer:
             ):
                 # The read may find a star-bound name: it selects that name
                 # from the star-imported modules, as an attribute read would.
+                star_export_lookup = True
                 source_key = python_node_source_key(node)
                 result = replace(
                     result, source_origins=result.source_origins | {source_key}
@@ -3657,6 +3659,8 @@ class _Analyzer:
             | (
                 previous.module_metadata_effects if previous is not None else NO_EFFECTS
             ),
+            star_export_lookup=star_export_lookup
+            or (previous is not None and previous.star_export_lookup),
         )
         scope.deferred_execution |= deferred_execution
         scope.module_metadata_effects |= module_metadata_effects
@@ -8371,14 +8375,7 @@ class _Analyzer:
         # Build reverse edges once; each effect bit traverses each edge once.
         owners = {}
         for (key, _parent, _kind), scope in self._source_scopes.items():
-            source = (
-                key.lineno,
-                key.col_offset,
-                key.end_lineno,
-                key.end_col_offset,
-                key.kind,
-            )
-            owners.setdefault(source, []).append(scope.scope_id)
+            owners.setdefault(key.source_key, []).append(scope.scope_id)
         effects = [
             value
             for scope in self.scopes

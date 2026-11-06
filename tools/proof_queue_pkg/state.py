@@ -17,6 +17,7 @@ from typing import Literal, Sequence
 
 from molt.dx import checkout_custody
 from molt.exact_json import dumps_exact
+from molt.sqlite_failure import SqliteFailure, classify_sqlite_failure
 from tools.dirty_tree_policy import (
     DEFAULT_DIRTY_TREE_IGNORE_GLOBS,
     filter_status_lines,
@@ -1114,10 +1115,7 @@ def _evidence_retention(row: sqlite3.Row) -> dict[str, object] | None:
 
 
 def _is_sqlite_locked_error(exc: BaseException) -> bool:
-    if not isinstance(exc, sqlite3.OperationalError):
-        return False
-    message = str(exc).lower()
-    return "database is locked" in message or "database is busy" in message
+    return classify_sqlite_failure(exc) is SqliteFailure.CONTENTION
 
 
 def _commit_with_locked_retry(conn: sqlite3.Connection) -> None:
@@ -1134,7 +1132,10 @@ def _commit_with_locked_retry(conn: sqlite3.Connection) -> None:
             conn.commit()
             return
         except sqlite3.OperationalError as exc:
-            if not _is_sqlite_locked_error(exc):
+            # SQLite keeps the transaction open after a contended COMMIT, but
+            # not after every failure; once it has rolled back, a retried
+            # commit() would report success while writing nothing.
+            if not _is_sqlite_locked_error(exc) or not conn.in_transaction:
                 raise
             last_exc = exc
             if attempt + 1 < PROOF_QUEUE_LOCKED_WRITE_RETRIES:
