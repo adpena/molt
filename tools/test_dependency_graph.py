@@ -1461,18 +1461,6 @@ class DependencyGraph:
                 )
         return tuple(selected)
 
-    def imports_change(self, test: str, changed: Iterable[str]) -> bool:
-        """Whether the change is ``test`` itself or a source ``test`` imports.
-
-        These are the test file's own edges: its module and function imports
-        and the programs it names. Its harness (package inits, pytest plugins,
-        conftest scopes) and its data reads are not, so a change that reaches
-        a test only through them leaves the test's slow cases to postsubmit.
-        """
-        changed = frozenset(changed)
-        own = {node_path(node) for node in self.nodes.get(test, Dependencies()).execs}
-        return test in changed or bool(own & changed)
-
     def programs_reached(
         self, changed: Iterable[str], programs: Iterable[str]
     ) -> tuple[str, ...]:
@@ -1761,9 +1749,9 @@ class LandingEnvelope:
 
     Pre-push and main plan commands supply the file's declared prerequisites.
     Presubmit runs its direct inputs unfiltered, except that ``skip_slow``
-    skips the file's ``slow`` tests (``--skip-slow``) when the change reaches
-    it only through its harness or its data. Postsubmit also admits the
-    existing slow cell; complementary selectors run the file unfiltered.
+    skips the file's ``slow`` tests (``--skip-slow``) unless the change edits
+    the test file itself. Postsubmit runs every slow case on the farm and
+    reverts on a new failure; complementary selectors run the file unfiltered.
     Cells that require a compiler build retain their separate proof owner.
     """
 
@@ -1941,6 +1929,7 @@ def graph_selection(
             selected = graph.select(changed)
         case _:
             assert_never(mode)
+    changed_paths = frozenset(changed)
     whole_files = {target for target in selected if "::" not in target}
     selected = tuple(
         target
@@ -1952,9 +1941,9 @@ def graph_selection(
         if owner is not None:
             envelope = envelopes[owner]
             # Every presubmit graph target is a changed test or direct reader.
-            # Slow probes run here only for a changed test or one that imports
-            # the change; a reader through its harness or data leaves them to
-            # postsubmit and release runs, which keep the owner's selector.
+            # Slow cases run here only for a test file the change edits; every
+            # reader leaves them to postsubmit, which runs them all and reverts
+            # on a new failure (docs/design/landing_queue.md, 9.10).
             presubmit = mode is LandingMode.PRESUBMIT
             run[test] = LandingEnvelope(
                 (test,) if owner != test else envelope.targets,
@@ -1962,8 +1951,7 @@ def graph_selection(
                 envelope.owners,
                 () if presubmit else envelope.select,
                 envelope.cells,
-                skip_slow=presubmit
-                and not graph.imports_change(test.partition("::")[0], changed),
+                skip_slow=presubmit and test.partition("::")[0] not in changed_paths,
             )
         else:
             other = _owned_by(test.partition("::")[0], others)
