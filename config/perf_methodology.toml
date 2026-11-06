@@ -24,8 +24,8 @@ schema = "molt-perf-methodology-v1"
 # descendant facts at callbacks (deb45c66df, 67236970f1, 6caf9faa68), so
 # instruction counts and admitted workload modules can move. These landed on
 # main without the lock (HF-601). Earlier reports retain their recorded class.
-version = 30
-content_sha256 = "0997310507aae32ac8c0592ef5def76702c8cf3deb860d42daeb13c21746a7f0"
+version = 31
+content_sha256 = "bb80c415d9ef9280fd2e39ed835fb61fc7cc3d825352973ae16d28c6bd572b6d"
 
 [[methodology]]
 path = "tools/safe_run.py"
