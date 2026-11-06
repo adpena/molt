@@ -9570,7 +9570,6 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
                 "nightly.verification-t3.fuzz-compiler",
                 "nightly.verification-t3.fuzz-tests",
                 "nightly.verification-t3.reproducibility",
-                "nightly.verification-t3.differential",
                 "portability.rust.linux-aarch64.clippy-workspace",
                 "portability.rust.macos.clippy-workspace",
                 "portability.rust.macos.runtime-gate",
