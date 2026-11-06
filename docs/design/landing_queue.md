@@ -1104,13 +1104,13 @@ was reviewed twice and retired by the owner before any code landed.
 
 **Slow cases.** The `slow` marker (pyproject.toml) already names the tests
 that exercise long toolchain paths, and the CI fast cells deselect them.
-Presubmit runs a selected test file whole only when the lane changes that
-file. Every other selected file runs its fast cases: its cohort passes
-`--skip-slow`, and `tests/conftest.py` skips its `slow` cases. Owner,
-2026-11-06: presubmit stays within minutes and postsubmit on the farm owns the
-slow cases (revert on a new failure); an importing reader used to run whole,
-and linked WASM end-to-end cases then failed landings on the per-gate memory
-slice, not on the change. A skip, not
+Presubmit runs no `slow` case: every selected file's cohort passes
+`--skip-slow`, and `tests/conftest.py` skips its `slow` cases, even in a test
+file the lane edits. Owner, 2026-11-06: presubmit stays within minutes and
+postsubmit on the farm owns the slow cases (revert on a new failure). Readers
+and edited files used to run whole, and the linked WASM end-to-end cases (one
+`molt-wasm-host` peaked at 9.8-11.0 GB on main and on the batch alike) failed
+landings on the per-gate memory slice, not on the change. A skip, not
 `-m "not slow"`, keeps a cohort whose cases are all slow from ending with
 pytest's exit status 5. Postsubmit keeps each owner's selector and runs every
 slow case. The provisioning cases that publish real Python images

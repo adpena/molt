@@ -1749,8 +1749,8 @@ class LandingEnvelope:
 
     Pre-push and main plan commands supply the file's declared prerequisites.
     Presubmit runs its direct inputs unfiltered, except that ``skip_slow``
-    skips the file's ``slow`` tests (``--skip-slow``) unless the change edits
-    the test file itself. Postsubmit runs every slow case on the farm and
+    always skips the file's ``slow`` tests (``--skip-slow``), even for a test
+    file the change edits. Postsubmit runs every slow case on the farm and
     reverts on a new failure; complementary selectors run the file unfiltered.
     Cells that require a compiler build retain their separate proof owner.
     """
@@ -1929,7 +1929,6 @@ def graph_selection(
             selected = graph.select(changed)
         case _:
             assert_never(mode)
-    changed_paths = frozenset(changed)
     whole_files = {target for target in selected if "::" not in target}
     selected = tuple(
         target
@@ -1941,8 +1940,7 @@ def graph_selection(
         if owner is not None:
             envelope = envelopes[owner]
             # Every presubmit graph target is a changed test or direct reader.
-            # Slow cases run here only for a test file the change edits; every
-            # reader leaves them to postsubmit, which runs them all and reverts
+            # Presubmit runs no slow case; postsubmit runs them all and reverts
             # on a new failure (docs/design/landing_queue.md, 9.10).
             presubmit = mode is LandingMode.PRESUBMIT
             run[test] = LandingEnvelope(
@@ -1951,7 +1949,7 @@ def graph_selection(
                 envelope.owners,
                 () if presubmit else envelope.select,
                 envelope.cells,
-                skip_slow=presubmit and test.partition("::")[0] not in changed_paths,
+                skip_slow=presubmit,
             )
         else:
             other = _owned_by(test.partition("::")[0], others)

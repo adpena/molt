@@ -1292,12 +1292,11 @@ def test_the_graph_never_drops_what_a_rule_selects():
     assert dropped == []
 
 
-def test_presubmit_skips_slow_cases_of_every_reader_but_a_changed_test(
+def test_presubmit_skips_every_slow_case_and_postsubmit_runs_them(
     tmp_path,
 ):
-    """Presubmit runs the fast cases of every reader, importing or not; only a
-    test file the change edits runs whole, and postsubmit keeps every slow case
-    (docs/design/landing_queue.md, 9.10)."""
+    """Presubmit runs only fast cases, even of a test file the change edits;
+    postsubmit keeps every slow case (docs/design/landing_queue.md, 9.10)."""
     root = _repository(
         tmp_path,
         {
@@ -1323,7 +1322,7 @@ def test_presubmit_skips_slow_cases_of_every_reader_but_a_changed_test(
     assert {test: run.skip_slow for test, run in selection.run.items()} == {
         "tests/test_imports.py": True,
         "tests/test_reads.py": True,
-        "tests/test_changed.py": False,
+        "tests/test_changed.py": True,
     }
     post = graph_selection(graph, changed, commands, mode=LandingMode.POSTSUBMIT)
     assert post.run and not any(run.skip_slow for run in post.run.values())
@@ -1341,7 +1340,11 @@ def test_presubmit_skips_slow_cases_of_every_reader_but_a_changed_test(
         for argument in gate.command
         if argument.startswith("tests/")
     }
-    assert skipping == {"tests/test_imports.py", "tests/test_reads.py"}
+    assert skipping == {
+        "tests/test_imports.py",
+        "tests/test_reads.py",
+        "tests/test_changed.py",
+    }
     post_gates, _ = config.select(changed, mode=LandingMode.POSTSUBMIT)
     assert not any("--skip-slow" in gate.command for gate in post_gates)
 
