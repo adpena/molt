@@ -1205,6 +1205,9 @@ pub(crate) fn alloc_tuple_owned(_py: &PyToken<'_>, elems: &[u64]) -> *mut u8 {
 /// this cache. Recheck under the lock and make only the winner immortal; a
 /// losing candidate retires after unlocking. Runtime teardown drains every
 /// pointer from this owner before the state itself is dropped.
+/// The class builder is a managed semantic identity: it retires in the
+/// callback-root fixed point, before builtin class metadata, not with the
+/// terminal immortal data pool.
 pub(crate) struct CanonicalObjectCache {
     singleton_init: std::sync::Mutex<()>,
     empty_tuple: std::sync::atomic::AtomicPtr<u8>,
@@ -1213,6 +1216,7 @@ pub(crate) struct CanonicalObjectCache {
     missing: std::sync::atomic::AtomicPtr<u8>,
     not_implemented: std::sync::atomic::AtomicPtr<u8>,
     ellipsis: std::sync::atomic::AtomicPtr<u8>,
+    class_builder: std::sync::atomic::AtomicU64,
     ascii_chars: [std::sync::atomic::AtomicPtr<u8>; 128],
     interned_strings: std::sync::Mutex<std::collections::HashMap<Box<[u8]>, usize>>,
 }
@@ -1227,6 +1231,7 @@ impl CanonicalObjectCache {
             missing: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             not_implemented: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             ellipsis: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+            class_builder: std::sync::atomic::AtomicU64::new(0),
             ascii_chars: [const { std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()) }; 128],
             interned_strings: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
@@ -1283,6 +1288,34 @@ fn canonical_singleton(
 pub(crate) fn canonical_cache_locks_available_for_test(py: &PyToken<'_>) -> bool {
     let cache = &runtime_state(py).canonical_objects;
     cache.singleton_init.try_lock().is_ok() && cache.interned_strings.try_lock().is_ok()
+}
+
+/// The canonical class builder is an identity, not a name-keyed registry hit.
+/// The slot owns one ordinary reference; callers receive a separate reference.
+pub(crate) fn canonical_class_builder_bits(
+    py: &PyToken<'_>,
+    allocate: impl FnOnce() -> Option<u64>,
+) -> Option<u64> {
+    let slot = &runtime_state(py).canonical_objects.class_builder;
+    let bits = crate::object::init_atomic_bits(py, slot, || allocate().unwrap_or(0));
+    if bits == 0 {
+        None
+    } else {
+        inc_ref_bits(py, bits);
+        Some(bits)
+    }
+}
+
+pub(crate) fn clear_class_builder(py: &PyToken<'_>, state: &crate::RuntimeState) -> bool {
+    let bits = state
+        .canonical_objects
+        .class_builder
+        .swap(0, std::sync::atomic::Ordering::AcqRel);
+    if bits == 0 {
+        return false;
+    }
+    dec_ref_bits(py, bits);
+    true
 }
 
 #[cfg(test)]

@@ -156,6 +156,8 @@ pub(crate) enum WasmRuntimeImport {
     CellGt,
     CellGe,
     GuardBuiltinBindings,
+    BuildClassBuiltin,
+    ClassBuilderCheck,
     TypesCellContentsGet,
     TypesCellContentsSet,
     TypesCellContentsDelete,

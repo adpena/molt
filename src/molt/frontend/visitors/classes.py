@@ -17,7 +17,13 @@ from typing import (
     cast,
 )
 
-from molt.compiler_analysis.python_identity_catalog_generated import PythonIdentity
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    BUILTIN_NAMES_BY_IDENTITY,
+    PythonIdentity,
+)
+from molt.compiler_analysis.builtin_binding_guards_generated import (
+    BUILTIN_BINDING_GUARD_BITS,
+)
 from molt.compiler_analysis.python_source_keys import python_node_source_key
 from molt.compiler_analysis.python_lexical_scope import (
     PythonLexicalScopeVisitor,
@@ -515,6 +521,20 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                         Diagnostic.SYNTAX_FORM, "Unsupported class decorator"
                     )
                 decorator_vals.append(self._capture_expression_reference(decorator_val))
+
+        if (
+            self._proven_builtin_identity(node)
+            is not PythonIdentity.BUILTIN_BUILD_CLASS
+        ):
+            builder_name = BUILTIN_NAMES_BY_IDENTITY[PythonIdentity.BUILTIN_BUILD_CLASS]
+            mask = self._emit_const_value(BUILTIN_BINDING_GUARD_BITS[builder_name])
+            canonical = self._emit_runtime_call(
+                "molt_guard_builtin_bindings", [mask], type_hint="bool"
+            )
+            self.emit(MoltOp(kind="IF", args=[canonical], result=MoltValue("none")))
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+            self._emit_intrinsic_call("molt_class_builder_check", [], type_hint="None")
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
         type_param_vals, type_param_map = self._emit_type_params_values(node)
         if type_param_map:

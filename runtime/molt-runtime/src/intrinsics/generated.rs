@@ -8461,6 +8461,20 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         public: None,
     },
     IntrinsicSpec {
+        name: "molt_build_class_builtin",
+        symbol: "molt_build_class_builtin",
+        arity: 2,
+        defaults: &[],
+        public: Some(super::public_objects_generated::PublicObjectId::BuildClassBuiltin),
+    },
+    IntrinsicSpec {
+        name: "molt_class_builder_check",
+        symbol: "molt_class_builder_check",
+        arity: 0,
+        defaults: &[],
+        public: None,
+    },
+    IntrinsicSpec {
         name: "molt_types_cell_contents_get",
         symbol: "molt_types_cell_contents_get",
         arity: 2,

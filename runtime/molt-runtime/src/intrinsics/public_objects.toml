@@ -1,6 +1,16 @@
 # Public native Python object identity and publication authority.
 # CPython 3.12 / 3.14 census is the independent oracle.
 
+[object.molt_build_class_builtin]
+kind = "builtin_function_or_method"
+name = "__build_class__"
+qualname = "__build_class__"
+module = "builtins"
+bindings = ["builtins.__build_class__"]
+[object.molt_build_class_builtin.call]
+vararg = "args"
+varkw = "kwargs"
+
 [object.molt_abc_get_cache_token]
 kind = "builtin_function_or_method"
 name = "get_cache_token"

@@ -548,6 +548,25 @@ pub(crate) fn alloc_python_builtin_function_bits(
     info: wasm_callables::PythonBuiltinFunctionInfo,
     module_bits: u64,
 ) -> Option<u64> {
+    if info.public == crate::intrinsics::public_objects_generated::PublicObjectId::BuildClassBuiltin
+    {
+        // Publication and LOAD_BUILD_CLASS share this runtime-owned singleton,
+        // independent of later public or intrinsic-registry dictionary edits.
+        let bits = crate::intrinsics::registry::class_builder_bits(_py)?;
+        let ptr = obj_from_bits(bits)
+            .as_ptr()
+            .expect("public native callable");
+        let spec = super::native_callable::NativeCallableSpec {
+            identity: Some(info.public.identity()),
+            self_bits: Some(module_bits),
+            ..super::native_callable::NativeCallableSpec::uncached_function()
+        };
+        if !unsafe { super::native_callable::configure_native_callable(_py, ptr, spec) } {
+            dec_ref_bits(_py, bits);
+            return None;
+        }
+        return Some(bits);
+    }
     let fn_ptr = crate::intrinsics::registry::try_app_resolve_symbol(info.runtime_name)?;
     let ptr = alloc_runtime_function_obj(_py, fn_ptr, info.arity);
     if ptr.is_null() {

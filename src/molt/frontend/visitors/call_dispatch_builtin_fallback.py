@@ -35,6 +35,7 @@ class CallNamedBuiltinFallbackDispatchMixin(GeneratorMixinBase):
             needs_bind = needs_bind or (
                 (spec.bind_kind is not None and spec.bind_kind.requires_custom_binding)
                 or spec.vararg is not None
+                or spec.varkw is not None
                 or bool(spec.kwonly_params)
             )
             callee = self._emit_builtin_function(func_id)

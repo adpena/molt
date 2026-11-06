@@ -55,6 +55,42 @@ def _last_call(source: str):
     return index.calls[-1]
 
 
+@pytest.mark.parametrize(
+    "prefix,expected",
+    [
+        ("", True),
+        ("__build_class__ = None\n", True),
+        ("import builtins\nbuiltins.__build_class__ = None\n", False),
+        ("__builtins__ = {}\n", False),
+    ],
+)
+def test_class_builder_read_uses_only_the_executing_builtins(prefix, expected):
+    source = prefix + "class C: pass\n"
+    node = ast.parse(source).body[-1]
+    index = analyze_python_source_bindings(source)
+    identity = index.class_builder_identity(node)
+    assert (identity is PythonIdentity.BUILTIN_BUILD_CLASS) is expected
+
+
+def test_class_builder_read_precedes_bases_and_follows_decorators():
+    source = (
+        "import builtins\n"
+        "def replace():\n"
+        "    builtins.__build_class__ = None\n"
+        "    return object\n"
+        "class Before(replace()): pass\n"
+        "@replace()\n"
+        "class After: pass\n"
+    )
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(source)
+    assert (
+        index.class_builder_identity(tree.body[-2])
+        is PythonIdentity.BUILTIN_BUILD_CLASS
+    )
+    assert index.class_builder_identity(tree.body[-1]) is None
+
+
 @pytest.mark.parametrize("rebind", ["", "    name = 'other'\n"])
 def test_source_activation_arguments_drive_canonical_flow_and_expire_on_store(rebind):
     source = (

@@ -14,6 +14,7 @@ pub(crate) struct PublicObjectIdentity {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PublicObjectId {
+    BuildClassBuiltin,
     AbcGetCacheToken,
     AbsBuiltin,
     Aiter,
@@ -251,6 +252,12 @@ pub(crate) enum PublicObjectId {
 impl PublicObjectId {
     pub(crate) const fn identity(self) -> PublicObjectIdentity {
         match self {
+            Self::BuildClassBuiltin => PublicObjectIdentity {
+                kind: PublicObjectKind::BuiltinFunctionOrMethod,
+                name: crate::NameId::DunderBuildClass,
+                qualname: crate::NameId::DunderBuildClass,
+                module: crate::NameId::Builtins,
+            },
             Self::AbcGetCacheToken => PublicObjectIdentity {
                 kind: PublicObjectKind::BuiltinFunctionOrMethod,
                 name: crate::NameId::GetCacheToken,
@@ -1718,6 +1725,7 @@ pub(crate) struct PublicConstructorSpec {
 impl PublicObjectId {
     pub(crate) fn constructor(self, python_313: bool) -> Option<PublicConstructorSpec> {
         match self {
+            Self::BuildClassBuiltin => None,
             Self::AbcGetCacheToken => None,
             Self::AbsBuiltin => None,
             Self::Aiter => None,
@@ -2294,6 +2302,16 @@ impl PublicObjectId {
     }
     pub(crate) fn call_signature(self, python_314: bool) -> Option<PublicSignatureSpec> {
         match self {
+            Self::BuildClassBuiltin => Some(PublicSignatureSpec {
+                arity: 2,
+                positional: &[],
+                posonly: 0,
+                vararg: true,
+                varkw: true,
+                defaults: &[],
+                kwonly: &[],
+                kwdefaults: &[],
+            }),
             Self::MathGcd => Some(PublicSignatureSpec {
                 arity: 1,
                 positional: &[],

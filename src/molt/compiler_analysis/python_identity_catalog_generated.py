@@ -199,6 +199,7 @@ class PythonIdentity(IntFlag):
     BUILTIN_VALUEERROR = 1 << 185
     BUILTIN_WARNING = 1 << 186
     BUILTIN_ZERODIVISIONERROR = 1 << 187
+    BUILTIN_BUILD_CLASS = 1 << 188
 
 
 class PythonMember(IntFlag):
@@ -359,6 +360,7 @@ class PythonMember(IntFlag):
     BUILTINS_VALUEERROR = 1 << 154
     BUILTINS_WARNING = 1 << 155
     BUILTINS_ZERODIVISIONERROR = 1 << 156
+    BUILTINS_BUILD_CLASS = 1 << 157
 
 
 class PythonTargetProperty(Enum):
@@ -415,7 +417,7 @@ UNBOUND_IDENTITY: Final[IdentityMask] = int(PythonIdentity.UNBOUND)
 UNKNOWN_IDENTITY: Final[IdentityMask] = OTHER_IDENTITY | UNBOUND_IDENTITY
 SENTINEL_IDENTITIES: Final[IdentityMask] = UNKNOWN_IDENTITY
 NO_INVALID_MEMBERS: Final[MemberMask] = 0
-ALL_INVALID_MEMBERS: Final[MemberMask] = 182687704666362864775460604089535377456991567871
+ALL_INVALID_MEMBERS: Final[MemberMask] = 365375409332725729550921208179070754913983135743
 
 class PythonImportCallable(NamedTuple):
     behavior: PythonImportBehavior
@@ -601,6 +603,7 @@ OPTIONAL_INTRINSIC_ACQUISITION_IDENTITIES: Final[IdentityMask] = (
 
 BUILTIN_IDENTITIES: Final[Mapping[str, tuple[PythonIdentity, PythonMember]]] = MappingProxyType(
     {
+        '__build_class__': (PythonIdentity.BUILTIN_BUILD_CLASS, PythonMember.BUILTINS_BUILD_CLASS),
         '__import__': (PythonIdentity.BUILTINS_IMPORT, PythonMember.BUILTINS_IMPORT),
         'globals': (PythonIdentity.BUILTIN_GLOBALS, PythonMember.BUILTINS_GLOBALS),
         'locals': (PythonIdentity.BUILTIN_LOCALS, PythonMember.BUILTINS_LOCALS),
@@ -742,6 +745,7 @@ BUILTIN_IDENTITIES: Final[Mapping[str, tuple[PythonIdentity, PythonMember]]] = M
 
 BUILTIN_NAMES_BY_IDENTITY: Final[Mapping[IdentityMask, str]] = MappingProxyType(
     {
+        int(PythonIdentity.BUILTIN_BUILD_CLASS): '__build_class__',
         int(PythonIdentity.BUILTINS_IMPORT): '__import__',
         int(PythonIdentity.BUILTIN_GLOBALS): 'globals',
         int(PythonIdentity.BUILTIN_LOCALS): 'locals',
@@ -966,6 +970,7 @@ CANONICAL_FROM_IMPORT_IDENTITIES: Final[Mapping[tuple[str, str], tuple[PythonIde
         ('typing', 'ClassVar'): (PythonIdentity.TYPING_CLASSVAR, PythonMember.TYPING_CLASSVAR),
         ('typing_extensions', 'ClassVar'): (PythonIdentity.TYPING_CLASSVAR, PythonMember.TYPING_CLASSVAR),
         ('dataclasses', 'field'): (PythonIdentity.DATACLASSES_FIELD, PythonMember.DATACLASSES_FIELD),
+        ('builtins', '__build_class__'): (PythonIdentity.BUILTIN_BUILD_CLASS, PythonMember.BUILTINS_BUILD_CLASS),
         ('builtins', '__import__'): (PythonIdentity.BUILTINS_IMPORT, PythonMember.BUILTINS_IMPORT),
         ('builtins', 'globals'): (PythonIdentity.BUILTIN_GLOBALS, PythonMember.BUILTINS_GLOBALS),
         ('builtins', 'locals'): (PythonIdentity.BUILTIN_LOCALS, PythonMember.BUILTINS_LOCALS),
@@ -1127,6 +1132,7 @@ CANONICAL_MEMBER_IDENTITIES: Final[Mapping[str, tuple[tuple[PythonIdentity, Pyth
         'InitVar': ((PythonIdentity.DATACLASSES_MODULE, PythonIdentity.DATACLASSES_INITVAR, PythonMember.DATACLASSES_INITVAR),),
         'ClassVar': ((PythonIdentity.TYPING_MODULE, PythonIdentity.TYPING_CLASSVAR, PythonMember.TYPING_CLASSVAR),),
         'field': ((PythonIdentity.DATACLASSES_MODULE, PythonIdentity.DATACLASSES_FIELD, PythonMember.DATACLASSES_FIELD),),
+        '__build_class__': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_BUILD_CLASS, PythonMember.BUILTINS_BUILD_CLASS),),
         '__import__': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTINS_IMPORT, PythonMember.BUILTINS_IMPORT),),
         'globals': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_GLOBALS, PythonMember.BUILTINS_GLOBALS),),
         'locals': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_LOCALS, PythonMember.BUILTINS_LOCALS),),
@@ -1288,6 +1294,7 @@ CANONICAL_MEMBER_WRITES: Final[Mapping[str, tuple[tuple[PythonIdentity, MemberMa
         'InitVar': ((PythonIdentity.DATACLASSES_MODULE, 8796093022208),),
         'ClassVar': ((PythonIdentity.TYPING_MODULE, 17592186044416),),
         'field': ((PythonIdentity.DATACLASSES_MODULE, 35184372088832),),
+        '__build_class__': ((PythonIdentity.BUILTINS_MODULE, 182687704666362864775460604089535377456991567872),),
         '__import__': ((PythonIdentity.BUILTINS_MODULE, 136),),
         'globals': ((PythonIdentity.BUILTINS_MODULE, 268435456),),
         'locals': ((PythonIdentity.BUILTINS_MODULE, 536870912),),

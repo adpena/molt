@@ -893,6 +893,9 @@ class PythonBindingFacts:
     # (``__name__``, ``__package__``, ``__spec__``, ``__path__``). True unless
     # a closed-graph namespace premise bounds the callback domain (HF-226).
     callbacks_rewrite_metadata: bool
+    # LOAD_BUILD_CLASS reads only the executing frame's builtins, not any
+    # lexical/global/class binding. Values join at this implicit source read.
+    class_builder_reads: Mapping[PythonNodeKey, IdentityMask]
     source_elements: tuple[PythonSourceElement, ...]
     source_calls: tuple[PythonSourceCall, ...]
     source_native_initializers: tuple[PythonNativeInitializerSource, ...]
@@ -937,6 +940,7 @@ class PythonBindingFacts:
             tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...
         ] = (),
         callbacks_rewrite_metadata: bool = True,
+        class_builder_reads: Mapping[PythonNodeKey, IdentityMask] | None = None,
         source_elements: tuple[PythonSourceElement, ...] = (),
         source_calls: tuple[PythonSourceCall, ...] = (),
         source_native_initializers: tuple[PythonNativeInitializerSource, ...] = (),
@@ -965,6 +969,7 @@ class PythonBindingFacts:
             source_attributes=source_attributes,
             source_bases=source_bases,
             callbacks_rewrite_metadata=callbacks_rewrite_metadata,
+            class_builder_reads=MappingProxyType(dict(class_builder_reads or {})),
             source_elements=source_elements,
             source_calls=source_calls,
             source_native_initializers=source_native_initializers,
@@ -985,6 +990,15 @@ class PythonBindingFacts:
 
     def expression_fact(self, node: ast.AST) -> PythonExpressionFact | None:
         return self._expression_lookup.get(PythonNodeKey.from_node(node))
+
+    def class_builder_identity(self, node: ast.ClassDef) -> PythonIdentity | None:
+        identity = PythonIdentity.BUILTIN_BUILD_CLASS
+        return (
+            identity
+            if self.class_builder_reads.get(PythonNodeKey.from_node(node))
+            == int(identity)
+            else None
+        )
 
     def expression_is(self, node: ast.AST, identity: PythonIdentity) -> bool:
         """An expression's resolved value, independently of its spelling."""

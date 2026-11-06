@@ -14,6 +14,12 @@ pub struct PythonBuiltinCallableSpec {
 
 pub const PYTHON_BUILTIN_CALLABLES: &[PythonBuiltinCallableSpec] = &[
     PythonBuiltinCallableSpec {
+        python_name: "__build_class__",
+        python_module: "builtins",
+        runtime_name: "molt_build_class_builtin",
+        arity: 2,
+    },
+    PythonBuiltinCallableSpec {
         python_name: "__import__",
         python_module: "builtins",
         runtime_name: "molt_importlib_import_transaction",

@@ -160,9 +160,11 @@ class BuiltinGuardMixin(GeneratorMixinBase):
         lowering of a builtin, call or value, keys on this identity (HF-776):
         an unproved read has none, so it keeps the live read.
         """
+        index = self.python_binding_index
+        if isinstance(node, ast.ClassDef):
+            return index.class_builder_identity(node) if index is not None else None
         if not isinstance(node, ast.Name) or not isinstance(node.ctx, ast.Load):
             return None
-        index = self.python_binding_index
         fact = index.expression_fact(node) if index is not None else None
         name = fact.exact_builtin_name() if fact is not None else None
         if name is None:

@@ -8,6 +8,7 @@ pub(crate) mod attr;
 pub(crate) mod attributes;
 pub(crate) mod binding_guards;
 pub(crate) mod callable;
+pub(crate) mod class_builder;
 pub(crate) mod classes;
 pub(crate) mod codecs;
 pub(crate) mod codecs_ext;
