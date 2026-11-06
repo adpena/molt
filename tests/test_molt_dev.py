@@ -7008,6 +7008,49 @@ def test_land_fast_merges_main_tests_the_merge_and_pushes_its_receipted_commit(
     )
 
 
+def test_land_fast_runs_its_try_run_on_the_farm_host_when_set(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    """MOLT_LANDING_GATE_HOST sends the try run to the farm; the static gates,
+    the merge, the receipt and the push stay on the Mac."""
+    from tools import landing_receipt, trunk_landing
+    from tools.molt_dev_gates import display
+
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    try_gate = f"echo try >> {shlex.quote(str(counter))}"
+    _publish_policy(work, _try_run_policy(counter, try_gate=try_gate))
+    lane = work.parent / "lane-farm"
+    _lane(work, "farm", {"a.py": "a = 1\n"})
+    monkeypatch.setenv(trunk_landing.HOST_SETTING, "molt-gate")
+    logs = tmp_path / "farm-logs"
+    logs.mkdir()
+    sent: list[tuple[str, ...]] = []
+
+    def remote(repo, commit, gates, *, host):
+        assert host == "molt-gate"
+        assert commit == _git(lane, "rev-parse", "HEAD").stdout.strip()
+        sent.extend(display(gate.command) for gate in gates)
+        (logs / "gate-001.stdout.log").write_text("ok\n", encoding="utf-8")
+        return [(2.5, display(gate.command)) for gate in gates], logs
+
+    monkeypatch.setattr(trunk_landing, "run_remote", remote)
+    base = _git(work, "rev-parse", "HEAD").stdout.strip()
+    assert _land_fast(drv, lane, "--subject", "Land the farm lane") == EXIT_OK
+
+    # Only the static gate ran here; the farm ran the try run.
+    assert counter.read_text(encoding="utf-8").split() == ["static"]
+    assert sent == [try_gate]
+    landed = _remote_main(work)
+    receipt = landing_receipt.read_receipt(
+        drv._git_common_directory(lane),
+        tree=_git(lane, "rev-parse", f"{landed}^{{tree}}").stdout.strip(),
+        base=base,
+    )
+    assert receipt is not None
+    assert [gate["phase"] for gate in receipt["gates"]] == ["static", "try-run"]
+
+
 def test_land_fast_receipt_reads_counts_and_the_crate_gate_summary(tmp_path):
     """Counts come from each gate's log; unverified and narrowed cells from the
     crate-test gate's typed summary line, never from its human text."""
@@ -9269,7 +9312,7 @@ def test_integrate_remote_gate_opt_in_keeps_mac_publication_boundary(
         seen.append(host)
         if farm_failure:
             raise DriverError("farm unavailable")
-        return [(1.0, "echo selected-on-mac")]
+        return [(1.0, "echo selected-on-mac")], work
 
     monkeypatch.setattr(trunk_landing, "run_remote", remote)
     monkeypatch.setattr(

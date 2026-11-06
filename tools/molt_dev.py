@@ -1464,9 +1464,10 @@ def _integrate_exclusive(
     elif farm_host:
         from tools.trunk_landing import run_remote
 
-        gate_seconds.extend(
-            run_remote(repo, selected_commit, gate_cmds, host=farm_host)
+        remote_seconds, _remote_logs = run_remote(
+            repo, selected_commit, gate_cmds, host=farm_host
         )
+        gate_seconds.extend(remote_seconds)
     else:
         runtime = _gate_runtime(
             git,

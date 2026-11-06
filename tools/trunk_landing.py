@@ -88,7 +88,11 @@ def admit_result(receipt: dict, request: dict) -> None:
         raise DriverError("remote landing receipt omits gate outcomes")
 
 
-def run_remote(repo: Path, commit: str, gates, *, host: str) -> list[tuple[float, str]]:
+def run_remote(
+    repo: Path, commit: str, gates, *, host: str
+) -> tuple[list[tuple[float, str]], Path]:
+    """Run ``gates`` on ``host``; return their seconds and the collected output
+    directory, which holds each gate's ``gate-NNN`` logs in request order."""
     try:
         return _run_remote(repo, commit, gates, host=host)
     except DriverError:
@@ -101,7 +105,7 @@ def run_remote(repo: Path, commit: str, gates, *, host: str) -> list[tuple[float
 
 def _run_remote(
     repo: Path, commit: str, gates, *, host: str
-) -> list[tuple[float, str]]:
+) -> tuple[list[tuple[float, str]], Path]:
     from tools import trunk_loop
 
     tree = trunk_loop.checked(["git", "-C", str(repo), "rev-parse", commit + "^{tree}"])
@@ -133,7 +137,10 @@ def _run_remote(
     from tools import molt_dev
 
     molt_dev._assert_integration_source(molt_dev.Git(repo), commit)
-    return [(float(seconds), str(command)) for seconds, command in receipt["seconds"]]
+    return (
+        [(float(seconds), str(command)) for seconds, command in receipt["seconds"]],
+        result.parent,
+    )
 
 
 def execute(record: dict, output: Path) -> int:
