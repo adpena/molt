@@ -168,15 +168,23 @@ PREMISE_VERIFICATION = (
 )
 
 DESIGN_REVIEW = (
-    "DESIGN REVIEW (Elephant Goldfish Model): before implementation, write artifacts/design.md "
-    "in your lane: the problem with measured evidence, prior art, the chosen mechanism, its "
-    "invariants, the consumers it changes and the test plan. Then have at least two Goldfish "
-    "reviewers read only that file, never your session: Claude workers use the egm reviewer "
-    "agents (egm-design, egm-implementation-readiness, egm-codebase-details, egm-zoom-out); "
-    "Codex workers run separate `codex exec -s read-only` reviews, one at a time, each given "
-    "only the file path and a reviewer role. Fix or answer each finding in the file; at most "
-    "two rounds, then cut scope. Commit design.md with its review record before code, and "
-    "report the outcome. A one-line fix may use one reviewer."
+    "DESIGN REVIEW (Elephant Goldfish Model): the egm plugin from "
+    "github.com/google/elephant-goldfish-model is the authority for the method; follow its "
+    "files, not a summary of them. Claude workers have it as egm@egm and read its "
+    "docs/claude.md first; Codex workers have it as the egm plugin and read docs/codex.md "
+    "first, spawning each reviewer with a fresh context (fork_context false). Before "
+    "implementation, write artifacts/design.md in your lane against the plugin's "
+    "resources/document_standards/feature-spec-standard.md: the measured problem, prior art, "
+    "the mechanism, its invariants, the test plan and the consumers it changes, meaning every "
+    "hand-written list of sibling modules (proof-plan authority inputs and globs, capture and "
+    "closure lists, fingerprint role tables), every test fake of a changed boundary or record, "
+    "every reader of a new or newly set environment variable, every registry and generated "
+    "projection, and any existing runner, cell or tool that already does the job. Then run the "
+    "plugin's egm-review skill with its uninterrupted preset (Stages 5 to 9 in order), passing "
+    "those consumer files as GoldfishContext, and settle every finding with egm-resolve as FIX "
+    "or CONTEST. Commit design.md and the review reports before code. After implementation run "
+    "egm-drift-report against the design. A review written after the code is not this review. "
+    "The integrator follows the same rule for load-bearing changes; a one-line fix needs none."
 )
 
 WHOLE_CRATE_TESTS = (
