@@ -515,6 +515,46 @@ def test_protocol_constructor_result_is_not_assumed_exact(name: str) -> None:
     assert call.result.type_hint == "Any"
 
 
+@pytest.mark.parametrize(
+    ("expression", "kind"),
+    [
+        ("str(source)", "STR_FROM_OBJ"),
+        ("repr(source)", "REPR_FROM_OBJ"),
+        ('f"{source!a}"', "ASCII_FROM_OBJ"),
+        ('f"{source}"', "STRING_FORMAT"),
+    ],
+)
+def test_proven_builtin_binding_does_not_prove_exact_protocol_result(
+    expression: str, kind: str
+) -> None:
+    # PyObject_Str, PyObject_Repr and PyObject_Format accept str subclasses.
+    # Proving the callee's identity cannot prove the user's hook result exact.
+    generator = SimpleTIRGenerator()
+    generator.visit(ast.parse(f"def convert(source):\n    return {expression}\n"))
+    conversions = [
+        op
+        for function in generator.funcs_map.values()
+        for op in function["ops"]
+        if op.kind == kind
+    ]
+    assert conversions
+    assert all(op.result.type_hint == "Any" for op in conversions)
+
+
+@pytest.mark.parametrize("expression", ['str("EXACT")', "str(123)", "str(True)"])
+def test_proven_builtin_string_constructor_keeps_exact_result(expression: str) -> None:
+    generator = SimpleTIRGenerator()
+    generator.visit(ast.parse(f"def convert():\n    return {expression}\n"))
+    conversions = [
+        op
+        for function in generator.funcs_map.values()
+        for op in function["ops"]
+        if op.kind == "STR_FROM_OBJ"
+    ]
+    assert conversions
+    assert all(op.result.type_hint == "str" for op in conversions)
+
+
 def test_inner_string_conversion_precedes_later_base_evaluation() -> None:
     ops = _raw_ops("value = int(str(1.5), base())\n")
     assert not any(op.kind == "INT_FROM_STR_OF_OBJ" for op in ops)

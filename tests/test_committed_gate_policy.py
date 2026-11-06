@@ -930,6 +930,14 @@ def test_committed_facts_policy_excludes_compiler_codegen(path):
 
 def test_committed_source_checks_precede_complete_native_build_selection():
     cfg = GateConfig.load(COMMITTED_GATES)
+    # Presubmit orders admitted backend owners. The public release authority
+    # excludes experimental Luau; its scheduled coverage is a separate cell.
+    matrix = tomllib.loads(
+        (REPO_ROOT / "config" / "release_acceptance_matrix.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "luau" in {row["backend"] for row in matrix["excluded_backend"]}
     gates, matched = cfg.select(
         [
             "runtime/molt-backend-native/src/native_backend/simple_backend/config.rs",
