@@ -250,7 +250,7 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 65
+_ANALYSIS_SCHEMA: Final = 66
 _BUILTIN_SHAPE_IDENTITY_MASK: Final[IdentityMask] = sum(BUILTIN_SHAPE_NAMES_BY_IDENTITY)
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
@@ -2622,6 +2622,7 @@ class _Analyzer:
         self._class_cell_slots: dict[int, int] = {}
         self._class_cell_slot_mask = 0
         self.expressions: dict[PythonNodeKey, PythonExpressionFact] = {}
+        self.class_builder_reads: dict[PythonNodeKey, IdentityMask] = {}
         self.source_attributes: dict[
             PythonSourceKey, tuple[str, frozenset[PythonSourceKey]]
         ] = {}
@@ -7525,6 +7526,34 @@ class _Analyzer:
                 result = self.eval_expr(expression, state_id, scope)
                 state_id = result.state_id
                 effects |= result.effects
+            # LOAD_BUILD_CLASS is after decorator evaluation and before bases
+            # and keywords. It bypasses globals and the class-local mapping.
+            builder = self._guarded_member_identity(
+                state_id,
+                int(PythonIdentity.BUILTINS_MODULE),
+                PythonIdentity.BUILTINS_MODULE,
+                PythonIdentity.BUILTIN_BUILD_CLASS,
+                PythonMember.BUILTINS_BUILD_CLASS,
+            )
+            custom_builtins_possible = (
+                self._builtins_mapping_rebindable()
+                or not scope.activation_namespace_stable
+            )
+            if custom_builtins_possible:
+                builder |= OTHER_IDENTITY
+            builder_key = self._node_key(node)
+            self.class_builder_reads[builder_key] = (
+                self.class_builder_reads.get(builder_key, NO_IDENTITIES) | builder
+            )
+            if builder != int(PythonIdentity.BUILTIN_BUILD_CLASS):
+                # A custom builtins mapping can run __getitem__ at this read.
+                lookup_effects = RAISES | (
+                    EXECUTES_ARBITRARY_PYTHON
+                    if custom_builtins_possible
+                    else NO_EFFECTS
+                )
+                effects |= lookup_effects
+                state_id = self._apply_effects(state_id, lookup_effects)
             state_id, definition_scope = self._type_parameter_scope(
                 node, state_id, scope
             )
@@ -8762,6 +8791,7 @@ class _Analyzer:
         )
         facts = PythonBindingFacts.create(
             source_digest=self.source_digest,
+            class_builder_reads=self.class_builder_reads,
             callbacks_rewrite_metadata=self._callback_module_names is None
             or not self._callback_module_names.isdisjoint(_METADATA_NAMES),
             source_namespaces=tuple(

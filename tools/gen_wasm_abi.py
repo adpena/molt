@@ -1757,6 +1757,7 @@ def _python_builtin_global_callables(data: dict) -> list[dict]:
         if spec.bind_kind == BuiltinBindingPolicy.POSITIONAL_RANGE and (
             spec.pos_or_kw_params
             or spec.vararg
+            or spec.varkw
             or spec.kwonly_params
             or spec.kw_defaults
             or len(spec.defaults) > len(spec.params)
@@ -1767,6 +1768,7 @@ def _python_builtin_global_callables(data: dict) -> list[dict]:
         if spec.bind_kind == BuiltinBindingPolicy.CLINIC_NAMED and (
             spec.params
             or spec.vararg
+            or spec.varkw
             or spec.kwonly_params
             or spec.kw_defaults
             or len(spec.defaults) > len(spec.pos_or_kw_params)
@@ -1775,7 +1777,8 @@ def _python_builtin_global_callables(data: dict) -> list[dict]:
                 f"builtin {python_name!r} has invalid fixed named Clinic metadata"
             )
         if (
-            python_name.startswith("_") and python_name != "__import__"
+            python_name.startswith("_")
+            and python_name not in {"__import__", "__build_class__"}
         ) or python_name.startswith("molt_"):
             raise ValueError(
                 f"private runtime spelling {python_name!r} is not a Python builtin; "
@@ -1815,7 +1818,7 @@ def _python_builtin_global_callables(data: dict) -> list[dict]:
                 "pos_or_kw_params": list(spec.pos_or_kw_params),
                 "kwonly_params": list(spec.kwonly_params),
                 "vararg": spec.vararg,
-                "varkw": None,
+                "varkw": spec.varkw,
                 "defaults": list(spec.defaults),
                 "kw_defaults": [
                     (name, expr)

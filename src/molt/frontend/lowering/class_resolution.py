@@ -19,6 +19,7 @@ from molt.compiler_analysis.python_lexical_scope import (
     python_scope_declarations,
 )
 from molt.compiler_analysis.python_identity_catalog_generated import (
+    BUILTIN_NAMES_BY_IDENTITY,
     PythonIdentity,
 )
 from molt.compiler_analysis.python_source_keys import (
@@ -384,16 +385,16 @@ class ClassResolutionMixin(GeneratorMixinBase):
         return fact is not None and bool(fact.result.source_origins)
 
     def _base_class_reference(self, node: ast.expr) -> ClassRef | None:
-        """A class statement, or a builtin class that no source binding shadows."""
+        """A class statement, or a builtin class selected by the read's proof."""
         class_id = self._class_reference(node)
         if class_id is not None:
             return class_id
-        if not isinstance(node, ast.Name) or self._name_has_source_binding(node):
+        identity = self._proven_builtin_identity(node)
+        if identity is None:
             return None
-        if node.id in BUILTIN_TYPE_TAGS or self._builtin_exception_is_available(
-            node.id
-        ):
-            return BuiltinClass(node.id)
+        name = BUILTIN_NAMES_BY_IDENTITY[identity]
+        if name in BUILTIN_TYPE_TAGS or self._builtin_exception_is_available(name):
+            return BuiltinClass(name)
         return None
 
     def _annotation_class(self, node: ast.expr | None) -> ClassId | None:
@@ -494,6 +495,8 @@ class ClassResolutionMixin(GeneratorMixinBase):
         return info.get("mro", (class_ref,))
 
     def _class_is_exception_subclass(self, class_id: ClassId) -> bool:
+        # BuiltinClass entries in a source base's MRO are proof-backed. The
+        # implicit language object base is not a source builtin read.
         cached = self._exception_subclass_memo.get(class_id)
         if cached is not None:
             return cached

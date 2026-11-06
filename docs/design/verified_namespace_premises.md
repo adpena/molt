@@ -1046,17 +1046,20 @@ source before it lands.
 
 ### Open siblings
 
-- A class statement reads `__build_class__` from the frame's builtins in
-  CPython (`LOAD_BUILD_CLASS`); Molt lowers it directly. It is the same
-  mechanism without a source spelling, so it needs a proof query for an
-  implicit read. Not in this lane.
-- `_base_class_reference` (`class_resolution.py`) and
-  `_class_is_exception_subclass` classify a builtin base class by spelling
-  when the module does not bind it. A replaced `builtins.ValueError` used as a
-  base would still be classified as the builtin. The class statement itself
-  reads the base live, so runtime class creation is correct; the static
-  classification feeds layout and constructor choice. It needs the proof
-  query for class bases. Not in this lane.
+- Class construction (HF-803 B) records its implicit `__build_class__` read
+  after decorators and before bases/keywords. A proved canonical read retains
+  inline construction. Otherwise the existing binding guard admits the fast
+  arm, and its slow arm reads only the executing frame's builtins and checks
+  the exact public object. Missing bindings raise `NameError`; noncanonical
+  and direct builders raise the static-class-model `TypeError` specified by
+  [spec 0216](../spec/areas/compat/contracts/dynamic_execution_policy_contract.md).
+  Replace-then-restore remains supported; this adds no body-callable ABI.
+- Class-base classification (HF-803 A) now uses the same proved builtin
+  identity as named lowering. `_base_class_reference` creates a builtin MRO
+  entry only from `_proven_builtin_identity`; exception classification consumes
+  that proved MRO. The implicit language `object` base is not a source read.
+  `class_replaced_exception_base.py` checks replaced exception/type bases with
+  a metaclass: the old classification skipped its `__prepare__` calls.
 - `locals()`, `vars()` and zero-argument `dir()` in a class body return the
   module namespace or the enclosing frame, proved or not (see above). Correct
   class-body calls, and a replaced `builtins.locals` in a class body, need a

@@ -548,6 +548,7 @@ pub(crate) use crate::builtins::attr::{
 pub use crate::builtins::attributes::*;
 pub use crate::builtins::binding_guards::molt_guard_builtin_bindings;
 pub use crate::builtins::callable::*;
+pub use crate::builtins::class_builder::{molt_build_class_builtin, molt_class_builder_check};
 pub(crate) use crate::builtins::classes::{
     BuiltinClasses, builtin_classes, builtin_classes_if_initialized,
     builtin_classes_retire_identities, builtin_classes_shutdown, builtin_type_bits,

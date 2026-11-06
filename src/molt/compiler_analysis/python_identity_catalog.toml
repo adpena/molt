@@ -191,6 +191,7 @@ BUILTIN_USERWARNING = 184
 BUILTIN_VALUEERROR = 185
 BUILTIN_WARNING = 186
 BUILTIN_ZERODIVISIONERROR = 187
+BUILTIN_BUILD_CLASS = 188
 
 [native_initializer]
 DATACLASS = ["PARAMETERS", "POSITIONAL", "DEFAULTS", "KWDEFAULTS", "CAPTURE_NAMES", "CAPTURES", "STORES", "POST_INIT_INPUTS", "FACTORY_MARKER", "FROZEN_OBJECT", "ANNOTATIONS", "GLOBALS", "MODULE", "BUILTINS"]
@@ -473,6 +474,13 @@ BUILTINS_USERWARNING = 153
 BUILTINS_VALUEERROR = 154
 BUILTINS_WARNING = 155
 BUILTINS_ZERODIVISIONERROR = 156
+BUILTINS_BUILD_CLASS = 157
+
+[[builtin]]
+name = "__build_class__"
+identity = "BUILTIN_BUILD_CLASS"
+guard = "BUILTINS_BUILD_CLASS"
+shape = false
 
 # [[builtin]] rows: name, identity, guard, shape; optional return_capture and
 # role. role = "caller_frame" marks a builtin that reads the calling frame's

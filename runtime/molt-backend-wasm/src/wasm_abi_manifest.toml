@@ -1176,6 +1176,18 @@ runtime_name = "molt_guard_builtin_bindings"
 callable_arity = 1
 
 [[import]]
+name = "build_class_builtin"
+type = 3
+runtime_name = "molt_build_class_builtin"
+callable_arity = 2
+
+[[import]]
+name = "class_builder_check"
+type = 0
+runtime_name = "molt_class_builder_check"
+callable_arity = 0
+
+[[import]]
 name = "types_cell_contents_get"
 type = 3
 runtime_name = "molt_types_cell_contents_get"

@@ -43,6 +43,37 @@ def _ops(source: str, suffix: str) -> list[dict]:
 CLOSED = PythonNamespacePremise((), 0, 0, (), ())
 
 
+def test_implicit_class_builder_read_keeps_the_proved_inline_arm():
+    ops = _premise_ops("class C: pass\n", "molt_main")
+    assert not _guards(ops)
+    assert not any(op.get("s_value") == "molt_class_builder_check" for op in ops)
+    assert any(op["kind"] == "class_def" for op in ops)
+
+
+def test_implicit_class_builder_guard_precedes_base_evaluation():
+    ops = _premise_ops(
+        "import builtins\n"
+        "builtins.__build_class__ = None\n"
+        "def base(): return object\n"
+        "class C(base()): pass\n",
+        "molt_main",
+    )
+    guard = next(
+        guard
+        for guard in _guards(ops)
+        if _guard_mask(ops, guard) == BUILTIN_BINDING_GUARD_BITS["__build_class__"]
+    )
+    checked = next(op for op in ops if op.get("s_value") == "molt_class_builder_check")
+    base_call = next(
+        op
+        for op in ops
+        if op["kind"].startswith("call")
+        and op.get("source_line") == 4
+        and op.get("col_offset") == 8
+    )
+    assert ops.index(guard) < ops.index(checked) < ops.index(base_call)
+
+
 def _premise_ops(
     source: str, suffix: str, premise: PythonNamespacePremise = CLOSED
 ) -> list[dict]:
