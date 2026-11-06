@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-import sys
 import threading
 import time
 from pathlib import Path
@@ -18,35 +16,20 @@ from molt_accel.errors import (
     MoltTimeout,
     MoltWorkerUnavailable,
 )
+from tests.molt_accel_test_support import (
+    WORKER_CALL_TIMEOUT_MS,
+    worker_cmd,
+    worker_env,
+)
 from tests.process_guard_common import install_module_view
-
-
-def _worker_cmd() -> list[str]:
-    root = Path(__file__).resolve().parents[1]
-    worker = root / "tests" / "fixtures" / "molt_worker_stub.py"
-    return [sys.executable, "-u", str(worker)]
-
-
-# A call to a real worker includes starting its Python process. 500 ms fired
-# on a saturated landing host (2026-11-05, receipt 5a52f77deb, HF-545); owner
-# D1 raises a deadline that fired by 5-10x with its measured cause.
-_WORKER_CALL_TIMEOUT_MS = 5_000
-
-
-def _worker_env() -> dict[str, str]:
-    root = Path(__file__).resolve().parents[1]
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root / "src")
-    env["MOLT_WORKER_WIRE"] = "json"
-    return env
 
 
 @pytest.mark.slow
 def test_client_echo_roundtrip() -> None:
-    client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
+    client = MoltClient(worker_cmd=worker_cmd(), wire="json", env=worker_env())
     payload = {"ok": True, "count": 3}
     result = client.call(
-        entry="echo", payload=payload, codec="json", timeout_ms=_WORKER_CALL_TIMEOUT_MS
+        entry="echo", payload=payload, codec="json", timeout_ms=WORKER_CALL_TIMEOUT_MS
     )
     assert result == payload
     client.close()
@@ -57,7 +40,7 @@ def test_client_echo_roundtrip() -> None:
 def test_dead_worker_buffered_stdin_cleanup_preserves_replacement(
     replace: bool,
 ) -> None:
-    client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
+    client = MoltClient(worker_cmd=worker_cmd(), wire="json", env=worker_env())
     worker = client._ensure_process()
     try:
         assert worker.proc.stdin is not None
@@ -72,7 +55,7 @@ def test_dead_worker_buffered_stdin_cleanup_preserves_replacement(
                 entry="echo",
                 payload={"alive": True},
                 codec="json",
-                timeout_ms=_WORKER_CALL_TIMEOUT_MS,
+                timeout_ms=WORKER_CALL_TIMEOUT_MS,
             ) == {"alive": True}
             assert client._worker is successor
         else:
@@ -85,20 +68,20 @@ def test_dead_worker_buffered_stdin_cleanup_preserves_replacement(
 
 @pytest.mark.slow
 def test_client_unknown_entry() -> None:
-    client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
+    client = MoltClient(worker_cmd=worker_cmd(), wire="json", env=worker_env())
     with pytest.raises(MoltInvalidInput):
         client.call(
             entry="missing",
             payload={},
             codec="json",
-            timeout_ms=_WORKER_CALL_TIMEOUT_MS,
+            timeout_ms=WORKER_CALL_TIMEOUT_MS,
         )
     client.close()
 
 
 @pytest.mark.slow
 def test_client_hooks_and_metrics() -> None:
-    client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
+    client = MoltClient(worker_cmd=worker_cmd(), wire="json", env=worker_env())
     events: list[str] = []
     metrics: dict[str, float] = {}
 
@@ -118,7 +101,7 @@ def test_client_hooks_and_metrics() -> None:
         entry="echo",
         payload={"ok": True},
         codec="json",
-        timeout_ms=_WORKER_CALL_TIMEOUT_MS,
+        timeout_ms=WORKER_CALL_TIMEOUT_MS,
         before_send=before_send,
         after_recv=after_recv,
         metrics_hook=on_metrics,
@@ -138,9 +121,9 @@ def test_client_hook_failure_releases_request_for_timeout_restart(
     hook: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(client_module, "_STARTUP_GRACE_MS", 0)
-    env = _worker_env()
+    env = worker_env()
     env["MOLT_STUB_STARTUP_DELAY_S"] = "30"
-    client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=env)
+    client = MoltClient(worker_cmd=worker_cmd(), wire="json", env=env)
 
     def fail(*_):
         raise ValueError("hook failed")
@@ -161,20 +144,20 @@ def test_client_hook_failure_releases_request_for_timeout_restart(
 
 @pytest.mark.slow
 def test_client_cancel_check() -> None:
-    client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
+    client = MoltClient(worker_cmd=worker_cmd(), wire="json", env=worker_env())
     with pytest.raises(MoltCancelled):
         client.call(
             entry="echo",
             payload={"ok": True},
             codec="json",
-            timeout_ms=_WORKER_CALL_TIMEOUT_MS,
+            timeout_ms=WORKER_CALL_TIMEOUT_MS,
             cancel_check=lambda: True,
         )
     client.close()
 
 
 def test_client_retry_on_timeout_with_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
+    client = MoltClient(worker_cmd=worker_cmd(), wire="json", env=worker_env())
     calls = {"count": 0}
     sleeps: list[float] = []
 
@@ -191,7 +174,7 @@ def test_client_retry_on_timeout_with_backoff(monkeypatch: pytest.MonkeyPatch) -
         entry="echo",
         payload={"ok": True},
         codec="json",
-        timeout_ms=_WORKER_CALL_TIMEOUT_MS,
+        timeout_ms=WORKER_CALL_TIMEOUT_MS,
         idempotent=True,
         retry_on_timeout=True,
         retry_backoff_ms=7,
@@ -203,7 +186,7 @@ def test_client_retry_on_timeout_with_backoff(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_client_retry_on_busy_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
+    client = MoltClient(worker_cmd=worker_cmd(), wire="json", env=worker_env())
     calls = {"count": 0}
 
     def fake_call_once(**_kwargs: object) -> dict[str, bool]:
@@ -219,7 +202,7 @@ def test_client_retry_on_busy_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
         entry="echo",
         payload={"ok": True},
         codec="json",
-        timeout_ms=_WORKER_CALL_TIMEOUT_MS,
+        timeout_ms=WORKER_CALL_TIMEOUT_MS,
         idempotent=True,
         retry_on_busy=True,
     )
@@ -230,7 +213,7 @@ def test_client_retry_on_busy_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_client_timeout_not_retried_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
+    client = MoltClient(worker_cmd=worker_cmd(), wire="json", env=worker_env())
 
     def fake_call_once(**_kwargs: object) -> dict[str, bool]:
         raise MoltTimeout("slow")
@@ -241,20 +224,20 @@ def test_client_timeout_not_retried_by_default(
             entry="echo",
             payload={"ok": True},
             codec="json",
-            timeout_ms=_WORKER_CALL_TIMEOUT_MS,
+            timeout_ms=WORKER_CALL_TIMEOUT_MS,
             idempotent=True,
         )
 
 
 @pytest.mark.slow
 def test_client_decode_response_false() -> None:
-    client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
+    client = MoltClient(worker_cmd=worker_cmd(), wire="json", env=worker_env())
     payload = {"ok": True, "count": 3}
     result = client.call(
         entry="echo",
         payload=payload,
         codec="json",
-        timeout_ms=_WORKER_CALL_TIMEOUT_MS,
+        timeout_ms=WORKER_CALL_TIMEOUT_MS,
         decode_response=False,
     )
     assert isinstance(result, (bytes, bytearray))
@@ -270,7 +253,7 @@ def test_arrow_ipc_codec_passthrough() -> None:
 
 @pytest.mark.slow
 def test_client_concurrent_calls() -> None:
-    client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
+    client = MoltClient(worker_cmd=worker_cmd(), wire="json", env=worker_env())
     results: list[int] = []
     errors: list[BaseException] = []
     lock = threading.Lock()
@@ -282,7 +265,7 @@ def test_client_concurrent_calls() -> None:
                 entry="echo",
                 payload=payload,
                 codec="json",
-                timeout_ms=_WORKER_CALL_TIMEOUT_MS,
+                timeout_ms=WORKER_CALL_TIMEOUT_MS,
             )
             with lock:
                 results.append(response["id"])
@@ -309,9 +292,9 @@ def test_startup_grace_covers_every_request_sent_before_first_response(
     # Every concurrent request reaches the worker before it can answer, so
     # each one waits for startup, not only the request that started it.
     monkeypatch.setattr(client_module, "_STARTUP_GRACE_MS", 60_000)
-    env = _worker_env()
+    env = worker_env()
     env["MOLT_STUB_STARTUP_DELAY_S"] = "1.0"
-    client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=env)
+    client = MoltClient(worker_cmd=worker_cmd(), wire="json", env=env)
     barrier = threading.Barrier(4)
     results: list[int] = []
     errors: list[BaseException] = []
@@ -344,19 +327,19 @@ def test_startup_grace_covers_every_request_sent_before_first_response(
 @pytest.mark.slow
 def test_client_pool_round_robin() -> None:
     pool = MoltClientPool(
-        worker_cmd=_worker_cmd(), wire="json", env=_worker_env(), pool_size=2
+        worker_cmd=worker_cmd(), wire="json", env=worker_env(), pool_size=2
     )
     first = pool.call(
         entry="echo",
         payload={"id": 1},
         codec="json",
-        timeout_ms=_WORKER_CALL_TIMEOUT_MS,
+        timeout_ms=WORKER_CALL_TIMEOUT_MS,
     )
     second = pool.call(
         entry="echo",
         payload={"id": 2},
         codec="json",
-        timeout_ms=_WORKER_CALL_TIMEOUT_MS,
+        timeout_ms=WORKER_CALL_TIMEOUT_MS,
     )
     assert first["id"] == 1
     assert second["id"] == 2
@@ -401,11 +384,11 @@ def test_dead_worker_replacement_fails_its_requests_before_delayed_eof(
         return response
 
     monkeypatch.setattr(client_module, "read_frame", delayed_eof)
-    env = _worker_env()
+    env = worker_env()
     env["MOLT_STUB_FAIL_ONCE_ENTRY"] = "echo"
     env["MOLT_STUB_FAIL_ONCE_SENTINEL"] = str(tmp_path / "failed-once")
     env["MOLT_STUB_STARTUP_DELAY_S"] = "0.1"
-    client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=env, max_restarts=1)
+    client = MoltClient(worker_cmd=worker_cmd(), wire="json", env=env, max_restarts=1)
     outcomes: dict[str, object] = {}
 
     def first_before_send(_):

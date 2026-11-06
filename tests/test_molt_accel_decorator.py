@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import os
-import sys
-from pathlib import Path
 import json
 
 import pytest
@@ -10,27 +7,23 @@ import pytest
 from molt_accel.client import MoltClient, MoltClientPool
 from molt_accel import decorator as decorator_mod
 from molt_accel.decorator import molt_offload, raw_json_response_factory
-
-
-def _worker_cmd() -> list[str]:
-    root = Path(__file__).resolve().parents[1]
-    worker = root / "tests" / "fixtures" / "molt_worker_stub.py"
-    return [sys.executable, "-u", str(worker)]
-
-
-def _worker_env() -> dict[str, str]:
-    root = Path(__file__).resolve().parents[1]
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(root / "src")
-    env["MOLT_WORKER_WIRE"] = "json"
-    return env
+from tests.molt_accel_test_support import (
+    WORKER_CALL_TIMEOUT_MS,
+    worker_cmd,
+    worker_env,
+)
 
 
 @pytest.mark.slow
 def test_molt_offload_decorator() -> None:
-    client = MoltClient(worker_cmd=_worker_cmd(), wire="json", env=_worker_env())
+    client = MoltClient(worker_cmd=worker_cmd(), wire="json", env=worker_env())
 
-    @molt_offload(entry="list_items", codec="json", client=client)
+    @molt_offload(
+        entry="list_items",
+        codec="json",
+        client=client,
+        timeout_ms=WORKER_CALL_TIMEOUT_MS,
+    )
     def handler(request):
         return {"fallback": True}
 
@@ -50,10 +43,12 @@ def test_molt_offload_decorator() -> None:
 @pytest.mark.slow
 def test_molt_offload_decorator_pool() -> None:
     pool = MoltClientPool(
-        worker_cmd=_worker_cmd(), wire="json", env=_worker_env(), pool_size=2
+        worker_cmd=worker_cmd(), wire="json", env=worker_env(), pool_size=2
     )
 
-    @molt_offload(entry="list_items", codec="json", client=pool)
+    @molt_offload(
+        entry="list_items", codec="json", client=pool, timeout_ms=WORKER_CALL_TIMEOUT_MS
+    )
     def handler(request):
         return {"fallback": True}
 
