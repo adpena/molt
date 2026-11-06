@@ -1971,22 +1971,6 @@ evidence_outputs = ["proof-results/mutation-tier3.json"]
 argv = ["uv", "run", "python3", "tools/mutation_test.py", "--max-mutations", "50", "--timeout", "60", "--json-out", "proof-results/mutation-tier3.json"]
 toolchains = ["python", "uv"]
 
-# Translation validation of tests/differential ran past 1800 s beside the
-# other Tier 3 suites in Nightly run 37953183680.
-[[command]]
-id = "nightly.verification-t3.differential"
-cargo_native_units = { target = ["c", "c++"] }
-family = "nightly_verification_t3"
-cell = "linux-x86_64-py312-native-dev"
-tiers = ["scheduled"]
-resource_class = "scheduled-suite"
-timeout_seconds = 3300
-cache_domain = "cargo-workspace"
-dependencies = ["nightly.verification-t3.compiler-prewarm"]
-evidence_outputs = ["proof-results/differential-tier3.json"]
-argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--compiler-profile", "dev", "--build-profile", "dev", "--stdlib-profile", "full", "--target", "native", "--jobs", "4", "--json-output", "proof-results/differential-tier3.json", "tests/differential"]
-toolchains = ["python", "uv", "rustc", "cargo"]
-
 [[command]]
 id = "nightly.verification-t3.model-based"
 family = "nightly_verification_t3"

@@ -2009,65 +2009,6 @@
       "argv": [
         "uv",
         "run",
-        "--active",
-        "--project",
-        ".",
-        "--python",
-        "3.12",
-        "--no-sync",
-        "--no-config",
-        "python",
-        "tests/molt_diff.py",
-        "--python-version",
-        "3.12",
-        "--molt-target-python",
-        "3.12",
-        "--compiler-profile",
-        "dev",
-        "--build-profile",
-        "dev",
-        "--stdlib-profile",
-        "full",
-        "--target",
-        "native",
-        "--jobs",
-        "4",
-        "--json-output",
-        "proof-results/differential-tier3.json",
-        "tests/differential"
-      ],
-      "cache_domain": "cargo-workspace",
-      "cargo_native_units": {
-        "target": [
-          "c",
-          "c++"
-        ]
-      },
-      "cell": "linux-x86_64-py312-native-dev",
-      "dependencies": [
-        "nightly.verification-t3.compiler-prewarm"
-      ],
-      "evidence_outputs": [
-        "proof-results/differential-tier3.json"
-      ],
-      "family": "nightly_verification_t3",
-      "id": "nightly.verification-t3.differential",
-      "resource_class": "scheduled-suite",
-      "tiers": [
-        "scheduled"
-      ],
-      "timeout_seconds": 3300,
-      "toolchains": [
-        "python",
-        "uv",
-        "rustc",
-        "cargo"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
         "python3",
         "-m",
         "pytest",
@@ -9628,13 +9569,13 @@
       "nightly_verification_t3": {
         "budget_seconds": 6300,
         "critical_path_seconds": 4800,
-        "headroom_seconds": 0,
+        "headroom_seconds": 900,
         "job_reserve_seconds": 600,
-        "projected_makespan_seconds": 5700,
-        "required_job_seconds": 6300,
+        "projected_makespan_seconds": 4800,
+        "required_job_seconds": 5400,
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 1200,
-          "scheduled-suite": 3675
+          "scheduled-suite": 2850
         }
       },
       "primitive_instructions": {

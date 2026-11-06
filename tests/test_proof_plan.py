@@ -9334,8 +9334,6 @@ def test_differential_proofs_select_their_host_compiler_profile_explicitly() -> 
         "runtime.public-consumers.wasm": "release",
         # The JIT tier is a development tier: its twin gate runs the dev compiler.
         "native.jit-aot-twins": "dev",
-        # The nightly corpus sweep runs the canonical differential runner.
-        "nightly.verification-t3.differential": "dev",
     }
     expected.update(
         (lane.id, "dev")

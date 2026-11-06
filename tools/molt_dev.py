@@ -1855,9 +1855,9 @@ def _difftest_streams_match(expected: bytes, actual: bytes) -> bool:
     """Compare captured program output with host-stdio newline parity.
 
     CPython on Windows translates ``print(..., "\\n")`` to CRLF when stdout is a
-    pipe; Molt's native runtime writes LF. The main differential harness compares
-    text after newline normalization, so ``difftest`` must not report a Windows
-    false negative once exit codes and logical output match.
+    pipe; Molt's native runtime writes LF. ``difftest`` keeps this Windows rule of
+    its own. The canonical runner, ``tests/molt_diff.py``, compares raw bytes
+    decoded losslessly through ``compat_comparison``; HF-801 consolidates the two.
     """
     if os.name == "nt":
         expected = expected.replace(b"\r\n", b"\n")

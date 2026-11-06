@@ -78,6 +78,25 @@ from molt.build_state_layout import build_state_root  # noqa: E402
 from molt.memory_guard_paths import memory_guard_state_root  # noqa: E402
 
 _FAILURE_STATUSES = frozenset({"fail", "oom", "uncalibrated"})
+
+
+def _summary_exit_code(summary: Mapping[str, Any]) -> int:
+    """The process status of one differential run.
+
+    128+n when the guard stopped the run with signal n. Otherwise the shared
+    fail-closed verdict: 0 only when files executed and every one passed, 1 for
+    an executed failure (a mismatch, a timeout, an out-of-memory kill or an
+    uncalibrated backend), and 2 when nothing executed or files were not run.
+    """
+    if summary["guard_signal"] is not None:
+        return 128 + summary["guard_signal"]
+    return fail_closed_proof_exit_code(
+        executed=summary["total"],
+        failed=summary["failed"],
+        errors=summary["not_run"],
+    )
+
+
 _PROCESS_STARTED = time.monotonic()
 _DIFF_RUN_LOCK_HANDLE: file_locks._FileLockHandle | None = None
 _WORKER_ORPHAN_GUARD_INSTALLED = False
@@ -5075,13 +5094,7 @@ if __name__ == "__main__":
             print(f"[LOCK] {exc}", file=sys.stderr)
             sys.exit(2)
         _emit_json(summary, args.json_output, args.json)
-        sys.exit(
-            128 + summary["guard_signal"]
-            if summary["guard_signal"] is not None
-            else 0
-            if summary["failed"] == 0 and summary["not_run"] == 0
-            else 1
-        )
+        sys.exit(_summary_exit_code(summary))
     # Default test
     with open("temp_test.py", "w", encoding="utf-8") as f:
         f.write("print(1 + 2)\n")
@@ -5116,14 +5129,4 @@ if __name__ == "__main__":
         sys.exit(2)
     _emit_json(summary, args.json_output, args.json)
     os.remove("temp_test.py")
-    # 0 only when files executed and every one matched; 2 when nothing ran or
-    # files were not run (inconclusive); 1 for an executed failure.
-    sys.exit(
-        128 + summary["guard_signal"]
-        if summary["guard_signal"] is not None
-        else fail_closed_proof_exit_code(
-            executed=summary["total"],
-            failed=summary["failed"],
-            errors=summary["not_run"],
-        )
-    )
+    sys.exit(_summary_exit_code(summary))
