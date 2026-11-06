@@ -115,7 +115,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 
 | Toolchain | Identity kind | Provider | Required version | Probe cwd | Setup value | Setup evidence |
 |---|---|---|---|---|---|---:|
-| `python` | `executable` | — | `^Python 3\.12\.15$` | `.` | `3.12.15` | 2 |
+| `python` | `executable` | — | `^Python 3\.12\.16$` | `.` | `3.12.16` | 2 |
 | `bash` | `executable` | — | `^GNU bash, version [0-9]+\.[0-9]+\.` | `.` | `Ubuntu hosted shell package` | 1 |
 | `fish` | `executable` | — | `^fish, version [0-9]+\.[0-9]+\.` | `.` | `Ubuntu hosted shell package` | 1 |
 | `zsh` | `executable` | — | `^zsh [0-9]+\.[0-9]+` | `.` | `Ubuntu hosted shell package` | 1 |

@@ -2937,8 +2937,19 @@ def _compatibility_source_policy_fixture(tmp_path):
 
 
 def test_compatibility_source_refresh_is_atomic_and_deterministic(tmp_path):
+    import tomllib
+
     protocol = SA.compatibility_errors
     _compatibility_source_policy_fixture(tmp_path)
+    pins = {
+        row["python"]: row["tag"].removeprefix("v")
+        for row in tomllib.loads(
+            (tmp_path / "config/cpython_regrtest_sources.toml").read_text(
+                encoding="utf-8"
+            )
+        )["source"]
+    }
+    references = {pins["3.12"], pins["3.13"], pins["3.14"]}
 
     def fetch(version, paths, _revision, _git_url):
         return {
@@ -2951,13 +2962,13 @@ def test_compatibility_source_refresh_is_atomic_and_deterministic(tmp_path):
     rows = json.loads(before)["sources"]
     assert {
         row["version"] for row in rows if row["path"] == "Objects/memoryobject.c"
-    } == {"3.12.15", "3.13.17", "3.14.9"}
+    } == references
     assert not any(
-        row["version"] == "3.15.1" and row["path"] == "Objects/memoryobject.c"
+        row["version"] == pins["3.15"] and row["path"] == "Objects/memoryobject.c"
         for row in rows
     )
     assert any(
-        row["version"] == "3.15.1" and row["path"] == "Modules/_io/iobase.c"
+        row["version"] == pins["3.15"] and row["path"] == "Modules/_io/iobase.c"
         for row in rows
     )
     assert protocol.refresh_sources(fetch, root=tmp_path) == 0
@@ -2979,7 +2990,7 @@ def test_compatibility_source_refresh_is_atomic_and_deterministic(tmp_path):
 
     def changed(version, paths, revision, git_url):
         result = fetch(version, paths, revision, git_url)
-        if version == "3.12.15":
+        if version == pins["3.12"]:
             result["Objects/memoryobject.c"] = (
                 b"changed source at an unchanged coordinate"
             )
@@ -2991,7 +3002,7 @@ def test_compatibility_source_refresh_is_atomic_and_deterministic(tmp_path):
 
     policy = tmp_path / "config/verified_subset.toml"
     policy.write_text(
-        policy.read_text(encoding="utf-8").replace('"3.12.15"', '"3.12.14"'),
+        policy.read_text(encoding="utf-8").replace(f'"{pins["3.12"]}"', '"3.12.0"'),
         encoding="utf-8",
     )
     calls = 0

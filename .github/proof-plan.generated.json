@@ -14240,14 +14240,14 @@
       "name": "python",
       "python_identity_role": "environment",
       "setup_evidence": [
-        ".python-version::3.12.15",
+        ".python-version::3.12.16",
         ".github/actions/setup-project/action.yml::bash .github/actions/setup-project/provision-python.sh"
       ],
-      "setup_value": "3.12.15",
+      "setup_value": "3.12.16",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^Python 3\\.12\\.15$"
+      "version_pattern": "^Python 3\\.12\\.16$"
     },
     {
       "executable": "bash",

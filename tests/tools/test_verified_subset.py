@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from molt import verified_subset as authority
-from tools import verified_subset
+from tools import cpython_regrtest, verified_subset
 from tools.compat import comparison, test_policy
 from tests.process_guard_common import current_thread_only, install_module_view
 from tests.python_environment_test_support import create_test_venv
@@ -286,7 +286,21 @@ def test_policy_generates_exact_version_host_backend_closure() -> None:
     coordinates = authority.verified_subset_coordinates(policy)
 
     assert policy.python_versions == ("3.12", "3.13", "3.14")
-    assert policy.reference_cpython == ("3.12.15", "3.13.17", "3.14.9")
+    # Each reference is an exact patch release on its own line, and it is the
+    # release whose source the regrtest/source authority pins for that line.
+    sources = {
+        source.python: source.tag.removeprefix("v")
+        for source in cpython_regrtest.load_cpython_sources().values()
+    }
+    assert policy.reference_cpython == tuple(
+        sources[line] for line in policy.python_versions
+    )
+    assert all(
+        reference.rpartition(".")[0] == line and reference.rpartition(".")[2].isdigit()
+        for reference, line in zip(
+            policy.reference_cpython, policy.python_versions, strict=True
+        )
+    )
     assert policy.backends == ("llvm", "native", "wasm")
     assert policy.abi == "cpython-language"
     assert policy.concurrency == "gil"

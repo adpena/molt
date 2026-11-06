@@ -6,7 +6,7 @@ development; consult [current status](spec/STATUS.md) for compatibility limits.
 ## Prerequisites
 
 - A [supported CPython compiler host](../packaging/INSTALL.md#requirements)
-  (the repository pins its development host to CPython 3.12.15 through `uv`)
+  (the repository pins its development host's exact CPython patch in `.python-version`)
 - Rust via `rustup`, using the version pinned in `rust-toolchain.toml`
 - `uv`
 - A native C compiler and linker: a platform toolchain on macOS/Linux, or MSVC
@@ -213,7 +213,8 @@ pinned CPython release (a dotted patch such as `3.14.9` is exact). The harness
 interpreter compiles when it is that release; otherwise the harness compiles
 under a managed image of the release, published once per checkout. A missing
 release stops the run before any test and names its `uv python install`
-command; every target cell needs `uv python install 3.12.15 3.13.17 3.14.9`
+command; every target cell needs each `reference_cpython` release in
+`config/verified_subset.toml` installed with `uv python install`
 ([design](design/target_frontend_selection.md)).
 Compiled programs require no host or fallback Python. See
 [compatibility](spec/areas/compat/README.md) for version- and target-scoped proof.

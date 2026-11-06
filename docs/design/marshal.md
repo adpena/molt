@@ -33,7 +33,8 @@ retain payloads; canonicalization is a wire policy, not a storage necessity.
 ## Sources and existing mechanisms
 
 The admitted target authority is `src/molt/target_python_policy.py`: 3.12,
-3.13 and 3.14. `config/cpython_regrtest_sources.toml` pins these references:
+3.13 and 3.14. This design read these references (the live pins are in
+`config/cpython_regrtest_sources.toml`):
 
 | Target | Tag | Commit | Default format |
 | --- | --- | --- | --- |

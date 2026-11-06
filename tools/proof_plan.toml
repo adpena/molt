@@ -590,9 +590,9 @@ max_parallel = 2
 name = "python"
 executable = "{python}"
 version_args = ["--version"]
-version_pattern = '^Python 3\.12\.15$'
-setup_value = "3.12.15"
-setup_evidence = [".python-version::3.12.15", ".github/actions/setup-project/action.yml::bash .github/actions/setup-project/provision-python.sh"]
+version_pattern = '^Python 3\.12\.16$'
+setup_value = "3.12.16"
+setup_evidence = [".python-version::3.12.16", ".github/actions/setup-project/action.yml::bash .github/actions/setup-project/provision-python.sh"]
 
 [[toolchain_policy]]
 name = "bash"
