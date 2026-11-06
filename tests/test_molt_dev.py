@@ -3374,6 +3374,69 @@ def test_gate_block_blames_the_candidate_only_for_a_gate_exit(drv, tmp_path, cau
     assert ran == [("gate", "1")]
 
 
+@pytest.mark.parametrize("second_rc", [0, 3])
+def test_heavy_gates_rerun_once_one_at_a_time_after_a_failure(drv, tmp_path, second_rc):
+    # A heavy gate that fails beside others and passes alone failed on load or
+    # a flake, not on the candidate; a gate that fails twice is the candidate's.
+    attempts: dict[str, int] = {}
+    said: list[str] = []
+
+    def run_captured_gate(command, repo, environment, cancelled, streams=None):
+        key = next(part for part in command if str(part).startswith("tests/"))
+        attempts[key] = attempts.get(key, 0) + 1
+        if key == "tests/test_gate_1.py":
+            return _gate_outcome(3 if attempts[key] == 1 else second_rc, "", "", None)
+        return _gate_outcome(0, "", "", None)
+
+    class Progress:
+        def emit(self, event, **details):
+            pass
+
+    environment = ProcessEnvironment(os.environ)
+    runtime = molt_dev_gates.GateRuntime(
+        repo=tmp_path,
+        environments={("python",): GateEnvironment(environment, None, False)},
+        cargo_outputs={},
+        capacity_requirements={},
+        progress=Progress(),
+        check_source=lambda: None,
+        source_changes=lambda: (),
+        source_identity=lambda: {"commit": "0" * 40, "tree": "1" * 40},
+        policy_text="",
+        executor_max_workers=None,
+        resource_limits={},
+        toolchains={},
+        receipt_path=tmp_path / "receipt.json",
+        output_dir=tmp_path / "receipt.d" / "run",
+        run_captured_gate=run_captured_gate,
+        observe_capacity=lambda *args, **kwargs: (),
+        say=said.append,
+        ok=lambda message: None,
+    )
+    gates = [
+        SelectedGate(
+            command=("python", "-m", "pytest", "-q", f"tests/test_gate_{index}.py"),
+            toolchains=("python",),
+            pytest=True,
+        )
+        for index in (1, 2)
+    ]
+    if second_rc == 0:
+        molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 1)
+        assert any(line.startswith("    retry passed:") for line in said)
+        assert {gate.command[-1] for gate in runtime.passed} == {
+            "tests/test_gate_1.py",
+            "tests/test_gate_2.py",
+        }
+    else:
+        with pytest.raises(GateFailure) as exc:
+            molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 1)
+        assert "gate failed (exit 3)" in str(exc.value)
+        assert any("first attempt" in note for note in exc.value.__notes__)
+    # The failing gate ran exactly twice; never a third time.
+    assert attempts["tests/test_gate_1.py"] == 2
+
+
 def test_gate_block_keeps_every_stream_and_shows_a_failure_briefly(
     drv, tmp_path, capsys
 ):
@@ -3760,10 +3823,16 @@ def _run_block_beside_cancelled_sibling(
     )
     outcomes = {("pytest", "first"): first, ("pytest", "sibling"): sibling}
 
+    concurrent_run: set[tuple[str, ...]] = set()
+
     def run(command, repo, environment, cancelled, streams=None):
         assert command[-2] == "-n" and int(command[-1]) > 0
         command = command[:-2]
-        entered.wait(timeout=30)
+        # The two gates meet only in the first, concurrent block; a retry runs
+        # each alone.
+        if command not in concurrent_run:
+            concurrent_run.add(command)
+            entered.wait(timeout=30)
         if command == ("pytest", "sibling"):
             assert events[command].wait(timeout=30), "executor did not cancel"
             assert cancelled()
@@ -11949,9 +12018,15 @@ def test_cargo_effects_overlap_private_work_and_preserve_writer_exclusion(
         SelectedGate(("writer", "last"), ("python", "cargo")),
     ]
 
+    private_runs: list[int] = []
+
     def run(command, repo, environment, cancelled, streams=None):
         if command[:2] == ("pytest", "private"):
             assert command[-2] == "-n" and int(command[-1]) > 0
+            private_runs.append(1)
+            if len(private_runs) > 1:
+                # The landing's retry runs the failed gate alone.
+                return _gate_outcome(6 if cancel else 0, "", "", None)
             assert writer_started.wait(5)
             assert lease.exists(), "isolated work waited for shared-target release"
             private_started.set()
