@@ -11,7 +11,12 @@ from typing import Any
 
 from molt.file_publication import is_link_like
 from molt.portable_paths import portable_relative_path
-from molt.release_matrix import RELEASE_TARGETS, SUPPORTED_CPYTHON_VERSIONS
+from molt.release_matrix import (
+    RELEASE_TARGETS,
+    SUPPORTED_CPYTHON_VERSIONS,
+    TIER1_CELLS,
+    Tier1Cell,
+)
 from molt.source_root import compiler_source_root
 from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
 from molt.toolchain_identity import (
@@ -302,6 +307,31 @@ def verified_subset_coordinates(
     if len(coordinates) != expected_count or ids != sorted(set(ids)):
         raise ValueError("verified-subset coordinate closure is not exact")
     return tuple(coordinates)
+
+
+def tier1_coordinates(
+    cells: tuple[Tier1Cell, ...] = TIER1_CELLS,
+    policy: VerifiedSubsetPolicy | None = None,
+) -> dict[str, VerifiedSubsetCoordinate | None]:
+    """Each Tier 1 cell id mapped to its verified-subset coordinate.
+
+    A cell maps to the coordinate of its host, Python, backend and guest
+    profile. It maps to None when Molt does not admit the cell's Python as a
+    target, so a release gate fails that cell instead of skipping it.
+    """
+    resolved = policy or load_verified_subset_policy()
+    by_id = {
+        coordinate.id: coordinate
+        for coordinate in verified_subset_coordinates(resolved)
+    }
+    mapped: dict[str, VerifiedSubsetCoordinate | None] = {}
+    for cell in cells:
+        coordinate_id = (
+            f"{cell.host}-py{cell.python.replace('.', '')}-{resolved.abi}-"
+            f"{resolved.concurrency}-{cell.backend}-{cell.guest_profile}"
+        )
+        mapped[cell.id] = by_id.get(coordinate_id)
+    return mapped
 
 
 def verified_subset_coordinate_by_id(

@@ -1729,14 +1729,15 @@ def test_every_proof_plan_command_uses_its_exact_nonempty_toolchain_authority() 
         assert envelope["toolchains"], command.id
 
 
-def test_luau_runtime_command_owns_required_runner_without_ambient_discovery() -> None:
+def test_compiler_authorities_command_needs_no_luau_runner() -> None:
     plan = proof_plan.ProofPlan.load()
     command = next(
         item for item in plan.commands if item.id == "rust.test.compiler-authorities"
     )
     envelope = command_admission.envelope_for_command(command.argv)
     assert envelope["kind"] == "proof-plan"
-    assert "lune" in envelope["process_closure"]["toolchains"]
+    # Luau left every proof cell (HF-620), so no runner is admitted.
+    assert "lune" not in envelope["process_closure"]["toolchains"]
     assert "--include-ignored" in command.argv
     assert "--no-fail-fast" in command.argv
     config_index = command.argv.index("--config")
@@ -1744,7 +1745,7 @@ def test_luau_runtime_command_owns_required_runner_without_ambient_discovery() -
         "profile.dev-fast.package.cranelift-codegen.opt-level=0"
     )
     assert config_index < command.argv.index("--")
-    assert {"cargo", "lune", "node", "wasm-ld"} <= set(envelope["toolchains"])
+    assert {"cargo", "node", "wasm-ld"} <= set(envelope["toolchains"])
     compiler_only = [arg for arg in command.argv if arg != "--include-ignored"]
     compiler_envelope = command_admission.envelope_for_command(compiler_only)
     assert "lune" not in compiler_envelope["toolchains"]

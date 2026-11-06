@@ -1312,7 +1312,6 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "integration",
         "basic",
         "native_extern_linkage",
-        "rust_transpiler_preview",
         "wasm_link_facts_cli",
         "host_diagnostics",
     }
@@ -1772,11 +1771,9 @@ def test_daemon_cache_runs_actual_native_and_wasm_binary_receivers() -> None:
     assert {server[i + 1] for i, arg in enumerate(server[:-1]) if arg == "--test"} == {
         "daemon_server",
         "native_batch_worker_spawn",
-        "rust_transpiler_preview",
     }
     assert {server[i + 1] for i, arg in enumerate(server[:-1]) if arg == "-p"} == {
         "molt-backend",
-        "molt-backend-rust",
     }
     assert "--no-fail-fast" in server
     assert server[server.index("--features") + 1] == argv[argv.index("--features") + 1]
@@ -2870,6 +2867,21 @@ def test_wasm_host_export_applications_have_independent_cold_partitions() -> Non
         if row.id.startswith("wasm.integration.host-exports")
     }
     assert set(rows) == set(expected)
+    # The Falcon driver builds without --build-profile, which is release
+    # (wasm-release runtime), so its cell says so; the others build dev.
+    falcon_cell = next(
+        cell
+        for cell in PLAN.matrix_cells
+        if cell.id == rows["wasm.integration.host-exports.falcon-driver"].data["cell"]
+    )
+    falcon_source = (
+        Path(__file__).resolve().parent / "test_wasm_split_runtime.py"
+    ).read_text(encoding="utf-8")
+    falcon_test = falcon_source.split(
+        "def test_linked_falcon_ocr_wasm_driver_runs_stub_generation", 1
+    )[1].split("\ndef ", 1)[0]
+    assert '"--build-profile"' not in falcon_test
+    assert falcon_cell.data["profile"] == "wasm-release"
     for name, (test_name, runtime_dependencies) in expected.items():
         row = rows[name]
         assert row.argv[6] == f"tests/test_wasm_split_runtime.py::{test_name}"
@@ -4869,7 +4881,6 @@ def _receipt_for(
         "node": "v{}",
         "rustc": "rustc {}",
         "cargo": "cargo {}",
-        "lune": "lune {}",
         "clang": "clang version {}",
         "ld.lld": "LLD {} (compatible with GNU linkers)",
         "llvm-config": "{}",
@@ -9204,58 +9215,91 @@ def test_native_import_collection_fixtures_declare_compilers_for_each_execution_
     "path",
     [
         "runtime/molt-backend-luau/src/luau/op_maps.rs",
-        "runtime/molt-backend-luau/src/luau/tests/core.rs",
         "runtime/molt-backend-luau/Cargo.toml",
-        "runtime/molt-ir/src/tir/op_kinds.toml",
-    ],
-)
-def test_luau_lowering_changes_select_owning_library_without_native_codegen(
-    path: str,
-) -> None:
-    from tools import molt_dev_policy
-
-    config = molt_dev_policy.GateConfig.load(PLAN.path)
-    rule = next(rule for rule in config.rules if rule.name == "backend-luau")
-    isolated = _rule_only(config, rule)
-    gates, matched = isolated.select([path])
-    assert [selected.name for selected in matched] == ["backend-luau"]
-    (gate,) = gates
-    argv = shlex.split(gate.command)
-    assert argv[:2] == ["cargo", "test"]
-    assert "--lib" in argv
-    assert [
-        argv[index + 1] for index, token in enumerate(argv[:-1]) if token == "-p"
-    ] == ["molt-backend-luau"]
-    assert {"rustc", "cargo", "lune"} <= set(PLAN.toolchain_closure(gate.toolchains))
-    assert isolated.select(["README.md"]) == ([], [])
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "runtime/molt-backend-rust/src/rust/prelude/system.rs",
-        "runtime/molt-backend-rust/src/rust/python_version_policy_generated.rs",
         "runtime/molt-backend-rust/tests/rust_transpiler_preview.rs",
-        "runtime/molt-backend-rust/Cargo.toml",
+        "runtime/molt-backend-mlir/src/tir_to_mlir.rs",
     ],
 )
-def test_rust_emitter_changes_execute_source_without_native_codegen(path: str) -> None:
+def test_experimental_backend_changes_select_no_experimental_gate(path: str) -> None:
+    # Owner decision 2026-11-05: Luau, the Rust emitter and MLIR run in no
+    # presubmit or postsubmit cell. A change to their sources may still select
+    # shared authority gates, but none of those gates runs an excluded backend.
     from tools import molt_dev_policy
 
     config = molt_dev_policy.GateConfig.load(PLAN.path)
-    rule = next(rule for rule in config.rules if rule.name == "backend-rust")
-    isolated = _rule_only(config, rule)
-    gates, matched = isolated.select([path])
-    assert [selected.name for selected in matched] == ["backend-rust"]
-    (gate,) = gates
-    argv = shlex.split(gate.command)
-    assert argv[:2] == ["cargo", "test"]
-    assert argv[argv.index("--test") + 1] == "rust_transpiler_preview"
-    assert argv[argv.index("--features") + 1] == "rust-backend"
-    assert [
-        argv[index + 1] for index, token in enumerate(argv[:-1]) if token == "-p"
-    ] == ["molt-backend-rust"]
-    assert isolated.select(["README.md"]) == ([], [])
+    gates, _matched = config.select([path])
+    excluded = proof_plan.excluded_backends()
+    assert excluded == frozenset({"luau", "mlir", "rust"})
+    for gate in gates:
+        argv = (
+            shlex.split(gate.command)
+            if isinstance(gate.command, str)
+            else list(gate.command)
+        )
+        selection = proof_plan.experimental_backend_selection(argv, None, excluded)
+        assert selection is None, (gate.command, selection)
+
+
+def test_experimental_backend_selection_names_each_selection_form() -> None:
+    excluded = frozenset({"luau", "mlir", "rust"})
+    select = proof_plan.experimental_backend_selection
+    assert (
+        select(
+            ["python3", "-m", "molt.cli", "build", "a.py", "--target", "luau"],
+            None,
+            excluded,
+        )
+        == "--target luau"
+    )
+    assert select(["cargo", "test", "-p", "molt-backend-rust"], None, excluded) == (
+        "-p molt-backend-rust"
+    )
+    assert (
+        select(
+            [
+                "cargo",
+                "test",
+                "--features",
+                "molt-backend/native-backend,molt-backend/luau-backend",
+            ],
+            None,
+            excluded,
+        )
+        == "--features molt-backend/native-backend,molt-backend/luau-backend"
+    )
+    assert select(
+        ["cargo", "test", "--all-targets"], "runtime/molt-backend-mlir", excluded
+    ) == ("cwd runtime/molt-backend-mlir")
+    # A Cargo target triple, a supported backend and a whole-workspace lint are
+    # not selections of an experimental backend.
+    assert (
+        select(
+            ["cargo", "build", "--target", "wasm32-wasip1", "-p", "molt-runtime"],
+            None,
+            excluded,
+        )
+        is None
+    )
+    assert (
+        select(
+            ["cargo", "test", "--features", "molt-backend/native-backend"],
+            None,
+            excluded,
+        )
+        is None
+    )
+    assert select(["cargo", "clippy", "--workspace"], None, excluded) is None
+
+
+def test_live_plan_runs_no_experimental_backend_before_the_schedule() -> None:
+    assert not [error for error in PLAN.validate() if "experimental backend" in error]
+    excluded = proof_plan.excluded_backends()
+    for command in PLAN.commands:
+        if proof_plan.experimental_backend_selection(
+            command.argv, command.data.get("cwd"), excluded
+        ):
+            # Only the schedule may run an experimental backend.
+            assert tuple(command.data["tiers"]) == ("scheduled",), command.id
 
 
 def test_native_fixture_compiler_capability_keeps_llvm_abi_pin_separate() -> None:

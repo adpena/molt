@@ -13,7 +13,7 @@ this page explains them and never restates their content.
 - **CLI commands and their argument trees.** Every command the `molt`
   entrypoint exposes carries a stability tier in the declaration; the gate
   refuses an untiered command, so no command can ship without a stability
-  decision. The v2 surface snapshot retains the entrypoint and every nested
+  decision. The v3 surface snapshot retains the entrypoint and every nested
   command in one recursive `cli` tree. It records flags (including global
   `--version` and help), destinations, positional order, arity, typed scalar
   choices, named converters, constants, scalar/list defaults, required subcommands,
@@ -36,6 +36,9 @@ this page explains them and never restates their content.
 - **Release targets.** Operating system, architecture, Rust target, and archive
   format per release target, from the same generated matrix. There is no second
   release-target table.
+- **Tier 1 support cells.** The release-blocking cells (`TIER1_CELLS`), generated
+  from `config/release_targets.toml`; see the [v0.1 claim](PUBLIC_CLAIM_V0_1.md).
+  Every other cell is Tier 2. A Tier 1 change is a visible surface change.
 - **Verified-subset matrix identity.** The digest of the exact
   `tools/verified_subset.py matrix`, so a change to the claimed product matrix
   is a visible contract change.
@@ -110,9 +113,15 @@ option in the stable build surface does not certify those obligations.
   The signing job prepares and signs H0, and
   `tools/release/release_authority.py index` requires that authenticated green
   manifest for the tagged commit (see `docs/design/CENTURY_SYSTEMS_PLAN.md` §5
-  and `tools/phase_exit_manifest.py`). Pre-1.0 tags carry no stability promise
-  and need no H0 phase exit, but still require E1-E4 evidence. Their bundle
-  records and reports open findings, which do not hold a pre-1.0 release.
+  and `tools/phase_exit_manifest.py`).
+- The first public release is v0.1 (owner decision 2026-11-05). A `v0.x.y` tag
+  carries no stability promise and needs no H0 phase exit. It is held only by
+  its Tier 1 cells and by open rows classified `v0_1_blocking` (or not yet
+  classified); every other open row is reported in its generated known-issues
+  list (`tools/known_issues.py`). The release tooling does not implement this
+  0.x rule yet: until HF-620's release-line slice lands
+  ([design §11](../design/v0_1_support_matrix.md)), the gate, release evidence
+  and release authority hold every version to the 1.x rule above.
 - Deprecation is a time-bounded public transition: the superseded lane is
   registered in `config/legacy_inventory.toml` with its replacement and a
   `removal_release`, and `legacy_count` must be zero before a phase exit is

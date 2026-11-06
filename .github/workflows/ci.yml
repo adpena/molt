@@ -498,7 +498,7 @@ jobs:
     needs: classify-changes
     if: needs.classify-changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 342
+    timeout-minutes: 334
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -517,11 +517,6 @@ jobs:
         with:
           profile: full
           wasi: "true"
-
-      - name: Install pinned executable Luau proof runner
-        env:
-          PYTHONPATH: ${{ github.workspace }}/src
-        run: python3 -m molt.tool_releases provision lune --github-path "$GITHUB_PATH"
 
       - name: Execute selected Rust partitions
         run: python3 tools/proof_plan.py --run-family rust --receipt proof-receipts/rust.json
@@ -571,7 +566,7 @@ jobs:
     needs: classify-changes
     if: needs.classify-changes.outputs.llvm == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 77
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

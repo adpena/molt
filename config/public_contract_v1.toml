@@ -8,14 +8,14 @@ public_schemas = [
   "molt.release-consumer-proof.v12",
   "molt.release-compiler-source.v6",
   "molt.installed-runtime.v3",
-  "molt.release-targets.v1",
+  "molt.release-targets.v2",
   "molt-release-exit/4",
   "molt-pact-witness-acceptance/3",
   "molt.phase-exit-manifest.v2",
   "molt.phase-exit-requirements.v1",
   "molt.legacy-inventory.v1",
   "molt.public-contract.v1",
-  "molt.public-contract-surface.v2",
+  "molt.public-contract-surface.v3",
   "molt.verified-subset.v2",
 ]
 

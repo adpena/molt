@@ -17,8 +17,8 @@ Landing checks execute the generator and authority inputs captured from the exac
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
 | Hashed executable authority inputs | 1 | 453 |
-| Local path rules | 35 | 86 |
-| Unique local commands | 73 | 86 |
+| Local path rules | 35 | 84 |
+| Unique local commands | 73 | 84 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -45,15 +45,15 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 
 | Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|
-| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2880 s | 120 s | 600 s | `repository-policy` | none | `docs-gates` needs none | 242 |
-| `wasm` | pre-push, pr, main | yes | `github-job` | 333 min | 19800 s | 180 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 56 |
+| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2880 s | 120 s | 600 s | `repository-policy` | none | `docs-gates` needs none | 244 |
+| `wasm` | pre-push, pr, main | yes | `github-job` | 333 min | 19200 s | 180 s | 600 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 56 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 43 min | 2400 s per cell | 60 s | 120 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
 | `python_unit_collection` | pr, main | yes | `github-matrix` | 24 min | 1320 s per cell | 60 s | 60 s | `python-tests` | none | `python-unit-collection` needs `classify-changes` | 11 |
 | `native_integration` | pre-push, pr, main | yes | `github-job` | 63 min | 3600 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 39 |
 | `browser_simd` | pre-push, pr, main | yes | `github-job` | 10 min | 480 s | 120 s | 0 s | `compiler-build-resource` | none | `browser-simd` needs `classify-changes` | 13 |
-| `rust` | pre-push, pr, main | yes | `github-job` | 342 min | 20280 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 23 |
-| `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 120 s | 180 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 46 |
+| `rust` | pre-push, pr, main | yes | `github-job` | 334 min | 19800 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 23 |
+| `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 77 min | 4500 s | 120 s | 0 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 46 |
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 60 s | 240 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, scheduled | yes | `github-job` | 21 min | 900 s | 360 s | 0 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 9 |
 | `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
@@ -83,6 +83,7 @@ Scheduled workflows consume the same typed command DAG and receipt executor with
 |---|---|---|---|---|---|---|---|
 | `linux-x86_64-py312-repository-policy` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `repository` | `host` | `policy` |
 | `linux-x86_64-py312-wasm-dev` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `wasm` | `wasm32-wasip1` | `dev-fast` |
+| `linux-x86_64-py312-wasm-release` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `wasm` | `wasm32-wasip1` | `wasm-release` |
 | `linux-x86_64-py312-static` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `python-tooling` | `host` | `static` |
 | `linux-x86_64-py312-unit` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `python-tooling` | `host` | `test` |
 | `macos-arm64-py312-unit` | `macos-14` | `macos` | `aarch64` | `3.12` | `python-tooling` | `host` | `test` |
@@ -135,7 +136,6 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `npm` | `executable` | — | `^12\.2\.1$` | `.` | `12.2.1` | 4 |
 | `edgebox-typescript` | `executable` | — | `^7\.0\.2$` | `examples/edgebox/packages/edgebox-cloudflare` | `7.0.2` | 1 |
 | `rustc` | `executable` | — | `^rustc 1\.99\.1\b` | `.` | `1.99.1` | 3 |
-| `lune` | `executable` | — | `^lune 0\.11\.1$` | `.` | `0.11.1` | 2 |
 | `cargo` | `executable` | — | `^cargo 1\.99\.1\b` | `.` | `1.99.1` | 3 |
 | `git` | `executable` | — | `^git version 2\.` | `.` | `2.x` | 1 |
 | `rustfmt` | `executable` | — | `^rustfmt 1\.10\.0-stable\b` | `.` | `1.10.0` | 3 |
@@ -146,8 +146,8 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `ninja` | `executable` | — | `^1\.13\.2(?:\.git(?:\.kitware\.jobserver-pipe-1)?)?$` | `.` | `1.13.2` | 2 |
 | `wasi-clang` | `executable` | — | `clang version 23\.1\.0\b` | `.` | `23.1.0` | 1 |
 | `llvm-config` | `executable` | — | `^22\.1\.8$` | `.` | `22.1.8` | 1 |
-| `llvm-sdk` | `executable` | `compiler:llvm-sdk` | `^22\.1\.8$` | `.` | `22.1.8` | 1 |
 | `mlir-opt` | `executable` | — | `version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `llvm-sdk` | `executable` | `compiler:llvm-sdk` | `^22\.1\.8$` | `.` | `22.1.8` | 1 |
 | `ld.lld` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `ld64.lld` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `lld-link` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
@@ -262,8 +262,6 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `wasm.run.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 300 s | `wasm-runtime` | 2 |
 | `wasm.compile.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 2 |
 | `wasm.run.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 300 s | `wasm-runtime` | 2 |
-| `luau.compile.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 1 |
-| `luau.compile.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 1 |
 | `wasm.compile.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 2 |
 | `wasm.run.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 300 s | `wasm-runtime` | 2 |
 | `wasm.test.startup-lifecycle` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 120 s | `python-tests` | 0 |
@@ -276,7 +274,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `wasm.integration.host-exports.tinygrad-tensor` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
 | `wasm.integration.host-exports.tensor-row-ops` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
 | `wasm.integration.host-exports.gpu-bytes-ownership` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
-| `wasm.integration.host-exports.falcon-driver` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
+| `wasm.integration.host-exports.falcon-driver` | `wasm` | `linux-x86_64-py312-wasm-release` | `cold` | 1200 s | `compiler-build-resource` | 1 |
 | `wasm.test.freestanding-e2e` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 3 |
 | `wasm.test.finally-pending-observer-parity.native` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 1 |
 | `wasm.test.finally-pending-observer-parity.wasm` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 3 |
@@ -328,13 +326,12 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `rust.clippy.runtime-edge` | `rust` | `linux-x86_64-rust-native-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
 | `rust.clippy.runtime-standard` | `rust` | `linux-x86_64-rust-native-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
 | `rust.clippy.backend-wasm-only` | `rust` | `linux-x86_64-rust-native-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
-| `rust.clippy.backend-luau-only` | `rust` | `linux-x86_64-rust-native-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
-| `rust.clippy.backend-rust-only` | `rust` | `linux-x86_64-rust-native-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
 | `llvm.build.backend` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | `cold` | 1200 s | `compiler-build-resource` | 0 |
+| `mlir.test.backend` | `llvm` | `linux-x86_64-py312-mlir-dev` | `warm` | 300 s | `compiler-build-resource` | 1 |
+| `rust.test.rust-emitter-preview` | `llvm` | `linux-x86_64-rust-native-dev` | `warm` | 300 s | `compiler-build-resource` | 0 |
 | `llvm.test.lowering` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | `warm` | 300 s | `compiler-build-resource` | 1 |
 | `linker.test.generated-object-admission` | `llvm` | `linux-x86_64-py312-linker-release-fast` | `warm` | 300 s | `compiler-build-resource` | 1 |
 | `llvm.clippy.backend` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | `warm` | 300 s | `compiler-build-resource` | 1 |
-| `mlir.test.backend` | `llvm` | `linux-x86_64-py312-mlir-dev` | `warm` | 300 s | `compiler-build-resource` | 1 |
 | `linker.test.plan-authority` | `llvm` | `linux-x86_64-py312-linker-release-fast` | `explicit` | 120 s | `python-tests` | 1 |
 | `llvm.test.differential` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | `suite` | 1800 s | `compiler-build-resource` | 1 |
 | `security.lock-audit` | `python_security` | `linux-x86_64-py312-python-audit` | `explicit` | 900 s | `network-audit` | 0 |
@@ -424,8 +421,6 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `maintained-regalloc-moves` | 1 | 1 |
 | `native-object-emission` | 5 | 1 |
 | `maintained-zlib-counters` | 13 | 2 |
-| `backend-luau` | 3 | 1 |
-| `backend-rust` | 2 | 1 |
 | `backend-llvm` | 6 | 1 |
 | `tir-midend` | 11 | 2 |
 | `wasm-host` | 9 | 2 |

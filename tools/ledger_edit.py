@@ -17,12 +17,17 @@ release engineering" [--after HF-587] --defect ... --evidence ... --next ...
     ledger_edit.py note HF-185 [--defect-note ...] [--evidence-note ...] \
 [--next-note ...]
     ledger_edit.py class HF-605 --v1-class release_apparatus
+    ledger_edit.py v01 set HF-605 tier2
+    ledger_edit.py v01 apply classification.json
     ledger_edit.py family create W --stratum engine --axes empty/startup --name ... --cause ...
     ledger_edit.py edge add F W --reason ...
     ledger_edit.py edge remove F W
 
 The edges table owns row readiness and critical-path priority. Each open row
-also has exactly one v1 class; row edits maintain that membership together.
+also has exactly one v1 class; row edits maintain that membership together. An
+open row may carry one v0.1 class (``finding_status.V01Class``); a row without
+one holds a 0.x release. ``close`` and ``merge`` remove both classes, and a
+merge keeps the stricter v0.1 class of the two rows.
 
 Cell text is Markdown; a literal ``|`` must be written ``\\|``.
 """
@@ -137,15 +142,93 @@ def open_row(text: str, args: argparse.Namespace) -> str:
         except ValueError as exc:
             raise LedgerEditError("the ledger has no v1 membership table") from exc
     lines.insert(position, _row([args.key, args.v1_class]))
-    return "\n".join(lines)
+    opened = "\n".join(lines)
+    if args.v01_class is None:
+        return opened
+    return _set_v01_classes(opened, {args.key: finding_status.V01Class(args.v01_class)})
 
 
 def _remove_membership(text: str, key: str) -> str:
+    status = finding_status.project(text)
+    doomed = sorted(
+        (
+            entry.line
+            for entry in (*status.v1_membership, *status.v01_membership)
+            if entry.key == key
+        ),
+        reverse=True,
+    )
     lines = text.split("\n")
-    for entry in reversed(finding_status.project(text).v1_membership):
-        if entry.key == key:
-            del lines[entry.line - 1]
+    for line in doomed:
+        del lines[line - 1]
     return "\n".join(lines)
+
+
+V01_DATA_SCHEMA = "molt.v01-classification.v1"
+
+
+def _set_v01_classes(text: str, classes: dict[str, finding_status.V01Class]) -> str:
+    """Add or restate the v0.1 class of each open row, in one rewrite."""
+    status = finding_status.project(text)
+    open_keys = set(status.open_keys)
+    for key in classes:
+        if key not in open_keys:
+            raise LedgerEditError(f"{key} is not an open row")
+    current = {entry.key: entry for entry in status.v01_membership}
+    lines = text.split("\n")
+    for key, value in classes.items():
+        entry = current.get(key)
+        if entry is not None:
+            lines[entry.line - 1] = _row([key, value.value])
+    new_rows = sorted(
+        (key for key in classes if key not in current),
+        key=finding_status.finding_sort_key,
+    )
+    if not new_rows:
+        return "\n".join(lines)
+    rendered = [_row([key, classes[key].value]) for key in new_rows]
+    if current:
+        # Keep the table in canonical finding order: merge, then rewrite it.
+        first = min(entry.line for entry in current.values()) - 1
+        last = max(entry.line for entry in current.values())
+        existing = {finding_status.cells(line)[0]: line for line in lines[first:last]}
+        existing.update(zip(new_rows, rendered, strict=True))
+        lines[first:last] = [
+            existing[key]
+            for key in sorted(existing, key=finding_status.finding_sort_key)
+        ]
+        return "\n".join(lines)
+    membership = [entry.line for entry in status.v1_membership]
+    if not membership:
+        raise LedgerEditError("the ledger has no v1 membership table")
+    position = max(membership)
+    header = "| " + " | ".join(finding_status.V01_MEMBERSHIP_HEADER) + " |"
+    lines[position:position] = ["", header, "|---|---|", *rendered]
+    return "\n".join(lines)
+
+
+def set_v01_class(text: str, args: argparse.Namespace) -> str:
+    """Add or restate one open row's v0.1 class."""
+    return _set_v01_classes(text, {args.key: finding_status.V01Class(args.v01_class)})
+
+
+def apply_v01_classes(text: str, args: argparse.Namespace) -> str:
+    """Apply a classification data file: {"schema": ..., "rows": {key: class}}."""
+    data = json.loads(Path(args.data).read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or set(data) != {"schema", "rows"}:
+        raise LedgerEditError("classification data needs exactly schema and rows")
+    if data["schema"] != V01_DATA_SCHEMA:
+        raise LedgerEditError(f"classification data schema must be {V01_DATA_SCHEMA}")
+    rows = data["rows"]
+    if not isinstance(rows, dict) or not rows:
+        raise LedgerEditError("classification data rows must be a non-empty object")
+    try:
+        classes = {
+            str(key): finding_status.V01Class(value) for key, value in rows.items()
+        }
+    except ValueError as exc:
+        raise LedgerEditError(str(exc)) from exc
+    return _set_v01_classes(text, classes)
 
 
 def classify_row(text: str, args: argparse.Namespace) -> str:
@@ -253,7 +336,19 @@ def merge_rows(text: str, args: argparse.Namespace) -> str:
             lambda keys: [k for k in keys if k != args.key],
         )
     del lines[_row_index(lines, args.key)]
+    v01 = status.v01_classes
+    absorbed, kept = v01.get(args.key), v01.get(args.into)
     merged = _remove_membership("\n".join(lines), args.key)
+    if kept is not None and absorbed != kept:
+        # The stricter class wins; an unclassified side holds like blocking.
+        rank = finding_status.V01_STRICTNESS.index
+        stricter = (
+            finding_status.V01Class.V0_1_BLOCKING
+            if absorbed is None
+            else min(absorbed, kept, key=rank)
+        )
+        if stricter != kept:
+            merged = _set_v01_classes(merged, {args.into: stricter})
     lines = merged.split("\n")
     for edge in reversed(finding_status.project(merged).dependency_edges):
         if args.key not in (edge.source, edge.target):
@@ -431,6 +526,11 @@ def main(argv: list[str] | None = None, *, root: Path = _REPO_ROOT) -> int:
         required=True,
         choices=[value.value for value in finding_status.V1Class],
     )
+    opened.add_argument(
+        "--v01-class",
+        choices=[value.value for value in finding_status.V01Class],
+        help="the row's v0.1 class; without one the row holds a 0.x release",
+    )
     opened.add_argument("--section", required=True)
     opened.add_argument("--after")
     for name in ("defect", "evidence", "next"):
@@ -454,6 +554,15 @@ def main(argv: list[str] | None = None, *, root: Path = _REPO_ROOT) -> int:
         required=True,
         choices=[value.value for value in finding_status.V1Class],
     )
+    v01 = sub.add_parser("v01", help="set or apply v0.1 classes of open rows")
+    v01_sub = v01.add_subparsers(dest="v01_command", required=True)
+    v01_set = v01_sub.add_parser("set")
+    v01_set.add_argument("key")
+    v01_set.add_argument(
+        "v01_class", choices=[value.value for value in finding_status.V01Class]
+    )
+    v01_apply = v01_sub.add_parser("apply")
+    v01_apply.add_argument("data", help=f"JSON file of schema {V01_DATA_SCHEMA}")
     for command in (merged, noted):
         for name in ("defect-note", "evidence-note", "next-note"):
             command.add_argument(f"--{name}")
@@ -514,6 +623,9 @@ def main(argv: list[str] | None = None, *, root: Path = _REPO_ROOT) -> int:
     elif args.command == "edge":
         edit = {"add": add_edge, "remove": remove_edge}[args.edge_command]
         subject = f"{args.source} -> {args.target}"
+    elif args.command == "v01":
+        edit = {"set": set_v01_class, "apply": apply_v01_classes}[args.v01_command]
+        subject = args.key if args.v01_command == "set" else f"classes from {args.data}"
     else:
         edit = {
             "open": open_row,

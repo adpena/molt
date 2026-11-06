@@ -186,7 +186,8 @@ This compares one program, not the whole verified subset. The compiler frontend
 baseline is CPython 3.12+, including 3.15. Its interpreter and target semantics
 are separate: `molt build --python-version` selects an admitted target policy
 (currently `3.12`, `3.13`, or `3.14`; 3.15 completion is tracked in
-[V1-35](agent/V1_HANDOFF_FINDINGS.md)). Select the source
+[V1-35](agent/V1_HANDOFF_FINDINGS.md), and 3.15 is in every v0.1 Tier 1 cell:
+see [the v0.1 claim](spec/PUBLIC_CLAIM_V0_1.md)). Select the source
 frontend with uv in the same command; it must be at least as new as the target:
 
 ```bash
