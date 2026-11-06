@@ -23,7 +23,10 @@ import subprocess
 import sys
 import time
 import traceback
-from typing import NoReturn
+from collections.abc import Mapping
+from enum import StrEnum
+from types import MappingProxyType
+from typing import Final, NoReturn
 import zipfile
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +38,58 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 bind_repository_imports(__file__)
 
 SCHEMA = "molt.trunk-run.v3"
+
+
+class RunState(StrEnum):
+    """A remote run's lifecycle in run.json (docs/design/state_machines.md)."""
+
+    PREPARING = "preparing"  # record written; stage and checkouts being prepared
+    LAUNCHED = "launched"  # the launcher acknowledged a worker
+    COLLECTED = "collected"  # terminal receipt checked and evidence retained
+    VANISHED = "vanished"  # the worker is gone and published no receipt
+    ABANDONED = "abandoned"  # start failed before any launch was attempted
+
+
+# PREPARING -> COLLECTED: the launch acknowledgement was lost, yet the worker
+# ran and published its terminal receipt. Terminal states have no exits.
+RUN_TRANSITIONS: Final[Mapping[RunState, frozenset[RunState]]] = MappingProxyType(
+    {
+        RunState.PREPARING: frozenset(
+            {RunState.LAUNCHED, RunState.ABANDONED, RunState.COLLECTED}
+        ),
+        RunState.LAUNCHED: frozenset({RunState.COLLECTED, RunState.VANISHED}),
+        RunState.COLLECTED: frozenset(),
+        RunState.VANISHED: frozenset(),
+        RunState.ABANDONED: frozenset(),
+    }
+)
+
+
+class TerminalStatus(StrEnum):
+    """How a run or a remote landing closed: the worker's terminal.json and the
+    landing receipt.json share this vocabulary."""
+
+    SUCCESS = "success"
+    FAILURE = "failure"  # a selected proof failed for its own reason
+    INFRASTRUCTURE = "infrastructure"  # the run stopped before a verdict
+
+
+class InvalidRunTransition(RuntimeError):
+    """A run record was asked to take an edge its lifecycle does not have."""
+
+
+def transition(record: dict, target: RunState, **fields: object) -> None:
+    """Move ``record`` to ``target`` with ``fields``, or refuse the edge."""
+    current = RunState(record["state"])
+    if target not in RUN_TRANSITIONS[current]:
+        raise InvalidRunTransition(
+            f"{record.get('run_id')}: {current} -> {target} is not a run transition"
+        )
+    record.update(state=target.value, **fields)
+
+
+def failure_text(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}"
 
 
 def authorities():
@@ -1099,13 +1154,73 @@ def start(args, *, landing: dict | None = None, repo: Path = _REPO_ROOT) -> Path
         "cells": args.cell,
         "run_id": run_id,
         "created_at": datetime.now(UTC).isoformat(),
-        "state": "preparing",
+        "state": RunState.PREPARING.value,
     }
     record_path = run_root / "run.json"
     if landing is not None:
         record["landing"] = landing
     write_json(record_path, record)
     print(f"trunk-loop: recovery record {record_path}", flush=True)
+    try:
+        script = _prepare_launch(
+            args, host, transport, record, record_path, run_root, repo, landing
+        )
+    except BaseException as exc:
+        # No worker was launched: the run is over, with its reason.
+        transition(
+            record,
+            RunState.ABANDONED,
+            abandoned={
+                "observed_at": datetime.now(UTC).isoformat(),
+                "error": failure_text(exc),
+            },
+        )
+        write_json(record_path, record)
+        raise
+    try:
+        if host.launcher == cross.DetachedLauncher.WSL_SESSION:
+            # A distro that must boot first delays the identity by seconds.
+            raw = transport.windows_command(script, timeout=180)
+        else:
+            raw = transport.shell_command(script)
+        pid, worker = acknowledge(raw)
+    except BaseException as exc:
+        # The launch command may have started a worker; collect can still
+        # find its terminal receipt, so the run stays PREPARING.
+        record["launch_error"] = failure_text(exc)
+        write_json(record_path, record)
+        raise
+    transition(
+        record,
+        RunState.LAUNCHED,
+        launcher_pid=pid,
+        worker=asdict(worker) if worker is not None else None,
+        launched_at=datetime.now(UTC).isoformat(),
+    )
+    write_json(record_path, record)
+    print(
+        f"trunk-loop: launched {host.name} pid={pid} "
+        f"worker={worker.pid if worker is not None else 'exited'}; "
+        f"collect --record {record_path}",
+        flush=True,
+    )
+    return record_path
+
+
+def _prepare_launch(
+    args,
+    host,
+    transport,
+    record: dict,
+    record_path: Path,
+    run_root: Path,
+    repo,
+    landing,
+) -> str:
+    """Everything before the launch command; returns the launch script."""
+    cross = authorities()
+    subject, controller = record["commit"], record["controller_commit"]
+    checkout, control = record["checkout"], record["controller"]
     transport.prepare()
     remote_head = transport.shell_command(
         remote_argv(host, ["git", "-C", host.checkout, "rev-parse", "HEAD"])
@@ -1160,25 +1275,7 @@ def start(args, *, landing: dict | None = None, repo: Path = _REPO_ROOT) -> Path
             newline="\n",
         )
         transport.push([launch])
-        # A distro that must boot first delays the identity by seconds.
-        raw = transport.windows_command(script, timeout=180)
-    else:
-        raw = transport.shell_command(script)
-    pid, worker = acknowledge(raw)
-    record.update(
-        state="launched",
-        launcher_pid=pid,
-        worker=asdict(worker) if worker is not None else None,
-        launched_at=datetime.now(UTC).isoformat(),
-    )
-    write_json(record_path, record)
-    print(
-        f"trunk-loop: launched {host.name} pid={pid} "
-        f"worker={worker.pid if worker is not None else 'exited'}; "
-        f"collect --record {record_path}",
-        flush=True,
-    )
-    return record_path
+    return script
 
 
 def record_host(record: dict):
@@ -1275,8 +1372,9 @@ def worker_vanished(
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
         retained = f"unavailable ({exc})"
     pid = launched.pid if launched is not None else record.get("launcher_pid")
-    record.update(
-        state="vanished",
+    transition(
+        record,
+        RunState.VANISHED,
         vanished={
             "observed_at": datetime.now(UTC).isoformat(),
             "reason": reason,
@@ -1293,6 +1391,22 @@ def worker_vanished(
 
 def collect(record_path: Path, *, wait: bool = True) -> int:
     record = json.loads(record_path.read_text(encoding="utf-8"))
+    match RunState(record["state"]):
+        case RunState.COLLECTED:
+            # Terminal: answer from the record; the remote stage may be gone.
+            return _recorded_collection(record_path, record)
+        case RunState.VANISHED:
+            raise WorkerVanished(
+                f"{record['run_id']}: recorded vanished at "
+                f"{record['vanished']['observed_at']}: {record['vanished']['reason']}"
+            )
+        case RunState.ABANDONED:
+            raise RuntimeError(
+                f"{record['run_id']}: start was abandoned before any launch "
+                f"({record['abandoned']['error']}); nothing to collect"
+            )
+        case RunState.PREPARING | RunState.LAUNCHED:
+            pass
     host, transport = transfer_for_record(record)
     launched = (
         ProcessProbe(**record["worker"]) if record.get("worker") is not None else None
@@ -1344,9 +1458,11 @@ def collect(record_path: Path, *, wait: bool = True) -> int:
         durable_publish_exclusive(partial, destination)
     if digest(destination) != terminal["archive_sha256"]:
         raise ValueError("collected result archive digest mismatch")
-    if terminal.get("status") not in {"success", "failure", "infrastructure"}:
-        raise ValueError("unknown terminal status")
-    if terminal["status"] != "infrastructure" and (
+    try:
+        status = TerminalStatus(terminal.get("status"))
+    except ValueError as exc:
+        raise ValueError("unknown terminal status") from exc
+    if status is not TerminalStatus.INFRASTRUCTURE and (
         {cell["id"] for cell in terminal["cells"]} != set(record["cells"])
         or not all(cell.get("receipt") is True for cell in terminal["cells"])
     ):
@@ -1382,10 +1498,25 @@ def collect(record_path: Path, *, wait: bool = True) -> int:
                 from molt.file_publication import atomic_write_bytes
 
                 atomic_write_bytes(target, content, exclusive=True)
-    record.update(state="collected", terminal=terminal)
+    transition(record, RunState.COLLECTED, terminal=terminal)
     write_json(record_path, record)
-    print(f"trunk-loop: collected {root}; status={terminal['status']}", flush=True)
-    return 0 if terminal["status"] == "success" else 1
+    print(f"trunk-loop: collected {root}; status={status}", flush=True)
+    return 0 if status is TerminalStatus.SUCCESS else 1
+
+
+def _recorded_collection(record_path: Path, record: dict) -> int:
+    """Re-read a collected run from its retained, digest-checked archive."""
+    terminal = record["terminal"]
+    archive = record_path.parent / "results.zip"
+    if not archive.is_file() or digest(archive) != terminal["archive_sha256"]:
+        raise ValueError(
+            f"{record['run_id']}: collected run lost or changed its retained archive"
+        )
+    status = TerminalStatus(terminal["status"])
+    print(
+        f"trunk-loop: {record['run_id']} already collected; status={status}", flush=True
+    )
+    return 0 if status is TerminalStatus.SUCCESS else 1
 
 
 def worker_environment(record: dict) -> dict[str, str]:
@@ -1624,7 +1755,7 @@ def worker(record_path: Path) -> int:
     record = json.loads(record_path.read_text(encoding="utf-8"))
     transfer_for_record(record)
     uv = host_uv(record_host(record))
-    status = "infrastructure"
+    status = TerminalStatus.INFRASTRUCTURE
     cells = []
     lock = None
     unresolved_child = False
@@ -1668,7 +1799,7 @@ def worker(record_path: Path) -> int:
         env = provision(record, stage)
         (stage / "trunk_timings.py").write_text(TIMINGS_PLUGIN, encoding="utf-8")
         env["PYTHONPATH"] += os.pathsep + str(stage)
-        status = "success"
+        status = TerminalStatus.SUCCESS
         for cell in record["cells"]:
             directory = stage / cell
             directory.mkdir(exist_ok=False)
@@ -1724,19 +1855,23 @@ def worker(record_path: Path) -> int:
                     "proof receipt does not bind the selected clean source and cell"
                 )
             cells.append({"id": cell, "returncode": returncode, "receipt": True})
-            if "landing" in record and receipt.get("status") == "infrastructure":
-                status = "infrastructure"
+            if (
+                "landing" in record
+                and TerminalStatus(receipt.get("status"))
+                is TerminalStatus.INFRASTRUCTURE
+            ):
+                status = TerminalStatus.INFRASTRUCTURE
                 break
             if receipt.get("execution", {}).get("global_stop_triggered"):
-                status = "infrastructure"
+                status = TerminalStatus.INFRASTRUCTURE
                 break
             if returncode:
-                status = "failure"
+                status = TerminalStatus.FAILURE
                 # Cells are independent selections; preserve this failure and
                 # continue the next cell, never a dependent command batch.
     except Exception as exc:
         traceback.print_exc()
-        status = "infrastructure"
+        status = TerminalStatus.INFRASTRUCTURE
         unresolved_child = getattr(exc, "owned_process", None) is not None
     except BaseException:
         # Resume control interruption after the canonical waiter's atexit
@@ -1749,10 +1884,12 @@ def worker(record_path: Path) -> int:
             if lock is not None:
                 atexit.unregister(release_host_lock)
                 release_host_lock()
-    return 0 if status == "success" else 1
+    return 0 if status is TerminalStatus.SUCCESS else 1
 
 
-def publish_worker_result(record: dict, stage: Path, cells: list, status: str) -> None:
+def publish_worker_result(
+    record: dict, stage: Path, cells: list, status: TerminalStatus
+) -> None:
     """Publish completion only after the existing detached owner closed."""
     sys.stdout.flush()
     sys.stderr.flush()

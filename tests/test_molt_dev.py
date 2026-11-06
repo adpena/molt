@@ -13320,3 +13320,52 @@ def test_shell_pytest_gate_cannot_bypass_executor_worker_budget():
     )
     with pytest.raises(DriverError, match="simple argv"):
         molt_dev_gates._local_command(1, gate, "local", repo=REPO_ROOT)
+
+
+def test_queue_request_closes_exactly_once_across_an_interrupted_close(
+    tmp_path, monkeypatch
+):
+    """docs/design/state_machines.md, landing request: PENDING -> CLOSED once.
+
+    record_result publishes the result, then removes the request. A runner
+    stopped between the two left a request that was pending and closed at
+    once; the next batch tested it again and replaced its result.
+    """
+    from tools import molt_dev_queue as queue
+
+    paths = queue.QueuePaths(tmp_path / "queue", tmp_path / "sandbox", tmp_path / "ev")
+    first = queue.enqueue(paths, head="a" * 40, worktree=tmp_path, branch="lane/a")
+    second = queue.enqueue(paths, head="b" * 40, worktree=tmp_path, branch="lane/b")
+
+    real_unlink = Path.unlink
+
+    def stopped(self, *args, **kwargs):
+        if self.parent == paths.requests and self.stem == first.id:
+            raise KeyboardInterrupt("runner stopped between result and removal")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", stopped)
+    with pytest.raises(KeyboardInterrupt):
+        queue.record_result(
+            paths, first, status=queue.LandingStatus.FAILED, detail="gate failed"
+        )
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    assert (paths.requests / f"{first.id}.json").is_file()
+
+    # Closed wins: the next batch never sees the request again.
+    assert [request.id for request in queue.pending(paths)] == [second.id]
+    # A second close cannot replace the recorded result.
+    with pytest.raises(DriverError, match="already closed"):
+        queue.record_result(
+            paths, first, status=queue.LandingStatus.LANDED, detail="retested"
+        )
+    recorded = queue.read_result(paths, first.id)
+    assert queue.LandingStatus(recorded["status"]) is queue.LandingStatus.FAILED
+    # The runner, holding its lock, finishes the interrupted close.
+    assert queue.finish_interrupted_closes(paths) == [first.id]
+    assert not (paths.requests / f"{first.id}.json").exists()
+    assert queue.finish_interrupted_closes(paths) == []
+    queue.record_result(
+        paths, second, status=queue.LandingStatus.LANDED, detail="ok", landed="c" * 40
+    )
+    assert queue.pending(paths) == []

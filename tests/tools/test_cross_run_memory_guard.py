@@ -2264,3 +2264,150 @@ def test_windows_standard_handles_point_at_the_rebound_descriptors(tmp_path):
     assert (tmp_path / "calls.txt").read_text(
         encoding="utf-8"
     ) == "[(-10, 1000), (-11, 1001), (-12, 1002)]"
+
+
+def test_run_lifecycle_table_is_exhaustive_and_terminal_states_have_no_exits():
+    """docs/design/state_machines.md, trunk_loop run: every state has a row;
+    terminal states refuse every edge, so no record leaves COLLECTED."""
+    RunState = trunk_loop.RunState
+    assert set(trunk_loop.RUN_TRANSITIONS) == set(RunState)
+    for terminal in (RunState.COLLECTED, RunState.VANISHED, RunState.ABANDONED):
+        assert trunk_loop.RUN_TRANSITIONS[terminal] == frozenset()
+        for target in RunState:
+            record = {"run_id": "r", "state": terminal.value}
+            with pytest.raises(trunk_loop.InvalidRunTransition):
+                trunk_loop.transition(record, target)
+            assert record["state"] == terminal.value
+    record = {"run_id": "r", "state": "preparing"}
+    trunk_loop.transition(record, RunState.LAUNCHED, launcher_pid=7)
+    assert (record["state"], record["launcher_pid"]) == ("launched", 7)
+    with pytest.raises(trunk_loop.InvalidRunTransition):
+        trunk_loop.transition(record, RunState.ABANDONED)
+    with pytest.raises(ValueError):
+        trunk_loop.transition({"state": "finished"}, RunState.COLLECTED)
+
+
+@pytest.mark.parametrize("terminal_status", ["success", "failure"])
+def test_collect_answers_a_collected_run_from_its_record_without_the_remote(
+    tmp_path, monkeypatch, terminal_status
+):
+    """A collected run whose remote stage was retired used to be re-observed:
+    no worker, no terminal, so worker_vanished overwrote COLLECTED with
+    VANISHED. COLLECTED is terminal; collect answers from the record."""
+    import hashlib
+
+    record_path = tmp_path / "run.json"
+    archive = tmp_path / "results.zip"
+    archive.write_bytes(b"retained evidence")
+    record = {
+        "schema": trunk_loop.SCHEMA,
+        "run_id": "collected-run",
+        "state": "collected",
+        "terminal": {
+            "status": terminal_status,
+            "archive_sha256": hashlib.sha256(b"retained evidence").hexdigest(),
+        },
+    }
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+    monkeypatch.setattr(
+        trunk_loop,
+        "transfer_for_record",
+        lambda _record: pytest.fail("a collected run contacted its remote"),
+    )
+    expected = 0 if terminal_status == "success" else 1
+    assert trunk_loop.collect(record_path, wait=False) == expected
+    assert json.loads(record_path.read_text(encoding="utf-8")) == record
+    archive.write_bytes(b"changed evidence")
+    with pytest.raises(ValueError, match="lost or changed its retained archive"):
+        trunk_loop.collect(record_path, wait=False)
+
+
+def test_collect_reports_a_vanished_or_abandoned_run_without_the_remote(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        trunk_loop,
+        "transfer_for_record",
+        lambda _record: pytest.fail("a terminal run contacted its remote"),
+    )
+    record_path = tmp_path / "run.json"
+    for record, error, match in (
+        (
+            {
+                "run_id": "v",
+                "state": "vanished",
+                "vanished": {
+                    "observed_at": "t",
+                    "reason": "the process no longer exists",
+                },
+            },
+            trunk_loop.WorkerVanished,
+            "recorded vanished at t: the process no longer exists",
+        ),
+        (
+            {"run_id": "a", "state": "abandoned", "abandoned": {"error": "OSError: x"}},
+            RuntimeError,
+            "abandoned before any launch",
+        ),
+    ):
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        with pytest.raises(error, match=match):
+            trunk_loop.collect(record_path, wait=False)
+        assert json.loads(record_path.read_text(encoding="utf-8")) == record
+
+
+@pytest.mark.parametrize("failure", ["preparation", "launch"])
+def test_start_closes_a_failed_preparation_and_keeps_a_failed_launch_collectable(
+    tmp_path, monkeypatch, failure
+):
+    """A start that failed before any launch left PREPARING forever, with no
+    reason. It is ABANDONED now. A failure at the launch command may have
+    started a worker, so the run stays PREPARING (collect can still find its
+    terminal receipt) and records the launch error."""
+    from argparse import Namespace
+
+    from molt import disk_capacity, dx
+
+    host = cross_run.Host(name="host", target="aarch64-apple-darwin", transport="ssh")
+
+    class Transport:
+        _nonce = "0" * 32
+        execution_dir = "/owned/molt-cross-" + "0" * 32
+
+        def __init__(self, _host):
+            pass
+
+        def shell_command(self, _script):
+            raise OSError("launch connection dropped")
+
+    class Authorities:
+        SSHTransport = Transport
+        DetachedLauncher = cross_run.DetachedLauncher
+
+    monkeypatch.setattr(trunk_loop, "authorities", lambda: Authorities)
+    monkeypatch.setattr(trunk_loop, "selected_host", lambda *_a, **_k: host)
+    monkeypatch.setattr(trunk_loop, "exact_commit", lambda name, _repo: "1" * 40)
+    monkeypatch.setattr(trunk_loop, "checked", lambda *_a, **_k: "")
+    monkeypatch.setattr(
+        trunk_loop, "host_paths", lambda _host, nonce: ("/w/trunk-" + nonce, "/w/c")
+    )
+    monkeypatch.setattr(dx, "artifact_root", lambda _repo: tmp_path)
+    monkeypatch.setattr(disk_capacity, "require_build_capacity", lambda _roots: None)
+
+    def prepare(*_args, **_kwargs):
+        if failure == "preparation":
+            raise OSError("bundle transfer failed")
+        return "launch-script"
+
+    monkeypatch.setattr(trunk_loop, "_prepare_launch", prepare)
+    args = Namespace(inventory=None, host="host", cell=["cell"], commit="1" * 40)
+    with pytest.raises(OSError):
+        trunk_loop.start(args, repo=tmp_path)
+    (record_path,) = tmp_path.glob("evidence/trunk-loop/*/host/runs/*/run.json")
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    if failure == "preparation":
+        assert record["state"] == trunk_loop.RunState.ABANDONED
+        assert record["abandoned"]["error"] == "OSError: bundle transfer failed"
+    else:
+        assert record["state"] == trunk_loop.RunState.PREPARING
+        assert record["launch_error"] == "OSError: launch connection dropped"

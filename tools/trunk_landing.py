@@ -69,10 +69,17 @@ def admit_result(receipt: dict, request: dict) -> None:
         raise DriverError(
             "remote landing receipt has different source, tree or gate selection"
         )
-    status = receipt.get("status")
-    if status == "failure":
+    from tools.trunk_loop import TerminalStatus
+
+    try:
+        status = TerminalStatus(receipt.get("status"))
+    except ValueError as exc:
+        raise DriverError(
+            f"remote landing receipt has an unknown status: {receipt.get('status')!r}"
+        ) from exc
+    if status is TerminalStatus.FAILURE:
         raise CandidateFailure(f"remote landing gate failed: {receipt.get('error')}")
-    if status != "success":
+    if status is not TerminalStatus.SUCCESS:
         raise DriverError(
             f"remote landing infrastructure stopped: {receipt.get('error')}"
         )
@@ -146,6 +153,7 @@ def _run_remote(
 def execute(record: dict, output: Path) -> int:
     from tools import molt_dev as drv, trunk_loop
     from tools.molt_dev_gates import admit_selected_output_capacity, run_selected_gates
+    from tools.trunk_loop import TerminalStatus
     from molt.dx import RunContext
 
     request = record["landing"]
@@ -160,7 +168,7 @@ def execute(record: dict, output: Path) -> int:
         "source_tree": request["tree"],
         "source_tree_state": "unknown",
         "request_sha256": request_digest(request),
-        "status": "infrastructure",
+        "status": TerminalStatus.INFRASTRUCTURE,
         "passed": [],
         "seconds": seconds,
         "toolchains": {},
@@ -211,17 +219,21 @@ def execute(record: dict, output: Path) -> int:
             raise DriverError("remote executor omitted selected gates")
         drv._assert_integration_source(git, request["commit"])
         result.update(
-            status="success", source_tree_state="clean", passed=list(range(len(gates)))
+            status=TerminalStatus.SUCCESS,
+            source_tree_state="clean",
+            passed=list(range(len(gates))),
         )
     except CandidateFailure as exc:
-        result.update(status="failure", source_tree_state="clean", error=str(exc))
+        result.update(
+            status=TerminalStatus.FAILURE, source_tree_state="clean", error=str(exc)
+        )
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
         # BaseException and unresolved owned children must never publish completion.
         if getattr(exc, "owned_process", None) is not None:
             raise
     trunk_loop.write_json(output / "receipt.json", result)
-    return 0 if result["status"] == "success" else 1
+    return 0 if result["status"] is TerminalStatus.SUCCESS else 1
 
 
 def main() -> int:
