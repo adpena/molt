@@ -20,7 +20,6 @@ from molt.frontend import (
 )
 from molt.frontend.dataclass_init import DataclassInitField
 from molt.opcode_literal_payloads import integer_literal_bytes, literal_ast_dump
-from molt.frontend.dataclass_init import DataclassInitField
 
 from molt.cli import function_records
 from molt.cli.function_records import FunctionDigestSeed
