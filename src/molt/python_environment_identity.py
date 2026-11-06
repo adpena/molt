@@ -500,6 +500,7 @@ def python_capture_authority_paths(
         "guard_scope",
         "guard_stems_generated",
         "toolchain_identity",
+        "sqlite_failure",
         "toolchain_facts",
         "input_report",
         "llvm_linker_roles",
