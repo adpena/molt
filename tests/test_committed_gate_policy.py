@@ -910,10 +910,11 @@ def test_committed_source_checks_precede_complete_native_build_selection():
         "committed-gate-policy",
         "ci-wiring",
     }
+    # Experimental backends (Luau) run in no presubmit or postsubmit cell
+    # (owner 2026-11-05; config/release_acceptance_matrix.toml).
     build_names = [
         "backend-native",
         "native-object-emission",
-        "backend-luau",
         "tir-midend",
         "pending-call-source-authority",
     ]
@@ -962,7 +963,6 @@ def test_committed_gate_manifest_selects_molt_ir_op_kind_registry():
         "op-kind-registry",
         "rust-clippy-changed",
         "rust-test-changed",
-        "backend-luau",
         "tir-midend",
         "pending-call-source-authority",
     ]
