@@ -19,6 +19,7 @@ from molt.frontend import (
     ReceiverKind,
 )
 from molt.opcode_literal_payloads import integer_literal_bytes, literal_ast_dump
+from molt.frontend.dataclass_init import DataclassInitField
 
 from molt.cli import function_records
 from molt.cli.function_records import FunctionDigestSeed
@@ -49,6 +50,7 @@ _CACHE_JSON_TAGS = frozenset(
         "__builtin_class__",
         "__declared_class__",
         "__bound_method__",
+        "__dataclass_init_field__",
     }
 )
 
@@ -133,6 +135,19 @@ def _decode_class_identity(value: dict[str, Any]) -> _ClassIdentity | None:
     return None
 
 
+def _decode_dataclass_init_field(payload: Any) -> DataclassInitField:
+    if not (
+        isinstance(payload, list)
+        and len(payload) == 5
+        and isinstance(payload[0], str)
+        and all(type(flag) is bool for flag in payload[1:4])
+        and type(payload[4]) is int
+        and payload[4] in (0, 1, 2)
+    ):
+        raise ValueError("invalid cached dataclass initializer field")
+    return DataclassInitField(*payload)
+
+
 def _cache_json_sort_key(value: Any) -> str:
     """Order already-encoded heterogeneous keys or set members losslessly."""
     return json.dumps(
@@ -192,6 +207,8 @@ def _cache_json_value(value: Any) -> Any:
 
 
 def _json_ir_default(value: Any) -> Any:
+    if isinstance(value, DataclassInitField):
+        return {"__dataclass_init_field__": list(value.schema())}
     if isinstance(value, complex):
         return {"__complex__": [value.real, value.imag]}
     if value is Ellipsis:

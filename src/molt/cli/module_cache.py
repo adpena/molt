@@ -34,6 +34,7 @@ from molt.cli.cache_fingerprints import (
 from molt.cli.cache_keys import (
     _cache_json_value,
     _decode_class_identity,
+    _decode_dataclass_init_field,
     _encode_class_identity,
     _json_ir_default,
 )
@@ -773,10 +774,12 @@ def _frontend_lowering_cache_disabled() -> bool:
     }
 
 
-_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 13
+# The typed dataclass projection reserves a new JSON tag. Old name maps did not
+# escape it, so do not decode those records under the extended codec.
+_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 14
 
 
-_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 10
+_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 11
 
 
 _MODULE_ANALYSIS_FUNC_KINDS = frozenset({"sync", "async", "gen", "asyncgen"})
@@ -1056,6 +1059,10 @@ def _decode_cached_json_value_inner(value: Any) -> Any:
         class_identity = _decode_class_identity(value)
         if class_identity is not None:
             return class_identity
+        if "__dataclass_init_field__" in value:
+            if len(value) != 1:
+                raise ValueError("invalid cached dataclass initializer field")
+            return _decode_dataclass_init_field(value["__dataclass_init_field__"])
         if "__molt_value__" in value and isinstance(value["__molt_value__"], dict):
             payload = value["__molt_value__"]
             name = payload.get("name")
