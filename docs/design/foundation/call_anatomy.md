@@ -686,7 +686,8 @@ exceptional entries. Successful completion closes its region and jumps directly 
 continuation containing `else` and normal-finally work. The exceptional landing closes
 its region and enters handler dispatch directly. Only that landing reads the raised slot
 for dispatch; successful completion executes no pending-slot observer, comparison,
-negation or dispatch branch. Preserve the existing handler bodies, async exception-slot
+negation or branch for dispatch. Existing normal-finally observers remain unchanged.
+Preserve the existing handler bodies, async exception-slot
 stores, finally context and cleanup ownership. Handler-less `try/finally` retains its
 marked pending observer. The specialized synchronous split remains the normal form for
 its existing subset.
