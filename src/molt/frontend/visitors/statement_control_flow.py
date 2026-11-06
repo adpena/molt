@@ -501,13 +501,16 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
         self.try_suppress_depth = len(self.try_end_labels)
         self.try_handler_scopes.append(scope)
 
-        self.emit(
-            MoltOp(
-                kind="LABEL",
-                args=[try_join_label],
-                result=MoltValue("none"),
+        # A handler landing already proves an error is pending. Keep normal
+        # completion out of dispatch rather than joining and re-testing it.
+        if not node.handlers:
+            self.emit(
+                MoltOp(
+                    kind="LABEL",
+                    args=[try_join_label],
+                    result=MoltValue("none"),
+                )
             )
-        )
         exc_val = MoltValue(self.next_var(), type_hint="exception")
         pending_observer_kind = (
             "EXCEPTION_LAST_PENDING"
@@ -515,14 +518,14 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
             else "EXCEPTION_FINALLY_PENDING_OBSERVER"
         )
         self.emit(MoltOp(kind=pending_observer_kind, args=[], result=exc_val))
-        none_val = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-        is_none = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="IS", args=[exc_val, none_val], result=is_none))
-        pending = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="NOT", args=[is_none], result=pending))
-
-        self.emit(MoltOp(kind="IF", args=[pending], result=MoltValue("none")))
+        if not node.handlers:
+            none_val = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
+            is_none = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="IS", args=[exc_val, none_val], result=is_none))
+            pending = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="NOT", args=[is_none], result=pending))
+            self.emit(MoltOp(kind="IF", args=[pending], result=MoltValue("none")))
 
         def emit_handlers(handlers: list[ast.ExceptHandler]) -> None:
             if not handlers:
@@ -673,7 +676,15 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             self.active_exceptions.pop()
 
-        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+        if node.handlers:
+            self.emit(
+                MoltOp(kind="JUMP", args=[try_done_label], result=MoltValue("none"))
+            )
+            self.emit(
+                MoltOp(kind="LABEL", args=[try_join_label], result=MoltValue("none"))
+            )
+        else:
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         if node.orelse:
             if node.finalbody:
                 with self._suppress_check_exception(emit_on_exit=False):
@@ -773,7 +784,8 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
             )
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             self.active_exceptions.pop()
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        if not node.handlers:
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self.emit(
             MoltOp(
                 kind="LABEL",
@@ -831,6 +843,7 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
 
         self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
         try_exc_label = self.next_label()
+        try_normal_label = self.next_label()
         try_done_label = self.next_label()
         scope.handler_label = try_exc_label
         scope.done_label = try_done_label
@@ -842,8 +855,15 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
                 result=MoltValue("none"),
             )
         )
-        self._visit_block(node.body)
-        self.emit(MoltOp(kind="JUMP", args=[try_done_label], result=MoltValue("none")))
+        body_terminated = self._visit_block(node.body)
+        self.block_terminated = False
+        if not body_terminated:
+            self.emit(
+                MoltOp(kind="TRY_END", args=[try_exc_label], result=MoltValue("none"))
+            )
+            self.emit(
+                MoltOp(kind="JUMP", args=[try_normal_label], result=MoltValue("none"))
+            )
         self.emit(
             MoltOp(
                 kind="LABEL",
@@ -863,6 +883,10 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
         self.try_suppress_depth = len(self.try_end_labels)
         self.try_handler_scopes.append(scope)
 
+        if not node.handlers:
+            self.emit(
+                MoltOp(kind="LABEL", args=[try_normal_label], result=MoltValue("none"))
+            )
         exc_val = MoltValue(self.next_var(), type_hint="exception")
         pending_observer_kind = (
             "EXCEPTION_LAST_PENDING"
@@ -872,12 +896,12 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind=pending_observer_kind, args=[], result=exc_val))
         none_val = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-        is_none = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="IS", args=[exc_val, none_val], result=is_none))
-        pending = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="NOT", args=[is_none], result=pending))
-
-        self.emit(MoltOp(kind="IF", args=[pending], result=MoltValue("none")))
+        if not node.handlers:
+            is_none = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="IS", args=[exc_val, none_val], result=is_none))
+            pending = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="NOT", args=[is_none], result=pending))
+            self.emit(MoltOp(kind="IF", args=[pending], result=MoltValue("none")))
         self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
 
         rest_cell = self._emit_cell_new(exc_val)
@@ -1228,7 +1252,15 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             self.active_exceptions.pop()
 
-        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+        if node.handlers:
+            self.emit(
+                MoltOp(kind="JUMP", args=[try_done_label], result=MoltValue("none"))
+            )
+            self.emit(
+                MoltOp(kind="LABEL", args=[try_normal_label], result=MoltValue("none"))
+            )
+        else:
+            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         if node.orelse:
             if node.finalbody:
                 with self._suppress_check_exception(emit_on_exit=False):
@@ -1328,7 +1360,8 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
             )
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
             self.active_exceptions.pop()
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        if not node.handlers:
+            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self.emit(
             MoltOp(
                 kind="LABEL",

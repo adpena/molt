@@ -679,80 +679,47 @@ performance ratchet or methodology to admit a candidate. Record runtime calls, w
 memory and binary size alongside counters. Generated synchronization, touched-reader checks and
 the landing precheck remain separate required evidence.
 
-#### Pending-error branch constraints (HF-764 proposal, 2026-11-06)
+#### Separate normal completion from exception dispatch (HF-764, 2026-11-06)
 
-Status: proposed, awaiting parent design review before implementation. The Origin/Unwind
-contract above remains unchanged.
+General `try` and `try*` lowering with handlers must preserve separate normal and
+exceptional entries. Successful completion closes its region and jumps directly to the
+continuation containing `else` and normal-finally work. The exceptional landing closes
+its region and enters handler dispatch directly. Only that landing reads the raised slot
+for dispatch; successful completion executes no pending-slot observer, comparison,
+negation or dispatch branch. Preserve the existing handler bodies, async exception-slot
+stores, finally context and cleanup ownership. Handler-less `try/finally` retains its
+marked pending observer. The specialized synchronous split remains the normal form for
+its existing subset.
 
-The shared exception verifier can reject a valid async `try/except/else` before Rust
-optimization. The frontend's general try lowering joins normal completion and the exception
-landing, observes `ExceptionLastPending`, tests its result against `ConstNone`, and branches
-on the negated test. Only the no-error arm executes `else`. The event traversal currently
-propagates every incoming source state down both arms of every `CondBranch`. It therefore
-propagates an exceptional `Unwind` into the normal arm; its first potentially failing
-`ClosureLoad` changes that impossible state to `Mixed`. The following Origin check rejects
-`{Origin, Mixed}`. `PendingSource::Mixed` has one producing transition: a potentially failing
-authored operation reached with `Unwind` or `Mixed`. Verification runs at the end of the
-default pipeline, so “after optimization” does not identify the offending transformation.
+This establishes the existing invariant at the producer: valid general try lowering
+verifies, every executable Origin is captured exactly once, and a real mixed-source check
+is rejected. The shared verifier and its physical custody traversal need no predicate
+projection. Previously the general lowering joined normal and exceptional completion,
+then branched on a pending-slot None test. The verifier conservatively explored both arms,
+allowing an exceptional Unwind into the normal `else` arm and deriving Mixed at its first
+potential failure. The producer split removes that infeasible path from the CFG itself.
+It also makes normal `try*` completion enter `else` and normal-finally work before cleanup.
 
-**Invariant.** Event provenance includes every executable pending-error path, but a proven
-fresh pending-slot predicate excludes paths inconsistent with its branch outcome. A genuine
-Origin/Unwind join, or an operation executed while an earlier transfer is pending, must still
-be rejected. Exception custody and reference ownership remain separately conservative.
+All backends consume the same producer split. Qualification must cover synchronous,
+async, module and exception-group forms, failure in `else`, matched and unmatched handlers,
+nonlocal exits, and finally precedence against CPython. Existing exception and traceback
+oracles, including the three frame differentials, own observable membership, multiplicity
+and frozen coordinates. Keep physical region/MatchRef ownership and the async captured
+exception slot intact across suspension. Measure a try-heavy program's instructions,
+compile time and artifact size before and after; removal of dispatch work is not itself
+a measured performance result.
 
-The proposed correction belongs to the existing `exception_regions` event analysis. Derive
-a closed pending predicate from typed SSA definitions: the pending observer's `ValueId`,
-identity-preserving copies, comparison with `ConstNone` in either operand order, and boolean
-negation. Reuse the shared `value_identity` authority. Carry compatible facts through block
-arguments; a disagreement loses the proof. Use dense `ValueId`-indexed facts rather than
-names, runtime flags, a second optimizer, or a backend-specific recognizer.
+Equal normal and exceptional destinations do not make a check transparent: an Origin
+captures a traceback entry. Frontend check/jump threading may remove only an Unwind check
+with no payload or asynchronous-work marker and no lexical-handler or landing destination.
+Plain jump threading remains eligible. A failing operation in `else` must still create its
+own Origin; matching destinations are not an oracle for event redundancy.
 
-The observer is a snapshot, not an everlasting assertion about the raised slot. Track whether
-its relation to the current pending state is still valid on each path. A pending-state
-mutation, possible new exception, callback, asynchronous poll or suspension invalidates that
-relation unless the existing semantic authority proves preservation. Frame-location stores
-and metadata do not invalidate it. An unknown or stale predicate retains both successors.
-At a fresh predicate, project the existing source state onto the selected outcome:
-
-| Incoming source | No pending exception | Pending exception |
-|---|---|---|
-| Clear | Clear | unreachable |
-| Origin (operation may succeed or fail) | Clear | Origin |
-| Unwind | Clear (or unreachable if presence is separately proven) | Unwind |
-| Mixed | Clear (or unreachable if presence is separately proven) | Mixed |
-
-Source provenance is not a definite-presence fact: `ExceptionSetLast(None)` clears the
-runtime slot, although the current source transition records Unwind. Model that clear at
-its typed producer boundary; an unknown setter operand must retain the possible-clear case.
-Do not treat `Origin` as proof that an operation actually failed. Do not convert a real
-`Mixed` to Origin on the pending arm. Keep the physical-edge traversal used for region/MatchRef
-custody; predicate filtering belongs to executable event provenance and does not grant permission
-to remove releases, region markers or handlers. Both analyses retain one authority for
-operation semantics. The correction adds no emitted instruction, runtime clear or capture.
-
-The site family includes async/module general try joins, nested `try/else`, finally pending
-observers, exceptional loop predicates, and predicates transported across blocks. Plain
-`ExceptionLastPending` observes the raised slot. A marked finally observer can also service
-async work; its fresh result must describe the post-poll slot, with its potential new event
-modeled explicitly. Public/handled exception observers are not interchangeable with raised-slot
-observers. The source/check kinds must survive serialization, lifting, cloning and lowering
-for native, LLVM, WASM, Rust and Luau.
-
-Check-threading has a related obligation: equal normal and exceptional destinations do not
-make an Origin check disposable, because capture is observable. Review both frontend alias
-recognizers and the check-plus-jump contraction in `midend_cfg.py` against that obligation;
-keep plain jump threading and remove a check only when no capture or transfer is lost. Existing coalescing
-already requires matching edge kinds and destinations. This audit is not evidence that a
-Rust optimization caused the async failure.
-
-After design approval, extend the existing exception-region tests with a joined pending-slot
-predicate followed by an authored failure, plus negative controls for unrelated/stale
-predicates and genuine mixed sources. Cover None/unknown setter operands, reversed comparisons,
-negation, copies, block arguments, normal/error continuations, and marked observers. The independent end-to-end
-oracle is CPython's `try/except/else` behavior and the traceback event model above: success
-executes `else`; failure skips it; a failure in `else` adds its own Origin exactly once.
-Exercise the WASM async protocol repro and its end-to-end reader group, asyncio on native and
-LLVM, the three frame differentials, and `molt-passes --lib`. Qualification remains pending.
+The verifier-side SSA predicate proposal is rejected: it would add freshness/presence
+machinery, require preservation across optimization and drop pipelines, and weaken the
+existing producer-split contract. Marked-finally-observer transition gaps and detection of
+an Origin dropped before return are separate findings; this correction does not change
+their verifier rules or runtime semantics.
 
 #### Location publication cost (HF-764 correction, 2026-11-04)
 
