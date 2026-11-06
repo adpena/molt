@@ -769,7 +769,7 @@ The read-only plan reports recorded primitive ratios or their absence.
 | Family | Stratum | HF-459 axes | Shared cause or missing authority | Open rows |
 | --- | --- | --- | --- | --- |
 | A. Typed op and runtime-call ABI | semantics | - | Backends restate op kinds, runtime symbols, ownership and target legality by hand | HF-197, HF-485, HF-384, HF-553, HF-560, HF-262, HF-202, V1-26, HF-501, HF-124, HF-125, HF-211, HF-279, HF-287, HF-288, HF-596, HF-672, HF-687 |
-| B. Closed-world program model | engine | dataclass_construction/per_op | Prove each binding, reachable module and decorator in the closed program | HF-203, HF-226, HF-181, HF-140, HF-126, HF-79, HF-693, HF-700, HF-717, HF-718, HF-727, HF-776 |
+| B. Closed-world program model | engine | dataclass_construction/per_op | Prove each binding, reachable module and decorator in the closed program | HF-203, HF-226, HF-181, HF-140, HF-126, HF-79, HF-693, HF-700, HF-717, HF-718, HF-727, HF-803, HF-804, HF-805 |
 | C. Proof coverage | apparatus | - | Proof cells are named by hand, so whole trees, feature-gated targets, Lean modules and masked code run in no cell and their failures go unseen | HF-73, HF-99, HF-565, HF-314, HF-210, HF-509, HF-37, HF-42, HF-56, HF-63, HF-66, HF-186, HF-484, HF-87, HF-178, HF-533, HF-594, HF-626, HF-632, HF-677, HF-740, HF-754, HF-782, HF-799, HF-800, HF-801 |
 | D. Verdict truth (executable ledger) | apparatus | - | Expected failures and failure classes live in snapshots and prose | HF-563, HF-106, HF-295, HF-215, HF-488, HF-95, HF-530, V1-03, V1-04, HF-388, HF-422, HF-545, HF-577, HF-641, HF-652, HF-655, HF-676, HF-674, HF-719, HF-734, HF-786 |
 | E. Performance verdict truth | apparatus | - | No armed baseline or deterministic axis | HF-222, HF-460, HF-245, HF-616, HF-185, HF-686, HF-731, HF-775 |
@@ -784,7 +784,7 @@ The read-only plan reports recorded primitive ratios or their absence.
 | N. OS, process and network boundary | semantics | - | Host-boundary semantics | HF-441, HF-455, HF-518, V1-10, V1-13, V1-36, HF-531, HF-177, HF-595, HF-636, HF-802 |
 | O. Versioned target facts | semantics | - | Facts read from the build host instead of the declared version and target | V1-16, V1-22, V1-23, V1-35, HF-65, HF-122, HF-568, HF-554, HF-567, HF-628, HF-656 |
 | P. Typed facts and specialization | engine | loop/per_op | Sound facts on typed SSA values, passes on all code including the stdlib, representation choice, inline fast paths and counted loops | HF-201, HF-204, HF-214, HF-555, HF-572, HF-573, HF-678, HF-721, HF-732, HF-733, HF-739, HF-758, HF-773, HF-778, HF-798 |
-| Q. User compile and edit latency | delivery | - | No early cutoff on unchanged inputs; HF-26, HF-371 and HF-172 (first-link cost), HF-517 (guard overhead), HF-458 (PGO) and HF-225 (daemon admission) are first-build costs | HF-250, HF-252, HF-254, HF-266, HF-285, HF-357, HF-516, HF-173, HF-517, HF-26, HF-371, HF-172, HF-263, HF-458, HF-225, HF-631, HF-634, HF-774, HF-777, HF-791 |
+| Q. User compile and edit latency | delivery | - | No early cutoff on unchanged inputs; HF-26, HF-371 and HF-172 (first-link cost), HF-517 (guard overhead), HF-458 (PGO) and HF-225 (daemon admission) are first-build costs | HF-250, HF-252, HF-254, HF-266, HF-285, HF-357, HF-516, HF-173, HF-517, HF-26, HF-371, HF-172, HF-263, HF-458, HF-225, HF-631, HF-634, HF-774, HF-791 |
 | R. Development state ownership and reconciliation | apparatus | - | Molt-created processes and state have no declared-state reconciler: ownership is guessed, liveness has four implementations, and a crash or reboot leaves state nobody owns | V1-12, V1-25, HF-379, HF-169, HF-544, HF-551, HF-304, HF-444, HF-07, HF-23, HF-138, HF-387, HF-550, HF-370, HF-583, HF-602, HF-606, HF-607, HF-630, HF-667, HF-675, HF-694, HF-691, HF-702, HF-703, HF-704, HF-705, HF-706, HF-730, HF-736, HF-743, HF-752, HF-762, HF-769, HF-770, HF-783 |
 | S. Landing pipeline and self-build cost | apparatus | - | The merge gate tries to be complete and serial instead of a fast presubmit plus a continuous postsubmit farm, and building Molt repeats links, targets and toolchain work | HF-10, HF-22, HF-27, HF-190, HF-373, HF-291, HF-53, HF-93, HF-68, HF-170, HF-96, HF-599, HF-600, HF-603, HF-618, HF-623, HF-629, HF-633, HF-638, HF-635, HF-666, HF-490, HF-692, HF-701, HF-707, HF-708, HF-709, HF-710, HF-711, HF-712, HF-713, HF-723, HF-728, HF-729, HF-742, HF-779, HF-780, HF-787 |
 | T. Installed delivery and witnesses | delivery | - | The installed product and its end-to-end witnesses | V1-02, V1-06, V1-24, V1-28, HF-62, HF-64, HF-454, HF-576, HF-386, HF-04, HF-380, HF-510, HF-575, HF-620, HF-659, V1-07, HF-697, HF-724, HF-725, HF-726, HF-784, HF-788, HF-789, HF-790, HF-794, HF-795, HF-796, HF-797 |
@@ -1162,8 +1162,6 @@ The read-only plan reports recorded primitive ratios or their absence.
 | HF-773 | release_blocking |
 | HF-774 | release_blocking |
 | HF-775 | release_apparatus |
-| HF-776 | release_blocking |
-| HF-777 | release_blocking |
 | HF-778 | release_blocking |
 | HF-779 | release_apparatus |
 | HF-780 | release_apparatus |
@@ -1189,6 +1187,405 @@ The read-only plan reports recorded primitive ratios or their absence.
 | HF-800 | post_1_0 |
 | HF-801 | apparatus |
 | HF-802 | release_blocking |
+| HF-803 | release_blocking |
+| HF-804 | release_blocking |
+| HF-805 | post_1_0 |
+
+| Row | v0.1 class |
+|---|---|
+| HF-02 | post_v0_1 |
+| HF-04 | tier2 |
+| HF-06 | post_v0_1 |
+| HF-07 | post_v0_1 |
+| HF-10 | post_v0_1 |
+| HF-12 | v0_1_blocking |
+| HF-22 | post_v0_1 |
+| HF-23 | post_v0_1 |
+| HF-26 | post_v0_1 |
+| HF-27 | post_v0_1 |
+| HF-35 | post_v0_1 |
+| HF-37 | post_v0_1 |
+| HF-42 | post_v0_1 |
+| HF-50 | post_v0_1 |
+| HF-53 | post_v0_1 |
+| HF-56 | post_v0_1 |
+| HF-57 | post_v0_1 |
+| HF-61 | post_v0_1 |
+| HF-62 | v0_1_blocking |
+| HF-63 | post_v0_1 |
+| HF-64 | post_v0_1 |
+| HF-65 | post_v0_1 |
+| HF-66 | post_v0_1 |
+| HF-68 | post_v0_1 |
+| HF-73 | post_v0_1 |
+| HF-78 | post_v0_1 |
+| HF-79 | post_v0_1 |
+| HF-87 | post_v0_1 |
+| HF-93 | post_v0_1 |
+| HF-95 | post_v0_1 |
+| HF-96 | post_v0_1 |
+| HF-99 | post_v0_1 |
+| HF-106 | post_v0_1 |
+| HF-120 | post_v0_1 |
+| HF-122 | v0_1_blocking |
+| HF-123 | tier2 |
+| HF-124 | post_v0_1 |
+| HF-125 | post_v0_1 |
+| HF-126 | post_v0_1 |
+| HF-138 | post_v0_1 |
+| HF-140 | post_v0_1 |
+| HF-156 | post_v0_1 |
+| HF-157 | v0_1_blocking |
+| HF-158 | post_v0_1 |
+| HF-169 | post_v0_1 |
+| HF-170 | post_v0_1 |
+| HF-172 | tier2 |
+| HF-173 | post_v0_1 |
+| HF-174 | post_v0_1 |
+| HF-175 | post_v0_1 |
+| HF-177 | post_v0_1 |
+| HF-178 | post_v0_1 |
+| HF-181 | post_v0_1 |
+| HF-185 | post_v0_1 |
+| HF-186 | v0_1_blocking |
+| HF-190 | post_v0_1 |
+| HF-195 | v0_1_blocking |
+| HF-197 | post_v0_1 |
+| HF-198 | post_v0_1 |
+| HF-200 | post_v0_1 |
+| HF-201 | post_v0_1 |
+| HF-202 | post_v0_1 |
+| HF-203 | v0_1_blocking |
+| HF-204 | v0_1_blocking |
+| HF-205 | post_v0_1 |
+| HF-206 | post_v0_1 |
+| HF-208 | v0_1_blocking |
+| HF-209 | post_v0_1 |
+| HF-210 | post_v0_1 |
+| HF-211 | post_v0_1 |
+| HF-213 | v0_1_blocking |
+| HF-214 | v0_1_blocking |
+| HF-215 | v0_1_blocking |
+| HF-222 | post_v0_1 |
+| HF-225 | post_v0_1 |
+| HF-226 | post_v0_1 |
+| HF-229 | post_v0_1 |
+| HF-235 | post_v0_1 |
+| HF-238 | post_v0_1 |
+| HF-244 | post_v0_1 |
+| HF-245 | post_v0_1 |
+| HF-247 | v0_1_blocking |
+| HF-250 | post_v0_1 |
+| HF-252 | post_v0_1 |
+| HF-254 | post_v0_1 |
+| HF-261 | post_v0_1 |
+| HF-262 | post_v0_1 |
+| HF-263 | post_v0_1 |
+| HF-266 | post_v0_1 |
+| HF-268 | post_v0_1 |
+| HF-273 | post_v0_1 |
+| HF-276 | v0_1_blocking |
+| HF-279 | post_v0_1 |
+| HF-282 | post_v0_1 |
+| HF-283 | post_v0_1 |
+| HF-285 | post_v0_1 |
+| HF-287 | post_v0_1 |
+| HF-288 | post_v0_1 |
+| HF-291 | post_v0_1 |
+| HF-295 | post_v0_1 |
+| HF-297 | v0_1_blocking |
+| HF-300 | post_v0_1 |
+| HF-304 | post_v0_1 |
+| HF-314 | post_v0_1 |
+| HF-322 | post_v0_1 |
+| HF-329 | post_v0_1 |
+| HF-334 | post_v0_1 |
+| HF-351 | v0_1_blocking |
+| HF-357 | tier2 |
+| HF-363 | tier2 |
+| HF-370 | post_v0_1 |
+| HF-371 | tier2 |
+| HF-372 | post_v0_1 |
+| HF-373 | post_v0_1 |
+| HF-379 | tier2 |
+| HF-380 | post_v0_1 |
+| HF-383 | v0_1_blocking |
+| HF-384 | post_v0_1 |
+| HF-385 | post_v0_1 |
+| HF-386 | tier2 |
+| HF-387 | post_v0_1 |
+| HF-388 | post_v0_1 |
+| HF-422 | post_v0_1 |
+| HF-433 | post_v0_1 |
+| HF-434 | post_v0_1 |
+| HF-439 | post_v0_1 |
+| HF-441 | post_v0_1 |
+| HF-442 | v0_1_blocking |
+| HF-444 | post_v0_1 |
+| HF-451 | post_v0_1 |
+| HF-452 | post_v0_1 |
+| HF-454 | post_v0_1 |
+| HF-455 | v0_1_blocking |
+| HF-458 | post_v0_1 |
+| HF-460 | post_v0_1 |
+| HF-469 | post_v0_1 |
+| HF-473 | post_v0_1 |
+| HF-483 | post_v0_1 |
+| HF-484 | post_v0_1 |
+| HF-485 | post_v0_1 |
+| HF-488 | post_v0_1 |
+| HF-490 | post_v0_1 |
+| HF-491 | post_v0_1 |
+| HF-492 | post_v0_1 |
+| HF-501 | post_v0_1 |
+| HF-507 | post_v0_1 |
+| HF-509 | tier2 |
+| HF-510 | tier2 |
+| HF-516 | post_v0_1 |
+| HF-517 | post_v0_1 |
+| HF-518 | v0_1_blocking |
+| HF-522 | post_v0_1 |
+| HF-527 | tier2 |
+| HF-530 | v0_1_blocking |
+| HF-531 | v0_1_blocking |
+| HF-533 | post_v0_1 |
+| HF-539 | post_v0_1 |
+| HF-544 | post_v0_1 |
+| HF-545 | v0_1_blocking |
+| HF-548 | v0_1_blocking |
+| HF-550 | post_v0_1 |
+| HF-551 | post_v0_1 |
+| HF-553 | v0_1_blocking |
+| HF-554 | post_v0_1 |
+| HF-555 | post_v0_1 |
+| HF-558 | post_v0_1 |
+| HF-559 | post_v0_1 |
+| HF-560 | post_v0_1 |
+| HF-561 | post_v0_1 |
+| HF-563 | post_v0_1 |
+| HF-565 | post_v0_1 |
+| HF-567 | post_v0_1 |
+| HF-568 | post_v0_1 |
+| HF-569 | tier2 |
+| HF-570 | post_v0_1 |
+| HF-572 | post_v0_1 |
+| HF-573 | post_v0_1 |
+| HF-574 | post_v0_1 |
+| HF-575 | tier2 |
+| HF-576 | post_v0_1 |
+| HF-577 | post_v0_1 |
+| HF-578 | post_v0_1 |
+| HF-579 | post_v0_1 |
+| HF-583 | post_v0_1 |
+| HF-585 | post_v0_1 |
+| HF-586 | post_v0_1 |
+| HF-587 | post_v0_1 |
+| HF-589 | post_v0_1 |
+| HF-591 | post_v0_1 |
+| HF-593 | post_v0_1 |
+| HF-594 | post_v0_1 |
+| HF-595 | post_v0_1 |
+| HF-596 | post_v0_1 |
+| HF-599 | post_v0_1 |
+| HF-600 | post_v0_1 |
+| HF-601 | post_v0_1 |
+| HF-602 | post_v0_1 |
+| HF-603 | post_v0_1 |
+| HF-604 | post_v0_1 |
+| HF-605 | post_v0_1 |
+| HF-606 | post_v0_1 |
+| HF-607 | post_v0_1 |
+| HF-609 | v0_1_blocking |
+| HF-610 | tier2 |
+| HF-611 | tier2 |
+| HF-612 | post_v0_1 |
+| HF-613 | post_v0_1 |
+| HF-614 | tier2 |
+| HF-615 | post_v0_1 |
+| HF-616 | post_v0_1 |
+| HF-617 | post_v0_1 |
+| HF-618 | post_v0_1 |
+| HF-620 | v0_1_blocking |
+| HF-621 | tier2 |
+| HF-623 | post_v0_1 |
+| HF-626 | post_v0_1 |
+| HF-627 | post_v0_1 |
+| HF-628 | post_v0_1 |
+| HF-629 | post_v0_1 |
+| HF-630 | post_v0_1 |
+| HF-631 | post_v0_1 |
+| HF-632 | post_v0_1 |
+| HF-633 | post_v0_1 |
+| HF-634 | post_v0_1 |
+| HF-635 | post_v0_1 |
+| HF-636 | tier2 |
+| HF-638 | post_v0_1 |
+| HF-641 | post_v0_1 |
+| HF-643 | post_v0_1 |
+| HF-644 | v0_1_blocking |
+| HF-645 | v0_1_blocking |
+| HF-647 | post_v0_1 |
+| HF-649 | v0_1_blocking |
+| HF-650 | post_v0_1 |
+| HF-652 | post_v0_1 |
+| HF-655 | post_v0_1 |
+| HF-656 | post_v0_1 |
+| HF-659 | tier2 |
+| HF-661 | post_v0_1 |
+| HF-665 | post_v0_1 |
+| HF-666 | post_v0_1 |
+| HF-667 | post_v0_1 |
+| HF-669 | post_v0_1 |
+| HF-670 | post_v0_1 |
+| HF-671 | post_v0_1 |
+| HF-672 | v0_1_blocking |
+| HF-673 | post_v0_1 |
+| HF-674 | post_v0_1 |
+| HF-675 | post_v0_1 |
+| HF-676 | post_v0_1 |
+| HF-677 | post_v0_1 |
+| HF-678 | post_v0_1 |
+| HF-680 | post_v0_1 |
+| HF-681 | post_v0_1 |
+| HF-682 | tier2 |
+| HF-683 | post_v0_1 |
+| HF-684 | post_v0_1 |
+| HF-685 | post_v0_1 |
+| HF-686 | post_v0_1 |
+| HF-687 | post_v0_1 |
+| HF-688 | post_v0_1 |
+| HF-689 | post_v0_1 |
+| HF-690 | post_v0_1 |
+| HF-691 | post_v0_1 |
+| HF-692 | post_v0_1 |
+| HF-693 | post_v0_1 |
+| HF-694 | post_v0_1 |
+| HF-697 | v0_1_blocking |
+| HF-699 | post_v0_1 |
+| HF-700 | post_v0_1 |
+| HF-701 | post_v0_1 |
+| HF-702 | post_v0_1 |
+| HF-703 | post_v0_1 |
+| HF-704 | post_v0_1 |
+| HF-705 | post_v0_1 |
+| HF-706 | tier2 |
+| HF-707 | post_v0_1 |
+| HF-708 | post_v0_1 |
+| HF-709 | post_v0_1 |
+| HF-710 | post_v0_1 |
+| HF-711 | post_v0_1 |
+| HF-712 | post_v0_1 |
+| HF-713 | post_v0_1 |
+| HF-716 | post_v0_1 |
+| HF-717 | post_v0_1 |
+| HF-718 | v0_1_blocking |
+| HF-719 | post_v0_1 |
+| HF-721 | post_v0_1 |
+| HF-722 | post_v0_1 |
+| HF-723 | post_v0_1 |
+| HF-724 | post_v0_1 |
+| HF-725 | v0_1_blocking |
+| HF-726 | v0_1_blocking |
+| HF-727 | post_v0_1 |
+| HF-728 | post_v0_1 |
+| HF-729 | post_v0_1 |
+| HF-730 | post_v0_1 |
+| HF-731 | post_v0_1 |
+| HF-732 | post_v0_1 |
+| HF-733 | post_v0_1 |
+| HF-734 | post_v0_1 |
+| HF-735 | post_v0_1 |
+| HF-736 | post_v0_1 |
+| HF-737 | post_v0_1 |
+| HF-738 | v0_1_blocking |
+| HF-739 | v0_1_blocking |
+| HF-740 | post_v0_1 |
+| HF-741 | post_v0_1 |
+| HF-742 | post_v0_1 |
+| HF-743 | post_v0_1 |
+| HF-744 | v0_1_blocking |
+| HF-745 | post_v0_1 |
+| HF-746 | post_v0_1 |
+| HF-747 | post_v0_1 |
+| HF-748 | post_v0_1 |
+| HF-749 | tier2 |
+| HF-750 | post_v0_1 |
+| HF-751 | tier2 |
+| HF-752 | post_v0_1 |
+| HF-754 | post_v0_1 |
+| HF-757 | post_v0_1 |
+| HF-758 | tier2 |
+| HF-762 | post_v0_1 |
+| HF-763 | v0_1_blocking |
+| HF-764 | v0_1_blocking |
+| HF-769 | post_v0_1 |
+| HF-770 | post_v0_1 |
+| HF-772 | tier2 |
+| HF-773 | post_v0_1 |
+| HF-774 | post_v0_1 |
+| HF-775 | post_v0_1 |
+| HF-778 | v0_1_blocking |
+| HF-779 | post_v0_1 |
+| HF-780 | post_v0_1 |
+| HF-781 | post_v0_1 |
+| HF-782 | post_v0_1 |
+| HF-783 | post_v0_1 |
+| HF-784 | v0_1_blocking |
+| HF-785 | post_v0_1 |
+| HF-786 | post_v0_1 |
+| HF-787 | post_v0_1 |
+| HF-788 | v0_1_blocking |
+| HF-789 | v0_1_blocking |
+| HF-790 | v0_1_blocking |
+| HF-791 | v0_1_blocking |
+| HF-792 | post_v0_1 |
+| HF-793 | post_v0_1 |
+| HF-794 | v0_1_blocking |
+| HF-795 | v0_1_blocking |
+| HF-796 | v0_1_blocking |
+| HF-797 | post_v0_1 |
+| HF-798 | post_v0_1 |
+| HF-799 | post_v0_1 |
+| HF-800 | post_v0_1 |
+| HF-801 | post_v0_1 |
+| HF-802 | post_v0_1 |
+| HF-803 | post_v0_1 |
+| HF-804 | post_v0_1 |
+| HF-805 | post_v0_1 |
+| V1-01 | post_v0_1 |
+| V1-02 | tier2 |
+| V1-03 | post_v0_1 |
+| V1-04 | post_v0_1 |
+| V1-05 | v0_1_blocking |
+| V1-06 | v0_1_blocking |
+| V1-07 | post_v0_1 |
+| V1-08 | post_v0_1 |
+| V1-09 | post_v0_1 |
+| V1-10 | v0_1_blocking |
+| V1-11 | v0_1_blocking |
+| V1-12 | post_v0_1 |
+| V1-13 | v0_1_blocking |
+| V1-14 | post_v0_1 |
+| V1-15 | v0_1_blocking |
+| V1-16 | post_v0_1 |
+| V1-17 | post_v0_1 |
+| V1-18 | post_v0_1 |
+| V1-19 | v0_1_blocking |
+| V1-20 | post_v0_1 |
+| V1-21 | post_v0_1 |
+| V1-22 | v0_1_blocking |
+| V1-23 | post_v0_1 |
+| V1-24 | tier2 |
+| V1-25 | post_v0_1 |
+| V1-26 | v0_1_blocking |
+| V1-27 | post_v0_1 |
+| V1-28 | post_v0_1 |
+| V1-29 | v0_1_blocking |
+| V1-30 | v0_1_blocking |
+| V1-33 | v0_1_blocking |
+| V1-34 | v0_1_blocking |
+| V1-35 | v0_1_blocking |
+| V1-36 | v0_1_blocking |
 
 | From | To | Reason |
 | --- | --- | --- |
@@ -1354,6 +1751,9 @@ none is accepted as release debt or as a reason to weaken the declared matrix.
 
 | ID | Finding | Evidence | Next step |
 |----|---------|----------|-----------|
+| HF-805 | Two builtin reads cost more than they need to. (1) A parameter whose default reads a builtin without a catalog identity (memoryview, pow, round, Warning) inherits the default's OTHER or UNBOUND identity, so each read reloads the frame home and checks for unbound; a formal parameter is always bound at entry (measured: seven reloads in warnings and typing). (2) BUILTIN_FUNC finds its object by spelling at run time (lookup_builtin_name); exception lookups by name are HF-560. | 2026-11-05 lane hf776-builtin-proofs, docs/design/verified_namespace_premises.md 'Open siblings' (commit dde08acebe); found while it put every named builtin lowering behind a proof (HF-776). Speed only; no wrong result. | Drop UNBOUND from formal parameter bindings in the binding flow; give each catalogued builtin a typed runtime handle. Measure per-op instructions on the affected primitives against CPython. |
+| HF-804 | In a class body, locals(), vars() and zero-argument dir() return the module namespace or the enclosing frame, not the class namespace. CPython returns the class body's own mapping. A replaced builtins.locals in a class body is also not honored. | 2026-11-05 lane hf776-builtin-proofs, docs/design/verified_namespace_premises.md 'Open siblings' (commit dde08acebe); found while it put every named builtin lowering behind a proof (HF-776). Present on main, proved or not. | Give the class body a runtime frame or mapping handle that these calls read; a differential of locals(), vars() and dir() in class bodies (plain, nested, with a replaced builtins.locals) on native, LLVM and WASM against CPython 3.12. |
+| HF-803 | Two builtin reads still take the builtin's identity from its spelling, not from a proof. (1) A class statement reads __build_class__ from the frame's builtins in CPython (LOAD_BUILD_CLASS); Molt lowers it directly, so a replaced builtins.__build_class__ is ignored. (2) _base_class_reference (class_resolution.py) and _class_is_exception_subclass classify an unbound builtin base class by name; with builtins.ValueError replaced, the static classification still picks the builtin's layout and constructor, while the class statement reads the replaced base live. | 2026-11-05 lane hf776-builtin-proofs, docs/design/verified_namespace_premises.md 'Open siblings' (commit dde08acebe); found while it put every named builtin lowering behind a proof (HF-776). | Add the proof query for an implicit builtin read (__build_class__) and for class bases, as HF-776 did for named lowerings; a differential with both builtins replaced on native, LLVM and WASM against CPython 3.12. |
 | HF-802 | The WASM host stops a pipe reader by timer, not by wakeup: `CancellablePipeReader::read` (`runtime/molt-wasm-host/src/process_host.rs`) checks its cancel flag only between 5 ms non-blocking reads, and `HostReaderTask::close` gives the reader the rest of one 250 ms budget that the child close also spends (`db_host.rs` and `process_host.rs` both set `Instant::now() + 250 ms`). On a loaded host the reader misses the deadline and closing the database worker fails with "host pipe reader did not stop before close deadline", although nothing is wrong. | 2026-11-06 HF-623 landing attempt 2 (try-run 95a0749082, gate-001): tests/test_wasm_db_client_shim.py::test_wasm_db_client_shim_msgpack failed with that error after 1,165 s of parallel WASM end-to-end load; the lane changes no Rust. It failed once in 22 recorded runs. | Wake the reader instead of racing a timer: close or shut down its pipe end (the read returns EOF or an error at once), or poll the pipe together with a wake descriptor (self-pipe or eventfd on Unix, an event handle with overlapped reads on Windows), as tokio and mio wake blocked readers. Then a close deadline bounds only a stuck child, not scheduler latency. Prove with a test that holds the reader in a blocking read under load and requires close to return in bounded time on macOS, Linux and Windows. |
 | HF-798 | fast_math and strength_reduction each rebuild a private ValueId-to-type map from block arguments and operand-independent opcode result types only (runtime/molt-passes/src/tir/passes/fast_math.rs:55-72, strength_reduction.rs:29-55), so an arithmetic result inside a chain has no type and the next op in the chain is not eligible, although type_refine already derives such facts. | 2026-11-05 code reading on main 5bdef368ed. Neither pass consumes type_refine::extract_type_map; type_refine seeds from func.value_types, so its facts must first be qualified as proof (not annotations or subclass-admitting hints) before a pass may rely on them. | Expose one proof-qualified fact query (exact builtin type, no annotation or speculative fact) from the existing type refinement, consume it in both passes, delete the private maps; demonstrate a newly reduced chained-arithmetic case and negative cases that must stay conservative (annotated-only, subclass-admitting, possibly overflowing, unproven purity). |
 | HF-797 | deploy/cloudflare/README.md tells users to export `MOLT_OCR_BUILD_DIR` (lines 14, 27, 38) for the Falcon and Paddle builds, but Molt warns 'MOLT_OCR_BUILD_DIR is not a Molt environment variable; it is ignored', because the MOLT_ prefix is reserved for registered variables. | HF-620 Falcon witness run 2026-11-05: the warning appears in the build's error text (artifacts/witness/falcon-py312.summary.txt). deploy/cloudflare is reserved to the integrator, so the lane did not edit it. | Rename the README's shell variable to one without the MOLT_ prefix (for example OCR_BUILD_DIR) in every command that uses it. |
@@ -1630,7 +2030,6 @@ none is accepted as release debt or as a reason to weaken the declared matrix.
 | HF-12 | Current state (2026-10-13; the reconciled `lane/hf12-on-main` has since landed, 30e7a2ecd is on main): main changed the code or the oracle behind all 14 failures listed on 2026-10-11, in its own redesign. 31d961cc7 fixed the encoder run (`EncodeError::InvalidSequence`), the C-origin numeric, foreign-receiver, context-exit-frame and slice fixtures, the nine-edge `type_traverse` oracle, and exception rendering in isolates (runtime-native `__str__`/`__repr__`, tested in isolates). 567a673df fixed `%c`/`%d` over C-origin ints (it deleted the C percent formatter) and the gate's ignored witnesses and probes. 1307395f8 made the class-retirement census runtime-scoped, so isolate teardown no longer panics. 8affaaf6d keeps inherited builtin slots out of a restarted runtime's namespace (`StaticTypeNamespace`). 462c39e8e replaced the drain pass-count oracle. 9c878d270 made type-metadata publication valid with an incoming error, so `PyType_Ready` on a ready type keeps the caller's exception. Five of the 14 ran and passed here (`isolated_runtime_rejects_process_static_cpython_ownership`, both `cfunction_tests`, `python_text_transport_preserves_codepoints_and_callback_order`, `raised_exception_transfer_preserves_identity_through_finalizers`). The branch adds the oracles main still lacked (HF-F174). Declined lane changes: b83c60383 limited `type_traverse` to CPython's six heap-type edges, but main's shared collector must count every owned occurrence, including `ht_name`, `ht_qualname` and `ht_slots`, and its oracle requires them; f8a6929c6 restored shell slots at retirement, which duplicates main's declaration policy, and main's `builtin_slot_namespace_rebuild_keeps_inherited_init_out_of_str` already covers its regression test. 8dceb7466, the lane's fixture commits and the C formatter part of 61521b093 are superseded. The lane's isolate-rendering finding is not opened: main renders exceptions in isolates. Open: 30e7a2ecd completes C-function results through the callable authority (CPython `_Py_CheckFunctionResult`), which chains the original exception as `__cause__` and `__context__`. The first version of its test read exception fields through a foreign wrapper, failed, and leaked a native exception, so `cext_runtime_restart_rebinds_static_types_and_rebuilds_fields` also failed in that run. The committed C-API version of `cext_result_with_exception_raises_system_error_from_that_exception` has not run. Main's runtime gate is reported (2026-10-13) to fail two other tests, `generic_attributes_tests::protocol_capabilities::native_descriptor_diagnostics_use_semantic_receiver_types_without_hooks` and `native_inherited_slot_admission_obeys_nearest_declaration_and_sibling_names`; this reconciliation did not reproduce them. Older notes follow. The full `molt-runtime` lib suite does not complete on Windows or macOS. Windows deadlocks after ~71 tests (after the `async_rt::process::child_resources` tests). macOS serial (`--test-threads=1`, full tier): 708 ok, 22 failed, then SIGABRT in `c_api::tests::weakref_callback_calling_gc_collect_keeps_target_live` (`molt fatal: invalid object header in dec_ref`), so ~900 tests never run. The 22: 15 `builtins::platform::tests::extension_*` (empty exception message, or `AttributeError` setting a synthetic spec name), 2 `module_table::tests::builtin_bootstrap_*`, `attr::tests::sealed_field_offsets_*`, `types::*::class_assignment_respects_data_descriptor*`, `c_api::tests::c_api_tuple_new_size_getitem_setitem`, `concurrent::*future_errors_*` (also on Windows), `frames::activation_tests::live_poll_frame_*` (`frame_at_depth` accepts a published cell slot overwritten by a raw word). | Windows `cargo test --locked -p molt-runtime --lib --no-fail-fast`; macOS log `~/Molt/tmp/rust-macos-wasm-truth/32b_serial_tier_full.log`, 2026-10-06. Linux (native-receipts lane, after its HF-06 fix): the suite then hangs in `module_table` (four tests set `STATE_INITIALIZING` by hand without an unwind-safe restore, so a failure leaves a dead owner and later tests spin in `wait_for_foreign_init`), or hits the same order-dependent use-after-free; an exception constructor returns 2 owners instead of 1 (`future_errors_*`); 5 `frames::bindings` tests read refcount `u32::MAX`. Structural causes: 71 fatal paths print with `eprintln!`, which libtest captures, so aborts look silent; the ABI test leak check runs in a thread-local destructor, where any panic aborts the binary; 228 test-side `extern "C"` callbacks contain `assert`/`unwrap`. The CI command `rust.test.ir-wasm-runtime-authorities` on macOS fails 9 `molt-runtime` tests (attr sealed offsets, live poll frame, builtin bootstrap lookup, class assignment descriptor, young GC promotion, list root sequence slots, direct entry admission, dataclass payload privacy, bare object constructor class edge). | Run `cext_result_with_exception_raises_system_error_from_that_exception` and `cext_runtime_restart_rebinds_static_types_and_rebuilds_fields` on main, then record 30e7a2ecd as fixed or repair it. Fix the two remaining runtime-gate failures at their owners. Qualify release-output, hosted x86_64 Linux, Windows and the wasm32 clippy cell through CI, and close this row when the runtime gate is green there. Earlier plan: Fix the use-after-free first (it hides 900 tests), restore `STATE_INITIALIZING` through a guard, write fatal paths to raw stderr, move the leak check into a test-scoped guard, then each failure at its owner; find the Windows deadlock with `--test-threads 1` and a stack dump. Retain the earlier Windows-specific observations that future_errors_use_supplied_classes_and_release_temporary_exception_owners has an owner-count mismatch and builtin_bootstrap_publication_precedes_recursive_python_and_preserves_deletion leaves an exception pending. These dated host results are not fresh qualification; HF-06 and V1-12 retain the complete runtime lifecycle, ownership and actual platform closure obligations. CI 37871859733 qualifies the eight repaired dev-fast fixture cases: the runtime group reports 752 passes, two ignored and the one unchanged list in-place numeric failure. The release-output eight-thread run still reports twelve failing tests and aborts during cext_runtime_restart_rebinds_static_types_and_rebuilds_fields: prior-runtime retirement fails, then PendingCallTestCustody restoration attempts entry after permanent shutdown while unwinding. The sleep-payload retirement case remains among the release failures. Full same-tree debug evidence separately identifies the primary shutdown invariant: native GC owners survive the final callback drain before class retirement. This identifies the failed invariant, not the surviving allocation or a shared cause for the earlier reported failures. The complete terminal-safe test-transaction repair is integrated in the main candidate: pending-call restoration no longer enters a failed runtime, detached error/sys owners are not restored through retired metadata, and original body failure survives cleanup failure. All nineteen actual child modes now bind exact termination, completion and mode-specific evidence; independent review rejected the earlier common-marker proposal because valid transcripts could be exchanged. The Python descendant receiver and runtime-gate/truth consumers pass 300 checks with one platform skip. The nine new actual Rust child modes, native compilation and the primary native-owner survivor diagnosis remain required; source review and receiver tests are not runtime execution qualification. Preserve the distinction between debug and release evidence and review each owner; this does not qualify the complete numeric/storage migration. |
 | HF-26 | Content-keyed final-link reuse is implemented, but a genuinely new linked program still processes a large combined runtime/app module. The historical macOS dev hello module was 24 MB; its pre-reuse build took 38.9–41.4 s (link 24.7–26.2 s) with `wasm-opt -O1 -g`. Existing reachability cleanup is conservative around dynamic dispatch; this is remaining first-link and retained-runtime work, not a missing repeat-build cache. | 2026-10-19 Linux x86_64, full/release typed-exception aperture: a fresh link spent 31.74 s in linking, including 20.506 s in Binaryen and 7.862 s in 15 facts scans. After complete publication-facts reuse (`c34f010b5`), scans fall 15→14, scanner input falls by 13,759,302 bytes and cache hits rise 35→36; the full guest, execution manifest, optimizer input/policy and runtime bytes remain identical to the qualified safe-policy build. No runtime Cargo rebuild or guest rerun was needed for that identity-bound comparison. Scanner wall fell by 0.355 s in one advisory observation; whole-build speed is not established. The host-only facts change also refreshed the compiler (2.86 s) and invalidated app codegen (15.009 s). At `2102bd1ed`, the standalone facts product removes that source dependency and uses optimized `release-fast` inspection independently of compiler development profiles. Actual Linux/aarch64 baseline, facts-only edit, backend-edit control and exact restoration preserve identical guest and manifest bytes; app-cache hits are true/true/false/true. The facts edit selects new admitted scanner bytes and final-link identity while preserving compiler/app/function identities; the backend control invalidates compiler/app/function identities, and restoration regains the originals. All four phases require zero runtime Cargo builds; complete guest-input identity permits reuse of the retained actual CPython parity proof. Two alternating scans return byte-identical responses at median 0.488→0.080 s (6.11×), with executable size 15,340,944→2,036,688 bytes. Real CLI/publication cohorts pass 70 Linux and 69 Windows tests. These qualify the isolated host-tool/source-cache contract, not a historical whole-build speedup or installed release delivery. Earlier: `examples/hello.py` dev builds, macOS arm64, lane `wasm-build`, 2026-10-06. CI run 38152757625 (2026-10-11), linked dev builds: the finally-pending WASM build spent 73.4 s in `molt-backend --wasm-link` and 36.8 s in `tools/wasm_link.py`, 24.8 s of it in `wasm-opt -O1`; each tinygrad host-export build spent 230–242 s in `--wasm-link`. In run 38152941765 `molt-wasm-host` compiled the linked hello module for 65 s before it ran. 2026-10-23, lane build-latency, macOS arm64, load 8-14, a 91-line asyncio program (`asyncio_signal_handler_semantics` plus one line), new-program dev builds: dev `wasm-opt -O1 -g` took 266 of 342 observed CPU seconds; standalone on the 75 MB linked module it took 267 CPU s, 4.3 trillion instructions, 54 s and 4.2 GB peak RSS and saved 10.4 MB. Change I053d7e70: dev builds run no post-link optimizer (`--wasm-opt-level` opts in). Interleaved builds: 388.6 and 387.6 CPU s with O1, 105.7 and 102.7 without; `wasm_link` 240 and 207 s to 170 and 165 s. Node ran the larger module (code 42.3 MB against 30.9 MB) in 4.0-4.6 s against 2.1-2.3 s. Six differential programs pass on WASM without the optimizer. What remains: the backend runs TIR, drop insertion and codegen over all 3,600 functions on every build (47-49 CPU s, 52-57 s), and `tools/wasm_link.py` rewrites the 75 MB module 10 times (27 section walks): a sample of the link tool shows about 55 s in `write` and 22 s in `close` on the external volume, with `wasm-ld` itself at 0.3-0.65 CPU s. 2026-10-23, lane build-io, same program and host: 0e267a620 pipes each module to the facts tool (`--scan-wasm-link-facts` and `--publish-wasm-link-facts --output` read stdin), removing the 13 scratch writes and rereads (865 MB each way per link) and the persisted copy before the final publication; the relocatable runtime preflight relinks to the null device (0.3 s against 8.0-8.5 s with an 83 MB scratch file). 132be339a moves the private generation's outputs into the final stages and transfers the final-link cache by clone. Interleaved dev builds (load 7.3-15.1, four old and three new): link phase 97.8 s to 68.9 s, `wasm_publish` 3.8 s to 0.4 s, build 182.1 s to 158.9 s (medians); CPU unchanged (92.4 s and 93.2 s); `backend_cache_write` unchanged (13.1 s and 12.7 s), since cloned copies are verified by a read from disk. `tests/test_wasm_runner_table_base.py` published fixture facts with the codegen backend, which lost that mode when the facts tool was separated (b331c61eb): 17 of 37 failed; 6cecd9bac admits the facts tool and all 37 pass. What remains in the tool: private snapshots of the runtime and app inputs (113 MB copied per link), the `wasm-ld` stage written and read back, 10 in-memory reserializations (`wasm_strip` 4.3-9.3 s), 13 full scans (27-36 s under load), the private publication's durable flush, the CLI's repeated hashing of the inputs (about 1 GB), and the runtime pair hydrate (HF-505). | Tree-shake the runtime by reachability; compile the stdlib once as cached relocatable objects as native does; batch the facts queries so each stage scans once and keep the module in memory between passes; snapshot link inputs by clone; publish the private generation without a durable flush; then re-measure warm and cold builds. Tree-shake the runtime by reachability, decide whether a whole-runtime `-Oz` at runtime generation pays for itself (HF-F204), cut the post-link pipeline's whole-artifact rewrites, compile the stdlib once as cached relocatable objects as native does, and re-measure warm and cold builds. Preserve the separate earlier Windows dev baseline: examples/hello.py warm total 102 s (wasm_link 59 s, backend_prepare 20 s, cache_lookup 17 s), linked module 24.5 MB; cold total 591 s with backend_prepare 449 s, recorded on 2026-10-06 in hello2_linked.wasm.wasm-opt.json. Those measurements predate the recorded cross-output link-result reuse and are not a current missing-cache diagnosis. Profile remaining link sub-stages and reachability/runtime size; qualify changed SDK inputs under V1-28 and keep compiler build cost separate from guest size/execution. The imported-zero-memory assumption is removed from shared policy (`5469ef1f8`); actual monolithic/split-reference tests over initialized imported memory reject its return, and historical size-only evidence is marked accordingly. Same-input default Oz saved 1,360 raw bytes but showed no timing gain in one advisory pair, so no extra-pass deletion is justified by that pair. Complete published facts now seed the existing bounded cache; final validators remain mandatory, changed bytes miss, and final publication refuses unconsumed linker metadata. Qualify first-link/runtime reachability and target/profile costs beyond this bounded case. Standalone host inspection now preserves exact tool/source and codegen identities; strict source, installed-manifest, bundle, wheel, provenance and consumer projections migrate together. Full installed release execution, first-link/runtime reachability and the broader target/profile costs remain unqualified; V1-02/V1-28 retain delivered release acceptance. HF-300 still owns preserved-mtime source freshness. |
 | HF-774 | Every build lowers and optimizes the stdlib modules it reaches again: the loop program carries about 830 stdlib functions, and with full mid-end coverage that one-time-able work dominates its compile time. No prebuilt, toolchain-keyed stdlib artifact exists. | 2026-11-05 lane hf572-midend-coverage: loop 833 functions of which the user program is a few; compile 16.56 -> 173.45 s once stdlib is optimized. Prior art: Go ships and caches compiled std packages; Swift ships prebuilt module interfaces; Rust ships prebuilt libstd rlibs per target; rustc incremental queries and Go's build cache reuse per-module results by content. | Make each optimized stdlib module a content-addressed product of the existing lowering/product cache authority (module source, compiler identity, target, mid-end policy), shipped prebuilt per toolchain release and per target where possible; a warm build reuses it. HF-572 round 2 starts the cache; this row owns the shipped prebuilt artifact and its acceptance (warm compile no slower than before full coverage). 2026-11-05 owner directive: start from the existing per-function TIR cache and the current artifact/cache authority, not HF-572's Python mid-end cache; the outcome is that installed user builds never repeat stdlib preparation and optimization. Measure fresh install and first compile, reusable-product compile, unchanged rebuild and a one-file edit separately (wall time, process-tree RSS, link time, stdlib work repeated), protected by HF-775. |
-| HF-777 | The frontend lowering cache cannot persist the record of a module that defines a dataclass: it raises 'TypeError: Object of type DataclassInitField is not JSON serializable', so any cold build of such a module with the lowering cache on fails. | 2026-11-05 lane family-b-premises: reproduced on main with the dataclass primitive; the lane disabled the lowering cache in both A/B legs to measure. | Make DataclassInitField a typed member of the lowering record's serialization schema (exact JSON, schema version bump), with a round-trip test and a cold-plus-warm build of the dataclass primitive. |
 | HF-27 | The WASM CI job is effectively serial: wall 1,723 s against 1,933 s of summed command time, peak concurrency 2 on a 4-CPU runner, because every compile row holds the single `compiler-build-resource` slot (the rows share one Cargo target directory). | `proof-receipts/wasm.json` from CI 37414548819. | Fix HF-26 first (it shrinks every row), then split rows that need no Cargo build out of `compiler-build-resource`. 2026-10-14, train 23 (run 38527585266) hotspots: 21 of the 27 WASM commands hold the one `compiler-build-resource` slot, and 249 guarded commands took 9,572 s. Four single-test host-export rows ran one after another: `tinygrad_dtype` 716 s, `tensor_row_ops` 624 s, `tinygrad_tensor` 601 s and the GPU vector-add kernel 441 s, 2,382 s in all; the codec-parity `molt_diff` row ran into its 1,200 s deadline. Find what each host-export test builds (likely its own split runtime and link) before deciding which can share a build or leave the slot. |
 | HF-37 | Remaining Rust truth qualification on macOS, Linux/Windows and wasm32: the 24 macOS runtime-fixture C-width errors are repaired through one shared ABI authority (bcd39cbc6 on main; 8a37f2845 exists only on `codex/v1-primary-*` branches) and the complete fixture family. Full workspace tests/lints and required CI cells remain open; prior wasm32 runtime-path/http lint errors are not closed by the width unit. The migration missed `runtime/molt-runtime/src/builtins/frames/bindings.rs`: seven production sites (lines 676, 846, 895, 1036, 1048, 1259, 1551) still turn integer-carried ABI words into pointers with `as usize as *mut T`, which truncates on wasm32 and drops provenance, bypassing `provenance/abi.rs`. `tests/test_runtime_abi_width_authority.py` finds them, but it sits in the HF-73 backlog, so CI never ran it; its second test pins authority source strings that have since changed (`ptr_addr % alignment != 0`) and should become a behavior test. The file has Codex work in progress (`shared-hash-storage`), 2026-10-09. | Current local width unit: 215 ABI/codegen tests, four FromSpec tests, two host guest-length boundary tests, host clippy and WASIp1 codegen/ABI clippy pass. Independent Astra review accepted the bounded25path migration; exact CPython3.12.13/3.13.12/3.14.8 headers and staged projections were verified. | Qualify every required workspace/backend/profile/target cell and add the missing CI gates. A bounded C-width pass does not qualify full Rust truth or Cargo source/artifact custody. |
 | HF-42 | macOS Python unit truth, remaining after the macOS cell landed: `tests/cli/test_cli_import_collection.py` has 32 failures on macOS (external native artifact plans, e.g. "native callable dispatch admission failed: native runtime path no longer names its codegen generation"), present before the cell. Also failing on macOS at main: `tests/test_wasm_pipeline_e2e.py` (5 errors, 1 failure), `tests/cli/test_cli_extension_commands.py` (4), `tests/test_wasm_performance.py` (2), `tests/test_wasm_browser_embed.py` (1). On 2026-10-09, 27 of its 44 local failures share one stale fixture: `NativeArchiveFixtureCatalog.read_symbols()` (`tests/cli/native_link_test_support.py`) rejects the `_opened` keyword that `native_symbol_inspection` now passes; the file and fixture carry WIP in three Codex worktrees, so the fix belongs to that lane. | macOS integrator, 2026-10-06. | Root-cause each on macOS and keep the macOS cell green. Earlier failures used GNU-only ar qcD on macOS, Apple clang for wasm32-wasip1, and host-based Mach-O decoration for an ELF object. Their bounded fixture repairs and the landed macOS cell are retained in HF-F36/HF-F44; they do not close the later suites listed here. Keep tools under the declared toolchain authority and decorations/diagnostics under the artifact-format authority through HF-39/V1-28. Historical results are not a new full macOS qualification. |
@@ -1669,7 +2068,6 @@ none is accepted as release debt or as a reason to weaken the declared matrix.
 | HF-175 | The WASM program that imports the pending-call C extension aborts. GC `collect_generation` calls `with_preserved_error`, `take_current_error` and `take_thread_state_error`, which panics with "C error state used before runtime TLS lifetime preparation" and then "RefCell already borrowed" (`runtime/molt-cpython-abi/src/api/object.rs`); `PyErr_Clear` from `restore_native_pending_snapshot` reaches the same state during finalization. | CI run 38152757625 (Linux x86_64, branch verify/hf169-census-probe): `molt-wasm-host` exited 1 after 84.5 s. `tests/test_finally_pending_observer_parity.py -k wasm` on Darwin arm64 at e023944f6: the same two panics. | Establish the C-API thread-state lifetime before the first GC or pending-call observer can read it, and keep the error-state borrow out of re-entrant GC paths. Prove it with `wasm.test.finally-pending-observer-parity.wasm` and a direct finalization regression. |
 | HF-181 | Source-demand discovery admits modules that a program cannot reach, through two conservative rules. (1) Constructing a class, or reading a member that its namespace lacks, escapes every method of the class family: `json.loads` calls `decoder_cls(...)`, so discovery scans `JSONDecoder.raw_decode` and would admit its deferred `operator` import. (2) The binding flow never proves a builtin name exact (`setattr`, `getattr` and `__import__` read as the builtin or an unknown value), so a module passed to any builtin escapes its whole namespace. Train 20 removed a third rule: a star import no longer escapes its source module; reads select star-bound names on demand (`test_star_import_selects_star_bound_names_on_demand`). The three-module `cold_warm…hashseed` program now compiles 26 modules; `warnings` stays because the `ByteString` metaclass escapes. Measured cost of rule (1): an unsound experiment in which constructing a class escapes only its dunder methods changed no admitted module for eight programs (json, Counter, argparse, logging, dataclass, pathlib, re, unittest; 7 to 71 modules), so the class-family rule costs body scans there, not modules. | Discovery demand traces on train 20, 2026-10-13. Family B landed in main `5ac8b2a91` (lane family-b-binding-flow, 2026-10-31; `bench_etl_orders` -0.29% instructions retired, binary 21.70 -> 20.94 MB). All 15 precision oracles, admission controls and the long source-closure and determinism cells pass. Before/after finding qualification remains. 2026-11-02: identity added CPython's `pickle_union` to core module copyreg, registered at module init; its nested `import functools, operator` was reachable, so the closed-world scan admitted 37 modules into every program (`print(1)` core graph 7 -> 44). Demand-driven reachability would admit them only for a program that pickles or copies a union type. 2026-11-05: a cold build of a 20-line asyncio program had scanned 3,176 modules for imports after 300 s and was still discovering (see the new family Q cold-discovery row). | Bind `self` and `cls` to the class family and select members by class hierarchy; prove builtin exactness from a whole-program fact that no source replaces the builtin. Add dead and live controls for each rule to `test_public_stdlib_deferred_demand_graph`. |
 | HF-226 | By default the binding flow assumes any callback (a call, an import, an iteration or context callback) may rebind every global and canonical member of the module, so after the first callback it forgets static facts: `TYPE_CHECKING` stops being False (user-program discovery compiles type-only imports: `from typing import TYPE_CHECKING`, `import os`, `if TYPE_CHECKING: import decimal` compiles `decimal`), and `__package__`, `__spec__` and `__name__` become unknown (a later relative import covers every local module, so the M35 lowering scope was all 1,409 `src/molt` files and any edit invalidated the persisted lowering cache). This is stricter than the language contract: spec 0216 admits scoped mutation and excludes unrestricted `exec`/`eval`, monkeypatching and reflection. It also split Molt's own consumers: the frontend's `_module_stable_funcs` already assumes only a module's own code rebinds its functions, and the import flow trusted foreign code at calls but widened metadata at iteration and context callbacks. | Tooling closures done in lane/admission-closure (2026-10-15). `compiler_analysis/python_namespace_writes.py` summarizes, in one AST pass, the names a module's own deferred code rebinds and its named writes to other modules (attribute, `setattr`, `__dict__`/`vars` item writes on module references, import-hook mutations). `PythonBindingFlowPolicy.foreign_namespace_writes` and `callback_member_writes` bound the callback domain to those names; `python_canonical_member_writes` shares `_member_write_mask` with the flow's direct stores; `PythonBindingFacts.callbacks_rewrite_metadata` gives the import flow the same answer. `local_python_import_closure` computes the premise as a monotone fixpoint (named writes, package child names, member writes; summaries cached in analysis rows). Real lowering scope, isolated cache, Apple M-series: 1,409 files with whole-tree coverage on main aedec0934 to 242 with none, one round; cold 4.09 s to 4.02-4.14 s, warm 0.14 s to 0.04-0.05 s. A relative import the flow proves dead now resolves lexically; before, it failed the executable-tool closure (also on main). Tests in `tests/test_python_namespace_writes.py`, `tests/test_python_binding_flow.py`, `tests/cli/test_cli_python_source_closure.py` and `tests/cli/test_cli_lowering_cache_tooling_scope.py`; the fixpoint, package-child and dead-import tests each fail when their mechanism is disabled. Design and prior art (Nuitka, Lifeguard, Cinder): `docs/design/verified_namespace_premises.md`. Family B landed in main `5ac8b2a91` (lane family-b-binding-flow, 2026-10-31; `bench_etl_orders` -0.29% instructions retired, binary 21.70 -> 20.94 MB). Closed writer premises, activation argument flow and host consumer/cache controls pass. The finding and target matrix remains. 2026-11-05 lane family-b-premises (7cd837eb60..fafba30643, landed): exact builtin certificates in the frontend: a proved builtin type lowers to BUILTIN_TYPE and a proved callee lowers like the guard's fast arm, with no guard and no module lookup; isinstance/issubclass carry typed catalog identities; a writer of __builtins__ or a star-export reach withdraws proofs. isinstance per-op 5,976.4 -> 5,187.8 instructions (0.868x; Molt/CPython 7.516 -> 6.524); no primitive axis regresses; all 15 primitive binaries 1.5-1.6% smaller; hello and loop admit 29 modules each (unchanged); census 2,226 = 2,226; public stdlib dataclass discovery 8/8; 24 native/LLVM/WASM differential cells pass; readers 6,712 passed, 18 skipped. HF-79's bundle was reconciled: the exact-builtin query, merged proof authority and call-shape mask kept; its direct-call ABI, class slots and discovery changes dropped (they cost 35% binary size and the census). | Host source-contract migrations are integrated; frontend premise adoption and target acceptance remain open. An isolated CPython oracle exposed a missing tooling-closure entry mask: a writer can change `typing.TYPE_CHECKING` before the reader first imports it, causing the old eager closure and lowering fingerprint to omit an executed module. Both policy builders and their graph fixtures now share one immutable projection of foreign names, callback members and initial members. Tooling graph schema 21 rejects stale request records; the poisoned schema-20 control fails when the generation gate is restored. The core and direct source-scan schemas remain unchanged because they already key and apply the initial mask. Owning namespace/tooling and source-request/binding controls pass on macOS arm64. The changed CPython-oracle/cache controls and existing warm-fixpoint control also pass on actual Windows x64 bat00 (three cases), with a normally closed Windows Job and unchanged peer worktrees. Independent final source review found no boundary blocker. The downstream lowering-fingerprint family exposed one retired cache-key caller from HF-266. Its fixture now calls the current record-key authority and proves both orthogonal-edit stability and in-scope invalidation (28 cases pass). The existing namespace, tooling-closure, source-request and scoped-key families are selected automatically for their actual producer changes through the proof plan; source/fixture/projection migration remains one authority. The namespace repair lands at `5a5956fea` after all 32 selected Linux integration gates; the consumer/proof-selection companion at `31c75e9e7` passes all 29 selected gates, including 2,062 joined cases with 13 skips and 87 selector cases. Required-run worker telemetry is retained for later cost decisions; it does not justify changing admission units.  One generated compiler identity/member catalog and `compiler_analysis.python_namespace_graph` own namespace facts. Tooling and user discovery share the syntax authority and operation-wide delta worklist: named writes wake affected reached contexts, active logical targets survive generated namespace admission, and closure publication updates changed rows without copying a growing graph. Star initialization invalidates module bindings and global/builtin fallbacks; uninspected native/artifact/catalog owners remain unknown. Current-globals reads, custom-key stores/deletes and mutation methods retain source-point slot custody and protocol demands. Descriptor exposure stays conservative where effects are unknown. One source-scan authority owns raw SHA, package identity, ordered search portions and native helper roots. Native helpers select the original captured AST instead of generating Python slice files; ordinary initialization dominates helper views. Import, syntax and runtime-policy caches and frontend workers consume the same selection. Strict joins reject source/root drift, including named foreign writers and generated-importer paths. Graph-admitted source leases flow through analysis, serial/parallel lowering, context-addressed records and worker receipts. Writers stamp the captured generation and reject changed or missing input; cache hits validate that generation. Replaced stat/resolver carriers, text fallback lanes, retained-AST lowering bypass and unused entry lowering are deleted. One topology owner covers entry/root selection, segmented package resolution, negative lookups, child inventories and final publication, preserving namespace portions and lexical symlink traversal. Existing private candidate seams fence IR, native, WASM, transpiled, MLIR and factgraph publication. Reconstructible compiler caches use one typed durability policy in the existing atomic publisher, including both shared-copy directions, source/import/analysis records, lowering IR and tool/version/wrapper memos. Required outputs and current-byte artifact receipts retain durability. Candidate memo hits avoid JSON rereads while consumers independently qualify inputs; metadata hints never attest source or artifact bytes. Writes invalidate the memo instead of binding submitted payloads to a later path stat. Captured byte size enforces bounded reads; malformed JSON and invalid cached representations become misses through their owning decode boundaries. The matched 24-record publication probe on the macOS build volume falls from 1,573.36 to 5.49 ms, removing 48 flushes; this is filesystem-specific cache I/O evidence, not whole-compile or target performance. [Operations](../OPERATIONS.md#build-time) owns this policy. Developer ratio checks and proof source capture now share one lightweight Git-owned inventory, excluding ignored operational trees without excluding tracked source. Checked Git callbacks retain command custody, missing source fails closed, and native path grammar preserves literal POSIX backslashes and Windows protocol newlines. CPython PathFinder, namespace/key-protocol, source-generation, cold/warm cache, worker and publication controls qualify the host boundary. Frontend premise adoption, conservative descriptor exposure and actual cross-OS/architecture/backend/profile/optimization qualification remain open. These are compiler/development costs; emitted binaries perform none of this analysis. DAG reconciliation (2026-11-02): the family-B design orders HF-79 (direct calls) before HF-226's remaining source-demand precision, and lane b-slice2-direct-calls carries the callback precision HF-79 needs. The edges HF-226 -> HF-680, HF-681, HF-684, HF-688 and HF-673 assume all of HF-226. When that lane reports what of HF-226 remains, split HF-226 into the writer model those rows need and the remainder, or retarget the edges. 2026-11-02: split. Target qualification moved to HF-700. HF-226 closes when frontend codegen consumes the build graph's premise behind the package-topology fence (`verified_namespace_premises.md`, "Remaining consumers"); lane b-slice2-direct-calls carries it. Integrator decision 2026-11-05: source callable, class and import certificates become a typed pure read of the proved binding on an SSA value, which the mid-end's loop-invariant motion and value numbering hoist or merge; no lookup-free call entry and no direct-call ABI. Its natural home is HF-773's TIR mid-end. That work owns the loop, dynamic_call and dataclass_construction axes, which premise adoption alone cannot move (no builtin binding work per iteration; dataclass_construction keeps one module_get_global('Point')). |
-| HF-776 | Builtins without a catalog identity (type, ord, id, print and others) still lower by name without a proof, so a program that replaces them gets the original builtin: with builtins.type and builtins.ord replaced, Molt prints 'replaced <class 'int'> 97' where CPython prints 'replaced replaced-type -1'. | 2026-11-05 lane family-b-premises: repro logs/agents/lane-family-b-premises/artifacts/evidence/sibling_uncatalogued_named_builtins.py; main has the same behavior. | Give each named-lowered builtin a catalog identity and require a proof for its named lowering, as HF-226 now does for isinstance and issubclass; census each addition. |
 | HF-235 | Full reconstructed-function and code-reflection support still lacks a canonical constant pool, complete versioned flag surfaces and target/profile qualification. | The former source veto and its exclusive handler/effect/cache transport are retired; intrinsic, manifest/link, package/source-custody and coverage authorities remain. One shared class/direct FunctionType binder implements the versioned CPython constructor, and missing-only module builtins publication preserves explicit values and bootstrap ownership. Immutable code qualname/doc metadata survives failure-atomic publication, cloning, readonly access and lifetime traversal. The typed readonly function `__builtins__` descriptor projects the existing definition-time capture: the 28-word function payload and 15 physical metadata fields are unchanged. Independent CPython 3.12–3.15 and free-threaded 3.13/3.14 reference observations remain separate from target admission. Actual Linux ARM64 execution at `815f326c8` passes all 12 physical programs on native and WASM (24 observations, none skipped): eight reconstructed-function projects, JSON public-hook identity/order/no-retry controls and three import/codec receivers. The selected Linux development/full-profile runtime/Luau unit graph passes all 40 tests, including all 15 executable Lune oracles. macOS release-fast runtime lib tests pass 1,929 with 17 ignored; native backend clippy passes with warnings denied. These qualify their stated cells, not the whole release. | Preserve the qualified Python 3.12 development/full-profile native/WASM cell and qualify the remaining supported version/backend/profile/platform matrix. Implement real `co_consts` ordering and literal/nested-code identity through one code/literal pool shared by execution and reflection; a reflection-only tuple is insufficient. Retire replaced storage and declaration lanes in the same producer/consumer/lifetime migration. Implement the CPython-versioned `CO_HAS_DOCSTRING` projection (3.14+) and qualify the other code-flag/inspect surfaces rather than claiming full parity from this one flag. Source references and unit checks do not qualify unexecuted target cells. Preserve standalone guest execution; host Python and proof tooling belong to development/reference work. |
 | HF-238 | Native linking independently queried the macOS SDK and version, ignoring an explicit SDKROOT and mixing cross-target framework/library paths with a different explicit sysroot. The full platform selector also ignored environment DEVELOPER_DIR, while source-extension SDK projection selected unrelated tools, memoized partial environment inputs and swallowed failures. | The native and source-extension families share platform_toolchain SDK selection. Actual C compilation and linking with a sentinel header available only in the explicit SDK proves header custody; cross-target controls prove framework and library paths use the same argv sysroot. 2026-10-29 reconciliation (lane/ledger-reconcile): one typed SDK selection landed (e6b33d0f07, 32f1ad052b); remaining: the Windows cell. | One fresh typed SDK selection reads version and digest from the same stable SDKSettings bytes and honors SDKROOT/DEVELOPER_DIR. Full toolchain capture adds only the tools it needs and retains release revalidation. Native driver owns all SDK search flags; duplicate selector helpers and global extension SDK memo are deleted. Captured target and build-machine compiler commands own SDK/deployment arguments through Meson, generators and replay; generic environment filtering performs no SDK work. Native architecture floors and explicit deployment precedence remain distinct from the release SDK floor. Host source/toolchain consumer checks pass, including actual Clang compilation/linking with SDK variables removed and portable receipt rejection of frontend-only SDK custody. SDK-only default selection uses two selector processes, explicit SDK paths none, and full default tool capture seven instead of eight; these are development/build costs, with no emitted-binary work. Linux/Windows execution and full native/WASM release acceptance remain open. |
 | HF-244 | Two concurrent builds in one checkout can replace the backend that the other one links. A `molt_diff --target wasm` case (`builtins_symbol_classmethod_c2ce1533.py`) failed with "WASM link input changed since identity capture: .../checkouts/opkind-b6d9b09b5048/release/molt-backend.wasm_backend" while a release `--linked` WASM build of another program ran in the same checkout. The identity check fails closed, which is correct, but the build holds no lease on the backend binary it links with. | 2026-10-16 03:19-03:28 on lane/opkind; another case in the same window hit the 600 s build guard. Not yet reproduced alone. Reproduced 2026-10-17: with every WASM test in the checkout's own target, `-n 2` over `test_wasm_runtime_heavy_regressions.py` and `test_wasm_split_runtime.py` failed two builds with "WASM link input changed since identity capture" on `release/molt-backend.wasm_backend` after another build re-materialized it; both pass alone. | Immutable backend generations now carry the selected executable through every producer and consumer; the mutable hydration lane is removed, and runtime/backend retention shares one store owner. Recursive eviction uses the canonical no-follow deletion authority: the old callback fails the real outside-sentinel control; all 47 materialization controls pass on Darwin arm64, with two Windows junction cells unverified. Qualify actual concurrent shared-checkout builds and active-generation lifetime independently of wall-clock recency before closing. Current retention inherits the 24-hour idle policy; it is not a process-lifetime lease. |
@@ -1727,6 +2125,8 @@ none is accepted as release debt or as a reason to weaken the declared matrix.
 
 | ID | Defect | Integrated fix and verification boundary |
 |----|--------|-----------------------------------------|
+| HF-777 | The frontend lowering cache cannot persist the record of a module that defines a dataclass: it raises 'TypeError: Object of type DataclassInitField is not JSON serializable', so any cold build of such a module with the lowering cache on fails. | Lane hf776-builtin-proofs e96de03940 (with 3c1a81d7c5): DataclassInitField is a typed member of the lowering record's schema; from_schema is the inverse of schema() and refuses a malformed payload, so the lowering-cache decoder never turns a bad record into a plain dict. A cold write and a warm read of a persisted module-lowering record round-trip a real dataclass's projection (tests/cli/test_cli_module_frontend_shared_cache.py). |
+| HF-776 | Builtins without a catalog identity (type, ord, id, print and others) still lower by name without a proof, so a program that replaces them gets the original builtin: with builtins.type and builtins.ord replaced, Molt prints 'replaced <class 'int'> 97' where CPython prints 'replaced replaced-type -1'. | Lane hf776-builtin-proofs (31f397e6e2..dde08acebe; design docs/design/verified_namespace_premises.md, two Goldfish design rounds): every named-lowered builtin callable, type, constant and exception spelling has a catalog identity, and each named lowering is keyed on its proved identity (c0d145e261), including reads that miss a plain class mapping and __import__ reads proved by their own provenance. The repro now prints 'replaced replaced-type -1' as CPython does; 11 differential programs pass on native, LLVM and WASM against CPython 3.12.16 (33 cells). Primitive A/B shows no axis past its noise bound; proved reads drop their guard (id per op 0.549 -> 0.452 x CPython). Siblings: HF-803, HF-804, HF-805. |
 | HF-771 | The Python environment identity requires a locked wheel for every package on the active target (python_uv_lock_identity._locked_artifact), but uv itself installs the locked sdist when no wheel matches. cbor2 6.1.5 (dev group) publishes no macOS x86_64 wheel, so the development image refuses on Intel macOS: 'locked package cbor2 has no wheel for the active OS/arch/ABI'. Every sdist-only package on any target breaks the image the same way. | 152e2608bd (main 3e003d80a4): the locked artifact identity models uv's sdist fallback with a closed kind (wheel or sdist); schema v5. Live proof 2026-11-04 at 20217a58f1: the Intel Mac mini built cbor2 6.1.5 from its sdist, published its development image, passed toolchain admission and ran portability.queue.macos tests (run 20261105T050849Z-db8d67408b76ecf8fc77b3d77e646457). |
 | HF-768 | The public-source boundary is enforced nowhere. docs/ROOT_LAYOUT.md says the `public-source-boundary` pre-commit hook rejects tracked files under `logs/` and `tmp/`, but checkouts install only the `commit-msg` hook, and no static gate runs the pre-commit hooks. Nothing checks root entries against the contract's declared set. On 2026-11-04 HF-761 landed `logs/agents/lane-hf761-linux-identity/artifacts/design.md` on main (dc32eec00c), and HF-685's lane committed `artifacts/anatomy.md` and `artifacts/design.md` at the repository root; the integrator caught the second by hand. | tools/check_public_source_boundary.py runs in the always-run static gates of every landing (land --static-only included), and the public-source-boundary pre-commit hook runs the same tool. It refuses tracked files under logs/, tmp/, target/, build/, dist/ and node_modules/, raw benchmark logs, guard traces and machine-local settings, and any root entry outside its ROOT_ENTRIES set, which is now the one list docs/ROOT_LAYOUT.md points to. The change untracks the three leaked files: HF-761's lane design and two Wrangler/Miniflare caches tracked since 2026-03-28 (node_modules/.mf/cf.json holds request geolocation metadata). Git history still holds them; purging it means rewriting public main, an owner decision. Tests name each found leak; the gate fails on the old tree. Follow-up for review, not refused today: collab/, demos/ beside demo/, models/ (ONNX binaries) and root sitecustomize.py. |
 | HF-767 | `molt_dev.py lane start` takes its default base from `refs/molt/last-green`, and only a passing queue postsubmit advances that ref. No postsubmit has run since 2026-11-01 (383b51f486), and fast-path landings never advance it. A default lane start on 2026-11-04 therefore began 3 days behind main and failed provisioning (`src/molt/host_python.py` absent). Earlier lanes escaped only because the integrator passed `--base origin/main`. | lane start now bases a new lane on the fetched origin/main (or an explicit --base) and prints one line on how far main is past refs/molt/last-green, or that it is absent. Last green stays the postsubmit's delta base only. The default-to-last-green path and its absent-ref fallback are deleted. test_lane_start_bases_on_fetched_main_and_reports_last_green covers behind, current, absent and override; the old code fails its behind case. docs/design/observed_inputs.md states the rule. |
