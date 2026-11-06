@@ -1144,6 +1144,17 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             for anchor in anchors:
                 stores_after.setdefault(anchor, []).append(name)
         loads_after: dict[int, list[str]] = {}
+        # Emission publishes the resumed Python frame right after its label:
+        # operand loads, then FRAME_CONTEXT_SET. Reloads go after it, because a
+        # reload's home store can release the previous iteration's value and its
+        # finalizer must run in the resumed frame (HF-764's resume invariant).
+        frame_operand_kinds = {
+            FrontendKinds.CONST_NONE,
+            FrontendKinds.CONST,
+            FrontendKinds.LOAD_CLOSURE,
+            FrontendKinds.LOAD_VAR,
+            FrontendKinds.INDEX,
+        }
         for label_idx, names in label_spills.items():
             anchor = label_idx
             # A generator resume re-enters its try regions before any load.
@@ -1152,6 +1163,16 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 and ops[anchor + 1].kind == FrontendKinds.TRY_START
             ):
                 anchor += 1
+            publication = anchor + 1
+            while (
+                publication < len(ops) and ops[publication].kind in frame_operand_kinds
+            ):
+                publication += 1
+            if (
+                publication < len(ops)
+                and ops[publication].kind == FrontendKinds.FRAME_CONTEXT_SET
+            ):
+                anchor = publication
             loads_after.setdefault(anchor, []).extend(names)
 
         def slot_value(name: str) -> tuple[int, MoltValue]:
