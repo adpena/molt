@@ -150,9 +150,11 @@ DISTILL = (
 )
 
 MODEL_TIER = (
-    "MODEL AND CONCURRENCY: inherit the selected model and effort unless the operator or "
-    "AGENTS.md directs otherwise. Respect operator concurrency limits. No recursive delegation, "
-    "independent proof fanout or new integration lane without the parent assigning it."
+    "MODEL AND DELEGATION: inherit the selected model and effort unless the operator or "
+    "AGENTS.md directs otherwise. Never delegate: spawn no subagent, fork, Codex session or "
+    "other agent, and hand no part of the outcome to another worker. You own the whole "
+    "outcome; only the integrator dispatches. Open no independent proof fanout and no new "
+    "integration lane."
 )
 
 TRIALITY_WIRING = (
@@ -169,22 +171,19 @@ PREMISE_VERIFICATION = (
 
 DESIGN_REVIEW = (
     "DESIGN REVIEW (Elephant Goldfish Model): the egm plugin from "
-    "github.com/google/elephant-goldfish-model is the authority for the method; follow its "
-    "files, not a summary of them. Claude workers have it as egm@egm and read its "
-    "docs/claude.md first; Codex workers have it as the egm plugin and read docs/codex.md "
-    "first, spawning each reviewer with a fresh context (fork_context false). Before "
-    "implementation, write artifacts/design.md in your lane against the plugin's "
-    "resources/document_standards/feature-spec-standard.md: the measured problem, prior art, "
-    "the mechanism, its invariants, the test plan and the consumers it changes, meaning every "
-    "hand-written list of sibling modules (proof-plan authority inputs and globs, capture and "
-    "closure lists, fingerprint role tables), every test fake of a changed boundary or record, "
-    "every reader of a new or newly set environment variable, every registry and generated "
-    "projection, and any existing runner, cell or tool that already does the job. Then run the "
-    "plugin's egm-review skill with its uninterrupted preset (Stages 5 to 9 in order), passing "
-    "those consumer files as GoldfishContext, and settle every finding with egm-resolve as FIX "
-    "or CONTEST. Commit design.md and the review reports before code. After implementation run "
-    "egm-drift-report against the design. A review written after the code is not this review. "
-    "The integrator follows the same rule for load-bearing changes; a one-line fix needs none."
+    "github.com/google/elephant-goldfish-model is the authority for the method; read its files, "
+    "not a summary of them. A Goldfish review needs fresh-context reviewer agents, and workers "
+    "spawn none, so the integrator runs it. Before implementation, write artifacts/design.md in "
+    "your lane against the plugin's resources/document_standards/feature-spec-standard.md: the "
+    "measured problem, prior art, the mechanism, its invariants, the test plan and the consumers "
+    "it changes, meaning every hand-written list of sibling modules (proof-plan authority inputs "
+    "and globs, capture and closure lists, fingerprint role tables), every test fake of a changed "
+    "boundary or record, every reader of a new or newly set environment variable, every registry "
+    "and generated projection, and any existing runner, cell or tool that already does the job. "
+    "List those consumer files in a GoldfishContext section. Commit design.md, report, and stop: "
+    "the integrator runs egm-review and egm-resolve on it and returns the settled findings as a "
+    "dated Correction in this brief, and you implement against that. A one-line fix needs no "
+    "design.md. After implementation the integrator runs egm-drift-report against the design."
 )
 
 WHOLE_CRATE_TESTS = (
@@ -247,7 +246,7 @@ KEY_PHRASES: dict[str, str] = {
     "GIT_CUSTODY": "NEVER `git add -A`",
     "BUILD_ENV": "never change source, seal, worktree, or toolchain custody",
     "DISTILL": "advances the assigned outcome",
-    "MODEL_TIER": "Respect operator concurrency limits",
+    "MODEL_TIER": "Never delegate",
     "TRIALITY_WIRING": "all three legs",
     "PREMISE_VERIFICATION": "before your first Write",
     "DESIGN_REVIEW": "Elephant Goldfish",
