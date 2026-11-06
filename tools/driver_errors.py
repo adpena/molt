@@ -37,7 +37,16 @@ class CandidateFailure(DriverError):
 
 
 class GateFailure(CandidateFailure):
-    """A selected gate failed on the candidate."""
+    """A selected gate failed on the candidate.
+
+    ``clean_closure`` is true only when every other gate of the block either
+    passed or was cancelled with a closed tree and no runner fault: then the
+    landing may rerun the failed gate alone once (molt_dev_gates).
+    """
+
+    clean_closure: bool = False
+    # The failed gate's display form; the landing reruns exactly that gate.
+    shown: tuple[str, ...] = ()
 
 
 class RebaseConflict(DriverError):

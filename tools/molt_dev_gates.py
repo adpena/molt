@@ -87,6 +87,20 @@ class GateCancellation(DriverError):
         self.unresolved = unresolved
 
 
+class GateMemoryPressure(DriverError):
+    """The guard stopped a gate at its memory share, and closed its tree.
+
+    The share is the free memory divided among the gates running at once, so
+    the same gate can pass alone. The landing reruns the stopped gates alone
+    once before it fails (2026-11-06: one `molt-wasm-host` needed 9.8-11.0 GB,
+    above a 7.3-8.3 GB share, on main and on the batch). ``shown`` names them.
+    """
+
+    def __init__(self, message: str, shown: tuple[str, ...]) -> None:
+        super().__init__(message)
+        self.shown = shown
+
+
 class Gate(Protocol):
     @property
     def command(self) -> str | tuple[str, ...]: ...
@@ -616,10 +630,66 @@ def run_selected_gates(
         _run_serial_gate(ordinal, gate, runtime, gate_seconds)
     _check_cancellation(runtime)
     if heavy:
+        _run_heavy_gates(heavy, runtime, gate_seconds, host_limit)
+    _check_cancellation(runtime)
+
+
+def _run_heavy_gates(
+    heavy: list[tuple[int, Gate]],
+    runtime: GateRuntime,
+    gate_seconds: list[tuple[float, str]],
+    host_limit: Callable[[], int],
+) -> None:
+    """Run the heavy block; on a gate failure or a memory stop, rerun the
+    failed gates alone once, then the gates the stop cancelled.
+
+    A gate that passes alone failed on the load beside it or on a flake, not on
+    the candidate (Chromium's retry rule; Meta's probabilistic flakiness score);
+    a second failure is the candidate's and raises at once. Custody, closure,
+    cancellation and runner faults stop at once, as before: a retry must never
+    hide them, so a gate failure retries only with a clean closure.
+    """
+    try:
         _run_executor_block(
             heavy, runtime, gate_seconds, host_limit(), receipt_kind="heavy"
         )
-    _check_cancellation(runtime)
+        return
+    except (GateFailure, GateMemoryPressure) as first:
+        if runtime.cancelled() or (
+            isinstance(first, GateFailure) and not first.clean_closure
+        ):
+            raise
+        failed = [
+            (ordinal, gate)
+            for ordinal, gate in heavy
+            if display(gate.command) in first.shown
+        ]
+        if not failed:
+            raise
+        runtime.say(
+            f"    retry: {len(failed)} failed heavy gate(s) alone after: "
+            f"{str(first).splitlines()[0]}"
+        )
+        try:
+            _run_executor_block(
+                failed, runtime, gate_seconds, 1, receipt_kind="heavy-retry"
+            )
+        except BaseException as second:
+            second.add_note(f"first attempt, beside other gates: {first}")
+            raise
+        runtime.say(
+            "    retry passed: the first failure was load or a flake, not the "
+            f"candidate: {str(first).splitlines()[0]}"
+        )
+        rest = [
+            (ordinal, gate)
+            for ordinal, gate in heavy
+            if gate not in runtime.passed and (ordinal, gate) not in failed
+        ]
+        if rest:
+            _run_executor_block(
+                rest, runtime, gate_seconds, host_limit(), receipt_kind="heavy-rest"
+            )
 
 
 def _run_serial_gate(
@@ -1039,6 +1109,8 @@ def _run_executor_block(
 
     runner_errors: list[BaseException] = []
     control_failures: list[str] = []
+    # Control failures that are only the guard's memory stop with a closed tree.
+    memory_stops: list[str] = []
     # Cancelled gates whose guard closure stayed indeterminate.
     unresolved: list[str] = []
     for command in commands:
@@ -1090,6 +1162,12 @@ def _run_executor_block(
         if status == "failure" and outcome.returncode != 0:
             if record.get("failure_scope") == "global":
                 control_failures.append(f"at {shown}: {record.get('failure_reason')}")
+                guard = record.get("guard_outcome") or {}
+                if (
+                    guard.get("memory_violation") is not None
+                    and outcome.guard_result.descendants_closed is True
+                ):
+                    memory_stops.append(shown)
             continue
         if status != "success":
             control_failures.append(
@@ -1142,6 +1220,8 @@ def _run_executor_block(
             failure.add_note(evidence)
         if runner_errors:
             failure.guard_errors = tuple(runner_errors)
+        failure.clean_closure = not (unresolved or control_failures or runner_errors)
+        failure.shown = (display(command.gate.command),)
         raise failure
     if (
         unresolved
@@ -1159,6 +1239,10 @@ def _run_executor_block(
             error.guard_errors = tuple(runner_errors)
         raise error
     if control_failures:
+        if len(memory_stops) == len(control_failures) and not unresolved:
+            raise GateMemoryPressure(
+                stopped("; ".join(control_failures)).args[0], tuple(memory_stops)
+            )
         raise stopped("; ".join(control_failures))
     if receipt.get("status") != "success":
         raise stopped("without a classified gate failure")
