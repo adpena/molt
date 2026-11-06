@@ -1377,9 +1377,14 @@ def test_sync_try_except_uses_split_label_valued_handler_entry() -> None:
     )
 
     raise_idx = next(i for i, op in enumerate(func_ops) if op.get("kind") == "raise")
-    next_control = next(
-        op for op in func_ops[raise_idx + 1 :] if op.get("kind") != "line"
-    )
+    controls = (op for op in func_ops[raise_idx + 1 :] if op.get("kind") != "line")
+    # The pending exception is observed on the unwind edge before entering
+    # the shared handler; that observation is not an ordinary fallthrough.
+    observation = next(controls)
+    assert observation["kind"] == "check_exception"
+    assert observation["exception_edge"] == "unwind"
+    assert observation["value"] == handler_label
+    next_control = next(controls)
     assert next_control["kind"] == "jump"
     assert next_control["value"] == handler_label
 
