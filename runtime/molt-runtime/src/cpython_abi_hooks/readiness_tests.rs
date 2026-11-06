@@ -38,7 +38,7 @@ fn c_type_exposure_failure_keeps_hooks_live_and_can_retry() {
         with_gil(|py| unsafe {
             let runtime = crate::runtime_state(&py);
             assert!(
-                (*(&raw mut molt_cpython_abi::abi_types::PyExc_ZeroDivisionError))
+                molt_cpython_abi::abi_types::PyExc_ZeroDivisionError
                     .tp_dict
                     .is_null()
             );

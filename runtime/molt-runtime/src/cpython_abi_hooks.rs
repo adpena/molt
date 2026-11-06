@@ -8459,7 +8459,7 @@ mod tests {
                 );
                 unsafe {
                     assert!(
-                        (*(&raw mut molt_cpython_abi::abi_types::PyExc_ZeroDivisionError))
+                        molt_cpython_abi::abi_types::PyExc_ZeroDivisionError
                             .tp_dict
                             .is_null()
                     );
