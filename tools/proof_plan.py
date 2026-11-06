@@ -1781,6 +1781,11 @@ def excluded_backends(root: Path = ROOT) -> frozenset[str]:
     return frozenset(str(item["backend"]) for item in document["excluded_backend"])
 
 
+def excluded_backend_crates(excluded: frozenset[str]) -> frozenset[str]:
+    """The Cargo package of each excluded backend, `molt-backend-<backend>`."""
+    return frozenset(f"molt-backend-{name}" for name in excluded)
+
+
 def experimental_backend_selection(
     argv: Sequence[object], cwd: object, excluded: frozenset[str]
 ) -> str | None:
@@ -1793,7 +1798,7 @@ def experimental_backend_selection(
     crate. A whole-workspace lint with those features off compiles their code
     but runs none of it, and stays.
     """
-    crates = {f"molt-backend-{name}" for name in excluded}
+    crates = excluded_backend_crates(excluded)
     features = {f"{name}-backend" for name in excluded}
     tokens = [str(token) for token in argv]
     for index, token in enumerate(tokens):
