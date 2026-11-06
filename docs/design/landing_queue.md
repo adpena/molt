@@ -1313,8 +1313,11 @@ For a timed-out direct Python child, enable CPython's `-X faulthandler` and use
 its fatal SIGABRT dump before the existing tree termination. This is a timeout
 termination signal, not a harmless diagnostic request. Send only to the owned
 root under the sole reaper's signal lock; do not signal arbitrary descendants.
-An exec, disabled handler or interpreter not yet initialized can leave the dump
-unavailable. Windows has no POSIX signal dump. Output tails stay attached to the
+The flag is part of the launch: as with `subprocess.run`, the result's `args`,
+a timeout's or failure's `cmd` and every receipt's executed argv name the
+launched argv, while a repro command names the request, because the guard adds
+the flag again. An exec, disabled handler or interpreter not yet initialized can
+leave the dump unavailable. Windows has no POSIX signal dump. Output tails stay attached to the
 timeout exception and its diagnostic; incident profiles follow the run's durable
 evidence directory, outside reclaimable scratch. Never let diagnostic collection
 block the guard's independent deadline backstop.

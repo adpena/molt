@@ -8538,7 +8538,11 @@ def test_executor_cancellation_requires_exact_terminal_closure(
         "launch_id": "a" * 32,
         "guard_pid": 410,
         "command": list(command.argv),
-        "child_process": {"pid": 411, "started_at": "fixture-birth"},
+        "child_process": {
+            "pid": 411,
+            "started_at": "fixture-birth",
+            "command": list(command.argv),
+        },
     }
     terminal = {
         **startup,

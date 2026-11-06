@@ -146,8 +146,10 @@ def raise_for_guard_outcome(
                 "guarded subprocess reported a timeout without a requested "
                 "timeout; timeout custody is inconsistent"
             )
+        # As subprocess.run does, name the launched argv (``result.args``),
+        # which carries the guard's ``-X faulthandler`` for a timed Python child.
         error = GuardTimeoutExpired(
-            command,
+            result.args,
             timeout,
             output=result.stdout,
             stderr=result.stderr,
@@ -411,7 +413,7 @@ def run_completed_command(
     if check and result.returncode != 0:
         error = subprocess.CalledProcessError(
             result.returncode,
-            command,
+            result.args,
             output=result.stdout,
             stderr=result.stderr,
         )

@@ -692,7 +692,15 @@ def test_native_failure_retains_real_child_bytes_and_unique_invocations(
         assert result["returncode"] == result["child_returncode"] == 7
         assert result["descendants_closed"] is True
         assert result["timed_out"] is False
-        assert result["command"] == command
+        # The request stays the run's command; the result records the launched
+        # argv, where the timed Python stand-in carries the guard's
+        # -X faulthandler (HF-779).
+        assert manifest["run"]["command"] == command
+        assert (
+            result["command"]
+            == result["child_process"]["command"]
+            == [command[0], "-X", "faulthandler", *command[1:]]
+        )
         assert (root / result["stdout"]["path"]).read_bytes() == b"out\x00\xff"
         assert (root / result["child_stderr"]["path"]).read_bytes() == b"err\xfe"
         assert manifest["build"]["cwd"] == str(tmp_path)

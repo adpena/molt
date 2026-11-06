@@ -5492,7 +5492,8 @@ def _run_command(
     record = {
         **proof_receipts.command_record(command),
         "launch_argv": list(executed_argv),
-        "executed_argv": metrics.get("command") if metrics_valid else None,
+        # A valid record's child_process is the startup's launch record.
+        "executed_argv": metrics["child_process"]["command"] if metrics_valid else None,
         "pytest_workers": pytest_workers,
         "child_cpu_seconds": metrics.get("child_cpu_seconds")
         if metrics_valid

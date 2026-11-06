@@ -116,7 +116,9 @@ def main(argv: list[str] | None = None) -> int:
                 harness_memory_guard.memory_guard._cli_contract.INTERNAL_LAUNCH_ID_ENV
             ),
             "guard_pid": os.getpid(),
-            "command": list(result.args),
+            # The request binds this record to its startup custody; the
+            # launched argv, which may add -X faulthandler, is child_process's.
+            "command": list(command),
             "child_process": harness_memory_guard.memory_guard.guarded_child_process_payload(
                 result.child_process
             ),

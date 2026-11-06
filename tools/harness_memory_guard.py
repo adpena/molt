@@ -100,6 +100,17 @@ def canonical_interpreter(executable: str) -> str:
     return str(abs_path)
 
 
+def _launched_argv(
+    command: Sequence[str], child: memory_guard.GuardedChildProcess | None
+) -> list[str]:
+    """Return the argv the guard launched, as ``CompletedProcess.args`` reports it.
+
+    It can differ from the request: a timed Python child runs under
+    ``-X faulthandler`` (HF-779). Without a launched child it is the request.
+    """
+    return list(command if child is None else child.command)
+
+
 class GuardedCompletedProcess[Output: str | bytes](subprocess.CompletedProcess[Output]):
     def __init__(
         self,
@@ -1408,7 +1419,7 @@ def guarded_completed_process(
             text=text,
         )
     return GuardedCompletedProcess(
-        list(command),
+        _launched_argv(command, guarded.child_process),
         guarded.returncode,
         guarded.stdout,
         stderr,
@@ -1679,7 +1690,7 @@ def guarded_completed_process_to_tempfiles(
             ),
         )
     return GuardedCompletedProcess(
-        list(command),
+        _launched_argv(command, guarded.child_process),
         guarded.returncode,
         stdout,
         stderr,
