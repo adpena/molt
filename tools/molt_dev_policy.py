@@ -914,7 +914,11 @@ class GateConfig:
         # Rule-owned pytest commands retain their exact declared invocation.
         filtered: dict[
             tuple[
-                tuple[bool, bool], tuple[str, ...], tuple[str, ...], CargoTargetAccess
+                tuple[bool, bool],
+                tuple[str, ...],
+                bool,
+                tuple[str, ...],
+                CargoTargetAccess,
             ],
             list[str],
         ] = {}
@@ -923,14 +927,26 @@ class GateConfig:
             access = CargoTargetAccess.resolve(envelope.toolchains)
             path = target.partition("::")[0]
             priority = (path not in recent_paths, path not in touched)
-            key = (priority, envelope.select, envelope.toolchains, access)
+            key = (
+                priority,
+                envelope.select,
+                envelope.skip_slow,
+                envelope.toolchains,
+                access,
+            )
             filtered.setdefault(key, []).append(target)
-        for (_, select, cohort_tools, cohort_access), targets in sorted(
+        for (_, select, skip_slow, cohort_tools, cohort_access), targets in sorted(
             filtered.items(), key=lambda item: item[0][0]
         ):
             match mode:
                 case LandingMode.PRESUBMIT:
-                    options = (*select, "--maxfail=1")
+                    # tests/conftest.py skips `slow` tests under --skip-slow; a
+                    # skip, unlike -m "not slow", never empties the session.
+                    options = (
+                        *select,
+                        "--maxfail=1",
+                        *(("--skip-slow",) if skip_slow else ()),
+                    )
                 case LandingMode.POSTSUBMIT:
                     options = select
                 case _:

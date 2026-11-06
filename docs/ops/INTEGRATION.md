@@ -651,12 +651,16 @@ the commit.
 The approved whole-presubmit target is 600 seconds at p90, reached by selecting
 actual readers rather than increasing this bound. Recent postsubmit failures
 prioritize those readers; they do not add unrelated tests to a lane's presubmit.
-The approved selection policy puts property, mutation, e2e, Cloudflare and
-image-building provisioning consumers in postsubmit unless the change reaches
-their direct inputs. The static graph can still over-select through shared
-test-helper data roots or pytest harness edits; that precision work and
-whole-presubmit p90 qualification remain pending. Per-gate wall/child CPU and
-executor duration are retained in the existing receipts; one run is not p90 proof.
+A presubmit test file runs whole when the lane changes it or a source it
+imports or runs; a file reached only through its harness or data reads runs
+with `--skip-slow`, so its `slow` cases (long toolchain paths, the provisioning
+cases that publish real Python images) wait for postsubmit, which keeps every
+owner's selector. The typed `flaky(OpenFindingId)` marker is the only
+expected-failure form; `git grep -n "flaky(" -- tests` audits it
+([design](../design/landing_queue.md), section 9, part 10). Harness- and
+data-only readers still run their fast cases, so whole-presubmit p90
+qualification remains pending. Per-gate wall/child CPU and executor duration
+are retained in the existing receipts; one run is not p90 proof.
 
 Immediately before it writes the request (after the repair and the precheck,
 and also with `--no-precheck`), `land` classifies the lane from Git. A ledger

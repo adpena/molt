@@ -11554,11 +11554,11 @@ def test_selected_pytest_nodes_collect_before_build_and_still_execute(
             else "not found"
         ) in output
     else:
-        assert observed == [
-            cohort.collection_command,
-            "mock-rust-build",
-            cohort.command,
-        ]
+        assert observed[:2] == [cohort.collection_command, "mock-rust-build"]
+        # The cohort runs as selected, with the executor's explicit worker count.
+        (launched,) = observed[2:]
+        assert launched[:-2] == tuple(cohort.command)
+        assert launched[-2] == "-n" and int(launched[-1]) > 0
         assert executed.read_text(encoding="utf-8") == "executed"
         assert len(timings) == len(gates)
         assert any(event == "collection_finished" for event, _ in progress)

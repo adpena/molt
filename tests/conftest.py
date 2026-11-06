@@ -782,6 +782,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
         help="execute flaky(OpenFindingId) tests with normal pass/fail semantics",
     )
+    parser.addoption(
+        "--skip-slow",
+        action="store_true",
+        default=False,
+        help="landing presubmit: skip slow tests; postsubmit and release runs "
+        "execute them (docs/design/landing_queue.md, section 9, part 10)",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -829,6 +836,10 @@ def pytest_collection_modifyitems(
                         reason=f"{flakes[0].args[0]} (flaky; postsubmit --run-flaky)"
                     )
                 )
+        if config.getoption("skip_slow") and item.get_closest_marker("slow"):
+            # The landing reached this test only through its harness or data;
+            # postsubmit and release runs execute its slow cases.
+            item.add_marker(pytest.mark.skip(reason="slow (postsubmit runs it)"))
         marks = tuple(item.iter_markers(name=findings.MARK_NAME))
         if not marks:
             continue

@@ -706,9 +706,8 @@ Steps:
 6. **Select** with `select_landing_gates(H, base=B)`. The affected set is
    every selected gate with `gate.precheck`: the static gates, and the try run
    (direct-reader pytest cohorts and `precheck = true` rule gates, which now
-   include `rust-test-changed`, 4.2). Every other selected gate is left to
-   the queue batch (`batch_only`) and named in the receipt and the commit
-   message.
+   include `rust-test-changed`, 4.2). Every other selected gate is **waived**
+   to the queue batch and named in the receipt and the commit message.
    The try run used to drop a direct reader that a matched rule's pytest list
    also ran, leaving it to the batch: a lane that changed `tools/molt_dev.py`
    never ran `tests/test_molt_dev.py` before the queue. In presubmit a rule
@@ -749,7 +748,7 @@ Steps:
 Idempotence: a re-run whose `HEAD` is a commit listed by the receipt for
 `(T, B)` with `B` still current goes straight to step 10. Same tree and same
 base, so no result crosses inputs. `--dry-run` fetches, prints the merge it
-would make and the affected and batch-only sets, and changes nothing.
+would make and the affected and waived sets, and changes nothing.
 
 Lane retirement after a fast landing stays the integrator's `lane retire
 <slug>` (the lane is landed by ancestry); `land --fast` prints the command.
@@ -759,8 +758,7 @@ or frontend lane well under the 90 min ceiling on a warm target. The proof
 measures three recent lanes against their retained precheck receipts. The
 receipt's evidence is censored (the budget cut the cohort at 599 s), so the
 numbers come from the measurement, not from it. A miss is reported with its
-dominant gate. A landing has no waiver flag: the in-tree
-`flaky(OpenFindingId)` marker is the only waiver (section 10).
+dominant gate; there is no waiver flag (section 10).
 
 #### 4.2 Changed-crate lib tests: `tools/check_changed_crate_tests.py`
 
@@ -894,14 +892,13 @@ the push check.
   Retention: receipts older than 30 days retire when a receipt is written
   (the queue's `RESULT_DAYS`); a pruned receipt makes the hook refuse with
   the `land --fast` command, which re-tests.
-- **Schema** `molt.landing-receipt.v2` (section 10.6): `{schema, status:
-  "passed", mode: "fast"|"queue", base, tree, tested_commit, commits,
-  controller, started_at, finished_at, selection_sha256, gates: [{phase,
-  command, seconds, counts, log, flaky_skipped}], batch_only: [command],
-  waivers: [{node, finding}], unverified: [text], narrowed: [text]}`.
-  `selection_sha256` hashes the selected gate commands and `batch_only`, so a
-  hand-written receipt that matches no selection is detectable. `counts` is
-  `{passed, failed, ignored}` or null.
+- **Schema** `molt.landing-receipt.v1`: `{schema, status: "passed", mode:
+  "fast"|"queue", base, tree, tested_commit, commits, controller,
+  started_at, finished_at, selection_sha256, gates: [{phase, command, seconds,
+  counts, log}], waived: [command], unverified: [text], narrowed: [text]}`.
+  `selection_sha256` hashes the selected gate commands, so a hand-written
+  receipt that matches no selection is detectable. `counts` is `{passed, failed,
+  ignored}` or null.
 - **Counts** come from each gate's `gate-NNN.stdout.log`: libtest `test
   result:` lines summed, or the pytest terminal summary (`N passed, M skipped
   …`); null when neither appears (static gates) or when gates ran on the farm
@@ -909,8 +906,8 @@ the push check.
 - Written only after every selected gate passed.
 - **Writers:** `land --fast` (mode `fast`) and `integrate` (mode `queue`,
   `base` = its captured upstream, `commits` = its selected commit, written
-  after gates and before its push; it runs every selected gate, so
-  `batch_only` is empty). `integrate` keeps its plain fast-forward push; the hook checks the
+  after gates and before its push; it runs every selected gate, so `waived` is
+  empty). `integrate` keeps its plain fast-forward push; the hook checks the
   remote value it replaces.
 - **Trust:** a receipt is an unsigned local file. It guards against mistakes,
   not against an adversary.
@@ -925,8 +922,7 @@ Landed by molt_dev.py land --fast: tree <T> passed on base <B> (tested commit <H
 Static gates: <n> passed.
 Python readers: <k> pytest cohorts, <p> passed, <s> skipped.        (omitted when k = 0)
 Rust lib tests: <crate> [<cell>]: <p> passed; ...                   (omitted when none)
-Left to the queue batch: <command>; ...                             ("none" when empty)
-Waived (flaky markers; postsubmit runs them): <node> (HF-n); ...    ("none" when empty)
+Waived to the queue batch: <command>; ...                           ("none" when empty)
 Unverified here: <text>; ...                                        (omitted when empty)
 Receipt: landing-receipts/<T>.<B>.json
 ```
@@ -1085,254 +1081,55 @@ reviewers (8 blockers, 20 majors in total); round 2, design and
 implementation-readiness reviewers (3 blockers, 10 majors). Every blocker and
 major was resolved in the text above or recorded under "Out of scope".
 
-### 10. Typed waivers: the `flaky(OpenFindingId)` marker (HF-623)
+### 10. Expected failures and slow cases in the landing presubmit (HF-623)
 
-Owner, 2026-11-04: "land yourself. With a waiver for expensive gates or other
-fragile, broken things." Owner, 2026-11-05: "But I'm wary of you abusing the
-waiver." and "A lot of that seems like it's not what leading world-class AOT
-compiler projects would do." The waiver is therefore an expectation in the
-tree, reviewed like code and owned by an open finding. There is no
-per-landing command-line bypass, and the tool enforces every guardrail below.
+Owner, 2026-11-05: "Do not turn every bug into a new registry, receipt
+schema, orchestrator, or policy gate." and "Before landing, complete the
+affected consumer migration and run the focused checks required to trust
+that change." The landing presubmit runs the static gates and the focused
+readers of the changed authorities, within about 600 s; heavy suites run in
+postsubmit and at release milestones.
 
-#### 10.1 Problem, measured on 2026-11-05
-
-- Ten `land --fast` attempts failed after noon. Each try run ended on a
-  load-fragile test: `tests/test_dx_sccache_wrapper.py` (Gatekeeper's serial
-  scan of fresh executables), `tests/test_molt_accel_client.py` (HF-545, a
-  worker deadline on a saturated host) and `tests/test_wasm_async_protocol.py`
-  (cold discovery over 20 minutes). Eight lanes with 163 commits waited.
-- The persistent `flaky(OpenFindingId)` marker (the HF-623 section after this
-  one) already skipped a marked test in presubmit and ran it in postsubmit.
-  It had no pin to its row, no bound on new markers, no listing in the
-  receipt or the commit message, no audit and no postsubmit report.
-- No tool could list the markers in the tree without collecting the suite.
-- The receipt and the commit message already used "waived" for a different
-  fact: the selected gates that `land --fast` leaves to the queue batch
-  (step 6). One word must keep one meaning.
-
-This change marks no test. The three fragile tests above get D1 deadline
-fixes in HF-776's lane; the integrator decides about markers after it lands.
-
-#### 10.2 Prior art
-
-Leading projects keep expected failures in the tree, tied to a tracking
-issue: LLVM lit `XFAIL:` and `UNSUPPORTED:` lines, rustc compiletest
-`//@ ignore-*` directives, `#[ignore = "reason"]` tests that cargo-nextest runs
-with `--run-ignored`, and Chromium
+**Expected failures.** The typed `flaky(OpenFindingId)` marker
+(`tests/findings/__init__.py`) is the only expected-failure form, as LLVM lit
+`XFAIL:` lines, rustc compiletest `//@ ignore-*` directives and Chromium
 [TestExpectations](https://chromium.googlesource.com/chromium/src/+/HEAD/docs/testing/web_test_expectations.md)
-lines that each name a bug. None of them offers a per-landing bypass of a
-selected test. Chromium's CQ footers such as `No-Try: true` exist, and its
-[documentation](https://chromium.googlesource.com/chromium/src/+/HEAD/docs/infra/cq.md)
-limits them to reverts that green the tree. Bazel's
-[`flaky = True`](https://bazel.build/reference/be/common-definitions#test.flaky)
-retries up to three times; D1 rejected a retry ladder, so Molt skips the
-marked test in presubmit and runs it once in postsubmit. Molt's owner is a
-closed `Literal` generated from the ledger: a closed row fails collection and
-the check below, and `ty` rejects it where `ty` runs (`src`,
-`tests/findings`).
+keep theirs in the tree, reviewed like code and tied to a tracking issue.
+Collection refuses a marker whose finding is not open, so the marker expires
+with its row. Presubmit skips a marked test; postsubmit's `--run-flaky` runs
+it with normal pass and fail. There is no per-landing waiver flag, no waiver
+receipt field and no audit tool: the marker is in the tree, so
+`git grep -n "flaky(" -- tests` is the audit. A per-landing `--waive` design
+was reviewed twice and retired by the owner before any code landed.
 
-#### 10.3 One marker, two readers that agree
+**Slow cases.** The `slow` marker (pyproject.toml) already names the tests
+that exercise long toolchain paths, and the CI fast cells deselect them.
+Presubmit runs a selected test file whole when the lane changes that file or
+a source the file itself imports or runs (`DependencyGraph.imports_change`:
+the file's module and function imports and the programs it names). A file
+the change reaches only through its harness (package inits, pytest plugins,
+conftest scopes) or its data reads runs its fast cases: its cohort passes
+`--skip-slow`, and `tests/conftest.py` skips its `slow` cases. A skip, not
+`-m "not slow"`, keeps a cohort whose cases are all slow from ending with
+pytest's exit status 5. Postsubmit keeps each owner's selector and runs every
+slow case. The provisioning cases that publish real Python images
+(`PUBLISHES_IMAGES` in `tests/test_checkout_provisioning.py`, 22-214 s per
+case in landing gate logs) are now `slow`; `repository.docs-tests` declares no
+selector, so CI coverage is unchanged.
 
-The `@flaky("HF-n")` mark (`tests/findings/__init__.py`, beside `finding()`)
-is the only waiver. Two readers see it:
+Measured on this host: over the last 36 first-parent commits on `main`, the
+presubmit graph selected a median of 3.5 and a p90 of 101 test files (914 at
+most, for `src/molt/cli/__init__.py`); 2.5 and 22 of them (89 at most) import
+the change. A marshal change selects 90 files and runs one whole; the
+image-publishing provisioning cases now skip there and still run when
+`src/molt/checkout_provisioning.py` changes.
 
-- **pytest**, at collection, through `tests/conftest.py` (10.4);
-- **the static projection** `findings.flaky_markers(path, source)`, an `ast`
-  reader, for the check, the new-marker count and the audit (10.5, 10.7).
-  The count reads base-tree blobs, which pytest cannot collect, so the
-  projection is not a duplicate of collection.
-
-The projection accepts exactly two forms, each naming one node:
-
-- `@flaky("HF-n")` (or `@findings.flaky(...)`) on a test function or a test
-  method: node `path::name` or `path::Class::name`. On a parametrized
-  function it marks every case `name[...]`.
-- `pytest.param(..., marks=flaky("HF-n"), id="<ASCII literal>")` (alone or in
-  a list or tuple of marks) in the only `parametrize` of a test function:
-  node `path::name[<id>]`.
-
-A non-literal finding, a marked case without a literal ASCII id, a marked
-case under a second `parametrize`, and a `@pytest.mark.flaky` decorator are
-projection problems that the check reports. Markers live only in files
-pytest collects by name (`test_*.py`, `*_test.py`, pytest's default; the
-repository sets no `python_files`). The scan reads the 1,018 such files
-under `tests/` in 143 ms on this host and parses only files that spell
-`flaky(`.
-
-Collection enforces agreement: every item with a `flaky` mark must carry it
-as its own marker (not a class or module `pytestmark`), live in a file with
-a collected name, and be a node the projection of its file names. An alias
-(`q = flaky(...)`, `@q`) fails the last rule. So the check, the count and
-the audit see every marker pytest applies.
-
-#### 10.4 Pytest consumer: `tests/conftest.py`
-
-`pytest_collection_modifyitems` checks each marked item once: exactly one
-`flaky` mark with one argument; an open finding (`findings.finding_problem`,
-the generated authority); no `finding` or `xfail` mark; then the agreement
-rules (10.3). A failed check is a usage error. Then:
-
-- the item records `user_properties` `("flaky", {"node", "finding"})`
-  (`findings.flaky_property`);
-- without `--run-flaky` it is skipped with the reason `HF-n (flaky;
-  postsubmit --run-flaky)`. A skip, rather than a removal, keeps the row in
-  the gate log;
-- with `--run-flaky` (postsubmit) it runs with normal pass and fail.
-
-Every pytest gate a landing or postsubmit runs writes xunit1 JUnit beside
-its log (`molt_dev_gates._pytest_report_command`; before this change only
-postsubmit did). pytest writes `user_properties` per testcase, and xdist
-replays worker reports in the controller with them. `findings.read_flaky_junit`
-is the one reader: each marked testcase, `failed` when any phase failed or
-errored, else `skipped` or `passed`.
-
-#### 10.5 Guardrails
-
-1. **Open, and the row names the test.** `tools/finding_coverage.py --check`,
-   already a static `always` gate (never skipped) and a CI cell, checks every
-   marker: its finding is in `OPEN_FINDING_IDS`, and the checkout's ledger
-   (`finding_status.project`) has that key open with a row whose text
-   (`text.splitlines()[row.line - 1]`) contains the node id without its
-   parameter id, `<file>::<name>` (`FlakyMarker.pin`), with no name character
-   or `[` after it and no path character before it. A bare test name is not
-   a pin: `test_roundtrip` would name every such test. Finding-coverage
-   citations cannot name a marked test: each cites an expected failure, and
-   10.4 refuses a `flaky` test with a `finding` or `xfail` mark.
-2. **It expires.** When the row closes, the generated authority and the
-   ledger projection both drop it, so the check fails and collection fails.
-3. **At most two new markers per landing, each pinned on the base.**
-   `precheck_landing`, which `land --precheck-only`, `land` and `land --fast`
-   all run, compares the landing's changed test files on its base and its
-   head (`check_new_flaky_markers`). A (node, finding) pair the base lacks is
-   new, so a marker that moves to another node or finding counts. More than
-   two refuses the landing. Each new marker's row must be open and name the
-   test in the base's ledger, so a landing cannot write the row that pins
-   its own marker. The count is not an `always` gate: postsubmit binds that
-   gate's base to last green, so several landings would add up and a
-   healthy main would turn red.
-4. **No unreadable marker.** Every projection problem fails the check.
-
-#### 10.6 Receipt, message, hook
-
-Receipt schema `molt.landing-receipt.v2`:
-
-- `batch_only` replaces v1 `waived`: the selected gates `land --fast` leaves
-  to the queue batch. `selection_sha256` hashes the gates and `batch_only`.
-- Each gate record gains `flaky_skipped`: `null` for a gate that is not a
-  pytest session, else the marked tests its JUnit reports as skipped. A
-  pytest gate without its JUnit report fails the receipt: its skips are
-  unknown, and no receipt means no landing.
-- `waivers: [{node, finding}]` is their union, ordered by node: every marked
-  test the run skipped, with its row.
-
-The message (I6) renames one line and adds one:
-
-```
-Left to the queue batch: <command>; ...              ("none" when empty)
-Waived (flaky markers; postsubmit runs them): <node> (HF-n); ...
-                                                     ("none" when empty)
-```
-
-`read_receipt` refuses v1, so an unpublished landing with a v1 receipt
-re-tests, as a pruned receipt does. The pre-push hook runs the pushing
-checkout's `tools/landing_receipt.py`, and the pinned controller writes the
-receipt, so this lane lands with `--candidate-controller`, as 4.1's bootstrap
-did; afterwards main's controller and every merged lane read v2. The hook's
-rule is unchanged: a receipt that lists the commit admits it.
-
-`integrate` (the queue path) writes a v2 receipt whose gates carry no JUnit
-path, so their `flaky_skipped` is `null` and its `waivers` are empty, and it
-projects no message. The listing of I7 holds for `land --fast`, the
-integrator's push.
-
-#### 10.7 Postsubmit report and audit
-
-- Postsubmit passes `--run-flaky`, so a marked test it selects runs with
-  normal semantics, and a failure keeps the run `red`. The postsubmit result
-  gains `flaky: [{node, finding, outcome}]` from its gates' JUnit. The field
-  is additive; `postsubmit_results` reads `schema`, `status`, `commit` and
-  `finished_at`, so every record stays readable.
-- A marked test that passes is printed as a candidate to close its row and
-  remove its marker. One pass of a flake is weak evidence, so it is a
-  report, never an automatic change.
-- `python -B tools/finding_coverage.py --flaky` lists every marker in the
-  tree: node, finding, the row's state in the checkout's ledger, and the
-  newest local postsubmit outcome ("no local record" when this host has
-  none).
-
-#### 10.8 Invariants
-
-- **I7.** Every test that a landing skips for a waiver carries one
-  `flaky(OpenFindingId)` mark that the static projection names; a
-  `land --fast` receipt and its message list it with its finding.
-- **I8.** A marker skips one node, never a gate, a cohort, the try run or
-  a static gate.
-- **I9.** A marker's row is open and its text names `<file>::<name>`.
-- **I10.** A landing that runs the precheck adds at most two markers, each
-  pinned on its base.
-
-#### 10.9 Consumers, costs, tests and limits
-
-| Path | Change |
-| --- | --- |
-| `tests/findings/__init__.py` | `flaky_markers`, `FlakyMarker`, the collected-name rule, `flaky_property`, `read_flaky_junit` |
-| `tests/conftest.py` | agreement rules, the property |
-| `tools/finding_coverage.py` | marker checks, `new_flaky_markers`, `landing_flaky_problems`, `--flaky` audit |
-| `tools/molt_dev_precheck.py` | `check_new_flaky_markers`; `PrecheckResult.batch_only`; `GateRun.junit` |
-| `tools/molt_dev_gates.py` | JUnit for every pytest gate; `gate_junit_path` |
-| `tools/landing_receipt.py` | schema v2, `batch_only`, `flaky_skipped`, `waivers`, message |
-| `tools/molt_dev_land_fast.py`, `tools/molt_dev_queue.py` | receipt JUnit, `batch_only`, dry-run label, postsubmit `flaky` field and report |
-| `docs/ops/INTEGRATION.md`, `docs/OPERATIONS.md`, sections 4.1 and 4.3 | text |
-| `tests/tools/test_finding_tests.py`, `tests/tools/test_landing_receipt.py`, `tests/test_molt_dev.py` | tests |
-
-Costs, measured on this host: the check's scan reads 1,018 files in 143 ms
-and parses the files that spell `flaky(` (6 ms for the four that do today).
-The precheck reads its changed test files and runs `git show` only for those
-that spell `flaky(`. Collection parses a file only when one of its items has
-a mark. JUnit costs one XML write per pytest gate.
-
-Tests (real pytest sessions and real Git repositories as oracles): the
-projection's two forms and four problems; a real session that skips a marked
-test and writes its property, and with `--run-flaky` runs it; a class mark,
-a module `pytestmark`, an alias, `pytest.mark.flaky` and a marker in a file
-pytest does not collect by name are collection errors; the check refuses a
-closed row, a bare name, a longer test (`test_x` in `test_xy`) and a prefixed
-path; the precheck refuses a third new marker and a marker whose row the base
-does not pin; the receipt lists JUnit skips, refuses a pytest gate without
-JUnit, projects the message and is admitted by the real pre-push hook; a v1
-receipt reads as absent; postsubmit records a passing marked test and reports
-it; the audit lists each marker with its row and newest outcome.
-
-Limits:
-
-- Postsubmit runs a marked test only when its selection (changes since last
-  green) includes the test; an untouched marked test keeps its last outcome
-  in the audit. The farm trunk loop (`tools/trunk_loop.py`) and the CI pytest
-  cells run without `--run-flaky` and skip marked tests. Both cells stay
-  unverified.
-- A marker in a test the lane itself changes still skips in presubmit; the
-  base pin, the count and the "Waived" line bound and expose it.
-- Other pytest skips (`skip`, `skipif`, `-k`) are not waivers and are not
-  policed here.
-- Postsubmit's revert commands walk first parents, which is wrong for a fast
-  landing: `git revert -m 1` on the landing's merge reverts main's side. It
-  is reported to the integrator, not changed here.
-
-#### 10.10 Review
-
-Rounds 1 and 2 (egm-design, egm-codebase-details; fresh context, this file
-only) reviewed a per-landing `--waive` design: 4 blockers and 11 majors, then
-3 blockers and 7 majors. The owner then retired the per-landing form; no
-code of it was written. Round 3 reviewed the marker-only text: 3 blockers
-and 7 majors. Resolutions: JUnit properties replace a typed stdout summary
-line (one channel, and a missing report fails the receipt instead of reading
-as no skips); the count moved from the `always` gate to the precheck, so
-postsubmit cannot sum landings; new markers are pinned in the base ledger
-and counted by (node, finding); the projection reads only decorators and
-`marks=`, so `pytest.mark.flaky(...)` used as data stays valid; the receipt
-bootstrap is named; queue landings, the trunk loop and CI cells are stated
-as limits. Forcing postsubmit to run every marked test, and policing other
-skip forms, are left to the next slice.
+**Limit.** Harness- and data-only readers still run their fast cases in
+presubmit, so a broad change can select hundreds of files. Deferring those
+files entirely would bring the p90 from 101 to 22 files, but it also drops
+presubmit tests of data authorities (for example the readers of
+`tools/proof_plan.toml`), so that step is an owner decision, not part of this
+change.
 
 ## Costs
 
@@ -1490,19 +1287,18 @@ budget follows the owner's 2026-11-05 19:50Z correction: a 600-second presubmit
 p90 target, met by selecting actual readers rather than allowing longer runs.
 Failure history prioritizes readers without admitting unrelated failures.
 The enclosing cancellation still wins over a child deadline or retry. Diagnostic
-and cleanup grace remain bounded. This target is not yet qualified for shared
-pytest-harness changes, whose direct readers still include every consumer,
-or shared test-helper data roots that statically over-select consumers;
-the next selection slice must refine those contracts and qualify the full
-presubmit wall time from receipts. It does not promise admission against foreign
-processes or prove that Gatekeeper caused a particular wait.
+and cleanup grace remain bounded. A reader that the change reaches only
+through its pytest harness or its data runs its fast cases and leaves its
+`slow` cases to postsubmit (section 10 of the fast landing). Such readers can
+still number in the hundreds for a broad change, so the full presubmit wall
+time is not yet qualified from receipts. It does not promise admission against
+foreign processes or prove that Gatekeeper caused a particular wait.
 
 D1's `flaky(OpenFindingId)` quarantine is distinct from strict expected failures:
 collection validates the open identity, presubmit skips with its finding reason,
 and postsubmit passes `--run-flaky` and executes normally. It is the only
-waiver; section 10 of the fast landing owns its pin, its bound on new markers,
-its receipt listing and its audit. A slow test is not a flake; no current test
-is quarantined without evidence. `ci_triage` owns the
+expected-failure form (section 10 of the fast landing). A slow test is not a
+flake; no current test is quarantined without evidence. `ci_triage` owns the
 exhaustive infrastructure-retry classification. Only a typed launch resource
 failure (EAGAIN or ENOMEM) before payload execution can receive one retry.
 `Popen` may fork and reap a child whose exec failed, so this is not a claim
