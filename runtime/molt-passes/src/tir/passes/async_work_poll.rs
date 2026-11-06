@@ -32,6 +32,12 @@ use super::exception_observation::{
 };
 
 fn is_call_return_poll(op: &TirOp) -> bool {
+    if op.exception_source_kind() == Some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind)
+    {
+        // Compiler cleanup forwards an existing transfer. Service asynchronous
+        // work at the next authored operation, where an Origin can be captured.
+        return false;
+    }
     opcode_requires_async_work_poll_after_table(op.opcode)
         || (op.opcode == OpCode::Copy
             && matches!(
@@ -635,8 +641,12 @@ mod tests {
         op
     }
 
+    /// The frontend's operation-local check: it observes the preceding
+    /// operation's own failure, so its exceptional edge is Origin.
     fn check(label: i64) -> TirOp {
-        labeled_op(OpCode::CheckException, label)
+        let mut check = labeled_op(OpCode::CheckException, label);
+        check.set_exception_edge_kind(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin);
+        check
     }
 
     fn call() -> TirOp {
@@ -1118,10 +1128,10 @@ mod tests {
                 {"kind": "trace_enter_slot", "s_value": "frame_publication_resume"},
                 {"kind": "state_switch"},
                 {"kind": "call", "s_value": "work", "args": [], "out": "work_result"},
-                {"kind": "check_exception", "value": 70},
+                {"kind": "check_exception","exception_edge":"origin", "value": 70},
                 {"kind": "loop_start"},
                 {"kind": "loop_break_if_false", "args": ["keep_running"]},
-                {"kind": "check_exception", "value": 70},
+                {"kind": "check_exception","exception_edge":"origin", "value": 70},
                 {"kind": "loop_continue"},
                 {"kind": "loop_end"},
                 {"kind": "state_label", "value": 80},
@@ -1140,7 +1150,7 @@ mod tests {
                 {"kind": "if", "args": ["is_stop"]},
                 {"kind": "exception_clear"},
                 {"kind": "end_if"},
-                {"kind": "check_exception", "value": 70},
+                {"kind": "check_exception","exception_edge":"origin", "value": 70},
                 {"kind": "trace_exit"},
                 {"kind": "ret_void"},
                 {"kind": "label", "value": 70},

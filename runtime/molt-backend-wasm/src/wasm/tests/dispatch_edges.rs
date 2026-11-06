@@ -470,6 +470,7 @@ for (const test of config.cases) {
   refcount_admission: () => 0n, // isolated image: no runtime execution custody
 
     trace_set_line(line) { lines.push(Number(line)); return none; },
+    exception_frame_origin(homes) { assert.equal(homes,0n); return none; },
     exception_pending() {
       if (anchored && !anchor.checked) {
         assert.equal(anchor.constructed,1,'constructor observer precedes poll prefix');

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import ExceptionEdgeKind
+
 import __future__ as future_module
 import ast
 import os
@@ -977,6 +979,7 @@ def test_all_generated_future_feature_returns_own_local_frame_exit() -> None:
     entry_failure_label = gen.funcs_map[function["name"]]["frame_entry_failure_label"]
     assert function["ops"][1] == {
         "kind": "check_exception",
+        "exception_edge": "origin",
         "value": entry_failure_label,
     }
     assert len(return_indices) == 3  # normal, body failure and entry failure
@@ -1836,7 +1839,12 @@ def test_cfg_const_dedupe_keeps_check_exception_users_defined() -> None:
             MoltOp(kind="CONST", args=[0], result=MoltValue("argcount")),
             MoltOp(kind="CONST", args=[0], result=MoltValue("posonly")),
             MoltOp(kind="CONST", args=[0], result=MoltValue("kwonly")),
-            MoltOp(kind="CHECK_EXCEPTION", args=[1], result=MoltValue("none")),
+            MoltOp(
+                kind="CHECK_EXCEPTION",
+                exception_edge=ExceptionEdgeKind.ORIGIN,
+                args=[1],
+                result=MoltValue("none"),
+            ),
             MoltOp(kind="LABEL", args=[1], result=MoltValue("none")),
             MoltOp(
                 kind="CODE_NEW",
@@ -2305,7 +2313,12 @@ def test_cfg_dominance_respects_resume_bypass() -> None:
 def test_cfg_models_check_exception_target_edge() -> None:
     ops = [
         MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
-        MoltOp(kind="CHECK_EXCEPTION", args=[7], result=MoltValue("none")),
+        MoltOp(
+            kind="CHECK_EXCEPTION",
+            exception_edge=ExceptionEdgeKind.ORIGIN,
+            args=[7],
+            result=MoltValue("none"),
+        ),
         MoltOp(kind="CONST", args=[1], result=MoltValue("x")),
         MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
         MoltOp(kind="LABEL", args=[7], result=MoltValue("none")),
@@ -2417,7 +2430,12 @@ def test_cfg_precanonicalizer_aligns_phi_to_predecessor_shape() -> None:
 def test_cfg_precanonicalizer_threads_ladders_before_rounds() -> None:
     ops = [
         MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
-        MoltOp(kind="CHECK_EXCEPTION", args=[10], result=MoltValue("none")),
+        MoltOp(
+            kind="CHECK_EXCEPTION",
+            exception_edge=ExceptionEdgeKind.ORIGIN,
+            args=[10],
+            result=MoltValue("none"),
+        ),
         MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
         MoltOp(kind="JUMP", args=[40], result=MoltValue("none")),
         MoltOp(kind="LABEL", args=[10], result=MoltValue("none")),
@@ -2553,7 +2571,12 @@ def test_guard_mismatch_preserves_pending_exception_routing() -> None:
             [MoltValue("value"), MoltValue("float_tag")],
             MoltValue("none"),
         ),
-        MoltOp("CHECK_EXCEPTION", [99], MoltValue("none")),
+        MoltOp(
+            "CHECK_EXCEPTION",
+            [99],
+            MoltValue("none"),
+            exception_edge=ExceptionEdgeKind.ORIGIN,
+        ),
         MoltOp("TRY_END", [99], MoltValue("none")),
         MoltOp("ret", [MoltValue("value")], MoltValue("none")),
         MoltOp("LABEL", [99], MoltValue("none")),
@@ -2647,7 +2670,12 @@ def test_try_check_exception_threads_through_nested_label_trampoline() -> None:
             args=[MoltValue("container"), MoltValue("index")],
             result=MoltValue("value"),
         ),
-        MoltOp(kind="CHECK_EXCEPTION", args=[10], result=MoltValue("none")),
+        MoltOp(
+            kind="CHECK_EXCEPTION",
+            exception_edge=ExceptionEdgeKind.ORIGIN,
+            args=[10],
+            result=MoltValue("none"),
+        ),
         MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
         MoltOp(kind="JUMP", args=[90], result=MoltValue("none")),
         MoltOp(kind="LABEL", args=[10], result=MoltValue("none")),
@@ -2676,7 +2704,12 @@ def test_try_check_exception_threads_through_nested_label_trampoline() -> None:
 def test_try_except_join_normalization_threads_nested_label_trampolines() -> None:
     ops = [
         MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
-        MoltOp(kind="CHECK_EXCEPTION", args=[10], result=MoltValue("none")),
+        MoltOp(
+            kind="CHECK_EXCEPTION",
+            exception_edge=ExceptionEdgeKind.ORIGIN,
+            args=[10],
+            result=MoltValue("none"),
+        ),
         MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
         MoltOp(kind="JUMP", args=[40], result=MoltValue("none")),
         MoltOp(kind="LABEL", args=[10], result=MoltValue("none")),
@@ -2704,7 +2737,12 @@ def test_nested_try_except_join_normalization_runs_before_cse_rounds() -> None:
         [
             MoltOp(kind="CONST", args=[0], result=MoltValue("x")),
             MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
-            MoltOp(kind="CHECK_EXCEPTION", args=[10], result=MoltValue("none")),
+            MoltOp(
+                kind="CHECK_EXCEPTION",
+                exception_edge=ExceptionEdgeKind.ORIGIN,
+                args=[10],
+                result=MoltValue("none"),
+            ),
             MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
             MoltOp(kind="JUMP", args=[40], result=MoltValue("none")),
             MoltOp(kind="LABEL", args=[10], result=MoltValue("none")),
@@ -2730,11 +2768,21 @@ def test_nested_try_except_join_normalization_runs_before_cse_rounds() -> None:
 def test_try_except_join_normalization_threads_deep_check_ladders() -> None:
     ops = [
         MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
-        MoltOp(kind="CHECK_EXCEPTION", args=[10], result=MoltValue("none")),
+        MoltOp(
+            kind="CHECK_EXCEPTION",
+            exception_edge=ExceptionEdgeKind.ORIGIN,
+            args=[10],
+            result=MoltValue("none"),
+        ),
         MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
         MoltOp(kind="JUMP", args=[90], result=MoltValue("none")),
         MoltOp(kind="LABEL", args=[10], result=MoltValue("none")),
-        MoltOp(kind="CHECK_EXCEPTION", args=[20], result=MoltValue("none")),
+        MoltOp(
+            kind="CHECK_EXCEPTION",
+            exception_edge=ExceptionEdgeKind.ORIGIN,
+            args=[20],
+            result=MoltValue("none"),
+        ),
         MoltOp(kind="JUMP", args=[20], result=MoltValue("none")),
         MoltOp(kind="LABEL", args=[20], result=MoltValue("none")),
         MoltOp(kind="JUMP", args=[30], result=MoltValue("none")),
@@ -2747,12 +2795,110 @@ def test_try_except_join_normalization_threads_deep_check_ladders() -> None:
     gen = SimpleTIRGenerator()
     cfg = build_cfg(ops)
     rewritten, rewrites = gen._normalize_try_except_join_labels(ops, cfg=cfg)
-    assert rewrites >= 3
+    assert rewrites >= 1
     head_check = next(
         op for op in rewritten if op.kind == "CHECK_EXCEPTION" and op.args
     )
-    assert head_check.args[0] == 30
+    # The pure jump trampoline is threaded, but neither Origin capture is an alias.
+    assert head_check.args[0] == 10
+    assert [op.args[0] for op in rewritten if op.kind == "CHECK_EXCEPTION"] == [10, 30]
     assert any(op.kind == "JUMP" and op.args and op.args[0] == 30 for op in rewritten)
+
+
+@pytest.mark.parametrize("pass_name", ["edge_thread", "join_normalize"])
+def test_label_aliasing_preserves_origin_capture_count(pass_name: str) -> None:
+    ops = [
+        MoltOp("CALL", [MoltValue("fn")], MoltValue("result")),
+        MoltOp("JUMP", [10], MoltValue("none")),
+        MoltOp("LABEL", [10], MoltValue("none")),
+        MoltOp(
+            "CHECK_EXCEPTION",
+            [20],
+            MoltValue("none"),
+            exception_edge=ExceptionEdgeKind.ORIGIN,
+        ),
+        MoltOp("JUMP", [20], MoltValue("none")),
+        MoltOp("LABEL", [20], MoltValue("none")),
+        MoltOp("ret_void", [], MoltValue("none")),
+    ]
+    gen = SimpleTIRGenerator()
+    cfg = build_cfg(ops)
+    if pass_name == "edge_thread":
+        sccp = gen._compute_sccp(ops, cfg)
+        rewritten, *_ = gen._rewrite_loop_edge_threading(
+            ops,
+            cfg=cfg,
+            control=cfg.control,
+            executable_edges=sccp.executable_edges,
+            loop_break_choice_by_index=sccp.loop_break_choice_by_index,
+        )
+    else:
+        rewritten, _ = gen._normalize_try_except_join_labels(ops, cfg=cfg)
+    assert sum(op.exception_edge == ExceptionEdgeKind.ORIGIN for op in rewritten) == 1
+    # Keeping a dead check after bypassing its label would still lose the event.
+    assert next(op.args for op in rewritten if op.kind == "JUMP") == [10]
+
+
+@pytest.mark.parametrize(
+    "obligation", ["plain", "payload", "poll", "handler", "landing"]
+)
+def test_join_normalization_preserves_unwind_transfer_obligations(
+    obligation: str,
+) -> None:
+    args = [20, MoltValue("payload")] if obligation == "payload" else [20]
+    metadata = {"async_work_poll": True} if obligation == "poll" else None
+    ops = [
+        MoltOp(
+            "CHECK_EXCEPTION",
+            args,
+            MoltValue("none"),
+            metadata=metadata,
+            exception_edge=ExceptionEdgeKind.UNWIND,
+        ),
+        MoltOp("JUMP", [20], MoltValue("none")),
+        MoltOp("LABEL", [20], MoltValue("none")),
+    ]
+    if obligation == "handler":
+        ops.insert(0, MoltOp("TRY_START", [20], MoltValue("none")))
+        ops.append(MoltOp("TRY_END", [20], MoltValue("none")))
+    elif obligation == "landing":
+        ops.append(MoltOp("EXCEPTION_POP", [], MoltValue("none")))
+    ops.append(MoltOp("ret_void", [], MoltValue("none")))
+    gen = SimpleTIRGenerator()
+    rewritten, _ = gen._normalize_try_except_join_labels(ops, cfg=build_cfg(ops))
+    checks = [op for op in rewritten if op.kind == "CHECK_EXCEPTION"]
+    if obligation == "plain":
+        assert not checks
+    else:
+        assert len(checks) == 1
+        assert checks[0].args == args
+        assert checks[0].metadata == metadata
+
+
+def test_join_normalization_keeps_transfer_through_handler_trampoline() -> None:
+    ops = [
+        MoltOp("TRY_START", [30], MoltValue("none")),
+        MoltOp(
+            "CHECK_EXCEPTION",
+            [10],
+            MoltValue("none"),
+            exception_edge=ExceptionEdgeKind.UNWIND,
+        ),
+        MoltOp("JUMP", [10], MoltValue("none")),
+        MoltOp("LABEL", [10], MoltValue("none")),
+        MoltOp("JUMP", [20], MoltValue("none")),
+        MoltOp("LABEL", [20], MoltValue("none")),
+        MoltOp("JUMP", [30], MoltValue("none")),
+        MoltOp("LABEL", [30], MoltValue("none")),
+        MoltOp("TRY_END", [30], MoltValue("none")),
+        MoltOp("EXCEPTION_POP", [], MoltValue("none")),
+        MoltOp("ret_void", [], MoltValue("none")),
+    ]
+    gen = SimpleTIRGenerator()
+    rewritten, _ = gen._normalize_try_except_join_labels(ops, cfg=build_cfg(ops))
+    checks = [op for op in rewritten if op.kind == "CHECK_EXCEPTION"]
+    assert len(checks) == 1
+    assert checks[0].exception_edge == ExceptionEdgeKind.UNWIND
 
 
 def test_midend_preserves_post_join_guard_profile_event() -> None:
@@ -2837,7 +2983,12 @@ def test_try_exception_edge_keeps_markers_when_check_exception_is_pretrap() -> N
         [
             MoltOp(kind="CONST_NONE", args=[], result=MoltValue("exc")),
             MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
-            MoltOp(kind="CHECK_EXCEPTION", args=[99], result=MoltValue("none")),
+            MoltOp(
+                kind="CHECK_EXCEPTION",
+                exception_edge=ExceptionEdgeKind.ORIGIN,
+                args=[99],
+                result=MoltValue("none"),
+            ),
             MoltOp(kind="RAISE", args=[MoltValue("exc")], result=MoltValue("none")),
             MoltOp(kind="CONST", args=[404], result=MoltValue("dead_after_raise")),
             MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),

@@ -9,6 +9,7 @@ the SimpleTIRGenerator MRO via self.<method>.
 from __future__ import annotations
 
 from molt.frontend.lowering.op_kinds_generated import (
+    ExceptionEdgeKind,
     FrontendKinds,
     FRONTEND_FIRST_TRAILING_RESULT_ARG,
 )
@@ -188,7 +189,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                             break
                 finally:
                     self._pop_qualname()
-                self._emit_generator_falloff()
+                self._emit_generator_falloff(node.body[-1])
                 self._spill_async_temporaries()
                 closure_size = self._task_closure_size(
                     frame_plan.payload_slots,
@@ -356,12 +357,13 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 if not self._ends_with_return_jump():
                     res = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                    self._emit_return_value(res)
+                    self._emit_return_value(res, node.body[-1])
                 self._emit_return_label()
             else:
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                self._emit_normal_return_terminator(res)
+                with self._source_location_scope(node.body[-1]):
+                    self._emit_normal_return_terminator(res)
             self._spill_async_temporaries()
             locals_layout = self._stateful_locals_layout(frame_plan, params, free_vars)
             closure_size = self._task_closure_size(
@@ -1162,7 +1164,12 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             for name in loads_after.get(idx, ()):
                 offset, value = slot_value(name)
                 new_ops.append(
-                    MoltOp(kind="LOAD_CLOSURE", args=["self", offset], result=value)
+                    MoltOp(
+                        kind="LOAD_CLOSURE",
+                        args=["self", offset],
+                        result=value,
+                        exception_source=ExceptionEdgeKind.UNWIND,
+                    )
                 )
             for name in stores_after.get(idx, ()):
                 offset, value = slot_value(name)
@@ -1171,6 +1178,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                         kind="STORE_CLOSURE",
                         args=["self", offset, value],
                         result=MoltValue("none"),
+                        exception_source=ExceptionEdgeKind.UNWIND,
                     )
                 )
         # A frame reload is a new SSA definition. Keep the value shared by
@@ -1415,10 +1423,19 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             self.emit(
                 MoltOp(
                     kind="STATE_TRANSITION",
+                    exception_source=ExceptionEdgeKind.ORIGIN,
                     args=[coro, result_slot_val, pending_state_val, next_state_id],
                     result=res_placeholder,
                 )
             )
+            # The transition owns this carrier only until resumption. Loading
+            # retains the result before clearing its hidden frame reference.
+            res = self._consume_scratch_cell(result_storage)
+            # Acquire a fresh owner after resumption. Clearing the hidden slot
+            # cannot finalize the awaited task while this owner remains live
+            # through Origin capture; pre-suspension SSA values are unavailable
+            # on an implicit resume.
+            completed = self._reload_async_value(awaitable_slot, "Future")
             cleared_val = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=cleared_val))
             self.emit(
@@ -1428,9 +1445,26 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                     result=MoltValue("none"),
                 )
             )
-            # The transition owns this carrier only until resumption. Loading
-            # retains the result before clearing its hidden frame reference.
-            res = self._consume_scratch_cell(result_storage)
+            handler = (
+                self.try_end_labels[-1]
+                if self.try_end_labels
+                else self.function_exception_label
+            )
+            if handler is None:
+                raise AssertionError("await resumption requires an exception handler")
+            # Carrier consumption precedes every transfer. The Origin targets
+            # the lexical handler directly, just like awaitable acquisition.
+            self.emit(
+                MoltOp(
+                    kind="CHECK_EXCEPTION",
+                    args=[handler],
+                    result=MoltValue("none"),
+                    exception_edge=ExceptionEdgeKind.ORIGIN,
+                )
+            )
+            # Canonical exception-edge drops release this owner after Origin
+            # capture when the handler wins; this is its normal-path boundary.
+            self._emit_drop_owned_value(completed)
             self._emit_raise_if_pending()
         return res
 

@@ -79,10 +79,10 @@ fn plan(homes: usize, policy: FramePolicy) -> FramePlan {
 fn enter_frame(py: &PyToken<'_>, code: u64, slots: usize) -> (*mut u64, usize) {
     inc_ref_bits(py, code);
     frame_stack_push_owned(py, code, 0, 0, 0);
-    assert!(frame_stack_enter_homes(plan(
-        slots,
-        FramePolicy::of_runtime(py)
-    )));
+    assert!(frame_stack_enter_homes(
+        py,
+        plan(slots, FramePolicy::of_runtime(py))
+    ));
     let homes = crate::provenance::abi::mut_ptr::<u64>(molt_frame_homes(slots as u64))
         .expect("frame homes address fits the target");
     assert!(!exception_pending(py));
@@ -138,7 +138,12 @@ fn homes_are_a_stack_of_zeroed_words() {
     let policy = FramePolicy::default();
     let first = FrameBindings::enter(plan(3, policy)).expect("homes");
     let second = FrameBindings::enter(plan(2, policy)).expect("homes");
-    assert_eq!(second.homes, first.homes + 3 * FRAME_HOME_WORDS * WORD);
+    assert_eq!(
+        second.homes,
+        first.homes
+            + 3 * FRAME_HOME_WORDS * WORD
+            + (-molt_codegen_abi::FRAME_LOCATION_OFFSET) as usize
+    );
     unsafe { *(second.homes as *mut u64) = 7 };
     second.exit();
     let again = FrameBindings::enter(plan(2, policy)).expect("homes");
@@ -156,12 +161,100 @@ fn homes_are_a_stack_of_zeroed_words() {
     let reused = FrameBindings::enter(plan(3, policy)).expect("homes");
     assert_eq!(reused.homes, first.homes);
     reused.exit();
-    // An optimized code object without slots, and a module body, take none.
+    // Zero-home functions and modules still lend their canonical location word.
     for empty in [plan(0, policy), FramePlan::default()] {
         let bindings = FrameBindings::enter(empty).expect("no homes");
-        assert_eq!(bindings.homes, 0);
+        assert_ne!(bindings.homes, 0);
+        assert_eq!(bindings.home_count, 0);
+        assert_eq!(bindings.location(), LocationId::ABSENT);
         bindings.exit();
     }
+}
+
+#[test]
+fn origin_capture_owns_its_entry_preserves_multiplicity_and_is_failure_atomic() {
+    use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+    struct RestoreBudget;
+    impl Drop for RestoreBudget {
+        fn drop(&mut self) {
+            set_tracker(Box::new(UnlimitedTracker));
+        }
+    }
+    let _guard = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let code = slot_code(py, &[], &[]);
+        let globals = MoltObject::from_ptr(crate::alloc_dict_with_pairs(py, &[])).bits();
+        inc_ref_bits(py, code);
+        inc_ref_bits(py, globals);
+        frame_stack_push_owned(py, code, globals, globals, 0);
+        assert!(frame_stack_enter_homes(
+            py,
+            plan(0, FramePolicy::of_runtime(py))
+        ));
+        let homes = molt_frame_homes(0);
+        let error_ptr = crate::alloc_exception(py, BuiltinExc::ValueError, "selected origin");
+        let error = MoltObject::from_ptr(error_ptr).bits();
+        let trace = || {
+            crate::molt_getattr_builtin(
+                error,
+                crate::NameId::DunderTraceback.bits(py),
+                MoltObject::none().bits(),
+            )
+        };
+        crate::record_exception(py, error_ptr);
+        crate::molt_exception_frame_origin(0);
+        crate::molt_exception_frame_origin(homes + 8);
+        crate::clear_exception(py);
+        let absent = trace();
+        assert!(
+            obj_from_bits(absent).is_none(),
+            "failed/unlent entry must not capture its caller"
+        );
+        dec_ref_bits(py, absent);
+
+        crate::record_exception(py, error_ptr);
+        crate::molt_exception_frame_origin(homes);
+        crate::molt_exception_frame_origin(homes);
+        crate::clear_exception(py);
+        let first = trace();
+        assert!(!obj_from_bits(first).is_none());
+        let second = crate::molt_getattr_builtin(
+            first,
+            crate::NameId::TbNext.bits(py),
+            MoltObject::none().bits(),
+        );
+        assert!(
+            !obj_from_bits(second).is_none(),
+            "two Origin events retain two entries of one activation"
+        );
+        let end = crate::molt_getattr_builtin(
+            second,
+            crate::NameId::TbNext.bits(py),
+            MoltObject::none().bits(),
+        );
+        assert!(obj_from_bits(end).is_none());
+
+        crate::record_exception(py, error_ptr);
+        set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+            max_allocations: Some(0),
+            ..Default::default()
+        })));
+        let budget = RestoreBudget;
+        crate::molt_exception_frame_origin(homes);
+        drop(budget);
+        assert_eq!(crate::exception_last_bits_noinc(py), Some(error));
+        crate::clear_exception(py);
+        let unchanged = trace();
+        assert_eq!(
+            unchanged, first,
+            "abandoned capture leaves the current traceback untouched"
+        );
+        for bits in [unchanged, end, second, first, error] {
+            dec_ref_bits(py, bits);
+        }
+        frame_stack_pop(py);
+        dec_ref_bits(py, code);
+    });
 }
 
 #[test]
@@ -823,7 +916,7 @@ fn compiled_code_borrows_only_homes_the_frame_has() {
         // A frame without homes (a module body) lends none.
         inc_ref_bits(py, code);
         frame_stack_push_owned(py, code, 0, 0, 0);
-        assert!(frame_stack_enter_homes(FramePlan::default()));
+        assert!(frame_stack_enter_homes(py, FramePlan::default()));
         assert_eq!(molt_frame_homes(1), 0);
         dec_ref_bits(py, take_pending(py));
         frame_stack_pop(py);

@@ -140,6 +140,8 @@ pub const FRAME_HOME_WORDS: usize = 2;
 pub const FRAME_HOME_BYTES: i64 = 16;
 pub const FRAME_HOME_KIND_OFFSET: i32 = 0;
 pub const FRAME_HOME_BITS_OFFSET: i32 = 8;
+/// Raw LocationId immediately before the lent home base, including zero-home frames.
+pub const FRAME_LOCATION_OFFSET: i32 = -8;
 /// The slot is unbound; the bits are zero.
 pub const FRAME_HOME_UNBOUND: i64 = 0;
 /// The bits are the binding, a boxed object the home owns one reference to.
@@ -288,6 +290,7 @@ pub const fn frame_binding_abi_word() -> u64 {
         | ((FRAME_HOME_UNBOUND as u64) << 48)
         | ((FRAME_HOME_HOLDS_REFERENCE as u64) << 52)
         | (ENTRY_CUSTODY_ADOPTS << 56)
+        | (((-FRAME_LOCATION_OFFSET) as u64) << 60)
 }
 
 const _: () = assert!(
@@ -309,7 +312,9 @@ const _: () = assert!(
         && FRAME_HOME_CELL < 16
         && 0 < FRAME_HOME_PRIVATE_CELL
         && FRAME_HOME_PRIVATE_CELL < 16
-        && ENTRY_CUSTODY_ADOPTS < 256
+        && ENTRY_CUSTODY_ADOPTS < 16
+        && 0 < -FRAME_LOCATION_OFFSET
+        && -FRAME_LOCATION_OFFSET < 16
         && FRAME_HOME_PLAIN & FRAME_HOME_HOLDS_REFERENCE != 0
         && FRAME_HOME_CELL & FRAME_HOME_HOLDS_REFERENCE != 0
         && FRAME_HOME_PRIVATE_CELL & FRAME_HOME_HOLDS_REFERENCE != 0
@@ -635,17 +640,21 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
 /// link to it. Revision 6 binds the thread-record prefix offsets and pending-work
 /// word width. A compiler reading the work-word pointer must never link to an
 /// older runtime whose recursion-depth field occupied that offset. Revision 7
-/// binds the count-word custody encoding, owner bound, inline window and custody
-/// flags; old full-width count objects cannot link to this runtime.
-pub const GENERATED_OBJECT_ABI_FINGERPRINT_V7: u64 = 0x69ba_b6cd_a2ad_ac1b;
+/// had two independent bindings on parallel lanes, and neither may link here:
+/// the count-word custody encoding, owner bound, inline window and custody
+/// flags (`molt_generated_object_abi_69bab6cda2adac1b_*_v7`), and the
+/// code-location word immediately before every lent frame-home base
+/// (`molt_generated_object_abi_16b12518d4094b67_*_v7`). Revision 8 binds both:
+/// it is the fingerprint of the merged fact words.
+pub const GENERATED_OBJECT_ABI_FINGERPRINT_V8: u64 = 0xb353_df98_e047_c49b;
 const _: () = assert!(
-    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V7,
+    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V8,
     "native generated-object ABI changed: bump the fingerprint revision and link symbols",
 );
 pub const GENERATED_OBJECT_ABI_GIL_SYMBOL: &str =
-    "molt_generated_object_abi_69bab6cda2adac1b_gil_v7";
+    "molt_generated_object_abi_b353df98e047c49b_gil_v8";
 pub const GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL: &str =
-    "molt_generated_object_abi_69bab6cda2adac1b_free_threaded_v7";
+    "molt_generated_object_abi_b353df98e047c49b_free_threaded_v8";
 /// Compile-time authority consumed by runtime storage and generated native
 /// access. Cargo feature unification may enable this through any dependency;
 /// consumers must branch on this value rather than a crate-local feature.
@@ -1640,14 +1649,14 @@ mod tests {
         let canonical = GENERATED_OBJECT_ABI_FACTS.words();
         assert_eq!(
             fingerprint_words(canonical),
-            GENERATED_OBJECT_ABI_FINGERPRINT_V7
+            GENERATED_OBJECT_ABI_FINGERPRINT_V8
         );
         for index in 0..canonical.len() {
             let mut changed = canonical;
             changed[index] ^= 1;
             assert_ne!(
                 fingerprint_words(changed),
-                GENERATED_OBJECT_ABI_FINGERPRINT_V7,
+                GENERATED_OBJECT_ABI_FINGERPRINT_V8,
                 "generated-object ABI word {index} is not fingerprinted"
             );
         }
@@ -1655,13 +1664,13 @@ mod tests {
 
     #[test]
     fn generated_object_link_symbols_embed_fingerprint_and_revision() {
-        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V7);
+        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V8);
         for symbol in [
             GENERATED_OBJECT_ABI_GIL_SYMBOL,
             GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
         ] {
             assert!(symbol.contains(&fingerprint), "{symbol}");
-            assert!(symbol.ends_with("_v7"), "{symbol}");
+            assert!(symbol.ends_with("_v8"), "{symbol}");
         }
     }
 
@@ -1669,7 +1678,7 @@ mod tests {
     fn every_frame_binding_fact_changes_its_abi_word() {
         // Each hardcoded frame fact owns one byte of the fingerprinted word;
         // the kinds share bytes as nibbles.
-        assert_eq!(frame_binding_abi_word(), 0x0110_5321_0800_1002);
+        assert_eq!(frame_binding_abi_word(), 0x8110_5321_0800_1002);
         assert_eq!(
             GENERATED_OBJECT_ABI_FACTS.words()[56],
             frame_binding_abi_word()

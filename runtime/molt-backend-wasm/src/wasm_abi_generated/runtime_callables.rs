@@ -398,6 +398,11 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 2,
     },
     RuntimeCallableImportSpec {
+        runtime_name: "molt_exception_frame_origin",
+        import: WasmRuntimeImport::ExceptionFrameOrigin,
+        arity: 1,
+    },
+    RuntimeCallableImportSpec {
         runtime_name: "molt_exception_trace_prepend",
         import: WasmRuntimeImport::ExceptionTracePrepend,
         arity: 1,
@@ -12769,6 +12774,7 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_locals_builtin" => Some(WasmRuntimeImport::LocalsBuiltin),
         "molt_frame_cell_publish" => Some(WasmRuntimeImport::FrameCellPublish),
         "molt_exception_prepare_raise" => Some(WasmRuntimeImport::ExceptionPrepareRaise),
+        "molt_exception_frame_origin" => Some(WasmRuntimeImport::ExceptionFrameOrigin),
         "molt_exception_trace_prepend" => Some(WasmRuntimeImport::ExceptionTracePrepend),
         "molt_exception_active" => Some(WasmRuntimeImport::ExceptionActive),
         "molt_exception_current" => Some(WasmRuntimeImport::ExceptionCurrent),

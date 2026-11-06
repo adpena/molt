@@ -676,7 +676,9 @@ pub(crate) fn raise_not_callable(_py: &PyToken<'_>, obj: MoltObject) -> u64 {
                 .unwrap_or_else(|| "<file>".to_string());
             eprintln!(
                 "molt not_callable frame name={} file={} line={}",
-                name, file, frame.line
+                name,
+                file,
+                frame.source_line()
             );
         }
         eprintln!(

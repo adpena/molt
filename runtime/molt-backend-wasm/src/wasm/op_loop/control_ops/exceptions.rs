@@ -68,6 +68,11 @@ fn emit_check_exception(context: &ControlOpContext<'_>, func: &mut Function, op:
             context.import_ids,
             context.reloc_enabled,
             false,
+            |func| {
+                if let Some(location) = op.frame_location {
+                    context.frame.emit_frame_location(func, location);
+                }
+            },
         );
         func.instruction(&Instruction::I64Const(0));
         func.instruction(&Instruction::I64Ne);
@@ -87,7 +92,22 @@ fn emit_check_exception(context: &ControlOpContext<'_>, func: &mut Function, op:
         .value
         .unwrap_or_else(|| panic!("{} missing exception label", op.kind));
     let depth = super::branches::label_branch_depth(context, target, op.kind);
-    func.instruction(&Instruction::BrIf(depth));
+    match op.exception_edge.expect("verified exceptional edge kind") {
+        molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Origin => {
+            func.instruction(&Instruction::If(BlockType::Empty));
+            context.frame.emit_exception_origin(
+                func,
+                context.import_ids,
+                context.reloc_enabled,
+                op.frame_location,
+            );
+            func.instruction(&Instruction::Br(depth + 1));
+            func.instruction(&Instruction::End);
+        }
+        molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Unwind => {
+            func.instruction(&Instruction::BrIf(depth));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -115,8 +135,12 @@ mod tests {
             crate::wasm_abi_generated::WasmRuntimeImport::AsyncWorkPollAndExceptionPending
         };
         let trace_import = crate::wasm_abi_generated::WasmRuntimeImport::TraceSetLine;
-        let import_ids =
-            TrackedImportIds::new(BTreeMap::from([(poll_import, 0), (trace_import, 1)]));
+        let origin_import = crate::wasm_abi_generated::WasmRuntimeImport::ExceptionFrameOrigin;
+        let import_ids = TrackedImportIds::new(BTreeMap::from([
+            (poll_import, 0),
+            (trace_import, 1),
+            (origin_import, 2),
+        ]));
         let func_ir = crate::FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "plain_poll".into(),
@@ -220,6 +244,7 @@ mod tests {
         let mut imports = ImportSection::new();
         imports.import("molt_runtime", "pending", EntityType::Function(0));
         imports.import("molt_runtime", "record", EntityType::Function(1));
+        imports.import("molt_runtime", "origin", EntityType::Function(1));
         module.section(&imports);
         let mut functions = FunctionSection::new();
         functions.function(0);
@@ -234,7 +259,7 @@ mod tests {
         });
         module.section(&memory);
         let mut exports = ExportSection::new();
-        exports.export("run", ExportKind::Func, 2);
+        exports.export("run", ExportKind::Func, 3);
         exports.export("memory", ExportKind::Memory, 0);
         module.section(&exports);
         let mut code = CodeSection::new();
@@ -274,7 +299,7 @@ mod tests {
             assert!(
                 operators
                     .iter()
-                    .any(|op| matches!(op, Operator::BrIf { relative_depth: 0 }))
+                    .any(|op| matches!(op, Operator::Br { relative_depth: 1 }))
             );
         }
     }
@@ -293,16 +318,18 @@ mod tests {
 const fs=require('fs'), assert=require('assert/strict');
 const module=new WebAssembly.Module(fs.readFileSync(process.argv[1]));
 for(const [word,pending,coldError] of [[0,0,0],[8,0,0],[8,0,1],[0,1,0]]) {
-  let calls=0; const trace=[];
+  let calls=0, origins=0; const trace=[];
   const app=new WebAssembly.Instance(module,{molt_runtime:{
     pending:()=>{calls++;return BigInt(coldError);},
-    record:line=>{trace.push(Number(line));return 0n;}
+    record:line=>{trace.push(Number(line));return 0n;},
+    origin:homes=>{assert.equal(homes,0n);origins++;return 0n;}
   }}).exports;
   const view=new DataView(app.memory.buffer);
   view.setUint8(256,pending); view.setUint32(512,word,true);
   app.run();
   assert.equal(calls,word?1:0,'an empty poll must not enter the runtime');
   assert.deepEqual(trace,(pending||coldError)?[]:[4]);
+  assert.equal(origins,(pending||coldError)?1:0,'Origin is cold and runs exactly once');
 }
 // Positive control: published callback data alone cannot schedule a poll.
 // Suppressing its producer bit must keep the cold callback unexecuted.
@@ -331,15 +358,17 @@ const module = new WebAssembly.Module(fs.readFileSync(process.argv[1]));
 // repairs it (a stale task slot) is no exception.
 for (const [byte, pending] of [[0, false], [1, true], [1, false]]) {
   const events = [];
-  let reads = 0;
+  let reads = 0, origins = 0;
   const app = new WebAssembly.Instance(module, {molt_runtime: {
     pending: () => { reads++; return pending ? 1n : 0n; },
     record: line => { events.push(Number(line)); return 0n; },
+    origin: homes => { assert.equal(homes, 0n); origins++; return 0n; },
   }}).exports;
   new Uint8Array(app.memory.buffer)[256] = byte;
   assert.equal(app.run(), 0n);
   assert.deepEqual(events, pending ? [2, 3] : [1, 3], 'explicit inner cleanup must precede the outer continuation');
   assert.equal(reads, byte, 'the reader runs only when the pending byte is set');
+  assert.equal(origins,pending?1:0,'only the taken Origin edge calls capture');
 }
 "#,
             &[&path],

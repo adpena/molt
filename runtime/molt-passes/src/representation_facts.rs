@@ -485,7 +485,7 @@ fn integer_operand_use(op: &TirOp) -> IntegerOperandUse {
     let binary_result = raw_operands_and_result(2);
     let unary_result = raw_operands_and_result(1);
     let (observation, raw_result_depends_on_operands) = match op.opcode {
-        OpCode::IncRef | OpCode::DecRef | OpCode::DelBoundary => {
+        OpCode::IncRef | OpCode::DecRef | OpCode::DelBoundary | OpCode::FrameSetLocation => {
             (IntegerOperandObservation::Never, false)
         }
         OpCode::CheckedAdd | OpCode::CheckedMul => (binary, true),

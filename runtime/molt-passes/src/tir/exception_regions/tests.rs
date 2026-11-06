@@ -48,7 +48,85 @@ fn try_end(label: i64) -> TirOp {
 fn check_exception(label: i64) -> TirOp {
     let mut op = op(OpCode::CheckException);
     op.attrs.insert("value".into(), AttrValue::Int(label));
+    op.set_exception_edge_kind(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin);
     op
+}
+
+/// `Raise` captures its own Origin; its transport check forwards (Unwind).
+fn raise_transport_check(label: i64) -> TirOp {
+    let mut op = check_exception(label);
+    op.set_exception_edge_kind(crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind);
+    op
+}
+
+#[test]
+fn exceptional_check_rejects_mixed_origin_and_unwind_predecessors() {
+    let mut func = TirFunction::new(
+        "mixed_event_source".into(),
+        vec![TirType::DynBox, TirType::Bool],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let origin = func.fresh_block();
+    let unwind = func.fresh_block();
+    let join = func.fresh_block();
+    let exit = func.fresh_block();
+    let entry_args = &func.blocks[&func.entry_block].args;
+    let error = entry_args[0].id;
+    let cond = entry_args[1].id;
+    func.label_id_map.insert(exit.0, 9);
+    func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::CondBranch {
+        cond,
+        then_block: origin,
+        then_args: vec![],
+        else_block: unwind,
+        else_args: vec![],
+    };
+    let mut fresh_error = op(OpCode::Call);
+    fresh_error.results.push(func.fresh_value());
+    fresh_error
+        .attrs
+        .insert("callee".into(), AttrValue::Str("source_operation".into()));
+    let mut forwarded = op(OpCode::Raise);
+    forwarded.operands.push(error);
+    for (block, producer) in [(origin, fresh_error), (unwind, forwarded)] {
+        func.blocks.insert(
+            block,
+            TirBlock {
+                id: block,
+                args: vec![],
+                ops: vec![producer],
+                terminator: Terminator::Branch {
+                    target: join,
+                    args: vec![],
+                },
+            },
+        );
+    }
+    func.blocks.insert(
+        join,
+        TirBlock {
+            id: join,
+            args: vec![],
+            ops: vec![check_exception(9)],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+    func.blocks.insert(
+        exit,
+        TirBlock {
+            id: exit,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+    let diagnostics = verify_exception_regions(&func).unwrap_err();
+    assert!(
+        diagnostics.iter().any(
+            |diagnostic| diagnostic.kind == ExceptionRegionDiagnosticKind::AmbiguousEventSource
+        )
+    );
 }
 
 fn const_int(result: ValueId, value: i64) -> TirOp {
@@ -387,7 +465,7 @@ fn forced_raise_check_exception_handler_branch_function() -> (TirFunction, Value
     let exc = func.fresh_value();
 
     func.blocks.get_mut(&func.entry_block).unwrap().ops =
-        vec![try_start(57), op(OpCode::Raise), check_exception(57)];
+        vec![try_start(57), op(OpCode::Raise), raise_transport_check(57)];
     func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
         target: handler,
         args: vec![],
@@ -1492,6 +1570,7 @@ fn exception_region_state_resume_stacks_are_bounded_by_lexical_try_token() {
                 phase: ExceptionRegionPhase::Active,
             }],
             pending_must_transfer: false,
+            pending_source: super::path_state::PendingSource::Clear,
         }]),
         "state-dispatch cycles must not manufacture duplicate lexical exception frames"
     );
@@ -1718,7 +1797,7 @@ fn assert_nested_region_pop_order(inner_phase: ExceptionRegionPhase, suspended: 
         ExceptionRegionPhase::Active => {}
         ExceptionRegionPhase::NormalClosure => nested_ops.push(try_end(20)),
         ExceptionRegionPhase::Handler => {
-            nested_ops.extend([op(OpCode::Raise), check_exception(20)]);
+            nested_ops.extend([op(OpCode::Raise), raise_transport_check(20)]);
         }
     }
     func.blocks.insert(
@@ -1856,6 +1935,7 @@ fn assert_nested_region_pop_order(inner_phase: ExceptionRegionPhase, suspended: 
                     },
                 ],
                 pending_must_transfer: false,
+                pending_source: super::path_state::PendingSource::Clear,
             }])
         );
     }
@@ -2081,12 +2161,12 @@ fn repoll_loop_custody_survives_target_optimization() {
                 {"kind": "try_start", "value": 310},
                 {"kind": "state_label", "value": 313},
                 {"kind": "call", "s_value": "work", "args": [], "out": "work_result"},
-                {"kind": "check_exception", "value": 310},
+                {"kind": "check_exception","exception_edge":"origin", "value": 310},
                 {"kind": "const", "value": 313, "out": "pending"},
                 {"kind": "const", "value": 152, "out": "slot"},
                 {"kind": "state_transition", "value": 314,
                  "args": ["awaitable", "slot", "pending"], "out": "ready"},
-                {"kind": "check_exception", "value": 310},
+                {"kind": "check_exception","exception_edge":"origin", "value": 310},
                 {"kind": "try_end", "value": 310},
                 {"kind": "jump", "value": 311},
                 {"kind": "label", "value": 310},
@@ -2661,7 +2741,7 @@ fn dead_return_cleanup_repoll_does_not_gain_dispatch_custody_after_target_optimi
                 {"kind": "try_start", "value": 94},
                 {"kind": "br_if", "args": ["return_now"], "value": 92},
                 {"kind": "call", "s_value": "work", "args": [], "out": "work_result"},
-                {"kind": "check_exception", "value": 94},
+                {"kind": "check_exception","exception_edge":"origin", "value": 94},
                 {"kind": "try_end", "value": 94},
                 {"kind": "jump", "value": 95},
                 {"kind": "label", "value": 92},
@@ -2672,13 +2752,17 @@ fn dead_return_cleanup_repoll_does_not_gain_dispatch_custody_after_target_optimi
                 {"kind": "const", "value": 152, "out": "slot"},
                 {"kind": "state_transition", "value": 114,
                  "args": ["awaitable", "slot", "pending"], "out": "ready"},
-                {"kind": "check_exception", "value": 94},
+                {"kind": "check_exception","exception_edge":"origin", "value": 94},
                 {"kind": "try_end", "value": 94},
                 {"kind": "jump", "value": 95},
                 {"kind": "label", "value": 94},
                 {"kind": "try_end", "value": 94},
                 {"kind": "label", "value": 95},
                 {"kind": "exception_last_pending", "out": "observed"},
+                // The frontend takes the pending exception into a value and
+                // clears it before authored finally code, so a fresh Origin
+                // never joins the forwarded Unwind.
+                {"kind": "exception_clear"},
                 {"kind": "call", "s_value": "consume", "args": ["observed"], "out": "consumed"},
                 {"kind": "exception_pop"},
                 {"kind": "ret_void"},

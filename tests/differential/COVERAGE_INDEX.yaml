@@ -981,6 +981,8 @@ stdlib:
       - tests/differential/stdlib/logging_record_thread_process.py
   traceback:
     tests:
+      - tests/differential/stdlib/frame_exception_events.py
+      - tests/differential/stdlib/frame_location_lifecycle.py
       - tests/differential/stdlib/traceback_tb_next_assignment.py
       - tests/differential/stdlib/traceback_chain.py
       - tests/differential/stdlib/traceback_extract_tb_payload.py

@@ -8,13 +8,14 @@ unsupported-feature diagnostic conversion.
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import ExceptionEdgeKind
+
 from molt.frontend.lowering.op_kinds_generated import (
     CHECK_EXCEPTION_SKIP_KINDS,
     FRONTEND_ARBITRARY_HEAP_EFFECT,
     FRONTEND_REPOLL_KINDS,
     FrontendKinds,
     FrontendOpKind,
-    RAISING_KIND_NAMES,
 )
 
 import ast
@@ -37,13 +38,43 @@ _EMIT_KINDS_1: frozenset[FrontendOpKind] = frozenset({"PHI", "IDENTITY_ALIAS"})
 
 
 class EmissionCoreMixin(GeneratorMixinBase):
-    def visit(self, node: ast.AST) -> Any:
+    @contextmanager
+    def _source_location_scope(self, node: ast.AST | None) -> Any:
+        """Attribute an implicit source terminator without attributing cleanup."""
+        if node is None:
+            yield
+            return
+        previous = self._expr_line, self._expr_col, self._statement_site
+        line = getattr(node, "lineno", None)
+        if line is None:
+            raise ValueError("source terminator has no AST location")
+        self._expr_line = (line, getattr(node, "end_lineno", line) or line)
+        col = getattr(node, "col_offset", None)
+        end_col = getattr(node, "end_col_offset", None)
+        self._expr_col = (
+            (col, end_col) if col is not None and end_col is not None else None
+        )
+        self._statement_site = None
         try:
-            if isinstance(node, (ast.stmt, ast.ExceptHandler)):
+            yield
+        finally:
+            self._expr_line, self._expr_col, self._statement_site = previous
+
+    def visit(self, node: ast.AST) -> Any:
+        previous_statement = self._statement_site
+        statement = isinstance(node, (ast.stmt, ast.ExceptHandler))
+        try:
+            if statement:
                 lineno = getattr(node, "lineno", None)
                 if lineno:
                     col = getattr(node, "col_offset", None)
                     end_col = getattr(node, "end_col_offset", None)
+                    self._statement_site = (
+                        lineno,
+                        getattr(node, "end_lineno", lineno) or lineno,
+                        col,
+                        end_col,
+                    )
                     self._emit_line_marker(int(lineno), col, end_col)
             # Track expression-level column offsets for traceback carets.
             # When an expression node is visited, record its position so
@@ -54,13 +85,18 @@ class EmissionCoreMixin(GeneratorMixinBase):
                 col = getattr(node, "col_offset", None)
                 end_col = getattr(node, "end_col_offset", None)
                 prev = getattr(self, "_expr_col", None)
+                prev_line = getattr(self, "_expr_line", None)
                 if col is not None and end_col is not None:
                     self._expr_col = (col, end_col)
+                line = getattr(node, "lineno", None)
+                if line is not None:
+                    self._expr_line = (line, getattr(node, "end_lineno", line) or line)
                 try:
                     result = super().visit(node)
                 finally:
                     if col is not None and end_col is not None:
                         self._expr_col = prev
+                    self._expr_line = prev_line
                 if isinstance(node, ast.Call):
                     # The instruction that evaluates a source call adopts its
                     # operands, as CPython's CALL does.
@@ -86,6 +122,9 @@ class EmissionCoreMixin(GeneratorMixinBase):
             raise
         except FrontendRejection as rejection:
             raise_compatibility_error(self.compat, node, rejection)
+        finally:
+            if statement:
+                self._statement_site = previous_statement
 
     def next_var(self) -> str:
         while True:
@@ -119,27 +158,40 @@ class EmissionCoreMixin(GeneratorMixinBase):
                         self.emit(
                             MoltOp(
                                 kind="CHECK_EXCEPTION",
+                                exception_edge=ExceptionEdgeKind.UNWIND,
                                 args=[handler_label],
                                 result=MoltValue("none"),
                             )
                         )
 
     def emit(self, op: MoltOp) -> None:
+        if (
+            self.try_suppress_depth is not None
+            and len(self.try_end_labels) <= self.try_suppress_depth
+            and op.kind != FrontendKinds.CHECK_EXCEPTION
+            and op.exception_source is None
+        ):
+            # Compiler transport/cleanup forwards the existing error. Authored
+            # guarded bodies use a deeper handler; source loops do not suppress.
+            op.exception_source = ExceptionEdgeKind.UNWIND
         if op.kind in _EMIT_KINDS_1 and op.result is not None:
             op.result.borrows_binding |= any(
                 isinstance(value, MoltValue) and value.borrows_binding
                 for value in op.args
             )
-        # Auto-attach expression column offsets to raising ops. RAISING_KIND_NAMES
-        # is generated from runtime/molt-ir/src/tir/op_kinds.toml (the
-        # [[frontend_raising_kind]] table cross-checked against the [[opcode]]
-        # may_throw oracle) - see the module-level import.
+        # Retain expression and terminal-statement coordinates before lowering
+        # loses the AST. Publication is selected separately from effect facts.
         expr_col = getattr(self, "_expr_col", None)
-        if (
-            op.col_offset is None
-            and op.kind in RAISING_KIND_NAMES
-            and expr_col is not None
-        ):
+        expr_line = getattr(self, "_expr_line", None)
+        if self._statement_site is not None:
+            line, end_line, col, end_col = self._statement_site
+            if expr_line is None:
+                expr_line = (line, end_line)
+            if expr_col is None and col is not None and end_col is not None:
+                expr_col = (col, end_col)
+        if op.source_line is None and expr_line is not None:
+            op.source_line, op.source_end_line = expr_line
+        if op.col_offset is None and expr_col is not None:
             op.col_offset, op.end_col_offset = expr_col
         if (
             op.kind == FrontendKinds.CONST
@@ -183,6 +235,7 @@ class EmissionCoreMixin(GeneratorMixinBase):
         self.current_ops.append(
             MoltOp(
                 kind="CHECK_EXCEPTION",
+                exception_edge=ExceptionEdgeKind.ORIGIN,
                 args=[handler_label],
                 result=MoltValue("none"),
             )

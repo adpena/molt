@@ -409,6 +409,7 @@ _PY_HEADER = """\
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Final, Literal
 
 """
@@ -465,6 +466,10 @@ def render_py(data: dict) -> str:
         _render_py_kind_types(data),
         render_primitive_effects_py(data),
     ]
+    out.append("class ExceptionEdgeKind(StrEnum):\n")
+    for row in data["exception_edge_kind"]:
+        out.append(f"    {row['name'].upper()} = {row['wire']!r}\n")
+    out.append("\n")
     out.append(
         _render_py_frozenset(
             "SIMPLEIR_REGISTERED_KINDS", sorted(registered_simpleir_kinds(data))

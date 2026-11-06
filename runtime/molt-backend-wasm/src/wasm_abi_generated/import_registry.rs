@@ -298,6 +298,10 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "exception_prepare_raise",
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::ExceptionFrameOrigin,
+        name: "exception_frame_origin",
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionTracePrepend,
         name: "exception_trace_prepend",
     },
@@ -11312,6 +11316,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_frame_cell_publish" => Some(WasmRuntimeImport::FrameCellPublish),
         "exception_prepare_raise" => Some(WasmRuntimeImport::ExceptionPrepareRaise),
         "molt_exception_prepare_raise" => Some(WasmRuntimeImport::ExceptionPrepareRaise),
+        "exception_frame_origin" => Some(WasmRuntimeImport::ExceptionFrameOrigin),
+        "molt_exception_frame_origin" => Some(WasmRuntimeImport::ExceptionFrameOrigin),
         "exception_trace_prepend" => Some(WasmRuntimeImport::ExceptionTracePrepend),
         "molt_exception_trace_prepend" => Some(WasmRuntimeImport::ExceptionTracePrepend),
         "exception_active" => Some(WasmRuntimeImport::ExceptionActive),

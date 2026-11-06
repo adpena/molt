@@ -75,6 +75,7 @@ static WORK:AtomicU32=AtomicU32::new(0);
 static CALLS:AtomicU64=AtomicU64::new(0);
 static PASSIVES:AtomicU64=AtomicU64::new(0);
 static ERROR:AtomicU64=AtomicU64::new(0);
+static ORIGINS:AtomicU64=AtomicU64::new(0);
 #[no_mangle] pub static {abi}:u64=1;
 #[no_mangle] pub extern "C" fn molt_thread_record()->u64 {{
  unsafe {{RECORD.work=core::ptr::addr_of!(WORK) as u64;}} core::ptr::addr_of!(RECORD) as u64
@@ -85,20 +86,23 @@ static ERROR:AtomicU64=AtomicU64::new(0);
 #[no_mangle] pub extern "C" fn molt_exception_last_pending()->u64 {{assert!(unsafe{{RECORD.pending!=0}},"empty exception state entered passive capture");PASSIVES.fetch_add(1,SeqCst);0x7ff9_0000_0000_0007}}
 #[no_mangle] pub extern "C" fn molt_dec_ref_obj(_:u64){{}}
 #[no_mangle] pub extern "C" fn molt_inc_ref_obj(_:u64){{}}
-#[no_mangle] pub extern "C" fn poll_config(word:u32,pending:u8,error:u64){{WORK.store(word,SeqCst);unsafe{{RECORD.pending=pending;}}ERROR.store(error,SeqCst);CALLS.store(0,SeqCst);PASSIVES.store(0,SeqCst);}}
+#[no_mangle] pub extern "C" fn molt_exception_frame_origin(homes:u64)->u64 {{assert_eq!(homes,0,"a frameless probe lends no homes");ORIGINS.fetch_add(1,SeqCst);0}}
+#[no_mangle] pub extern "C" fn poll_config(word:u32,pending:u8,error:u64){{WORK.store(word,SeqCst);unsafe{{RECORD.pending=pending;}}ERROR.store(error,SeqCst);CALLS.store(0,SeqCst);PASSIVES.store(0,SeqCst);ORIGINS.store(0,SeqCst);}}
+#[no_mangle] pub extern "C" fn origin_calls()->u64{{ORIGINS.load(SeqCst)}}
 #[no_mangle] pub extern "C" fn poll_calls()->u64{{CALLS.load(SeqCst)}}
 #[no_mangle] pub extern "C" fn passive_calls()->u64{{PASSIVES.load(SeqCst)}}
 "#,
         abi = molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL
     );
     let harness = r#"
-extern "C" {fn inline_poll_probe()->u64;fn inline_payload_probe()->u64;fn poll_config(word:u32,pending:u8,error:u64);fn poll_calls()->u64;fn passive_calls()->u64;}
+extern "C" {fn inline_poll_probe()->u64;fn inline_payload_probe()->u64;fn poll_config(word:u32,pending:u8,error:u64);fn poll_calls()->u64;fn passive_calls()->u64;fn origin_calls()->u64;}
 fn main(){unsafe{
  let int=0x7ff9_0000_0000_0000u64;
- poll_config(0,0,0);for _ in 0..1000{assert_eq!(inline_poll_probe(),int);}assert_eq!(poll_calls(),0);
- poll_config(8,0,0);assert_eq!(inline_poll_probe(),int);assert_eq!(poll_calls(),1);
- poll_config(8,0,1);assert_eq!(inline_poll_probe(),int|1);assert_eq!(poll_calls(),1);
- poll_config(0,1,0);assert_eq!(inline_poll_probe(),int|1);assert_eq!(poll_calls(),0);
+ // Only a taken Origin edge captures: once per failing probe, never otherwise.
+ poll_config(0,0,0);for _ in 0..1000{assert_eq!(inline_poll_probe(),int);}assert_eq!(poll_calls(),0);assert_eq!(origin_calls(),0);
+ poll_config(8,0,0);assert_eq!(inline_poll_probe(),int);assert_eq!(poll_calls(),1);assert_eq!(origin_calls(),0);
+ poll_config(8,0,1);assert_eq!(inline_poll_probe(),int|1);assert_eq!(poll_calls(),1);assert_eq!(origin_calls(),1);
+ poll_config(0,1,0);assert_eq!(inline_poll_probe(),int|1);assert_eq!(poll_calls(),0);assert_eq!(origin_calls(),1);
  // Mutation control: callback work with its producer notification suppressed
  // cannot enter service. The real C-API producer is tested in molt-runtime.
  poll_config(0,0,1);assert_eq!(inline_poll_probe(),int);assert_eq!(poll_calls(),0);
@@ -316,6 +320,10 @@ pub extern "C" fn molt_thread_record() -> u64 {{
 pub extern "C" fn molt_int_from_i64(value: i64) -> u64 {{ value as u64 }}
 #[no_mangle]
 pub extern "C" fn molt_async_work_poll_and_exception_pending() -> u64 {{ 0 }}
+#[no_mangle]
+pub extern "C" fn molt_exception_frame_origin(_: u64) -> u64 {{
+    panic!("this provider never sets an error, so no Origin edge is taken")
+}}
 #[no_mangle]
 pub extern "C" fn {SYMBOL}(_: u64) -> u64 {{ {SENTINEL}u64 }}
 
@@ -2601,6 +2609,10 @@ pub extern "C" fn molt_thread_record() -> u64 {{
 pub extern "C" fn molt_int_from_i64(value: i64) -> u64 {{ value as u64 }}
 #[no_mangle]
 pub extern "C" fn molt_async_work_poll_and_exception_pending() -> u64 {{ 0 }}
+#[no_mangle]
+pub extern "C" fn molt_exception_frame_origin(_: u64) -> u64 {{
+    panic!("this provider never sets an error, so no Origin edge is taken")
+}}
 #[no_mangle]
 pub extern "C" fn {SYMBOL}() -> *mut u8 {{
     INIT_CALLS.fetch_add(1, Ordering::SeqCst);

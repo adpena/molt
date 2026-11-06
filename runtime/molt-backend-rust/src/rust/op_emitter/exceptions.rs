@@ -136,6 +136,11 @@ impl RustBackend {
         self.emit_line("molt_trace_exit();");
     }
 
+    pub(super) fn emit_op_frame_set_location(&mut self, op: &OpIR) {
+        let location = op.value.expect("admitted source location index");
+        self.emit_line(&format!("molt_frame_set_location({location});"));
+    }
+
     pub(super) fn emit_op_frame_locals_set(&mut self, op: &OpIR) {
         let args = op.args.as_deref().unwrap_or(&[]);
         let locals = args

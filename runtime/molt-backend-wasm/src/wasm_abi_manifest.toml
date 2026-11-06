@@ -759,6 +759,12 @@ runtime_name = "molt_exception_prepare_raise"
 callable_arity = 2
 
 [[import]]
+name = "exception_frame_origin"
+type = 2
+runtime_name = "molt_exception_frame_origin"
+callable_arity = 1
+
+[[import]]
 name = "exception_trace_prepend"
 type = 2
 runtime_name = "molt_exception_trace_prepend"

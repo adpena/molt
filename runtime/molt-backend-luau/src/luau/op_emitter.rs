@@ -120,6 +120,7 @@ impl LuauBackend {
 
         match op.kind {
             molt_ir::runtime_call_op_kinds!() => unreachable!("contract calls dispatched above"),
+            molt_ir::OpKind::FrameSetLocation => unreachable!("location dispatched above"),
             molt_ir::OpKind::Phi | molt_ir::OpKind::Nop => {}
             molt_ir::OpKind::MAnd
             | molt_ir::OpKind::Abs

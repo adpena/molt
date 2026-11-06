@@ -197,9 +197,15 @@ class SerializationExceptionOpsMixin(GeneratorMixinBase):
                 }
             )
         elif op.kind == FrontendKinds.CHECK_EXCEPTION:
+            edge = op.exception_edge
+            if edge is None:
+                raise ValueError(
+                    "CHECK_EXCEPTION requires a typed Origin or Unwind edge"
+                )
             ctx.json_ops.append(
                 {
                     "kind": "check_exception",
+                    "exception_edge": edge,
                     "value": self._serialization_control_value(op),
                 }
             )

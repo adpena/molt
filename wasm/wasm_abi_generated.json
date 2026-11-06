@@ -3362,6 +3362,7 @@
     "exception_context_set": "molt_exception_context_set",
     "exception_current": "molt_exception_current",
     "exception_enter_handler": "molt_exception_enter_handler",
+    "exception_frame_origin": "molt_exception_frame_origin",
     "exception_init": "molt_exception_init",
     "exception_kind": "molt_exception_kind",
     "exception_last": "molt_exception_last",

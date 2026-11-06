@@ -603,16 +603,27 @@ class SerializationMixin(
         # JSON dicts emitted by raising ops.  This is done after serialization
         # so we don't need to modify every json_ops.append site.
         for ci_idx, (start_idx, mop) in enumerate(_col_inject):
-            if mop.col_offset is None:
-                continue
             end_idx = (
                 _col_inject[ci_idx + 1][0]
                 if ci_idx + 1 < len(_col_inject)
                 else len(json_ops)
             )
             if end_idx > start_idx:
+                if mop.exception_source is not None:
+                    for entry in json_ops[start_idx:end_idx]:
+                        if entry["kind"] not in {
+                            WireKinds.CHECK_EXCEPTION,
+                            WireKinds.ASYNC_WORK_POLL,
+                        }:
+                            entry.setdefault("exception_source", mop.exception_source)
                 last_entry = json_ops[end_idx - 1]
-                if isinstance(last_entry, dict) and "col_offset" not in last_entry:
+                if mop.source_line is not None:
+                    for entry in json_ops[start_idx:end_idx]:
+                        entry.setdefault("source_line", mop.source_line)
+                        entry.setdefault(
+                            "source_end_line", mop.source_end_line or mop.source_line
+                        )
+                if mop.col_offset is not None and "col_offset" not in last_entry:
                     last_entry["col_offset"] = mop.col_offset
                     if mop.end_col_offset is not None:
                         last_entry["end_col_offset"] = mop.end_col_offset
@@ -746,6 +757,30 @@ class SerializationMixin(
             if metadata:
                 function_metadata[func_entry["name"]] = metadata
         self._maybe_report_midend_stats()
+        from molt.frontend.lowering.frame_locations import publish_frame_locations
+
+        publication_anchors = {
+            function["name"]: function["ops"][publication["boundary_index"]]
+            for function in funcs_json
+            if (
+                publication := function_metadata.get(function["name"], {}).get(
+                    "source_module_publication"
+                )
+            )
+            is not None
+        }
+        publish_frame_locations(
+            funcs_json, module_code_symbol=module_init_symbol or "molt_main"
+        )
+        for function in funcs_json:
+            if function["name"] in publication_anchors:
+                function_metadata[function["name"]]["source_module_publication"][
+                    "boundary_index"
+                ] = next(
+                    index
+                    for index, op in enumerate(function["ops"])
+                    if op is publication_anchors[function["name"]]
+                )
         return {
             "functions": funcs_json,
             "function_metadata": function_metadata,

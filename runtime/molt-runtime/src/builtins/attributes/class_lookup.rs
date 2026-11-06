@@ -195,9 +195,6 @@ where
                     Some(raw) => !default.admits(py, owner, raw)?,
                     None => false,
                 };
-                if fallback.is_some() {
-                    traceback_suppress_enter();
-                }
                 exception_stack_push();
                 let result = match raw {
                     Some(raw) if custom => descriptor_call1(py, raw, owner, Some(receiver), name),
@@ -214,9 +211,6 @@ where
                 // still selected, before AttributeError suppression or fallback.
                 if let Some(bits) = raw.take() {
                     dec_ref_bits(py, bits);
-                }
-                if fallback.is_some() {
-                    traceback_suppress_exit();
                 }
                 let result = match result {
                     Err(()) if fallback.is_some() && clear_attribute_error_if_pending(py) => {

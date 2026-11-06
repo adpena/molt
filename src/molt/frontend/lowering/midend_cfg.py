@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from molt.frontend.lowering.op_kinds_generated import (
+    ExceptionEdgeKind,
     FrontendKinds,
     FrontendOpKind,
 )
@@ -74,6 +75,69 @@ _NORMALIZE_TRY_EXCEPT_JOIN_LABELS_KINDS_1: frozenset[FrontendOpKind] = frozenset
 
 
 class MidendCFGMixin(GeneratorMixinBase):
+    def _exception_routing_labels(self, ops: list[MoltOp]) -> set[str]:
+        """Preserve lexical entries and labels owning exception landing work."""
+        protected = {
+            key
+            for op in ops
+            if op.kind in _REWRITE_LOOP_EDGE_THREADING_KINDS_2
+            if (key := self._control_label_key(try_region_id(op))) is not None
+        }
+        plain_aliases: dict[str, str] = {}
+        label: str | None = None
+        body: list[MoltOp] = []
+
+        def finish_label() -> None:
+            if (
+                label is not None
+                and len(body) == 1
+                and body[0].kind == FrontendKinds.JUMP
+            ):
+                if (
+                    body[0].args
+                    and (target := self._control_label_key(body[0].args[0])) is not None
+                ):
+                    plain_aliases[label] = target
+
+        for op in ops:
+            if op.kind in _ENSURE_STRUCTURAL_CFG_VALIDITY_KINDS_3:
+                finish_label()
+                label = self._control_label_key(op.args[0]) if op.args else None
+                body = []
+            elif op.kind != FrontendKinds.LINE:
+                body.append(op)
+                if label is not None and op.kind in {
+                    FrontendKinds.TRY_END,
+                    FrontendKinds.EXCEPTION_POP,
+                    FrontendKinds.EXCEPTION_REGION_DROPS_INSERTED,
+                }:
+                    protected.add(label)
+        finish_label()
+        # A trampoline to an entry still transfers custody into that entry.
+        sources_by_target: dict[str, list[str]] = {}
+        for source, target in plain_aliases.items():
+            sources_by_target.setdefault(target, []).append(source)
+        pending = list(protected)
+        while pending:
+            for source in sources_by_target.get(pending.pop(), ()):
+                if source not in protected:
+                    protected.add(source)
+                    pending.append(source)
+        return protected
+
+    def _check_is_transparent_label_forwarder(
+        self, op: MoltOp, protected_labels: set[str]
+    ) -> bool:
+        return (
+            op.kind == FrontendKinds.CHECK_EXCEPTION
+            and op.exception_edge == ExceptionEdgeKind.UNWIND
+            and len(op.args) == 1
+            and op.result.name == "none"
+            and "async_work_poll" not in (op.metadata or {})
+            and (target := self._control_label_key(op.args[0])) is not None
+            and target not in protected_labels
+        )
+
     def _guard_signature(self, op: MoltOp) -> tuple[Any, ...] | None:
         if op.kind != FrontendKinds.GUARD_TAG:
             return None
@@ -309,12 +373,7 @@ class MidendCFGMixin(GeneratorMixinBase):
                 single_exec_succ_by_block[block.id] = chosen[0]
 
         label_alias: dict[str, str] = {}
-        region_labels = {
-            str(region_id)
-            for op in ops
-            if op.kind in _REWRITE_LOOP_EDGE_THREADING_KINDS_2
-            if (region_id := try_region_id(op)) is not None
-        }
+        region_labels = self._exception_routing_labels(ops)
 
         def collect_label_aliases() -> None:
             def alias_target_from_body(body_ops: list[MoltOp]) -> str | None:
@@ -326,8 +385,9 @@ class MidendCFGMixin(GeneratorMixinBase):
                     return self._control_label_key(body_ops[0].args[0])
                 if (
                     len(body_ops) == 2
-                    and body_ops[0].kind == FrontendKinds.CHECK_EXCEPTION
-                    and body_ops[0].args
+                    and self._check_is_transparent_label_forwarder(
+                        body_ops[0], region_labels
+                    )
                     and body_ops[1].kind == FrontendKinds.JUMP
                     and body_ops[1].args
                 ):
@@ -432,6 +492,12 @@ class MidendCFGMixin(GeneratorMixinBase):
                                     ],
                                     result=op.result,
                                     metadata=op.metadata,
+                                    exception_edge=op.exception_edge,
+                                    exception_source=op.exception_source,
+                                    source_line=op.source_line,
+                                    source_end_line=op.source_end_line,
+                                    col_offset=op.col_offset,
+                                    end_col_offset=op.end_col_offset,
                                 )
                             )
                             check_exception_threads += 1
@@ -464,6 +530,12 @@ class MidendCFGMixin(GeneratorMixinBase):
                                     args=[back_label],
                                     result=MoltValue("none"),
                                     metadata=op.metadata,
+                                    exception_edge=op.exception_edge,
+                                    exception_source=op.exception_source,
+                                    source_line=op.source_line,
+                                    source_end_line=op.source_end_line,
+                                    col_offset=op.col_offset,
+                                    end_col_offset=op.end_col_offset,
                                 )
                             )
                             continue
@@ -473,6 +545,12 @@ class MidendCFGMixin(GeneratorMixinBase):
                                 args=[],
                                 result=MoltValue("none"),
                                 metadata=op.metadata,
+                                exception_edge=op.exception_edge,
+                                exception_source=op.exception_source,
+                                source_line=op.source_line,
+                                source_end_line=op.source_end_line,
+                                col_offset=op.col_offset,
+                                end_col_offset=op.end_col_offset,
                             )
                         )
                         continue
@@ -490,6 +568,12 @@ class MidendCFGMixin(GeneratorMixinBase):
                                     args=[exit_label],
                                     result=MoltValue("none"),
                                     metadata=op.metadata,
+                                    exception_edge=op.exception_edge,
+                                    exception_source=op.exception_source,
+                                    source_line=op.source_line,
+                                    source_end_line=op.source_end_line,
+                                    col_offset=op.col_offset,
+                                    end_col_offset=op.end_col_offset,
                                 )
                             )
                             continue
@@ -499,6 +583,12 @@ class MidendCFGMixin(GeneratorMixinBase):
                                 args=[],
                                 result=MoltValue("none"),
                                 metadata=op.metadata,
+                                exception_edge=op.exception_edge,
+                                exception_source=op.exception_source,
+                                source_line=op.source_line,
+                                source_end_line=op.source_end_line,
+                                col_offset=op.col_offset,
+                                end_col_offset=op.end_col_offset,
                             )
                         )
                         continue
@@ -527,6 +617,12 @@ class MidendCFGMixin(GeneratorMixinBase):
                                 args=[break_label],
                                 result=MoltValue("none"),
                                 metadata=op.metadata,
+                                exception_edge=op.exception_edge,
+                                exception_source=op.exception_source,
+                                source_line=op.source_line,
+                                source_end_line=op.source_end_line,
+                                col_offset=op.col_offset,
+                                end_col_offset=op.end_col_offset,
                             )
                         )
                         continue
@@ -854,12 +950,7 @@ class MidendCFGMixin(GeneratorMixinBase):
             local_ops: list[MoltOp], local_cfg: CFGGraph
         ) -> dict[str, str]:
             alias_label: dict[str, str] = {}
-            region_labels = {
-                str(region_id)
-                for op in local_ops
-                if op.kind in _REWRITE_LOOP_EDGE_THREADING_KINDS_2
-                if (region_id := try_region_id(op)) is not None
-            }
+            region_labels = self._exception_routing_labels(local_ops)
 
             def extract_alias_target(body_ops: list[MoltOp]) -> str | None:
                 if (
@@ -870,8 +961,9 @@ class MidendCFGMixin(GeneratorMixinBase):
                     return self._control_label_key(body_ops[0].args[0])
                 if (
                     len(body_ops) == 2
-                    and body_ops[0].kind == FrontendKinds.CHECK_EXCEPTION
-                    and body_ops[0].args
+                    and self._check_is_transparent_label_forwarder(
+                        body_ops[0], region_labels
+                    )
                     and body_ops[1].kind == FrontendKinds.JUMP
                     and body_ops[1].args
                 ):
@@ -924,6 +1016,7 @@ class MidendCFGMixin(GeneratorMixinBase):
             if not local_cfg.blocks:
                 break
             alias_label = collect_alias_labels(current, local_cfg)
+            protected_labels = self._exception_routing_labels(current)
 
             def resolve_alias(label: str) -> str:
                 resolved = label
@@ -955,10 +1048,18 @@ class MidendCFGMixin(GeneratorMixinBase):
                                 args=[new_first, *op.args[1:]],
                                 result=op.result,
                                 metadata=op.metadata,
+                                exception_edge=op.exception_edge,
+                                exception_source=op.exception_source,
+                                source_line=op.source_line,
+                                source_end_line=op.source_end_line,
+                                col_offset=op.col_offset,
+                                end_col_offset=op.end_col_offset,
                             )
                             round_rewrites += 1
 
-                if rewritten.kind == FrontendKinds.CHECK_EXCEPTION and rewritten.args:
+                if self._check_is_transparent_label_forwarder(
+                    rewritten, protected_labels
+                ):
                     check_target_key = self._control_label_key(rewritten.args[0])
                     if check_target_key is not None:
                         j = i + 1

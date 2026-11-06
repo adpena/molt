@@ -12,6 +12,7 @@ from molt.compiler_analysis.python_identity_catalog_generated import PythonIdent
 from molt.compiler_analysis.python_source_keys import PythonSourceKey
 
 from molt.frontend.lowering.op_kinds_generated import (
+    ExceptionEdgeKind,
     FrontendOpKind,
     WireOpKind,
 )
@@ -67,6 +68,8 @@ if TYPE_CHECKING:
 
 
 class SimpleIROp(TypedDict):
+    exception_edge: NotRequired[ExceptionEdgeKind]
+    exception_source: NotRequired[ExceptionEdgeKind]
     """Serialized operation: closed identity, existing operation-specific payload."""
 
     kind: WireOpKind
@@ -92,6 +95,7 @@ class SimpleIROp(TypedDict):
     runtime_symbol: NotRequired[Any]
     s_value: NotRequired[Any]
     source_line: NotRequired[Any]
+    source_end_line: NotRequired[Any]
     source_module_publication_boundary: NotRequired[Any]
     stack_eligible: NotRequired[Any]
     arena_eligible: NotRequired[Any]
@@ -372,6 +376,9 @@ class MoltOp:
     col_offset: int | None = None
     end_col_offset: int | None = None
     source_line: int | None = None
+    source_end_line: int | None = None
+    exception_edge: ExceptionEdgeKind | None = None
+    exception_source: ExceptionEdgeKind | None = None
 
 
 def loaded_method_self_name(op: MoltOp) -> str:

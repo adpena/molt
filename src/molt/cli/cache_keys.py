@@ -20,6 +20,7 @@ from molt.frontend import (
 )
 from molt.frontend.dataclass_init import DataclassInitField
 from molt.opcode_literal_payloads import integer_literal_bytes, literal_ast_dump
+from molt.frontend.dataclass_init import DataclassInitField
 
 from molt.cli import function_records
 from molt.cli.function_records import FunctionDigestSeed
@@ -194,6 +195,8 @@ def _cache_json_value(value: Any) -> Any:
 
 
 def _json_ir_default(value: Any) -> Any:
+    if isinstance(value, DataclassInitField):
+        return {"__dataclass_init_field__": list(value.schema())}
     if isinstance(value, complex):
         return {"__complex__": [value.real, value.imag]}
     if value is Ellipsis:
@@ -237,8 +240,6 @@ def _json_ir_default(value: Any) -> Any:
                 ),
             }
         }
-    if isinstance(value, DataclassInitField):
-        return {"__dataclass_init_field__": list(value.schema())}
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 

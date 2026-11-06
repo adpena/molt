@@ -6,7 +6,7 @@ from tools.generator_io import rustfmt_source
 
 from . import render_wire as _wire
 from .primitive_effects import render_primitive_effects_rs
-from .registration import registered_simpleir_kinds
+from .registration import registered_simpleir_kinds, frontend_kinds_for_wire_kind
 from .runtime_calls import render_runtime_calls
 from .runtime_requirements import (
     INTEGER_SEMANTIC_ROLES,
@@ -101,7 +101,33 @@ def _render_rs_unformatted(data: dict) -> str:
     out: list[str] = [_RS_HEADER]
 
     out.append(_wire.render_enum(data))
+    edges = data["exception_edge_kind"]
+    out.append(
+        "#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]\n"
+    )
+    out.append("#[repr(i64)]\npub enum ExceptionEdgeKind {\n")
+    for row in edges:
+        out.append(
+            f'    #[serde(rename = "{row["wire"]}")]\n    {row["name"]} = {row["tag"]},\n'
+        )
+    out.append(
+        "}\nimpl ExceptionEdgeKind {\n    pub fn from_tag(tag: i64) -> Option<Self> {\n        match tag {\n"
+    )
+    for row in edges:
+        out.append(f"            {row['tag']} => Some(Self::{row['name']}),\n")
+    out.append("            _ => None,\n        }\n    }\n}\n")
 
+    skip = {row["kind"] for row in data["frontend_check_exception_skip"]}
+    out.append(
+        "/// Structural/forwarding producers, shared with the frontend's auto-check authority.\n"
+    )
+    out.append("pub fn kind_defers_source_exception_check(kind: OpKind) -> bool {\n")
+    deferred = []
+    for kind in sorted(registered_simpleir_kinds(data)):
+        frontend = frontend_kinds_for_wire_kind(data, kind)
+        if frontend and all(name in skip for name in frontend):
+            deferred.append(_wire.kind_ref(kind))
+    out.append(f"    matches!(kind, {' | '.join(deferred)})\n}}\n")
     out.append(_render_simpleir_control_facts(data))
     out.append("\n\n")
     out.append(_render_simpleir_field_roles(data))
@@ -450,6 +476,18 @@ def _render_rs_unformatted(data: dict) -> str:
         "    match opcode {\n"
     )
     out.append(_render_opcode_bool_arms(opcodes, state_machine_opcodes))
+    out.append("    }\n}\n\n")
+
+    temporary_release_opcodes = list(data.get("temporary_release_opcodes", []))
+    out.append(
+        "/// Whether an opcode's only Python callback is finalizing a temporary that\n"
+        "/// drop insertion releases at its last use. Frame-location placement does\n"
+        "/// not treat that finalizer as a location read. EXHAUSTIVE over OpCode.\n"
+        "#[inline]\n"
+        "pub fn opcode_is_temporary_release_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, temporary_release_opcodes))
     out.append("    }\n}\n\n")
 
     out.append(_render_module_slot_promotion_roles(opcodes, data))
@@ -1372,6 +1410,8 @@ def _render_observation_kind_predicates(data: dict) -> str:
         _wire.boolean(data, name, data.get(table, []))
         for name, table in (
             ("copy_kind_is_callback_free_table", "callback_free_copy_kinds"),
+            ("copy_kind_is_binding_release_table", "binding_release_copy_kinds"),
+            ("copy_kind_has_exact_int_result_table", "exact_int_result_copy_kinds"),
             (
                 "simpleir_kind_requires_async_work_poll_after",
                 "async_work_poll_after_kinds",

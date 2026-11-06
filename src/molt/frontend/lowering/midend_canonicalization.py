@@ -1213,7 +1213,10 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                 args=canonical_args,
                 result=op.result,
                 metadata=op.metadata,
+                exception_edge=op.exception_edge,
+                exception_source=op.exception_source,
                 source_line=op.source_line,
+                source_end_line=op.source_end_line,
                 col_offset=op.col_offset,
                 end_col_offset=op.end_col_offset,
             )
@@ -1317,6 +1320,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                                 args=[integer_literal_bytes(folded)],
                                 result=canonical_op.result,
                                 source_line=canonical_op.source_line,
+                                source_end_line=canonical_op.source_end_line,
                                 col_offset=canonical_op.col_offset,
                                 end_col_offset=canonical_op.end_col_offset,
                             )
@@ -1327,6 +1331,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                                 args=[folded],
                                 result=canonical_op.result,
                                 source_line=canonical_op.source_line,
+                                source_end_line=canonical_op.source_end_line,
                                 col_offset=canonical_op.col_offset,
                                 end_col_offset=canonical_op.end_col_offset,
                             )
@@ -1375,6 +1380,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                                         args=[integer_literal_bytes(folded_bw)],
                                         result=canonical_op.result,
                                         source_line=canonical_op.source_line,
+                                        source_end_line=canonical_op.source_end_line,
                                         col_offset=canonical_op.col_offset,
                                         end_col_offset=canonical_op.end_col_offset,
                                     )

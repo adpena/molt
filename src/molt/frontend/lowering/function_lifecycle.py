@@ -8,6 +8,8 @@ exit emission shared by function, async, module, and control-flow visitors.
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import ExceptionEdgeKind
+
 from molt.frontend.lowering.op_kinds_generated import (
     FrontendKinds,
     FrontendOpKind,
@@ -66,6 +68,7 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         argument_kind: int | None = None,
     ) -> None:
         """Publish live Python argument custody, never inferred ABI/locals snapshots."""
+        # Publication forwards frame custody; it does not own an error transfer.
         with self._suppress_check_exception(emit_on_exit=False):
             no_value = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=no_value))
@@ -282,6 +285,7 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         self.emit(
             MoltOp(
                 kind="CHECK_EXCEPTION",
+                exception_edge=ExceptionEdgeKind.ORIGIN,
                 args=[failure_label],
                 result=MoltValue("none"),
             )
@@ -534,30 +538,33 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
             return slot_val
         return self.return_slot
 
-    def _emit_return_value(self, value: MoltValue) -> None:
-        # Implicit expression returns (lambdas and generated evaluators) share
-        # the source-return owner. An earlier unwind capture is already owned.
-        # A binding view is captured here, before the frame's exit releases
-        # the homes it borrows from. The exit (`trace_exit`) releases or
-        # retires every binding the frame still holds; no compiled release
-        # precedes it.
-        value = self._capture_expression_reference(value)
-        exit_baseline_now = self.return_slot is None or self.return_label is None
-        if exit_baseline_now:
-            self._emit_restore_exception_stack_depth(exit_baseline=True)
-            self._emit_normal_return_terminator(value)
-            return
-        self._emit_restore_exception_stack_depth(exit_baseline=False)
-        slot = self._load_return_slot()
-        if slot is None:
-            self._emit_normal_return_terminator(value)
-            return
-        self._emit_cell_set(slot, value)
-        self.emit(
-            MoltOp(kind="JUMP", args=[self.return_label], result=MoltValue("none"))
-        )
+    def _emit_return_value(
+        self, value: MoltValue, source_node: ast.AST | None = None
+    ) -> None:
+        with self._source_location_scope(source_node):
+            # Implicit expression returns (lambdas and generated evaluators) share
+            # the source-return owner. An earlier unwind capture is already owned.
+            # A binding view is captured here, before the frame's exit releases
+            # the homes it borrows from. The exit (`trace_exit`) releases or
+            # retires every binding the frame still holds; no compiled release
+            # precedes it.
+            value = self._capture_expression_reference(value)
+            exit_baseline_now = self.return_slot is None or self.return_label is None
+            if exit_baseline_now:
+                self._emit_restore_exception_stack_depth(exit_baseline=True)
+                self._emit_normal_return_terminator(value)
+                return
+            self._emit_restore_exception_stack_depth(exit_baseline=False)
+            slot = self._load_return_slot()
+            if slot is None:
+                self._emit_normal_return_terminator(value)
+                return
+            self._emit_cell_set(slot, value)
+            self.emit(
+                MoltOp(kind="JUMP", args=[self.return_label], result=MoltValue("none"))
+            )
 
-    def _emit_generator_falloff(self) -> None:
+    def _emit_generator_falloff(self, source_node: ast.AST) -> None:
         """Return None from a generator body that falls off its end.
 
         The return terminator reports completion (``_emit_return_terminator``).
@@ -566,12 +573,13 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
             if not self._ends_with_return_jump():
                 none_val = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-                self._emit_return_value(none_val)
+                self._emit_return_value(none_val, source_node)
             self._emit_return_label()
         elif not (self.current_ops and self.current_ops[-1].kind == FrontendKinds.ret):
             none_val = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-            self._emit_normal_return_terminator(none_val)
+            with self._source_location_scope(source_node):
+                self._emit_normal_return_terminator(none_val)
 
     def _emit_return_label(self) -> None:
         if self.return_label is None or self.return_slot is None:

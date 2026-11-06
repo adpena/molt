@@ -1133,6 +1133,7 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_exception_last": ("molt_exception_last", 0),
     "molt_exception_last_pending": ("molt_exception_last_pending", 0),
     "molt_exception_pending": ("molt_exception_pending", 0),
+    "molt_exception_frame_origin": ("molt_exception_frame_origin", 1),
     "molt_async_work_poll_and_exception_pending": ("molt_async_work_poll_and_exception_pending", 0),
     "molt_async_work_poll_and_exception_last_pending": ("molt_async_work_poll_and_exception_last_pending", 0),
     "molt_exception_clear": ("molt_exception_clear", 0),

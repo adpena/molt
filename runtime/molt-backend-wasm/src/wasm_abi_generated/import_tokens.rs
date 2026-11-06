@@ -76,6 +76,7 @@ pub(crate) enum WasmRuntimeImport {
     LocalsBuiltin,
     FrameCellPublish,
     ExceptionPrepareRaise,
+    ExceptionFrameOrigin,
     ExceptionTracePrepend,
     ExceptionActive,
     ExceptionCurrent,

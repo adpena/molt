@@ -17,3 +17,6 @@ build-inputs = [
 
 [lib]
 path = "src/lib.rs"
+
+[dev-dependencies]
+molt-codegen-abi = { path = "../molt-codegen-abi" }
