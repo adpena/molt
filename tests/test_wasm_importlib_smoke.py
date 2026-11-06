@@ -373,6 +373,10 @@ def test_wasm_linked_caught_missing_intrinsic_does_not_poison_module_init(
     assert run.stdout.splitlines() == ["caught", "ok"]
 
 
+# A cold linked WASM build of this program took up to 304 s under landing
+# load on 2026-11-05 (Molt compile latency, HF-791): presubmit skips it for
+# harness-only readers; WASM changes and postsubmit run it.
+@pytest.mark.slow
 def test_wasm_linked_gpu_intrinsics_are_available_to_stdlib_wrapper(
     tmp_path: Path,
 ) -> None:
