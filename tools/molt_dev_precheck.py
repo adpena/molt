@@ -288,6 +288,8 @@ class PrecheckResult:
     seconds: tuple[tuple[str, float], ...] = ()
     # Selected gates the precheck does not run: the queue batch's.
     waived: tuple[SelectedGate, ...] = ()
+    # Data readers of the change that presubmit leaves to postsubmit.
+    postsubmit_only: tuple[str, ...] = ()
 
     @property
     def complete(self) -> bool:
@@ -333,13 +335,18 @@ def precheck_landing(
 
     budget = budget or molt_dev_policy.PRECHECK_BUDGET
     base = merge_base(head, upstream, run_git=lambda args: git._run(args).stdout)
-    policy, config, _touched, gates, _matched = select_landing_gates(
+    recent = recent_postsubmit_failures(queue_paths(repo))
+    policy, config, touched, gates, _matched = select_landing_gates(
         git,
         repo,
         head,
         base,
         extra=[],
-        recent_failures=recent_postsubmit_failures(queue_paths(repo)),
+        recent_failures=recent,
+    )
+    # The same selection object that chose the gates (GateConfig memoizes it).
+    postsubmit_only = molt_dev_policy.left_to_postsubmit(
+        config.graph_selection(touched, recent_failures=recent), gates
     )
     selected = [
         gate for gate in gates if gate.precheck and (gate.static or not static_only)
@@ -355,7 +362,9 @@ def precheck_landing(
         "the queue's batch runs every gate)"
     )
     if not selected:
-        return PrecheckResult((), None, budget, waived=waived)
+        return PrecheckResult(
+            (), None, budget, waived=waived, postsubmit_only=postsubmit_only
+        )
     drv._assert_integration_source(git, head)
     prepared = config.prepare(
         selected,
@@ -405,7 +414,13 @@ def precheck_landing(
     if not trial:
         _say(gate_time_summary(gate_seconds))
         return PrecheckResult(
-            passed, None, budget, tuple(runs), seconds(), waived=waived
+            passed,
+            None,
+            budget,
+            tuple(runs),
+            seconds(),
+            waived=waived,
+            postsubmit_only=postsubmit_only,
         )
     from tools.trunk_landing import HOST_SETTING
 
@@ -422,7 +437,13 @@ def precheck_landing(
         runs.append(GateRun("try-run", remote_logs, tuple(trial)))
         _say(gate_time_summary(gate_seconds))
         return PrecheckResult(
-            (*passed, *trial), None, budget, tuple(runs), seconds(), waived=waived
+            (*passed, *trial),
+            None,
+            budget,
+            tuple(runs),
+            seconds(),
+            waived=waived,
+            postsubmit_only=postsubmit_only,
         )
     from molt.disk_capacity import DiskCapacityError
 
@@ -438,6 +459,7 @@ def precheck_landing(
             tuple(runs),
             seconds(),
             waived=waived,
+            postsubmit_only=postsubmit_only,
         )
         _warn(result.report())
         return result
@@ -483,6 +505,7 @@ def precheck_landing(
         tuple(runs),
         seconds(),
         waived=waived,
+        postsubmit_only=postsubmit_only,
     )
     if refusal is not None:
         _warn(result.report())

@@ -160,16 +160,23 @@ def test_observed_refinement_preserves_source_edits_postsubmit_and_node_envelope
     )
     graph = build_graph(RepositoryTree.from_worktree(root), cache=None)
     observed = _observed_pair(tmp_path / "reads", "tests/test_assets.py")
-    assert "tests/test_assets.py" in graph.direct_readers(["config/data.toml"])
-    selected = graph.direct_readers(["config/data.toml"], observations=observed)
+    assert (
+        "tests/test_assets.py"
+        in graph.direct_readers(["config/data.toml"]).data_readers
+    )
+    selected = graph.direct_readers(
+        ["config/data.toml"], observations=observed
+    ).data_readers
     assert "tests/test_assets.py::test_left" in selected
     assert "tests/test_assets.py::test_right" not in selected
-    assert "tests/test_assets.py" in graph.direct_readers(
+    # A changed test is its own importer, never refined to observed nodes.
+    assert graph.direct_readers(
         ["tests/test_assets.py"], observations=observed
-    )
+    ).importers == ("tests/test_assets.py",)
     scoped = ObservedTestInputs(tmp_path / "reads", guest_only=True)
-    assert "tests/test_assets.py" in graph.direct_readers(
-        ["config/data.toml"], observations=scoped
+    assert (
+        "tests/test_assets.py"
+        in graph.direct_readers(["config/data.toml"], observations=scoped).data_readers
     )
     _observed(
         tmp_path / "reads",
@@ -178,8 +185,11 @@ def test_observed_refinement_preserves_source_edits_postsubmit_and_node_envelope
         files=["runtime/crate/src/a.rs"],
         directories=[],
     )
-    assert "tests/test_assets.py::test_left" in graph.direct_readers(
-        ["runtime/crate/src/a.rs"], observations=observed
+    assert (
+        "tests/test_assets.py::test_left"
+        in graph.direct_readers(
+            ["runtime/crate/src/a.rs"], observations=observed
+        ).data_readers
     )
     _observed_pair(tmp_path / "reads", "tests/test_assets.py")
     command = {
@@ -190,13 +200,15 @@ def test_observed_refinement_preserves_source_edits_postsubmit_and_node_envelope
         "argv": ["python", "-m", "pytest"],
         "cell": "fixture-cell",
     }
+    # Presubmit leaves the observed data reader to postsubmit, by node.
     selection = graph_selection(
         graph, ["config/data.toml"], [command], observations=observed
     )
-    envelope = selection.run["tests/test_assets.py::test_left"]
-    assert envelope.targets == ("tests/test_assets.py::test_left",)
-    assert envelope.cells == ("fixture-cell",)
-    assert envelope.toolchains == ("python",)
+    assert not selection.run
+    assert "tests/test_assets.py::test_left" in selection.postsubmit_only
+    assert "tests/test_assets.py::test_right" not in selection.postsubmit_only
+    # A recent postsubmit failure among the data readers runs in presubmit, in
+    # its node envelope.
     recent = graph_selection(
         graph,
         ["config/data.toml"],
@@ -207,6 +219,10 @@ def test_observed_refinement_preserves_source_edits_postsubmit_and_node_envelope
     assert "tests/test_assets.py" not in recent.selected
     assert "tests/test_assets.py::test_left" in recent.selected
     assert "tests/test_assets.py::test_right" not in recent.selected
+    envelope = recent.run["tests/test_assets.py::test_left"]
+    assert envelope.targets == ("tests/test_assets.py::test_left",)
+    assert envelope.cells == ("fixture-cell",)
+    assert envelope.toolchains == ("python",)
     postsubmit = graph_selection(
         graph,
         ["config/data.toml"],
@@ -358,11 +374,11 @@ def test_interrupted_observation_retains_static_readers(tmp_path, monkeypatch, p
     assert record["complete"] is False
     assert "runtime/later.rs" not in record["files"]
     graph = build_graph(RepositoryTree.from_worktree(root), cache=None)
-    static = graph.direct_readers(["runtime/later.rs"])
+    static = graph.direct_readers(["runtime/later.rs"]).data_readers
     assert test in static
     selected = graph.direct_readers(
         ["runtime/later.rs"], observations=ObservedTestInputs(directory)
-    )
+    ).data_readers
     # A missing report must never turn an unread path into qualified absence.
     expected = test if phase == "collection" else test + "::test_interrupt"
     assert expected in selected
@@ -922,7 +938,9 @@ def test_presubmit_direct_readers_include_imports_inside_test_functions(
         },
     )
     graph = build_graph(RepositoryTree.from_worktree(root), cache=None)
-    assert graph.direct_readers(["src/pkg/hub.py"]) == ("tests/test_local.py",)
+    readers = graph.direct_readers(["src/pkg/hub.py"])
+    assert readers.importers == ("tests/test_local.py",)
+    assert readers.data_readers == ()
 
 
 def test_presubmit_prioritizes_recent_readers_without_adding_unrelated_failures(
@@ -1159,7 +1177,11 @@ def _landing_tests(paths, *, mode=LandingMode.PRESUBMIT):
     ],
 )
 def test_missed_consumers_are_selected_by_construction(changed, test):
-    assert test in _landing_tests([changed])
+    # Never missed: an importer runs in presubmit, a data reader in postsubmit
+    # (owner decision 2026-11-06, docs/design/landing_queue.md 9.10).
+    selection = GateConfig.load(COMMITTED_GATES).graph_selection([changed])
+    left = {target.partition("::")[0] for target in selection.postsubmit_only}
+    assert test in _landing_tests([changed]) | left
 
 
 def test_postsubmit_frontend_edits_select_the_frontend_lowering_cell():
@@ -1319,11 +1341,13 @@ def test_presubmit_skips_every_slow_case_and_postsubmit_runs_them(
     commands = _landing_commands(graph)
     changed = ["src/pkg/hub.py", "src/pkg/table.toml", "tests/test_changed.py"]
     selection = graph_selection(graph, changed, commands)
+    # Presubmit runs importers and changed tests; the data reader is left to
+    # postsubmit (owner decision 2026-11-06).
     assert {test: run.skip_slow for test, run in selection.run.items()} == {
         "tests/test_imports.py": True,
-        "tests/test_reads.py": True,
         "tests/test_changed.py": True,
     }
+    assert selection.postsubmit_only == ("tests/test_reads.py",)
     post = graph_selection(graph, changed, commands, mode=LandingMode.POSTSUBMIT)
     assert post.run and not any(run.skip_slow for run in post.run.values())
     # The cohort argv carries the decision; every reader's cohort skips.
@@ -1340,11 +1364,7 @@ def test_presubmit_skips_every_slow_case_and_postsubmit_runs_them(
         for argument in gate.command
         if argument.startswith("tests/")
     }
-    assert skipping == {
-        "tests/test_imports.py",
-        "tests/test_reads.py",
-        "tests/test_changed.py",
-    }
+    assert skipping == {"tests/test_imports.py", "tests/test_changed.py"}
     post_gates, _ = config.select(changed, mode=LandingMode.POSTSUBMIT)
     assert not any("--skip-slow" in gate.command for gate in post_gates)
 
@@ -1399,3 +1419,36 @@ def test_skip_slow_skips_only_slow_cases_and_never_empties_the_session(
     assert result.returncode == 0, result.stdout + result.stderr
     assert executed.exists() is not skip_slow
     assert ("1 skipped" if skip_slow else "1 passed") in result.stdout
+
+
+def test_left_to_postsubmit_names_only_what_no_selected_gate_runs():
+    # The receipt never lists a data reader that a selected gate (a curated
+    # rule cohort) runs in presubmit, by file or by node.
+    from tools.molt_dev_policy import SelectedGate, left_to_postsubmit
+    from tools.test_dependency_graph import GraphSelection
+
+    selection = GraphSelection(
+        selected=("tests/test_imports.py",),
+        run={},
+        deferred={},
+        postsubmit_only=(
+            "tests/test_reads.py",
+            "tests/test_rule.py::test_node",
+            "tests/test_whole.py::test_inside",
+        ),
+    )
+    gates = [
+        SelectedGate(
+            command=("python", "-m", "pytest", "tests/test_rule.py::test_node"),
+            toolchains=("python",),
+            pytest=True,
+        ),
+        SelectedGate(
+            command=("python", "-m", "pytest", "tests/test_whole.py"),
+            toolchains=("python",),
+            pytest=True,
+        ),
+        SelectedGate(command="python tools/generators.py check", toolchains=()),
+    ]
+    assert left_to_postsubmit(selection, gates) == ("tests/test_reads.py",)
+    assert left_to_postsubmit(None, gates) == ()

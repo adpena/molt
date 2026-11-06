@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import shlex
 import tomllib
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
@@ -293,6 +293,9 @@ class GateConfig:
     dependency_graph: Callable[[], DependencyGraph] | None = None
     # Mechanical repairs, in order; `land` applies them before its precheck.
     repair: list[str] = field(default_factory=list)
+    # One graph selection per request: the gates it selects and the receipt
+    # that names what it left to postsubmit read the same object.
+    _graph_selections: dict = field(default_factory=dict, repr=False, compare=False)
 
     @staticmethod
     def load(path: Path) -> "GateConfig":
@@ -455,6 +458,21 @@ class GateConfig:
         """The tests that read a touched path, and where each one runs."""
         if self.dependency_graph is None or not (touched or recent_failures):
             return None
+        # The provider is part of the request: a reassigned graph is another one.
+        key = (self.dependency_graph, tuple(touched), mode, tuple(recent_failures))
+        if key not in self._graph_selections:
+            self._graph_selections[key] = self._compute_graph_selection(
+                touched, mode=mode, recent_failures=recent_failures
+            )
+        return self._graph_selections[key]
+
+    def _compute_graph_selection(
+        self,
+        touched: list[str],
+        *,
+        mode: LandingMode,
+        recent_failures: Collection[str],
+    ) -> GraphSelection:
         from tools.test_dependency_graph import (
             ObservedTestInputs,
             graph_selection,
@@ -1182,6 +1200,28 @@ class GateConfig:
 # --------------------------------------------------------------------------
 # Content marker byte membership
 # --------------------------------------------------------------------------
+
+
+def left_to_postsubmit(
+    selection: "GraphSelection | None", gates: Sequence[SelectedGate]
+) -> tuple[str, ...]:
+    """The data readers presubmit leaves to postsubmit (owner 2026-11-06,
+    importers only), less any target a selected gate runs anyway: a curated
+    rule cohort that runs a node or a whole file covers it here."""
+    if selection is None:
+        return ()
+    ran = {
+        argument
+        for gate in gates
+        if isinstance(gate.command, tuple)
+        for argument in gate.command
+        if isinstance(argument, str) and argument.startswith("tests/")
+    }
+    return tuple(
+        target
+        for target in selection.postsubmit_only
+        if target not in ran and target.partition("::")[0] not in ran
+    )
 
 
 def select_landing_gates(

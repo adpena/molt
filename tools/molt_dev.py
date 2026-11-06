@@ -140,7 +140,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -224,6 +224,7 @@ from tools.molt_dev_policy import (  # noqa: E402
     GateEnvironment,
     LandingMode,
     SelectedGate,
+    left_to_postsubmit,
     select_landing_gates,
 )
 from tools.dirty_tree_policy import (  # noqa: E402
@@ -1024,6 +1025,7 @@ def _write_queue_receipt(
     seconds: list[tuple[float, str]],
     logs: Mapping[str, Path],
     controller: str | None,
+    postsubmit_only: Sequence[str] = (),
 ) -> None:
     """The landing receipt of an integrate run: every selected gate passed.
     ``logs`` maps each shown command to the log of the run that passed."""
@@ -1051,6 +1053,7 @@ def _write_queue_receipt(
         controller=controller,
         started_at=datetime.now(UTC).isoformat(timespec="seconds"),
         gates=records,
+        postsubmit_only=postsubmit_only,
     )
     _ok(f"landing receipt {landing_receipt.write_receipt(common_dir, receipt)}")
 
@@ -1420,6 +1423,12 @@ def _integrate_exclusive(
             )
             for test, cells in sorted(graph_selection.deferred.items()):
                 _say(f"      {test}  ({', '.join(cells) or 'no proof cell owns it'})")
+        left = left_to_postsubmit(graph_selection, gate_cmds)
+        if left:
+            _say(
+                f"    data readers left to postsubmit ({len(left)}): "
+                "presubmit runs importers"
+            )
     env = gate_environment(repo, session_id=args.session_id, create_dirs=False)
     progress.environments = {(): GateEnvironment(ProcessEnvironment(env), None, False)}
     cargo_outputs: dict[tuple[str, ...], tuple[Path, ...]] = {}
@@ -1505,6 +1514,7 @@ def _integrate_exclusive(
             seconds=gate_seconds,
             logs=gate_logs,
             controller=progress.controller,
+            postsubmit_only=left_to_postsubmit(graph_selection, gate_cmds),
         )
 
     # --- step 6: push (only after every gate is green) ----------------------
