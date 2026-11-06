@@ -1655,3 +1655,98 @@ def test_changed_generators_select_by_derived_inputs_and_declared_outputs(
         "tools/gen_other.py",
         "tools/gen_manifest.py",
     )
+
+
+def test_consumers_of_a_republished_python_module_render_in_a_fresh_interpreter(
+    tmp_path, monkeypatch
+):
+    """The runner renders every generator in one interpreter. On 2026-11-06 a
+    CPython pin bump rewrote src/molt/_python_release_generated.py, yet
+    gen_host_capabilities (which declares gen_stdlib_module_union upstream and
+    reads the module through molt.target_python, already imported) rendered the
+    old release facts: three outputs stayed stale until a second `write`.
+    A consumer of a republished Python module now renders in a fresh child."""
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from tools import generators
+
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools/proof_plan.toml").write_text("", encoding="utf-8")
+    module, table, leaf, data, reader = (
+        tmp_path / name for name in ("release.py", "t.rs", "l.rs", "d.json", "r.rs")
+    )
+    for path in (module, table, leaf, data, reader):
+        path.write_text("old\n", encoding="utf-8")
+    manifest = tmp_path / "tools/generator_manifest.toml"
+    manifest.write_text(
+        f"""
+[[generator]]
+tool = "python-producer"
+check_mode = true
+toolchains = []
+outputs = ["{module.name}"]
+[[generator]]
+tool = "module-consumer"
+check_mode = true
+toolchains = []
+upstream_generators = ["python-producer"]
+outputs = ["{table.name}"]
+[[generator]]
+tool = "transitive"
+check_mode = true
+toolchains = []
+upstream_generators = ["module-consumer"]
+outputs = ["{leaf.name}"]
+[[generator]]
+tool = "data-producer"
+check_mode = true
+toolchains = []
+outputs = ["{data.name}"]
+[[generator]]
+tool = "data-consumer"
+check_mode = true
+toolchains = []
+upstream_generators = ["data-producer"]
+outputs = ["{reader.name}"]
+""",
+        encoding="utf-8",
+    )
+    read_manifest = generators.manifest_generators
+    monkeypatch.setattr(
+        generators, "manifest_generators", lambda: read_manifest(manifest)
+    )
+    monkeypatch.setattr(generators, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        generators.harness_memory_guard,
+        "repo_process_sentinel",
+        lambda **_: nullcontext(),
+    )
+    outputs = {
+        "python-producer": {module: "RELEASE = (3, 12, 16)\n"},
+        "data-producer": {data: "{}\n"},
+        "data-consumer": {reader: "read\n"},
+        "transitive": {leaf: "leaf\n"},
+    }
+    in_process, fresh = [], []
+
+    def render(tool):
+        in_process.append(tool)
+        if tool not in outputs:
+            pytest.fail(f"{tool} rendered beside a stale import of its upstream")
+        return outputs[tool]
+
+    monkeypatch.setattr(
+        generators,
+        "load_generator",
+        lambda tool: SimpleNamespace(generated_outputs=lambda: render(tool)),
+    )
+    monkeypatch.setattr(generators, "_write_in_fresh_interpreter", fresh.append)
+    assert generators.main(["write"]) == 0
+    # The direct consumer may import the republished module, so it renders in
+    # a child. Its own consumer renders fresh only if the child published a
+    # Python module; here it published Rust, so that consumer stays in-process.
+    assert fresh == ["module-consumer"]
+    assert sorted(in_process) == sorted(
+        ["python-producer", "transitive", "data-producer", "data-consumer"]
+    )
+    assert module.read_text(encoding="utf-8") == "RELEASE = (3, 12, 16)\n"
