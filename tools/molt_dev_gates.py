@@ -347,6 +347,9 @@ class GateRuntime:
     # Every gate that passed, in completion order: the typed outcome a caller
     # reads instead of matching rendered commands.
     passed: list[Gate] = field(default_factory=list)
+    # The stdout log of the run that passed, by shown command: after a rerun,
+    # the rerun's log, never the failed first attempt's (landing receipt counts).
+    passed_logs: dict[str, Path] = field(default_factory=dict)
 
 
 def gate_runs_pytest(gate: Gate, *, repo: Path) -> bool:
@@ -363,9 +366,14 @@ def gate_runs_pytest(gate: Gate, *, repo: Path) -> bool:
 
 
 def _pytest_report_command(
-    command: str | tuple[str, ...], gate: Gate, runtime: GateRuntime, ordinal: int
+    command: str | tuple[str, ...],
+    gate: Gate,
+    runtime: GateRuntime,
+    ordinal: int,
+    log_dir: Path,
 ) -> str | tuple[str, ...]:
-    """JUnit is pytest's own test-level failure evidence, kept with gate logs."""
+    """JUnit is pytest's own test-level failure evidence, kept with the gate's
+    other logs in ``log_dir``."""
     match runtime.mode:
         case LandingMode.PRESUBMIT:
             return command
@@ -380,8 +388,7 @@ def _pytest_report_command(
                 "--run-flaky",
                 "-o",
                 "junit_family=xunit1",
-                "--junitxml="
-                + str(runtime.output_dir / f"gate-{ordinal:03d}.junit.xml"),
+                "--junitxml=" + str(log_dir / f"gate-{ordinal:03d}.junit.xml"),
             )
         case _:
             assert_never(runtime.mode)
@@ -672,7 +679,12 @@ def _run_heavy_gates(
         )
         try:
             _run_executor_block(
-                failed, runtime, gate_seconds, 1, receipt_kind="heavy-retry"
+                failed,
+                runtime,
+                gate_seconds,
+                1,
+                receipt_kind="heavy-retry",
+                log_dir=runtime.output_dir / "heavy-retry",
             )
         except BaseException as second:
             second.add_note(f"first attempt, beside other gates: {first}")
@@ -688,7 +700,12 @@ def _run_heavy_gates(
         ]
         if rest:
             _run_executor_block(
-                rest, runtime, gate_seconds, host_limit(), receipt_kind="heavy-rest"
+                rest,
+                runtime,
+                gate_seconds,
+                host_limit(),
+                receipt_kind="heavy-rest",
+                log_dir=runtime.output_dir / "heavy-rest",
             )
 
 
@@ -703,7 +720,7 @@ def _run_serial_gate(
     cmd = gate.collection_command if collection else gate.command
     assert cmd is not None
     if not collection:
-        cmd = _pytest_report_command(cmd, gate, runtime, ordinal)
+        cmd = _pytest_report_command(cmd, gate, runtime, ordinal, runtime.output_dir)
     assert isinstance(gate.cargo_target_access, CargoTargetAccess)
     phase = "collection" if collection else "gate"
     shown = display(cmd)
@@ -799,6 +816,8 @@ def _run_serial_gate(
         raise gate_failure(rc, elapsed, shown, timings, record)
     if not collection:
         runtime.passed.append(gate)
+        if streams is not None:
+            runtime.passed_logs[display(gate.command)] = streams[0]
     runtime.ok(
         f"pytest collection passed in {elapsed:.1f} s (execution still required): {shown}"
         if collection
@@ -916,8 +935,15 @@ def _run_executor_block(
     host: int,
     *,
     receipt_kind: str | None = None,
+    log_dir: Path | None = None,
 ) -> None:
-    """Run the block through the proof executor; report it in declared order."""
+    """Run the block through the proof executor; report it in declared order.
+
+    ``log_dir`` holds the block's gate logs; it defaults to the run's
+    ``output_dir``. A block that reruns gates passes its own directory: gate
+    streams are created exclusively, and a rerun keeps the first run's logs.
+    """
+    log_dir = runtime.output_dir if log_dir is None else log_dir
     from tools.proof_plan import _normalized_arch, _normalized_os
 
     classes: dict[str, int] = {}
@@ -987,9 +1013,9 @@ def _run_executor_block(
         required = runtime.capacity_requirements.get(command.gate.toolchains, 0)
         started = time.monotonic()
         streams, stream_error = prepare_gate_streams(
-            runtime.output_dir
+            log_dir
             if allocation.attempt == 1
-            else runtime.output_dir / f"attempt-{allocation.attempt}",
+            else log_dir / f"attempt-{allocation.attempt}",
             command.ordinal,
         )
         record.update(stream_record(streams, stream_error))
@@ -997,7 +1023,7 @@ def _run_executor_block(
             environment = environments[command.gate.toolchains].overlay(
                 {
                     "MOLT_GUARD_PROFILE_LOG": str(
-                        runtime.output_dir
+                        log_dir
                         / f"gate-{command.ordinal:03d}.attempt-{allocation.attempt}.profile.jsonl"
                     )
                 }
@@ -1013,7 +1039,9 @@ def _run_executor_block(
                     environment=environment.environment,
                 )
                 record["pytest_workers"] = workers
-            argv = _pytest_report_command(argv, command.gate, runtime, command.ordinal)
+            argv = _pytest_report_command(
+                argv, command.gate, runtime, command.ordinal, log_dir
+            )
             record["launch_argv"] = (
                 list(argv) if not isinstance(argv, str) else ["/bin/sh", "-c", argv]
             )
@@ -1175,6 +1203,8 @@ def _run_executor_block(
             )
             continue
         runtime.passed.append(command.gate)
+        if "stdout_path" in record:
+            runtime.passed_logs[shown] = Path(record["stdout_path"])
         runtime.ok(f"gate passed in {elapsed:.1f} s: {shown}")
     if (
         runtime.cancelled()

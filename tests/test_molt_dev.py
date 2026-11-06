@@ -3384,6 +3384,11 @@ def test_heavy_gates_rerun_once_one_at_a_time_after_a_failure(drv, tmp_path, sec
     def run_captured_gate(command, repo, environment, cancelled, streams=None):
         key = next(part for part in command if str(part).startswith("tests/"))
         attempts[key] = attempts.get(key, 0) + 1
+        # The real boundary: memory_guard.run_guarded creates each stream
+        # exclusively, so a rerun that reuses a path fails (FileExistsError).
+        assert streams is not None
+        for path in streams:
+            path.open("x").close()
         if key == "tests/test_gate_1.py":
             return _gate_outcome(3 if attempts[key] == 1 else second_rc, "", "", None)
         return _gate_outcome(0, "", "", None)
@@ -3427,6 +3432,13 @@ def test_heavy_gates_rerun_once_one_at_a_time_after_a_failure(drv, tmp_path, sec
         assert {gate.command[-1] for gate in runtime.passed} == {
             "tests/test_gate_1.py",
             "tests/test_gate_2.py",
+        }
+        # The receipt reads the passing run's log, not the failed attempt's.
+        retried = runtime.passed_logs[molt_dev_gates.display(gates[0].command)]
+        assert retried.parent == runtime.output_dir / "heavy-retry"
+        assert runtime.passed_logs[molt_dev_gates.display(gates[1].command)].parent in {
+            runtime.output_dir,
+            runtime.output_dir / "heavy-rest",
         }
     else:
         with pytest.raises(GateFailure) as exc:
@@ -10180,7 +10192,9 @@ def test_integrate_capacity_observes_interval_without_campaign_guarantee(
             drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
     else:
         assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True)) == 0
-    assert ran == ["echo non-cargo-prefix", "echo opaque-cargo-wrapper"]
+    # A failing heavy gate reruns alone exactly once (the retry classifier).
+    runs = 2 if gate_rc else 1
+    assert ran == ["echo non-cargo-prefix", *["echo opaque-cargo-wrapper"] * runs]
     output = capsys.readouterr().err
     readiness = json.loads(
         next(
@@ -10197,7 +10211,7 @@ def test_integrate_capacity_observes_interval_without_campaign_guarantee(
         for line in output.splitlines()
         if "gate capacity: " in line
     ]
-    assert [row["phase"] for row in observations] == ["before", "after"]
+    assert [row["phase"] for row in observations] == ["before", "after"] * runs
     assert observations[1]["free_bytes_delta"] == {str(target): -1_420_288_000}
     assert observations[0]["probes"][0]["free_bytes"] == 27_270_266_880
     assert observations[1]["probes"][0]["free_bytes"] == 25_849_978_880
@@ -11667,12 +11681,17 @@ def test_selected_pytest_nodes_collect_before_build_and_still_execute(
         ) in output
     else:
         assert observed[:2] == [cohort.collection_command, "mock-rust-build"]
-        # The cohort runs as selected, with the executor's explicit worker count.
-        (launched,) = observed[2:]
-        assert launched[:-2] == tuple(cohort.command)
-        assert launched[-2] == "-n" and int(launched[-1]) > 0
+        # The cohort runs as selected, with the executor's explicit worker
+        # count. A failing heavy gate reruns alone exactly once (the retry
+        # classifier); a passing one runs once.
+        launches = observed[2:]
+        assert len(launches) == (2 if case == "body_failure" else 1)
+        for launched in launches:
+            assert launched[:-2] == tuple(cohort.command)
+            assert launched[-2] == "-n" and int(launched[-1]) > 0
         assert executed.read_text(encoding="utf-8") == "executed"
-        assert len(timings) == len(gates)
+        # Each run reports its own time, the rerun included.
+        assert len(timings) == len(gates) + len(launches) - 1
         assert any(event == "collection_finished" for event, _ in progress)
         assert any(event == "gate_finished" for event, _ in progress)
     # A passing collection cannot conceal the later real assertion failure.

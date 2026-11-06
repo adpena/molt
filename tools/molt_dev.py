@@ -1022,10 +1022,11 @@ def _write_queue_receipt(
     commit: str,
     gates: list[SelectedGate],
     seconds: list[tuple[float, str]],
-    logs: Path | None,
+    logs: Mapping[str, Path],
     controller: str | None,
 ) -> None:
-    """The landing receipt of an integrate run: every selected gate passed."""
+    """The landing receipt of an integrate run: every selected gate passed.
+    ``logs`` maps each shown command to the log of the run that passed."""
     from tools import landing_receipt
     from tools.molt_dev_gates import display
 
@@ -1038,9 +1039,9 @@ def _write_queue_receipt(
             phase="static" if gate.static else "batch",
             command=display(gate.command),
             seconds=elapsed.get(display(gate.command)),
-            log=None if logs is None else logs / f"gate-{ordinal:03d}.stdout.log",
+            log=logs.get(display(gate.command)),
         )
-        for ordinal, gate in enumerate(gates, start=1)
+        for gate in gates
     ]
     receipt = landing_receipt.build_receipt(
         mode="queue",
@@ -1456,7 +1457,7 @@ def _integrate_exclusive(
             )
         _assert_integration_source(git, selected_commit)
     gate_seconds: list[tuple[float, str]] = []
-    gate_logs: Path | None = None
+    gate_logs: Mapping[str, Path] = {}
     if dry:
         for gate in gate_cmds:
             _assert_integration_source(git, selected_commit)
@@ -1482,7 +1483,7 @@ def _integrate_exclusive(
             toolchains=toolchains,
             deferred=prepared.deferred,
         )
-        gate_logs = runtime.output_dir
+        gate_logs = runtime.passed_logs
         run_selected_gates(
             gate_cmds,
             runtime,
