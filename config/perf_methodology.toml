@@ -24,8 +24,11 @@ schema = "molt-perf-methodology-v1"
 # descendant facts at callbacks (deb45c66df, 67236970f1, 6caf9faa68), so
 # instruction counts and admitted workload modules can move. These landed on
 # main without the lock (HF-601). Earlier reports retain their recorded class.
-version = 31
-content_sha256 = "bb80c415d9ef9280fd2e39ed835fb61fc7cc3d825352973ae16d28c6bd572b6d"
+# v32: HF-803 adds the implicit class-builder read, its callback effects and
+# guarded identity. Admitted workloads and instruction counts can change;
+# earlier reports retain their recorded comparison class.
+version = 32
+content_sha256 = "90e4157e56f4efc7aea27babe645a4627c13d1901368ecdc28c6dfce15245824"
 
 [[methodology]]
 path = "tools/safe_run.py"
