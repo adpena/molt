@@ -969,32 +969,33 @@ class GateConfig:
                     options = select
                 case _:
                     assert_never(mode)
-            command = local_pytest_argv(
-                targets, options, memory_units=self.pytest_memory_units
-            )
-            pytest_commands.add(command_key(command))
-            graph_commands.add(command_key(command))
-            add(
-                command,
-                cohort_tools,
-                cargo_target_access=cohort_access,
-                pytest=True,
-                # Changed tests and their direct readers: the lane's try run.
-                try_run=mode is LandingMode.PRESUBMIT,
-                cells=tuple(
-                    dict.fromkeys(
-                        cell
-                        for target, envelope in graph_runs
-                        if target in targets
-                        for cell in envelope.cells
-                    )
-                ),
-                collection_command=(
-                    local_pytest_collection_argv(command)
-                    if any("::" in target for target in targets)
-                    else None
-                ),
-            )
+            for shard in pytest_shards(targets):
+                command = local_pytest_argv(
+                    shard, options, memory_units=self.pytest_memory_units
+                )
+                pytest_commands.add(command_key(command))
+                graph_commands.add(command_key(command))
+                add(
+                    command,
+                    cohort_tools,
+                    cargo_target_access=cohort_access,
+                    pytest=True,
+                    # Changed tests and their direct readers: the lane's try run.
+                    try_run=mode is LandingMode.PRESUBMIT,
+                    cells=tuple(
+                        dict.fromkeys(
+                            cell
+                            for target, envelope in graph_runs
+                            if target in shard
+                            for cell in envelope.cells
+                        )
+                    ),
+                    collection_command=(
+                        local_pytest_collection_argv(command)
+                        if any("::" in target for target in shard)
+                        else None
+                    ),
+                )
         for envelope in selection.foreign if selection else ():
             add(
                 local_pytest_argv(
@@ -1200,6 +1201,31 @@ class GateConfig:
 # --------------------------------------------------------------------------
 # Content marker byte membership
 # --------------------------------------------------------------------------
+
+
+#: Test files per pytest gate. A cohort is sharded into gates of at most this
+#: many files: each gate's workers import fewer test modules, its process tree
+#: closes quickly, and a failure or a retry costs one shard. Landing attempts
+#: 15-17 ran one 300-file cohort: 8.6 GiB, two memory-pressure stops and one
+#: indeterminate descendant closure after its tests had passed to 99%.
+PYTEST_SHARD_FILES: Final = 40
+
+
+def pytest_shards(targets: Sequence[str]) -> list[list[str]]:
+    """``targets`` in order, cut into shards of at most ``PYTEST_SHARD_FILES``
+    files; the nodes of one file stay in one shard."""
+    shards: list[list[str]] = []
+    files: set[str] = set()
+    for target in targets:
+        path = target.partition("::")[0]
+        if path not in files and len(files) == PYTEST_SHARD_FILES:
+            shards.append([])
+            files = set()
+        if not shards:
+            shards.append([])
+        files.add(path)
+        shards[-1].append(target)
+    return shards
 
 
 def left_to_postsubmit(

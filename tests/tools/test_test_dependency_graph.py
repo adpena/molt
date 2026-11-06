@@ -1452,3 +1452,29 @@ def test_left_to_postsubmit_names_only_what_no_selected_gate_runs():
     ]
     assert left_to_postsubmit(selection, gates) == ("tests/test_reads.py",)
     assert left_to_postsubmit(None, gates) == ()
+
+
+def test_pytest_shards_bound_files_per_gate_and_keep_a_files_nodes_together():
+    # A 300-file cohort ran as one gate (8.6 GiB, an indeterminate closure);
+    # shards bound each gate and keep every node of a file in one shard.
+    from tools.molt_dev_policy import PYTEST_SHARD_FILES, pytest_shards
+
+    files = [
+        f"tests/test_{index:03d}.py" for index in range(PYTEST_SHARD_FILES * 2 + 5)
+    ]
+    targets = [*files[: PYTEST_SHARD_FILES - 1]]
+    targets += [
+        f"{files[PYTEST_SHARD_FILES - 1]}::test_a",
+        f"{files[PYTEST_SHARD_FILES - 1]}::test_b",
+    ]
+    targets += files[PYTEST_SHARD_FILES:]
+    shards = pytest_shards(targets)
+    assert [target for shard in shards for target in shard] == targets
+    assert all(
+        len({target.partition("::")[0] for target in shard}) <= PYTEST_SHARD_FILES
+        for shard in shards
+    )
+    assert len(shards) == 3
+    node_file = files[PYTEST_SHARD_FILES - 1]
+    assert sum(any(t.startswith(node_file) for t in shard) for shard in shards) == 1
+    assert pytest_shards([]) == []
