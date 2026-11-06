@@ -638,12 +638,25 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
     def _emit_restore_exception_stack_depth(
         self, *, exit_baseline: bool = True
     ) -> None:
+        def current_baseline(value: MoltValue) -> MoltValue:
+            # The shared cleanup is appended after spill lowering. A suspended
+            # baseline lives in its local home, not in the prologue's SSA value
+            # (which belongs to the current poll rather than first activation).
+            home = (
+                self.funcs_map[self.current_func_name]
+                .get("resume_value_homes", {})
+                .get(value.name)
+            )
+            if home is None:
+                return value
+            return self._load_compiler_local(home)
+
         baseline = self.exception_stack_depth_baseline
         if baseline is not None:
             self.emit(
                 MoltOp(
                     kind="EXCEPTION_STACK_SET_DEPTH",
-                    args=[baseline],
+                    args=[current_baseline(baseline)],
                     result=MoltValue("none"),
                 )
             )
@@ -655,7 +668,7 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         self.emit(
             MoltOp(
                 kind="EXCEPTION_STACK_EXIT",
-                args=[prev_baseline],
+                args=[current_baseline(prev_baseline)],
                 result=MoltValue("none"),
             )
         )

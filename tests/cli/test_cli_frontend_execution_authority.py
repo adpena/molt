@@ -161,6 +161,10 @@ def test_module_result_consumer_keeps_canonical_records_and_diagnostic_names(
     symbol = SimpleTIRGenerator.module_init_symbol("m")
     assert symbol in state.global_code_ids and "molt_main" not in state.global_code_ids
     assert set(diagnostics.policy_outcomes_by_function) == {f"m::{symbol}"}
+    coverage = diagnostics.policy_outcomes_by_function[f"m::{symbol}"]["coverage"]
+    assert coverage["status"] == "skipped"
+    assert coverage["input_ops"] is None
+    assert coverage["reasons"] == ["missing_outcome"]
     assert diagnostics.pass_stats_by_function == {
         f"m::{symbol}": {"fold": {"visited": 1}}
     }

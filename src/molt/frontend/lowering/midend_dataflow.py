@@ -17,6 +17,8 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Sequence, cast
 
 from molt.frontend._mixin_base import GeneratorMixinBase
+from molt.frontend.value_liveness import ValueLiveness
+from molt.frontend.lowering.midend_telemetry import profile_midend_solver
 from molt.compiler_analysis.literal_identity import (
     literal_identity_key,
     same_literal_value,
@@ -228,7 +230,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
         cfg: CFGGraph = build_cfg(ops)
         if not cfg.blocks:
             return []
-        all_defs = self._collect_defined_value_names(ops).union(predefined)
+        phi_edges_by_block = cfg.phi_edge_table()
 
         # Track which value names are produced by MISSING ops so we can
         # verify they haven't been eliminated by a prior pass.
@@ -242,64 +244,32 @@ class MidendDataflowMixin(GeneratorMixinBase):
         # This catches cases where branch pruning collapses a PHI to a single
         # MISSING-carrying input that escapes into CALL arg positions.
         missing_tainted: set[str] = set(missing_value_defs)
-        _phi_changed = True
-        while _phi_changed:
-            _phi_changed = False
-            for op in ops:
-                if op.kind != FrontendKinds.PHI or not op.args:
-                    continue
-                out_name = op.result.name
-                if out_name == "none" or out_name in missing_tainted:
-                    continue
-                phi_value_args = [arg for arg in op.args if isinstance(arg, MoltValue)]
-                if phi_value_args and all(
-                    arg.name in missing_tainted for arg in phi_value_args
-                ):
-                    missing_tainted.add(out_name)
-                    _phi_changed = True
+        phi_users: dict[str, list[int]] = {}
+        phi_pending: list[int] = []
+        phi_results: list[str] = []
+        for op in ops:
+            if op.kind != FrontendKinds.PHI or op.result.name == "none":
+                continue
+            inputs = {arg.name for arg in op.args if isinstance(arg, MoltValue)}
+            if not inputs:
+                continue
+            index = len(phi_results)
+            phi_results.append(op.result.name)
+            phi_pending.append(len(inputs))
+            for name in inputs:
+                phi_users.setdefault(name, []).append(index)
+        taint_queue = deque(sorted(missing_tainted))
+        while taint_queue:
+            for index in phi_users.get(taint_queue.popleft(), ()):
+                phi_pending[index] -= 1
+                result = phi_results[index]
+                if phi_pending[index] == 0 and result not in missing_tainted:
+                    missing_tainted.add(result)
+                    taint_queue.append(result)
 
-        block_defs: dict[int, set[str]] = {}
-        for block in cfg.blocks:
-            defs: set[str] = set()
-            for op in ops[block.start : block.end]:
-                out_name = op.result.name
-                if out_name != "none":
-                    defs.add(out_name)
-            block_defs[block.id] = defs
-
-        in_defs: dict[int, set[str]] = {}
-        out_defs: dict[int, set[str]] = {}
-        for block_id in range(len(cfg.blocks)):
-            if block_id == 0:
-                initial = set(predefined)
-            elif block_id in cfg.reachable:
-                initial = set(all_defs)
-            else:
-                initial = set()
-            in_defs[block_id] = initial
-            out_defs[block_id] = initial.union(block_defs[block_id])
-
-        changed = True
-        while changed:
-            changed = False
-            for block_id in range(1, len(cfg.blocks)):
-                if block_id not in cfg.reachable:
-                    continue
-                preds = [
-                    pred
-                    for pred in cfg.predecessors.get(block_id, [])
-                    if pred in cfg.reachable
-                ]
-                if not preds:
-                    new_in = set(predefined)
-                else:
-                    new_in = set.intersection(*(out_defs[pred] for pred in preds))
-                new_out = new_in.union(block_defs[block_id])
-                if new_in != in_defs[block_id] or new_out != out_defs[block_id]:
-                    in_defs[block_id] = new_in
-                    out_defs[block_id] = new_out
-                    changed = True
-
+        # Unique producers plus instruction order and interval dominance prove
+        # the same must-definition obligation without O(blocks * definitions)
+        # retained sets. CHECK_EXCEPTION/resume boundaries are CFG block splits.
         failures: list[tuple[int, str, str]] = []
         definition_index: dict[str, int] = {}
         definition_block: dict[str, int] = {}
@@ -307,34 +277,58 @@ class MidendDataflowMixin(GeneratorMixinBase):
             out_name = op.result.name
             if out_name == "none":
                 continue
+            if op.kind == FrontendKinds.LOOP_INDEX_NEXT:
+                # Authored loop carriers are explicitly pre-SSA transport, not
+                # value definitions (the normalized SimpleIR boundary retires
+                # them before SSA). An update must target this loop's unique
+                # START; ordinary repeated SSA producers remain invalid.
+                start = definition_index.get(out_name)
+                owner = cfg.control.loop_owner.get(op_idx)
+                if (
+                    start is None
+                    or ops[start].kind != FrontendKinds.LOOP_INDEX_START
+                    or owner is None
+                    or cfg.control.loop_owner.get(start) != owner
+                ):
+                    failures.append((op_idx, op.kind, out_name))
+                continue
             if out_name in definition_index:
                 failures.append((op_idx, op.kind, out_name))
                 continue
             definition_index[out_name] = op_idx
             definition_block[out_name] = cfg.op_blocks[op_idx]
 
-        # Collect which value names are consumed by GETATTR/CALL/LOOKUP ops
-        # as default or sentinel arguments — these are the critical consumers
-        # of MISSING sentinels.
-        _missing_sentinel_consumer_ops: set[FrontendOpKind] = {
-            "GETATTR_NAME_DEFAULT",
-            "CALL",
-            "CALL_INDIRECT",
-        }
-
         for block in cfg.blocks:
             block_id = block.id
             if block_id not in cfg.reachable:
                 continue
-            local_defs = set(in_defs[block_id])
             for op_idx in range(block.start, block.end):
                 op = ops[op_idx]
                 used: set[str] = set()
                 for arg in op.args:
                     self._collect_arg_value_names(arg, used)
-                missing = sorted(name for name in used if name not in local_defs)
-                for name in missing:
-                    failures.append((op_idx, op.kind, name))
+                if op.kind == FrontendKinds.LOOP_INDEX_NEXT:
+                    # Updating a home requires its initialization on this path.
+                    used.add(op.result.name)
+                phi_edges = phi_edges_by_block[block_id]
+                if op.kind == FrontendKinds.PHI and len(op.args) == len(phi_edges) > 1:
+                    # PHI operands are uses on their incoming edges. Requiring
+                    # both branch-local producers to dominate the join rejects
+                    # valid SSA and used to force the weaker CSE fallback.
+                    for arg, (predecessor, _target) in zip(op.args, phi_edges):
+                        if predecessor not in cfg.reachable:
+                            continue
+                        if not isinstance(arg, MoltValue):
+                            continue
+                        name = arg.name
+                        if name in predefined:
+                            continue
+                        definition = definition_block.get(name)
+                        if definition is None or not cfg.dominance.dominates(
+                            definition, predecessor
+                        ):
+                            failures.append((op_idx, op.kind, name))
+                    used.clear()
                 for name in sorted(used):
                     if name in predefined:
                         continue
@@ -343,8 +337,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
                         # Value is used but has no definition at all — if it
                         # was originally a MISSING sentinel that got removed,
                         # flag this as a failure.
-                        if name in missing_value_defs:
-                            failures.append((op_idx, op.kind, name))
+                        failures.append((op_idx, op.kind, name))
                         continue
                     def_block = definition_block[name]
                     if not cfg.dominance.dominates(def_block, block_id):
@@ -352,17 +345,6 @@ class MidendDataflowMixin(GeneratorMixinBase):
                         continue
                     if def_block == block_id and def_idx >= op_idx:
                         failures.append((op_idx, op.kind, name))
-                # Extra check: ops that consume MISSING-produced values
-                # (sentinel consumers) must have those definitions still
-                # present and dominating.
-                if op.kind in _missing_sentinel_consumer_ops:
-                    for arg in op.args:
-                        if (
-                            isinstance(arg, MoltValue)
-                            and arg.name in missing_value_defs
-                        ):
-                            if arg.name not in local_defs:
-                                failures.append((op_idx, op.kind, arg.name))
                 # Transitive MISSING taint check: if a CALL/CALL_INDIRECT
                 # arg is MISSING-tainted through a PHI collapse (not a direct
                 # MISSING def), that means an uninitialized variable leaked
@@ -374,9 +356,6 @@ class MidendDataflowMixin(GeneratorMixinBase):
                             and arg.name not in missing_value_defs
                         ):
                             failures.append((op_idx, op.kind, arg.name))
-                out_name = op.result.name
-                if out_name != "none":
-                    local_defs.add(out_name)
         return failures
 
     def _dead_op_lattice_class(
@@ -519,6 +498,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
             return False
         return True
 
+    @profile_midend_solver("sccp_solver")
     def _compute_sccp(
         self,
         ops: list[MoltOp],
@@ -538,6 +518,26 @@ class MidendDataflowMixin(GeneratorMixinBase):
         loop_break_choice_by_index: dict[int, bool] = {}
         loop_bound_facts = self._analyze_loop_bound_facts(ops, cfg)
         loop_compare_truth = self._analyze_affine_loop_compare_truth(ops, cfg)
+        live = ValueLiveness(ops, cfg=cfg)
+        phi_edges_by_block = live.phi_edges
+        input_names = [set(live.live_into(block.start)) for block in cfg.blocks]
+        output_names = [
+            input_names[block.id]
+            | set(live.live_out_of(block.id))
+            | {
+                op.result.name
+                for op in ops[block.start : block.end]
+                if op.result.name != "none"
+            }
+            for block in cfg.blocks
+        ]
+        phi_dependents: dict[int, set[int]] = {}
+        for block in cfg.blocks:
+            for op in ops[block.start : block.end]:
+                edges = phi_edges_by_block[block.id]
+                if op.kind == FrontendKinds.PHI and len(op.args) == len(edges) > 1:
+                    for predecessor, _target in edges:
+                        phi_dependents.setdefault(predecessor, set()).add(block.id)
 
         def type_fact_key(name: str) -> str:
             return f"__tag__:{name}"
@@ -582,13 +582,22 @@ class MidendDataflowMixin(GeneratorMixinBase):
                 return left
             return _SCCP_OVERDEFINED
 
-        def merge_states(states: list[dict[str, Any]]) -> dict[str, Any]:
+        def merge_states(
+            states: list[dict[str, Any]], needed: set[str]
+        ) -> dict[str, Any]:
             if not states:
                 return {}
+            if len(states) == 1:
+                return {
+                    name: value
+                    for name, value in states[0].items()
+                    if (name[8:] if is_heap_fact(name) else name) in needed
+                }
             merged: dict[str, Any] = {}
-            all_keys: set[str] = set()
-            for state in states:
-                all_keys.update(state.keys())
+            # In particular, a common exception handler may have thousands of
+            # predecessors, each with distinct dead temporaries. Joining their
+            # union before projecting made that fan-in quadratic in edge count.
+            all_keys = needed | {type_fact_key(name) for name in needed}
             for key in all_keys:
                 # Type/shape guards are must-facts, unlike unknown scalar
                 # lattice values. A callback on one predecessor kills them.
@@ -668,17 +677,19 @@ class MidendDataflowMixin(GeneratorMixinBase):
                 return _SCCP_OVERDEFINED
             if op.kind == FrontendKinds.PHI and op.args:
                 block_id = cfg.op_blocks[op_index]
-                block_preds = cfg.predecessors.get(block_id, [])
-                if len(block_preds) == len(op.args):
+                phi_edges = phi_edges_by_block[block_id]
+                if len(phi_edges) == len(op.args):
                     merged: Any = _SCCP_UNKNOWN
                     seen_exec = False
-                    for arg, pred in zip(op.args, block_preds):
-                        if (pred, block_id) not in executable_edges:
+                    for arg, edge in zip(op.args, phi_edges):
+                        if edge not in executable_edges:
                             continue
                         if not isinstance(arg, MoltValue):
                             return _SCCP_OVERDEFINED
                         seen_exec = True
-                        merged = merge_lattice(merged, value_lattice(arg.name, known))
+                        merged = merge_lattice(
+                            merged, value_lattice(arg.name, out_values[edge[0]])
+                        )
                         if is_overdefined(merged):
                             return _SCCP_OVERDEFINED
                     if seen_exec:
@@ -923,30 +934,16 @@ class MidendDataflowMixin(GeneratorMixinBase):
             return _SCCP_OVERDEFINED
 
         iterations = 0
-        ssa_defs = sum(1 for op in ops if op.result.name != "none")
         if max_iters_override is None or max_iters_override <= 0:
-            # Direct solver consumers share the pipeline's environment refresh
-            # authority. Explicit policy budgets are already resolved by their
-            # caller and do not need another environment scan per solver round.
             self._refresh_midend_env_config_if_needed()
-        if max_iters_override is not None and max_iters_override > 0:
-            max_iterations = max_iters_override
-        elif self.midend_env.sccp_iter_cap_override is not None:
-            max_iterations = self.midend_env.sccp_iter_cap_override
-        else:
-            # Dynamic cap keeps compile-time bounded while scaling with function/CFG size.
-            # Keep the default ceiling conservative so wasm builds cannot stall for
-            # minutes in pathological SCCP worklists.
-            cfg_edge_count = sum(len(succs) for succs in cfg.successors.values())
-            max_iterations = max(
-                2048,
-                min(
-                    131072,
-                    (len(cfg.blocks) * 96) + (cfg_edge_count * 48) + (ssa_defs * 24),
-                ),
-            )
+        max_iterations = (
+            max_iters_override
+            if max_iters_override is not None and max_iters_override > 0
+            else self.midend_env.sccp_iter_cap_override
+        )
         func_stats = self._midend_function_stats()
 
+        processed_blocks: set[int] = set()
         block_queue: deque[int] = deque()
         queued_blocks: set[int] = set()
         edge_queue: deque[tuple[int, int]] = deque()
@@ -985,10 +982,13 @@ class MidendDataflowMixin(GeneratorMixinBase):
                 # PHI evaluation also depends on the incoming executable-edge
                 # mask, even when all predecessor state dictionaries are equal.
                 enqueue_block(dst)
+                for dependent in sorted(phi_dependents.get(src, ())):
+                    if dependent in executable_blocks:
+                        enqueue_block(dependent)
                 continue
 
             iterations += 1
-            if iterations > max_iterations:
+            if max_iterations is not None and iterations > max_iterations:
                 self.midend_stats["sccp_iteration_cap_hits"] = (
                     self.midend_stats.get("sccp_iteration_cap_hits", 0) + 1
                 )
@@ -1021,7 +1021,17 @@ class MidendDataflowMixin(GeneratorMixinBase):
                     if (pred, block_id) in executable_edges
                 ]
                 pred_states = [out_values[pred] for pred in exec_preds]
-                new_in = merge_states(pred_states)
+                new_in = merge_states(pred_states, input_names[block_id])
+
+            # Facts belong to values that this block can still consume. Carrying
+            # every earlier constant through every later check made ordinary
+            # module initialization quadratic in both time and retained maps.
+            needed = input_names[block_id]
+            new_in = {
+                name: value
+                for name, value in new_in.items()
+                if (name[8:] if is_heap_fact(name) else name) in needed
+            }
 
             if not _same_sccp_state(new_in, in_values[block_id]):
                 in_values[block_id] = new_in
@@ -1065,6 +1075,28 @@ class MidendDataflowMixin(GeneratorMixinBase):
                                 known[type_fact_key(guarded_obj.name)] = tags[0]
 
             prior_out = out_values[block_id]
+            needed = output_names[block_id]
+            known = {
+                name: value
+                for name, value in known.items()
+                if (name[8:] if is_heap_fact(name) else name) in needed
+            }
+            # Join successive observations, never narrow a scalar or resurrect
+            # a killed heap relation around a cycle. Exact literal identity is
+            # shared with CSE (including float bits and exact Python types).
+            for name, old_value in prior_out.items():
+                if is_heap_fact(name):
+                    if name in known and not _same_sccp_value(old_value, known[name]):
+                        known.pop(name)
+                else:
+                    known[name] = merge_lattice(
+                        old_value, known.get(name, _SCCP_OVERDEFINED)
+                    )
+            if block_id in processed_blocks:
+                for name in list(known):
+                    if is_heap_fact(name) and name not in prior_out:
+                        known.pop(name)
+            processed_blocks.add(block_id)
             out_changed = not _same_sccp_state(known, prior_out)
             if out_changed:
                 out_values[block_id] = known
@@ -1134,6 +1166,9 @@ class MidendDataflowMixin(GeneratorMixinBase):
                 for succ in cfg.successors.get(block_id, []):
                     if succ in executable_blocks:
                         enqueue_block(succ)
+                for dependent in sorted(phi_dependents.get(block_id, ())):
+                    if dependent in executable_blocks:
+                        enqueue_block(dependent)
 
         return SCCPResult(
             in_values=in_values,
@@ -1169,33 +1204,22 @@ class MidendDataflowMixin(GeneratorMixinBase):
             return ops, 0
 
         trimmed = 0
+        phi_edges_by_block = cfg.phi_edge_table()
         out: list[MoltOp] = []
         for block in cfg.blocks:
-            block_preds = cfg.predecessors.get(block.id, [])
-            # Look through single-predecessor post-merge blocks: if this
-            # block has exactly one predecessor that is itself a merge point
-            # (multiple predecessors), the PHI args correspond to the merge
-            # block's predecessors, not the direct predecessor.
-            effective_preds = block_preds
-            edge_target = block.id
-            if (
-                len(block_preds) == 1
-                and len(cfg.predecessors.get(block_preds[0], [])) > 1
-            ):
-                effective_preds = cfg.predecessors.get(block_preds[0], [])
-                edge_target = block_preds[0]
+            phi_edges = phi_edges_by_block[block.id]
             for op_idx in range(block.start, block.end):
                 op = ops[op_idx]
                 if (
                     op.kind == FrontendKinds.PHI
                     and op.args
-                    and len(op.args) == len(effective_preds)
-                    and len(effective_preds) > 1
+                    and len(op.args) == len(phi_edges)
+                    and len(phi_edges) > 1
                 ):
                     kept_args = [
                         arg
-                        for arg, pred in zip(op.args, effective_preds)
-                        if (pred, edge_target) in executable_edges
+                        for arg, edge in zip(op.args, phi_edges)
+                        if edge in executable_edges
                     ]
                     normalized_args = kept_args
                     if kept_args and all(
@@ -1226,18 +1250,10 @@ class MidendDataflowMixin(GeneratorMixinBase):
             return ops, 0
 
         rewrites = 0
+        phi_edges_by_block = cfg.phi_edge_table()
         out: list[MoltOp] = []
         for block in cfg.blocks:
-            block_preds = cfg.predecessors.get(block.id, [])
-            # Look through single-predecessor post-merge blocks to find
-            # the effective predecessor count that PHI args should match.
-            effective_preds = block_preds
-            if (
-                len(block_preds) == 1
-                and len(cfg.predecessors.get(block_preds[0], [])) > 1
-            ):
-                effective_preds = cfg.predecessors.get(block_preds[0], [])
-            expected = len(effective_preds)
+            expected = len(phi_edges_by_block[block.id])
             for op_idx in range(block.start, block.end):
                 op = ops[op_idx]
                 if op.kind != FrontendKinds.PHI or not op.args:

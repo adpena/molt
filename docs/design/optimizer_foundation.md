@@ -6,6 +6,143 @@ architecture). Origin: user vision — "bleeding edge, like Mojo and Julia but b
 like Codon but more ecosystem compatibility / language support / flexibility; like Nuitka but
 way faster and even more flexible."
 
+Support and release claims are bounded by the
+[verified subset](../spec/areas/compat/contracts/verified_subset_contract.md)
+and its qualified target cells. The north-star comparisons below describe the
+architectural goal.
+
+## Mid-end coverage and bounded work
+
+Every serialized lowered function receives frontend mid-end coverage accounting,
+including stdlib bodies and large functions. User functions enter the optimizer
+regardless of size. Stdlib bodies bypass the Python optimizer as a measured cost
+policy owned by HF-773, while the backend Rust TIR pipeline still processes them.
+This is a cost decision, not a correctness gate: the 2026-11-05 round-2 native
+release measurements found cold builds growing from 51.66 to 111.58 seconds for
+`bench_math_numeric`, 59.05 to 109.70 for `bench_colorsys`, and 40.91 to 77.04 for
+`binary_trees`, for 0–3.4% fewer runtime instructions across the measured corpus.
+Receipts: `logs/agents/lane-hf572-midend-coverage/artifacts/round-2/report.md`
+in the integration checkout. These are whole-lane observations, not an isolated
+attribution of every instruction delta to stdlib optimization. HF-773 must carry
+the measured opportunities into the existing typed SSA optimizer and retire the
+overlapping Python fact families. It owns full stdlib differential qualification.
+The round-3 design and two sequential read-only review records are retained in
+the same lane's `artifacts/round-3/`; the first review's six findings were answered
+and the implementation-readiness review found no remaining design gap.
+
+The build's existing mid-end diagnostics
+record original input ops, output ops, status and reasons per function; a
+program summary is also emitted without detailed timing diagnostics. The
+denominator includes generated module chunks and precedes backend reachability.
+It is not a count of source functions or surviving optimized operations.
+
+The disjoint statuses are `full`, `degraded`, `skipped`, and `fallback`, with
+skipped taking precedence over fallback, and fallback over degraded. A fixed
+point without a rewrite is full optimization. A verification rejection,
+rollback, solver limit, disabled required pass or deterministic optional-pass
+budget is coverage loss even when a later attempt verifies. Reasons may
+overlap; their counts must not be added as category totals. Missing cached
+outcomes retain their function inventory as skipped with unknown input ops;
+op fractions are null until the denominator is complete. Empty denominators
+also have null fractions. Failed builds do not establish program coverage.
+Stdlib bypass records `skipped` with reason `stdlib_cost_policy`, including empty
+functions, original/output op counts and zero executed passes. The historical
+`midend_module_skips` counter counts per-function invocations of this policy;
+program function/module inventories provide their own denominators. Skipped
+stdlib functions are never counted as fully optimized by the Python pipeline.
+
+Required outer rewrites and SCCP's default worklists drain to a fixed point.
+Tier/profile round counts calibrate optional CSE's work budget, not required-pass
+admission. Backend benchmark and differential runners impose no hidden solver
+or outer-round diagnostic limits. An explicit diagnostic visit
+limit returns no value or branch facts and marks all CFG blocks and edges
+executable; its loss remains in coverage. Successive scalar outputs widen by
+the exact-literal lattice, and killed heap relations cannot resurrect around
+a cycle. The shared value-liveness analysis bounds retained block facts to
+values used locally or later. Joins project needed values before merging:
+a shared exception handler must not join every dead temporary from every
+predecessor. The verifier uses unique producer sites, instruction order and
+dominator intervals rather than a definition set for every block. MISSING
+taint follows PHI use dependencies iteratively.
+Authored `LOOP_INDEX_START`/`LOOP_INDEX_NEXT` are explicit pre-SSA loop carriers:
+an update requires its own loop's unique dominating start. They do not admit
+ordinary repeated SSA definitions or flow-insensitive literal facts.
+
+Optimized stdlib functions are products of the existing source-qualified
+module-lowering record, together with function metadata and original coverage
+receipts. Serial and parallel readers consult that product before constructing
+the frontend generator. Its identity must include module bytes, semantic
+compiler identity, target Python/platform, source-body selection, dependency
+facts, profile/PGO and every mid-end policy setting. Reusing the product executes
+no mid-end passes; restored pass timings describe its original production,
+identified by the existing cache-hit worker mode. There is no separate stdlib
+optimization cache. Cold compile cost and warm product reuse are distinct
+measurements; backend artifact reuse is another boundary.
+
+CSE propagates aliases only for values live out of each block. Substitutions
+for that block's eliminated definitions remain at their producers until final
+operand rewriting, including substitutions that are dead in the original
+value graph. This bounds propagated alias entries by the sum of live-out names,
+plus one local substitution per defining operation, instead of copying every
+earlier eliminated definition through every later block. Available expressions
+remain a separate fact: a dead representative may eliminate a future repeated
+computation. Their removal cannot be justified by value liveness alone.
+Scalar and type facts propagate for live values, live alias targets and all
+available representatives; dead eliminated aliases do not retain duplicate
+facts in every later block. This projects the existing fact domain without
+dropping expression availability or changing effect invalidation.
+CSE compares the four closed fact maps directly, using target SSA identity for
+aliases and available expressions. It retains no sorted signature projection
+or mutation-invalidated memo alongside those maps.
+
+With `MOLT_MIDEND_STATS` present, existing pass statistics also record actual
+call counts and sampled compiler-process peak RSS, including entry/exit samples
+and a 10 ms observer. Nested SCCP/CSE solver calls have their own records; their
+inclusive wall times and resident peaks overlap outer stages and must not be
+added as a total. RSS includes retained inputs and allocator pages, rather than
+only allocations made by the pass. Peak growth is relative to its first valid
+sample; unavailable observations remain null with explicit missing-sample counts.
+Disabled or rejected-before-execution stages have zero calls, independently of
+their recorded optimization attempts. The observer is owned by one function's
+mid-end invocation and closes on success or failure. Normal builds start no
+observer. Restored module-product timings remain historical receipts, so fresh
+optimizer profiling disables lowering-cache reuse.
+
+Frontend dominance queries use intervals and retained tree storage is linear.
+The CHK construction itself has a quadratic worst case: a chain whose final
+node has edges back to every earlier non-entry node makes repeated intersections
+walk long parent paths. A macOS arm64 / slot Python 3.12.15 measurement on
+2026-11-05 took 0.056/0.213/0.827/1.283 seconds at 4k/8k/16k/20k nodes
+(2N-3 edges), with a 155.9 MiB process high-water RSS at 20k including Python
+and imports. This bounds that measured case only; arbitrary graph construction
+is not claimed to be near-linear. Required frontend passes still admit every
+user function.
+
+PHI operands belong to incoming merge edges, including normal continuations
+through exception checks after a structured merge. One linear CFG edge table
+feeds liveness, SCCP, trimming and verification.
+The structured wire boundary additionally requires PHIs immediately after
+their `END_IF`; branch tail merging must retain common checks and metadata
+inside the branches when a PHI follows. CFG validity alone does not prove that
+backend attachment contract.
+Suspended values use explicit
+local homes, fresh SSA results on reload, and the existing backend SSA
+construction. Checked producers publish into a home only on the success path.
+Branch transport captures borrowed frame views before storing them in compiler
+locals, so a returned selection survives the source frame exit.
+Branch transport uses the same typed local homes; the retired frontend `COPY`
+identity has no remaining producer or consumer. The backend wire `copy` remains
+part of its own SSA lowering contract. Heap-read CSE invalidates available reads at effects and joins
+only identical available results; numeric mutation epochs are unnecessary and
+would grow indefinitely on loop backedges. Deterministic work budgets may
+disable the superlinear cross-block CSE optimization, with a coverage reason;
+they do not truncate required CFG/SCCP/DCE work or skip a function.
+
+This coverage contract does not qualify all backend/profile cells by itself.
+The findings ledger owns current qualification. The
+[single typed IR migration](foundation/77_architecture_convergence.md#b-one-typed-ir-as-the-backend-input)
+owns retirement of the overlapping Python and Rust optimizers.
+
 ## What "better than each" technically requires
 - **vs Nuitka** (full CPython compat, but slow — inherits CPython's runtime/object model via
   libpython): molt keeps the compatibility but has its OWN runtime, so the win comes from an

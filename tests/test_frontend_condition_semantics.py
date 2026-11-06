@@ -71,7 +71,7 @@ def _execute_expression_ops(ops: list[MoltOp], inputs: dict[str, Any]) -> Any:
         elif op.kind == "LOAD_VAR":
             assert op.metadata is not None
             values[op.result.name] = variables[op.metadata["var"]]
-        elif op.kind in {"COPY", "IDENTITY_ALIAS", "BINDING_ALIAS"}:
+        elif op.kind in {"IDENTITY_ALIAS", "BINDING_ALIAS"}:
             values[op.result.name] = read(op.args[0])
         elif op.kind == "PHI":
             values[op.result.name] = read(op.args[0 if completed_branch else 1])

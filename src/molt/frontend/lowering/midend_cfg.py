@@ -177,7 +177,15 @@ class MidendCFGMixin(GeneratorMixinBase):
                         self.midend_stats["guard_hoist_rejected"] += 1
 
                 shared_tail: list[MoltOp] = []
-                while then_ops and else_ops:
+                # Structured PHIs are attached to the immediately preceding
+                # END_IF by every backend's structured-to-SSA boundary. Moving
+                # even a check or line between them silently detaches the merge.
+                # Keep branch tails in place until that merge is consumed.
+                has_phi_join = (
+                    end_if_idx + 1 < end
+                    and ops[end_if_idx + 1].kind == FrontendKinds.PHI
+                )
+                while then_ops and else_ops and not has_phi_join:
                     tail_then = then_ops[-1]
                     tail_else = else_ops[-1]
                     if not self._op_equal_for_tail_merge(tail_then, tail_else):

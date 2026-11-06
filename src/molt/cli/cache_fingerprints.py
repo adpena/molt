@@ -238,6 +238,7 @@ _FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
         "cli/progress.py": _FrontendInputRole.REPORTING,
         "dx.py": _FrontendInputRole.REPORTING,
         "input_report.py": _FrontendInputRole.REPORTING,
+        "process_model.py": _BUILD,
         "backend_environment.py": _BUILD,
         "backend_executable_names.py": _BUILD,
         "browser_asset_closure.py": _BUILD,

@@ -35727,6 +35727,43 @@ def test_programs_share_the_lowered_form_of_every_imported_module(
     assert warm["hits"] == warm["observed"] - 1
 
 
+@pytest.mark.slow
+@pytest.mark.long_pole
+@pytest.mark.parametrize("workers", [0, 2])
+def test_warm_module_products_reuse_optimized_ir_without_entering_midend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workers: int
+) -> None:
+    from molt.frontend import SimpleTIRGenerator
+    from molt.frontend._types import _MIDEND_ENV_KEYS
+
+    for name in _MIDEND_ENV_KEYS:
+        monkeypatch.delenv(name, raising=False)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text(
+        "from collections import ChainMap\nprint(ChainMap({'x': 42})['x'])\n",
+        encoding="utf-8",
+    )
+    records: list[dict[str, object]] = []
+    with _real_frontend_fake_backend(project, tmp_path / "cache", workers, records):
+        cold = _cli_build_diagnostics(project, "main.py", "program.o")
+
+        def unexpected_midend(*args, **kwargs):
+            pytest.fail("a warm module product entered the midend")
+
+        monkeypatch.setattr(
+            SimpleTIRGenerator, "_run_ir_midend_passes", unexpected_midend
+        )
+        warm = _cli_build_diagnostics(project, "main.py", "program.o")
+    assert len(records) == 2 and records[0] == records[1]
+    assert cold["midend"] == warm["midend"]
+    cache = warm["frontend_lowering_cache"]
+    assert cache["observed"] > 2 and cache["hits"] == cache["observed"]
+    modes = {row["mode"] for row in warm["frontend_parallel"]["worker_timings"]}
+    assert modes <= {"serial_cache_hit", "parallel_cache_hit"}
+    assert ("parallel_cache_hit" if workers else "serial_cache_hit") in modes
+
+
 # Each frontend worker mode under two fixed and two independently random hash
 # seeds. All eight cold/warm builds are compared: any seed- or worker-dependent
 # production-byte/cache-key difference fails. Random seeds add coverage across runs.

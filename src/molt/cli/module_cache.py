@@ -1411,6 +1411,9 @@ def _module_lowering_context_payload(
         "module_chunking": module_chunking,
         "module_chunk_max_ops": module_chunk_max_ops,
         "optimization_profile": optimization_profile,
+        # The product already contains optimized IR and its coverage. A policy
+        # change must not restore a differently optimized standard library.
+        "midend_policy": SimpleTIRGenerator._capture_midend_env_snapshot(),
         "pgo_hot_functions": pgo_hot_function_names_sorted,
     }
 

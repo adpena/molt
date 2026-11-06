@@ -154,6 +154,12 @@ link or native executable. It compiles the whole program on every start, so it i
 slower than the default AOT tier for any program that imports `os`; see
 [the JIT tier](docs/getting-started.md#run-from-memory-jit-tier).
 
+Build output reports mid-end coverage of serialized functions and their original
+operation counts, including stdlib bodies and generated chunks. It distinguishes
+full optimization, reported limits, skips, and fallbacks; see the
+[coverage contract](docs/design/optimizer_foundation.md#mid-end-coverage-and-bounded-work).
+Coverage counts do not establish release qualification.
+
 Final-link reuse checks the complete output family against its receipt. Linked
 WASM deployment files are published together; failed builds preserve the previous
 generation. Keep the hidden `.molt-artifact-*` custody files beside local outputs,

@@ -169,7 +169,6 @@ FrontendOpKind = Literal[
     'CONTAINS',
     'CONTEXT_ENTER',
     'CONTEXT_EXIT',
-    'COPY',
     'COPY_VAR',
     'DEC_REF',
     'DELATTR',
@@ -1231,7 +1230,6 @@ class FrontendKinds:
     CONTAINS: Final = 'CONTAINS'
     CONTEXT_ENTER: Final = 'CONTEXT_ENTER'
     CONTEXT_EXIT: Final = 'CONTEXT_EXIT'
-    COPY: Final = 'COPY'
     COPY_VAR: Final = 'COPY_VAR'
     DEC_REF: Final = 'DEC_REF'
     DELATTR: Final = 'DELATTR'
@@ -2294,7 +2292,6 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'CONTAINS': 'contains',
     'CONTEXT_ENTER': 'context_enter',
     'CONTEXT_EXIT': 'context_exit',
-    'COPY': 'copy',
     'COPY_VAR': 'copy_var',
     'DEC_REF': 'dec_ref',
     'DELATTR_GENERIC_OBJ': 'del_attr_generic_obj',
@@ -3637,7 +3634,6 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "CONTAINS",
         "CONTEXT_ENTER",
         "CONTEXT_EXIT",
-        "COPY",
         "COPY_VAR",
         "DEC_REF",
         "DELATTR",
@@ -4028,6 +4024,7 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
 FRONTEND_LOWERING_KINDS_BY_WIRE: dict[WireOpKind, tuple[FrontendOpKind, ...]] = {
     'closure_load': ('LOAD_CLOSURE',),
     'closure_store': ('STORE_CLOSURE',),
+    'copy': (),
     'del_attr_generic_obj': ('DELATTR_GENERIC_OBJ',),
     'del_attr_generic_ptr': ('DELATTR_GENERIC_PTR',),
     'iter': ('ITER_NEW',),
@@ -4697,7 +4694,6 @@ CHECK_EXCEPTION_SKIP_KINDS: frozenset[FrontendOpKind] = frozenset(
         "CONST_FLOAT",
         "IS",
         "IS_NOT",
-        "COPY",
         "INC_REF",
         "DEC_REF",
         "BINDING_ALIAS",
@@ -4820,7 +4816,6 @@ FRONTEND_EFFECT_CLASS: dict[FrontendOpKind, str] = {
     "CONST_NOT_IMPLEMENTED": "pure",
     "CONST_STR": "pure",
     "CONTAINS": "writes_heap",
-    "COPY": "reads_heap",
     "COPY_VAR": "reads_heap",
     "DEC_REF": "writes_heap",
     "DELATTR": "writes_heap",
@@ -5107,7 +5102,6 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {
     "CONST_NOT_IMPLEMENTED": False,
     "CONST_STR": False,
     "CONTAINS": True,
-    "COPY": True,
     "COPY_VAR": True,
     "DEC_REF": True,
     "DELATTR": True,
@@ -6027,7 +6021,6 @@ FRONTEND_EFFECT_READS_HEAP_KINDS: frozenset[FrontendOpKind] = frozenset(
         "BUILD_SET",
         "BUILD_SLICE",
         "BUILD_TUPLE",
-        "COPY",
         "COPY_VAR",
         "EXCEPTION_MATCH_BUILTIN",
         "FOR_ITER",

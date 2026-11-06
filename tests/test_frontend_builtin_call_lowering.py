@@ -1479,7 +1479,8 @@ def test_try_except_finally_splits_handler_match_ref_from_finally_observer() -> 
 def test_module_try_except_assignments_use_module_storage_after_join() -> None:
     source = (
         "try:\n"
-        "    raise ModuleNotFoundError('x')\n"
+        "    if input():\n"
+        "        raise ModuleNotFoundError('x')\n"
         "except ModuleNotFoundError:\n"
         "    flag = True\n"
         "else:\n"
@@ -5742,7 +5743,7 @@ def test_internal_intrinsic_calls_preserve_existing_result_destination() -> None
     assert call.args == ["molt_iterator_throw", iterator, error]
     assert call.result is destination
     assert any(op.kind == "CHECK_EXCEPTION" for op in emitted)
-    assert not any(op.kind in {"COPY", "BUILTIN_FUNC", "CALL_FUNC"} for op in emitted)
+    assert not any(op.kind in {"BUILTIN_FUNC", "CALL_FUNC"} for op in emitted)
 
 
 def test_await_operand_uses_shared_runtime_protocol() -> None:

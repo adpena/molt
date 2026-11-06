@@ -641,8 +641,14 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                         raise FrontendRejection(
                             Diagnostic.OPERAND_VALUE, "Unsupported dict.update input"
                         )
+                    # Discard the effect result. CONST_NONE below is the
+                    # single SSA producer for Python's known None result.
                     self.emit(
-                        MoltOp(kind="DICT_UPDATE", args=[receiver, other], result=res)
+                        MoltOp(
+                            kind="DICT_UPDATE",
+                            args=[receiver, other],
+                            result=MoltValue("none"),
+                        )
                     )
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                 return res

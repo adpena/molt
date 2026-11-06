@@ -132,6 +132,8 @@ _TYPING_NAMES = {
 # Imports that are only valid under ``if TYPE_CHECKING`` (avoid an import cycle /
 # runtime cost): identifier -> ``from`` module.
 _TYPE_CHECKING_IMPORTS = {
+    "MidendMemoryProfiler": "molt.frontend.lowering.midend_telemetry",
+    "PassMemorySample": "molt.frontend.lowering.midend_telemetry",
     "CallForm": "molt.compiler_analysis.python_call_arguments",
     "FunctionKind": "molt.compiler_analysis.python_function_kind",
     "StatefulFunctionFramePlan": "molt.frontend.sema.funcmeta",

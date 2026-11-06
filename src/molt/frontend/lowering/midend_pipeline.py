@@ -28,6 +28,11 @@ from molt.frontend._types import (
 from molt.frontend.lowering.midend_dataflow import (
     current_unique_result_definitions,
 )
+from molt.frontend.value_liveness import ValueLiveness
+from molt.frontend.lowering.midend_telemetry import (
+    profile_midend_function,
+    profile_midend_solver,
+)
 
 
 _CANONICALIZE_CONTROL_AWARE_OPS_IMPL_KINDS_1: frozenset[FrontendOpKind] = frozenset(
@@ -36,14 +41,18 @@ _CANONICALIZE_CONTROL_AWARE_OPS_IMPL_KINDS_1: frozenset[FrontendOpKind] = frozen
 
 
 class MidendPipelineMixin(GeneratorMixinBase):
+    @profile_midend_function
     def _run_ir_midend_passes(self, ops: list[MoltOp]) -> list[MoltOp]:
         self._refresh_midend_env_config_if_needed()
         # Dev-profile mid-end gate removed: MISSING-value miscompile fixes
         # (SCCP non-propagation, DCE protection, definite-assignment hardening)
         # are now in place.  MOLT_MIDEND_DEV_ENABLE is no longer
         # required — mid-end runs for both dev and release profiles.
-        # Correctness gate: keep stdlib modules out of mid-end canonicalization
-        # until canonicalized stdlib lowering is proven stable (HF-572).
+        # Measured cost policy, not a correctness gate (HF-773): round 2
+        # grew math_numeric/colorsys/binary_trees cold builds 1.5–2.2x for
+        # 0–3.4% fewer instructions. Keep stdlib on the Rust TIR optimizer;
+        # HF-773 owns moving the remaining Python fact families there.
+        # Evidence: logs/agents/lane-hf572-midend-coverage/artifacts/round-2/report.md
         if self._source_is_stdlib_module:
             self.midend_stats["midend_module_skips"] += 1
             return ops
@@ -52,48 +61,9 @@ class MidendPipelineMixin(GeneratorMixinBase):
             ops, stage="midend_entry"
         )
         self.midend_stats["cfg_structural_canonicalizations"] += structural_rewrites
-        oversized_skip_threshold = self.midend_env.skip_op_threshold
-        _module_function_count, _module_total_ops, monolith_pressure_level = (
-            self._current_module_pressure_snapshot()
-        )
-        effective_skip_threshold = oversized_skip_threshold
-        if monolith_pressure_level >= 1:
-            effective_skip_threshold = min(effective_skip_threshold, 650)
-        if monolith_pressure_level >= 2:
-            effective_skip_threshold = min(effective_skip_threshold, 500)
-        if len(ops) >= effective_skip_threshold:
-            cfg = build_cfg(ops)
-            policy = self._resolve_midend_function_policy(
-                ops,
-                function_name=self._active_midend_function_name,
-                block_count=max(1, len(cfg.blocks)),
-            )
-            if len(ops) >= oversized_skip_threshold or (
-                not policy.promoted and policy.tier != "A"
-            ):
-                self.midend_stats["midend_oversized_function_skips"] += 1
-                self._record_midend_policy_outcome(
-                    policy=policy,
-                    spent_ms=0.0,
-                    work_units_spent=0.0,
-                    degraded=True,
-                    degrade_events=[
-                        {
-                            "reason": "oversized_function_skip",
-                            "stage": "midend_entry",
-                            "action": "emit_unoptimized_ir",
-                            "spent_ms": 0.0,
-                            "value": {
-                                "op_count": len(ops),
-                                "threshold": effective_skip_threshold,
-                            },
-                        }
-                    ],
-                    round_snapshots=[],
-                )
-                return ops
         return self._canonicalize_control_aware_ops(ops)
 
+    @profile_midend_solver("cse_solver")
     def _run_cse_canonicalization_round(
         self,
         ops: list[MoltOp],
@@ -131,6 +101,14 @@ class MidendPipelineMixin(GeneratorMixinBase):
                 _def_name = working_ops[_op_idx].result.name
                 if _def_name != "none" and _def_name not in _value_def_block:
                     _value_def_block[_def_name] = _blk.id
+
+        live = ValueLiveness(working_ops, cfg=round_cfg)
+        live_out_names = [set(live.live_out_of(block.id)) for block in round_cfg.blocks]
+        # Substitutions for eliminated local definitions are needed by final
+        # operand rewriting even when their original names are no longer live.
+        # Keep each at its producer instead of copying all earlier aliases
+        # through every subsequent block (millions of entries in stdlib chunks).
+        local_aliases: list[dict[str, MoltValue]] = [{} for _ in round_cfg.blocks]
 
         block_inputs: dict[int, CanonicalizationState] = {
             block.id: self._empty_canonicalization_state() for block in round_cfg.blocks
@@ -202,12 +180,9 @@ class MidendPipelineMixin(GeneratorMixinBase):
                     in_state["const_int_values"][name] = value
                     in_state["value_type_tags"][name] = BUILTIN_TYPE_TAGS["int"]
 
-                # The predecessor clone may carry a cached signature. Both the
-                # must-fact projection and SCCP overlay changed its contents.
-                self._invalidate_canonicalization_state_signature(in_state)
-                input_changed = self._canonicalization_state_signature(
-                    in_state
-                ) != self._canonicalization_state_signature(block_inputs[block_id])
+                input_changed = not self._canonicalization_states_equal(
+                    in_state, block_inputs[block_id]
+                )
                 if block_id in processed_blocks and not input_changed:
                     # Transfer is deterministic for this fixed block, induction
                     # analysis and input state. Reuse only inside this round;
@@ -225,9 +200,39 @@ class MidendPipelineMixin(GeneratorMixinBase):
                     in_state,
                     induction_steps=induction_steps,
                 )
-                if self._canonicalization_state_signature(
-                    out_state
-                ) != self._canonicalization_state_signature(block_outputs[block_id]):
+                local_aliases[block_id] = {
+                    name: value
+                    for name, value in out_state["aliases"].items()
+                    if _value_def_block.get(name) == block_id
+                }
+                out_state["aliases"] = {
+                    name: value
+                    for name, value in out_state["aliases"].items()
+                    if name in live_out_names[block_id]
+                }
+                # Eliminated aliases also left duplicate scalar/type facts in
+                # every later block. Future transfers can consume a fact via
+                # an original live operand, its alias target, or an available
+                # expression representative. Preserve all three, including
+                # representatives dead in the original value graph.
+                needed = (
+                    live_out_names[block_id]
+                    | {value.name for value in out_state["aliases"].values()}
+                    | {value.name for value in out_state["available_values"].values()}
+                )
+                out_state["const_int_values"] = {
+                    name: value
+                    for name, value in out_state["const_int_values"].items()
+                    if name in needed
+                }
+                out_state["value_type_tags"] = {
+                    name: value
+                    for name, value in out_state["value_type_tags"].items()
+                    if name in needed
+                }
+                if not self._canonicalization_states_equal(
+                    out_state, block_outputs[block_id]
+                ):
                     block_outputs[block_id] = self._clone_canonicalization_state(
                         out_state
                     )
@@ -251,11 +256,11 @@ class MidendPipelineMixin(GeneratorMixinBase):
         # When allow_cross_block_const_dedupe is False, these aliases are
         # NOT propagated to successor blocks — a variable eliminated in
         # block A can still be referenced in block B.  Collect the union
-        # of all aliases from every block's output state and apply them
+        # of substitutions from their defining blocks and apply them
         # to the reassembled ops so that no dangling references remain.
         global_aliases: dict[str, MoltValue] = {}
         for block_id in range(len(round_cfg.blocks)):
-            for alias_name, alias_target in block_outputs[block_id]["aliases"].items():
+            for alias_name, alias_target in local_aliases[block_id].items():
                 if alias_name not in global_aliases:
                     global_aliases[alias_name] = alias_target
         if global_aliases:
@@ -310,6 +315,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
             function_name=self._active_midend_function_name,
             block_count=len(cfg.blocks),
         )
+        pass_memory = self._start_midend_pass_memory()
         pass_start = time.perf_counter()
         rewritten_ops, pre_cfg_rewrites = self._canonicalize_cfg_before_optimization(
             validated_ops
@@ -317,6 +323,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
         self._record_midend_pass_sample(
             "cfg_precanonicalize",
             elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+            memory=pass_memory,
             accepted=pre_cfg_rewrites > 0,
             degraded=False,
         )
@@ -335,18 +342,13 @@ class MidendPipelineMixin(GeneratorMixinBase):
         degraded = False
         enable_deep_edge_thread = policy.enable_deep_edge_thread
         enable_cse = policy.enable_cse
-        max_rounds = max(2, policy.max_rounds)
-        sccp_iter_cap = max(1, policy.sccp_iter_cap)
+        diagnostic_round_cap = self.midend_env.max_rounds_override
+        sccp_iter_cap = policy.sccp_iter_cap
         cse_iter_cap = max(1, policy.cse_iter_cap)
 
-        # --- Per-function DETERMINISTIC work budget, 3-level degrade ladder ---
-        # (formerly a wall-time budget, MOL-27; made deterministic for #73).
+        # Only optional cross-block CSE is subject to this work budget.
         per_func_work_budget = max(0.0, float(policy.work_budget))
-        degrade_level: int = 0
-        degrade_level_reasons: list[str] = []
 
-        if self.midend_env.max_rounds_override is not None:
-            max_rounds = max(2, self.midend_env.max_rounds_override)
         if self.midend_env.sccp_iter_cap_override is not None:
             sccp_iter_cap = self.midend_env.sccp_iter_cap_override
         if self.midend_env.cse_iter_cap_override is not None:
@@ -411,42 +413,18 @@ class MidendPipelineMixin(GeneratorMixinBase):
             the input, never on wall-clock timing (#73).
             """
             nonlocal degraded
-            nonlocal degrade_level
-            nonlocal enable_deep_edge_thread
             nonlocal enable_cse
-            nonlocal max_rounds
-            nonlocal sccp_iter_cap
-            nonlocal cse_iter_cap
-            if per_func_work_budget < 0:
-                return
             charge_work(max(1, ops_now))
             while work_units_spent > per_func_work_budget:
                 action: str | None = None
-                proof_floor = round_index + 2
-                if max_rounds > proof_floor:
-                    max_rounds = proof_floor
-                    action = f"cap_rounds_to_{max_rounds}"
-                elif sccp_iter_cap > 8:
-                    sccp_iter_cap = max(8, sccp_iter_cap // 2)
-                    action = f"shrink_sccp_iter_cap_to_{sccp_iter_cap}"
-                elif cse_iter_cap > 4:
-                    cse_iter_cap = max(4, cse_iter_cap // 2)
-                    action = f"shrink_cse_iter_cap_to_{cse_iter_cap}"
-                elif enable_cse:
+                # Only cross-block CSE retains superlinear per-block facts.
+                # Required CFG/SCCP/DCE passes always complete.
+                if enable_cse:
                     enable_cse = False
                     action = "disable_cse"
-                elif enable_deep_edge_thread:
-                    enable_deep_edge_thread = False
-                    action = "disable_deep_edge_thread"
                 if action is None:
                     break
                 degraded = True
-                degrade_level = min(3, degrade_level + 1)
-                degrade_level_reasons.append(
-                    f"work_budget_exceeded at {stage}: "
-                    f"work={work_units_spent:.0f} > budget="
-                    f"{per_func_work_budget:.0f}; action={action}"
-                )
                 extra_value: dict[str, Any] = {
                     "work_units": round(work_units_spent, 1),
                     "work_budget": round(per_func_work_budget, 1),
@@ -480,7 +458,12 @@ class MidendPipelineMixin(GeneratorMixinBase):
         round_index = 0
         round_snapshots: list[dict[str, Any]] = []
         cse_dce_closure_failed = False
-        while round_index < max_rounds:
+        # Required canonical rewrites drain to their fixed point: they remove
+        # operations/edges or replace a value by its canonical exact fact, never
+        # recreate the eliminated form. Optional CSE has its separate work and
+        # solver budgets. A tier's nominal work calibration is not an admission
+        # or convergence limit for required passes.
+        while diagnostic_round_cap is None or round_index < diagnostic_round_cap:
             round_index += 1
             maybe_apply_budget_degrade(
                 f"round_{round_index}_start",
@@ -493,6 +476,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
             post_cse_dce_ran = False
 
             # 1) simplify
+            pass_memory = self._start_midend_pass_memory()
             pass_start = time.perf_counter()
             step_ops, structural_prunes = (
                 self._canonicalize_structured_regions_pre_sccp(step_ops)
@@ -500,6 +484,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
             self._record_midend_pass_sample(
                 "simplify",
                 elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                memory=pass_memory,
                 accepted=structural_prunes > 0,
                 degraded=degraded,
             )
@@ -514,6 +499,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
             # 2) SCCP/edge-thread
             iter_cfg = build_cfg(step_ops)
             if iter_cfg.blocks:
+                pass_memory = self._start_midend_pass_memory()
                 pass_start = time.perf_counter()
                 iter_sccp = self._compute_sccp(
                     step_ops,
@@ -581,6 +567,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
                 self._record_midend_pass_sample(
                     "sccp_edge_thread",
                     elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                    memory=pass_memory,
                     accepted=(
                         branch_prunes
                         + loop_rewrites
@@ -596,6 +583,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
                 self._record_midend_pass_sample(
                     "sccp_edge_thread",
                     elapsed_ms=0.0,
+                    executed=False,
                     accepted=False,
                     degraded=degraded,
                 )
@@ -612,6 +600,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
             )
 
             # 3) join canonicalize
+            pass_memory = self._start_midend_pass_memory()
             pass_start = time.perf_counter()
             join_cfg = build_cfg(step_ops)
             if join_cfg.blocks:
@@ -625,6 +614,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
             self._record_midend_pass_sample(
                 "join_canonicalize",
                 elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                memory=pass_memory,
                 accepted=try_join_threads > 0,
                 degraded=degraded,
             )
@@ -636,6 +626,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
             )
 
             # 4) prune
+            pass_memory = self._start_midend_pass_memory()
             pass_start = time.perf_counter()
             prune_cfg = build_cfg(step_ops)
             if prune_cfg.blocks:
@@ -672,6 +663,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
             self._record_midend_pass_sample(
                 "prune",
                 elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                memory=pass_memory,
                 accepted=(
                     region_prunes
                     + unreachable_blocks
@@ -690,6 +682,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
             )
 
             # 5) verifier
+            pass_memory = self._start_midend_pass_memory()
             pass_start = time.perf_counter()
             # Compute predefined from the ORIGINAL ops at round start, not the
             # current ops. If a rewrite eliminated a variable's definition,
@@ -704,6 +697,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
             self._record_midend_pass_sample(
                 "verifier",
                 elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                memory=pass_memory,
                 accepted=not round_failures,
                 degraded=degraded,
             )
@@ -713,6 +707,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
                 *,
                 pass_name: str,
             ) -> tuple[list[MoltOp], bool]:
+                pass_memory = self._start_midend_pass_memory()
                 pass_start = time.perf_counter()
                 dce_candidate = self._eliminate_dead_trivial_consts(dce_input)
                 dce_failures = self._verify_definite_assignment_in_ops(
@@ -722,24 +717,33 @@ class MidendPipelineMixin(GeneratorMixinBase):
                 self._record_midend_pass_sample(
                     pass_name,
                     elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                    memory=pass_memory,
                     accepted=accepted,
                     degraded=degraded,
                 )
                 if dce_failures:
+                    self.midend_stats["midend_verifier_rejections"] = (
+                        self.midend_stats.get("midend_verifier_rejections", 0) + 1
+                    )
                     return dce_input, False
                 return dce_candidate, accepted
 
             if round_failures:
+                self.midend_stats["midend_verifier_rejections"] = (
+                    self.midend_stats.get("midend_verifier_rejections", 0) + 1
+                )
                 step_ops = step_before
                 self._record_midend_pass_sample(
                     "dce",
                     elapsed_ms=0.0,
+                    executed=False,
                     accepted=False,
                     degraded=True,
                 )
                 self._record_midend_pass_sample(
                     "cse",
                     elapsed_ms=0.0,
+                    executed=False,
                     accepted=False,
                     degraded=True,
                 )
@@ -758,6 +762,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
                     cse_dce_closure_converged = False
                     cse_dce_fp_max_iters = max(1, self.midend_env.cse_fp_max_iters)
                     for cse_dce_fp_iter in range(1, cse_dce_fp_max_iters + 1):
+                        pass_memory = self._start_midend_pass_memory()
                         pass_start = time.perf_counter()
                         cse_input = step_ops
                         cse_candidate, cse_phi_trims = (
@@ -780,10 +785,15 @@ class MidendPipelineMixin(GeneratorMixinBase):
                         self._record_midend_pass_sample(
                             "cse",
                             elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                            memory=pass_memory,
                             accepted=cse_accepted,
                             degraded=degraded,
                         )
                         if cse_failures:
+                            self.midend_stats["midend_verifier_rejections"] = (
+                                self.midend_stats.get("midend_verifier_rejections", 0)
+                                + 1
+                            )
                             cse_dce_closure_converged = True
                             break
                         step_ops = cse_candidate
@@ -811,6 +821,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
                         self._record_midend_pass_sample(
                             "cse_dce_closure",
                             elapsed_ms=0.0,
+                            executed=False,
                             accepted=False,
                             degraded=True,
                         )
@@ -818,6 +829,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
                     self._record_midend_pass_sample(
                         "cse",
                         elapsed_ms=0.0,
+                        executed=False,
                         accepted=False,
                         degraded=True,
                     )
@@ -859,10 +871,12 @@ class MidendPipelineMixin(GeneratorMixinBase):
         if not converged:
             self.midend_stats["fixed_point_fail_fast"] += 1
             add_degrade_event(
-                "fixed_point_round_cap",
+                "fixed_point_round_cap"
+                if diagnostic_round_cap is not None
+                else "cse_dce_fixed_point_cap",
                 "fixed_point_exit",
                 "fail_closed_non_convergence",
-                value=max_rounds,
+                value=diagnostic_round_cap,
             )
             degraded = True
             self._record_midend_policy_outcome(
@@ -873,9 +887,14 @@ class MidendPipelineMixin(GeneratorMixinBase):
                 degrade_events=degrade_events,
                 round_snapshots=round_snapshots,
             )
+            limit = (
+                f"{diagnostic_round_cap} diagnostic rounds"
+                if diagnostic_round_cap is not None
+                else "the CSE/DCE closure budget"
+            )
             raise RuntimeError(
                 "midend deterministic fixed-point failed to converge within "
-                f"{max_rounds} rounds for {self._active_midend_function_name}"
+                f"{limit} for {self._active_midend_function_name}"
             )
 
         if converged:

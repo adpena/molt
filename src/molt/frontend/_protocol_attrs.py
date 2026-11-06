@@ -42,6 +42,7 @@ from molt.frontend._types import (
 if TYPE_CHECKING:
     from molt.frontend.lowering.class_resolution import ClassDefinitionIndex
     from molt.frontend.lowering.builtin_guards import GuardArmKind
+    from molt.frontend.lowering.midend_telemetry import MidendMemoryProfiler
     from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
     from molt.compiler_analysis.python_lexical_scope import PythonDependencyAuthority
     from molt.compiler_analysis.python_binding_facts import PythonNodeKey
@@ -66,6 +67,7 @@ class _GeneratorProtocolAttrs(Protocol):
     _lexical_dependency_index: PythonBindingIndex | None
     _list_int_containers: set[str]
     _midend_env_snapshot: Any
+    _midend_memory_profiler: MidendMemoryProfiler | None
     _midend_stats_reported: Any
     _module_attr_type_hints: dict[str, TypeHint]
     _module_pressure_funcs_map_ref: Any
@@ -147,4 +149,3 @@ class _GeneratorProtocolAttrs(Protocol):
     global_imported_names: dict[str, str]
     globals: dict[str, MoltValue]
     imported_attr_names: dict[str, str]
-    imported_module_attr_mutations: set[tuple[str, str]]

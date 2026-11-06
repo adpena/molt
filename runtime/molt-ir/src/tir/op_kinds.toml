@@ -5554,6 +5554,10 @@ wire_kind = "ret_void"
 # Direct wire production does not imply a frontend MoltOp identity.
 [[frontend_lowering_kind]]
 kinds = []
+wire_kind = "copy"
+
+[[frontend_lowering_kind]]
+kinds = []
 wire_kind = "string_eq"
 
 [[frontend_effect_kind]]
@@ -6014,10 +6018,6 @@ opcode = "Is"
 [[frontend_check_exception_skip]]
 kind = "IS_NOT"
 opcode = "IsNot"
-
-[[frontend_check_exception_skip]]
-kind = "COPY"
-opcode = "Copy"
 
 [[frontend_check_exception_skip]]
 kind = "INC_REF"

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from molt.frontend.lowering.op_kinds_generated import (
     FrontendKinds,
-    FrontendOpKind,
     FRONTEND_FIRST_TRAILING_RESULT_ARG,
 )
 
@@ -19,13 +18,13 @@ from molt.compiler_analysis.python_lexical_scope import (
 )
 
 import ast
+from dataclasses import replace
 from molt.python_private_names import python_definition_name
 from collections.abc import Sequence
 from typing import (
     Any,
 )
 
-from molt.frontend.cfg_analysis import build_cfg
 from molt.frontend._types import (
     GEN_CONTROL_SIZE,
     GEN_SEND_OFFSET,
@@ -35,12 +34,12 @@ from molt.frontend._types import (
     AsyncFrameSlotRole,
     AsyncContextExit,
     MoltOp,
+    CompilerLocalHome,
     MoltValue,
     FunctionDefinitionValues,
     ScratchCell,
     TryScope,
     TypeHint,
-    loaded_method_self_name,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -55,110 +54,7 @@ from molt.compiler_analysis.python_function_kind import FunctionKind
 from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-# Names that are frame state rather than SSA values.
-_INIT_KINDS_1: frozenset[FrontendOpKind] = frozenset(
-    {"CALLARGS_PUSH_METHOD_RECEIVER", "CALL_LOADED_METHOD"}
-)
-_INIT_KINDS_2: frozenset[FrontendOpKind] = frozenset(
-    {"LOAD_METHOD", "LOAD_SUPER_METHOD"}
-)
-
-
-_RESUME_LIVENESS_EXEMPT = frozenset({"self", "none", ""})
-
-
-class _ResumeLiveness:
-    """SSA value liveness of one stateful poll, over the frontend CFG.
-
-    The CFG gives STATE_SWITCH a resume edge to every STATE_LABEL, and gives
-    loops their back edges and checks their exception edges, so a value is live
-    into a label exactly when some path from the label uses it before any op
-    defines it again. Bit ``i`` of a block's live set is name ``i``.
-    """
-
-    def __init__(self, ops: Sequence[MoltOp]) -> None:
-        self.cfg = build_cfg(ops)
-        self.names: list[str] = []
-        self.def_sites: dict[str, list[int]] = {}
-        self.type_hints: dict[str, TypeHint] = {}
-        # A method load's `self_or_null` word is a wire name, not a frontend
-        # value; it is tracked here so that a resume can never lose it.
-        self.loaded_method_selves: set[str] = set()
-        index: dict[str, int] = {}
-
-        def bit(value: MoltValue) -> int:
-            position = index.get(value.name)
-            if position is None:
-                position = index[value.name] = len(self.names)
-                self.names.append(value.name)
-            if value.type_hint:
-                self.type_hints.setdefault(value.name, value.type_hint)
-            return 1 << position
-
-        blocks = self.cfg.blocks
-        uses = [0] * len(blocks)
-        defs = [0] * len(blocks)
-        for block in blocks:
-            used = defined = 0
-            for idx in range(block.start, block.end):
-                op = ops[idx]
-                # The generated field authority names the ops whose trailing
-                # args are outputs (UNPACK_SEQUENCE's targets), not operands.
-                first_output = FRONTEND_FIRST_TRAILING_RESULT_ARG.get(
-                    op.kind, len(op.args)
-                )
-                operands = [
-                    arg for arg in op.args[:first_output] if isinstance(arg, MoltValue)
-                ]
-                outputs = [op.result, *op.args[first_output:]]
-                if op.kind in _INIT_KINDS_1:
-                    operands.append(MoltValue(loaded_method_self_name(op)))
-                elif op.kind in _INIT_KINDS_2:
-                    self_name = loaded_method_self_name(op)
-                    self.loaded_method_selves.add(self_name)
-                    outputs.append(MoltValue(self_name))
-                for arg in operands:
-                    if arg.name not in _RESUME_LIVENESS_EXEMPT:
-                        mask = bit(arg)
-                        if not defined & mask:
-                            used |= mask
-                for output in outputs:
-                    if (
-                        isinstance(output, MoltValue)
-                        and output.name not in _RESUME_LIVENESS_EXEMPT
-                    ):
-                        defined |= bit(output)
-                        self.def_sites.setdefault(output.name, []).append(idx)
-            uses[block.id] = used
-            defs[block.id] = defined
-        live_in = [0] * len(blocks)
-        # Reverse op order visits most successors first; iterate to a fixpoint.
-        order = sorted(self.cfg.reachable, reverse=True)
-        changed = True
-        while changed:
-            changed = False
-            for block_id in order:
-                live_out = 0
-                for successor in self.cfg.successors[block_id]:
-                    live_out |= live_in[successor]
-                updated = uses[block_id] | (live_out & ~defs[block_id])
-                if updated != live_in[block_id]:
-                    live_in[block_id] = updated
-                    changed = True
-        self._live_in = live_in
-
-    def live_into(self, op_index: int) -> list[str]:
-        """The names live on entry to the block that starts at ``op_index``."""
-        block = self.cfg.block_for_op(op_index)
-        if block is None:
-            raise KeyError(op_index)
-        mask = self._live_in[block]
-        names: list[str] = []
-        while mask:
-            lowest = mask & -mask
-            names.append(self.names[lowest.bit_length() - 1])
-            mask ^= lowest
-        return names
+from molt.frontend.value_liveness import ValueLiveness
 
 
 class AsyncGenVisitorMixin(GeneratorMixinBase):
@@ -802,6 +698,11 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             raise FrontendRejection(
                 Diagnostic.CONTROL_FLOW, "yield from outside of generator"
             )
+        if not self.is_async():
+            raise FrontendRejection(
+                Diagnostic.INTERNAL_INVARIANT,
+                "yield from requires its generator's stateful frame plan",
+            )
         iterable = self.visit(node.value)
         if iterable is None:
             raise FrontendRejection(
@@ -819,61 +720,38 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 result=MoltValue("none"),
             )
         )
-        iter_slot = None
-        is_gen_slot = None
-        pair_slot = None
-        if self.is_async():
-            iter_slot = self._new_async_internal_slot()
-            is_gen_slot = self._new_async_internal_slot()
-            pair_slot = self._new_async_internal_slot()
+        iter_slot = self._new_async_internal_slot()
+        is_gen_slot = self._new_async_internal_slot()
+        pair_slot = self._new_async_internal_slot()
+
+        def store_slot(slot: int, value: MoltValue) -> None:
             self.emit(
                 MoltOp(
                     kind="STORE_CLOSURE",
-                    args=["self", iter_slot, iter_obj],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", is_gen_slot, is_gen],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", pair_slot, pair],
+                    args=["self", slot, value],
                     result=MoltValue("none"),
                 )
             )
 
+        def load_slot(slot: int, hint: TypeHint) -> MoltValue:
+            value = MoltValue(self.next_var(), type_hint=hint)
+            self.emit(
+                MoltOp(
+                    kind="LOAD_CLOSURE",
+                    args=["self", slot],
+                    result=value,
+                )
+            )
+            return value
+
+        store_slot(iter_slot, iter_obj)
+        store_slot(is_gen_slot, is_gen)
+        store_slot(pair_slot, pair)
+
         self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-        if iter_slot is not None:
-            iter_obj = MoltValue(self.next_var(), type_hint="iter")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", iter_slot],
-                    result=iter_obj,
-                )
-            )
-            is_gen = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", is_gen_slot],
-                    result=is_gen,
-                )
-            )
-            pair = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", pair_slot],
-                    result=pair,
-                )
-            )
+        iter_obj = load_slot(iter_slot, "iter")
+        is_gen = load_slot(is_gen_slot, "bool")
+        pair = load_slot(pair_slot, "tuple")
         zero = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[0], result=zero))
         one = MoltValue(self.next_var(), type_hint="int")
@@ -895,31 +773,8 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             )
         )
         self._emit_state_yield_resume_entry(resume_state)
-        if iter_slot is not None:
-            iter_obj = MoltValue(self.next_var(), type_hint="iter")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", iter_slot],
-                    result=iter_obj,
-                )
-            )
-            is_gen = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", is_gen_slot],
-                    result=is_gen,
-                )
-            )
-            pair = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", pair_slot],
-                    result=pair,
-                )
-            )
+        iter_obj = load_slot(iter_slot, "iter")
+        is_gen = load_slot(is_gen_slot, "bool")
         none_val = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
         pending_throw = MoltValue(self.next_var(), type_hint="exception")
@@ -944,17 +799,11 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 result=MoltValue("none"),
             )
         )
+        thrown_pair = MoltValue(self.next_var(), type_hint="tuple")
         self._emit_intrinsic_call(
-            "molt_iterator_throw", [iter_obj, pending_throw], result=pair
+            "molt_iterator_throw", [iter_obj, pending_throw], result=thrown_pair
         )
-        if pair_slot is not None:
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", pair_slot, pair],
-                    result=MoltValue("none"),
-                )
-            )
+        store_slot(pair_slot, thrown_pair)
         self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
@@ -977,25 +826,14 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind="IS", args=[pending_send, none_val], result=send_is_none))
         self.emit(MoltOp(kind="IF", args=[send_is_none], result=MoltValue("none")))
         pair = self._emit_iter_next_checked(iter_obj)
-        if pair_slot is not None:
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", pair_slot, pair],
-                    result=MoltValue("none"),
-                )
-            )
+        store_slot(pair_slot, pair)
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="IF", args=[is_gen], result=MoltValue("none")))
-        self.emit(MoltOp(kind="GEN_SEND", args=[iter_obj, pending_send], result=pair))
-        if pair_slot is not None:
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", pair_slot, pair],
-                    result=MoltValue("none"),
-                )
-            )
+        sent_pair = MoltValue(self.next_var(), type_hint="tuple")
+        self.emit(
+            MoltOp(kind="GEN_SEND", args=[iter_obj, pending_send], result=sent_pair)
+        )
+        store_slot(pair_slot, sent_pair)
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         err_val = self._emit_exception_new(
             "TypeError", "can't send non-None to a non-generator iterator"
@@ -1015,15 +853,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 result=MoltValue("none"),
             )
         )
-        if pair_slot is not None:
-            pair = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", pair_slot],
-                    result=pair,
-                )
-            )
+        pair = load_slot(pair_slot, "tuple")
         zero = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[0], result=zero))
         result = MoltValue(self.next_var(), type_hint="Any")
@@ -1244,7 +1074,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         if switch_idx is None or not label_indices:
             # Only STATE_SWITCH resumes into a label.
             return
-        live = _ResumeLiveness(ops)
+        live = ValueLiveness(ops)
         prologue_names: set[str] = set()
         body_names: set[str] = set()
         for name, sites in live.def_sites.items():
@@ -1343,7 +1173,71 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                         result=MoltValue("none"),
                     )
                 )
-        self.current_ops[:] = new_ops
+        # A frame reload is a new SSA definition. Keep the value shared by
+        # entry, resume, backedges and cleanup in an explicit local home; the
+        # backend's existing SSA construction promotes these STORE/LOAD_VARs.
+        # Reusing the original SSA name here invalidated frontend dominance and
+        # allowed flow-insensitive facts to describe the wrong activation.
+        homes = {
+            name: self._new_compiler_local(live.type_hints.get(name, "Unknown"))
+            for name in sorted(spill_names)
+        }
+        self.funcs_map[self.current_func_name]["resume_value_homes"] = homes
+        transported: list[MoltOp] = []
+        home_stores_after: dict[int, list[tuple[CompilerLocalHome, MoltValue]]] = {}
+        for op_index, op in enumerate(new_ops):
+            first_output = FRONTEND_FIRST_TRAILING_RESULT_ARG.get(op.kind, len(op.args))
+            read_names: set[str] = set()
+            for arg in op.args[:first_output]:
+                self._collect_arg_value_names(arg, read_names)
+            aliases: dict[str, MoltValue] = {}
+            for name in sorted(read_names & spill_names):
+                value = MoltValue(
+                    self.next_var(), type_hint=live.type_hints.get(name, "Unknown")
+                )
+                transported.append(
+                    MoltOp(
+                        kind="LOAD_VAR",
+                        args=[],
+                        result=value,
+                        metadata={"var": homes[name].name},
+                    )
+                )
+                aliases[name] = value
+            args = [
+                self._rewrite_aliases_in_arg(arg, aliases)
+                for arg in op.args[:first_output]
+            ]
+            outputs = [op.result, *op.args[first_output:]]
+            stores: list[tuple[CompilerLocalHome, MoltValue]] = []
+            for index, output in enumerate(outputs):
+                if isinstance(output, MoltValue) and output.name in homes:
+                    value = MoltValue(self.next_var(), type_hint=output.type_hint)
+                    stores.append((homes[output.name], value))
+                    outputs[index] = value
+            transported.append(
+                replace(op, args=[*args, *outputs[1:]], result=outputs[0])
+            )
+            # A failed producer must not publish its result into mutable state.
+            # Match the existing frame-store success boundary above: the check
+            # branches to the handler before either kind of home is updated.
+            anchor = op_index
+            if (
+                op_index + 1 < len(new_ops)
+                and new_ops[op_index + 1].kind == FrontendKinds.CHECK_EXCEPTION
+            ):
+                anchor += 1
+            home_stores_after.setdefault(anchor, []).extend(stores)
+            for home, value in home_stores_after.pop(op_index, ()):
+                transported.append(
+                    MoltOp(
+                        kind="STORE_VAR",
+                        args=[value],
+                        result=MoltValue("none"),
+                        metadata={"var": home.name},
+                    )
+                )
+        self.current_ops[:] = transported
 
     def _emit_await_anext(
         self,

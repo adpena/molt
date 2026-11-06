@@ -275,8 +275,6 @@ def wasm_linked_build_command(
     )
     if isinstance(src, ModuleEntry):
         env["MOLT_MODULE_ROOTS"] = str(src.root)
-    env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "2")
-    env.setdefault("MOLT_CSE_MAX_ITERS", "6")
     env[ARTIFACT_ROOT_ENV] = str(test_artifact_root)
     tmp_root = scratch_root(root, env)
     tmp_root.mkdir(parents=True, exist_ok=True)
