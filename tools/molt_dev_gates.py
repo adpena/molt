@@ -363,6 +363,7 @@ def _pytest_report_command(
             argv = tuple(shlex.split(command)) if isinstance(command, str) else command
             return (
                 *argv,
+                "--run-flaky",
                 "-o",
                 "junit_family=xunit1",
                 "--junitxml="
@@ -614,14 +615,10 @@ def run_selected_gates(
         _check_cancellation(runtime)
         _run_serial_gate(ordinal, gate, runtime, gate_seconds)
     _check_cancellation(runtime)
-    if len(heavy) >= 2:
+    if heavy:
         _run_executor_block(
             heavy, runtime, gate_seconds, host_limit(), receipt_kind="heavy"
         )
-    else:
-        for ordinal, gate in heavy:
-            _check_cancellation(runtime)
-            _run_serial_gate(ordinal, gate, runtime, gate_seconds)
     _check_cancellation(runtime)
 
 
@@ -802,9 +799,25 @@ def _memory_slice(plan: _LocalGatePlan, classes: dict[str, int]) -> int | None:
     return max(1, usable // concurrency)
 
 
-def _local_command(ordinal: int, gate: Gate, cell: str) -> _LocalGateCommand:
+def _local_command(
+    ordinal: int, gate: Gate, cell: str, *, repo: Path
+) -> _LocalGateCommand:
     cmd = gate.command
     argv = ("/bin/sh", "-c", cmd) if isinstance(cmd, str) else tuple(cmd)
+    pytest_gate = gate_runs_pytest(gate, repo=repo)
+    if pytest_gate and isinstance(cmd, str):
+        import shlex
+
+        lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|<>()")
+        lexer.whitespace_split = True
+        words = tuple(lexer)
+        if any(word and set(word) <= set(";&|<>()") for word in words) or any(
+            character in cmd for character in "$`\n"
+        ):
+            raise DriverError(
+                "pytest gates require a simple argv; shell programs bypass worker allocation"
+            )
+        argv = words
     assert isinstance(gate.cargo_target_access, CargoTargetAccess)
     return _LocalGateCommand(
         id=f"local.{'always' if gate.concurrent else 'gate'}.{ordinal}",
@@ -814,6 +827,7 @@ def _local_command(ordinal: int, gate: Gate, cell: str) -> _LocalGateCommand:
             "tiers": ["local-integration"],
             "resource_class": gate_resource_class(gate),
             "toolchains": list(gate.toolchains),
+            "pytest": pytest_gate,
             "cargo_target_access": gate.cargo_target_access.value,
             # Local always gates keep their unbounded deadline.
             "timeout_budget": "none",
@@ -843,7 +857,10 @@ def _run_executor_block(
     plan = _local_plan(runtime, classes, host)
     cell = f"{_normalized_os()}-{_normalized_arch()}-local"
     commands = _cargo_chain(
-        [_local_command(ordinal, gate, cell) for ordinal, gate in gates]
+        [
+            _local_command(ordinal, gate, cell, repo=runtime.repo)
+            for ordinal, gate in gates
+        ]
     )
     outcomes: dict[str, GateOutcome | BaseException] = {}
     receipt_path = (
@@ -868,7 +885,10 @@ def _run_executor_block(
     }
 
     def run_command(
-        _plan: Any, command: _LocalGateCommand, cancel: threading.Event
+        _plan: Any,
+        command: _LocalGateCommand,
+        cancel: threading.Event,
+        allocation: proof_executor.CommandAllocation,
     ) -> dict[str, Any]:
         record: dict[str, Any] = {
             **proof_receipts.command_record(command),
@@ -897,10 +917,36 @@ def _run_executor_block(
         required = runtime.capacity_requirements.get(command.gate.toolchains, 0)
         started = time.monotonic()
         streams, stream_error = prepare_gate_streams(
-            runtime.output_dir, command.ordinal
+            runtime.output_dir
+            if allocation.attempt == 1
+            else runtime.output_dir / f"attempt-{allocation.attempt}",
+            command.ordinal,
         )
         record.update(stream_record(streams, stream_error))
         try:
+            environment = environments[command.gate.toolchains].overlay(
+                {
+                    "MOLT_GUARD_PROFILE_LOG": str(
+                        runtime.output_dir
+                        / f"gate-{command.ordinal:03d}.attempt-{allocation.attempt}.profile.jsonl"
+                    )
+                }
+            )
+            argv = command.gate.command
+            if allocation.pytest_cpus is not None:
+                from tools.proof_command_argv import allocated_pytest_argv
+
+                argv, workers = allocated_pytest_argv(
+                    command.argv,
+                    root=runtime.repo,
+                    cpus=allocation.pytest_cpus,
+                    environment=environment.environment,
+                )
+                record["pytest_workers"] = workers
+            argv = _pytest_report_command(argv, command.gate, runtime, command.ordinal)
+            record["launch_argv"] = (
+                list(argv) if not isinstance(argv, str) else ["/bin/sh", "-c", argv]
+            )
             before = (
                 runtime.observe_capacity(
                     paths, required_bytes=required, phase="before", gate=shown
@@ -909,11 +955,9 @@ def _run_executor_block(
                 else ()
             )
             outcome = runtime.run_captured_gate(
-                _pytest_report_command(
-                    command.gate.command, command.gate, runtime, command.ordinal
-                ),
+                argv,
                 runtime.repo,
-                environments[command.gate.toolchains],
+                environment,
                 lambda: cancel.is_set() or runtime.cancelled(),
                 streams,
             )
@@ -923,6 +967,8 @@ def _run_executor_block(
                 cancel_requested=cancel.is_set() or runtime.cancelled(),
                 cargo_target_access=command.gate.cargo_target_access,
             )
+            record["executed_argv"] = list(outcome.guard_result.args)
+            record["child_cpu_seconds"] = outcome.guard_result.child_cpu_seconds
             if paths:
                 runtime.observe_capacity(
                     paths,
@@ -936,6 +982,8 @@ def _run_executor_block(
             # this record (its streams and duration) for the receipt; the
             # declared-order report below raises the original error.
             outcomes[command.id] = exc
+            from molt.process_spawn import ProcessLaunchError
+
             return {
                 **record,
                 "duration_seconds": round(time.monotonic() - started, 6),
@@ -944,6 +992,11 @@ def _run_executor_block(
                 "executor_error": f"{type(exc).__name__}: {exc}",
                 "failure_scope": "global",
                 "failure_reason": "the gate runner raised",
+                **(
+                    {"launch_failure": exc.json_payload()}
+                    if isinstance(exc, ProcessLaunchError)
+                    else {}
+                ),
             }
         except BaseException as exc:  # an interrupt stops the block at once
             outcomes[command.id] = exc

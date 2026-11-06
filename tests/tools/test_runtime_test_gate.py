@@ -804,7 +804,12 @@ def test_cargo_build_timeout_keeps_real_partial_streams(monkeypatch, tmp_path):
         result = caught.value.guarded_result
         assert result.timed_out and result.descendants_closed
         assert (tmp_path / "build.stdout.jsonl").read_bytes() == stdout
-        assert (tmp_path / "build.stderr.log").read_bytes() == stderr
+        # The stand-in child is Python, so the guard ends it with SIGABRT under
+        # -X faulthandler (HF-779): its real stderr is the written bytes, then
+        # its own stack dump. Cargo children get no dump.
+        stderr_log = (tmp_path / "build.stderr.log").read_bytes()
+        assert stderr_log.startswith(stderr)
+        assert stderr_log[len(stderr) :].startswith(b"Fatal Python error: Aborted")
         assert caught.value.output == stdout.decode("utf-8").replace("\r\n", "\n")
         assert list(
             gate.truth.compiler_artifacts(

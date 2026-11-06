@@ -81,7 +81,10 @@ from molt.cargo_execution_policy import (  # noqa: E402
     normalize_cargo_environment,
 )
 
-from tools.proof_executor import execute_commands as _execute_commands  # noqa: E402
+from tools.proof_executor import (  # noqa: E402
+    CommandAllocation,
+    execute_commands as _execute_commands,
+)
 
 from tools import proof_plan_cli as _proof_plan_cli  # type: ignore  # noqa: E402
 
@@ -5397,6 +5400,7 @@ def _run_command(
     *,
     environment: Mapping[str, str],
     memory_share: int | None,
+    allocation: CommandAllocation | None = None,
 ) -> dict[str, Any]:
     relative_cwd = str(command.data.get("cwd", "."))
     cache = _cache_disposition(command)
@@ -5445,9 +5449,20 @@ def _run_command(
     custody_error: Exception | None = None
     cancellation_started: float | None = None
     cancellation_elapsed: float | None = None
+    executed_argv = resolved_command_argv(command)
+    pytest_workers = None
+    if allocation is not None and allocation.pytest_cpus is not None:
+        from tools.proof_command_argv import allocated_pytest_argv
+
+        executed_argv, pytest_workers = allocated_pytest_argv(
+            executed_argv,
+            root=ROOT / relative_cwd,
+            cpus=allocation.pytest_cpus,
+            environment=child_env,
+        )
     try:
         process = _COMMANDS.start_guarded(
-            resolved_command_argv(command),
+            executed_argv,
             cwd=ROOT / relative_cwd,
             env=child_env,
             timeout=timeout,
@@ -5555,6 +5570,13 @@ def _run_command(
             break
     record = {
         **proof_receipts.command_record(command),
+        "launch_argv": list(executed_argv),
+        # A valid record's child_process is the startup's launch record.
+        "executed_argv": metrics["child_process"]["command"] if metrics_valid else None,
+        "pytest_workers": pytest_workers,
+        "child_cpu_seconds": metrics.get("child_cpu_seconds")
+        if metrics_valid
+        else None,
         "started_at": started_at,
         "duration_seconds": (
             round(float(metrics["duration_seconds"]), 6) if metrics_valid else None
@@ -5592,37 +5614,16 @@ def _run_command(
         },
         "termination_escalated": False,
         "guard_returncode": completed_returncode,
-        "guard_custody": {
-            "launch_id": process.launch_id,
-            "launch_pid": process.pid,
-            "guard_pid": process.guard_pid,
-            "startup_path": str(process.startup_path),
-            "summary_path": str(process.summary_path),
-            "cancellation_path": str(process.cancellation_path),
-            "evidence_path": str(process.evidence_path),
-            "terminal": process.terminal,
-            "cancellation_observation_seconds": cancellation_elapsed,
-            "cancellation_observation_budget_seconds": (
+        "guard_custody": proof_receipts.guarded_command_custody(
+            process,
+            cancellation_elapsed=cancellation_elapsed,
+            cancellation_budget=(
                 GUARD_CANCELLATION_OBSERVATION_SECONDS
                 if cancellation_started is not None
                 else None
             ),
-            "observation_error": None
-            if custody_error is None
-            else {
-                "type": type(custody_error).__name__,
-                "message": str(custody_error),
-                "closure": "confirmed" if process.terminal else "unresolved",
-                "cleanup_error": (
-                    None
-                    if getattr(custody_error, "cleanup_error", None) is None
-                    else {
-                        "type": type(custody_error.cleanup_error).__name__,
-                        "message": str(custody_error.cleanup_error),
-                    }
-                ),
-            },
-        },
+            observation_error=custody_error,
+        ),
         "environment_policies_applied": list(applied_environment_policies),
         "evidence_outputs": evidence_outputs,
     }
@@ -5680,12 +5681,21 @@ def execute_commands(
         _normalized_os=_normalized_os,
         _normalized_arch=_normalized_arch,
         _required_toolchains=lambda command: closures[command.id],
-        _run_command=lambda plan, command, event: _run_command(
+        _run_command=lambda plan, command, event, allocation: _run_command(
             plan,
             command,
             event,
-            environment=environments[closures[command.id]],
+            environment=MappingProxyType(
+                {
+                    **environments[closures[command.id]],
+                    "MOLT_GUARD_PROFILE_LOG": str(
+                        receipt_path.with_suffix(".d")
+                        / f"{command.id}.attempt-{allocation.attempt}.profile.jsonl"
+                    ),
+                }
+            ),
             memory_share=memory_share,
+            allocation=allocation,
         ),
         _cache_disposition=_cache_disposition,
     )

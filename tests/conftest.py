@@ -775,7 +775,26 @@ def _keep_hypothesis_storage_in_scratch() -> None:
     )
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--run-flaky",
+        action="store_true",
+        default=False,
+        help="execute flaky(OpenFindingId) tests with normal pass/fail semantics",
+    )
+    parser.addoption(
+        "--skip-slow",
+        action="store_true",
+        default=False,
+        help="landing presubmit: skip slow tests; postsubmit and release runs "
+        "execute them (docs/design/landing_queue.md, section 9, part 10)",
+    )
+
+
 def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers", "flaky(finding_id): proven random flake owned by one open finding"
+    )
     _bind_repository_import_path()
     _assert_pytest_memory_guard_active(config)
     _ensure_pytest_process_scope()
@@ -797,6 +816,30 @@ def pytest_collection_modifyitems(
 
     problems: list[str] = []
     for item in items:
+        flakes = tuple(item.iter_markers(name="flaky"))
+        if flakes:
+            if len(flakes) != 1 or len(flakes[0].args) != 1 or flakes[0].kwargs:
+                problems.append(
+                    f"{item.nodeid}: name exactly one open finding, as @flaky(id)"
+                )
+            elif problem := findings.finding_problem(flakes[0].args[0]):
+                problems.append(f"{item.nodeid}: {problem}")
+            elif any(item.iter_markers(name="xfail")) or any(
+                item.iter_markers(name=findings.MARK_NAME)
+            ):
+                problems.append(
+                    f"{item.nodeid}: flaky tests execute normally; remove finding/xfail"
+                )
+            elif not config.getoption("run_flaky"):
+                item.add_marker(
+                    pytest.mark.skip(
+                        reason=f"{flakes[0].args[0]} (flaky; postsubmit --run-flaky)"
+                    )
+                )
+        if config.getoption("skip_slow") and item.get_closest_marker("slow"):
+            # The landing reached this test only through its harness or data;
+            # postsubmit and release runs execute its slow cases.
+            item.add_marker(pytest.mark.skip(reason="slow (postsubmit runs it)"))
         marks = tuple(item.iter_markers(name=findings.MARK_NAME))
         if not marks:
             continue

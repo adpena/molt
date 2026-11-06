@@ -4298,7 +4298,14 @@ def test_actual_guard_paths_keep_raw_child_streams_separate(
     )
 
     assert result.stdout == stdout
-    assert result.child_stderr == child_stderr
+    if termination == "timeout" and os.name == "posix":
+        assert result.child_stderr.startswith(child_stderr)
+        dump = result.child_stderr[len(child_stderr) :]
+        assert dump.lstrip(b"\r\n").startswith(b"Fatal Python error: Aborted")
+        assert b"threading.py" in dump
+        assert b"memory_guard:" not in result.child_stderr
+    else:
+        assert result.child_stderr == child_stderr
     # The guard's own stderr names the closure condition that failed.
     assert result.descendants_closed is True, result.stderr
     assert result.sampling_telemetry is not None

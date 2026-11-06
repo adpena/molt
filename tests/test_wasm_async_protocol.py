@@ -1,3 +1,4 @@
+import pytest
 from pathlib import Path
 
 from tests.wasm_linked_runner import (
@@ -55,6 +56,10 @@ asyncio.run(main())
 """
 
 
+# A cold linked WASM build of this program took up to 1200 s under landing
+# load on 2026-11-05 (Molt compile latency, HF-791): presubmit skips it for
+# harness-only readers; WASM changes and postsubmit run it.
+@pytest.mark.slow
 def test_wasm_async_protocol_parity(tmp_path: Path) -> None:
     require_wasm_toolchain()
 

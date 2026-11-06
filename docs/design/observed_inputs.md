@@ -105,8 +105,10 @@ graph supplies the first hop, without closing importers transitively. A test's f
 edge of its own module: the module body, its functions and its literal data reads. Path rules
 retain their declared commands and scopes. A rule that runs the same or a wider scope of a test
 absorbs that graph request; a narrower rule scope (`-k`) does not, so the direct reader also runs
-whole. Direct inputs and changed tests run their slow probes too; the ordinary cells exclude slow probes,
-which remain owned by the existing `-m slow` postsubmit cell. Failure history orders execution;
+whole. Changed tests and tests that import or run a changed source run their slow probes too; a
+reader reached only through its harness or data runs with `--skip-slow`, and the ordinary cells
+exclude slow probes, which remain owned by the existing `-m slow` postsubmit cell
+([landing design](landing_queue.md), section 9, part 10). Failure history orders execution;
 it never substitutes for a passing result. Pytest's parallel scheduler may finish files out of order.
 
 Postsubmit runs the full transitive selection on the newest main head when no landing is pending,
@@ -216,7 +218,7 @@ the copy it replaces.
 | Stage | Change | Measured or expected effect |
 | --- | --- | --- |
 | 0 | A cancelled gate is recorded as `cancelled`. The runner decides by `failure_trigger` first and bisects every candidate failure (HF-605). | -7,428 s per day (8 identical-tree reruns) |
-| 1 | Fast presubmit: changed tests and first-hop readers, recent postsubmit failures first, with `--maxfail=1`. Rule-owned commands retain their scope; expensive real-process probes run in their slow cell except at a direct changed input. | Historical replay caught 24 of 31 failed blocks with a median 212 files; live before/after wall time remains required |
+| 1 | Fast presubmit: changed tests and first-hop readers, recent postsubmit failures first among those readers, with `--maxfail=1`. Failure history adds no unrelated tests. Rule-owned commands retain their scope; `slow` probes run in presubmit only for a changed test or one that imports or runs the change. | Historical replay before the 2026-11-05 selection correction caught 24 of 31 failed blocks with a median 212 files; live before/after wall time remains required |
 | 2 | One CPU budget per host that knows performance cores. Receipts record `-n` and CPU time. | Not yet measured |
 | 3 | A typed layer table: `src/molt` never imports `tools`. Break the 38-file import cycle. Shrink the harness kernel. | 983 to 340 files per batch |
 | 4 | Deferred by the owner: `molt.file_hashing` becomes the only content identity, keyed by durable file identity; delete private copies. | One hash per file per host |

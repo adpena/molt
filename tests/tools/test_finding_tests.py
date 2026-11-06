@@ -588,3 +588,77 @@ def test_edges_table_refuses_every_drift(edges: str, extra: str, expected: str) 
     status = finding_status.project(_dag_with(edges, extra))
     problems = finding_coverage.dependency_order_problems(status, _PRIOR_ART)
     assert any(expected in problem for problem in problems), problems
+
+
+@pytest.mark.parametrize("run_flaky,expected_status", [(False, 0), (True, 1)])
+def test_flaky_collection_skips_presubmit_and_executes_postsubmit(
+    tmp_path, run_flaky, expected_status
+):
+    import os
+
+    project = tmp_path / "flaky-project"
+    project.mkdir()
+    (project / "pytest.ini").write_text(
+        "[pytest]\naddopts =\nmarkers = flaky(finding_id): known random flake\n",
+        encoding="utf-8",
+    )
+    (project / "conftest.py").write_text(
+        "from tests.conftest import pytest_addoption, pytest_collection_modifyitems\n",
+        encoding="utf-8",
+    )
+    executed = project / "executed"
+    (project / "test_flake.py").write_text(
+        "from pathlib import Path\nfrom tests.findings import flaky\n"
+        f"@flaky({OPEN_ID!r})\n"
+        "def test_flake():\n"
+        f"    Path({str(executed)!r}).touch()\n"
+        "    assert False, 'postsubmit executes the original defect'\n",
+        encoding="utf-8",
+    )
+    root = Path(__file__).resolve().parents[2]
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-n",
+            "0",
+            *(["--run-flaky"] if run_flaky else []),
+            str(project / "test_flake.py"),
+        ],
+        cwd=project,
+        env=dict(
+            os.environ, PYTHONPATH=os.pathsep.join((str(root), str(root / "src")))
+        ),
+        timeout=180,
+    )
+    assert result.returncode == expected_status, result.stdout + result.stderr
+    assert executed.exists() is run_flaky
+    assert ("1 failed" if run_flaky else "1 skipped") in result.stdout
+
+
+@pytest.mark.parametrize(
+    "mark",
+    [
+        pytest.mark.flaky(FIXED_ID).mark,
+        pytest.mark.flaky("HF-999999").mark,
+        pytest.mark.flaky().mark,
+    ],
+)
+def test_invalid_flaky_identity_is_a_collection_error(mark):
+    from types import SimpleNamespace
+    from tests.conftest import pytest_collection_modifyitems
+
+    item = SimpleNamespace(
+        nodeid="tests/example.py::test_flake",
+        path=Path("tests/example.py"),
+        iter_markers=lambda name: iter([mark] if name == "flaky" else []),
+        add_marker=lambda value: pytest.fail(
+            "invalid flake was marked instead of refused"
+        ),
+    )
+    with pytest.raises(pytest.UsageError, match="exactly one|not a finding|is fixed"):
+        pytest_collection_modifyitems(
+            SimpleNamespace(getoption=lambda name: False), [item]
+        )

@@ -5955,7 +5955,7 @@ def test_executor_preserves_admitted_path_provider_when_managed_projection_is_mi
         ),
     )
 
-    def run(_plan, current, _cancel, *, environment, memory_share):
+    def run(_plan, current, _cancel, *, environment, memory_share, allocation=None):
         assert environment["PATH"] == baseline_path
         with pytest.raises(TypeError):
             environment["PATH"] = "/mutated"
@@ -6011,6 +6011,8 @@ def test_executor_emits_measured_receipt(tmp_path: Path, monkeypatch) -> None:
     assert receipt["executed_partitions"] == [command.id]
     record = receipt["commands"][0]
     assert record["duration_seconds"] > 0
+    assert record["child_cpu_seconds"] >= 0
+    assert record["executed_argv"][0] == sys.executable
     assert record["peak_rss_bytes"] > 0
     assert record["cache_disposition"] == "not-applicable"
     assert record["timeout_env"] == ["MOLT_INNER_TIMEOUT"]
@@ -6049,7 +6051,7 @@ def test_provisioned_lean_fingerprint_admits_formal_build_receipt(
     monkeypatch.setattr(
         proof_plan,
         "_run_command",
-        lambda _plan, current, _cancel, *, environment, memory_share: (
+        lambda _plan, current, _cancel, *, environment, memory_share, allocation=None: (
             _successful_synthetic_record(current)
         ),
     )
@@ -6474,6 +6476,7 @@ def test_executor_schedules_dependencies_and_resources_with_deterministic_receip
         *,
         environment: Any,
         memory_share: int | None,
+        allocation=None,
     ) -> dict[str, object]:
         resource = str(command.data["resource_class"])
         with lock:
@@ -6537,7 +6540,7 @@ def test_executor_partition_failure_preserves_independent_work_and_blocks_depend
     )
     live_started = threading.Event()
 
-    def fake_run(_plan, command, cancel, *, environment, memory_share):
+    def fake_run(_plan, command, cancel, *, environment, memory_share, allocation=None):
         if command.id == "synthetic.fail":
             assert live_started.wait(timeout=1)
             return {
@@ -6588,7 +6591,7 @@ def _execute_synthetic_policy_commands(
         plan,
         commands,
         receipt_path,
-        _source_tree_changes=lambda: (),
+        _source_tree_changes=execution_options.pop("_source_tree_changes", lambda: ()),
         toolchain_fingerprints=_admit_synthetic_python,
         _authority_sha256=lambda _plan: "0" * 64,
         _source_identity=lambda: {"commit": "a" * 40, "tree": "b" * 40},
@@ -6626,7 +6629,7 @@ def test_executor_cancellation_policy_stops_active_and_queued_work_in_either_ord
     started = []
     lock = threading.Lock()
 
-    def run(_plan, command, cancel):
+    def run(_plan, command, cancel, allocation):
         with lock:
             started.append(command.id)
         if command.id == failure.id:
@@ -6707,7 +6710,7 @@ def test_executor_cancellation_policy_preserves_racing_failures_and_trigger_retu
         for name in ("synthetic.earlier", "synthetic.live", "synthetic.success")
     }
 
-    def run(_plan, command, cancel):
+    def run(_plan, command, cancel, allocation):
         if command.id == "synthetic.trigger":
             assert all(event.wait(5) for event in ready.values())
             return {
@@ -6780,7 +6783,7 @@ def test_executor_cancellation_policy_does_not_invent_a_failure_from_a_stopped_r
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1})
     started = []
 
-    def run(_plan, command, cancel):
+    def run(_plan, command, cancel, allocation):
         assert not cancel.is_set()
         started.append(command.id)
         if command.id == "synthetic.stopped":
@@ -6819,7 +6822,7 @@ def test_executor_default_policy_keeps_independent_partitions_collecting(tmp_pat
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1})
     started = []
 
-    def run(_plan, command, cancel):
+    def run(_plan, command, cancel, allocation):
         assert not cancel.is_set()
         started.append(command.id)
         if command.id == "synthetic.fail":
@@ -6958,6 +6961,7 @@ def test_executor_does_not_convert_control_plane_interrupts_into_records(
         *,
         environment: Any,
         memory_share: int | None,
+        allocation=None,
     ) -> dict[str, object]:
         raise KeyboardInterrupt
 
@@ -7139,7 +7143,7 @@ def test_executor_rejects_source_mutation_during_partition(
     monkeypatch.setattr(
         proof_plan,
         "_run_command",
-        lambda _plan, command, _cancel, *, environment, memory_share: {
+        lambda _plan, command, _cancel, *, environment, memory_share, allocation=None: {
             "id": command.id,
             "status": "success",
             "returncode": 0,
@@ -7698,7 +7702,7 @@ def test_executor_stops_on_candidate_change_even_when_checkout_is_clean(
     )
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1})
 
-    def run(_plan, command, _cancel, *, environment, memory_share):
+    def run(_plan, command, _cancel, *, environment, memory_share, allocation=None):
         current[field] = "c" * 40
         return _successful_synthetic_record(command)
 
@@ -7733,7 +7737,7 @@ def test_executor_control_plane_interrupt_cancels_siblings_before_join(
     live_started = threading.Event()
     closed = threading.Event()
 
-    def run(_plan, command, cancel, *, environment, memory_share):
+    def run(_plan, command, cancel, *, environment, memory_share, allocation=None):
         if command.id == "interrupt":
             assert live_started.wait(1)
             raise KeyboardInterrupt
@@ -8545,7 +8549,11 @@ def test_executor_cancellation_requires_exact_terminal_closure(
         "launch_id": "a" * 32,
         "guard_pid": 410,
         "command": list(command.argv),
-        "child_process": {"pid": 411, "started_at": "fixture-birth"},
+        "child_process": {
+            "pid": 411,
+            "started_at": "fixture-birth",
+            "command": list(command.argv),
+        },
     }
     terminal = {
         **startup,
@@ -12113,15 +12121,15 @@ def test_receipt_projects_admitted_cargo_target_effect():
 
     for effect in CargoTargetAccess:
         gate = SelectedGate(
-            ("python", "fixture.py"),
+            ("python", "-m", "pytest", "tests/test_fixture.py"),
             ("python", "cargo"),
             pytest=True,
             cargo_target_access=effect,
         )
-        command = _local_command(1, gate, "local-fixture")
+        command = _local_command(1, gate, "local-fixture", repo=proof_plan.ROOT)
         record = proof_receipts.command_record(command)
         assert record["cargo_target_access"] == effect.value
-        assert record["argv"] == ["python", "fixture.py"]
+        assert record["argv"] == ["python", "-m", "pytest", "tests/test_fixture.py"]
 
 
 def test_local_cargo_target_effect_splits_only_disjoint_requests(tmp_path):
@@ -12285,3 +12293,156 @@ def test_repair_is_validated_and_projected_as_always_is(field, value, reason):
     # An unbindable template or undeclared toolchain fails like `always`.
     errors = replace(PLAN, **{field: value}).validate()
     assert any(error.startswith(reason) for error in errors), errors
+
+
+@pytest.mark.parametrize("cpus", [1, 2, 6, 18])
+def test_executor_shares_one_cpu_budget_across_simultaneous_pytest_sessions(
+    tmp_path, monkeypatch, cpus
+):
+    from molt import host_capacity
+
+    monkeypatch.setattr(host_capacity, "execution_cpu_count", lambda: cpus)
+    commands = tuple(
+        replace(command, data={**command.data, "pytest": ["tests/synthetic.py"]})
+        for command in (
+            _synthetic_executor_command(f"synthetic.{index}") for index in range(8)
+        )
+    )
+    plan = _synthetic_executor_plan(commands, limits={"resource-a": 4}, max_workers=4)
+    barrier = threading.Barrier(min(cpus, 4))
+    lock = threading.Lock()
+    live = 0
+    peak = 0
+    allocations = {}
+
+    def run(_plan, command, cancel, allocation):
+        nonlocal live, peak
+        with lock:
+            assert allocation.pytest_cpus >= 1
+            live += allocation.pytest_cpus
+            peak = max(peak, live)
+            assert live <= cpus
+            allocations[command.id] = allocation.pytest_cpus
+        barrier.wait(timeout=30)
+        with lock:
+            live -= allocation.pytest_cpus
+        return _successful_synthetic_record(command)
+
+    receipt_path = tmp_path / "receipt.json"
+    assert _execute_synthetic_policy_commands(plan, commands, receipt_path, run) == 0
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert peak == cpus
+    assert receipt["execution"]["pytest_cpu_budget"] == cpus
+    assert {
+        row["id"]: row["pytest_cpu_share"] for row in receipt["commands"]
+    } == allocations
+    assert live == 0
+
+
+@pytest.mark.parametrize("second_status", ["success", "failure"])
+def test_executor_retries_only_proven_launch_infrastructure_once(
+    tmp_path, second_status
+):
+    import errno
+    from molt.process_spawn import ProcessLaunchError
+
+    command = _synthetic_executor_command("synthetic.retry")
+    plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
+    attempts = []
+
+    def run(_plan, command, cancel, allocation):
+        attempts.append(allocation.attempt)
+        if allocation.attempt == 1:
+            failure = ProcessLaunchError(
+                command.argv, OSError(errno.EAGAIN, "resource unavailable")
+            )
+            failure.cleanup_closed = (
+                True  # The spawn authority's no-child finalizer proof.
+            )
+            raise failure
+        return {
+            **_successful_synthetic_record(command),
+            "status": second_status,
+            "returncode": 0 if second_status == "success" else 6,
+        }
+
+    receipt_path = tmp_path / "receipt.json"
+    result = _execute_synthetic_policy_commands(plan, (command,), receipt_path, run)
+    assert result == (0 if second_status == "success" else 6)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert attempts == [1, 2]
+    record = receipt["commands"][0]
+    assert [row["status"] for row in record["attempts"]] == ["failure", second_status]
+    assert record["attempts"][0]["launch_failure"]["payload_started"] is False
+    assert record["infrastructure_retry"] == "launch_resource_unavailable"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        {"timed_out": True},
+        {"infrastructure_failure": {"phase": "temporary_artifact_custody"}},
+        {"child_returncode": 1},
+    ],
+)
+def test_executor_does_not_retry_timeout_product_or_unresolved_custody(
+    tmp_path, failure
+):
+    command = _synthetic_executor_command("synthetic.no-retry")
+    plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
+    attempts = []
+
+    def run(_plan, command, cancel, allocation):
+        attempts.append(allocation.attempt)
+        return {
+            **_successful_synthetic_record(command),
+            "status": "failure",
+            "returncode": 124,
+            "guard_outcome": failure,
+        }
+
+    assert (
+        _execute_synthetic_policy_commands(
+            plan, (command,), tmp_path / "receipt.json", run
+        )
+        == 124
+    )
+    assert attempts == [1]
+
+
+@pytest.mark.parametrize("stop", ["cancel", "source-change"])
+def test_infrastructure_retry_cannot_cross_cancellation_or_source_identity(
+    tmp_path, stop
+):
+    import errno
+    from molt.process_spawn import ProcessLaunchError
+
+    command = _synthetic_executor_command("synthetic.interrupted-retry")
+    plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
+    attempts = []
+    dirty = False
+
+    def run(_plan, command, cancel, allocation):
+        nonlocal dirty
+        attempts.append(allocation.attempt)
+        if stop == "cancel":
+            cancel.set()
+        else:
+            dirty = True
+        failure = ProcessLaunchError(
+            command.argv, OSError(errno.EAGAIN, "resource unavailable")
+        )
+        failure.cleanup_closed = True
+        raise failure
+
+    assert (
+        _execute_synthetic_policy_commands(
+            plan,
+            (command,),
+            tmp_path / "receipt.json",
+            run,
+            _source_tree_changes=lambda: ("changed.py",) if dirty else (),
+        )
+        == 2
+    )
+    assert attempts == [1]

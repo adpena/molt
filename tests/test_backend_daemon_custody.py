@@ -524,7 +524,12 @@ def test_installed_daemon_probes_need_only_the_molt_package(tmp_path: Path) -> N
     report = json.loads(result.stdout)
     assert report["self_alive"] is True
     # Native argv keeps its boundaries: the multi-line program is one argument.
-    assert report["self_argv"][1 : 5 + len(bytecode)] == [
+    # The guard prepends "-X faulthandler" to a timed Python child so a timeout
+    # dumps its stacks (tools/memory_guard.py); nothing else may change.
+    argv = report["self_argv"][1:]
+    if argv[:2] == ["-X", "faulthandler"]:
+        argv = argv[2:]
+    assert argv[: 4 + len(bytecode)] == [
         *bytecode,
         "-I",
         "-S",

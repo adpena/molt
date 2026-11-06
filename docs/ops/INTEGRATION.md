@@ -629,7 +629,7 @@ Git hooks run on it. `land` refuses the commit when a path outside the lane's
 diff since the merge base and the generator manifest's declared outputs
 changed (another writer touched the checkout), and refuses to repair a branch
 that a pending landing request pins. Repairs have no deadline and sit outside
-the 15-minute precheck claim: a full `generators.py write` of all 40
+the try-run budget: a full `generators.py write` of all 40
 reproducible generators took 16-25 s on the primary (2026-11-02), and one
 lane's whole repair took 43.5 s. Then `land` runs
 the precheck in the lane against its merge base with main, through the same
@@ -640,12 +640,27 @@ readers) and the gates of `precheck = true` rules (changed-crate Clippy).
 Other Cargo builds and the rules' curated pytest cohorts wait for the batch. A
 failing gate stops `land` before it queues anything. The static gates run to
 their verdict with no deadline. `PRECHECK_BUDGET` (`tools/molt_dev_policy.py`,
-15 minutes) bounds the try run alone, from its first gate: at the limit the
+10 minutes, following the owner's 2026-11-05 correction) bounds the try run
+alone, from its first gate: at the limit the
 guards cancel running gates, later gates never start, and `land` names each
 refused gate, then queues; the batch runs every selected gate. A try run that
 the disk-capacity check refuses is named and queued the same way. It then writes one request under
 `<git-common-dir>/molt/landing-queue/requests/` and returns; the request pins
 the commit.
+
+The approved whole-presubmit target is 600 seconds at p90, reached by selecting
+actual readers rather than increasing this bound. Recent postsubmit failures
+prioritize those readers; they do not add unrelated tests to a lane's presubmit.
+A presubmit test file runs whole when the lane changes it or a source it
+imports or runs; a file reached only through its harness or data reads runs
+with `--skip-slow`, so its `slow` cases (long toolchain paths, the provisioning
+cases that publish real Python images) wait for postsubmit, which keeps every
+owner's selector. The typed `flaky(OpenFindingId)` marker is the only
+expected-failure form; `git grep -n "flaky(" -- tests` audits it
+([design](../design/landing_queue.md), section 9, part 10). Harness- and
+data-only readers still run their fast cases, so whole-presubmit p90
+qualification remains pending. Per-gate wall/child CPU and executor duration
+are retained in the existing receipts; one run is not p90 proof.
 
 Immediately before it writes the request (after the repair and the precheck,
 and also with `--no-precheck`), `land` classifies the lane from Git. A ledger

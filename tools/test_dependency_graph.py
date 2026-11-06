@@ -1461,6 +1461,18 @@ class DependencyGraph:
                 )
         return tuple(selected)
 
+    def imports_change(self, test: str, changed: Iterable[str]) -> bool:
+        """Whether the change is ``test`` itself or a source ``test`` imports.
+
+        These are the test file's own edges: its module and function imports
+        and the programs it names. Its harness (package inits, pytest plugins,
+        conftest scopes) and its data reads are not, so a change that reaches
+        a test only through them leaves the test's slow cases to postsubmit.
+        """
+        changed = frozenset(changed)
+        own = {node_path(node) for node in self.nodes.get(test, Dependencies()).execs}
+        return test in changed or bool(own & changed)
+
     def programs_reached(
         self, changed: Iterable[str], programs: Iterable[str]
     ) -> tuple[str, ...]:
@@ -1748,7 +1760,9 @@ class LandingEnvelope:
     """The targets and tools under which the landing runs one test file.
 
     Pre-push and main plan commands supply the file's declared prerequisites.
-    Presubmit runs its direct inputs unfiltered. Postsubmit also admits the
+    Presubmit runs its direct inputs unfiltered, except that ``skip_slow``
+    skips the file's ``slow`` tests (``--skip-slow``) when the change reaches
+    it only through its harness or its data. Postsubmit also admits the
     existing slow cell; complementary selectors run the file unfiltered.
     Cells that require a compiler build retain their separate proof owner.
     """
@@ -1758,6 +1772,7 @@ class LandingEnvelope:
     owners: tuple[str, ...]
     select: tuple[str, ...] = ()
     cells: tuple[str, ...] = ()
+    skip_slow: bool = False
 
 
 @dataclass(frozen=True)
@@ -1902,18 +1917,24 @@ def graph_selection(
     changed = tuple(changed)
     match mode:
         case LandingMode.PRESUBMIT:
-            recent = (
+            recent = {
                 target.partition("::")[0]
                 for target in recent_failures
                 if target.partition("::")[0] in graph.tests
-            )
+            }
             selected = tuple(
                 dict.fromkeys(
                     (
-                        *recent,
                         *(path for path in changed if path in graph.tests),
                         *graph.direct_readers(changed, observations=observations),
                     )
+                )
+            )
+            # Failure history orders actual readers; an unrelated failure
+            # belongs to postsubmit triage, not every later lane's presubmit.
+            selected = tuple(
+                sorted(
+                    selected, key=lambda target: target.partition("::")[0] not in recent
                 )
             )
         case LandingMode.POSTSUBMIT:
@@ -1930,15 +1951,19 @@ def graph_selection(
         owner = _owned_by(test.partition("::")[0], envelopes)
         if owner is not None:
             envelope = envelopes[owner]
-            # Every presubmit graph target is a changed test, direct reader or
-            # recent failure. Exercise slow probes too at this direct boundary.
-            selector = () if mode is LandingMode.PRESUBMIT else envelope.select
+            # Every presubmit graph target is a changed test or direct reader.
+            # Slow probes run here only for a changed test or one that imports
+            # the change; a reader through its harness or data leaves them to
+            # postsubmit and release runs, which keep the owner's selector.
+            presubmit = mode is LandingMode.PRESUBMIT
             run[test] = LandingEnvelope(
                 (test,) if owner != test else envelope.targets,
                 envelope.toolchains,
                 envelope.owners,
-                selector,
+                () if presubmit else envelope.select,
                 envelope.cells,
+                skip_slow=presubmit
+                and not graph.imports_change(test.partition("::")[0], changed),
             )
         else:
             other = _owned_by(test.partition("::")[0], others)

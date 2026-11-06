@@ -21,11 +21,52 @@ from molt.portable_paths import portable_relative_path
 from tools.git_identity import require_git_object_id
 
 if TYPE_CHECKING:
+    from tools.command_execution import GuardedCommand
     from tools.proof_plan import ProofCommand, ProofPlan, ToolchainPolicy
 
 RECEIPT_SCHEMA = "molt.proof-receipt.v4"
 SELECTION_SCHEMA = "molt.proof-selection.v1"
 SELECTION_MAX_BYTES = 16 * 1024 * 1024
+
+
+def guarded_command_custody(
+    process: GuardedCommand,
+    *,
+    cancellation_elapsed: float | None,
+    cancellation_budget: float | None,
+    observation_error: Exception | None,
+) -> dict[str, Any]:
+    """Serialize owned-launch observations; never decide terminal admission."""
+    cleanup_error = (
+        None
+        if observation_error is None
+        else getattr(observation_error, "cleanup_error", None)
+    )
+    return {
+        "launch_id": process.launch_id,
+        "launch_pid": process.pid,
+        "guard_pid": process.guard_pid,
+        "startup_path": str(process.startup_path),
+        "summary_path": str(process.summary_path),
+        "cancellation_path": str(process.cancellation_path),
+        "evidence_path": str(process.evidence_path),
+        "terminal": process.terminal,
+        "cancellation_observation_seconds": cancellation_elapsed,
+        "cancellation_observation_budget_seconds": cancellation_budget,
+        "observation_error": None
+        if observation_error is None
+        else {
+            "type": type(observation_error).__name__,
+            "message": str(observation_error),
+            "closure": "confirmed" if process.terminal else "unresolved",
+            "cleanup_error": None
+            if cleanup_error is None
+            else {
+                "type": type(cleanup_error).__name__,
+                "message": str(cleanup_error),
+            },
+        },
+    }
 
 
 def _selection_context(

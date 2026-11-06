@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from tests.process_guard_common import guard_result_for_test
 from molt import python_environment_contract as _contract
-from molt.python_environment_identity import PythonIdentityVerifier
+from molt.python_environment_identity import (
+    PYTHON_IDENTITY_PROBE_TIMEOUT_S,
+    PythonIdentityVerifier,
+)
 
 import hashlib
 import copy
@@ -80,7 +83,7 @@ def real_published_image(tmp_path):
             "--copies" if os.name == "nt" else "--symlinks",
             str(root),
         ],
-        timeout=120,
+        timeout=PYTHON_IDENTITY_PROBE_TIMEOUT_S,
     )
     assert created.returncode == 0, created.stderr
     executable = location.environment_python_path(root)

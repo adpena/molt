@@ -7,6 +7,7 @@ on 2026-10-29; each must now hold by construction.
 
 from __future__ import annotations
 
+import os
 import textwrap
 import tomllib
 import json
@@ -16,6 +17,7 @@ from pathlib import Path
 from dataclasses import replace
 
 import pytest
+from molt.python_environment_identity import PYTHON_IDENTITY_PROBE_TIMEOUT_S
 
 from tests.process_guard_common import run_guarded_test_process
 from tools.molt_dev_policy import GateConfig, LandingMode, select_landing_gates
@@ -202,8 +204,9 @@ def test_observed_refinement_preserves_source_edits_postsubmit_and_node_envelope
         observations=observed,
         recent_failures=["tests/test_assets.py::test_left"],
     )
-    assert "tests/test_assets.py" in recent.selected
-    assert "tests/test_assets.py::test_left" not in recent.selected
+    assert "tests/test_assets.py" not in recent.selected
+    assert "tests/test_assets.py::test_left" in recent.selected
+    assert "tests/test_assets.py::test_right" not in recent.selected
     postsubmit = graph_selection(
         graph,
         ["config/data.toml"],
@@ -272,7 +275,7 @@ def test_observed_plugin_records_real_reads_and_shared_fixture_consumers(
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=PYTHON_IDENTITY_PROBE_TIMEOUT_S,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     observed = ObservedTestInputs(
@@ -346,7 +349,7 @@ def test_interrupted_observation_retains_static_readers(tmp_path, monkeypatch, p
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=PYTHON_IDENTITY_PROBE_TIMEOUT_S,
     )
     assert result.returncode == 2, result.stdout + result.stderr
     directory = observation_directory(context)
@@ -922,7 +925,7 @@ def test_presubmit_direct_readers_include_imports_inside_test_functions(
     assert graph.direct_readers(["src/pkg/hub.py"]) == ("tests/test_local.py",)
 
 
-def test_presubmit_recent_failures_then_changed_tests_then_direct_readers(
+def test_presubmit_prioritizes_recent_readers_without_adding_unrelated_failures(
     landing_graph,
 ):
     commands = _landing_commands(landing_graph)
@@ -930,12 +933,15 @@ def test_presubmit_recent_failures_then_changed_tests_then_direct_readers(
         landing_graph,
         ["src/pkg/hub.py", "tests/test_changed.py"],
         commands,
-        recent_failures=("tests/test_recent.py::test_recent", "tests/deleted.py"),
+        recent_failures=(
+            "tests/test_direct.py",
+            "tests/test_recent.py::test_recent",
+            "tests/deleted.py",
+        ),
     )
     assert selected.selected == (
-        "tests/test_recent.py",
-        "tests/test_changed.py",
         "tests/test_direct.py",
+        "tests/test_changed.py",
     )
     assert list(selected.run) == list(selected.selected)
 
@@ -949,7 +955,7 @@ def test_graph_pytest_is_failure_first_and_maxfail_one(landing_graph):
     )
     gates, _ = config.select(
         ["src/pkg/hub.py", "tests/test_changed.py"],
-        recent_failures=("tests/test_recent.py::test_recent",),
+        recent_failures=("tests/test_direct.py", "tests/test_recent.py::test_recent"),
     )
     assert all("--maxfail=1" in gate.command for gate in gates)
     assert [
@@ -957,7 +963,7 @@ def test_graph_pytest_is_failure_first_and_maxfail_one(landing_graph):
         for gate in gates
         for argument in gate.command
         if argument.startswith("tests/")
-    ] == ["tests/test_recent.py", "tests/test_changed.py", "tests/test_direct.py"]
+    ] == ["tests/test_direct.py", "tests/test_changed.py"]
 
 
 def test_presubmit_graph_cohorts_are_the_lane_try_run(landing_graph):
@@ -1012,7 +1018,7 @@ def test_postsubmit_observes_only_the_qualified_command_cohort(
     assert all("--molt-observed-context" not in gate.command for gate in pre)
 
 
-def test_a_changed_test_runs_its_slow_cases_and_recent_failure_needs_no_path_change(
+def test_a_changed_test_runs_slow_cases_and_unrelated_failure_adds_no_work(
     landing_graph,
 ):
     commands = _landing_commands(landing_graph)[:1]
@@ -1026,7 +1032,8 @@ def test_a_changed_test_runs_its_slow_cases_and_recent_failure_needs_no_path_cha
     assert changed.run["tests/test_changed.py"].select == ()
     recent = config.graph_selection([], recent_failures=("tests/test_recent.py",))
     assert recent is not None
-    assert recent.selected == ("tests/test_recent.py",)
+    assert recent.selected == ()
+    assert recent.run == {}
 
 
 def test_changed_slow_only_test_uses_its_declared_non_build_owner(landing_graph):
@@ -1283,3 +1290,109 @@ def test_the_graph_never_drops_what_a_rule_selects():
             if not _covers(full, selector, target)
         )
     assert dropped == []
+
+
+def test_presubmit_skips_slow_cases_of_readers_that_do_not_import_the_change(
+    tmp_path,
+):
+    """A reader through its data or harness runs its fast cases in presubmit;
+    a changed test and a test that imports the change run whole, and
+    postsubmit keeps every slow case (docs/design/landing_queue.md, 9.10)."""
+    root = _repository(
+        tmp_path,
+        {
+            "src/pkg/__init__.py": "",
+            "src/pkg/hub.py": "def value():\n    return 1\n",
+            "src/pkg/table.toml": "value = 1\n",
+            "tests/test_imports.py": (
+                "from pkg.hub import value\n\n"
+                "def test_imports():\n    assert value() == 1\n"
+            ),
+            "tests/test_reads.py": (
+                "from pathlib import Path\n\n"
+                "TABLE = Path('src/pkg/table.toml')\n\n"
+                "def test_reads():\n    assert TABLE.read_text()\n"
+            ),
+            "tests/test_changed.py": "def test_changed():\n    pass\n",
+        },
+    )
+    graph = build_graph(RepositoryTree.from_worktree(root), cache=None)
+    commands = _landing_commands(graph)
+    changed = ["src/pkg/hub.py", "src/pkg/table.toml", "tests/test_changed.py"]
+    selection = graph_selection(graph, changed, commands)
+    assert {test: run.skip_slow for test, run in selection.run.items()} == {
+        "tests/test_imports.py": False,
+        "tests/test_reads.py": True,
+        "tests/test_changed.py": False,
+    }
+    post = graph_selection(graph, changed, commands, mode=LandingMode.POSTSUBMIT)
+    assert post.run and not any(run.skip_slow for run in post.run.values())
+    # The cohort argv carries the decision; only the data reader's cohort skips.
+    config = GateConfig(
+        pytest_memory_units=PytestMemoryUnits(commands, root=graph.tree.root),
+        commands=tuple(commands),
+        dependency_graph=lambda: graph,
+    )
+    gates, _ = config.select(changed)
+    skipping = {
+        argument
+        for gate in gates
+        if "--skip-slow" in gate.command
+        for argument in gate.command
+        if argument.startswith("tests/")
+    }
+    assert skipping == {"tests/test_reads.py"}
+    post_gates, _ = config.select(changed, mode=LandingMode.POSTSUBMIT)
+    assert not any("--skip-slow" in gate.command for gate in post_gates)
+
+
+@pytest.mark.parametrize("skip_slow", [False, True])
+def test_skip_slow_skips_only_slow_cases_and_never_empties_the_session(
+    tmp_path, skip_slow
+):
+    """tests/conftest.py skips `slow` cases under --skip-slow. A session whose
+    cases are all slow still exits 0, where -m "not slow" would exit 5."""
+    project = tmp_path / "skip-slow-project"
+    project.mkdir()
+    (project / "pytest.ini").write_text(
+        "[pytest]\naddopts =\nmarkers =\n    slow: slow\n"
+        "    flaky(finding_id): known random flake\n",
+        encoding="utf-8",
+    )
+    (project / "conftest.py").write_text(
+        "from tests.conftest import pytest_addoption, pytest_collection_modifyitems\n",
+        encoding="utf-8",
+    )
+    executed = project / "executed"
+    (project / "test_only_slow.py").write_text(
+        "import pytest\nfrom pathlib import Path\n"
+        "@pytest.mark.slow\n"
+        "def test_slow():\n"
+        f"    Path({str(executed)!r}).touch()\n",
+        encoding="utf-8",
+    )
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-n",
+            "0",
+            "-p",
+            "no:cacheprovider",
+            *(["--skip-slow"] if skip_slow else []),
+            str(project / "test_only_slow.py"),
+        ],
+        cwd=project,
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join((str(REPO_ROOT), str(REPO_ROOT / "src"))),
+        },
+        capture_output=True,
+        text=True,
+        timeout=PYTHON_IDENTITY_PROBE_TIMEOUT_S,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert executed.exists() is not skip_slow
+    assert ("1 skipped" if skip_slow else "1 passed") in result.stdout

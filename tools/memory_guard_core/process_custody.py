@@ -9,7 +9,7 @@ from collections.abc import (
     Set as AbcSet,
 )
 import contextlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import errno
 import os
 from pathlib import Path
@@ -195,6 +195,7 @@ class GuardResult:
     worker_peaks: WorkerPeakSummary | None = None
     # The output bound that ended the command, when silence ended it.
     output_stall_s: float | None = None
+    child_cpu_seconds: float | None = None
 
 
 ChildExitResourceUsage = _process_model.ChildExitResourceUsage
@@ -651,6 +652,14 @@ def _rusage_maxrss_kb(rusage: object) -> int:
     return raw
 
 
+def _child_exit_usage(usage: Any) -> ChildExitResourceUsage:
+    """Attribute the sole wait4 observation, never global concurrent deltas."""
+    return ChildExitResourceUsage(
+        max_rss_kb=_rusage_maxrss_kb(usage),
+        cpu_seconds=float(usage.ru_utime) + float(usage.ru_stime),
+    )
+
+
 class ChildExecutionClock:
     """High-resolution launch/resume-to-waiter observation, independent of sampling.
 
@@ -743,9 +752,7 @@ class ChildExecutionClock:
                             raise RuntimeError("reserved child exit was not reapable")
                         self.proc.returncode = os.waitstatus_to_exitcode(status)
                         self.finished = finished
-                        self.usage = ChildExitResourceUsage(
-                            max_rss_kb=_rusage_maxrss_kb(usage)
-                        )
+                        self.usage = _child_exit_usage(usage)
                     except BaseException as exc:
                         self.error = exc
                         raise
@@ -770,7 +777,7 @@ class ChildExecutionClock:
                     raise RuntimeError("unexpected owned child reap identity")
                 self.proc.returncode = os.waitstatus_to_exitcode(status)
                 self.finished = time.perf_counter() if finished is None else finished
-                self.usage = ChildExitResourceUsage(max_rss_kb=_rusage_maxrss_kb(usage))
+                self.usage = _child_exit_usage(usage)
                 return True
             except BaseException as exc:
                 self.error = exc
@@ -801,7 +808,7 @@ class ChildExecutionClock:
                     raise RuntimeError("unexpected owned child reap identity")
                 self.proc.returncode = os.waitstatus_to_exitcode(status)
                 self.finished = time.perf_counter() if finished is None else finished
-                self.usage = ChildExitResourceUsage(max_rss_kb=_rusage_maxrss_kb(usage))
+                self.usage = _child_exit_usage(usage)
             except BaseException as exc:
                 self.error = exc
                 raise
@@ -902,6 +909,8 @@ class ChildExecutionClock:
 RootSignal: TypeAlias = Callable[
     [str, float], tuple[bool, GuardTerminationReport | None]
 ]
+# A diagnostic is part of timeout termination, never an unbounded stack probe.
+PYTHON_TIMEOUT_DUMP_GRACE_S = 0.5
 
 
 def owned_root_group_signal(
@@ -910,6 +919,7 @@ def owned_root_group_signal(
     child: GuardedChildProcess,
     *,
     terminate_job: Callable[[], None] | None = None,
+    python_timeout_dump: bool = False,
 ) -> RootSignal | None:
     """The one signal whose target needs no observation, or None.
 
@@ -945,15 +955,43 @@ def owned_root_group_signal(
     def signal_group(reason: str, grace: float):
         started_at = _utc_timestamp()
         actions: list[GuardTerminationAction] = []
+        diagnostic = python_timeout_dump and reason in {"timeout", "output_stalled"}
         with clock.reap_signal_lock:
             if clock.error is not None or proc.returncode is not None:
                 return False, None
-            actions.append(_send_process_group_signal_action(pgid, signal.SIGTERM))
+            if diagnostic:
+                # The unreaped child reserves this PID even after exec or a
+                # disabled handler. Abort is a fatal timeout signal, not a
+                # harmless diagnostic request. Never send it to descendants.
+                actions.append(
+                    replace(
+                        _send_pid_signal_action(proc.pid, signal.SIGABRT),
+                        target_kind="owned_child_handle",
+                    )
+                )
+            else:
+                actions.append(_send_process_group_signal_action(pgid, signal.SIGTERM))
+        if diagnostic:
+            clock.done.wait(PYTHON_TIMEOUT_DUMP_GRACE_S)
+            with clock.reap_signal_lock:
+                if clock.error is None and proc.returncode is None:
+                    actions.append(
+                        _send_process_group_signal_action(pgid, signal.SIGTERM)
+                    )
         clock.done.wait(grace)
         with clock.reap_signal_lock:
             if clock.error is None and proc.returncode is None:
                 actions.append(
                     _send_process_group_signal_action(pgid, fallback_kill_signal())
+                )
+            elif clock.error is None and diagnostic:
+                actions.append(
+                    _termination_action(
+                        target_kind="owned_child_handle",
+                        target_id=proc.pid,
+                        signum=None,
+                        result="completed_or_missing",
+                    )
                 )
         return True, GuardTerminationReport(
             reason=reason,

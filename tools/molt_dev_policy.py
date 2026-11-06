@@ -117,7 +117,7 @@ PRECHECK_TOOLCHAINS = frozenset({"generators", "git", "python", "rustfmt", "uv"}
 
 @dataclass(frozen=True)
 class PrecheckBudget:
-    """The wall-clock limit of one lane try run (HF-710: 15 minutes at p90).
+    """The wall-clock limit of one lane try run, including any allowed retry.
 
     The static gates and the repairs before them run outside it. The try run
     stops at the limit: its running gates are cancelled through
@@ -132,7 +132,11 @@ class PrecheckBudget:
             raise ValueError("a precheck budget must be positive")
 
 
-PRECHECK_BUDGET = PrecheckBudget(seconds=15 * 60)
+# Owner correction, 2026-11-05 19:50Z: presubmit targets 600 s p90 by
+# selecting changed tests and their actual readers, never by a larger budget.
+# Static/repair wall time remains visible outside this try-run guard; the
+# whole-presubmit p90 must be qualified from the retained run measurements.
+PRECHECK_BUDGET = PrecheckBudget(seconds=10 * 60)
 # The ceiling of one `land --fast` attempt's try run (docs/design/
 # landing_queue.md, section 9). A fast landing pushes only a complete run, so
 # a refusal at this ceiling fails the landing instead of queueing its gates.
@@ -910,7 +914,11 @@ class GateConfig:
         # Rule-owned pytest commands retain their exact declared invocation.
         filtered: dict[
             tuple[
-                tuple[bool, bool], tuple[str, ...], tuple[str, ...], CargoTargetAccess
+                tuple[bool, bool],
+                tuple[str, ...],
+                bool,
+                tuple[str, ...],
+                CargoTargetAccess,
             ],
             list[str],
         ] = {}
@@ -919,14 +927,26 @@ class GateConfig:
             access = CargoTargetAccess.resolve(envelope.toolchains)
             path = target.partition("::")[0]
             priority = (path not in recent_paths, path not in touched)
-            key = (priority, envelope.select, envelope.toolchains, access)
+            key = (
+                priority,
+                envelope.select,
+                envelope.skip_slow,
+                envelope.toolchains,
+                access,
+            )
             filtered.setdefault(key, []).append(target)
-        for (_, select, cohort_tools, cohort_access), targets in sorted(
+        for (_, select, skip_slow, cohort_tools, cohort_access), targets in sorted(
             filtered.items(), key=lambda item: item[0][0]
         ):
             match mode:
                 case LandingMode.PRESUBMIT:
-                    options = (*select, "--maxfail=1")
+                    # tests/conftest.py skips `slow` tests under --skip-slow; a
+                    # skip, unlike -m "not slow", never empties the session.
+                    options = (
+                        *select,
+                        "--maxfail=1",
+                        *(("--skip-slow",) if skip_slow else ()),
+                    )
                 case LandingMode.POSTSUBMIT:
                     options = select
                 case _:
