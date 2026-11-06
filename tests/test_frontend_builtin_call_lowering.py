@@ -1377,11 +1377,13 @@ def test_sync_try_except_uses_split_label_valued_handler_entry() -> None:
     )
 
     raise_idx = next(i for i, op in enumerate(func_ops) if op.get("kind") == "raise")
-    next_control = next(
-        op for op in func_ops[raise_idx + 1 :] if op.get("kind") != "line"
-    )
-    assert next_control["kind"] == "jump"
-    assert next_control["value"] == handler_label
+    after_raise = [op for op in func_ops[raise_idx + 1 :] if op.get("kind") != "line"]
+    # The raise reaches its lexical handler through the exceptional edge: a check
+    # into a handler label is never contracted to a plain jump, because entering
+    # a handler that way carries different custody (HF-764, join_normalize).
+    assert after_raise[0]["kind"] == "check_exception"
+    assert after_raise[0]["value"] == handler_label
+    assert str(after_raise[0]["exception_edge"].value) == "unwind"
 
     handler_idx = next(
         i
