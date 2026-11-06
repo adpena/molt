@@ -6372,6 +6372,8 @@ globs = [
   "src/molt/compiler_analysis/python_value_identity.py",
   "src/molt/compiler_analysis/python_binding_facts.py",
   "src/molt/compiler_analysis/python_binding_flow.py",
+  "runtime/exception_kinds.toml",
+  "tools/gen_exception_kinds.py",
   "tools/gen_python_identity_catalog.py",
   "tests/test_gen_python_identity_catalog.py",
 ]

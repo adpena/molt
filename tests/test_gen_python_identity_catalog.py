@@ -570,3 +570,68 @@ def test_catalog_covers_every_builtin_the_frontend_lowers_by_name() -> None:
     assert exceptions <= catalogued and not target_gated & catalogued
     assert {"NotImplemented", "Ellipsis"} <= catalogued
     assert all(hasattr(builtins, name) for name in catalogued)
+
+
+def test_builtin_roles_match_cpython_semantics() -> None:
+    """The exception role is derived from runtime/exception_kinds.toml; the
+    running interpreter is the independent oracle: exactly the catalogued
+    names bound to a BaseException subclass. Caller-frame readers follow
+    CPython's bltinmodule.c and super_init_without_args."""
+    import builtins
+
+    def names(mask: int) -> set[str]:
+        return {
+            name
+            for name, (identity, _member) in catalog.BUILTIN_IDENTITIES.items()
+            if int(identity) & mask
+        }
+
+    exceptions = {
+        name
+        for name in catalog.BUILTIN_IDENTITIES
+        if isinstance(value := getattr(builtins, name), type)
+        and issubclass(value, BaseException)
+    }
+    assert names(catalog.BUILTIN_EXCEPTION_CLASS_IDENTITIES) == exceptions
+    assert names(catalog.BUILTIN_CALLER_FRAME_IDENTITIES) == {
+        "locals",
+        "vars",
+        "eval",
+        "exec",
+        "super",
+    }
+    assert not (
+        catalog.BUILTIN_EXCEPTION_CLASS_IDENTITIES
+        & catalog.BUILTIN_CALLER_FRAME_IDENTITIES
+    )
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "expected"),
+    [
+        (
+            'name = "locals"\nidentity = "BUILTIN_LOCALS"\nguard = "BUILTINS_LOCALS"\nshape = false\nrole = "caller_frame"\n',
+            'name = "locals"\nidentity = "BUILTIN_LOCALS"\nguard = "BUILTINS_LOCALS"\nshape = false\nrole = "frame"\n',
+            "unknown role",
+        ),
+        (
+            'name = "AttributeError"\nidentity = "BUILTIN_ATTRIBUTEERROR"\nguard = "BUILTINS_ATTRIBUTEERROR"\nshape = false\n',
+            'name = "AttributeError"\nidentity = "BUILTIN_ATTRIBUTEERROR"\nguard = "BUILTINS_ATTRIBUTEERROR"\nshape = false\nrole = "caller_frame"\n',
+            "comes from exception_kinds.toml",
+        ),
+        (
+            'name = "len"\nidentity = "BUILTIN_LEN"\nguard = "BUILTINS_LEN"\nshape = true\n',
+            'name = "len"\nidentity = "BUILTIN_LEN"\nguard = "BUILTINS_LEN"\nshape = true\nrole = "exception_class"\n',
+            "comes from exception_kinds.toml",
+        ),
+    ],
+)
+def test_catalog_rejects_undeclarable_builtin_roles(
+    tmp_path: Path, before, after, expected
+) -> None:
+    source = gen.SOURCE.read_text(encoding="utf-8")
+    assert before in source
+    path = tmp_path / "invalid.toml"
+    path.write_text(source.replace(before, after, 1), encoding="utf-8")
+    with pytest.raises(gen.SchemaError, match=expected):
+        gen.load_schema(path)

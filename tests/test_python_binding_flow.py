@@ -6204,3 +6204,123 @@ def test_exposed_namespace_tracks_late_callable_publication(tmp_path):
     engine.accept("api", scan(source))
     engine.drain()
     assert python_node_source_key(ast.parse(source).body[0]) in bodies
+
+
+_HOOK_TAIL = "    raise AttributeError(f'no attribute {name!r}')\n"
+
+
+@pytest.mark.parametrize(
+    "body, expected",
+    [
+        # asyncio's PEP 562 shape: a terminal chain, then narrowed uses.
+        (
+            "    if name == 'log':\n        mod = 1\n"
+            "    elif name in ('locks', 'queues'):\n        mod = 2\n"
+            "    else:\n"
+            + "    "
+            + _HOOK_TAIL
+            + "    globals()[name] = mod\n    return mod\n",
+            frozenset({"log", "locks", "queues"}),
+        ),
+        ("    if 'a' != name:\n        return 0\n" + _HOOK_TAIL, frozenset({"a"})),
+        (
+            "    if name not in ['a', 'b']:\n"
+            + "    "
+            + _HOOK_TAIL
+            + "    return name\n",
+            None,
+        ),
+        ("    return 0\n", frozenset()),
+        # Implicit reads and rebinding of the parameter.
+        (
+            "    name += '_impl'\n    if name == 'log_impl':\n        return 1\n"
+            + _HOOK_TAIL,
+            None,
+        ),
+        (
+            "    if (name := name.lower()) == 'a':\n        return 1\n" + _HOOK_TAIL,
+            None,
+        ),
+        ("    for name in ():\n        pass\n" + _HOOK_TAIL, None),
+        (
+            "    try:\n        pass\n    except Exception as name:\n        pass\n"
+            + _HOOK_TAIL,
+            None,
+        ),
+        ("    import name\n" + _HOOK_TAIL, None),
+        ("    def name():\n        pass\n" + _HOOK_TAIL, None),
+        ("    del name\n", None),
+        # A pattern or guard that names the parameter is not a literal test.
+        (
+            "    match name:\n        case 'a':\n            return 1\n" + _HOOK_TAIL,
+            None,
+        ),
+        ("    match 0:\n        case name:\n            return 1\n", None),
+        # Nested scopes and frame readers observe the binding.
+        ("    return lambda: name\n", None),
+        ("    return [x for x in name]\n", None),
+        ("    def inner(value=name):\n        return value\n    return inner\n", None),
+        ("    if name == 'a':\n        return locals()\n" + _HOOK_TAIL, None),
+        (
+            "    reader = vars\n    if name == 'a':\n        return reader()\n"
+            + _HOOK_TAIL,
+            None,
+        ),
+        # Value uses outside literal tests and narrowed regions.
+        ("    return name\n", None),
+        ("    return len(name)\n", None),
+        ("    return globals()[name]\n", None),
+        ("    if name:\n        return 1\n" + _HOOK_TAIL, None),
+        ("    if name < 'm':\n        return 1\n" + _HOOK_TAIL, None),
+        ("    if name in 'abc':\n        return 1\n" + _HOOK_TAIL, None),
+        ("    if 'a' == name == 'a':\n        return 1\n" + _HOOK_TAIL, None),
+        (
+            "    if name == 'a' or name == 'b':\n        return name\n" + _HOOK_TAIL,
+            None,
+        ),
+        ("    raise AttributeError(f'{name:>10}')\n", None),
+        ("    raise AttributeError('x') from name\n", None),
+        ("    raise AttributeError(str(name))\n", None),
+    ],
+)
+def test_parameter_literal_classes_admit_only_literal_observation(body, expected):
+    """Each refused case is a way the binding flow could see more of the value.
+
+    A collapsible parameter shares one body analysis for every argument outside
+    its literal set (python_parameter_classes); the oracle that the shared
+    analysis equals the exact one is in test_source_pure_import_requests.
+    """
+    source = "def hook(name):\n" + body
+    index = analyze_python_source_bindings(source)
+    hook = python_node_source_key(ast.parse(source).body[0])
+    (parameters,) = [item for item in index.source_parameters if item.owner == hook]
+    assert parameters.literal_classes == (expected,)
+
+
+def test_parameter_literal_classes_message_needs_typed_callee_without_source_reach():
+    """A raise may hold the parameter only when no source callable receives it.
+
+    A source class shadowing the builtin receives the message, so its call
+    reaches source; the builtin's callee identity is a catalogued exception
+    class (``role = "exception_class"``), never a spelled name.
+    """
+    builtin = "def hook(name):\n    if name == 'a':\n        return 1\n" + _HOOK_TAIL
+    shadowed = "class AttributeError(Exception):\n    pass\n" + builtin
+    for source, expected in ((builtin, frozenset({"a"})), (shadowed, None)):
+        tree = ast.parse(source)
+        hook = python_node_source_key(tree.body[-1])
+        index = analyze_python_source_bindings(source)
+        (parameters,) = [p for p in index.source_parameters if p.owner == hook]
+        assert parameters.literal_classes == (expected,)
+
+
+def test_parameter_literal_classes_align_with_positional_parameters():
+    source = (
+        "def pick(kind, /, other, *rest, flag, **extra):\n"
+        "    if kind in ('a', 'b'):\n        return other\n"
+        "    raise ValueError(f'bad {kind}')\n"
+    )
+    index = analyze_python_source_bindings(source)
+    (parameters,) = index.source_parameters
+    assert len(parameters.literal_classes) == len(parameters.positional) == 2
+    assert parameters.literal_classes == (frozenset({"a", "b"}), None)

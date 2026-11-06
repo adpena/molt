@@ -142,6 +142,10 @@ class PythonSourceParameters(NamedTuple):
     vararg: PythonSourceKey | None
     keywords: tuple[tuple[str, PythonSourceKey], ...]
     kwarg: PythonSourceKey | None
+    # Per positional parameter: the string literals that partition its
+    # activation arguments, or None when the body may observe more of the
+    # value (``python_parameter_classes``). Aligned with ``positional``.
+    literal_classes: tuple[frozenset[str] | None, ...]
 
 
 class PythonClassPreparation(StrEnum):

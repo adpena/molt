@@ -428,7 +428,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `runtime-vfs` | 4 | 2 |
 | `runtime-lib` | 5 | 1 |
 | `python-effect-capability-authority` | 6 | 1 |
-| `python-identity-catalog-authority` | 7 | 0 |
+| `python-identity-catalog-authority` | 9 | 0 |
 | `builtin-binding-guard-authority` | 9 | 1 |
 | `wasm-optimizer-policy` | 6 | 1 |
 | `native-callable-abi` | 20 | 1 |
