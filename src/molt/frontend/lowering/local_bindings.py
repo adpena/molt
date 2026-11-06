@@ -210,7 +210,7 @@ class LocalBindingMixin(GeneratorMixinBase):
         name_key = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=["__name__"], result=name_key))
         missing = self._emit_missing_value()
-        name_val = MoltValue(self.next_var(), type_hint="str")
+        name_val = MoltValue(self.next_var(), type_hint="Any")
         self._emit_getattr_name_default(
             obj,
             name_key,
@@ -254,12 +254,12 @@ class LocalBindingMixin(GeneratorMixinBase):
                 )
             )
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            res = MoltValue(self.next_var(), type_hint="str")
+            res = MoltValue(self.next_var(), type_hint="Any")
             self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", slot], result=res))
             return res
 
         # Branch transport is a promotable local, never a redefined SSA value.
-        home = self._new_compiler_local("str")
+        home = self._new_compiler_local("Any")
         self.emit(MoltOp(kind="IF", args=[is_missing], result=MoltValue("none")))
         fallback = self._emit_str_from_obj(obj)
         self._store_compiler_local(home, fallback)

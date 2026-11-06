@@ -215,15 +215,16 @@ fn infer_single_result_type_with_attrs(
 /// An owned result has an independent value type, never operand zero's type.
 /// Ownership does not prove allocation freshness or native-callable identity:
 /// `builtin_func` can acquire any public replacement and therefore is DynBox.
-/// Scalar conversion primitives retain their explicitly declared result types.
+/// Scalar conversion primitives retain their explicitly declared result types;
+/// Python text protocols may return an overriding str subclass.
 fn owned_value_kind_result_type(kind: molt_ir::OpKind) -> TirType {
     match kind {
         molt_ir::OpKind::FloatFromObj => TirType::F64,
         molt_ir::OpKind::StrFromObj
         | molt_ir::OpKind::ReprFromObj
         | molt_ir::OpKind::AsciiFromObj
-        | molt_ir::OpKind::StringFormat
-        | molt_ir::OpKind::StringJoin => TirType::Str,
+        | molt_ir::OpKind::StringFormat => TirType::DynBox,
+        molt_ir::OpKind::StringJoin => TirType::Str,
         _ => TirType::DynBox,
     }
 }
