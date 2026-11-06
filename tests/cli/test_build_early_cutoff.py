@@ -373,9 +373,16 @@ def test_temporary_files_leave_the_recorded_build_current(
     assert len(calls) == 1, "the build's temporary files are products"
 
 
+@pytest.mark.parametrize("profile_log", [False, True])
 def test_a_guarded_child_leaves_the_recorded_build_current(
-    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, profile_log: bool
 ) -> None:
+    if profile_log:
+        # Bench tools and landing gates turn on the guard's command profile;
+        # its log and incident directory are guard custody, not inputs.
+        monkeypatch.setenv(
+            "MOLT_GUARD_PROFILE_LOG", str(tmp_path / "guard" / "commands.jsonl")
+        )
     # Cargo, the backend and the linker run under the memory guard. Each run
     # leases a scratch generation, writes custody markers and removes the
     # generation when the child ends; none of it is an input of the binary.
