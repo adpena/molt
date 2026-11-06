@@ -2778,12 +2778,110 @@ def test_try_except_join_normalization_threads_deep_check_ladders() -> None:
     gen = SimpleTIRGenerator()
     cfg = build_cfg(ops)
     rewritten, rewrites = gen._normalize_try_except_join_labels(ops, cfg=cfg)
-    assert rewrites >= 3
+    assert rewrites >= 1
     head_check = next(
         op for op in rewritten if op.kind == "CHECK_EXCEPTION" and op.args
     )
-    assert head_check.args[0] == 30
+    # The pure jump trampoline is threaded, but neither Origin capture is an alias.
+    assert head_check.args[0] == 10
+    assert [op.args[0] for op in rewritten if op.kind == "CHECK_EXCEPTION"] == [10, 30]
     assert any(op.kind == "JUMP" and op.args and op.args[0] == 30 for op in rewritten)
+
+
+@pytest.mark.parametrize("pass_name", ["edge_thread", "join_normalize"])
+def test_label_aliasing_preserves_origin_capture_count(pass_name: str) -> None:
+    ops = [
+        MoltOp("CALL", [MoltValue("fn")], MoltValue("result")),
+        MoltOp("JUMP", [10], MoltValue("none")),
+        MoltOp("LABEL", [10], MoltValue("none")),
+        MoltOp(
+            "CHECK_EXCEPTION",
+            [20],
+            MoltValue("none"),
+            exception_edge=ExceptionEdgeKind.ORIGIN,
+        ),
+        MoltOp("JUMP", [20], MoltValue("none")),
+        MoltOp("LABEL", [20], MoltValue("none")),
+        MoltOp("ret_void", [], MoltValue("none")),
+    ]
+    gen = SimpleTIRGenerator()
+    cfg = build_cfg(ops)
+    if pass_name == "edge_thread":
+        sccp = gen._compute_sccp(ops, cfg)
+        rewritten, *_ = gen._rewrite_loop_edge_threading(
+            ops,
+            cfg=cfg,
+            control=cfg.control,
+            executable_edges=sccp.executable_edges,
+            loop_break_choice_by_index=sccp.loop_break_choice_by_index,
+        )
+    else:
+        rewritten, _ = gen._normalize_try_except_join_labels(ops, cfg=cfg)
+    assert sum(op.exception_edge == ExceptionEdgeKind.ORIGIN for op in rewritten) == 1
+    # Keeping a dead check after bypassing its label would still lose the event.
+    assert next(op.args for op in rewritten if op.kind == "JUMP") == [10]
+
+
+@pytest.mark.parametrize(
+    "obligation", ["plain", "payload", "poll", "handler", "landing"]
+)
+def test_join_normalization_preserves_unwind_transfer_obligations(
+    obligation: str,
+) -> None:
+    args = [20, MoltValue("payload")] if obligation == "payload" else [20]
+    metadata = {"async_work_poll": True} if obligation == "poll" else None
+    ops = [
+        MoltOp(
+            "CHECK_EXCEPTION",
+            args,
+            MoltValue("none"),
+            metadata=metadata,
+            exception_edge=ExceptionEdgeKind.UNWIND,
+        ),
+        MoltOp("JUMP", [20], MoltValue("none")),
+        MoltOp("LABEL", [20], MoltValue("none")),
+    ]
+    if obligation == "handler":
+        ops.insert(0, MoltOp("TRY_START", [20], MoltValue("none")))
+        ops.append(MoltOp("TRY_END", [20], MoltValue("none")))
+    elif obligation == "landing":
+        ops.append(MoltOp("EXCEPTION_POP", [], MoltValue("none")))
+    ops.append(MoltOp("ret_void", [], MoltValue("none")))
+    gen = SimpleTIRGenerator()
+    rewritten, _ = gen._normalize_try_except_join_labels(ops, cfg=build_cfg(ops))
+    checks = [op for op in rewritten if op.kind == "CHECK_EXCEPTION"]
+    if obligation == "plain":
+        assert not checks
+    else:
+        assert len(checks) == 1
+        assert checks[0].args == args
+        assert checks[0].metadata == metadata
+
+
+def test_join_normalization_keeps_transfer_through_handler_trampoline() -> None:
+    ops = [
+        MoltOp("TRY_START", [30], MoltValue("none")),
+        MoltOp(
+            "CHECK_EXCEPTION",
+            [10],
+            MoltValue("none"),
+            exception_edge=ExceptionEdgeKind.UNWIND,
+        ),
+        MoltOp("JUMP", [10], MoltValue("none")),
+        MoltOp("LABEL", [10], MoltValue("none")),
+        MoltOp("JUMP", [20], MoltValue("none")),
+        MoltOp("LABEL", [20], MoltValue("none")),
+        MoltOp("JUMP", [30], MoltValue("none")),
+        MoltOp("LABEL", [30], MoltValue("none")),
+        MoltOp("TRY_END", [30], MoltValue("none")),
+        MoltOp("EXCEPTION_POP", [], MoltValue("none")),
+        MoltOp("ret_void", [], MoltValue("none")),
+    ]
+    gen = SimpleTIRGenerator()
+    rewritten, _ = gen._normalize_try_except_join_labels(ops, cfg=build_cfg(ops))
+    checks = [op for op in rewritten if op.kind == "CHECK_EXCEPTION"]
+    assert len(checks) == 1
+    assert checks[0].exception_edge == ExceptionEdgeKind.UNWIND
 
 
 def test_midend_preserves_post_join_guard_profile_event() -> None:
