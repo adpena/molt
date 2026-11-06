@@ -97,9 +97,16 @@ class _EnumDict(dict):
         # Ordered set of member names (dict-as-ordered-set, value ignored),
         # excluding dunders/sunders/descriptors/callables.
         self._member_names: dict[str, None] = {}
+        self._ignore: list[str] = []
 
     def __setitem__(self, key: str, value: Any) -> None:
-        if _is_sunder(key) or _is_dunder(key):
+        if key == "_ignore_":
+            value = value.replace(",", " ").split() if isinstance(value, str) else list(value)
+            already = set(value) & self._member_names.keys()
+            if already:
+                raise ValueError(f"_ignore_ cannot specify already set names: {already!r}")
+            self._ignore = value
+        elif key in self._ignore or _is_sunder(key) or _is_dunder(key):
             pass
         elif key in self._member_names:
             # A member name reused inside the same body is a redefinition,
@@ -126,13 +133,20 @@ class EnumType(type):
     def __new__(
         mcls, name: str, bases: tuple[type, ...], namespace: dict[str, Any], **kwargs
     ):
+        # Enum consumes ignored scratch bindings in the live body mapping,
+        # including aliases obtained through vars(), before copying it.
+        ignored = namespace.get("_ignore_", [])
+        if isinstance(ignored, str):
+            ignored = ignored.replace(",", " ").split()
+        for key in [*ignored, "_ignore_"]:
+            namespace.pop(key, None)
         # Member names in definition order. When the body executed under our
         # _EnumDict (the normal `class X(Enum): ...` path) it already filtered
         # dunders/sunders/descriptors/callables; the functional API hands us a
         # plain dict, so reproduce the same filter as a fallback.
         ordered_member_names = getattr(namespace, "_member_names", None)
         if ordered_member_names is not None:
-            member_names = list(ordered_member_names)
+            member_names = [key for key in ordered_member_names if key not in ignored]
         else:
             member_names = [
                 key
@@ -142,6 +156,7 @@ class EnumType(type):
                 and not key.startswith("_")
                 and not _is_descriptor(value)
                 and not callable(value)
+                and key not in ignored
             ]
         members: list[tuple[str, Any]] = [(key, namespace[key]) for key in member_names]
         # Members must not remain as plain class attributes; they are replaced

@@ -796,25 +796,34 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     pub(super) fn emit_identity(&mut self, op: &crate::tir::ops::TirOp) {
         let result_id = op.results[0];
-        let lhs = self.resolve(op.operands[0]);
-        let rhs = self.resolve(op.operands[1]);
-        let lhs_i64 = self.ensure_i64(lhs);
-        let rhs_i64 = self.ensure_i64(rhs);
-        let cmp = self
+        let negate = op.opcode == OpCode::IsNot;
+        // Identity compares Python words, not machine carriers: a raw false
+        // is zero, while a boxed False has the boolean tag. Use the same
+        // operation-local materialization/custody as every borrowing consumer.
+        let word = self
+            .with_borrowed_boxed_operands(&op.operands, "identity", |this, words, _| {
+                let equal = this
+                    .backend
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::EQ, words[0], words[1], "is")
+                    .unwrap();
+                let result = if negate {
+                    this.backend.builder.build_not(equal, "is_not").unwrap()
+                } else {
+                    equal
+                };
+                this.backend
+                    .builder
+                    .build_int_z_extend(result, this.backend.context.i64_type(), "identity_word")
+                    .unwrap()
+            })
+            .into_int_value();
+        let val = self
             .backend
             .builder
-            .build_int_compare(inkwell::IntPredicate::EQ, lhs_i64, rhs_i64, "is")
+            .build_int_truncate(word, self.backend.context.bool_type(), "identity_bool")
             .unwrap();
-        let val: BasicValueEnum<'ctx> = if op.opcode == OpCode::IsNot {
-            self.backend
-                .builder
-                .build_not(cmp, "is_not")
-                .unwrap()
-                .into()
-        } else {
-            cmp.into()
-        };
-        self.values.insert(result_id, val);
+        self.values.insert(result_id, val.into());
         self.value_types.insert(result_id, TirType::Bool);
     }
 

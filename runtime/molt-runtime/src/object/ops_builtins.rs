@@ -277,6 +277,75 @@ pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_class_frame_enter(
+    code_bits: u64,
+    globals_bits: u64,
+    builtins_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        // Like TRACE_ENTER_SLOT, every attempt owns one TRACE_EXIT marker.
+        TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().push(false));
+        let Some(_code) = obj_from_bits(code_bits).as_ptr().filter(|ptr| unsafe {
+            object_type_id(*ptr) == TYPE_ID_CODE
+                && crate::object::layout::code_scope_kind(*ptr)
+                    == crate::object::layout::CodeScopeKind::ClassBody
+        }) else {
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::SystemError,
+                "class entry requires class body code",
+            );
+        };
+        let plan = crate::builtins::frames::compiled_slot_for_code(code_bits)
+            .and_then(|slot| {
+                runtime_state(py)
+                    .code_slots
+                    .get()?
+                    .get(usize::try_from(slot).ok()?)
+            })
+            .map(CompiledCodeSlot::frame_plan);
+        let Some(plan) = plan else {
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::SystemError,
+                "class body code has no published frame plan",
+            );
+        };
+        debug_assert!(!plan.optimized);
+        for bits in [code_bits, globals_bits, builtins_bits] {
+            inc_ref_bits(py, bits);
+        }
+        frame_stack_push_owned(py, code_bits, globals_bits, builtins_bits, 0);
+        TRACE_FRAME_PUSH_STACK.with(|stack| *stack.borrow_mut().last_mut().unwrap() = true);
+        if !crate::builtins::frames::frame_stack_enter_homes(py, plan) {
+            crate::record_memory_error_without_allocation(py);
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_class_frame_exit() -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let entered =
+            TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow().last().copied().unwrap_or(false));
+        molt_trace_exit();
+        if entered && exception_pending(py) {
+            // Propagation out of the class body is a call-site Origin in its
+            // caller, just as a real class-body function returning an error.
+            let homes = FRAME_STACK.with(|stack| {
+                stack
+                    .borrow()
+                    .last()
+                    .map_or(0, |entry| entry.bindings.homes_base() as u64)
+            });
+            crate::molt_exception_frame_origin(homes);
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_trace_exit() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if trace_exit_pending_enabled()

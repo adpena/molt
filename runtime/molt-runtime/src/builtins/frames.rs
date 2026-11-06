@@ -214,7 +214,8 @@ pub(crate) struct FrameEntry {
     pub(crate) code_bits: u64,
     /// A traceback's frozen site. Live entries use their arena location word.
     pub(crate) location_snapshot: Option<LocationId>,
-    /// The namespace mapping of a module body (`frame_locals_set`): its
+    /// The namespace mapping of a module or class body (their distinct
+    /// publication entries): its
     /// `f_locals` and `locals()`. Owned by the entry. An optimized frame's
     /// bindings are `bindings`, never a dict here.
     pub(crate) locals_bits: u64,
@@ -247,7 +248,7 @@ const TRACEBACK_PAYLOAD_NEXT_OFFSET: usize = 4 * std::mem::size_of::<u64>();
 const TRACEBACK_PAYLOAD_GLOBALS_OFFSET: usize = 5 * std::mem::size_of::<u64>();
 /// The frame's binding source, owned: an optimized frame's `FRAME_BINDINGS`
 /// payload, which the exiting frame's bindings move into, or a module body's
-/// namespace mapping.
+/// namespace mapping (module or class).
 const TRACEBACK_PAYLOAD_SOURCE_OFFSET: usize = 6 * std::mem::size_of::<u64>();
 const TRACEBACK_PAYLOAD_BUILTINS_OFFSET: usize = 7 * std::mem::size_of::<u64>();
 const TRACEBACK_PAYLOAD_LOCATION_OFFSET: usize = 8 * std::mem::size_of::<u64>();
@@ -633,6 +634,15 @@ pub(crate) fn frame_stack_active_namespaces() -> Option<(u64, u64)> {
 }
 
 impl FrameEntry {
+    pub(crate) fn is_class_body(self) -> bool {
+        obj_from_bits(self.code_bits)
+            .as_ptr()
+            .is_some_and(|ptr| unsafe {
+                object_type_id(ptr) == TYPE_ID_CODE
+                    && crate::object::layout::code_scope_kind(ptr)
+                        == crate::object::layout::CodeScopeKind::ClassBody
+            })
+    }
     pub(crate) fn source_position(self) -> Option<locations::CodeLocation> {
         let code = obj_from_bits(self.code_bits).as_ptr()?;
         if unsafe { object_type_id(code) } != TYPE_ID_CODE {
@@ -927,6 +937,96 @@ pub extern "C" fn molt_frame_locals_set(dict_bits: u64) -> u64 {
     })
 }
 
+/// The class namespace is already prepared. Preserve its identity, including
+/// custom mappings; module __builtins__ initialization has no place here.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_frame_class_locals_set(mapping_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let class_frame = FRAME_STACK.with(|stack| {
+            stack
+                .borrow()
+                .last()
+                .is_some_and(|entry| entry.is_class_body() && !entry.bindings.has_python_bindings())
+        });
+        if !class_frame || obj_from_bits(mapping_bits).as_ptr().is_none() {
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::SystemError,
+                "class namespace publication requires a class frame and mapping",
+            );
+        }
+        frame_stack_set_locals_dict(py, mapping_bits);
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_class_body_builtins(globals_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        match frame_effective_builtins_bits(py, globals_bits) {
+            Ok(bits) => {
+                inc_ref_bits(py, bits);
+                bits
+            }
+            Err(()) => MoltObject::none().bits(),
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_code_set_class_body(code_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(ptr) = obj_from_bits(code_bits).as_ptr().filter(|ptr| unsafe {
+            object_type_id(*ptr) == TYPE_ID_CODE
+                && crate::object::layout::code_frame_slot_id(*ptr).is_none()
+                && crate::object::layout::code_scope_kind(*ptr)
+                    == crate::object::layout::CodeScopeKind::Function
+        }) else {
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::SystemError,
+                "class body code must be marked before its compiled slot is published",
+            );
+        };
+        unsafe {
+            crate::object::layout::code_set_scope_kind(
+                ptr,
+                crate::object::layout::CodeScopeKind::ClassBody,
+            );
+        }
+        MoltObject::none().bits()
+    })
+}
+
+/// Inline class regions retain the enclosing function's homes. Their source
+/// sites belong to the class frame, never the enclosing homes' location word.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_class_frame_set_location(index_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(index) =
+            to_i64(obj_from_bits(index_bits)).and_then(|value| u64::try_from(value).ok())
+        else {
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::SystemError,
+                "invalid class location index",
+            );
+        };
+        FRAME_STACK.with(|stack| {
+            stack
+                .borrow_mut()
+                .last_mut()
+                .expect("executing class frame")
+                .bindings
+                .set_location(LocationId::from_word(index));
+        });
+        MoltObject::none().bits()
+    })
+}
+
+pub(super) const UNMATERIALIZED_CLASS_LOCALS: &str =
+    "class namespace reflection requires a materialized class body mapping (spec 0216)";
+
 #[derive(Clone, Copy)]
 struct FrameField {
     bits: u64,
@@ -939,6 +1039,10 @@ struct FrameField {
 fn frame_binding_source(entry: &FrameEntry) -> u64 {
     if entry.bindings.payload_bits != 0 && entry.bindings.has_python_bindings() {
         entry.bindings.payload_bits
+    } else if entry.locals_bits == 0 && entry.is_class_body() {
+        // A distinct typed source state for an elided class mapping. Frozen
+        // traceback frames keep this state instead of borrowing another scope.
+        MoltObject::none().bits()
     } else {
         entry.locals_bits
     }
@@ -971,8 +1075,7 @@ unsafe fn code_is_module(code_bits: u64) -> bool {
         if object_type_id(code_ptr) != TYPE_ID_CODE {
             return false;
         }
-        let name_bits = code_name_bits(code_ptr);
-        string_obj_to_owned(obj_from_bits(name_bits)).is_some_and(|name| name == "<module>")
+        crate::object::layout::code_is_module(code_ptr)
     }
 }
 
@@ -1528,6 +1631,13 @@ pub extern "C" fn molt_locals_builtin() -> u64 {
             if bits != 0 && !obj_from_bits(bits).is_none() {
                 inc_ref_bits(_py, bits);
                 return bits;
+            }
+            if frame_binding_source(&entry) == MoltObject::none().bits() {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    UNMATERIALIZED_CLASS_LOCALS,
+                );
             }
         }
         // Fallback: for module frames, CPython uses f_locals == f_globals.

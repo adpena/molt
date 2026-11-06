@@ -52,6 +52,34 @@ def test_location_encoding_is_decoded_by_cpython_without_source_inference():
     ]
 
 
+def test_class_code_locations_and_first_line_follow_the_cpython_code_owner():
+    from types import CodeType
+
+    source = "@decorate\nclass Subject:\n    raise RuntimeError('class body')\n"
+    oracle = next(
+        code
+        for code in compile(source, "<oracle>", "exec").co_consts
+        if isinstance(code, CodeType)
+    )
+    _, ir = compile_source(source, (3, 12))
+    main = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "molt_main")
+    definitions = {op["out"]: op for op in main if op.get("out")}
+    enter = next(op for op in main if op.get("s_value") == "molt_class_frame_enter")
+    code = definitions[enter["args"][0]]
+    assert definitions[code["args"][1]]["s_value"] == oracle.co_name
+    first_line = definitions[code["args"][2]]["value"]
+    assert first_line == oracle.co_firstlineno
+    table = bytes(definitions[code["args"][3]]["bytes"])
+    positions = list(oracle.replace(co_linetable=table).co_positions())
+    published = [
+        positions[definitions[op["args"][0]]["value"]]
+        for op in main
+        if op.get("s_value") == "molt_class_frame_set_location"
+    ]
+    assert any(position[:2] == (3, 3) for position in published)
+    assert not any("class_frame" in op for op in main)
+
+
 def test_multiline_frame_reads_publish_the_expression_position():
     source = "def sample(frame):\n    return (\n        frame.f_lineno,\n        frame.f_lasti,\n    )\n"
     _, ir = compile_source(source, (3, 12))
@@ -684,9 +712,11 @@ def test_class_namespace_prefix_suffix_and_both_exits_use_correct_frame_owner():
         and keys.get(op.args[1].name) in expected
     ]
     assert {key for _, key in writes} == expected
+    (enter,) = runtime_calls(ops, "molt_class_frame_enter")
+    exits = runtime_calls(ops, "molt_class_frame_exit")
     cleanup_targets = set()
     for index, _ in writes:
-        assert frame_before(ops, index).kind == 0
+        assert enter < index
         check = ops[index + 1]
         assert check.kind == "CHECK_EXCEPTION"
         cleanup_targets.add(check.args[0])
@@ -697,19 +727,18 @@ def test_class_namespace_prefix_suffix_and_both_exits_use_correct_frame_owner():
         for index, op in enumerate(ops)
         if op.kind == "LABEL" and op.args[0] == cleanup_label
     )
-    frames = publications(ops)
-    normal_restore = next(
-        frame for frame in frames if writes[-1][0] < frame.index < cleanup_index
+    normal_exit = next(
+        index for index in exits if writes[-1][0] < index < cleanup_index
     )
-    exceptional_restore = next(frame for frame in frames if frame.index > cleanup_index)
-    # Both exits restore the method's own argument zero: its first home.
-    assert_home_argument_zero(ops, normal_restore)
-    assert_home_argument_zero(ops, exceptional_restore)
-    assert ops[normal_restore.index + 1].kind == "JUMP"
-    assert ops[exceptional_restore.index + 1].kind == "JUMP"
-    assert ops[normal_restore.index + 1].args != ops[exceptional_restore.index + 1].args
-    for consumer in builtin_calls(ops):
-        assert frame_before(ops, consumer).kind == 3
+    exceptional_exit = next(index for index in exits if index > cleanup_index)
+    assert ops[normal_exit + 1].kind == "JUMP"
+    assert ops[exceptional_exit + 1].kind == "JUMP"
+    assert ops[normal_exit + 1].args != ops[exceptional_exit + 1].args
+    # The method's own context is never overwritten by an inline class body.
+    # Popping that separate frame exposes the same live argument-zero home.
+    (method_frame,) = publications(ops)
+    assert_home_argument_zero(ops, method_frame)
+    assert all(index > normal_exit for index in builtin_calls(ops))
 
 
 def assert_resume_frame_ownership(ops: list[MoltOp], required_boundaries: set[str]):
@@ -727,10 +756,23 @@ def assert_resume_frame_ownership(ops: list[MoltOp], required_boundaries: set[st
         # Only reconstruct the two operands between a resume boundary and its
         # publication. In particular no resumed body call or release can run
         # with the invocation's default NoArg context.
-        assert all(
-            item.kind in {"CONST_NONE", "CONST", "LOAD_CLOSURE", "LOAD_VAR", "INDEX"}
-            for item in ops[index + 1 : frame.index]
-        )
+        for offset in range(index + 1, frame.index):
+            item = ops[offset]
+            if item.kind == "STORE_VAR":
+                # Async spill restoration may bind a just-loaded task slot
+                # before publication; this transports an operand, runs no
+                # Python code and releases no prior activation binding.
+                prior = ops[offset - 1]
+                assert prior.kind == "LOAD_CLOSURE"
+                assert item.args == [prior.result]
+            else:
+                assert item.kind in {
+                    "CONST_NONE",
+                    "CONST",
+                    "LOAD_CLOSURE",
+                    "LOAD_VAR",
+                    "INDEX",
+                }
     assert observed == required_boundaries
 
 
@@ -919,23 +961,32 @@ def test_annotation_evaluator_publishes_versioned_argument_and_real_class_cell(
             if op.kind == "STORE_INDEX" and is_class_cell_key(op.args[1])
         ]
         namespace, _key, published_cell = store.args
-        ((push_index, push),) = [
-            (index, op)
-            for index, op in enumerate(main_ops)
-            if op.kind == "CALLARGS_PUSH_POS" and op.args[1] == namespace
+        namespace_builders = [
+            index
+            for index in runtime_calls(main_ops, "molt_class_def_namespace")
+            if main_ops[index].args[3] == namespace
         ]
-        ((call_index, call),) = [
-            (index, op)
-            for index, op in enumerate(main_ops)
-            if op.kind == "CALL_BIND" and op.args[1] == push.args[0]
-        ]
-        positional = [
-            op.args[1]
-            for op in main_ops[:call_index]
-            if op.kind == "CALLARGS_PUSH_POS" and op.args[0] == call.args[1]
-        ]
-        assert len(positional) == 3 and positional[2] == namespace
-        assert store_index < push_index < call_index
+        if namespace_builders:
+            (call_index,) = namespace_builders
+            assert store_index < call_index
+        else:
+            ((push_index, push),) = [
+                (index, op)
+                for index, op in enumerate(main_ops)
+                if op.kind == "CALLARGS_PUSH_POS" and op.args[1] == namespace
+            ]
+            ((call_index, call),) = [
+                (index, op)
+                for index, op in enumerate(main_ops)
+                if op.kind == "CALL_BIND" and op.args[1] == push.args[0]
+            ]
+            positional = [
+                op.args[1]
+                for op in main_ops[:call_index]
+                if op.kind == "CALLARGS_PUSH_POS" and op.args[0] == call.args[1]
+            ]
+            assert len(positional) == 3 and positional[2] == namespace
+            assert store_index < push_index < call_index
     assert transported_cell == published_cell
 
 

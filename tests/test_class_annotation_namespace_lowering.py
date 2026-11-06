@@ -152,7 +152,9 @@ def test_conditional_annotation_items_reload_shared_lexical_cells():
     (execution_map,) = execution_cell["args"]
     assert definitions[execution_map]["kind"] == "dict_new"
     assert outer.index(definitions[execution_map]) < next(
-        index for index, op in enumerate(outer) if op.get("kind") == "if"
+        index
+        for index, op in enumerate(outer)
+        if op.get("kind") == "if" and op.get("source_line") == 4
     )
     marks = [
         op
@@ -258,17 +260,78 @@ def test_class_annotations_mapping_exists_before_first_body_statement(future):
     )
     main = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "molt_main")
     strings = {op["out"]: op.get("s_value") for op in main if op["kind"] == "const_str"}
-    class_op = next(op for op in main if op["kind"] == "class_def")
-    args = class_op["args"]
-    attrs = {
-        strings[arg]: args[index + 1]
-        for index, arg in enumerate(args[:-1])
-        if strings.get(arg) in {"before", "after", "__annotations__"}
-    }
-    assert attrs["before"] == attrs["after"] == attrs["__annotations__"]
-    assert any(
-        op["kind"] == "store_index" and op["args"][0] == attrs["before"] for op in main
+    publication = next(
+        (op for op in main if op.get("s_value") == "molt_frame_class_locals_set"),
+        None,
     )
+    if publication is None:
+        class_op = next(op for op in main if op["kind"] == "class_def")
+        args = class_op["args"]
+        attrs = {
+            strings[arg]: args[index + 1]
+            for index, arg in enumerate(args[:-1])
+            if strings.get(arg) in {"before", "after", "__annotations__"}
+        }
+        assert attrs["before"] == attrs["after"] == attrs["__annotations__"]
+        assert any(
+            op["kind"] == "store_index" and op["args"][0] == attrs["before"]
+            for op in main
+        )
+        return
+    namespace = publication["args"][0]
+    prefix = next(
+        index
+        for index, op in enumerate(main)
+        if op["kind"] == "store_index"
+        and op["args"][0] == namespace
+        and strings.get(op["args"][1]) == "__annotations__"
+    )
+    first_body_line = 3 if future else 2
+    reads = [
+        index
+        for index, op in enumerate(main)
+        if op.get("s_value") == "molt_namespace_get"
+        and op["args"][0] == namespace
+        and strings.get(op["args"][1]) == "__annotations__"
+        and op.get("source_line") == first_body_line
+    ]
+    assert reads and all(prefix < index for index in reads)
+
+
+def test_class_docstring_namespace_prefix_order_and_site_match_cpython():
+    import dis
+    import sys
+    from types import CodeType
+
+    source = "class Subject:\n    'doc'\n    value: int = 1\n    namespace = locals()\n"
+    code = next(
+        value
+        for value in compile(source, "<oracle>", "exec").co_consts
+        if isinstance(value, CodeType)
+    )
+    expected = [
+        (
+            "__annotations__" if item.opname == "SETUP_ANNOTATIONS" else item.argval,
+            item.positions.lineno,
+        )
+        for item in dis.get_instructions(code)
+        if item.opname == "SETUP_ANNOTATIONS"
+        or (item.opname == "STORE_NAME" and item.argval == "__doc__")
+    ]
+    ir = _compile(source, (sys.version_info.major, sys.version_info.minor))
+    main = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "molt_main")
+    strings = {op["out"]: op.get("s_value") for op in main if op["kind"] == "const_str"}
+    publication = next(
+        op for op in main if op.get("s_value") == "molt_frame_class_locals_set"
+    )
+    actual = [
+        (strings[op["args"][1]], op.get("source_line"))
+        for op in main
+        if op["kind"] == "store_index"
+        and op["args"][0] == publication["args"][0]
+        and strings.get(op["args"][1]) in {"__doc__", "__annotations__"}
+    ]
+    assert actual == expected
 
 
 def test_class_annotation_value_store_precedes_annotation_callback_and_mapping_store():

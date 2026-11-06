@@ -54,6 +54,14 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
             self.bytearray_len_hints.pop(value.name, None)
 
     def _emit_locals_dict(self) -> MoltValue:
+        if self._class_ns_stack and self._class_ns_stack[-1].class_node is not None:
+            namespace = self._class_ns_stack[-1].ns
+            if namespace is None:
+                raise FrontendRejection(
+                    Diagnostic.INTERNAL_INVARIANT,
+                    "Reflected class body has no namespace mapping",
+                )
+            return namespace
         if self.current_func_name == "molt_main":
             return self._emit_globals_dict()
         # A function's locals() is its frame's: the runtime reads the executing

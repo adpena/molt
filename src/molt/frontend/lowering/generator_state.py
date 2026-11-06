@@ -64,7 +64,7 @@ FUNCTION_LOCAL_BINDING_STATE_ATTRS = (
     "comprehension_bindings",
     "current_python_first_arg",
     "python_frame_context_active",
-    "python_class_body_context",
+    "python_class_frame_owner",
     "_class_ns_stack",
     "_class_body_depth",
     "boxed_local_hints",
@@ -217,7 +217,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.comprehension_bindings: dict[str, ComprehensionBinding] = {}
         self.current_python_first_arg: str | MoltValue | None = None
         self.python_frame_context_active = False
-        self.python_class_body_context = False
+        self.python_class_frame_owner: ClassId | None = None
         # A real function/code-object boundary does not inherit class LOAD_NAME
         # storage. Annotation evaluators capture their required owners through
         # explicit closure inputs rather than retaining outer-function SSA.
