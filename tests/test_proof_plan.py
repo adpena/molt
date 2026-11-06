@@ -9334,6 +9334,8 @@ def test_differential_proofs_select_their_host_compiler_profile_explicitly() -> 
         "runtime.public-consumers.wasm": "release",
         # The JIT tier is a development tier: its twin gate runs the dev compiler.
         "native.jit-aot-twins": "dev",
+        # The nightly corpus sweep runs the canonical differential runner.
+        "nightly.verification-t3.differential": "dev",
     }
     expected.update(
         (lane.id, "dev")
@@ -9518,7 +9520,7 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
                 "nightly.verification-t3.fuzz-compiler",
                 "nightly.verification-t3.fuzz-tests",
                 "nightly.verification-t3.reproducibility",
-                "nightly.verification-t3.translation",
+                "nightly.verification-t3.differential",
                 "portability.rust.linux-aarch64.clippy-workspace",
                 "portability.rust.macos.clippy-workspace",
                 "portability.rust.macos.runtime-gate",

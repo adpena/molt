@@ -7451,19 +7451,6 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "developer",
-      "default": "dev",
-      "kind": "enum",
-      "name": "MOLT_TV_BUILD_PROFILE",
-      "output_neutral": false,
-      "owner": "tools/translation_validate.py",
-      "summary": "Default Molt build profile for tools/translation_validate.py, dev or release; --build-profile overrides it; default dev.",
-      "values": [
-        "dev",
-        "release"
-      ]
-    },
-    {
       "audience": "user",
       "default": "",
       "kind": "path",
@@ -7481,36 +7468,6 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "src/molt/frontend/tv_hooks.py",
       "summary": "Set to exactly 1 to make the mid-end write before/after IR snapshots for every pass into the MOLT_TV_DIR dump directory; the value is read once per process; any other value or unset disables emission.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "4",
-      "kind": "int",
-      "name": "MOLT_TV_JOBS",
-      "output_neutral": false,
-      "owner": "tools/translation_validate.py",
-      "summary": "Default number of parallel validation jobs for tools/translation_validate.py; --jobs overrides it; a non-integer value raises ValueError at import; default 4.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "",
-      "kind": "string",
-      "name": "MOLT_TV_PYTHON",
-      "output_neutral": false,
-      "owner": "tools/translation_validate.py",
-      "summary": "Explicit CPython command that tools/translation_validate.py runs as the ground-truth interpreter; unset or blank resolves the target Python from the project configuration.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "60",
-      "kind": "int",
-      "name": "MOLT_TV_TIMEOUT",
-      "output_neutral": false,
-      "owner": "tools/translation_validate.py",
-      "summary": "Default per-file timeout in seconds for tools/translation_validate.py; --timeout overrides it; a non-integer value raises ValueError at import; default 60.",
       "values": []
     },
     {

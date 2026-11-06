@@ -68,8 +68,9 @@ A semantics-bearing transformation states its preconditions as checked facts
 and proves itself against the formal model, not by example alone.
 
 - Semantics: the Lean model under `formal/lean`.
-- Passes: translation validation (`tools/translation_validate.py`) checks a
-  rewrite's input and output against that model.
+- Passes: no checker yet proves a rewrite against that model. Differential
+  execution (`tests/molt_diff.py`) checks observable behavior of the programs
+  it runs; a bounded per-pass validator is open work (HF-800).
 - Scope: the verified subset
   (`docs/spec/areas/compat/contracts/verified_subset_contract.md`) bounds what
   the model must cover.

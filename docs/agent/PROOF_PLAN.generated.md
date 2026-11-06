@@ -16,7 +16,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
-| Hashed executable authority inputs | 1 | 454 |
+| Hashed executable authority inputs | 1 | 453 |
 | Local path rules | 35 | 86 |
 | Unique local commands | 73 | 86 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -197,7 +197,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `nightly.verification-t3.fuzz-compiler` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 2700 s | `scheduled-suite` | 1 |
 | `nightly.verification-t3.fuzz-tests` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 1200 s | `scheduled-suite` | 1 |
 | `nightly.verification-t3.mutation` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 3600 s | `scheduled-suite` | 1 |
-| `nightly.verification-t3.translation` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 3300 s | `scheduled-suite` | 1 |
+| `nightly.verification-t3.differential` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 3300 s | `scheduled-suite` | 1 |
 | `nightly.verification-t3.model-based` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 600 s | `scheduled-suite` | 1 |
 | `portability.completion.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
 | `portability.queue.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
@@ -404,7 +404,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `memory-graph` | 4 | 1 |
 | `native-toolchain-transfer` | 39 | 0 |
 | `proof-plan-tests` | 1 | 0 |
-| `ci-wiring` | 54 | 0 |
+| `ci-wiring` | 51 | 0 |
 | `apparatus-hooks` | 11 | 2 |
 | `apparatus-learning-protection` | 6 | 1 |
 | `performance-measurement` | 39 | 1 |

@@ -453,7 +453,7 @@ jobs:
             proof-results/reproducibility-tier3.json
             proof-results/fuzz-compiler-extended.json
             proof-results/mutation-tier3.json
-            proof-results/translation-tier3.json
+            proof-results/differential-tier3.json
           if-no-files-found: error
       - name: Save Cargo dependency cache
         if: ${{ !cancelled() }}

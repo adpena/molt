@@ -71,6 +71,7 @@ from molt.target_python import (  # noqa: E402
 from tools.compat import backends as compat_backends  # noqa: E402
 from tools.compat import comparison as compat_comparison  # noqa: E402
 from tools.compat import diff_output_layout  # noqa: E402
+from tools.proof_counts import fail_closed_proof_exit_code  # noqa: E402
 from tools.compat import test_policy  # noqa: E402
 from tools.memory_guard_core import harness_outcomes  # noqa: E402
 from molt.build_state_layout import build_state_root  # noqa: E402
@@ -5115,10 +5116,14 @@ if __name__ == "__main__":
         sys.exit(2)
     _emit_json(summary, args.json_output, args.json)
     os.remove("temp_test.py")
+    # 0 only when files executed and every one matched; 2 when nothing ran or
+    # files were not run (inconclusive); 1 for an executed failure.
     sys.exit(
         128 + summary["guard_signal"]
         if summary["guard_signal"] is not None
-        else 0
-        if summary["failed"] == 0 and summary["not_run"] == 0
-        else 1
+        else fail_closed_proof_exit_code(
+            executed=summary["total"],
+            failed=summary["failed"],
+            errors=summary["not_run"],
+        )
     )

@@ -302,15 +302,6 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         "throughput matrix runner must guard compile/run children",
     ),
     TokenContract(
-        "tools/translation_validate.py",
-        (
-            "harness_memory_guard",
-            "guarded_completed_process",
-            "guarded_harness_scope",
-        ),
-        "translation validator must guard CPython/Molt comparison children",
-    ),
-    TokenContract(
         "tools/runtime_safety.py",
         (
             "harness_memory_guard",

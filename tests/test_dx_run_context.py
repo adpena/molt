@@ -2731,7 +2731,7 @@ def test_capsule_selected_session_records_only_its_canonical_checkout_state(
     assert not (foreign / checkout_state.OWNER_RECORD).exists()
 
 
-@pytest.mark.parametrize("writer", ["transpiler", "translation", "tv", "proof"])
+@pytest.mark.parametrize("writer", ["transpiler", "tv", "proof"])
 def test_scratch_writers_bind_the_root_before_allocating(tmp_path, monkeypatch, writer):
     from molt.checkout_state import read_checkout_owner
 
@@ -2756,13 +2756,6 @@ def test_scratch_writers_bind_the_root_before_allocating(tmp_path, monkeypatch, 
 
         monkeypatch.setattr(check_transpiler_determinism, "_repo_root", lambda: source)
         assert check_transpiler_determinism._tmp_root() == selected
-    elif writer == "translation":
-        from tools import translation_validate
-
-        monkeypatch.setattr(translation_validate, "_REPO_ROOT", source)
-        assert translation_validate._temp_root(environment) == selected
-        assert not selected.exists(), "a projection must remain read-only"
-        assert translation_validate._temp_root(environment, create=True) == selected
     elif writer == "tv":
         from molt.frontend import tv_hooks
 

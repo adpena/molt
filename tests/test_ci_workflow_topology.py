@@ -4550,7 +4550,7 @@ def test_named_proof_lanes_fail_closed_and_share_counted_verdict_authority() -> 
         "tools/check_reproducible_build.py",
         "tools/verify_ir_suite.py",
         "tools/mutation_test.py",
-        "tools/translation_validate.py",
+        "tests/molt_diff.py",
     ):
         text = _read(tool)
         assert "fail_closed_proof_exit_code(" in text

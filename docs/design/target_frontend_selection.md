@@ -102,7 +102,7 @@ adds no second publisher, registry or cache.
    in place of `resolve_target_python_command`. The existing version check also
    applies to the override, so `MOLT_DIFF_PYTHON` must report that release.
    The product CLI's `resolve_target_python` (`molt compare`,
-   `tools/molt_dev.py python-oracle`, `tools/translation_validate.py`) keeps
+   `tools/molt_dev.py python-oracle`) keeps
    its minor request: what an installed Molt demands of its host is the later
    HF-726 slice.
 3. **The compiler frontend runs the oracle's CPython release.** The oracle

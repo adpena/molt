@@ -473,7 +473,6 @@ def test_shared_generator_and_ci_inputs_retain_ci_consumer_closure(source):
         "tests/test_ci_cargo_cache.py",
         "tests/test_generator_manifest.py",
         "tests/test_resource_pressure.py",
-        "tests/test_translation_validate_roots.py",
         "tests/tools/test_ci_resource_env.py",
         "tests/tools/test_fuzz_compiler_cli.py",
         "tests/tools/test_formal_correspondence_truth.py",

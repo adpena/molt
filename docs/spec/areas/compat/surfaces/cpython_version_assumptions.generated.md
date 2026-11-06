@@ -6,7 +6,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 ## Counts
 
-- `authority-routed` files: 69
+- `authority-routed` files: 68
 - `operational-tooling` files: 76
 - `scattered-assumption` files: 356
 
@@ -493,7 +493,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/perf_scoreboard_resolver.py` | 6 | scattered-assumption | `3.11` |
 | `tools/proof_command_argv.py` | 2 | operational-tooling | `3.12` |
 | `tools/proof_executor.py` | 2 | operational-tooling | `sys.version_info` |
-| `tools/proof_plan.toml` | 91 | authority-routed | `3.12` |
+| `tools/proof_plan.toml` | 94 | authority-routed | `3.12` |
 | `tools/public_contract_gate.py` | 2 | authority-routed | `3.12` |
 | `tools/pyperformance_adapter.py` | 1 | scattered-assumption | `3.12` |
 | `tools/quint_trace_to_tests.py` | 8 | operational-tooling | `3.12` |
@@ -512,6 +512,5 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/theorem_to_test.py` | 1 | operational-tooling | `3.12` |
 | `tools/throughput_matrix.py` | 2 | scattered-assumption | `3.12` |
 | `tools/tinygrad_off_shelf_adapter.py` | 5 | scattered-assumption | `3.0` |
-| `tools/translation_validate.py` | 10 | authority-routed | `3.12` |
 | `tools/verified_subset.py` | 10 | authority-routed | `sys.version_info` |
 | `tools/wasm_abi_gen/manifest.py` | 1 | scattered-assumption | `3.11` |
