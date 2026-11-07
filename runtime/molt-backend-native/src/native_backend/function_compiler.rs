@@ -1099,18 +1099,9 @@ impl SimpleBackend {
                 builder.capture_operation(index, &ops[index], &cfg_liveness.names);
             }
             if skip_ops.contains(&op_idx) || metadata_loop_ops.contains(&op_idx) {
-                // Structured lowering materializes SSA-only join operations at
-                // its merge. Consume their declared definitions at the logical
-                // source point even though no second instruction is emitted.
-                // All structured phi discovery paths share this boundary.
-                if skip_ops.contains(&op_idx)
-                    && ops[op_idx].kind.is_ssa_only()
-                    && builder
-                        .current_block()
-                        .is_some_and(|block| !block_has_terminator(&builder, block))
-                {
-                    builder.capture_operation(op_idx, &ops[op_idx], &cfg_liveness.names);
-                }
+                // Structured phis are captured by their materializing writer.
+                // Other skipped operations (including unrolled loop bodies)
+                // did not lower and must not acquire an emitted SSA value.
                 continue;
             }
             let op = ops[op_idx].clone();
@@ -2343,6 +2334,8 @@ impl SimpleBackend {
                 }
             }
         }
+
+        builder.end_op();
 
         // Finalize Master Return Block
         if !is_block_filled {

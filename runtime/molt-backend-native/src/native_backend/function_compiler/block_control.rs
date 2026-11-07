@@ -77,19 +77,20 @@ impl BlockTransportPlan {
         builder: &mut FunctionBuilder<'_>,
         block: Block,
     ) {
-        let params = builder.block_params(block).to_vec();
         assert_eq!(
-            params.len(),
+            builder.block_params(block).len(),
             self.vars.len(),
             "semantic transport block parameter arity drift"
         );
-        for (&var, param) in self.vars.iter().zip(params) {
-            builder.def_var(var, param);
+        for (index, &var) in self.vars.iter().enumerate() {
+            builder.bind_var_to_block_param(var, block, index);
         }
         for &(id, var) in &self.direct {
-            let value = builder.canonical_ssa_value(id).unwrap_or_else(|| {
-                panic!("proven canonical SSA definition #{id} was not captured before block materialization")
-            });
+            // Plans precede lowering. A terminated or skipped definition may
+            // never have been captured; Cranelift still owns its backing.
+            let value = builder
+                .canonical_ssa_value(id)
+                .unwrap_or_else(|| builder.use_var(var));
             builder.def_var(var, value);
         }
     }
@@ -210,12 +211,37 @@ impl NativeSsaValues {
         }
     }
 
-    pub(in crate::native_backend) fn read(&self, var: Variable, operation: usize) -> Option<Value> {
-        let id = self
-            .names_by_variable
+    fn id_for_variable(&self, var: Variable) -> Option<u32> {
+        self.names_by_variable
             .get(var.as_u32() as usize)
             .copied()
-            .flatten()?;
+            .flatten()
+    }
+
+    #[cfg(debug_assertions)]
+    pub(in crate::native_backend) fn captured_value(&self, var: Variable) -> Option<Value> {
+        self.emitted(self.id_for_variable(var)?)
+    }
+
+    pub(in crate::native_backend) fn capture_materialized_phi(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        var: Variable,
+    ) {
+        if let Some(id) = self.id_for_variable(var)
+            && matches!(
+                self.definitions[id as usize],
+                Some(crate::tir::simple_def_use::SimpleDefinitionSite::Operation(
+                    _
+                ))
+            )
+        {
+            self.capture_binding(builder, id);
+        }
+    }
+
+    pub(in crate::native_backend) fn read(&self, var: Variable, operation: usize) -> Option<Value> {
+        let id = self.id_for_variable(var)?;
         self.can_bind_directly(
             id,
             crate::tir::dominators::SimpleProgramPoint::Before(operation),
@@ -284,9 +310,8 @@ impl NativeSsaValues {
             };
             if self.definitions[id as usize]
                 == Some(crate::tir::simple_def_use::SimpleDefinitionSite::Invocation)
-                && let Some(binding) = self.bindings[id as usize]
             {
-                self.emitted[id as usize] = Some(builder.use_var(binding.var));
+                self.capture_binding(builder, id);
             }
         }
     }
@@ -304,11 +329,16 @@ impl NativeSsaValues {
                 == Some(crate::tir::simple_def_use::SimpleDefinitionSite::Operation(
                     index,
                 ))
-                && let Some(binding) = self.bindings[id as usize]
             {
-                self.emitted[id as usize] = Some(builder.use_var(binding.var));
+                self.capture_binding(builder, id);
             }
         });
+    }
+
+    fn capture_binding(&mut self, builder: &mut FunctionBuilder<'_>, id: u32) {
+        if let Some(binding) = self.bindings[id as usize] {
+            self.emitted[id as usize] = Some(builder.use_var(binding.var));
+        }
     }
 }
 

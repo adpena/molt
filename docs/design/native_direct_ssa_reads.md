@@ -1,4 +1,4 @@
-# Native SSA values and the early-sealing experiment
+# Native direct SSA reads
 
 ## Decision
 
@@ -56,10 +56,26 @@ No map keyed by source spelling stores SSA facts.
 The builder owns the existing retained-value authority during instruction
 emission. Parameters are captured after the invocation prologue. Each operation's
 final value is captured before lowering the next operation or switching labels;
-SSA-only structured joins are captured at their logical operation. Capturing at
+structured phis are captured at their actual merge writer. Skipped operations,
+including replaced sum-loop bodies, never acquire an emitted entry merely from
+their declared result. The textual-availability check still forbids using a
+materialized phi before its logical definition point. Capturing at
 the first `def_var` would be unsound for operations lowered through multiple
 internal branches. Capture reads temporarily bypass retained values so they see
 the completed native definition, rather than a stale earlier binding.
+
+Label plans precede lowering. If a direct definition was never captured because
+its lowering was skipped or terminated, label materialization reads its existing
+Cranelift Variable backing. It does not invent a retained SSA value or panic.
+After the source operation loop, the builder clears its operation point so native
+epilogues read their actual backing rather than the last body operation's facts.
+
+Debug builds check every ordinary native Variable definition against any captured
+value, resolving CLIF aliases before comparison. A different value requires a
+mutable exclusion or a known rebind boundary. Incoming block-parameter transport
+has one explicit boundary that selects an actual parameter of the current block;
+ordinary writes cannot silently bypass the check. The check adds no release-build
+analysis or representation.
 
 Native writes outside SimpleIR definitions are excluded at their existing owners:
 

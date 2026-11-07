@@ -1062,9 +1062,9 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 ensure_block_in_layout(&mut *builder, frame.after_block);
                 jump_block(&mut *builder, frame.after_block, &[]);
                 crate::switch_to_block_tracking(&mut *builder, frame.body_block, is_block_filled);
-                // Seal body_block now — its only predecessor is the brif
-                // above.  Early sealing helps Cranelift resolve SSA variables
-                // (especially the loop induction variable) immediately.
+                // Retain this original local seal when the conditional edge
+                // above completes the body predecessors. Exception-bearing
+                // functions keep their final seal_all_blocks boundary.
                 if exception_label_ids.is_empty() {
                     maybe_debug_seal("loop_break_false_body", op_idx, frame.body_block);
                     seal_block_once(&mut *builder, sealed_blocks, frame.body_block);

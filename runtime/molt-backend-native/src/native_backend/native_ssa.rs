@@ -34,6 +34,33 @@ impl<'a> FunctionBuilder<'a> {
     pub(crate) fn begin_op(&mut self, index: usize) {
         self.current_op = Some(index);
     }
+    pub(crate) fn end_op(&mut self) {
+        self.current_op = None;
+    }
+    pub(crate) fn def_var(&mut self, var: Variable, value: Value) {
+        #[cfg(debug_assertions)]
+        if let Some(captured) = self
+            .ssa_values
+            .as_ref()
+            .and_then(|values| values.captured_value(var))
+        {
+            debug_assert_eq!(
+                self.inner.func.dfg.resolve_aliases(value),
+                self.inner.func.dfg.resolve_aliases(captured),
+                "captured native SSA variable {var:?} redefined at {:?}; missing mutable exclusion or explicit rebind boundary",
+                self.current_op,
+            );
+        }
+        self.inner.def_var(var, value);
+    }
+    /// Semantic incoming transport can rebind a carrier even when its original
+    /// definition does not dominate this block. Only actual block parameters
+    /// enter through this boundary; ordinary native writes use `def_var`.
+    pub(crate) fn bind_var_to_block_param(&mut self, var: Variable, block: Block, index: usize) {
+        debug_assert_eq!(self.inner.current_block(), Some(block));
+        let value = self.inner.block_params(block)[index];
+        self.inner.def_var(var, value);
+    }
     /// One typed read boundary for semantic and internal Variables alike.
     pub(crate) fn use_var(&mut self, var: Variable) -> Value {
         if let Some(value) = self
@@ -46,6 +73,12 @@ impl<'a> FunctionBuilder<'a> {
     }
     pub(crate) fn canonical_ssa_value(&self, id: u32) -> Option<Value> {
         self.ssa_values.as_ref()?.emitted(id)
+    }
+    pub(crate) fn capture_materialized_phi(&mut self, var: Variable) {
+        if let Some(mut values) = self.ssa_values.take() {
+            values.capture_materialized_phi(self, var);
+            self.ssa_values = Some(values);
+        }
     }
     pub(crate) fn capture_operation(
         &mut self,

@@ -1,3 +1,4 @@
+# Direct SSA reads across joins, exception transfers and generator resumes.
 def exercise(limit, fail_at):
     total = 0
     events = []
