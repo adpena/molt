@@ -86,20 +86,19 @@ impl ValueOccupancy {
 /// `none` input is eligible, and two values share a local only when their
 /// occupied positions are disjoint.
 ///
-/// Resumable state machines re-enter at dispatcher-selected labels with frame
-/// values persisted outside WASM locals, and counted-loop index operations
-/// continue past their initializer in dispatch emission. The shared CFG
-/// models neither, so those frames keep one local per name.
+/// Counted loops arrive normalized: final TIR projection admission rejects
+/// `loop_index_start`/`loop_index_next`, and their carriers reach this planner
+/// as block-argument `store_var`/`load_var` around structured loop markers,
+/// which the shared CFG models. Resumable state machines re-enter at
+/// dispatcher-selected labels with frame values persisted outside WASM locals;
+/// the shared CFG does not model that, so those frames keep one local per name.
 pub(super) fn plan_local_storage(
     func_ir: &FunctionIR,
     read_vars: &BTreeSet<String>,
     param_set: &BTreeSet<String>,
 ) -> LocalStoragePlan {
     let ops = &func_ir.ops;
-    if ops
-        .iter()
-        .any(|op| op.kind.is_wasm_stateful_dispatch() || op.kind.is_pre_ssa_rewritten())
-    {
+    if ops.iter().any(|op| op.kind.is_wasm_stateful_dispatch()) {
         return LocalStoragePlan::default();
     }
 
@@ -601,21 +600,137 @@ mod tests {
         assert!(storage.occupancy().is_none());
     }
 
+    fn load_var(var: &str, out: &str) -> OpIR {
+        let mut load = op(molt_ir::OpKind::LoadVar, &[], Some(out));
+        load.var = Some(var.to_string());
+        load
+    }
+
+    /// One counted loop as final TIR projection emits it after counted-loop
+    /// normalization: the carrier is a block argument that the caller seeds
+    /// before the header and the back edge stores; the header loads it.
+    /// `body` runs between the exit test and the increment.
+    fn counted_loop(label: i64, carrier: &str, index: &str, body: Vec<OpIR>) -> Vec<OpIR> {
+        let cond = format!("{index}_cond");
+        let next = format!("{index}_next");
+        let mut ops = vec![
+            labelled(molt_ir::OpKind::Label, label),
+            op(molt_ir::OpKind::LoopStart, &[], None),
+            load_var(carrier, index),
+            op(molt_ir::OpKind::Lt, &[index, "stop"], Some(&cond)),
+            op(molt_ir::OpKind::LoopBreakIfFalse, &[&cond], None),
+        ];
+        ops.extend(body);
+        ops.push(op(molt_ir::OpKind::Add, &[index, "step"], Some(&next)));
+        ops.push(bind(&next, carrier));
+        ops.push(op(molt_ir::OpKind::LoopContinue, &[], None));
+        ops.push(op(molt_ir::OpKind::LoopEnd, &[], None));
+        ops
+    }
+
+    const COUNTED_PARAMS: [&str; 3] = ["start", "stop", "step"];
+
     #[test]
-    fn counted_loop_index_frames_keep_one_local_per_name() {
-        let storage = plan_with_params(
+    fn a_counted_loop_keeps_a_pre_loop_value_its_body_reads_before_a_later_definition() {
+        let mut ops = vec![
+            op(molt_ir::OpKind::Const, &[], Some("pre")),
+            bind("start", "i_carrier"),
+        ];
+        ops.extend(counted_loop(
+            1,
+            "i_carrier",
+            "i",
             vec![
-                op(molt_ir::OpKind::LoopStart, &[], None),
-                op(molt_ir::OpKind::LoopIndexStart, &["start"], Some("index")),
-                op(molt_ir::OpKind::TupleNew, &["index"], None),
-                op(molt_ir::OpKind::LoopContinue, &[], None),
-                op(molt_ir::OpKind::LoopEnd, &[], None),
+                op(molt_ir::OpKind::TupleNew, &["pre"], None),
+                // Born after `pre`'s last read in operation order; the next
+                // iteration reads `pre` again before any write.
+                op(molt_ir::OpKind::Const, &[], Some("later")),
+                op(molt_ir::OpKind::TupleNew, &["later"], None),
             ],
-            &["start"],
-        )
-        .1;
-        assert_eq!(storage.shared_slot("index"), None);
-        assert!(storage.occupancy().is_none());
+        ));
+        ops.push(op(molt_ir::OpKind::Const, &[], Some("after")));
+        ops.push(op(molt_ir::OpKind::TupleNew, &["after"], None));
+        ops.push(op(molt_ir::OpKind::RetVoid, &[], None));
+        let (func, storage) = plan_with_params(ops, &COUNTED_PARAMS);
+        assert_storage_matches_path_liveness("pre-loop read", &func.ops, &storage);
+        assert!(!shares(&storage, "pre", "later"), "later would clobber pre");
+        assert!(!shares(&storage, "pre", "i"));
+        assert!(!shares(&storage, "i", "later"), "the increment reads i");
+        assert!(
+            shares(&storage, "pre", "after"),
+            "a counted loop does not disable sharing for the rest of the frame"
+        );
+    }
+
+    #[test]
+    fn nested_counted_loops_keep_outer_values_live_through_the_inner_loop() {
+        let mut ops = vec![
+            op(molt_ir::OpKind::Const, &[], Some("outer_pre")),
+            bind("start", "i_carrier"),
+        ];
+        let mut outer_body = vec![bind("start", "j_carrier")];
+        outer_body.extend(counted_loop(
+            2,
+            "j_carrier",
+            "j",
+            vec![
+                op(molt_ir::OpKind::TupleNew, &["outer_pre", "i"], None),
+                op(molt_ir::OpKind::Const, &[], Some("inner_tmp")),
+                op(molt_ir::OpKind::TupleNew, &["inner_tmp"], None),
+            ],
+        ));
+        outer_body.push(op(molt_ir::OpKind::Const, &[], Some("between")));
+        outer_body.push(op(molt_ir::OpKind::TupleNew, &["between"], None));
+        ops.extend(counted_loop(1, "i_carrier", "i", outer_body));
+        ops.push(op(molt_ir::OpKind::Const, &[], Some("after")));
+        ops.push(op(molt_ir::OpKind::TupleNew, &["after"], None));
+        ops.push(op(molt_ir::OpKind::RetVoid, &[], None));
+        let (func, storage) = plan_with_params(ops, &COUNTED_PARAMS);
+        assert_storage_matches_path_liveness("nested", &func.ops, &storage);
+        for inner in ["j", "j_cond", "j_next", "inner_tmp", "between"] {
+            assert!(!shares(&storage, "outer_pre", inner), "{inner}");
+            assert!(!shares(&storage, "i", inner), "{inner}");
+        }
+        assert!(
+            !shares(&storage, "j", "inner_tmp"),
+            "the inner increment reads j"
+        );
+        assert!(shares(&storage, "outer_pre", "after"));
+    }
+
+    #[test]
+    fn an_exception_edge_out_of_a_counted_loop_body_keeps_the_handler_value() {
+        let mut ops = vec![
+            op(molt_ir::OpKind::Const, &[], Some("held")),
+            bind("start", "i_carrier"),
+        ];
+        ops.extend(counted_loop(
+            1,
+            "i_carrier",
+            "i",
+            vec![
+                op(molt_ir::OpKind::Const, &[], Some("before_check")),
+                op(molt_ir::OpKind::TupleNew, &["before_check"], None),
+                labelled(molt_ir::OpKind::CheckException, 9),
+                op(molt_ir::OpKind::Const, &[], Some("after_check")),
+                op(molt_ir::OpKind::TupleNew, &["after_check"], None),
+            ],
+        ));
+        ops.push(op(molt_ir::OpKind::Const, &[], Some("after")));
+        ops.push(op(molt_ir::OpKind::TupleNew, &["after"], None));
+        ops.push(op(molt_ir::OpKind::RetVoid, &[], None));
+        ops.push(labelled(molt_ir::OpKind::Label, 9));
+        ops.push(op(molt_ir::OpKind::Ret, &["held"], None));
+        let (func, storage) = plan_with_params(ops, &COUNTED_PARAMS);
+        assert_storage_matches_path_liveness("exception exit", &func.ops, &storage);
+        // Every iteration's check can still transfer to the handler.
+        for body in ["i", "before_check", "after_check", "i_cond", "i_next"] {
+            assert!(!shares(&storage, "held", body), "{body}");
+        }
+        assert!(
+            shares(&storage, "held", "after"),
+            "no transfer to the handler follows the loop"
+        );
     }
 
     #[test]
@@ -690,45 +805,54 @@ mod tests {
     fn generated_control_flow_never_shares_a_slot_between_observable_values() {
         for seed in 0..512 {
             let (func, storage) = plan_with_params(generated_ops(seed), &["p"]);
-            let ops = &func.ops;
-            let occupancy = storage
-                .occupancy()
-                .expect("generated frames are not resumable");
-            let live_after = exhaustive_live_after(ops);
-            let names = names_of(ops);
-            let entry = live_before(&ops[0], &live_after[0]);
+            assert_storage_matches_path_liveness(&format!("seed {seed}"), &func.ops, &storage);
+        }
+    }
+
+    /// Exact occupancy, entry seeds and slot disjointness against
+    /// path-semantic liveness over the operation-level successor relation.
+    fn assert_storage_matches_path_liveness(
+        context: &str,
+        ops: &[OpIR],
+        storage: &LocalStoragePlan,
+    ) {
+        let occupancy = storage
+            .occupancy()
+            .expect("non-resumable frames plan exact storage");
+        let live_after = exhaustive_live_after(ops);
+        let names = names_of(ops);
+        let entry = live_before(&ops[0], &live_after[0]);
+        for name in &names {
+            assert_eq!(
+                occupancy.is_entry_live(name),
+                entry.contains(name),
+                "{context}, {name}: {ops:?}"
+            );
+        }
+        let mut occupied_positions = vec![entry];
+        for (op_idx, op) in ops.iter().enumerate() {
+            let results = defined_names(op);
+            let mut at_read = live_before(op, &live_after[op_idx]);
+            at_read.extend(results.iter().cloned());
+            let mut at_result = live_after[op_idx].clone();
+            at_result.extend(results.iter().cloned());
             for name in &names {
                 assert_eq!(
-                    occupancy.is_entry_live(name),
-                    entry.contains(name),
-                    "seed {seed}, {name}: {ops:?}"
+                    occupancy.occupies_operation(name, op_idx),
+                    at_read.contains(name) && at_result.contains(name),
+                    "{context}, op {op_idx}, {name}: {ops:?}"
                 );
             }
-            let mut occupied_positions = vec![entry];
-            for (op_idx, op) in ops.iter().enumerate() {
-                let results = defined_names(op);
-                let mut at_read = live_before(op, &live_after[op_idx]);
-                at_read.extend(results.iter().cloned());
-                let mut at_result = live_after[op_idx].clone();
-                at_result.extend(results.iter().cloned());
-                for name in &names {
-                    assert_eq!(
-                        occupancy.occupies_operation(name, op_idx),
-                        at_read.contains(name) && at_result.contains(name),
-                        "seed {seed}, op {op_idx}, {name}: {ops:?}"
-                    );
-                }
-                occupied_positions.push(at_read);
-                occupied_positions.push(at_result);
-            }
-            for occupied in &occupied_positions {
-                let mut holders = BTreeMap::new();
-                for name in occupied {
-                    if let Some(slot) = storage.shared_slot(name)
-                        && let Some(other) = holders.insert(slot, name)
-                    {
-                        panic!("seed {seed}: {other} and {name} both occupy slot {slot}: {ops:?}");
-                    }
+            occupied_positions.push(at_read);
+            occupied_positions.push(at_result);
+        }
+        for occupied in &occupied_positions {
+            let mut holders = BTreeMap::new();
+            for name in occupied {
+                if let Some(slot) = storage.shared_slot(name)
+                    && let Some(other) = holders.insert(slot, name)
+                {
+                    panic!("{context}: {other} and {name} both occupy slot {slot}: {ops:?}");
                 }
             }
         }
