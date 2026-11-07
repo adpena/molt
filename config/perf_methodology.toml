@@ -27,8 +27,8 @@ schema = "molt-perf-methodology-v1"
 # v32: HF-803 adds the implicit class-builder read, its callback effects and
 # guarded identity. Admitted workloads and instruction counts can change;
 # earlier reports retain their recorded comparison class.
-version = 32
-content_sha256 = "90e4157e56f4efc7aea27babe645a4627c13d1901368ecdc28c6dfce15245824"
+version = 33
+content_sha256 = "1ccd027a7a30d6d02cf570980335834f9300948a801d98559cb5355048c46cf7"
 
 [[methodology]]
 path = "tools/safe_run.py"
