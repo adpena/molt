@@ -591,9 +591,10 @@ max_parallel = 2
 name = "python"
 executable = "{python}"
 version_args = ["--version"]
-version_pattern = '^Python 3\.12\.16$'
-setup_value = "3.12.16"
-setup_evidence = [".python-version::3.12.16", ".github/actions/setup-project/action.yml::bash .github/actions/setup-project/provision-python.sh"]
+# The project interpreter pin is `.python-version` (uv, CI and checkout
+# provisioning read it); the loader derives the version contract from it.
+version_file = ".python-version"
+setup_evidence = [".github/actions/setup-project/action.yml::bash .github/actions/setup-project/provision-python.sh"]
 
 [[toolchain_policy]]
 name = "bash"

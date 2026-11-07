@@ -489,6 +489,25 @@ class ToolchainPolicy:
         return str(self.data.get("executable") or self.name)
 
 
+_EXACT_VERSION = re.compile(r"\d+\.\d+\.\d+")
+
+
+def pinned_version_file(root: Path, name: str, relative: str) -> str:
+    """The exact X.Y.Z a policy's ``version_file`` pins (`.python-version`)."""
+    path = root / relative
+    try:
+        version = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ValueError(
+            f"{name}: version_file {relative} is unreadable: {exc}"
+        ) from exc
+    if not _EXACT_VERSION.fullmatch(version):
+        raise ValueError(
+            f"{name}: version_file {relative} must hold one X.Y.Z version, not {version!r}"
+        )
+    return version
+
+
 def _selected_target_python_versions(root: Path) -> tuple[str, ...]:
     """Query the selected source authority without rebinding driver imports."""
     source = root / "src/molt/target_python_policy.py"
@@ -576,6 +595,24 @@ def load_toolchain_policies(
         name = str(row.get("name", ""))
         if row.get("executable") == "{python}":
             row["python_identity_role"] = "environment"
+        if "version_file" in row:
+            # One authority: the policy derives its contract from the pin file
+            # and never restates it (docs/design/python_version_authority.md).
+            restated = {"version_pattern", "setup_value"} & row.keys()
+            if restated:
+                raise ValueError(
+                    f"{name}: version_file derives {sorted(restated)}; remove them"
+                )
+            relative = str(row.pop("version_file"))
+            version = pinned_version_file(root, name, relative)
+            row.update(
+                version_pattern=rf"^Python {re.escape(version)}$",
+                setup_value=version,
+                setup_evidence=[
+                    f"{relative}::{version}",
+                    *row.get("setup_evidence", []),
+                ],
+            )
         if row.get("python_versions") == "supported-targets":
             row["members"] = []
             for version in _selected_target_python_versions(root):

@@ -31,6 +31,7 @@ PIN_AUTHORITIES = (
     "formal/lean/lean-toolchain",
     "rust-toolchain.toml",
     "tools/proof_plan.toml",
+    ".python-version",
     "config/verified_subset.toml",
 )
 NOW = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)

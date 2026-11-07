@@ -10664,6 +10664,49 @@ def test_selected_node_package_version_is_derived_from_lock(tmp_path):
     }
 
 
+def test_python_policy_derives_its_contract_from_the_version_file(tmp_path):
+    (tmp_path / ".python-version").write_text("3.12.99\n", encoding="utf-8")
+    row = {
+        "name": "python",
+        "executable": "{python}",
+        "version_args": ["--version"],
+        "version_file": ".python-version",
+        "setup_evidence": ["ci.yml::provision"],
+    }
+    (policy,) = proof_plan.load_toolchain_policies(
+        {"toolchain_policy": [row]}, root=tmp_path
+    )
+    assert policy.data["version_pattern"] == r"^Python 3\.12\.99$"
+    assert policy.data["setup_value"] == "3.12.99"
+    assert policy.data["setup_evidence"] == [
+        ".python-version::3.12.99",
+        "ci.yml::provision",
+    ]
+    assert "version_file" not in policy.data
+    assert re.fullmatch(policy.data["version_pattern"], "Python 3.12.99")
+    assert not re.fullmatch(policy.data["version_pattern"], "Python 3.12.9")
+
+    with pytest.raises(ValueError, match="version_file derives"):
+        proof_plan.load_toolchain_policies(
+            {"toolchain_policy": [{**row, "setup_value": "3.12.99"}]}, root=tmp_path
+        )
+    (tmp_path / ".python-version").write_text("3.12\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="one X.Y.Z version"):
+        proof_plan.load_toolchain_policies({"toolchain_policy": [row]}, root=tmp_path)
+
+
+def test_repository_python_policy_is_the_python_version_file():
+    pinned = (proof_plan.ROOT / ".python-version").read_text(encoding="utf-8").strip()
+    (policy,) = proof_plan.load_toolchain_policies(
+        tomllib.loads((proof_plan.ROOT / "tools/proof_plan.toml").read_text("utf-8")),
+        names=("python",),
+    )
+    assert policy.data["setup_value"] == pinned
+    raw = tomllib.loads((proof_plan.ROOT / "tools/proof_plan.toml").read_text("utf-8"))
+    (block,) = [row for row in raw["toolchain_policy"] if row["name"] == "python"]
+    assert {"version_pattern", "setup_value"}.isdisjoint(block)
+
+
 def test_locked_node_package_admission_reports_real_node_missing_and_version_mismatch(
     tmp_path,
 ):

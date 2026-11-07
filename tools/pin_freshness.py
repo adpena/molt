@@ -117,6 +117,8 @@ from tools import (  # noqa: E402
 from tools.dependency_manifests import tracked_manifest_dirs  # noqa: E402
 
 PROOF_PLAN = Path("tools/proof_plan.toml")
+# The project interpreter pin; proof_plan.toml derives its python policy from it.
+PYTHON_VERSION_FILE = ".python-version"
 USER_AGENT = "molt-pin-freshness"
 TIMEOUT_SECONDS = 60
 LOCK_TIMEOUT_SECONDS = 900
@@ -562,12 +564,20 @@ def select_target(
 
 
 def _toolchain_policies(root: Path) -> dict[str, str]:
+    """Each policy's pinned version; a ``version_file`` policy reads its file."""
+    from tools.proof_plan import pinned_version_file
+
     plan = tomllib.loads((root / PROOF_PLAN).read_text(encoding="utf-8"))
-    return {
-        str(policy["name"]): str(policy["setup_value"])
-        for policy in plan["toolchain_policy"]
-        if "setup_value" in policy
-    }
+    versions = {}
+    for policy in plan["toolchain_policy"]:
+        name = str(policy["name"])
+        if "version_file" in policy:
+            versions[name] = pinned_version_file(
+                root, name, str(policy["version_file"])
+            )
+        elif "setup_value" in policy:
+            versions[name] = str(policy["setup_value"])
+    return versions
 
 
 # Upstream repositories of `config/tool_releases.toml` tools published as
@@ -632,7 +642,7 @@ def collect_pins(
         # its own held arc.
         Pin(
             "python-patch",
-            plan,
+            PYTHON_VERSION_FILE,
             policies["python"],
             lambda: [
                 release
@@ -640,7 +650,7 @@ def collect_pins(
                 if release.version.rsplit(".", 1)[0] == python_line
             ],
         ),
-        Pin("python", plan, policies["python"], python),
+        Pin("python", PYTHON_VERSION_FILE, policies["python"], python),
         Pin("node", manifest, tools["node"].version, lambda: node_releases(fetch)),
         Pin(
             "llvm",
