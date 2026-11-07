@@ -96,16 +96,22 @@ writes `run.json` before any remote work; `collect` reads the worker's
 - **SM-1C (confirmed, fixed): untyped status vocabulary.** `terminal.json` and
   `receipt.json` statuses were bare strings compared in ten places across two
   files. They are `TerminalStatus` now; an unknown status fails loud.
-- **SM-3 (confirmed, open; owner HF-694 defect 3): orphaned runs keep their
-  remote allocations.** A `LAUNCHED` run whose collector died is never collected
-  (record `20261104T082023Z-e1819e82…`, molt-gate); `PREPARING` and `ABANDONED`
-  runs keep their stage and worktrees; no run retires its allocations. On
-  2026-11-06 molt-gate held 26 worktrees and 13 stages of collected runs
-  (~7.5 GB). The reviewed retention design is
-  `logs/agents/lane-trunk-retention/artifacts/design.md`. Retirement is
-  orthogonal to the lifecycle (a run is collected, then retired): record it as
-  a typed field of a terminal record, never as a new lifecycle state, and never
-  re-enter the lifecycle to retire.
+- **SM-3 (confirmed, fixed 2026-11-07): terminal runs kept their remote
+  allocations.** No run retired its stage or worktrees; on 2026-11-06
+  molt-gate held 26 worktrees and 13 stages of collected runs (~7.5 GB), and
+  bat00's C: drive filled with Molt data. Retirement is now a typed field of a
+  terminal record (`RemoteRetirement`: `RETIRED`, `DEFERRED` while the worker
+  runs, `FAILED`), never a new `RunState`. `collect` retires after the
+  `COLLECTED` record is durable; `start()` and `trunk_loop retire --host`
+  sweep unretired terminal runs. Allocations come only from a record whose host
+  matches the inventory; a worktree is removed only when `git worktree list`
+  registers that exact path at the run's commit; the stage goes through the
+  transport's owner-checked cleanup. Tests:
+  `test_retirement_removes_only_the_runs_registered_worktrees_then_its_stage`,
+  `test_retirement_defers_while_the_worker_runs_and_refuses_live_runs`,
+  `test_retirement_refuses_a_record_whose_host_differs_from_the_inventory`,
+  `test_sweep_retires_only_terminal_unretired_runs_of_its_host`. Windows proof
+  roots (`<proof_*_root>/v2/<nonce>`) are not yet retired (open).
 
 ## Landing request (`tools/molt_dev_queue.py`)
 
@@ -231,6 +237,6 @@ The exemplar for the others: typed states and events and one transition map.
 | --- | --- | --- | --- |
 | Run lifecycle: typed states, failure exit, immutable terminal states | SM-1A, SM-1B, SM-1C | lost verdicts; stuck records; wrong failure class | fixed (this audit) |
 | Landing request closes exactly once | SM-2 | a failed request retested or landed twice; rewritten history | fixed (this audit) |
-| Farm allocation retention and orphaned runs | SM-3 | farm disk exhaustion (blocked the LLVM bootstrap on 2026-11-06) | open, HF-694 defect 3 |
+| Farm allocation retention and orphaned runs | SM-3 | farm disk exhaustion (blocked the LLVM bootstrap on 2026-11-06; filled bat00 C:) | fixed 2026-11-07; Windows proof roots open |
 | Untyped residual vocabularies | `source_tree_state` (`clean`, `dirty`, `unknown`) in proof and landing receipts; source extension candidate (`prepared`) and source package seal (`committed`) | a typo or new value passes unseen; no exhaustive match rejects a stale consumer | open, integrator |
 | Inventory machines not yet audited | see Catalog | unknown | open |

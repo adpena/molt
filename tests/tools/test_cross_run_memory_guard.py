@@ -1,5 +1,6 @@
 from __future__ import annotations
 import copy
+import dataclasses
 import json
 import os
 import shutil
@@ -2307,6 +2308,8 @@ def test_collect_answers_a_collected_run_from_its_record_without_the_remote(
             "status": terminal_status,
             "archive_sha256": hashlib.sha256(b"retained evidence").hexdigest(),
         },
+        # Already retired: a retired terminal run never contacts its host.
+        "remote_retirement": {"status": "retired", "observed_at": "t", "detail": ""},
     }
     record_path.write_text(json.dumps(record), encoding="utf-8")
     monkeypatch.setattr(
@@ -2411,3 +2414,163 @@ def test_start_closes_a_failed_preparation_and_keeps_a_failed_launch_collectable
     else:
         assert record["state"] == trunk_loop.RunState.PREPARING
         assert record["launch_error"] == "OSError: launch connection dropped"
+
+
+def _retirement_record(tmp_path, *, state="collected", worker=None):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    record_path = tmp_path / "run.json"
+    record = {
+        "schema": trunk_loop.SCHEMA,
+        "run_id": "run-1",
+        "state": state,
+        "nonce": "a" * 32,
+        "commit": "1" * 40,
+        "controller_commit": "2" * 40,
+        "stage": "/home/u/Molt/scratch/trunk-loop/molt-cross-" + "a" * 32,
+        "checkout": "/home/u/Molt/worktrees/trunk-" + "a" * 32,
+        "controller": "/home/u/Molt/worktrees/trunk-controller-" + "a" * 32,
+    }
+    if worker is not None:
+        record["worker"] = worker
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+    return record_path, record
+
+
+class _RetirementTransport:
+    def __init__(self, probe="null"):
+        self.scripts, self.cleaned, self.probe = [], 0, probe
+
+    def shell_command(self, script, *, timeout=60):
+        self.scripts.append(script)
+        return (
+            self.probe + "\n"
+            if script.startswith("set -eu\n") and "molt_probe" in script
+            else ""
+        )
+
+    def pull(self, name, target):
+        target.write_text("worker log\n", encoding="utf-8")
+
+    def remote_path(self, name):
+        return "/stage/" + name
+
+    def cleanup(self):
+        self.cleaned += 1
+
+
+def _retirement_host(monkeypatch, transport, *, inventory_matches=True):
+    host = cross_run.Host(
+        name="farm",
+        target="x86_64-unknown-linux-gnu",
+        transport="ssh",
+        custody_root="/home/u/Molt",
+        checkout="/home/u/Molt/molt-src",
+        remote_dir="/home/u/Molt/scratch/trunk-loop",
+    )
+    inventory = (
+        host
+        if inventory_matches
+        else dataclasses.replace(host, remote_dir="/elsewhere")
+    )
+    monkeypatch.setattr(trunk_loop, "transfer_for_record", lambda _r: (host, transport))
+    monkeypatch.setattr(
+        trunk_loop.authorities(), "parse_inventory", lambda _path: [inventory]
+    )
+    monkeypatch.setattr(trunk_loop, "observe", lambda _h, _t, _w: (None, None))
+    return host
+
+
+def test_retirement_removes_only_the_runs_registered_worktrees_then_its_stage(
+    tmp_path, monkeypatch
+):
+    record_path, record = _retirement_record(tmp_path)
+    transport = _RetirementTransport()
+    _retirement_host(monkeypatch, transport)
+    status = trunk_loop.retire_remote_run(record_path, record)
+    assert status is trunk_loop.RemoteRetirement.RETIRED
+    (script,) = transport.scripts
+    for path, commit in (
+        (record["checkout"], record["commit"]),
+        (record["controller"], record["controller_commit"]),
+    ):
+        assert f"path={path}; head={commit}" in script
+    assert "worktree remove --force" in script and "prune" not in script
+    assert transport.cleaned == 1
+    stored = json.loads(record_path.read_text(encoding="utf-8"))
+    assert stored["state"] == "collected"
+    assert stored["remote_retirement"]["status"] == trunk_loop.RemoteRetirement.RETIRED
+    assert (tmp_path / "worker.log").exists()
+    # Retired is final: a second call contacts nothing.
+    monkeypatch.setattr(
+        trunk_loop, "transfer_for_record", lambda _r: pytest.fail("retired twice")
+    )
+    assert (
+        trunk_loop.retire_remote_run(record_path, stored)
+        is trunk_loop.RemoteRetirement.RETIRED
+    )
+
+
+def test_retirement_defers_while_the_worker_runs_and_refuses_live_runs(
+    tmp_path, monkeypatch
+):
+    worker = {
+        "pid": 7,
+        "state": "S",
+        "started": "100",
+        "instance": "boot/1",
+        "instance_started_at": "t",
+    }
+    record_path, record = _retirement_record(tmp_path, worker=worker)
+    transport = _RetirementTransport()
+    _retirement_host(monkeypatch, transport)
+    alive = trunk_loop.ProcessProbe(**worker)
+    monkeypatch.setattr(trunk_loop, "observe", lambda _h, _t, _w: (alive, None))
+    assert (
+        trunk_loop.retire_remote_run(record_path, record)
+        is trunk_loop.RemoteRetirement.DEFERRED
+    )
+    assert transport.scripts == [] and transport.cleaned == 0
+    live_path, live = _retirement_record(tmp_path / "live", state="launched")
+    with pytest.raises(trunk_loop.InvalidRunTransition):
+        trunk_loop.retire_remote_run(live_path, live)
+
+
+def test_retirement_refuses_a_record_whose_host_differs_from_the_inventory(
+    tmp_path, monkeypatch
+):
+    record_path, record = _retirement_record(tmp_path)
+    transport = _RetirementTransport()
+    _retirement_host(monkeypatch, transport, inventory_matches=False)
+    status = trunk_loop.retire_remote_run(record_path, record)
+    assert status is trunk_loop.RemoteRetirement.FAILED
+    assert transport.scripts == [] and transport.cleaned == 0
+    stored = json.loads(record_path.read_text(encoding="utf-8"))
+    assert "differ from the inventory" in stored["remote_retirement"]["detail"]
+
+
+def test_sweep_retires_only_terminal_unretired_runs_of_its_host(tmp_path, monkeypatch):
+    from molt import dx
+
+    monkeypatch.setattr(dx, "artifact_root", lambda _repo: tmp_path)
+    runs = tmp_path / "evidence/trunk-loop" / ("1" * 40) / "farm" / "runs"
+    done = []
+    for name, state, retired in (
+        ("vanished-run", "vanished", None),
+        ("retired-run", "collected", "retired"),
+        ("live-run", "launched", None),
+    ):
+        directory = runs / name
+        directory.mkdir(parents=True)
+        record = {"schema": trunk_loop.SCHEMA, "run_id": name, "state": state}
+        if retired:
+            record["remote_retirement"] = {"status": retired}
+        (directory / "run.json").write_text(json.dumps(record), encoding="utf-8")
+    monkeypatch.setattr(
+        trunk_loop,
+        "retire_remote_run",
+        lambda path, record: (
+            done.append(record["run_id"]) or trunk_loop.RemoteRetirement.RETIRED
+        ),
+    )
+    outcomes = trunk_loop.retire_terminal_runs("farm", repo=tmp_path)
+    assert done == ["vanished-run"] and list(outcomes) == ["vanished-run"]

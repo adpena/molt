@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import contextlib
 from contextlib import chdir
 from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
@@ -1102,6 +1103,9 @@ def start(args, *, landing: dict | None = None, repo: Path = _REPO_ROOT) -> Path
     host = selected_host(
         args.inventory, args.host, args.cell, landing=landing is not None
     )
+    # The owned retry: earlier terminal runs give back their allocations
+    # before this run allocates (failures are recorded, never raised here).
+    retire_terminal_runs(host.name, repo=repo)
     subject = exact_commit(args.commit, repo)
     controller = exact_commit("HEAD", repo)
     # The controller must be committed: copying dirty source would make the
@@ -1500,6 +1504,7 @@ def collect(record_path: Path, *, wait: bool = True) -> int:
                 atomic_write_bytes(target, content, exclusive=True)
     transition(record, RunState.COLLECTED, terminal=terminal)
     write_json(record_path, record)
+    retire_remote_run(record_path, record)
     print(f"trunk-loop: collected {root}; status={status}", flush=True)
     return 0 if status is TerminalStatus.SUCCESS else 1
 
@@ -1516,7 +1521,179 @@ def _recorded_collection(record_path: Path, record: dict) -> int:
     print(
         f"trunk-loop: {record['run_id']} already collected; status={status}", flush=True
     )
+    retire_remote_run(record_path, record)
     return 0 if status is TerminalStatus.SUCCESS else 1
+
+
+class RemoteRetirement(StrEnum):
+    """What retirement did with a terminal run's remote allocations.
+
+    Retirement is orthogonal to the run lifecycle: a COLLECTED, VANISHED or
+    ABANDONED run is retired afterwards and never re-enters RunState.
+    """
+
+    RETIRED = "retired"  # stage, worktrees and proof roots removed
+    DEFERRED = "deferred"  # the worker still runs; retried by the next sweep
+    FAILED = "failed"  # an allocation refused removal; retried by the next sweep
+
+
+_TERMINAL_RUN_STATES: Final = frozenset(
+    {RunState.COLLECTED, RunState.VANISHED, RunState.ABANDONED}
+)
+_RETIREMENT_TIMEOUT_S: Final = 300.0
+
+
+def retire_remote_run(record_path: Path, record: dict) -> RemoteRetirement:
+    """Remove a terminal run's remote stage, worktrees and proof roots.
+
+    The local record and evidence are complete before this runs; a failure is
+    recorded and retried by the next sweep, never raised into a landing.
+    Allocations are named only by the record, after the record's host matches
+    the current inventory and its paths match the owned allocation rule.
+    """
+    if RunState(record["state"]) not in _TERMINAL_RUN_STATES:
+        raise InvalidRunTransition(
+            f"{record['run_id']}: only a terminal run retires its allocations"
+        )
+    previous = record.get("remote_retirement") or {}
+    if previous.get("status") == RemoteRetirement.RETIRED:
+        return RemoteRetirement.RETIRED
+    try:
+        status, detail = _retire_allocations(record_path, record)
+    except Exception as exc:  # noqa: BLE001 - recorded, retried by the next sweep
+        status, detail = RemoteRetirement.FAILED, failure_text(exc)
+    record["remote_retirement"] = {
+        "status": status,
+        "observed_at": datetime.now(UTC).isoformat(),
+        "detail": detail,
+    }
+    write_json(record_path, record)
+    if status is not RemoteRetirement.RETIRED:
+        print(
+            f"trunk-loop: {record['run_id']} retirement {status}: {detail}", flush=True
+        )
+    return status
+
+
+def _retire_allocations(
+    record_path: Path, record: dict
+) -> tuple[RemoteRetirement, str]:
+    host, transport = transfer_for_record(record)
+    _require_inventory_host(host)
+    for path in (record["stage"], record["checkout"], record["controller"]):
+        parts = (PureWindowsPath if host.is_windows else PurePosixPath)(path).parts
+        if ".." in parts:
+            raise ValueError(f"run allocation path is not normalized: {path}")
+    worker = record.get("worker")
+    if worker is not None:
+        launched = ProcessProbe(**worker)
+        current, _terminal = observe(host, transport, launched)
+        if (
+            launched.identity is not None
+            and current is not None
+            and current.identity == launched.identity
+        ):
+            return RemoteRetirement.DEFERRED, f"worker {launched.pid} still runs"
+    log = record_path.parent / "worker.log"
+    if not log.exists():
+        with contextlib.suppress(
+            OSError, RuntimeError, ValueError, subprocess.SubprocessError
+        ):
+            transport.pull("worker.log", log)
+    allocations = [(record["checkout"], record["commit"])]
+    if record.get("controller_commit"):
+        allocations.append((record["controller"], record["controller_commit"]))
+    script = worktree_retirement_script(host, allocations)
+    if host.is_windows:
+        transport.windows_command(script, timeout=_RETIREMENT_TIMEOUT_S)
+    else:
+        transport.shell_command(script, timeout=_RETIREMENT_TIMEOUT_S)
+    transport.cleanup()
+    return RemoteRetirement.RETIRED, "stage and worktrees removed"
+
+
+def _require_inventory_host(host) -> None:
+    cross = authorities()
+    current = next(
+        (
+            h
+            for h in cross.parse_inventory(_REPO_ROOT / "tools/cross_hosts.toml")
+            if h.name == host.name
+        ),
+        None,
+    )
+    if current is None or (
+        current.custody_root,
+        current.checkout,
+        current.remote_dir,
+    ) != (
+        host.custody_root,
+        host.checkout,
+        host.remote_dir,
+    ):
+        raise ValueError(
+            f"{host.name}: the run record's custody paths differ from the inventory"
+        )
+
+
+def worktree_retirement_script(host, allocations: list[tuple[str, str]]) -> str:
+    """Remove each worktree only when git registers that exact path at the run's
+    commit; anything else at the path is retained and fails the retirement."""
+    if host.is_windows:
+        rows = ",".join(f"@({ps(path)},{ps(commit)})" for path, commit in allocations)
+        return (
+            "$ErrorActionPreference='Stop'\n"
+            f"$repo={ps(host.checkout)}\n"
+            "$listing=@(git -C $repo worktree list --porcelain)\n"
+            "if ($LASTEXITCODE) { exit $LASTEXITCODE }\n"
+            f"foreach ($row in @({rows})) {{\n"
+            " $path=$row[0]; $head=$row[1]; $found=$false; $tree=$null\n"
+            " foreach ($line in $listing) {\n"
+            "  if ($line.StartsWith('worktree ')) { $tree=$line.Substring(9).Replace('/','\\') }\n"
+            "  elseif ($line.StartsWith('HEAD ') -and $tree -ieq $path -and $line.Substring(5) -ceq $head) { $found=$true }\n"
+            " }\n"
+            " if ($found) { git -C $repo worktree remove --force $path; if ($LASTEXITCODE) { exit $LASTEXITCODE } }\n"
+            ' elseif (Test-Path -LiteralPath $path) { throw "$path is not this run\'s registered worktree at $head; retained" }\n'
+            "}\n"
+        )
+    lines = [
+        "set -eu",
+        f"repo={shlex.quote(host.checkout)}",
+        'listing=$(git -C "$repo" worktree list --porcelain)',
+    ]
+    for path, commit in allocations:
+        lines.append(
+            f"path={shlex.quote(path)}; head={shlex.quote(commit)}\n"
+            'if printf \'%s\\n\' "$listing" | awk -v p="$path" -v c="$head" '
+            '\'$1=="worktree" {w=substr($0, 10)} $1=="HEAD" {if (w==p && $2==c) f=1} END {exit !f}\'; then\n'
+            ' git -C "$repo" worktree remove --force "$path"\n'
+            'elif [ -e "$path" ] || [ -L "$path" ]; then\n'
+            ' echo "$path is not this run\'s registered worktree at $head; retained" >&2; exit 3\n'
+            "fi"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def retire_terminal_runs(
+    host_name: str, *, repo: Path = _REPO_ROOT
+) -> dict[str, RemoteRetirement]:
+    """The owned retry: retire every terminal run of ``host_name`` not yet retired."""
+    from molt.dx import artifact_root
+
+    outcomes = {}
+    pattern = f"evidence/trunk-loop/*/{host_name}/runs/*/run.json"
+    for record_path in sorted(artifact_root(repo).glob(pattern)):
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        if record.get("schema") != SCHEMA:
+            continue
+        try:
+            terminal = RunState(record["state"]) in _TERMINAL_RUN_STATES
+        except ValueError:
+            continue
+        retired = (record.get("remote_retirement") or {}).get("status")
+        if terminal and retired != RemoteRetirement.RETIRED:
+            outcomes[record["run_id"]] = retire_remote_run(record_path, record)
+    return outcomes
 
 
 def worker_environment(record: dict) -> dict[str, str]:
@@ -1967,6 +2144,10 @@ def main(argv: list[str] | None = None) -> int:
     get = sub.add_parser("collect")
     get.add_argument("--record", type=Path, required=True)
     get.add_argument("--no-wait", action="store_true")
+    retire = sub.add_parser(
+        "retire", help="retire every terminal run of a host that is not yet retired"
+    )
+    retire.add_argument("--host", required=True)
     internal = sub.add_parser("_worker", help=argparse.SUPPRESS)
     internal.add_argument("--record", type=Path, required=True)
     args = parser.parse_args(argv)
@@ -1979,6 +2160,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.action == "collect":
             return collect(args.record, wait=not args.no_wait)
+        if args.action == "retire":
+            outcomes = retire_terminal_runs(args.host)
+            for run_id, status in outcomes.items():
+                print(f"trunk-loop: {run_id} {status}")
+            return (
+                0
+                if all(s is RemoteRetirement.RETIRED for s in outcomes.values())
+                else 1
+            )
         record = start(args)
         return 0 if args.no_wait else collect(record)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
