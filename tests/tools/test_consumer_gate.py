@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import tempfile
+import os
 
 from pathlib import Path
 
@@ -147,7 +149,31 @@ def test_a_tool_change_selects_the_repository_policy_gates():
     # The checks that cost landings 42-44 on 2026-11-07: the landing selects
     # them for any tool change, and now the gate runs them before commit.
     root = consumer_gate.ROOT
-    tree = consumer_gate.commit_tree(root, ["tools/consumer_gate.py"])
+    # A tree that changes a tool whatever the working tree holds: the landing
+    # checkout already contains every change, so commit_tree would equal HEAD.
+    with tempfile.TemporaryDirectory() as scratch:
+        env = dict(os.environ, GIT_INDEX_FILE=str(Path(scratch) / "index"))
+        changed = (root / "tools/consumer_gate.py").read_bytes() + b"\n# probe\n"
+        blob = (
+            run_guarded_test_process(
+                ["git", "-C", str(root), "hash-object", "-w", "--stdin"],
+                input=changed,
+                text=False,
+                check=True,
+            )
+            .stdout.decode()
+            .strip()
+        )
+        for argv in (
+            ["read-tree", "HEAD"],
+            ["update-index", "--cacheinfo", f"100644,{blob},tools/consumer_gate.py"],
+        ):
+            run_guarded_test_process(
+                ["git", "-C", str(root), *argv], env=env, check=True
+            )
+        tree = run_guarded_test_process(
+            ["git", "-C", str(root), "write-tree"], env=env, check=True
+        ).stdout.strip()
     selected = consumer_gate.static_gates(root, tree)
     for policy in (
         "tools/check_test_ownership.py",
