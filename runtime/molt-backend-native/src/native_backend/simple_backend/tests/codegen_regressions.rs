@@ -1,4 +1,5 @@
 use super::*;
+use crate::native_backend::block_sealing::FunctionBuilder;
 use cranelift_codegen::ir::InstBuilder;
 use molt_ir::OpKind;
 

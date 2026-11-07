@@ -1,4 +1,5 @@
 use super::*;
+use crate::NativeCompileError;
 use crate::runtime_import_abi::{MOLT_DEC_REF_OBJ, MOLT_TASK_NEW, NATIVE_RUNTIME_HELPER_IMPORTS};
 use cranelift_codegen::flowgraph::ControlFlowGraph;
 use cranelift_codegen::ir::InstructionData;
@@ -2361,9 +2362,6 @@ fn program_slot_objects_import_stable_symbols_and_bind_program_owned_dense_value
                 panic!("expected admission error");
             };
             assert_eq!(error.function, "molt_main");
-            let NativeCompileError::Admission(error) = error else {
-                panic!("expected admission error");
-            };
             assert_eq!(error.op_index, 0);
             assert_eq!(error.shape.kind, op_kind.as_str());
             assert_eq!(error.shape.violation, violation);
@@ -2391,6 +2389,9 @@ fn program_slot_objects_import_stable_symbols_and_bind_program_owned_dense_value
         // metadata as permission to leave a module binding unresolved.
         let Err(error) = compile(SimpleBackend::new(), module_ir.clone(), kind) else {
             panic!("a final application requires module bindings");
+        };
+        let NativeCompileError::Admission(error) = error else {
+            panic!("expected module-slot admission error");
         };
         assert_eq!(error.shape.violation, OpShapeViolation::UnboundModuleSlot);
 
