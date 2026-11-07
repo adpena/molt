@@ -368,7 +368,7 @@ impl<'op> NativeOperandTransaction<'op> {
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         builder: &mut FunctionBuilder<'_>,
         import_refs: &mut NativeFunctionImports,
-
+        sealed_blocks: &mut BTreeSet<Block>,
         vars: &BTreeMap<String, Variable>,
         representation_plan: &ScalarRepresentationPlan,
         nbc: &crate::NanBoxConsts,
@@ -389,7 +389,7 @@ impl<'op> NativeOperandTransaction<'op> {
             );
             jump_block(builder, join, &[]);
             switch_to_block_materialized(builder, failed);
-            seal_block_once(builder, failed);
+            seal_block_once(builder, sealed_blocks, failed);
             if !self.adopted_objects.is_empty() || self.adopted_callable.is_some() {
                 let (arguments, count) = store_borrowed_word_range(
                     builder,
@@ -427,7 +427,7 @@ impl<'op> NativeOperandTransaction<'op> {
             carry_internal_cfg_tracking(Some(failed), join, block_tracked_obj, block_tracked_ptr);
             jump_block(builder, join, &[]);
             switch_to_block_materialized(builder, join);
-            seal_block_once(builder, join);
+            seal_block_once(builder, sealed_blocks, join);
         }
         if let Some(current) = builder.current_block() {
             carry_internal_cfg_tracking(self.origin, current, block_tracked_obj, block_tracked_ptr);
@@ -453,7 +453,7 @@ impl<'op> NativeOperandTransaction<'op> {
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         builder: &mut FunctionBuilder<'_>,
         import_refs: &mut NativeFunctionImports,
-
+        sealed_blocks: &mut BTreeSet<Block>,
         vars: &BTreeMap<String, Variable>,
         representation_plan: &ScalarRepresentationPlan,
         nbc: &crate::NanBoxConsts,
@@ -475,6 +475,7 @@ impl<'op> NativeOperandTransaction<'op> {
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             nbc,
             representation_plan,
@@ -483,7 +484,7 @@ impl<'op> NativeOperandTransaction<'op> {
         self.materialized.insert(name, value);
         if let Some(owner) = owner {
             builder.def_var(owner, value);
-            self.continue_unless_pending(module, import_ids, builder, import_refs);
+            self.continue_unless_pending(module, import_ids, builder, import_refs, sealed_blocks);
         }
         value
     }
@@ -495,6 +496,7 @@ impl<'op> NativeOperandTransaction<'op> {
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         builder: &mut FunctionBuilder<'_>,
         import_refs: &mut NativeFunctionImports,
+        sealed_blocks: &mut BTreeSet<Block>,
     ) {
         let pending = import_func_ref(
             module,
@@ -511,14 +513,14 @@ impl<'op> NativeOperandTransaction<'op> {
             pending,
             None,
         );
-        self.fail_if(builder, failed);
+        self.fail_if(builder, sealed_blocks, failed);
     }
 
     /// Branch to the transaction's failure edge when `failed` holds.
     pub(in crate::native_backend::function_compiler) fn fail_if(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
-
+        sealed_blocks: &mut BTreeSet<Block>,
         failed: Value,
     ) {
         let abort = *self.failed.get_or_insert_with(|| {
@@ -529,7 +531,7 @@ impl<'op> NativeOperandTransaction<'op> {
         let next = builder.create_block();
         builder.ins().brif(failed, abort, &[], next, &[]);
         switch_to_block_materialized(builder, next);
-        seal_block_once(builder, next);
+        seal_block_once(builder, sealed_blocks, next);
     }
 
     /// Join `result` with the failure edge and release every initialized owner
@@ -545,7 +547,7 @@ impl<'op> NativeOperandTransaction<'op> {
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         builder: &mut FunctionBuilder<'_>,
         import_refs: &mut NativeFunctionImports,
-
+        sealed_blocks: &mut BTreeSet<Block>,
         block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
         block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     ) -> Value {
@@ -555,7 +557,7 @@ impl<'op> NativeOperandTransaction<'op> {
                 builder.append_block_param(join, types::I64);
                 jump_block(builder, join, &[result]);
                 switch_to_block_materialized(builder, failed);
-                seal_block_once(builder, failed);
+                seal_block_once(builder, sealed_blocks, failed);
                 if let Some(partial) = abandon {
                     let release = import_func_ref(
                         module,
@@ -577,7 +579,7 @@ impl<'op> NativeOperandTransaction<'op> {
                 }
                 jump_block(builder, join, &[self.none]);
                 switch_to_block_materialized(builder, join);
-                seal_block_once(builder, join);
+                seal_block_once(builder, sealed_blocks, join);
                 builder.block_params(join)[0]
             }
             None => result,
@@ -600,7 +602,7 @@ pub(in crate::native_backend::function_compiler) fn emit_contract_runtime_call(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
@@ -631,6 +633,7 @@ pub(in crate::native_backend::function_compiler) fn emit_contract_runtime_call(
         import_ids,
         builder,
         import_refs,
+        sealed_blocks,
         vars,
         representation_plan,
         nbc,
@@ -655,7 +658,7 @@ pub(in crate::native_backend::function_compiler) fn emit_operand_transaction_cal
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
@@ -689,6 +692,7 @@ pub(in crate::native_backend::function_compiler) fn emit_operand_transaction_cal
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             representation_plan,
             nbc,
@@ -732,6 +736,7 @@ pub(in crate::native_backend::function_compiler) fn emit_operand_transaction_cal
         import_ids,
         builder,
         import_refs,
+        sealed_blocks,
         block_tracked_obj,
         block_tracked_ptr,
     );
@@ -776,7 +781,7 @@ pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constru
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
@@ -833,6 +838,7 @@ pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constru
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             representation_plan,
             nbc,
@@ -907,6 +913,7 @@ pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constru
         import_ids,
         builder,
         import_refs,
+        sealed_blocks,
         block_tracked_obj,
         block_tracked_ptr,
     );
@@ -939,7 +946,7 @@ pub(in crate::native_backend::function_compiler) fn emit_hash_container_construc
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
@@ -954,6 +961,7 @@ pub(in crate::native_backend::function_compiler) fn emit_hash_container_construc
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             representation_plan,
             nbc,
@@ -999,7 +1007,7 @@ pub(in crate::native_backend::function_compiler) fn emit_hash_container_construc
     let unallocated = builder
         .ins()
         .icmp_imm_s(IntCC::Equal, aggregate, box_none());
-    transaction.fail_if(builder, unallocated);
+    transaction.fail_if(builder, sealed_blocks, unallocated);
     for name in args {
         let operand = transaction.operand(
             name,
@@ -1007,6 +1015,7 @@ pub(in crate::native_backend::function_compiler) fn emit_hash_container_construc
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             representation_plan,
             nbc,
@@ -1025,7 +1034,13 @@ pub(in crate::native_backend::function_compiler) fn emit_hash_container_construc
             import_refs,
             vars,
         );
-        transaction.continue_unless_pending(module, import_ids, builder, import_refs);
+        transaction.continue_unless_pending(
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            sealed_blocks,
+        );
     }
     let result = transaction.finish(
         aggregate,
@@ -1034,6 +1049,7 @@ pub(in crate::native_backend::function_compiler) fn emit_hash_container_construc
         import_ids,
         builder,
         import_refs,
+        sealed_blocks,
         block_tracked_obj,
         block_tracked_ptr,
     );
@@ -1125,7 +1141,7 @@ pub(in crate::native_backend::function_compiler) fn carry_internal_cfg_tracking(
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn begin_task_initialization(
     builder: &mut FunctionBuilder<'_>,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     task: Value,
 ) -> Block {
     let initialize = builder.create_block();
@@ -1133,7 +1149,7 @@ pub(in crate::native_backend::function_compiler) fn begin_task_initialization(
     let allocated = builder.ins().icmp_imm_s(IntCC::NotEqual, task, box_none());
     builder.ins().brif(allocated, initialize, &[], done, &[]);
     switch_to_block_materialized(builder, initialize);
-    seal_block_once(builder, initialize);
+    seal_block_once(builder, sealed_blocks, initialize);
     done
 }
 
@@ -1217,6 +1233,7 @@ pub(in crate::native_backend::function_compiler) fn emit_owned_execution_frame_e
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
+    sealed_blocks: &mut BTreeSet<Block>,
 ) {
     let Some(entered) = entered else {
         return;
@@ -1226,7 +1243,7 @@ pub(in crate::native_backend::function_compiler) fn emit_owned_execution_frame_e
     let done_block = builder.create_block();
     builder.ins().brif(active, pop_block, &[], done_block, &[]);
     switch_to_block_materialized(builder, pop_block);
-    seal_block_once(builder, pop_block);
+    seal_block_once(builder, sealed_blocks, pop_block);
     // Retire ownership before releasing frame-owned values can call Python.
     let inactive = builder.ins().iconst(types::I8, 0);
     builder.def_var(entered, inactive);
@@ -1242,7 +1259,7 @@ pub(in crate::native_backend::function_compiler) fn emit_owned_execution_frame_e
     builder.ins().call(exit, &[]);
     jump_block(builder, done_block, &[]);
     switch_to_block_materialized(builder, done_block);
-    seal_block_once(builder, done_block);
+    seal_block_once(builder, sealed_blocks, done_block);
 }
 
 #[cfg(feature = "native-backend")]

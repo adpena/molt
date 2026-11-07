@@ -78,7 +78,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     scalarized_tuples: &BTreeMap<String, Vec<Value>>,
     representation_plan: &ScalarRepresentationPlan,
@@ -238,6 +238,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                                 &mut *import_ids,
                                 &mut *builder,
                                 import_refs,
+                                sealed_blocks,
                                 raw_result,
                             )
                         };
@@ -260,7 +261,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
 
                     // Fast path: direct load
                     switch_to_block_materialized(&mut *builder, fast_block);
-                    seal_block_once(&mut *builder, fast_block);
+                    seal_block_once(&mut *builder, sealed_blocks, fast_block);
                     let byte_offset = builder.ins().imul_imm_s(raw_idx, 8);
                     let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
                     let raw_result =
@@ -275,6 +276,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                             &mut *import_ids,
                             &mut *builder,
                             import_refs,
+                            sealed_blocks,
                             raw_result,
                         )
                     };
@@ -284,7 +286,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                     // indices and raises IndexError, so the proven raw index is
                     // never boxed.
                     switch_to_block_materialized(&mut *builder, slow_block);
-                    seal_block_once(&mut *builder, slow_block);
+                    seal_block_once(&mut *builder, sealed_blocks, slow_block);
                     let callee = SimpleBackend::import_func_id_split(
                         &mut *module,
                         &mut *import_ids,
@@ -302,12 +304,19 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                         // Keep the original error and join with boxed None.
                         let mut result =
                             NativeOperandTransaction::begin(builder, representation_plan, []);
-                        result.continue_unless_pending(module, import_ids, builder, import_refs);
+                        result.continue_unless_pending(
+                            module,
+                            import_ids,
+                            builder,
+                            import_refs,
+                            sealed_blocks,
+                        );
                         let boxed = box_raw_i64_value_overflow_safe(
                             &mut *module,
                             &mut *import_ids,
                             &mut *builder,
                             import_refs,
+                            sealed_blocks,
                             raw_slow,
                         );
                         result.finish(
@@ -317,6 +326,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                             import_ids,
                             builder,
                             import_refs,
+                            sealed_blocks,
                             block_tracked_obj,
                             block_tracked_ptr,
                         )
@@ -325,7 +335,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
 
                     // Merge
                     switch_to_block_materialized(&mut *builder, merge_block);
-                    seal_block_once(&mut *builder, merge_block);
+                    seal_block_once(&mut *builder, sealed_blocks, merge_block);
                     let merged = builder.block_params(merge_block)[0];
                     if let Some(out__) = out {
                         def_var_named(&mut *builder, vars, out__, merged);
@@ -354,7 +364,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                     builder.set_cold_block(slow);
                     builder.ins().brif(in_bounds, fast_block, &[], slow, &[]);
                     switch_to_block_materialized(builder, fast_block);
-                    seal_block_once(builder, fast_block);
+                    seal_block_once(builder, sealed_blocks, fast_block);
                     Some(slow)
                 };
                 let bool_block = builder.create_block();
@@ -364,7 +374,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                     .brif(storage.is_bool, bool_block, &[], word_block, &[]);
 
                 switch_to_block_materialized(builder, bool_block);
-                seal_block_once(builder, bool_block);
+                seal_block_once(builder, sealed_blocks, bool_block);
                 let address = builder.ins().iadd(storage.data, raw_idx);
                 let byte = builder
                     .ins()
@@ -375,7 +385,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                 jump_block(builder, merge_block, &[boxed_bool, raw_bool]);
 
                 switch_to_block_materialized(builder, word_block);
-                seal_block_once(builder, word_block);
+                seal_block_once(builder, sealed_blocks, word_block);
                 let offset = builder.ins().ishl_imm_u(raw_idx, 3);
                 let address = builder.ins().iadd(storage.data, offset);
                 let word = builder
@@ -390,7 +400,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
 
                 if let Some(slow) = slow_block {
                     switch_to_block_materialized(builder, slow);
-                    seal_block_once(builder, slow);
+                    seal_block_once(builder, sealed_blocks, slow);
                     let callee = import_func_ref(
                         module,
                         import_ids,
@@ -408,7 +418,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                 }
 
                 switch_to_block_materialized(builder, merge_block);
-                seal_block_once(builder, merge_block);
+                seal_block_once(builder, sealed_blocks, merge_block);
                 let result = builder.block_params(merge_block)[0];
                 let payload = builder.block_params(merge_block)[1];
                 bind_index_result(
@@ -451,6 +461,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                     import_ids,
                     builder,
                     import_refs,
+                    sealed_blocks,
                     vars,
                     representation_plan,
                     nbc,
@@ -461,6 +472,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                     import_ids,
                     builder,
                     import_refs,
+                    sealed_blocks,
                     vars,
                     representation_plan,
                     nbc,
@@ -492,6 +504,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                     import_ids,
                     builder,
                     import_refs,
+                    sealed_blocks,
                     block_tracked_obj,
                     block_tracked_ptr,
                 );

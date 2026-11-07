@@ -100,7 +100,7 @@ fn native_representation_results_keep_discarded_box_effects_and_independent_owne
                         plan,
                         authority,
                     );
-
+                    let mut sealed = BTreeSet::from([entry]);
                     super::super::fc::value_transfer::handle_value_transfer_op(
                         &OpIR {
                             args: Some(vec!["source".into()]),
@@ -112,6 +112,7 @@ fn native_representation_results_keep_discarded_box_effects_and_independent_owne
                         &mut backend.import_ids,
                         &mut builder,
                         &mut refs,
+                        &mut sealed,
                         &vars,
                         plan,
                         &aliases,
@@ -236,7 +237,7 @@ fn captured_scalar_transport_preserves_raw_outputs_and_shares_one_box() {
                         },
                     )
                 };
-
+                let mut sealed = BTreeSet::from([entry]);
                 let mut incoming = if capture == "value" {
                     CapturedScalarTransport::new(original, source_storage)
                 } else {
@@ -278,6 +279,7 @@ fn captured_scalar_transport_preserves_raw_outputs_and_shares_one_box() {
                         &mut backend.import_ids,
                         &mut builder,
                         &mut refs,
+                        &mut sealed,
                         &crate::NanBoxConsts::new(),
                         RawI64,
                     );
@@ -297,6 +299,7 @@ fn captured_scalar_transport_preserves_raw_outputs_and_shares_one_box() {
                         &mut backend.import_ids,
                         &mut builder,
                         &mut refs,
+                        &mut sealed,
                         &crate::NanBoxConsts::new(),
                         home,
                     )
@@ -420,13 +423,14 @@ fn lower_unary_numeric_carrier_with_plan(
             out: Some(out.to_string()),
             ..OpIR::new(kind)
         };
-
+        let mut sealed = BTreeSet::from([entry]);
         super::super::fc::unary_logic::handle_unary_logic_op(
             &op,
             &mut backend.module,
             &mut backend.import_ids,
             &mut builder,
             &mut refs,
+            &mut sealed,
             &vars,
             plan,
             inc_ref,
@@ -904,11 +908,13 @@ fn native_int_boxing_constants_materialized_at_site() {
 
         let raw_zero = builder.ins().iconst(types::I64, 0);
         let mut import_refs = detached_imports(&mut builder);
+        let mut sealed_blocks = BTreeSet::from([entry]);
         let boxed = box_raw_i64_value_overflow_safe(
             &mut backend.module,
             &mut backend.import_ids,
             &mut builder,
             &mut import_refs,
+            &mut sealed_blocks,
             raw_zero,
         );
         builder.ins().return_(&[boxed]);

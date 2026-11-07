@@ -36,7 +36,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     local_inc_ref_obj: NativeRefcountSite,
@@ -70,7 +70,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
     >,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
-
+                                       sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        representation_plan: &ScalarRepresentationPlan|
@@ -80,6 +80,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -95,6 +96,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -105,6 +107,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -153,6 +156,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -177,6 +181,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -205,6 +210,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     import_ids,
                     builder,
                     import_refs,
+                    sealed_blocks,
                     vars,
                     representation_plan,
                     representation_plan
@@ -245,6 +251,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
+                        &mut *sealed_blocks,
                         vars,
                         &args[0],
                         representation_plan,
@@ -281,18 +288,18 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                         .brif(take_fast, fast_block, &[], slow_block, &[]);
 
                     switch_to_block_materialized(&mut *builder, fast_block);
-                    seal_block_once(&mut *builder, fast_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
                     let fast_res = box_int_value(&mut *builder, negated, nbc);
                     jump_block(&mut *builder, merge_block, &[fast_res]);
 
                     switch_to_block_materialized(&mut *builder, slow_block);
-                    seal_block_once(&mut *builder, slow_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                     let call = builder.ins().call(local_callee, &[*val]);
                     let slow_res = builder.inst_results(call)[0];
                     jump_block(&mut *builder, merge_block, &[slow_res]);
 
                     switch_to_block_materialized(&mut *builder, merge_block);
-                    seal_block_once(&mut *builder, merge_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
                     builder.block_params(merge_block)[0]
                 }
             } else {
@@ -301,6 +308,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -339,6 +347,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     import_ids,
                     builder,
                     import_refs,
+                    sealed_blocks,
                     vars,
                     representation_plan,
                     representation_plan
@@ -373,6 +382,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -394,6 +404,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -451,6 +462,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
+                        &mut *sealed_blocks,
                         vars,
                         &args[0],
                         representation_plan,
@@ -489,18 +501,18 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                         .brif(take_fast, fast_block, &[], slow_block, &[]);
 
                     switch_to_block_materialized(&mut *builder, fast_block);
-                    seal_block_once(&mut *builder, fast_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
                     let fast_res = box_int_value(&mut *builder, abs_val, nbc);
                     jump_block(&mut *builder, merge_block, &[fast_res]);
 
                     switch_to_block_materialized(&mut *builder, slow_block);
-                    seal_block_once(&mut *builder, slow_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                     let call = builder.ins().call(local_callee, &[*val]);
                     let slow_res = builder.inst_results(call)[0];
                     jump_block(&mut *builder, merge_block, &[slow_res]);
 
                     switch_to_block_materialized(&mut *builder, merge_block);
-                    seal_block_once(&mut *builder, merge_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
                     builder.block_params(merge_block)[0]
                 }
             } else {
@@ -509,6 +521,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -564,6 +577,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
+                        &mut *sealed_blocks,
                         vars,
                         &args[0],
                         representation_plan,
@@ -596,20 +610,20 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     builder.ins().brif(is_int, fast_block, &[], slow_block, &[]);
 
                     switch_to_block_materialized(&mut *builder, fast_block);
-                    seal_block_once(&mut *builder, fast_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
                     let minus_one = builder.ins().iconst(types::I64, -1i64);
                     let inverted = builder.ins().bxor(int_val, minus_one);
                     let fast_res = box_int_value(&mut *builder, inverted, nbc);
                     jump_block(&mut *builder, merge_block, &[fast_res]);
 
                     switch_to_block_materialized(&mut *builder, slow_block);
-                    seal_block_once(&mut *builder, slow_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                     let call = builder.ins().call(invert_local_callee, &[*val]);
                     let slow_res = builder.inst_results(call)[0];
                     jump_block(&mut *builder, merge_block, &[slow_res]);
 
                     switch_to_block_materialized(&mut *builder, merge_block);
-                    seal_block_once(&mut *builder, merge_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
                     builder.block_params(merge_block)[0]
                 }
             } else {
@@ -618,6 +632,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -685,6 +700,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -710,6 +726,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -733,6 +750,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -775,6 +793,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -785,6 +804,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -856,6 +876,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -866,6 +887,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -921,6 +943,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -931,6 +954,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,

@@ -107,8 +107,7 @@ pub(in crate::native_backend::function_compiler) fn observe_generic_list_storage
     let data = builder.ins().select(is_flat, flat_data, boxed_data);
     let len = builder.ins().select(is_flat, flat_len, boxed_len);
     for (field, value) in fields.into_iter().zip([data, len, is_bool, is_int]) {
-        let ty = builder.func.dfg.value_type(value);
-        let variable = builder.declare_var(ty);
+        let variable = builder.declare_var(builder.func.dfg.value_type(value));
         builder.def_var(variable, value);
         fast_paths.insert(field, name.to_string(), variable, builder);
     }
@@ -550,7 +549,7 @@ pub(in crate::native_backend::function_compiler) fn emit_loop_list_storage_hoist
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     fast_paths: &mut ListIndexFastPathState,
@@ -591,6 +590,7 @@ pub(in crate::native_backend::function_compiler) fn emit_loop_list_storage_hoist
                 import_ids,
                 builder,
                 import_refs,
+                sealed_blocks,
                 vars,
                 &name,
                 representation_plan,

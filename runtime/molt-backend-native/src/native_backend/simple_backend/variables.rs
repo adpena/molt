@@ -51,16 +51,24 @@ pub(crate) fn def_var_named(
 }
 
 /// Seal a materialized block after its final predecessor has been emitted.
-/// The native builder records the seal only after Cranelift succeeds. Repeated requests are
+/// This is the sole writer of the function compiler's seal record: a block is
+/// recorded only after Cranelift has actually sealed it. Repeated requests are
 /// harmless, but a missing layout entry is a codegen error, not a deferred seal.
 #[cfg(feature = "native-backend")]
 #[inline]
-pub(crate) fn seal_block_once(builder: &mut FunctionBuilder, block: Block) {
+pub(crate) fn seal_block_once(
+    builder: &mut FunctionBuilder,
+    sealed: &mut std::collections::BTreeSet<Block>,
+    block: Block,
+) {
     assert!(
         builder.func.layout.is_block_inserted(block),
         "native codegen cannot seal unmaterialized block {block:?}",
     );
-    builder.seal_block(block);
+    if !sealed.contains(&block) {
+        builder.seal_block(block);
+        sealed.insert(block);
+    }
 }
 
 #[cfg(feature = "native-backend")]

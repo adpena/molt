@@ -98,7 +98,7 @@ pub(in crate::native_backend::function_compiler) fn emit_frame_location_store(
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn emit_async_work_poll(
     builder: &mut FunctionBuilder<'_>,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     work_ptr_slot: cranelift_codegen::ir::StackSlot,
     record_slot: cranelift_codegen::ir::StackSlot,
     cold_observer: FuncRef,
@@ -121,7 +121,7 @@ pub(in crate::native_backend::function_compiler) fn emit_async_work_poll(
     builder.append_block_param(done, types::I64);
     builder.ins().brif(pending, cold, &[], fast, &[]);
     switch_to_block_materialized(builder, cold);
-    seal_block_once(builder, cold);
+    seal_block_once(builder, sealed_blocks, cold);
     if let Some((cold_homes, location)) = cold_location {
         // Serviced work is Python code that can read this frame.
         let homes = builder
@@ -133,7 +133,7 @@ pub(in crate::native_backend::function_compiler) fn emit_async_work_poll(
     let result = builder.inst_results(call)[0];
     jump_block(builder, done, &[result]);
     switch_to_block_materialized(builder, fast);
-    seal_block_once(builder, fast);
+    seal_block_once(builder, sealed_blocks, fast);
     let cond =
         emit_exception_pending_condition(builder, types::I64, cold_observer, Some(record_slot));
     let result = if let Some(observer) = fast_observer {
@@ -143,7 +143,7 @@ pub(in crate::native_backend::function_compiler) fn emit_async_work_poll(
             .iconst(types::I64, molt_codegen_abi::QNAN_TAG_NONE_I64);
         brif_block(builder, cond, capture, &[], done, &[none]);
         switch_to_block_materialized(builder, capture);
-        seal_block_once(builder, capture);
+        seal_block_once(builder, sealed_blocks, capture);
         let call = builder.ins().call(observer, &[]);
         builder.inst_results(call)[0]
     } else {
@@ -151,7 +151,7 @@ pub(in crate::native_backend::function_compiler) fn emit_async_work_poll(
     };
     jump_block(builder, done, &[result]);
     switch_to_block_materialized(builder, done);
-    seal_block_once(builder, done);
+    seal_block_once(builder, sealed_blocks, done);
     builder.block_params(done)[0]
 }
 
@@ -232,7 +232,7 @@ pub(in crate::native_backend::function_compiler) fn ensure_boxed_overflow_safe(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     name: &str,
@@ -242,7 +242,14 @@ pub(in crate::native_backend::function_compiler) fn ensure_boxed_overflow_safe(
         let boxed = if representation_plan.is_inline_safe_int_name(name) {
             box_int_value(builder, raw_val, &crate::NanBoxConsts::new())
         } else {
-            box_raw_i64_value_overflow_safe(module, import_ids, builder, import_refs, raw_val)
+            box_raw_i64_value_overflow_safe(
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                sealed_blocks,
+                raw_val,
+            )
         };
         if let Some(&var) = vars.get(name) {
             builder.def_var(var, raw_val);
@@ -264,7 +271,7 @@ pub(in crate::native_backend::function_compiler) fn box_raw_i64_value_overflow_s
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     raw_val: Value,
 ) -> Value {
     let fits = int_value_fits_inline(builder, raw_val);
@@ -276,7 +283,7 @@ pub(in crate::native_backend::function_compiler) fn box_raw_i64_value_overflow_s
     builder.ins().brif(fits, fast_blk, &[], slow_blk, &[]);
 
     switch_to_block_materialized(builder, fast_blk);
-    seal_block_once(builder, fast_blk);
+    seal_block_once(builder, sealed_blocks, fast_blk);
     // Escape boxing is representation-critical: do not read the NaN-box mask/tag
     // from Cranelift Variables here. Split-heavy CFGs can repair those Variables
     // through implicit block params; local constants make RawI64 -> BoxedI64 an
@@ -289,7 +296,7 @@ pub(in crate::native_backend::function_compiler) fn box_raw_i64_value_overflow_s
     jump_block(builder, merge_blk, &[inline_boxed]);
 
     switch_to_block_materialized(builder, slow_blk);
-    seal_block_once(builder, slow_blk);
+    seal_block_once(builder, sealed_blocks, slow_blk);
     let big_fn = import_func_ref(
         module,
         import_ids,
@@ -304,7 +311,7 @@ pub(in crate::native_backend::function_compiler) fn box_raw_i64_value_overflow_s
     jump_block(builder, merge_blk, &[big_res]);
 
     switch_to_block_materialized(builder, merge_blk);
-    seal_block_once(builder, merge_blk);
+    seal_block_once(builder, sealed_blocks, merge_blk);
     builder.block_params(merge_blk)[0]
 }
 
@@ -324,7 +331,7 @@ pub(in crate::native_backend::function_compiler) fn var_get_boxed_overflow_safe_
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     name: &str,
     representation_plan: &ScalarRepresentationPlan,
@@ -336,6 +343,7 @@ pub(in crate::native_backend::function_compiler) fn var_get_boxed_overflow_safe_
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             representation_plan,
             name,
@@ -422,7 +430,7 @@ impl ConditionalListBoolShadow {
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn emit_conditional_list_bool_truthiness(
     builder: &mut FunctionBuilder<'_>,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     shadow: Option<&ConditionalListBoolShadow>,
     truthy_merge: Block,
     live_through: &[LiveThroughValue],
@@ -439,13 +447,13 @@ pub(in crate::native_backend::function_compiler) fn emit_conditional_list_bool_t
         .brif(is_bool_check, raw_bool_block, &[], speculative_block, &[]);
 
     switch_to_block_materialized(builder, raw_bool_block);
-    seal_block_once(builder, raw_bool_block);
+    seal_block_once(builder, sealed_blocks, raw_bool_block);
     let raw_truthy = builder.ins().icmp_imm_s(IntCC::NotEqual, shadow.payload, 0);
     let merge_args = merge_args_with_live_through(raw_truthy, live_through);
     jump_block(builder, truthy_merge, &merge_args);
 
     switch_to_block_materialized(builder, speculative_block);
-    seal_block_once(builder, speculative_block);
+    seal_block_once(builder, sealed_blocks, speculative_block);
     true
 }
 
@@ -472,7 +480,7 @@ pub(in crate::native_backend::function_compiler) fn ensure_boxed_primitive_safe(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     nbc: &crate::NanBoxConsts,
     representation_plan: &ScalarRepresentationPlan,
@@ -484,6 +492,7 @@ pub(in crate::native_backend::function_compiler) fn ensure_boxed_primitive_safe(
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -498,6 +507,7 @@ pub(in crate::native_backend::function_compiler) fn ensure_boxed_primitive_safe(
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             representation_plan,
             name,
@@ -703,7 +713,7 @@ impl CapturedScalarTransport {
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         builder: &mut FunctionBuilder<'_>,
         import_refs: &mut NativeFunctionImports,
-
+        sealed_blocks: &mut BTreeSet<Block>,
         representation_plan: &ScalarRepresentationPlan,
         nbc: &crate::NanBoxConsts,
         name: &str,
@@ -718,7 +728,15 @@ impl CapturedScalarTransport {
                 ),
             "boxed transport cannot define full-deopt raw-int home `{name}`; use a raw i64 producer or checked raw runtime ABI"
         );
-        self.value_for_storage(module, import_ids, builder, import_refs, nbc, storage)
+        self.value_for_storage(
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            sealed_blocks,
+            nbc,
+            storage,
+        )
     }
 
     /// Consume the materialization's existing credit before retaining another
@@ -738,7 +756,7 @@ impl CapturedScalarTransport {
         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
         builder: &mut FunctionBuilder<'_>,
         import_refs: &mut NativeFunctionImports,
-
+        sealed_blocks: &mut BTreeSet<Block>,
         nbc: &crate::NanBoxConsts,
         storage: MergeRebindStorageKind,
     ) -> Value {
@@ -776,6 +794,7 @@ impl CapturedScalarTransport {
                     import_ids,
                     builder,
                     import_refs,
+                    sealed_blocks,
                     self.value,
                 ),
                 MergeRebindStorageKind::RawF64 => box_float_value(builder, self.value, nbc),
@@ -803,7 +822,7 @@ pub(in crate::native_backend::function_compiler) fn merge_rebind_value_for_stora
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
@@ -815,6 +834,7 @@ pub(in crate::native_backend::function_compiler) fn merge_rebind_value_for_stora
         import_ids,
         builder,
         import_refs,
+        sealed_blocks,
         nbc,
         storage,
     )
@@ -946,7 +966,7 @@ pub(in crate::native_backend::function_compiler) fn emit_guarded_boxed_bitwise(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     lhs: Value,
     rhs: Value,
     runtime_name: &'static str,
@@ -975,7 +995,7 @@ pub(in crate::native_backend::function_compiler) fn emit_guarded_boxed_bitwise(
         .brif(both_inline_int, fast_block, &[], slow_block, &[]);
 
     switch_to_block_materialized(builder, fast_block);
-    seal_block_once(builder, fast_block);
+    seal_block_once(builder, sealed_blocks, fast_block);
     let raw = match op {
         BoxedBitwiseOp::And => builder.ins().band(lhs_val, rhs_val),
         BoxedBitwiseOp::Or => builder.ins().bor(lhs_val, rhs_val),
@@ -993,13 +1013,13 @@ pub(in crate::native_backend::function_compiler) fn emit_guarded_boxed_bitwise(
     );
 
     switch_to_block_materialized(builder, slow_block);
-    seal_block_once(builder, slow_block);
+    seal_block_once(builder, sealed_blocks, slow_block);
     let call = builder.ins().call(callee, &[lhs, rhs]);
     let slow_res = builder.inst_results(call)[0];
     jump_block(builder, merge_block, &[slow_res]);
 
     switch_to_block_materialized(builder, merge_block);
-    seal_block_once(builder, merge_block);
+    seal_block_once(builder, sealed_blocks, merge_block);
     builder.block_params(merge_block)[0]
 }
 
@@ -1064,7 +1084,7 @@ pub(in crate::native_backend::function_compiler) fn float_value_for_mixed(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     operand: crate::representation_plan::NumericOperand<'_>,
@@ -1090,6 +1110,7 @@ pub(in crate::native_backend::function_compiler) fn float_value_for_mixed(
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -1112,6 +1133,7 @@ pub(in crate::native_backend::function_compiler) fn float_value_for_mixed(
         import_ids,
         builder,
         import_refs,
+        sealed_blocks,
         vars,
         name,
         representation_plan,
@@ -1127,7 +1149,7 @@ pub(in crate::native_backend::function_compiler) fn emit_float_numeric_compare(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
@@ -1141,6 +1163,7 @@ pub(in crate::native_backend::function_compiler) fn emit_float_numeric_compare(
         import_ids,
         builder,
         import_refs,
+        sealed_blocks,
         vars,
         representation_plan,
         lhs,
@@ -1150,6 +1173,7 @@ pub(in crate::native_backend::function_compiler) fn emit_float_numeric_compare(
         import_ids,
         builder,
         import_refs,
+        sealed_blocks,
         vars,
         representation_plan,
         rhs,

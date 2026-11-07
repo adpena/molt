@@ -524,18 +524,16 @@ pub(in crate::native_backend) fn compile_selected_functions_direct(
         if !remaining.remove(function.function().name.as_str()) {
             continue;
         }
-        backend
-            .compile_func(
-                function,
-                &analysis.task_kinds,
-                &analysis.task_closure_sizes,
-                &analysis.defined_functions,
-                &analysis.closure_functions,
-                &analysis.leaf_functions,
-                &function_arities,
-                &function_has_ret,
-            )
-            .expect("native fixture codegen");
+        backend.compile_func(
+            function,
+            &analysis.task_kinds,
+            &analysis.task_closure_sizes,
+            &analysis.defined_functions,
+            &analysis.closure_functions,
+            &analysis.leaf_functions,
+            &function_arities,
+            &function_has_ret,
+        );
     }
     assert!(
         remaining.is_empty(),

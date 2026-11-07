@@ -274,18 +274,16 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
     let effective_function_has_ret =
         merge_function_has_ret(Some(&module_context), local_function_has_ret);
     let mut backend = SimpleBackend::new();
-    backend
-        .compile_func(
-            final_function_for_test(caller),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            &BTreeSet::from(["molt_main".to_string()]),
-            &BTreeSet::new(),
-            &BTreeSet::new(),
-            &effective_function_arities,
-            &effective_function_has_ret,
-        )
-        .expect("native function codegen");
+    backend.compile_func(
+        final_function_for_test(caller),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeSet::from(["molt_main".to_string()]),
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+        &effective_function_arities,
+        &effective_function_has_ret,
+    );
     let declaration = backend
         .module
         .declarations()

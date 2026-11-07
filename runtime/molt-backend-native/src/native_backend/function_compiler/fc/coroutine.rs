@@ -32,7 +32,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
@@ -47,7 +47,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
     >,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
-
+                                       sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        representation_plan: &ScalarRepresentationPlan|
@@ -57,6 +57,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -93,7 +94,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 reachable_blocks.insert(block);
             }
             reachable_blocks.insert(fallback_block);
-            builder.emit_switch(switch, state, fallback_block);
+            switch.emit(&mut *builder, state, fallback_block);
             crate::switch_to_block_tracking(&mut *builder, fallback_block, &mut *is_block_filled);
         }
         kind @ (OpKind::StateTransition | OpKind::StateYield) => panic!(
@@ -198,7 +199,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 && !arg_names.is_empty()
             {
                 let tracking_origin = builder.current_block();
-                let initialized = begin_task_initialization(builder, obj);
+                let initialized = begin_task_initialization(builder, sealed_blocks, obj);
                 let obj_ptr = unbox_ptr_value(&mut *builder, obj);
                 for (idx, arg_name) in arg_names.iter().enumerate() {
                     let val = var_get_boxed_overflow_safe(
@@ -206,6 +207,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
+                        &mut *sealed_blocks,
                         vars,
                         arg_name,
                         representation_plan,
@@ -220,7 +222,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 }
                 jump_block(builder, initialized, &[]);
                 switch_to_block_materialized(builder, initialized);
-                seal_block_once(builder, initialized);
+                seal_block_once(builder, sealed_blocks, initialized);
                 carry_internal_cfg_tracking(
                     tracking_origin,
                     initialized,

@@ -113,7 +113,6 @@ pub enum JitCompileError {
     /// The program failed the op-shape or program-slot admission that every
     /// native code owner applies.
     Admission(molt_ir::ir_schema::FunctionOpShapeDiagnostic),
-    Codegen(NativeBlockError),
     /// The JIT tier compiles with Cranelift only.
     UnsupportedCodegenBackend(String),
     /// Generated code imports symbols the loaded runtime does not define.
@@ -121,10 +120,7 @@ pub enum JitCompileError {
     /// The program defines no symbol the launcher needs.
     MissingProgramSymbol(&'static str),
     /// Generated code did not return what it was compiled to return.
-    ProbeMismatch {
-        expected: i64,
-        actual: i64,
-    },
+    ProbeMismatch { expected: i64, actual: i64 },
     /// `cranelift_jit` could not make the code executable.
     Finalize(String),
 }
@@ -133,7 +129,6 @@ impl std::fmt::Display for JitCompileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Admission(diagnostic) => write!(f, "program admission failed: {diagnostic}"),
-            Self::Codegen(error) => error.fmt(f),
             Self::UnsupportedCodegenBackend(backend) => write!(
                 f,
                 "the JIT tier compiles with Cranelift; MOLT_BACKEND={backend} is not supported"
@@ -194,9 +189,7 @@ impl SimpleBackend {
         let compile_start = std::time::Instant::now();
         let mut ir = ir;
         let program = self.prepare_native_codegen(&mut ir, false, timing, &compile_start);
-        let (func_count, total_ops) = self
-            .emit_cranelift_program(program, timing)
-            .map_err(JitCompileError::Codegen)?;
+        let (func_count, total_ops) = self.emit_cranelift_program(program, timing);
         let SimpleBackend { module, .. } = self;
         let CodeOwner::ProcessMemory(owner) = module else {
             panic!("JIT compilation requires a process-memory code owner");

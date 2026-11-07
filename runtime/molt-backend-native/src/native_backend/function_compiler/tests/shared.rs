@@ -1,5 +1,5 @@
 use super::*;
-use cranelift_codegen::ir::{ExternalName, Inst, InstructionData, ValueDef};
+use cranelift_codegen::ir::{Block, ExternalName, Inst, InstructionData, ValueDef};
 use cranelift_frontend::Variable;
 use molt_ir::OpKind;
 
@@ -28,6 +28,7 @@ fn lower_with_wide_operands(
         &mut SimpleBackend,
         &mut FunctionBuilder<'_>,
         &mut NativeFunctionImports,
+        &mut BTreeSet<Block>,
         &BTreeMap<String, Variable>,
         &ScalarRepresentationPlan,
     ),
@@ -82,7 +83,15 @@ fn lower_with_wide_operands(
         let mut refs = NativeFunctionImports::default();
         let detached = builder.ins().iconst(types::I64, 0);
         refs.set_refcount_admission(detached);
-        lower(&mut backend, &mut builder, &mut refs, &vars, &plan);
+        let mut sealed = BTreeSet::from([entry]);
+        lower(
+            &mut backend,
+            &mut builder,
+            &mut refs,
+            &mut sealed,
+            &vars,
+            &plan,
+        );
         builder.ins().return_(&[]);
         builder.finalize(crate::test_support::host_frontend_config());
     }
@@ -103,7 +112,7 @@ fn lower_slice_new(args: &[&str], out: Option<&str>) -> (Function, BTreeMap<&'st
         out: out.map(str::to_string),
         ..OpIR::new(OpKind::SliceNew)
     };
-    lower_with_wide_operands(&slice, |backend, builder, refs, vars, plan| {
+    lower_with_wide_operands(&slice, |backend, builder, refs, sealed, vars, plan| {
         let (mut tracked_obj, mut tracked_ptr) = (BTreeMap::new(), BTreeMap::new());
         super::super::fc::slice_ops::handle_slice_op(
             &slice,
@@ -113,6 +122,7 @@ fn lower_slice_new(args: &[&str], out: Option<&str>) -> (Function, BTreeMap<&'st
             &mut backend.import_ids,
             builder,
             refs,
+            sealed,
             vars,
             plan,
             &crate::NanBoxConsts::new(),
@@ -207,23 +217,25 @@ fn bound_borrowed_transaction_result_is_secured_before_temporary_release() {
         out: Some("result".into()),
         ..OpIR::new(OpKind::DictSet)
     };
-    let (function, ids) = lower_with_wide_operands(&op, |backend, builder, refs, vars, plan| {
-        let (mut tracked_obj, mut tracked_ptr) = (BTreeMap::new(), BTreeMap::new());
-        super::super::shared::emit_operand_transaction_call(
-            &op,
-            op.args.as_deref().unwrap(),
-            "molt_dict_set",
-            &mut backend.module,
-            &mut backend.import_ids,
-            builder,
-            refs,
-            vars,
-            plan,
-            &crate::NanBoxConsts::new(),
-            &mut tracked_obj,
-            &mut tracked_ptr,
-        );
-    });
+    let (function, ids) =
+        lower_with_wide_operands(&op, |backend, builder, refs, sealed, vars, plan| {
+            let (mut tracked_obj, mut tracked_ptr) = (BTreeMap::new(), BTreeMap::new());
+            super::super::shared::emit_operand_transaction_call(
+                &op,
+                op.args.as_deref().unwrap(),
+                "molt_dict_set",
+                &mut backend.module,
+                &mut backend.import_ids,
+                builder,
+                refs,
+                sealed,
+                vars,
+                plan,
+                &crate::NanBoxConsts::new(),
+                &mut tracked_obj,
+                &mut tracked_ptr,
+            );
+        });
     let count = |symbol: &str| import_calls(&function, &ids, symbol).len();
     assert_eq!(count("molt_int_from_i64"), 2, "{}", function.display());
     assert_eq!(count("molt_exception_pending_fast"), 2);
@@ -288,7 +300,7 @@ fn shared_boxed_calls_retire_temporary_and_discarded_owners_separately() {
                 ..OpIR::new(kind)
             };
             let (function, ids) =
-                lower_with_wide_operands(&op, |backend, builder, refs, vars, plan| {
+                lower_with_wide_operands(&op, |backend, builder, refs, sealed, vars, plan| {
                     let (mut objects, mut pointers) = (BTreeMap::new(), BTreeMap::new());
                     super::super::shared::emit_operand_transaction_call(
                         &op,
@@ -298,6 +310,7 @@ fn shared_boxed_calls_retire_temporary_and_discarded_owners_separately() {
                         &mut backend.import_ids,
                         builder,
                         refs,
+                        sealed,
                         vars,
                         plan,
                         &crate::NanBoxConsts::new(),

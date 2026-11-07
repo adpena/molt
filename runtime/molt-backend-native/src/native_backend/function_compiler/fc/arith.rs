@@ -40,7 +40,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     loop_stack: &[LoopFrame],
@@ -56,6 +56,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             representation_plan,
             scalar_fast_paths_enabled,
@@ -67,6 +68,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             representation_plan,
             nbc,
@@ -77,6 +79,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             representation_plan,
             nbc,
@@ -87,6 +90,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             representation_plan,
             scalar_fast_paths_enabled,
@@ -103,6 +107,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 representation_plan,
                 nbc,
@@ -119,6 +124,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             representation_plan,
             loop_stack,
@@ -133,6 +139,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             representation_plan,
             scalar_fast_paths_enabled,
@@ -144,6 +151,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             representation_plan,
             loop_stack,
@@ -156,6 +164,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             representation_plan,
             scalar_fast_paths_enabled,
@@ -174,7 +183,7 @@ fn handle_add_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     scalar_fast_paths_enabled: bool,
@@ -207,7 +216,7 @@ fn handle_add_op(
     >,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
-
+                                       sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        representation_plan: &ScalarRepresentationPlan|
@@ -217,6 +226,7 @@ fn handle_add_op(
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -239,6 +249,7 @@ fn handle_add_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[0],
             representation_plan,
@@ -249,6 +260,7 @@ fn handle_add_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[1],
             representation_plan,
@@ -274,6 +286,7 @@ fn handle_add_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             representation_plan,
             representation_plan
@@ -285,6 +298,7 @@ fn handle_add_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             representation_plan,
             representation_plan
@@ -357,6 +371,7 @@ fn handle_add_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -367,6 +382,7 @@ fn handle_add_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -390,18 +406,18 @@ fn handle_add_op(
                 .brif(take_fast, fast_block, &[], slow_block, &[]);
 
             switch_to_block_materialized(&mut *builder, fast_block);
-            seal_block_once(&mut *builder, fast_block);
+            seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
             jump_block(&mut *builder, merge_block, &[fast_res, sum]);
 
             switch_to_block_materialized(&mut *builder, slow_block);
-            seal_block_once(&mut *builder, slow_block);
+            seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
             let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
             let slow_res = builder.inst_results(call)[0];
             let zero = builder.ins().iconst(types::I64, 0);
             jump_block(&mut *builder, merge_block, &[slow_res, zero]);
 
             switch_to_block_materialized(&mut *builder, merge_block);
-            seal_block_once(&mut *builder, merge_block);
+            seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
 
             builder.block_params(merge_block)[0]
         }
@@ -411,6 +427,7 @@ fn handle_add_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[0],
             representation_plan,
@@ -421,6 +438,7 @@ fn handle_add_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[1],
             representation_plan,
@@ -442,6 +460,7 @@ fn handle_add_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[0],
             representation_plan,
@@ -452,6 +471,7 @@ fn handle_add_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[1],
             representation_plan,
@@ -478,7 +498,7 @@ fn handle_add_op(
             .brif(both_int, fast_block, &[], slow_block, &[]);
 
         switch_to_block_materialized(&mut *builder, fast_block);
-        seal_block_once(&mut *builder, fast_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
         let sum = builder.ins().iadd(lhs_val, rhs_val);
         let fast_res = box_int_value(&mut *builder, sum, nbc);
         let fits_inline = int_value_fits_inline(&mut *builder, sum);
@@ -492,7 +512,7 @@ fn handle_add_op(
         );
 
         switch_to_block_materialized(&mut *builder, slow_block);
-        seal_block_once(&mut *builder, slow_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
         // Inline float fast path: if both operands are floats, do f64 add directly.
         let both_flt = both_float_check(&mut *builder, *lhs, *rhs, nbc);
         let float_block = builder.create_block();
@@ -503,7 +523,7 @@ fn handle_add_op(
             .brif(both_flt, float_block, &[], call_block, &[]);
 
         switch_to_block_materialized(&mut *builder, float_block);
-        seal_block_once(&mut *builder, float_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
         let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
         let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
         let flt_sum = builder.ins().fadd(lhs_f, rhs_f);
@@ -511,14 +531,14 @@ fn handle_add_op(
         jump_block(&mut *builder, merge_block, &[flt_res]);
 
         switch_to_block_materialized(&mut *builder, call_block);
-        seal_block_once(&mut *builder, call_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, call_block);
         emit_mixed_int_float_op(&mut *builder, *lhs, *rhs, nbc, 0, merge_block);
         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
         let slow_res = builder.inst_results(call)[0];
         jump_block(&mut *builder, merge_block, &[slow_res]);
 
         switch_to_block_materialized(&mut *builder, merge_block);
-        seal_block_once(&mut *builder, merge_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
         builder.block_params(merge_block)[0]
     };
     if let Some(ref out__) = op.out {
@@ -550,7 +570,7 @@ fn handle_checked_add_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
@@ -562,7 +582,7 @@ fn handle_checked_add_op(
     >,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
-
+                                       sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        representation_plan: &ScalarRepresentationPlan|
@@ -572,6 +592,7 @@ fn handle_checked_add_op(
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -646,6 +667,7 @@ fn handle_checked_add_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[0],
             representation_plan,
@@ -656,6 +678,7 @@ fn handle_checked_add_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[1],
             representation_plan,
@@ -704,7 +727,7 @@ fn handle_checked_mul_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
@@ -716,7 +739,7 @@ fn handle_checked_mul_op(
     >,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
-
+                                       sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        representation_plan: &ScalarRepresentationPlan|
@@ -726,6 +749,7 @@ fn handle_checked_mul_op(
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -803,6 +827,7 @@ fn handle_checked_mul_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[0],
             representation_plan,
@@ -813,6 +838,7 @@ fn handle_checked_mul_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[1],
             representation_plan,
@@ -861,7 +887,7 @@ fn handle_inplace_add_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     scalar_fast_paths_enabled: bool,
@@ -894,7 +920,7 @@ fn handle_inplace_add_op(
     >,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
-
+                                       sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        representation_plan: &ScalarRepresentationPlan|
@@ -904,6 +930,7 @@ fn handle_inplace_add_op(
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -920,6 +947,7 @@ fn handle_inplace_add_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[0],
             representation_plan,
@@ -930,6 +958,7 @@ fn handle_inplace_add_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[1],
             representation_plan,
@@ -954,6 +983,7 @@ fn handle_inplace_add_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             representation_plan,
             representation_plan
@@ -965,6 +995,7 @@ fn handle_inplace_add_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             representation_plan,
             representation_plan
@@ -1013,6 +1044,7 @@ fn handle_inplace_add_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[0],
             representation_plan,
@@ -1023,6 +1055,7 @@ fn handle_inplace_add_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[1],
             representation_plan,
@@ -1054,18 +1087,18 @@ fn handle_inplace_add_op(
             .brif(take_fast, fast_block, &[], slow_block, &[]);
 
         switch_to_block_materialized(&mut *builder, fast_block);
-        seal_block_once(&mut *builder, fast_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
         jump_block(&mut *builder, merge_block, &[fast_res, sum]);
 
         switch_to_block_materialized(&mut *builder, slow_block);
-        seal_block_once(&mut *builder, slow_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
         let slow_res = builder.inst_results(call)[0];
         let zero = builder.ins().iconst(types::I64, 0);
         jump_block(&mut *builder, merge_block, &[slow_res, zero]);
 
         switch_to_block_materialized(&mut *builder, merge_block);
-        seal_block_once(&mut *builder, merge_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
 
         builder.block_params(merge_block)[0]
     } else {
@@ -1074,6 +1107,7 @@ fn handle_inplace_add_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[0],
             representation_plan,
@@ -1084,6 +1118,7 @@ fn handle_inplace_add_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[1],
             representation_plan,
@@ -1110,7 +1145,7 @@ fn handle_inplace_add_op(
             .brif(both_int, fast_block, &[], slow_block, &[]);
 
         switch_to_block_materialized(&mut *builder, fast_block);
-        seal_block_once(&mut *builder, fast_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
         let sum = builder.ins().iadd(lhs_val, rhs_val);
         let fast_res = box_int_value(&mut *builder, sum, nbc);
         let fits_inline = int_value_fits_inline(&mut *builder, sum);
@@ -1124,7 +1159,7 @@ fn handle_inplace_add_op(
         );
 
         switch_to_block_materialized(&mut *builder, slow_block);
-        seal_block_once(&mut *builder, slow_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
         let both_flt = both_float_check(&mut *builder, *lhs, *rhs, nbc);
         let float_block = builder.create_block();
         let call_block = builder.create_block();
@@ -1134,7 +1169,7 @@ fn handle_inplace_add_op(
             .brif(both_flt, float_block, &[], call_block, &[]);
 
         switch_to_block_materialized(&mut *builder, float_block);
-        seal_block_once(&mut *builder, float_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
         let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
         let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
         let flt_sum = builder.ins().fadd(lhs_f, rhs_f);
@@ -1142,14 +1177,14 @@ fn handle_inplace_add_op(
         jump_block(&mut *builder, merge_block, &[flt_res]);
 
         switch_to_block_materialized(&mut *builder, call_block);
-        seal_block_once(&mut *builder, call_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, call_block);
         emit_mixed_int_float_op(&mut *builder, *lhs, *rhs, nbc, 0, merge_block);
         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
         let slow_res = builder.inst_results(call)[0];
         jump_block(&mut *builder, merge_block, &[slow_res]);
 
         switch_to_block_materialized(&mut *builder, merge_block);
-        seal_block_once(&mut *builder, merge_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
         builder.block_params(merge_block)[0]
     };
     if let Some(ref out__) = op.out {
@@ -1181,7 +1216,7 @@ fn handle_sub_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     loop_stack: &[LoopFrame],
@@ -1208,7 +1243,7 @@ fn handle_sub_op(
     >,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
-
+                                       sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        representation_plan: &ScalarRepresentationPlan|
@@ -1218,6 +1253,7 @@ fn handle_sub_op(
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -1236,6 +1272,7 @@ fn handle_sub_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             representation_plan,
             representation_plan
@@ -1247,6 +1284,7 @@ fn handle_sub_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             representation_plan,
             representation_plan
@@ -1317,6 +1355,7 @@ fn handle_sub_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -1327,6 +1366,7 @@ fn handle_sub_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -1350,18 +1390,18 @@ fn handle_sub_op(
                 .brif(take_fast, fast_block, &[], slow_block, &[]);
 
             switch_to_block_materialized(&mut *builder, fast_block);
-            seal_block_once(&mut *builder, fast_block);
+            seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
             jump_block(&mut *builder, merge_block, &[fast_res, diff]);
 
             switch_to_block_materialized(&mut *builder, slow_block);
-            seal_block_once(&mut *builder, slow_block);
+            seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
             let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
             let slow_res = builder.inst_results(call)[0];
             let zero = builder.ins().iconst(types::I64, 0);
             jump_block(&mut *builder, merge_block, &[slow_res, zero]);
 
             switch_to_block_materialized(&mut *builder, merge_block);
-            seal_block_once(&mut *builder, merge_block);
+            seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
 
             builder.block_params(merge_block)[0]
         }
@@ -1371,6 +1411,7 @@ fn handle_sub_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[0],
             representation_plan,
@@ -1381,6 +1422,7 @@ fn handle_sub_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[1],
             representation_plan,
@@ -1399,7 +1441,7 @@ fn handle_sub_op(
             .brif(both_int, fast_block, &[], slow_block, &[]);
 
         switch_to_block_materialized(&mut *builder, fast_block);
-        seal_block_once(&mut *builder, fast_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
         let diff = builder.ins().isub(lhs_val, rhs_val);
         let fast_res = box_int_value(&mut *builder, diff, nbc);
         let fits_inline = int_value_fits_inline(&mut *builder, diff);
@@ -1413,7 +1455,7 @@ fn handle_sub_op(
         );
 
         switch_to_block_materialized(&mut *builder, slow_block);
-        seal_block_once(&mut *builder, slow_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
         let callee = SimpleBackend::import_func_id_split(
             &mut *module,
             &mut *import_ids,
@@ -1431,7 +1473,7 @@ fn handle_sub_op(
             .brif(both_flt, float_block, &[], call_block, &[]);
 
         switch_to_block_materialized(&mut *builder, float_block);
-        seal_block_once(&mut *builder, float_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
         let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
         let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
         let flt_diff = builder.ins().fsub(lhs_f, rhs_f);
@@ -1439,14 +1481,14 @@ fn handle_sub_op(
         jump_block(&mut *builder, merge_block, &[flt_res]);
 
         switch_to_block_materialized(&mut *builder, call_block);
-        seal_block_once(&mut *builder, call_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, call_block);
         emit_mixed_int_float_op(&mut *builder, *lhs, *rhs, nbc, 1, merge_block);
         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
         let slow_res = builder.inst_results(call)[0];
         jump_block(&mut *builder, merge_block, &[slow_res]);
 
         switch_to_block_materialized(&mut *builder, merge_block);
-        seal_block_once(&mut *builder, merge_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
         builder.block_params(merge_block)[0]
     };
     if let Some(ref out__) = op.out {
@@ -1480,7 +1522,7 @@ fn handle_inplace_sub_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     scalar_fast_paths_enabled: bool,
@@ -1506,7 +1548,7 @@ fn handle_inplace_sub_op(
     >,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
-
+                                       sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        representation_plan: &ScalarRepresentationPlan|
@@ -1516,6 +1558,7 @@ fn handle_inplace_sub_op(
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -1534,6 +1577,7 @@ fn handle_inplace_sub_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             representation_plan,
             representation_plan
@@ -1545,6 +1589,7 @@ fn handle_inplace_sub_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             representation_plan,
             representation_plan
@@ -1588,6 +1633,7 @@ fn handle_inplace_sub_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[0],
             representation_plan,
@@ -1598,6 +1644,7 @@ fn handle_inplace_sub_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[1],
             representation_plan,
@@ -1629,18 +1676,18 @@ fn handle_inplace_sub_op(
             .brif(take_fast, fast_block, &[], slow_block, &[]);
 
         switch_to_block_materialized(&mut *builder, fast_block);
-        seal_block_once(&mut *builder, fast_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
         jump_block(&mut *builder, merge_block, &[fast_res, diff]);
 
         switch_to_block_materialized(&mut *builder, slow_block);
-        seal_block_once(&mut *builder, slow_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
         let slow_res = builder.inst_results(call)[0];
         let zero = builder.ins().iconst(types::I64, 0);
         jump_block(&mut *builder, merge_block, &[slow_res, zero]);
 
         switch_to_block_materialized(&mut *builder, merge_block);
-        seal_block_once(&mut *builder, merge_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
 
         builder.block_params(merge_block)[0]
     } else {
@@ -1649,6 +1696,7 @@ fn handle_inplace_sub_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[0],
             representation_plan,
@@ -1659,6 +1707,7 @@ fn handle_inplace_sub_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[1],
             representation_plan,
@@ -1677,7 +1726,7 @@ fn handle_inplace_sub_op(
             .brif(both_int, fast_block, &[], slow_block, &[]);
 
         switch_to_block_materialized(&mut *builder, fast_block);
-        seal_block_once(&mut *builder, fast_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
         let diff = builder.ins().isub(lhs_val, rhs_val);
         let fast_res = box_int_value(&mut *builder, diff, nbc);
         let fits_inline = int_value_fits_inline(&mut *builder, diff);
@@ -1691,7 +1740,7 @@ fn handle_inplace_sub_op(
         );
 
         switch_to_block_materialized(&mut *builder, slow_block);
-        seal_block_once(&mut *builder, slow_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
         let callee = SimpleBackend::import_func_id_split(
             &mut *module,
             &mut *import_ids,
@@ -1709,7 +1758,7 @@ fn handle_inplace_sub_op(
             .brif(both_flt, float_block, &[], call_block, &[]);
 
         switch_to_block_materialized(&mut *builder, float_block);
-        seal_block_once(&mut *builder, float_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
         let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
         let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
         let flt_diff = builder.ins().fsub(lhs_f, rhs_f);
@@ -1717,14 +1766,14 @@ fn handle_inplace_sub_op(
         jump_block(&mut *builder, merge_block, &[flt_res]);
 
         switch_to_block_materialized(&mut *builder, call_block);
-        seal_block_once(&mut *builder, call_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, call_block);
         emit_mixed_int_float_op(&mut *builder, *lhs, *rhs, nbc, 1, merge_block);
         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
         let slow_res = builder.inst_results(call)[0];
         jump_block(&mut *builder, merge_block, &[slow_res]);
 
         switch_to_block_materialized(&mut *builder, merge_block);
-        seal_block_once(&mut *builder, merge_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
         builder.block_params(merge_block)[0]
     };
     if let Some(ref out__) = op.out {
@@ -1754,7 +1803,7 @@ fn handle_mul_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     loop_stack: &[LoopFrame],
@@ -1781,7 +1830,7 @@ fn handle_mul_op(
     >,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
-
+                                       sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        representation_plan: &ScalarRepresentationPlan|
@@ -1791,6 +1840,7 @@ fn handle_mul_op(
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -1809,6 +1859,7 @@ fn handle_mul_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             representation_plan,
             representation_plan
@@ -1820,6 +1871,7 @@ fn handle_mul_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             representation_plan,
             representation_plan
@@ -1890,6 +1942,7 @@ fn handle_mul_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -1900,6 +1953,7 @@ fn handle_mul_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -1922,18 +1976,18 @@ fn handle_mul_op(
                 .brif(take_fast, fast_block, &[], slow_block, &[]);
 
             switch_to_block_materialized(&mut *builder, fast_block);
-            seal_block_once(&mut *builder, fast_block);
+            seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
             jump_block(&mut *builder, merge_block, &[fast_res, prod]);
 
             switch_to_block_materialized(&mut *builder, slow_block);
-            seal_block_once(&mut *builder, slow_block);
+            seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
             let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
             let slow_res = builder.inst_results(call)[0];
             let zero = builder.ins().iconst(types::I64, 0);
             jump_block(&mut *builder, merge_block, &[slow_res, zero]);
 
             switch_to_block_materialized(&mut *builder, merge_block);
-            seal_block_once(&mut *builder, merge_block);
+            seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
 
             builder.block_params(merge_block)[0]
         }
@@ -1943,6 +1997,7 @@ fn handle_mul_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[0],
             representation_plan,
@@ -1953,6 +2008,7 @@ fn handle_mul_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[1],
             representation_plan,
@@ -1979,7 +2035,7 @@ fn handle_mul_op(
             .brif(both_int, fast_block, &[], slow_block, &[]);
 
         switch_to_block_materialized(&mut *builder, fast_block);
-        seal_block_once(&mut *builder, fast_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
         let (prod, fits) = imul_checked_inline(&mut *builder, lhs_val, rhs_val);
         let fast_res = box_int_value(&mut *builder, prod, nbc);
         brif_block(
@@ -1992,7 +2048,7 @@ fn handle_mul_op(
         );
 
         switch_to_block_materialized(&mut *builder, slow_block);
-        seal_block_once(&mut *builder, slow_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
         let both_flt = both_float_check(&mut *builder, *lhs, *rhs, nbc);
         let float_block = builder.create_block();
         let call_block = builder.create_block();
@@ -2002,7 +2058,7 @@ fn handle_mul_op(
             .brif(both_flt, float_block, &[], call_block, &[]);
 
         switch_to_block_materialized(&mut *builder, float_block);
-        seal_block_once(&mut *builder, float_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
         let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
         let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
         let flt_prod = builder.ins().fmul(lhs_f, rhs_f);
@@ -2010,14 +2066,14 @@ fn handle_mul_op(
         jump_block(&mut *builder, merge_block, &[flt_res]);
 
         switch_to_block_materialized(&mut *builder, call_block);
-        seal_block_once(&mut *builder, call_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, call_block);
         emit_mixed_int_float_op(&mut *builder, *lhs, *rhs, nbc, 2, merge_block);
         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
         let slow_res = builder.inst_results(call)[0];
         jump_block(&mut *builder, merge_block, &[slow_res]);
 
         switch_to_block_materialized(&mut *builder, merge_block);
-        seal_block_once(&mut *builder, merge_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
         builder.block_params(merge_block)[0]
     };
     if let Some(ref out__) = op.out {
@@ -2049,7 +2105,7 @@ fn handle_inplace_mul_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     scalar_fast_paths_enabled: bool,
@@ -2075,7 +2131,7 @@ fn handle_inplace_mul_op(
     >,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
-
+                                       sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        representation_plan: &ScalarRepresentationPlan|
@@ -2085,6 +2141,7 @@ fn handle_inplace_mul_op(
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -2103,6 +2160,7 @@ fn handle_inplace_mul_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             representation_plan,
             representation_plan
@@ -2114,6 +2172,7 @@ fn handle_inplace_mul_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             representation_plan,
             representation_plan
@@ -2156,6 +2215,7 @@ fn handle_inplace_mul_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[0],
             representation_plan,
@@ -2166,6 +2226,7 @@ fn handle_inplace_mul_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[1],
             representation_plan,
@@ -2196,18 +2257,18 @@ fn handle_inplace_mul_op(
             .brif(take_fast, fast_block, &[], slow_block, &[]);
 
         switch_to_block_materialized(&mut *builder, fast_block);
-        seal_block_once(&mut *builder, fast_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
         jump_block(&mut *builder, merge_block, &[fast_res, prod]);
 
         switch_to_block_materialized(&mut *builder, slow_block);
-        seal_block_once(&mut *builder, slow_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
         let slow_res = builder.inst_results(call)[0];
         let zero = builder.ins().iconst(types::I64, 0);
         jump_block(&mut *builder, merge_block, &[slow_res, zero]);
 
         switch_to_block_materialized(&mut *builder, merge_block);
-        seal_block_once(&mut *builder, merge_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
 
         builder.block_params(merge_block)[0]
     } else {
@@ -2216,6 +2277,7 @@ fn handle_inplace_mul_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[0],
             representation_plan,
@@ -2226,6 +2288,7 @@ fn handle_inplace_mul_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             &args[1],
             representation_plan,
@@ -2252,7 +2315,7 @@ fn handle_inplace_mul_op(
             .brif(both_int, fast_block, &[], slow_block, &[]);
 
         switch_to_block_materialized(&mut *builder, fast_block);
-        seal_block_once(&mut *builder, fast_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
         let (prod, fits) = imul_checked_inline(&mut *builder, lhs_val, rhs_val);
         let fast_res = box_int_value(&mut *builder, prod, nbc);
         brif_block(
@@ -2265,7 +2328,7 @@ fn handle_inplace_mul_op(
         );
 
         switch_to_block_materialized(&mut *builder, slow_block);
-        seal_block_once(&mut *builder, slow_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
         let both_flt = both_float_check(&mut *builder, *lhs, *rhs, nbc);
         let float_block = builder.create_block();
         let call_block = builder.create_block();
@@ -2275,7 +2338,7 @@ fn handle_inplace_mul_op(
             .brif(both_flt, float_block, &[], call_block, &[]);
 
         switch_to_block_materialized(&mut *builder, float_block);
-        seal_block_once(&mut *builder, float_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
         let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
         let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
         let flt_prod = builder.ins().fmul(lhs_f, rhs_f);
@@ -2283,14 +2346,14 @@ fn handle_inplace_mul_op(
         jump_block(&mut *builder, merge_block, &[flt_res]);
 
         switch_to_block_materialized(&mut *builder, call_block);
-        seal_block_once(&mut *builder, call_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, call_block);
         emit_mixed_int_float_op(&mut *builder, *lhs, *rhs, nbc, 2, merge_block);
         let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
         let slow_res = builder.inst_results(call)[0];
         jump_block(&mut *builder, merge_block, &[slow_res]);
 
         switch_to_block_materialized(&mut *builder, merge_block);
-        seal_block_once(&mut *builder, merge_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
         builder.block_params(merge_block)[0]
     };
     if let Some(ref out__) = op.out {

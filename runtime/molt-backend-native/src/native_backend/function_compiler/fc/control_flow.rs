@@ -27,7 +27,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     first_defined_at: &BTreeMap<String, usize>,
@@ -36,6 +36,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
     if_to_end_if: &BTreeMap<usize, usize>,
     else_to_end_if: &BTreeMap<usize, usize>,
     int_store_target_names: &BTreeSet<String>,
+    exception_label_ids: &BTreeSet<i64>,
     list_index_fast_paths: &ListIndexFastPathState,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
@@ -67,7 +68,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
     >,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
-
+                                       sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        representation_plan: &ScalarRepresentationPlan|
@@ -77,6 +78,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -98,7 +100,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
             {
                 let dead = builder.create_block();
                 switch_to_block_materialized(&mut *builder, dead);
-                seal_block_once(&mut *builder, dead);
+                seal_block_once(&mut *builder, sealed_blocks, dead);
                 *is_block_filled = false;
             }
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -116,6 +118,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     &mut *import_ids,
                     &mut *builder,
                     import_refs,
+                    sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -142,6 +145,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     &mut *import_ids,
                     &mut *builder,
                     import_refs,
+                    sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -158,6 +162,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     &mut *import_ids,
                     &mut *builder,
                     import_refs,
+                    sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -167,6 +172,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                     &mut *module,
                     &mut *import_ids,
                     &mut *builder,
+                    sealed_blocks,
                     vars,
                     first_defined_at,
                     last_use,
@@ -364,6 +370,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                             &mut *import_ids,
                             &mut *builder,
                             import_refs,
+                            sealed_blocks,
                             vars,
                             representation_plan,
                             nbc,
@@ -394,8 +401,10 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
             // Note: we deliberately do not seal `origin_block` here because it may have
             // been sealed earlier (for example the function entry block is sealed up-front).
             crate::switch_to_block_tracking(&mut *builder, then_block, is_block_filled);
-            maybe_debug_seal("if_then", op_idx, then_block);
-            seal_block_once(&mut *builder, then_block);
+            if exception_label_ids.is_empty() {
+                maybe_debug_seal("if_then", op_idx, then_block);
+                seal_block_once(&mut *builder, sealed_blocks, then_block);
+            }
 
             if_stack.push(IfFrame {
                 else_block,
@@ -453,6 +462,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                 &mut *import_ids,
                                 &mut *builder,
                                 import_refs,
+                                sealed_blocks,
                                 vars,
                                 representation_plan,
                                 nbc,
@@ -472,6 +482,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                 &mut *import_ids,
                                 &mut *builder,
                                 import_refs,
+                                sealed_blocks,
                                 vars,
                                 representation_plan,
                                 nbc,
@@ -491,6 +502,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                             &mut *import_ids,
                             &mut *builder,
                             import_refs,
+                            sealed_blocks,
                             vars,
                             representation_plan,
                             nbc,
@@ -586,8 +598,10 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
 
             let else_block = frame.else_block.expect("else without placeholder block");
             crate::switch_to_block_tracking(&mut *builder, else_block, is_block_filled);
-            maybe_debug_seal("if_else", op_idx, else_block);
-            seal_block_once(&mut *builder, else_block);
+            if exception_label_ids.is_empty() {
+                maybe_debug_seal("if_else", op_idx, else_block);
+                seal_block_once(&mut *builder, sealed_blocks, else_block);
+            }
             frame.has_else = true;
         }
         OpKind::EndIf => {
@@ -629,6 +643,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                     &mut *import_ids,
                                     &mut *builder,
                                     import_refs,
+                                    sealed_blocks,
                                     vars,
                                     representation_plan,
                                     nbc,
@@ -649,6 +664,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                     &mut *import_ids,
                                     &mut *builder,
                                     import_refs,
+                                    sealed_blocks,
                                     vars,
                                     representation_plan,
                                     nbc,
@@ -668,6 +684,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                 &mut *import_ids,
                                 &mut *builder,
                                 import_refs,
+                                sealed_blocks,
                                 vars,
                                 representation_plan,
                                 nbc,
@@ -763,6 +780,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                     &mut *import_ids,
                                     &mut *builder,
                                     import_refs,
+                                    sealed_blocks,
                                     vars,
                                     representation_plan,
                                     nbc,
@@ -783,6 +801,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                     &mut *import_ids,
                                     &mut *builder,
                                     import_refs,
+                                    sealed_blocks,
                                     vars,
                                     representation_plan,
                                     nbc,
@@ -802,6 +821,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                 &mut *import_ids,
                                 &mut *builder,
                                 import_refs,
+                                sealed_blocks,
                                 vars,
                                 representation_plan,
                                 nbc,
@@ -884,8 +904,10 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
 
                 if let Some(else_block) = frame.else_block {
                     crate::switch_to_block_tracking(&mut *builder, else_block, is_block_filled);
-                    maybe_debug_seal("if_else", op_idx, else_block);
-                    seal_block_once(&mut *builder, else_block);
+                    if exception_label_ids.is_empty() {
+                        maybe_debug_seal("if_else", op_idx, else_block);
+                        seal_block_once(&mut *builder, sealed_blocks, else_block);
+                    }
                     if *is_block_filled {
                         frame.else_terminal = true;
                         return OpFlow::Continue;
@@ -902,6 +924,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                     &mut *import_ids,
                                     &mut *builder,
                                     import_refs,
+                                    sealed_blocks,
                                     vars,
                                     representation_plan,
                                     nbc,
@@ -922,6 +945,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                     &mut *import_ids,
                                     &mut *builder,
                                     import_refs,
+                                    sealed_blocks,
                                     vars,
                                     representation_plan,
                                     nbc,
@@ -941,6 +965,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                 &mut *import_ids,
                                 &mut *builder,
                                 import_refs,
+                                sealed_blocks,
                                 vars,
                                 representation_plan,
                                 nbc,
@@ -1028,17 +1053,24 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
             }
 
             let both_filled = frame.then_terminal && frame.else_terminal;
-            // Even a terminal diamond allocated this private merge in layout.
-            // All of its possible edges have now been emitted or eliminated.
-            seal_block_once(builder, frame.merge_block);
             if both_filled {
                 *is_block_filled = true;
             } else if reachable_blocks.contains(&frame.merge_block) {
                 ensure_block_in_layout(&mut *builder, frame.merge_block);
-                // This private merge has exactly the predecessors emitted by this if.
+                // For plain structured if/else the predecessor set is
+                // complete at `end_if`, so early sealing keeps SSA
+                // repair from inventing placeholder predecessors.
+                //
+                // Exception-bearing functions are different: handler
+                // paths can still reach the merge later in the linear
+                // stream, and sealing here bakes in an incomplete
+                // predecessor set. Let `seal_all_blocks()` finalize
+                // those cases once every edge is emitted.
                 crate::switch_to_block_tracking(&mut *builder, frame.merge_block, is_block_filled);
-                maybe_debug_seal("if_merge", op_idx, frame.merge_block);
-                seal_block_once(&mut *builder, frame.merge_block);
+                if exception_label_ids.is_empty() {
+                    maybe_debug_seal("if_merge", op_idx, frame.merge_block);
+                    seal_block_once(&mut *builder, sealed_blocks, frame.merge_block);
+                }
                 if !*is_block_filled
                     && frame.phi_ops.is_empty()
                     && !frame.merge_rebind_names.is_empty()
@@ -1109,6 +1141,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                                 import_ids,
                                 builder,
                                 import_refs,
+                                sealed_blocks,
                                 vars,
                                 out,
                                 representation_plan,

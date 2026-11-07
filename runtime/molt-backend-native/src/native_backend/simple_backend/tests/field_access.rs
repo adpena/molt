@@ -338,9 +338,9 @@ fn native_guarded_object_helpers_receive_the_tagged_receiver() {
 
 #[test]
 fn pointer_decode_preserves_unsigned_bit_47_in_emitted_arithmetic() {
-    use crate::native_backend::block_sealing::FunctionBuilder;
     use cranelift_codegen::ir::InstBuilder;
     use cranelift_frontend::FunctionBuilderContext;
+use crate::native_backend::native_ssa::FunctionBuilder;
 
     let mut function = Function::new();
     function
@@ -358,8 +358,7 @@ fn pointer_decode_preserves_unsigned_bit_47_in_emitted_arithmetic() {
             input,
         );
         builder.ins().return_(&[]);
-        builder.seal_block(entry);
-        builder.check_sealed("field_access").unwrap();
+        builder.seal_all_blocks();
         builder.finalize(crate::test_support::host_frontend_config());
         (input, output)
     };

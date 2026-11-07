@@ -18,9 +18,8 @@ use cranelift_codegen::isa;
 use cranelift_codegen::settings;
 use cranelift_codegen::settings::Configurable;
 use cranelift_frontend::{FunctionBuilderContext, Switch, Variable};
-mod block_sealing;
-use block_sealing::FunctionBuilder;
-pub use block_sealing::{NativeBlockError, NativeBlockIssue, NativeCompileError};
+mod native_ssa;
+use native_ssa::FunctionBuilder;
 use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule, ObjectProduct};
 use std::collections::BTreeMap;
@@ -176,8 +175,7 @@ mod header_flags_tests {
             let object_ptr = builder.block_params(entry)[0];
             let flags = emit_header_flags_load(&mut builder, object_ptr);
             builder.ins().return_(&[flags]);
-            builder.seal_block(entry);
-            builder.check_sealed("header_flags").unwrap();
+            builder.seal_all_blocks();
             builder.finalize(crate::test_support::host_frontend_config());
         }
         let ir = function.display().to_string();
@@ -211,8 +209,7 @@ mod header_flags_tests {
             let object_ptr = builder.block_params(entry)[0];
             let flags = emit_header_flags_load(&mut builder, object_ptr);
             builder.ins().return_(&[flags]);
-            builder.seal_block(entry);
-            builder.check_sealed("header_flags").unwrap();
+            builder.seal_all_blocks();
             builder.finalize(backend.module.target_config());
         }
         let mut context = Context::for_function(function);

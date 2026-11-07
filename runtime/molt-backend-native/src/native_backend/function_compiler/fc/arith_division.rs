@@ -86,7 +86,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     scalar_fast_paths_enabled: bool,
@@ -112,7 +112,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
     >,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
-
+                                       sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        representation_plan: &ScalarRepresentationPlan|
@@ -122,6 +122,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -160,6 +161,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     representation_plan,
                     representation_plan
@@ -171,6 +173,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     representation_plan,
                     representation_plan
@@ -192,12 +195,13 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 // Zero divisor -> call runtime for ZeroDivisionError.
                 // Defer var_get to cold path -- only needed for runtime call.
                 switch_to_block_materialized(&mut *builder, zero_block);
-                seal_block_once(&mut *builder, zero_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, zero_block);
                 let lhs_boxed = var_get_boxed_overflow_safe(
                     &mut *module,
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -208,6 +212,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[1],
                     representation_plan,
@@ -233,7 +238,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 }
                 // Non-zero -> fast fdiv.
                 switch_to_block_materialized(&mut *builder, ok_block);
-                seal_block_once(&mut *builder, ok_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, ok_block);
                 let result_f = builder.ins().fdiv(lhs_f, rhs_f);
                 if out_is_float_primary {
                     jump_block(&mut *builder, merge_block, &[result_f]);
@@ -242,7 +247,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     jump_block(&mut *builder, merge_block, &[fast_res]);
                 }
                 switch_to_block_materialized(&mut *builder, merge_block);
-                seal_block_once(&mut *builder, merge_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
                 builder.block_params(merge_block)[0]
             } else if op_prefers_int_lane(op) {
                 // Python true division: int / int always returns float.
@@ -256,6 +261,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -266,6 +272,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[1],
                     representation_plan,
@@ -302,7 +309,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     .brif(take_div, fast_block, &[], slow_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, fast_block);
-                seal_block_once(&mut *builder, fast_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
                 // Python true division: int / int -> float.
                 let lhs_f = builder.ins().fcvt_from_sint(types::F64, lhs_val);
                 let rhs_f = builder.ins().fcvt_from_sint(types::F64, rhs_val);
@@ -315,7 +322,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 }
 
                 switch_to_block_materialized(&mut *builder, slow_block);
-                seal_block_once(&mut *builder, slow_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                 let slow_res = builder.inst_results(call)[0];
                 let slow_f = builder
@@ -328,7 +335,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 }
 
                 switch_to_block_materialized(&mut *builder, merge_block);
-                seal_block_once(&mut *builder, merge_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
                 builder.block_params(merge_block)[0]
             } else {
                 let gen_div_out_fp = op
@@ -340,6 +347,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -350,6 +358,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[1],
                     representation_plan,
@@ -380,7 +389,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     .brif(both_int, int_block, &[], slow_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, int_block);
-                seal_block_once(&mut *builder, int_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, int_block);
                 let zero = builder.ins().iconst(types::I64, 0);
                 let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, rhs_val, zero);
                 let fast_block = builder.create_block();
@@ -389,7 +398,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, fast_block);
-                seal_block_once(&mut *builder, fast_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
                 // Python true division: int / int -> float.
                 let lhs_f = builder.ins().fcvt_from_sint(types::F64, lhs_val);
                 let rhs_f = builder.ins().fcvt_from_sint(types::F64, rhs_val);
@@ -402,7 +411,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 }
 
                 switch_to_block_materialized(&mut *builder, slow_block);
-                seal_block_once(&mut *builder, slow_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                 // Inline float fast path: if both operands are floats, do f64 div directly.
                 let both_flt = both_float_check(&mut *builder, *lhs, *rhs, nbc);
                 let float_block = builder.create_block();
@@ -413,7 +422,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     .brif(both_flt, float_block, &[], call_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, float_block);
-                seal_block_once(&mut *builder, float_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
                 let lhs_ff = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
                 let rhs_ff = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
                 // Dynamic boxed floats have the same zero-divisor boundary as
@@ -425,7 +434,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     .ins()
                     .brif(rhs_zero, call_block, &[], nonzero_float_block, &[]);
                 switch_to_block_materialized(&mut *builder, nonzero_float_block);
-                seal_block_once(&mut *builder, nonzero_float_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, nonzero_float_block);
                 let flt_quot = builder.ins().fdiv(lhs_ff, rhs_ff);
                 if gen_div_out_fp {
                     jump_block(&mut *builder, merge_block, &[flt_quot]);
@@ -435,7 +444,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 }
 
                 switch_to_block_materialized(&mut *builder, call_block);
-                seal_block_once(&mut *builder, call_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, call_block);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                 let slow_res = builder.inst_results(call)[0];
                 let slow_f = builder
@@ -448,7 +457,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 }
 
                 switch_to_block_materialized(&mut *builder, merge_block);
-                seal_block_once(&mut *builder, merge_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
                 builder.block_params(merge_block)[0]
             };
             if let Some(out__) = op.out.as_ref() {
@@ -513,7 +522,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                         .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
 
                     switch_to_block_materialized(&mut *builder, fast_block);
-                    seal_block_once(&mut *builder, fast_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
                     // Raw lane reached only for inline-47-proven operands, so
                     // `(i64::MIN, -1)` — the sole `sdiv`/`srem` trap and the sole
                     // non-i64 quotient (`2**63`) — cannot occur. Checked loudly in
@@ -532,12 +541,13 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     jump_block(&mut *builder, merge_block, &[floor_quot]);
 
                     switch_to_block_materialized(&mut *builder, slow_block);
-                    seal_block_once(&mut *builder, slow_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                     let lhs_boxed = var_get_boxed_overflow_safe(
                         &mut *module,
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
+                        &mut *sealed_blocks,
                         vars,
                         &args[0],
                         representation_plan,
@@ -548,6 +558,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
+                        &mut *sealed_blocks,
                         vars,
                         &args[1],
                         representation_plan,
@@ -560,7 +571,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     jump_block(&mut *builder, merge_block, &[slow_raw]);
 
                     switch_to_block_materialized(&mut *builder, merge_block);
-                    seal_block_once(&mut *builder, merge_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
                     let result = builder.block_params(merge_block)[0];
                     if let Some(ref out__) = op.out {
                         def_var_named(&mut *builder, vars, out__, result);
@@ -572,6 +583,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
+                        &mut *sealed_blocks,
                         vars,
                         &args[0],
                         representation_plan,
@@ -582,6 +594,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
+                        &mut *sealed_blocks,
                         vars,
                         &args[1],
                         representation_plan,
@@ -607,7 +620,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                         .brif(take_div, fast_block, &[], slow_block, &[]);
 
                     switch_to_block_materialized(&mut *builder, fast_block);
-                    seal_block_once(&mut *builder, fast_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
                     let quot = builder.ins().sdiv(lhs_val, rhs_val);
                     let rem = builder.ins().srem(lhs_val, rhs_val);
                     let rem_nonzero = builder.ins().icmp(IntCC::NotEqual, rem, zero);
@@ -629,13 +642,13 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     );
 
                     switch_to_block_materialized(&mut *builder, slow_block);
-                    seal_block_once(&mut *builder, slow_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let slow_res = builder.inst_results(call)[0];
                     jump_block(&mut *builder, merge_block, &[slow_res]);
 
                     switch_to_block_materialized(&mut *builder, merge_block);
-                    seal_block_once(&mut *builder, merge_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
                     builder.block_params(merge_block)[0]
                 }
             } else {
@@ -644,6 +657,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -654,6 +668,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[1],
                     representation_plan,
@@ -681,7 +696,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     .brif(both_int, int_block, &[], slow_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, int_block);
-                seal_block_once(&mut *builder, int_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, int_block);
                 let zero = builder.ins().iconst(types::I64, 0);
                 let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, rhs_val, zero);
                 builder
@@ -689,7 +704,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, fast_block);
-                seal_block_once(&mut *builder, fast_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
                 let one = builder.ins().iconst(types::I64, 1);
                 // SAFETY (INT_MIN/-1 sdiv/srem trap): `lhs_val`/`rhs_val` are the
                 // outputs of `fused_tag_check_and_unbox_int` = `(x << 17) >> 17`,
@@ -719,13 +734,13 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 );
 
                 switch_to_block_materialized(&mut *builder, slow_block);
-                seal_block_once(&mut *builder, slow_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                 let slow_res = builder.inst_results(call)[0];
                 jump_block(&mut *builder, merge_block, &[slow_res]);
 
                 switch_to_block_materialized(&mut *builder, merge_block);
-                seal_block_once(&mut *builder, merge_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
                 builder.block_params(merge_block)[0]
             };
             if let Some(out__) = op.out.as_ref() {
@@ -787,7 +802,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                         .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
 
                     switch_to_block_materialized(&mut *builder, fast_block);
-                    seal_block_once(&mut *builder, fast_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
                     // Raw lane reached only for inline-47-proven operands, so
                     // `(i64::MIN, -1)` — the sole `srem` trap — cannot occur (and
                     // `i64::MIN % -1 == 0` is representable anyway). Checked loudly
@@ -804,12 +819,13 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     jump_block(&mut *builder, merge_block, &[mod_val]);
 
                     switch_to_block_materialized(&mut *builder, slow_block);
-                    seal_block_once(&mut *builder, slow_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                     let lhs_boxed = var_get_boxed_overflow_safe(
                         &mut *module,
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
+                        &mut *sealed_blocks,
                         vars,
                         &args[0],
                         representation_plan,
@@ -820,6 +836,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
+                        &mut *sealed_blocks,
                         vars,
                         &args[1],
                         representation_plan,
@@ -831,7 +848,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     jump_block(&mut *builder, merge_block, &[slow_raw]);
 
                     switch_to_block_materialized(&mut *builder, merge_block);
-                    seal_block_once(&mut *builder, merge_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
                     let result = builder.block_params(merge_block)[0];
                     if let Some(ref out__) = op.out {
                         def_var_named(&mut *builder, vars, out__, result);
@@ -843,6 +860,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
+                        &mut *sealed_blocks,
                         vars,
                         &args[0],
                         representation_plan,
@@ -853,6 +871,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
+                        &mut *sealed_blocks,
                         vars,
                         &args[1],
                         representation_plan,
@@ -877,7 +896,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                         .brif(take_div, fast_block, &[], slow_block, &[]);
 
                     switch_to_block_materialized(&mut *builder, fast_block);
-                    seal_block_once(&mut *builder, fast_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
                     let rem = builder.ins().srem(lhs_val, rhs_val);
                     let rem_nonzero = builder.ins().icmp(IntCC::NotEqual, rem, zero);
                     let lhs_neg = builder.ins().icmp(IntCC::SignedLessThan, lhs_val, zero);
@@ -898,13 +917,13 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     );
 
                     switch_to_block_materialized(&mut *builder, slow_block);
-                    seal_block_once(&mut *builder, slow_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                     let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                     let slow_res = builder.inst_results(call)[0];
                     jump_block(&mut *builder, merge_block, &[slow_res]);
 
                     switch_to_block_materialized(&mut *builder, merge_block);
-                    seal_block_once(&mut *builder, merge_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
                     builder.block_params(merge_block)[0]
                 }
             } else {
@@ -913,6 +932,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -923,6 +943,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[1],
                     representation_plan,
@@ -950,7 +971,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     .brif(both_int, int_block, &[], slow_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, int_block);
-                seal_block_once(&mut *builder, int_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, int_block);
                 let zero = builder.ins().iconst(types::I64, 0);
                 let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, rhs_val, zero);
                 builder
@@ -958,7 +979,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     .brif(rhs_nonzero, fast_block, &[], slow_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, fast_block);
-                seal_block_once(&mut *builder, fast_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
                 let rem = builder.ins().srem(lhs_val, rhs_val);
                 let rem_nonzero = builder.ins().icmp(IntCC::NotEqual, rem, zero);
                 let lhs_neg = builder.ins().icmp(IntCC::SignedLessThan, lhs_val, zero);
@@ -979,13 +1000,13 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 );
 
                 switch_to_block_materialized(&mut *builder, slow_block);
-                seal_block_once(&mut *builder, slow_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                 let slow_res = builder.inst_results(call)[0];
                 jump_block(&mut *builder, merge_block, &[slow_res]);
 
                 switch_to_block_materialized(&mut *builder, merge_block);
-                seal_block_once(&mut *builder, merge_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
                 builder.block_params(merge_block)[0]
             };
             if let Some(out__) = op.out.as_ref() {
@@ -1009,6 +1030,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -1019,6 +1041,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -1053,7 +1076,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     .brif(take_div, fast_block, &[], slow_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, fast_block);
-                seal_block_once(&mut *builder, fast_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
                 let quot = builder.ins().sdiv(lhs_val, rhs_val);
                 let rem = builder.ins().srem(lhs_val, rhs_val);
                 // Adjust: if rem != 0 and signs of lhs/rhs differ, subtract 1.
@@ -1077,13 +1100,13 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 );
 
                 switch_to_block_materialized(&mut *builder, slow_block);
-                seal_block_once(&mut *builder, slow_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                 let slow_res = builder.inst_results(call)[0];
                 jump_block(&mut *builder, merge_block, &[slow_res]);
 
                 switch_to_block_materialized(&mut *builder, merge_block);
-                seal_block_once(&mut *builder, merge_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
                 builder.block_params(merge_block)[0]
             } else {
                 let callee = SimpleBackend::import_func_id_split(
@@ -1154,12 +1177,12 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                         .brif(is_zero, exp0_block, &[], exp1_block, &[]);
 
                     switch_to_block_materialized(&mut *builder, exp0_block);
-                    seal_block_once(&mut *builder, exp0_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, exp0_block);
                     let one = builder.ins().iconst(types::I64, 1);
                     jump_block(&mut *builder, merge_block, &[one]);
 
                     switch_to_block_materialized(&mut *builder, exp1_block);
-                    seal_block_once(&mut *builder, exp1_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, exp1_block);
                     let is_one = builder.ins().icmp_imm_s(IntCC::Equal, exp_raw, 1);
                     let exp1_ret_block = builder.create_block();
                     builder
@@ -1167,28 +1190,29 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                         .brif(is_one, exp1_ret_block, &[], exp2_block, &[]);
 
                     switch_to_block_materialized(&mut *builder, exp1_ret_block);
-                    seal_block_once(&mut *builder, exp1_ret_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, exp1_ret_block);
                     jump_block(&mut *builder, merge_block, &[base_raw]);
 
                     switch_to_block_materialized(&mut *builder, exp2_block);
-                    seal_block_once(&mut *builder, exp2_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, exp2_block);
                     let is_two = builder.ins().icmp_imm_s(IntCC::Equal, exp_raw, 2);
                     builder
                         .ins()
                         .brif(is_two, exp2_fast_block, &[], slow_block, &[]);
 
                     switch_to_block_materialized(&mut *builder, exp2_fast_block);
-                    seal_block_once(&mut *builder, exp2_fast_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, exp2_fast_block);
                     let sq = builder.ins().imul(base_raw, base_raw);
                     jump_block(&mut *builder, merge_block, &[sq]);
 
                     switch_to_block_materialized(&mut *builder, slow_block);
-                    seal_block_once(&mut *builder, slow_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                     let lhs_boxed = var_get_boxed_overflow_safe(
                         &mut *module,
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
+                        &mut *sealed_blocks,
                         vars,
                         &args[0],
                         representation_plan,
@@ -1199,6 +1223,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
+                        &mut *sealed_blocks,
                         vars,
                         &args[1],
                         representation_plan,
@@ -1210,7 +1235,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     jump_block(&mut *builder, merge_block, &[slow_raw]);
 
                     switch_to_block_materialized(&mut *builder, merge_block);
-                    seal_block_once(&mut *builder, merge_block);
+                    seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
                     let result = builder.block_params(merge_block)[0];
                     if let Some(ref out__) = op.out {
                         def_var_named(&mut *builder, vars, out__, result);
@@ -1223,6 +1248,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -1233,6 +1259,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[1],
                     representation_plan,
@@ -1274,7 +1301,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     .brif(both_int, pow_inline_block, &[], slow_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, pow_inline_block);
-                seal_block_once(&mut *builder, pow_inline_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, pow_inline_block);
                 // Check exp == 0
                 let is_zero = builder.ins().icmp_imm_s(IntCC::Equal, exp_val, 0);
                 builder
@@ -1283,14 +1310,14 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
 
                 // exp == 0 → result is 1
                 switch_to_block_materialized(&mut *builder, exp0_block);
-                seal_block_once(&mut *builder, exp0_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, exp0_block);
                 let one = builder.ins().iconst(types::I64, 1);
                 let res_one = box_int_value(&mut *builder, one, nbc);
                 jump_block(&mut *builder, merge_block, &[res_one]);
 
                 // Check exp == 1 → result is base (return lhs as-is)
                 switch_to_block_materialized(&mut *builder, exp1_block);
-                seal_block_once(&mut *builder, exp1_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, exp1_block);
                 let is_one = builder.ins().icmp_imm_s(IntCC::Equal, exp_val, 1);
                 let exp1_ret_block = builder.create_block();
                 builder
@@ -1298,12 +1325,12 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     .brif(is_one, exp1_ret_block, &[], exp2_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, exp1_ret_block);
-                seal_block_once(&mut *builder, exp1_ret_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, exp1_ret_block);
                 jump_block(&mut *builder, merge_block, &[*lhs]);
 
                 // Check exp == 2
                 switch_to_block_materialized(&mut *builder, exp2_block);
-                seal_block_once(&mut *builder, exp2_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, exp2_block);
                 let is_two = builder.ins().icmp_imm_s(IntCC::Equal, exp_val, 2);
                 builder
                     .ins()
@@ -1311,19 +1338,19 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
 
                 // exp == 2 → base * base with overflow check
                 switch_to_block_materialized(&mut *builder, exp2_fast_block);
-                seal_block_once(&mut *builder, exp2_fast_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, exp2_fast_block);
                 let (sq, fits) = imul_checked_inline(&mut *builder, base_val, base_val);
                 let sq_res = box_int_value(&mut *builder, sq, nbc);
                 brif_block(&mut *builder, fits, merge_block, &[sq_res], slow_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, slow_block);
-                seal_block_once(&mut *builder, slow_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                 let slow_res = builder.inst_results(call)[0];
                 jump_block(&mut *builder, merge_block, &[slow_res]);
 
                 switch_to_block_materialized(&mut *builder, merge_block);
-                seal_block_once(&mut *builder, merge_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
                 builder.block_params(merge_block)[0]
             } else {
                 let lhs = var_get_boxed_overflow_safe(
@@ -1331,6 +1358,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -1341,6 +1369,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[1],
                     representation_plan,
@@ -1378,6 +1407,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -1388,6 +1418,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -1398,6 +1429,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[2],
                 representation_plan,
@@ -1434,6 +1466,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -1444,6 +1477,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -1454,6 +1488,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[2],
                 representation_plan,
@@ -1492,6 +1527,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,

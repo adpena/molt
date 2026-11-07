@@ -27,7 +27,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     loop_stack: &[LoopFrame],
@@ -44,7 +44,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
     >,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
-
+                                       sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        representation_plan: &ScalarRepresentationPlan|
@@ -54,6 +54,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -87,6 +88,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     representation_plan,
                     nbc,
@@ -113,6 +115,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -123,6 +126,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[1],
                     representation_plan,
@@ -141,13 +145,13 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     .brif(both_int, fast_block, &[], slow_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, fast_block);
-                seal_block_once(&mut *builder, fast_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
                 let cmp = builder.ins().icmp(IntCC::SignedLessThan, lhs_val, rhs_val);
                 let fast_res = box_bool_value(&mut *builder, cmp, nbc);
                 jump_block(&mut *builder, merge_block, &[fast_res]);
 
                 switch_to_block_materialized(&mut *builder, slow_block);
-                seal_block_once(&mut *builder, slow_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                 let callee = SimpleBackend::import_func_id_split(
                     &mut *module,
                     &mut *import_ids,
@@ -165,7 +169,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     .brif(both_flt, float_block, &[], call_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, float_block);
-                seal_block_once(&mut *builder, float_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
                 let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
                 let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
                 let fcmp = builder.ins().fcmp(FloatCC::LessThan, lhs_f, rhs_f);
@@ -173,13 +177,13 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 jump_block(&mut *builder, merge_block, &[flt_res]);
 
                 switch_to_block_materialized(&mut *builder, call_block);
-                seal_block_once(&mut *builder, call_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, call_block);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                 let slow_res = builder.inst_results(call)[0];
                 jump_block(&mut *builder, merge_block, &[slow_res]);
 
                 switch_to_block_materialized(&mut *builder, merge_block);
-                seal_block_once(&mut *builder, merge_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
                 builder.block_params(merge_block)[0]
             };
             if let Some(ref out__) = op.out {
@@ -207,6 +211,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     representation_plan,
                     nbc,
@@ -233,6 +238,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -243,6 +249,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[1],
                     representation_plan,
@@ -261,7 +268,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     .brif(both_int, fast_block, &[], slow_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, fast_block);
-                seal_block_once(&mut *builder, fast_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
                 let cmp = builder
                     .ins()
                     .icmp(IntCC::SignedLessThanOrEqual, lhs_val, rhs_val);
@@ -269,7 +276,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 jump_block(&mut *builder, merge_block, &[fast_res]);
 
                 switch_to_block_materialized(&mut *builder, slow_block);
-                seal_block_once(&mut *builder, slow_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                 let callee = SimpleBackend::import_func_id_split(
                     &mut *module,
                     &mut *import_ids,
@@ -287,7 +294,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     .brif(both_flt, float_block, &[], call_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, float_block);
-                seal_block_once(&mut *builder, float_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
                 let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
                 let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
                 let fcmp = builder.ins().fcmp(FloatCC::LessThanOrEqual, lhs_f, rhs_f);
@@ -295,13 +302,13 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 jump_block(&mut *builder, merge_block, &[flt_res]);
 
                 switch_to_block_materialized(&mut *builder, call_block);
-                seal_block_once(&mut *builder, call_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, call_block);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                 let slow_res = builder.inst_results(call)[0];
                 jump_block(&mut *builder, merge_block, &[slow_res]);
 
                 switch_to_block_materialized(&mut *builder, merge_block);
-                seal_block_once(&mut *builder, merge_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
                 builder.block_params(merge_block)[0]
             };
             if let Some(ref out__) = op.out {
@@ -329,6 +336,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     representation_plan,
                     nbc,
@@ -355,6 +363,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -365,6 +374,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[1],
                     representation_plan,
@@ -383,7 +393,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     .brif(both_int, fast_block, &[], slow_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, fast_block);
-                seal_block_once(&mut *builder, fast_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
                 let cmp = builder
                     .ins()
                     .icmp(IntCC::SignedGreaterThan, lhs_val, rhs_val);
@@ -391,7 +401,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 jump_block(&mut *builder, merge_block, &[fast_res]);
 
                 switch_to_block_materialized(&mut *builder, slow_block);
-                seal_block_once(&mut *builder, slow_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                 let callee = SimpleBackend::import_func_id_split(
                     &mut *module,
                     &mut *import_ids,
@@ -409,7 +419,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     .brif(both_flt, float_block, &[], call_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, float_block);
-                seal_block_once(&mut *builder, float_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
                 let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
                 let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
                 let fcmp = builder.ins().fcmp(FloatCC::GreaterThan, lhs_f, rhs_f);
@@ -417,13 +427,13 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 jump_block(&mut *builder, merge_block, &[flt_res]);
 
                 switch_to_block_materialized(&mut *builder, call_block);
-                seal_block_once(&mut *builder, call_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, call_block);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                 let slow_res = builder.inst_results(call)[0];
                 jump_block(&mut *builder, merge_block, &[slow_res]);
 
                 switch_to_block_materialized(&mut *builder, merge_block);
-                seal_block_once(&mut *builder, merge_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
                 builder.block_params(merge_block)[0]
             };
             if let Some(ref out__) = op.out {
@@ -451,6 +461,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     representation_plan,
                     nbc,
@@ -477,6 +488,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -487,6 +499,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[1],
                     representation_plan,
@@ -505,7 +518,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     .brif(both_int, fast_block, &[], slow_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, fast_block);
-                seal_block_once(&mut *builder, fast_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
                 let cmp = builder
                     .ins()
                     .icmp(IntCC::SignedGreaterThanOrEqual, lhs_val, rhs_val);
@@ -513,7 +526,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 jump_block(&mut *builder, merge_block, &[fast_res]);
 
                 switch_to_block_materialized(&mut *builder, slow_block);
-                seal_block_once(&mut *builder, slow_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                 let callee = SimpleBackend::import_func_id_split(
                     &mut *module,
                     &mut *import_ids,
@@ -531,7 +544,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     .brif(both_flt, float_block, &[], call_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, float_block);
-                seal_block_once(&mut *builder, float_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, float_block);
                 let lhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *lhs);
                 let rhs_f = builder.ins().bitcast(types::F64, MemFlagsData::new(), *rhs);
                 let fcmp = builder
@@ -541,13 +554,13 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 jump_block(&mut *builder, merge_block, &[flt_res]);
 
                 switch_to_block_materialized(&mut *builder, call_block);
-                seal_block_once(&mut *builder, call_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, call_block);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                 let slow_res = builder.inst_results(call)[0];
                 jump_block(&mut *builder, merge_block, &[slow_res]);
 
                 switch_to_block_materialized(&mut *builder, merge_block);
-                seal_block_once(&mut *builder, merge_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
                 builder.block_params(merge_block)[0]
             };
             if let Some(ref out__) = op.out {
@@ -575,6 +588,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     representation_plan,
                     nbc,
@@ -603,6 +617,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -613,6 +628,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[1],
                     representation_plan,
@@ -631,13 +647,13 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     .brif(both_int, fast_block, &[], slow_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, fast_block);
-                seal_block_once(&mut *builder, fast_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
                 let cmp = builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val);
                 let fast_res = box_bool_value(&mut *builder, cmp, nbc);
                 jump_block(&mut *builder, merge_block, &[fast_res]);
 
                 switch_to_block_materialized(&mut *builder, slow_block);
-                seal_block_once(&mut *builder, slow_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                 let callee = SimpleBackend::import_func_id_split(
                     &mut *module,
                     &mut *import_ids,
@@ -651,7 +667,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 jump_block(&mut *builder, merge_block, &[slow_res]);
 
                 switch_to_block_materialized(&mut *builder, merge_block);
-                seal_block_once(&mut *builder, merge_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
                 builder.block_params(merge_block)[0]
             };
             if let Some(ref out__) = op.out {
@@ -679,6 +695,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     representation_plan,
                     nbc,
@@ -706,6 +723,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -716,6 +734,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[1],
                     representation_plan,
@@ -734,13 +753,13 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                     .brif(both_int, fast_block, &[], slow_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, fast_block);
-                seal_block_once(&mut *builder, fast_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
                 let cmp = builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val);
                 let fast_res = box_bool_value(&mut *builder, cmp, nbc);
                 jump_block(&mut *builder, merge_block, &[fast_res]);
 
                 switch_to_block_materialized(&mut *builder, slow_block);
-                seal_block_once(&mut *builder, slow_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
                 let callee = SimpleBackend::import_func_id_split(
                     &mut *module,
                     &mut *import_ids,
@@ -754,7 +773,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 jump_block(&mut *builder, merge_block, &[slow_res]);
 
                 switch_to_block_materialized(&mut *builder, merge_block);
-                seal_block_once(&mut *builder, merge_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
                 builder.block_params(merge_block)[0]
             };
             if let Some(ref out__) = op.out {
@@ -775,6 +794,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -785,6 +805,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,

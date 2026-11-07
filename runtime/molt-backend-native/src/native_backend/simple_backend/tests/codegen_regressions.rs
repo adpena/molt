@@ -1,5 +1,4 @@
 use super::*;
-use crate::native_backend::block_sealing::FunctionBuilder;
 use cranelift_codegen::ir::InstBuilder;
 use molt_ir::OpKind;
 
@@ -13,7 +12,8 @@ fn native_completion_retires_dead_builder_components_without_traps() {
     let dead_header;
     let dead_body;
     {
-        let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
+        let mut builder =
+            cranelift_frontend::FunctionBuilder::new(&mut context.func, &mut builder_context);
         entry = builder.create_block();
         builder.switch_to_block(entry);
         builder.ins().return_(&[]);
@@ -22,10 +22,7 @@ fn native_completion_retires_dead_builder_components_without_traps() {
         builder.insert_block_after(dead_header, entry);
         builder.switch_to_block(dead_body);
         builder.ins().jump(dead_header, &[]);
-        builder.seal_block(entry);
-        builder.seal_block(dead_header);
-        builder.seal_block(dead_body);
-        builder.check_sealed("dead_components").unwrap();
+        builder.seal_all_blocks();
         builder.finalize(backend.module.target_config());
     }
     assert!(context.func.layout.is_block_inserted(dead_header));
@@ -57,15 +54,14 @@ fn native_completion_rejects_reachable_empty_builder_blocks() {
     context.func.signature.call_conv = backend.module.isa().default_call_conv();
     let mut builder_context = cranelift_frontend::FunctionBuilderContext::new();
     {
-        let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
+        let mut builder =
+            cranelift_frontend::FunctionBuilder::new(&mut context.func, &mut builder_context);
         let entry = builder.create_block();
         let empty_target = builder.create_block();
         builder.switch_to_block(entry);
         builder.ins().jump(empty_target, &[]);
         builder.insert_block_after(empty_target, entry);
-        builder.seal_block(entry);
-        builder.seal_block(empty_target);
-        builder.check_sealed("reachable_empty").unwrap();
+        builder.seal_all_blocks();
         builder.finalize(backend.module.target_config());
     }
     super::super::deferred_codegen::complete_native_control_flow(

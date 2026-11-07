@@ -37,7 +37,7 @@ impl SimpleBackend {
         leaf_functions: &BTreeSet<String>,
         known_function_arities: &BTreeMap<String, usize>,
         function_has_ret: &BTreeMap<String, bool>,
-    ) -> Result<(), NativeBlockError> {
+    ) {
         let func_ir = function.function();
         let trace_compile = env_setting(BackendEnv::MOLT_TRACE_COMPILE_FUNC)
             .as_deref()
@@ -112,7 +112,7 @@ impl SimpleBackend {
             leaf_functions,
             known_function_arities,
             function_has_ret,
-        )?;
+        );
         if trace_compile {
             eprintln!(
                 "[molt-native-compile] done {} after {:.2?}",
@@ -128,7 +128,6 @@ impl SimpleBackend {
                 ),
             );
         }
-        Ok(())
     }
 
     /// Inner compilation for the current native backend path.
@@ -142,7 +141,7 @@ impl SimpleBackend {
         leaf_functions: &BTreeSet<String>,
         known_function_arities: &BTreeMap<String, usize>,
         function_has_ret: &BTreeMap<String, bool>,
-    ) -> Result<(), NativeBlockError> {
+    ) {
         let (func_ir, representation_plan_storage) = function.into_parts();
         {
             let ce_count = func_ir
@@ -168,7 +167,6 @@ impl SimpleBackend {
         let representation_plan = &representation_plan_storage;
         let guard_facts = molt_tir::passes::RuntimeGuardFacts::for_function(&func_ir);
         let FunctionPreanalysis {
-            cfg,
             returns_value,
             stateful,
             needs_field_store_profile,
@@ -322,7 +320,7 @@ impl SimpleBackend {
         // are known. Our IR uses structured control-flow; for `if` this means then/else
         // each have a single predecessor and can be sealed immediately, and the merge block
         // can be sealed once end_if wiring is complete.
-
+        let mut sealed_blocks: BTreeSet<Block> = BTreeSet::new();
         let mut is_block_filled = false;
         let mut if_stack: Vec<IfFrame> = Vec::new();
         let mut loop_stack: Vec<LoopFrame> = Vec::new();
@@ -601,7 +599,7 @@ impl SimpleBackend {
         >,
                                            builder: &mut FunctionBuilder<'_>,
                                            import_refs: &mut NativeFunctionImports,
-
+                                           sealed_blocks: &mut BTreeSet<Block>,
                                            vars: &BTreeMap<String, Variable>,
                                            name: &str,
                                            representation_plan: &ScalarRepresentationPlan|
@@ -615,6 +613,7 @@ impl SimpleBackend {
                 import_ids,
                 builder,
                 import_refs,
+                sealed_blocks,
                 vars,
                 name,
                 representation_plan,
@@ -641,6 +640,7 @@ impl SimpleBackend {
                 &mut self.import_ids,
                 &mut builder,
                 &mut import_refs,
+                &mut sealed_blocks,
                 &vars,
                 "self",
                 representation_plan,
@@ -937,7 +937,7 @@ impl SimpleBackend {
                     let args = if returns_value { &[none][..] } else { &[] };
                     brif_block(&mut builder, failed, master_return_block, args, lent, &[]);
                     switch_to_block_materialized(&mut builder, lent);
-                    seal_block_once(&mut builder, lent);
+                    seal_block_once(&mut builder, &mut sealed_blocks, lent);
                 }
             }
             (homes, slots)
@@ -953,6 +953,7 @@ impl SimpleBackend {
                 &mut self.data_pool,
                 &mut self.next_data_id,
                 &mut builder,
+                &mut sealed_blocks,
                 &vars,
                 fc::const_literals::LiteralFailureExit {
                     block: master_return_block,
@@ -1003,7 +1004,7 @@ impl SimpleBackend {
                 .collect()
         };
 
-        seal_block_once(&mut builder, entry_block);
+        seal_block_once(&mut builder, &mut sealed_blocks, entry_block);
 
         // Literal failure checks split the prologue from the Python body.
         // Entry-value tracking is rooted at the successful body entry, not the
@@ -1011,7 +1012,7 @@ impl SimpleBackend {
         let mut body_entry_block = builder
             .current_block()
             .expect("literal prologue has a success continuation");
-        seal_block_once(&mut builder, body_entry_block);
+        seal_block_once(&mut builder, &mut sealed_blocks, body_entry_block);
 
         // Keep textual control-flow labels and persisted resume states in
         // disjoint block maps. A numeric ready-continuation state may collide
@@ -1034,7 +1035,6 @@ impl SimpleBackend {
             }
         }
         let ops = &func_ir.ops;
-        builder.plan_labels(ops, &cfg, &label_blocks);
         builder.install_ssa_values(ssa_values);
         // 2. Implementation
         let mut skip_ops: BTreeSet<usize> = BTreeSet::new();
@@ -1088,7 +1088,7 @@ impl SimpleBackend {
         }
         let mut pending_definition_op = None;
         for op_idx in 0..ops.len() {
-            builder.begin_op(op_idx, &ops[op_idx]);
+            builder.begin_op(op_idx);
             // Capture the preceding operation before any new label switch,
             // including handlers that intentionally bypass the per-op epilogue.
             if let Some(index) = pending_definition_op.take()
@@ -1156,7 +1156,7 @@ impl SimpleBackend {
                     {
                         let detached = builder.create_block();
                         switch_to_block_materialized(&mut builder, detached);
-                        seal_block_once(&mut builder, detached);
+                        seal_block_once(&mut builder, &mut sealed_blocks, detached);
                     }
                     is_block_filled = false;
                 }
@@ -1205,7 +1205,7 @@ impl SimpleBackend {
             // repeats whole live sets even for operations that never split.
             pending_definition_op = Some(op_idx);
             let operation_origin = builder.current_block();
-            let operation_flow = (|| -> Result<fc::OpFlow, NativeBlockError> {
+            let operation_flow = (|| {
                 match op_family {
                     fc::NativeOpFamily::NoCodegen => {
                         assert!(
@@ -1228,7 +1228,7 @@ impl SimpleBackend {
                             local_inc_ref_obj,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1249,6 +1249,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &loop_stack,
@@ -1258,7 +1259,7 @@ impl SimpleBackend {
                             &mut block_tracked_ptr,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1271,13 +1272,14 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             scalar_fast_paths_enabled,
                             &nbc,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1290,12 +1292,13 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &nbc,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1309,13 +1312,14 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             scalar_fast_paths_enabled,
                             &nbc,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1327,6 +1331,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &mut scalarized_tuples,
                             representation_plan,
@@ -1335,7 +1340,7 @@ impl SimpleBackend {
                             &mut block_tracked_ptr,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1347,6 +1352,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &nbc,
@@ -1359,6 +1365,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &nbc,
@@ -1372,6 +1379,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &nbc,
@@ -1379,7 +1387,7 @@ impl SimpleBackend {
                             &mut block_tracked_ptr,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1391,6 +1399,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &nbc,
@@ -1398,7 +1407,7 @@ impl SimpleBackend {
                             &mut block_tracked_ptr,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1410,6 +1419,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &nbc,
@@ -1417,7 +1427,7 @@ impl SimpleBackend {
                             &mut block_tracked_ptr,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1429,6 +1439,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &nbc,
@@ -1436,7 +1447,7 @@ impl SimpleBackend {
                             &mut block_tracked_ptr,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1450,6 +1461,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             &scalarized_tuples,
                             representation_plan,
@@ -1471,6 +1483,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &nbc,
@@ -1488,6 +1501,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &nbc,
@@ -1506,6 +1520,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &nbc,
@@ -1528,6 +1543,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &nbc,
@@ -1543,6 +1559,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &nbc,
@@ -1558,6 +1575,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             local_exc_pending_fast,
@@ -1573,6 +1591,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &nbc,
@@ -1588,6 +1607,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &loop_stack,
@@ -1603,6 +1623,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             local_inc_ref_obj,
@@ -1610,7 +1631,7 @@ impl SimpleBackend {
                             &nbc,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1626,6 +1647,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &mut block_tracked_obj,
@@ -1634,7 +1656,7 @@ impl SimpleBackend {
                             &nbc,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1654,6 +1676,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             task_kinds,
@@ -1672,9 +1695,9 @@ impl SimpleBackend {
                             local_inc_ref_obj,
                             local_dec_ref_obj,
                             &nbc,
-                        )?;
+                        );
                         match __flow {
-                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1686,6 +1709,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &nbc,
@@ -1715,6 +1739,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &param_name_set,
@@ -1761,6 +1786,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &alias_roots,
@@ -1782,6 +1808,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &nbc,
@@ -1797,6 +1824,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &nbc,
@@ -1813,6 +1841,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &nbc,
@@ -1826,6 +1855,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             pending_work_slots,
@@ -1840,6 +1870,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &nbc,
@@ -1853,6 +1884,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &nbc,
@@ -1875,6 +1907,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &mut block_tracked_obj,
@@ -1905,6 +1938,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &first_defined_at,
@@ -1913,6 +1947,7 @@ impl SimpleBackend {
                             &if_to_end_if,
                             &else_to_end_if,
                             &int_store_target_names,
+                            &exception_label_ids,
                             &list_index_fast_paths,
                             &mut block_tracked_obj,
                             &mut block_tracked_ptr,
@@ -1929,7 +1964,7 @@ impl SimpleBackend {
                             &nbc,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1943,9 +1978,11 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &last_use,
+                            &exception_label_ids,
                             &loop_body_init_vars,
                             &mut list_index_fast_paths,
                             &mut block_tracked_obj,
@@ -1967,7 +2004,7 @@ impl SimpleBackend {
                             &nbc,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1981,6 +2018,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &alias_roots,
@@ -2002,7 +2040,7 @@ impl SimpleBackend {
                             &nbc,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -2016,12 +2054,13 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &nbc,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -2035,6 +2074,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             representation_plan,
                             &first_defined_at,
@@ -2062,7 +2102,7 @@ impl SimpleBackend {
                             &nbc,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
+                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -2095,8 +2135,8 @@ impl SimpleBackend {
                     }
                 }
 
-                Ok(fc::OpFlow::Proceed)
-            })()?;
+                fc::OpFlow::Proceed
+            })();
             // Generated internal branches do not change a SimpleIR operation's
             // ownership scope. Preserve its cleanup candidates across the final
             // continuation, including handlers that skip the common epilogue.
@@ -2137,6 +2177,7 @@ impl SimpleBackend {
                     &mut self.data_pool,
                     &mut self.next_data_id,
                     &mut builder,
+                    &mut sealed_blocks,
                     &vars,
                     fc::const_literals::LiteralFailureExit {
                         block: master_return_block,
@@ -2146,7 +2187,7 @@ impl SimpleBackend {
                 body_entry_block = builder
                     .current_block()
                     .expect("literal prologue has a success continuation");
-                seal_block_once(&mut builder, body_entry_block);
+                seal_block_once(&mut builder, &mut sealed_blocks, body_entry_block);
             }
 
             // IMPORTANT: entry-tracked cleanup must be control-flow safe.
@@ -2261,6 +2302,7 @@ impl SimpleBackend {
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
+                            &mut sealed_blocks,
                             &vars,
                             name,
                             representation_plan,
@@ -2306,8 +2348,6 @@ impl SimpleBackend {
             }
         }
 
-        builder.close_sources(ops.len() + 1);
-
         // Finalize Master Return Block
         if !is_block_filled {
             cleanup_roots.release_all(&mut builder, local_dec_ref_obj);
@@ -2320,7 +2360,7 @@ impl SimpleBackend {
         }
 
         switch_to_block_materialized(&mut builder, master_return_block);
-        seal_block_once(&mut builder, master_return_block);
+        seal_block_once(&mut builder, &mut sealed_blocks, master_return_block);
 
         literal_hoists.release_anchors(&mut builder, pointer_type, local_dec_ref_obj);
 
@@ -2330,6 +2370,7 @@ impl SimpleBackend {
             &mut self.import_ids,
             &mut builder,
             &mut import_refs,
+            &mut sealed_blocks,
         );
 
         // RC drop-insertion substrate (design 20 §4.1, Phase 5): the join-slot
@@ -2383,7 +2424,7 @@ impl SimpleBackend {
 
             // Success path: Python-level exit finalization + _exit(0).
             switch_to_block_materialized(&mut builder, exit_block);
-            seal_block_once(&mut builder, exit_block);
+            seal_block_once(&mut builder, &mut sealed_blocks, exit_block);
             let runtime_exit = Self::import_func_id_split(
                 &mut self.module,
                 &mut self.import_ids,
@@ -2401,7 +2442,7 @@ impl SimpleBackend {
 
             // Exception path: return normally for traceback printing.
             switch_to_block_materialized(&mut builder, normal_ret_block);
-            seal_block_once(&mut builder, normal_ret_block);
+            seal_block_once(&mut builder, &mut sealed_blocks, normal_ret_block);
         }
         if let Some(res) = final_res {
             builder.ins().return_(&[res]);
@@ -2446,15 +2487,9 @@ impl SimpleBackend {
                 MOLT_REFCOUNT_ADMISSION,
             )
         });
-        builder.check_sealed(&func_ir.name)?;
+        builder.seal_all_blocks();
         if debug_seal {
-            eprintln!(
-                "SEAL_SUMMARY {} values={} blocks={} drop_inserted={}",
-                func_ir.name,
-                builder.func.dfg.num_values(),
-                builder.func.dfg.num_blocks(),
-                drop_inserted
-            );
+            eprintln!("SEAL_SUMMARY {} values={} blocks={} drop_inserted={}", func_ir.name, builder.func.dfg.num_values(), builder.func.dfg.num_blocks(), drop_inserted);
         }
         builder.finalize(frontend_config);
 
@@ -2524,7 +2559,6 @@ impl SimpleBackend {
         });
         self.defined_func_names.insert(func_ir.name.clone());
         self.module.clear_context(&mut self.ctx);
-        Ok(())
     }
 }
 

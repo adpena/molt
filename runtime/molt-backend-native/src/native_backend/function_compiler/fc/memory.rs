@@ -55,7 +55,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     alias_roots: &BTreeMap<String, String>,
@@ -83,7 +83,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
     >,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
-
+                                       sealed_blocks: &mut BTreeSet<Block>,
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        representation_plan: &ScalarRepresentationPlan|
@@ -93,6 +93,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -142,6 +143,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -210,7 +212,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             let call = builder.ins().call(task_local, &[poll_addr, size, kind_val]);
             let obj = builder.inst_results(call)[0];
             let tracking_origin = builder.current_block();
-            let initialized = begin_task_initialization(builder, obj);
+            let initialized = begin_task_initialization(builder, sealed_blocks, obj);
             let obj_ptr = unbox_ptr_value(&mut *builder, obj);
             if let Some(args_names) = &op.args {
                 for (i, name) in args_names.iter().enumerate() {
@@ -219,6 +221,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
+                        &mut *sealed_blocks,
                         vars,
                         name,
                         representation_plan,
@@ -257,7 +260,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
 
             jump_block(builder, initialized, &[]);
             switch_to_block_materialized(builder, initialized);
-            seal_block_once(builder, initialized);
+            seal_block_once(builder, sealed_blocks, initialized);
             carry_internal_cfg_tracking(
                 tracking_origin,
                 initialized,
@@ -294,6 +297,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -304,6 +308,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -334,11 +339,11 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     .ins()
                     .brif(profile_bool, profile_block, &[], profile_cont, &[]);
                 switch_to_block_materialized(&mut *builder, profile_block);
-                seal_block_once(&mut *builder, profile_block);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, profile_block);
                 builder.ins().call(local_profile_struct, &[]);
                 jump_block(&mut *builder, profile_cont, &[]);
                 switch_to_block_materialized(&mut *builder, profile_cont);
-                seal_block_once(&mut *builder, profile_cont);
+                seal_block_once(&mut *builder, &mut *sealed_blocks, profile_cont);
             }
 
             // Both initialization and replacement share one physical backing
@@ -366,7 +371,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 .ins()
                 .brif(obj_is_ptr, store_block, &[], merge_block, &[]);
             switch_to_block_materialized(&mut *builder, store_block);
-            seal_block_once(&mut *builder, store_block);
+            seal_block_once(&mut *builder, &mut *sealed_blocks, store_block);
 
             let flags_val = crate::native_backend::emit_header_flags_load(builder, obj_ptr);
             let flags_64 = builder.ins().uextend(types::I64, flags_val);
@@ -396,7 +401,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             // Fast path: direct store at obj_ptr + offset, no
             // GIL acquire, no runtime call.
             switch_to_block_materialized(&mut *builder, fast_block);
-            seal_block_once(&mut *builder, fast_block);
+            seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
             builder
                 .ins()
                 .store(MemFlagsData::trusted(), *val, obj_ptr, offset);
@@ -405,7 +410,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             // Slow path: existing runtime helper handles all
             // ownership and dictionary-backed field semantics.
             switch_to_block_materialized(&mut *builder, slow_block);
-            seal_block_once(&mut *builder, slow_block);
+            seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
             let offset_bits = builder.ins().iconst(types::I64, i64::from(offset));
             let helper_name = typed_slot_store_helper_name(field_store_mode);
             let callee = SimpleBackend::import_func_id_split(
@@ -428,7 +433,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             // structurally identical to the helper's return
             // for the "side-effect, no value" contract.
             switch_to_block_materialized(&mut *builder, merge_block);
-            seal_block_once(&mut *builder, merge_block);
+            seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
             if !origin_obj_live.is_empty() {
                 extend_unique_tracked(
                     block_tracked_obj.entry(merge_block).or_default(),
@@ -459,6 +464,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -470,6 +476,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 *obj,
                 offset_val,
                 nbc,
@@ -490,6 +497,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -519,6 +527,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -533,6 +542,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
+                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -561,6 +571,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -572,6 +583,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 *obj,
                 offset,
                 nbc,
@@ -588,6 +600,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -598,6 +611,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -662,6 +676,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -672,6 +687,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -682,6 +698,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[2],
                 representation_plan,
@@ -757,7 +774,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 let enabled = builder.ins().icmp_imm_s(IntCC::NotEqual, enabled, 0);
                 builder.ins().brif(enabled, check, &[], skip, &[]);
                 switch_to_block_materialized(builder, skip);
-                seal_block_once(builder, skip);
+                seal_block_once(builder, sealed_blocks, skip);
                 if let Some(out) = simple_ir_out_result(op) {
                     super::value_transfer::define_alias_result(
                         op,
@@ -768,6 +785,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                         import_ids,
                         builder,
                         import_refs,
+                        sealed_blocks,
                         vars,
                         representation_plan,
                         alias_roots,
@@ -778,7 +796,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 }
                 jump_block(builder, join, &[]);
                 switch_to_block_materialized(builder, check);
-                seal_block_once(builder, check);
+                seal_block_once(builder, sealed_blocks, check);
                 carry_internal_cfg_tracking(origin, check, block_tracked_obj, block_tracked_ptr);
                 Some(join)
             } else {
@@ -795,6 +813,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 import_ids,
                 builder,
                 import_refs,
+                sealed_blocks,
                 vars,
                 representation_plan,
                 nbc,
@@ -805,6 +824,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 import_ids,
                 builder,
                 import_refs,
+                sealed_blocks,
                 vars,
                 representation_plan,
                 nbc,
@@ -829,6 +849,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     import_ids,
                     builder,
                     import_refs,
+                    sealed_blocks,
                     vars,
                     representation_plan,
                     alias_roots,
@@ -843,6 +864,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 import_ids,
                 builder,
                 import_refs,
+                sealed_blocks,
                 vars,
                 representation_plan,
                 nbc,
@@ -858,7 +880,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 );
                 jump_block(builder, join, &[]);
                 switch_to_block_materialized(builder, join);
-                seal_block_once(builder, join);
+                seal_block_once(builder, sealed_blocks, join);
             }
         }
         OpKind::GuardLayout => {
@@ -868,6 +890,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -878,6 +901,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
+                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,

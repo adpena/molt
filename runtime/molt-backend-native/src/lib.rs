@@ -60,8 +60,7 @@ pub use crate::ir::{
 };
 #[cfg(feature = "native-backend")]
 pub use crate::native_backend::{
-    CompileOutput, NativeBackendModuleContext, NativeBlockError, NativeBlockIssue,
-    NativeCompileError, NativeFunctionLinkageAbi, SimpleBackend,
+    CompileOutput, NativeBackendModuleContext, NativeFunctionLinkageAbi, SimpleBackend,
 };
 #[cfg(feature = "native-backend")]
 pub(crate) use crate::native_backend::{

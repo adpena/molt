@@ -36,7 +36,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     param_name_set: &BTreeSet<&str>,
@@ -76,6 +76,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             import_ids,
             builder,
             import_refs,
+            sealed_blocks,
             vars,
             representation_plan,
             nbc,
@@ -95,6 +96,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             param_name_set,
             last_use,
@@ -138,6 +140,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             closure_functions,
             known_function_arities,
@@ -155,6 +158,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             representation_plan,
             first_defined_at,
@@ -172,6 +176,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
+            &mut *sealed_blocks,
             vars,
             representation_plan,
             nbc,
@@ -230,6 +235,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
         import_ids,
         builder,
         import_refs,
+        sealed_blocks,
         vars,
         representation_plan,
         nbc,
@@ -431,7 +437,7 @@ fn handle_call_direct_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     param_name_set: &BTreeSet<&str>,
     last_use: &BTreeMap<String, usize>,
@@ -625,7 +631,7 @@ fn handle_call_direct_op(
         // propagates to the caller instead of being silently
         // swallowed as None when no check_exception follows.
         switch_to_block_materialized(&mut *builder, error_block);
-        seal_block_once(&mut *builder, error_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, error_block);
         let raise_ref = import_func_ref(
             &mut *module,
             &mut *import_ids,
@@ -662,7 +668,7 @@ fn handle_call_direct_op(
 
         // Call block: direct call to the target function.
         switch_to_block_materialized(&mut *builder, call_block);
-        seal_block_once(&mut *builder, call_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, call_block);
         let direct_call = builder.ins().call(local_callee, &args);
         let direct_results = builder.inst_results(direct_call);
         let call_res = if direct_results.is_empty() {
@@ -964,7 +970,7 @@ fn handle_call_guarded_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     closure_functions: &BTreeSet<String>,
     known_function_arities: &BTreeMap<String, usize>,
@@ -1113,7 +1119,7 @@ fn handle_call_guarded_op(
     jump_block(&mut *builder, merge_block, &[fallback_res]);
 
     switch_to_block_materialized(&mut *builder, func_block);
-    seal_block_once(&mut *builder, func_block);
+    seal_block_once(&mut *builder, &mut *sealed_blocks, func_block);
     let resolve_call = builder.ins().call(resolve_local, &[*callee_bits]);
     let func_ptr = builder.inst_results(resolve_call)[0];
     let fn_ptr = builder
@@ -1124,10 +1130,10 @@ fn handle_call_guarded_op(
     builder
         .ins()
         .brif(matches, then_block, &[], fallback_block, &[]);
-    seal_block_once(builder, fallback_block);
+    seal_block_once(builder, sealed_blocks, fallback_block);
 
     switch_to_block_materialized(&mut *builder, then_block);
-    seal_block_once(&mut *builder, then_block);
+    seal_block_once(&mut *builder, &mut *sealed_blocks, then_block);
     let guard_call = builder.ins().call(guard_enter_local, &[]);
     let guard_val = builder.inst_results(guard_call)[0];
     let guard_ok = builder.ins().icmp_imm_s(IntCC::NotEqual, guard_val, 0);
@@ -1138,7 +1144,7 @@ fn handle_call_guarded_op(
         .brif(guard_ok, then_call_block, &[], then_fail_block, &[]);
 
     switch_to_block_materialized(&mut *builder, then_call_block);
-    seal_block_once(&mut *builder, then_call_block);
+    seal_block_once(&mut *builder, &mut *sealed_blocks, then_call_block);
     let (record, outer_invocation) =
         emit_invocation_publish(&mut *builder, thread_record_slot, *callee_bits);
     // Closure is an ABI argument, never a Python positional argument. Its owner
@@ -1174,7 +1180,7 @@ fn handle_call_guarded_op(
     jump_block(&mut *builder, merge_block, &[direct_res]);
 
     switch_to_block_materialized(&mut *builder, then_fail_block);
-    seal_block_once(&mut *builder, then_fail_block);
+    seal_block_once(&mut *builder, &mut *sealed_blocks, then_fail_block);
     let raise_local = import_func_ref(
         &mut *module,
         &mut *import_ids,
@@ -1208,7 +1214,7 @@ fn handle_call_guarded_op(
     }
 
     switch_to_block_materialized(&mut *builder, merge_block);
-    seal_block_once(&mut *builder, merge_block);
+    seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
     let res = builder.block_params(merge_block)[0];
     bind_owned_runtime_result(op, res, module, import_ids, builder, import_refs, vars);
 }
@@ -1223,7 +1229,7 @@ fn handle_call_func_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     first_defined_at: &BTreeMap<String, usize>,
@@ -1285,7 +1291,7 @@ fn handle_call_func_op(
         brif_block(builder, admitted, direct_call_block, &[], slow_block, &[]);
 
         switch_to_block_materialized(builder, direct_call_block);
-        seal_block_once(builder, direct_call_block);
+        seal_block_once(builder, sealed_blocks, direct_call_block);
         let resolve_ref = import_func_ref(
             module,
             import_ids,
@@ -1326,7 +1332,7 @@ fn handle_call_func_op(
 
         // Guard fail: raise RecursionError (cold)
         switch_to_block_materialized(&mut *builder, guard_fail_block);
-        seal_block_once(&mut *builder, guard_fail_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, guard_fail_block);
         let raise_ref = import_func_ref(
             &mut *module,
             &mut *import_ids,
@@ -1354,7 +1360,7 @@ fn handle_call_func_op(
 
         // Direct call via call_indirect
         switch_to_block_materialized(&mut *builder, call_block);
-        seal_block_once(&mut *builder, call_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, call_block);
         let guard_exit = import_func_ref(
             module,
             import_ids,
@@ -1385,7 +1391,7 @@ fn handle_call_func_op(
         // Slow path: the runtime's invocation authority. Adopted arguments
         // take its owned lane; borrowed ones molt_call_func_fast{N}.
         switch_to_block_materialized(&mut *builder, slow_block);
-        seal_block_once(&mut *builder, slow_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
         let slow_res = if adopts {
             emit_owned_dynamic_call(
                 &mut *module,
@@ -1423,7 +1429,7 @@ fn handle_call_func_op(
         jump_block(&mut *builder, merge_block, &merge_args);
 
         switch_to_block_materialized(&mut *builder, merge_block);
-        seal_block_once(&mut *builder, merge_block);
+        seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
         let merge_params = builder.block_params(merge_block).to_vec();
         rebind_live_through_values(
             &mut *builder,
@@ -1530,7 +1536,7 @@ fn emit_native_forward_f32_call(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     symbol: &str,
     signature: &molt_ir::native_callable_abi::NativeCallableMachineSignature,
     input_bits: Value,
@@ -1601,7 +1607,7 @@ fn emit_native_forward_f32_call(
         .brif(input_valid, have_input, &[], done, &[BlockArg::from(zero)]);
 
     switch_to_block_materialized(builder, have_input);
-    seal_block_once(builder, have_input);
+    seal_block_once(builder, sealed_blocks, have_input);
     let output_call = builder.ins().call(scratch_alloc, &[input_len]);
     let output_ptr = builder.inst_results(output_call)[0];
     let output_valid = builder.ins().icmp_imm_s(IntCC::NotEqual, output_ptr, 0);
@@ -1614,7 +1620,7 @@ fn emit_native_forward_f32_call(
     );
 
     switch_to_block_materialized(builder, have_output);
-    seal_block_once(builder, have_output);
+    seal_block_once(builder, sealed_blocks, have_output);
     let output_native_ptr = if pointer_type == types::I64 {
         output_ptr
     } else {
@@ -1634,7 +1640,7 @@ fn emit_native_forward_f32_call(
     );
 
     switch_to_block_materialized(builder, convert_output);
-    seal_block_once(builder, convert_output);
+    seal_block_once(builder, sealed_blocks, convert_output);
     let result_call = builder
         .ins()
         .call(bytes_from, &[output_native_ptr, input_len]);
@@ -1642,13 +1648,13 @@ fn emit_native_forward_f32_call(
     jump_block(builder, cleanup_output, &[result_bits]);
 
     switch_to_block_materialized(builder, cleanup_output);
-    seal_block_once(builder, cleanup_output);
+    seal_block_once(builder, sealed_blocks, cleanup_output);
     let result_bits = builder.block_params(cleanup_output)[0];
     builder.ins().call(scratch_free, &[output_ptr, input_len]);
     jump_block(builder, done, &[result_bits]);
 
     switch_to_block_materialized(builder, done);
-    seal_block_once(builder, done);
+    seal_block_once(builder, sealed_blocks, done);
     builder.block_params(done)[0]
 }
 
@@ -1663,7 +1669,7 @@ fn handle_invoke_ffi_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-
+    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
@@ -1717,6 +1723,7 @@ fn handle_invoke_ffi_op(
                         import_ids,
                         builder,
                         import_refs,
+                        sealed_blocks,
                         symbol,
                         &machine_signature,
                         input_bits,
