@@ -4393,7 +4393,11 @@ def _provision_tool_releases(
     host that runs a gate selecting the tool, instead of refusing until a
     person provisions it (landing 25, 2026-11-07: wasm-tools 1.263.0).
     """
-    from molt.tool_releases import ToolReleaseError, pinned_command
+    from molt.tool_releases import (
+        ToolReleaseError,
+        discover_pinned_tool,
+        pinned_command,
+    )
 
     selected = set(names)
     errors = []
@@ -4405,10 +4409,12 @@ def _provision_tool_releases(
             if policy.projection == "runtime-tool-release":
                 # Cached: projection reuses the provisioned command.
                 _runtime_command(tool, root, environment, root, provision=True)
-            else:
-                pinned_command(
-                    tool, root, environ=environment, cwd=root, provision=True
-                )
+            elif (
+                discover_pinned_tool(tool, root, environ=environment, cwd=None) is None
+            ):
+                # The warm path is the discovery projection repeats; only an
+                # absent release reads the manifest and provisions.
+                pinned_command(tool, root, environ=environment, provision=True)
         except ToolReleaseError as exc:
             errors.append(f"{policy.name}: {exc}")
     return "; ".join(errors) or None

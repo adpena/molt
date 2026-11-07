@@ -10342,8 +10342,9 @@ version_pattern = '^selected-checkout-tool$'
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True)) == EXIT_OK
     )
     # The gate itself proved the projection: it ran the selected checkout's
-    # `cat`. The integrating process keeps its own PATH.
-    assert observed_roots == [work, work]
+    # `cat`. Admission discovers the release once before projecting it (and
+    # provisions only an absent one). The integrating process keeps its PATH.
+    assert observed_roots == [work, work, work]
     assert os.environ["PATH"] == path_before
 
 
