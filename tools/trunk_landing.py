@@ -52,6 +52,16 @@ def decode_gates(records: list[dict]) -> tuple[SelectedGate, ...]:
     return tuple(gates)
 
 
+def landing_request(commit: str, tree: str, gates) -> dict:
+    """The selected gates of one exact commit, as the landing executor reads them."""
+    return {
+        "commit": commit,
+        "tree": tree,
+        "gates": gate_records(gates),
+        "toolchains": sorted({name for gate in gates for name in gate.toolchains}),
+    }
+
+
 def request_digest(request: dict) -> str:
     return hashlib.sha256(
         json.dumps(request, sort_keys=True, separators=(",", ":")).encode()
@@ -117,12 +127,7 @@ def _run_remote(
     from tools import trunk_loop
 
     tree = trunk_loop.checked(["git", "-C", str(repo), "rev-parse", commit + "^{tree}"])
-    request = {
-        "commit": commit,
-        "tree": tree,
-        "gates": gate_records(gates),
-        "toolchains": sorted({name for gate in gates for name in gate.toolchains}),
-    }
+    request = landing_request(commit, tree, gates)
     args = SimpleNamespace(
         inventory=repo / "tools/cross_hosts.toml",
         host=host,

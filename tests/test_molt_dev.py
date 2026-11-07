@@ -7272,6 +7272,47 @@ def test_land_budget_refuses_unfinished_gates_by_name_and_still_queues(
     assert counter.read_text(encoding="utf-8").split().count("static") == 2
 
 
+def test_land_budget_refusal_writes_a_record_the_landing_executor_reruns(
+    drv, origin_and_clone, tmp_path, monkeypatch, capsys
+):
+    from tools import molt_dev_policy, trunk_landing
+
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    try_gate = f"sleep 3 && echo try >> {shlex.quote(str(counter))}"
+    _publish_policy(work, _try_run_policy(counter, try_gate=try_gate))
+    lane = work.parent / "lane-refused"
+    head = _lane(work, "refused", {"a.py": "a = 1\n"})
+    monkeypatch.setattr(
+        molt_dev_policy, "PRECHECK_BUDGET", molt_dev_policy.PrecheckBudget(1.0)
+    )
+
+    assert _land_without_runner(drv, monkeypatch, lane, "--precheck-only") == (
+        EXIT_FAIL
+    )
+    shown = "".join(capsys.readouterr())
+    assert "rerun them on this commit with the landing executor:" in shown
+    record = Path(shown.split("--record ", 1)[1].split()[0])
+    payload = json.loads(record.read_text(encoding="utf-8"))
+    assert payload["checkout"] == str(lane)
+    assert payload["landing"]["commit"] == head
+    (refused,) = trunk_landing.decode_gates(payload["landing"]["gates"])
+    assert refused.command == try_gate
+    assert "try" not in counter.read_text(encoding="utf-8").split()
+
+    # The record reruns the refused gate through the landing executor, which
+    # prepares its toolchains as the landing does; no interpreter is named.
+    output = tmp_path / "rerun"
+    monkeypatch.setattr(
+        sys, "argv", ["trunk_landing", "--record", str(record), "--output", str(output)]
+    )
+    assert trunk_landing.main() == 0
+    receipt = json.loads((output / "receipt.json").read_text(encoding="utf-8"))
+    assert receipt["status"] == "success"
+    assert receipt["source_commit"] == head
+    assert counter.read_text(encoding="utf-8").split().count("try") == 1
+
+
 def test_land_static_gates_run_outside_the_try_run_budget(
     drv, origin_and_clone, tmp_path, monkeypatch, capsys
 ):

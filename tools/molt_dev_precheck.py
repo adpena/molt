@@ -28,6 +28,7 @@ cohorts stay with the batch.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import dataclass
@@ -260,6 +261,10 @@ class TryRunRefusal:
     reason: RefusalReason
     gates: tuple[SelectedGate, ...]
     detail: str
+    # The refused gates as a landing executor record (tools/trunk_landing.py
+    # --record): a rerun prepares each gate's interpreter and toolchains
+    # exactly as the landing does, so no caller names an interpreter.
+    record: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -303,7 +308,28 @@ class PrecheckResult:
             f"{len(self.refusal.gates)} gate(s) that were still running or not yet "
             "started, and the queue's batch runs them:\n"
             + "\n".join(f"      {display(gate.command)}" for gate in self.refusal.gates)
+            + (
+                ""
+                if self.refusal.record is None
+                else "\n    rerun them on this commit with the landing executor:\n"
+                f"      uv run --python 3.12 python tools/trunk_landing.py --record "
+                f"{self.refusal.record} --output {self.refusal.record.parent / 'rerun'}"
+            )
         )
+
+
+def _write_refused_record(
+    git, repo: Path, head: str, refused: tuple[SelectedGate, ...], output: Path
+) -> Path:
+    """Write ``refused`` as a landing executor record beside the try run's logs."""
+    from tools.trunk_landing import landing_request
+
+    record = output / "refused-gates.json"
+    request = landing_request(head, git.rev_parse(f"{head}^{{tree}}"), refused)
+    payload = {"landing": request, "checkout": str(repo)}
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return record
 
 
 def precheck_landing(
@@ -494,6 +520,9 @@ def precheck_landing(
                 + "".join(
                     f"; guard closure unresolved for {item}"
                     for item in cancellation.unresolved
+                ),
+                record=_write_refused_record(
+                    git, repo, head, refused, tried_runtime.output_dir
                 ),
             )
     _say(gate_time_summary(gate_seconds))
