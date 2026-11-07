@@ -18,6 +18,7 @@ from molt.cli.wasm_host import (
 )
 from molt.node_runtime import NodeRuntime, NodeRuntimeError
 from molt.wasm_artifact import wasm_runtime_manifest_path
+from tests.cargo_output_fixture import write_cargo_output
 
 
 def test_require_node_binary_uses_shared_selector_with_test_guard(
@@ -354,8 +355,7 @@ def test_resolve_molt_wasm_host_binary_prefers_explicit_env(
     host_bin = tmp_path / molt_wasm_host_exe_name()
     host_bin.write_bytes(b"host")
     target_host = tmp_path / "target" / "dev-fast" / molt_wasm_host_exe_name()
-    target_host.parent.mkdir(parents=True)
-    target_host.write_bytes(b"target")
+    write_cargo_output(target_host, b"target")
 
     monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(host_bin))
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_host.parent.parent))
@@ -369,9 +369,9 @@ def test_resolve_molt_wasm_host_binary_uses_dev_fast_target_dir(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    host_bin = tmp_path / "target" / "dev-fast" / molt_wasm_host_exe_name()
-    host_bin.parent.mkdir(parents=True)
-    host_bin.write_bytes(b"host")
+    host_bin = write_cargo_output(
+        tmp_path / "target" / "dev-fast" / molt_wasm_host_exe_name(), b"host"
+    )
 
     monkeypatch.delenv("MOLT_WASM_HOST_BIN", raising=False)
     monkeypatch.setenv("CARGO_TARGET_DIR", str(host_bin.parent.parent))
@@ -387,13 +387,35 @@ def test_resolve_molt_wasm_host_binary_uses_requested_profile(
 ) -> None:
     # Without a run context the project's target is Cargo's <project>/target.
     monkeypatch.delenv("MOLT_WASM_HOST_BIN", raising=False)
-    host_bin = tmp_path / "target" / "release-output" / molt_wasm_host_exe_name()
-    host_bin.parent.mkdir(parents=True)
-    host_bin.write_bytes(b"host")
+    host_bin = write_cargo_output(
+        tmp_path / "target" / "release-output" / molt_wasm_host_exe_name(), b"host"
+    )
 
     assert resolve_molt_wasm_host_binary(
         tmp_path, cargo_profile="release-output"
     ) == str(host_bin)
+    assert resolve_molt_wasm_host_binary(tmp_path, cargo_profile="dev-fast") is None
+
+
+def test_selected_wasm_host_older_than_its_sources_is_not_resolved(
+    monkeypatch, tmp_path: Path
+) -> None:
+    # Landing 29 (2026-11-07) ran a host built on 11-01 and failed with an error
+    # its 11-06 fix had removed: an existing binary is not a current one.
+    monkeypatch.delenv("MOLT_WASM_HOST_BIN", raising=False)
+    host = write_cargo_output(
+        tmp_path / "target" / "dev-fast" / molt_wasm_host_exe_name(), b"host"
+    )
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(host.parent.parent))
+    assert resolve_molt_wasm_host_binary(tmp_path, cargo_profile="dev-fast") == str(
+        host
+    )
+    source = host.parent / f".{host.stem}-source.rs"
+    built = host.stat().st_mtime_ns
+    os.utime(source, ns=(built + 1_000_000_000, built + 1_000_000_000))
+    assert resolve_molt_wasm_host_binary(tmp_path, cargo_profile="dev-fast") is None
+    os.utime(source, ns=(built - 1_000_000_000, built - 1_000_000_000))
+    host.with_suffix(".d").unlink()
     assert resolve_molt_wasm_host_binary(tmp_path, cargo_profile="dev-fast") is None
 
 
@@ -410,9 +432,9 @@ def test_missing_selected_wasm_host_does_not_use_other_builds(
 ) -> None:
     monkeypatch.delenv("MOLT_WASM_HOST_BIN", raising=False)
     for directory in (tmp_path / "target", tmp_path / "environment"):
-        host = directory / "dev-fast" / molt_wasm_host_exe_name()
-        host.parent.mkdir(parents=True)
-        host.write_bytes(b"unselected host")
+        write_cargo_output(
+            directory / "dev-fast" / molt_wasm_host_exe_name(), b"unselected host"
+        )
     monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "environment"))
     target = None
     if selection == "environment":
@@ -442,9 +464,10 @@ def test_relative_cargo_host_directory_follows_the_cli_target_rule(
     monkeypatch.setenv("CARGO_TARGET_DIR", "selected target")
     # Cargo reads a relative CARGO_TARGET_DIR from the working directory, and
     # so does the CLI that builds the runtime there.
-    host = cwd / "selected target" / "dev-fast" / molt_wasm_host_exe_name()
-    host.parent.mkdir(parents=True)
-    host.write_bytes(b"selected host")
+    host = write_cargo_output(
+        cwd / "selected target" / "dev-fast" / molt_wasm_host_exe_name(),
+        b"selected host",
+    )
     assert resolve_molt_wasm_host_binary(root, cargo_profile="dev-fast") == str(host)
     assert host.parent.parent == _cargo_target_root(root)
 
@@ -481,9 +504,9 @@ def test_wasm_matrix_uses_selected_dev_fast_host(monkeypatch, tmp_path: Path) ->
     from types import SimpleNamespace
     from tools import wasm_run_matrix as matrix
 
-    host = tmp_path / "dev-fast" / molt_wasm_host_exe_name()
-    host.parent.mkdir(parents=True)
-    host.write_bytes(b"host")
+    host = write_cargo_output(
+        tmp_path / "dev-fast" / molt_wasm_host_exe_name(), b"host"
+    )
     monkeypatch.delenv("MOLT_WASM_HOST_BIN", raising=False)
     monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path))
     case = matrix.SMOKE_CORPUS[0]
@@ -931,9 +954,7 @@ def test_wasm_builds_share_one_persistent_target_per_checkout(
     assert shared not in {first, second}
     assert "sessions" not in first.parts
 
-    host = first / "dev-fast" / molt_wasm_host_exe_name()
-    host.parent.mkdir(parents=True)
-    host.write_bytes(b"host")
+    host = write_cargo_output(first / "dev-fast" / molt_wasm_host_exe_name(), b"host")
     wasm_path = tmp_path / "output_linked.wasm"
     wasm_path.write_bytes(b"\x00asm")
     (tmp_path / "manifest.json").write_text("{}", encoding="utf-8")
