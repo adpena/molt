@@ -198,6 +198,63 @@ class CFGGraph:
         """
         return self.op_blocks[index] if 0 <= index < len(self.op_blocks) else None
 
+    def phi_edge_table(self) -> tuple[tuple[tuple[int, int], ...], ...]:
+        """Nearest incoming merge edges for every block, in linear storage.
+
+        Structured PHIs may follow END_IF through labels and exception checks.
+        A one-predecessor normal continuation preserves the same incoming arm;
+        resume/exception entries and joins establish their own edge boundary.
+        Resolve chains iteratively once, rather than walk them for each PHI.
+        """
+        structured: dict[int, tuple[tuple[int, int], ...]] = {}
+        for condition, end in self.control.if_to_end.items():
+            target = self.op_blocks[end]
+            predecessors = self.predecessors.get(target, ())
+            otherwise = self.control.if_to_else.get(condition)
+            if otherwise is not None:
+                then_arm = self.op_blocks[otherwise]
+                ordered = [then_arm, *(p for p in predecessors if p != then_arm)]
+            else:
+                else_arm = self.op_blocks[condition]
+                ordered = [*(p for p in predecessors if p != else_arm), else_arm]
+            if len(ordered) == len(predecessors) and set(ordered) == set(predecessors):
+                structured[target] = tuple(
+                    (predecessor, target) for predecessor in ordered
+                )
+        resolved: list[tuple[tuple[int, int], ...] | None] = [None] * len(self.blocks)
+        for start in range(len(self.blocks)):
+            node = start
+            path: list[int] = []
+            seen: set[int] = set()
+            while resolved[node] is None:
+                predecessors = self.predecessors.get(node, ())
+                if node == 0 or node in seen:
+                    edges: tuple[tuple[int, int], ...] = ()
+                    break
+                if len(predecessors) != 1 or not (
+                    self.edge_kinds.get((predecessors[0], node), CFGEdgeKind(0))
+                    & CFGEdgeKind.NORMAL
+                ):
+                    edges = structured.get(
+                        node, tuple((predecessor, node) for predecessor in predecessors)
+                    )
+                    break
+                seen.add(node)
+                path.append(node)
+                node = predecessors[0]
+            else:
+                found = resolved[node]
+                assert found is not None
+                edges = found
+            resolved[node] = edges
+            for member in path:
+                resolved[member] = edges
+        result: list[tuple[tuple[int, int], ...]] = []
+        for resolved_edges in resolved:
+            assert resolved_edges is not None
+            result.append(resolved_edges)
+        return tuple(result)
+
     # Dominance is derived on first use: most graphs a pass round builds are
     # never asked a dominance query. Shared CFGs retain one immutable tree.
     @cached_property

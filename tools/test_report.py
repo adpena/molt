@@ -253,31 +253,6 @@ def _section_mutation(runs: list[RunSnapshot]) -> list[str]:
     return lines
 
 
-def _section_translation(runs: list[RunSnapshot]) -> list[str]:
-    """Translation validation summary."""
-    lines = ["## Translation Validation", ""]
-
-    for run in runs:
-        step = run.step_by_name("translation_validation")
-        if not step:
-            continue
-        summary = step.get("summary", {})
-        status = "PASS" if step.get("passed") else "FAIL"
-        files = summary.get("files_tested", "?")
-        test_dir = summary.get("test_dir", "?")
-
-        lines.append(f"### {run.date} ({status})")
-        lines.append(f"- Test dir: {test_dir}")
-        lines.append(f"- Files tested: {files}")
-        if "passed" in summary:
-            lines.append(f"- Passed: {summary['passed']}")
-        if "failed" in summary:
-            lines.append(f"- Failed: {summary['failed']}")
-        lines.append("")
-
-    return lines
-
-
 def _section_model_based(runs: list[RunSnapshot]) -> list[str]:
     """Model-based test summary."""
     lines = ["## Model-Based Tests", ""]
@@ -424,7 +399,6 @@ def generate_full_report(runs: list[RunSnapshot]) -> str:
     lines.extend(_section_fuzzing(runs))
     lines.extend(_section_mutation(runs))
     lines.extend(_section_model_based(runs))
-    lines.extend(_section_translation(runs))
 
     return "\n".join(lines)
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from molt.compiler_analysis.python_imports import is_compiler_intrinsics_module
 
 from molt.compiler_analysis.python_imports import normalize_stdlib_module_name
+from molt.compiler_analysis.python_identity_catalog_generated import PythonIdentity
 
 import ast
 from typing import (
@@ -26,6 +27,23 @@ from molt.frontend.diagnostics import FrontendRejection
 
 from molt.frontend.visitors.call_dispatch_common import CALL_NOT_HANDLED
 from molt.frontend._mixin_base import GeneratorMixinBase
+
+# Builtin exception classes whose call lowers to one construction operation.
+_EXCEPTION_GROUP_CONSTRUCTORS = frozenset(
+    {PythonIdentity.BUILTIN_BASEEXCEPTIONGROUP, PythonIdentity.BUILTIN_EXCEPTIONGROUP}
+)
+_EXCEPTION_CONSTRUCTORS = frozenset(
+    {
+        PythonIdentity.BUILTIN_BASEEXCEPTION,
+        PythonIdentity.BUILTIN_EXCEPTION,
+        PythonIdentity.BUILTIN_KEYERROR,
+        PythonIdentity.BUILTIN_INDEXERROR,
+        PythonIdentity.BUILTIN_VALUEERROR,
+        PythonIdentity.BUILTIN_TYPEERROR,
+        PythonIdentity.BUILTIN_RUNTIMEERROR,
+        PythonIdentity.BUILTIN_STOPITERATION,
+    }
+)
 
 
 class CallNamedDispatchMixin(GeneratorMixinBase):
@@ -253,8 +271,12 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
             )
             if lowered_wrapper_intrinsic is not None:
                 return lowered_wrapper_intrinsic
+            # Every builtin branch below keys on the identity the read is
+            # proved to select (HF-776). An unproved read matches none of them
+            # and keeps the live read and a dynamic call.
+            builtin = self._proven_builtin_identity(node.func)
             if (
-                func_id in {"BaseExceptionGroup", "ExceptionGroup"}
+                builtin in _EXCEPTION_GROUP_CONSTRUCTORS
                 and not node.keywords
                 and not any(isinstance(arg, ast.Starred) for arg in node.args)
             ):
@@ -271,16 +293,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     args.append(arg_val)
                 class_val = self._emit_exception_class(func_id)
                 return self._emit_exception_new_from_class(class_val, args)
-            if func_id in {
-                "BaseException",
-                "Exception",
-                "KeyError",
-                "IndexError",
-                "ValueError",
-                "TypeError",
-                "RuntimeError",
-                "StopIteration",
-            }:
+            if builtin in _EXCEPTION_CONSTRUCTORS:
                 if node.keywords or any(isinstance(a, ast.Starred) for a in node.args):
                     pass  # fall through to generic call handler
                 else:
@@ -296,7 +309,11 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                             )
                         args.append(arg_val)
                     return self._emit_exception_new_from_args(func_id, args)
-            if func_id == "abs" and len(node.args) == 1 and not node.keywords:
+            if (
+                builtin is PythonIdentity.BUILTIN_ABS
+                and len(node.args) == 1
+                and not node.keywords
+            ):
                 value = self.visit(node.args[0])
                 if value is None:
                     raise FrontendRejection(
@@ -312,19 +329,19 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 res = MoltValue(self.next_var(), type_hint=result_hint)
                 self.emit(MoltOp(kind="ABS", args=[value], result=res))
                 return res
-            if func_id == "globals":
+            if builtin is PythonIdentity.BUILTIN_GLOBALS:
                 if node.args or node.keywords:
                     count = len(node.args) + len(node.keywords)
                     msg = f"globals() takes no arguments ({count} given)"
                     return self._emit_type_error_value(msg, "dict")
                 return self._emit_globals_dict()
-            if func_id == "locals":
+            if builtin is PythonIdentity.BUILTIN_LOCALS:
                 if node.args or node.keywords:
                     count = len(node.args) + len(node.keywords)
                     msg = f"locals() takes no arguments ({count} given)"
                     return self._emit_type_error_value(msg, "dict")
                 return self._emit_locals_dict()
-            if func_id == "vars":
+            if builtin is PythonIdentity.BUILTIN_VARS:
                 if (
                     node.keywords
                     or len(node.args) > 1
@@ -363,7 +380,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     )
                 )
                 return res
-            if func_id == "dir":
+            if builtin is PythonIdentity.BUILTIN_DIR:
                 if (
                     node.keywords
                     or len(node.args) > 1
@@ -398,7 +415,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 res = MoltValue(self.next_var(), type_hint="list")
                 self.emit(MoltOp(kind="CALL_FUNC", args=[callee, obj], result=res))
                 return res
-            if func_id == "getattr":
+            if builtin is PythonIdentity.BUILTIN_GETATTR:
                 if len(node.args) not in {2, 3} or node.keywords:
                     return CALL_NOT_HANDLED
                 obj = self.visit(node.args[0])
@@ -486,7 +503,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                         qualified_module_name=receiver_module_name,
                     )
                 return res
-            if func_id == "setattr":
+            if builtin is PythonIdentity.BUILTIN_SETATTR:
                 if len(node.args) != 3 or node.keywords:
                     return CALL_NOT_HANDLED
                 obj = self.visit(node.args[0])
@@ -526,7 +543,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 )
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                 return res
-            if func_id == "delattr":
+            if builtin is PythonIdentity.BUILTIN_DELATTR:
                 if len(node.args) != 2 or node.keywords:
                     return CALL_NOT_HANDLED
                 obj = self.visit(node.args[0])
@@ -584,7 +601,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 )
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                 return res
-            if func_id == "hasattr":
+            if builtin is PythonIdentity.BUILTIN_HASATTR:
                 if len(node.args) != 2 or node.keywords:
                     return CALL_NOT_HANDLED
                 obj = self.visit(node.args[0])
@@ -603,7 +620,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     )
                 )
                 return res
-            if func_id == "super":
+            if builtin is PythonIdentity.BUILTIN_SUPER:
                 if not node.args and not node.keywords:
                     res = MoltValue(self.next_var(), type_hint="super")
                     self.emit(
@@ -612,7 +629,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     return res
                 # Constructor diagnostics follow ordinary argument evaluation.
                 return CALL_NOT_HANDLED
-            if func_id == "classmethod":
+            if builtin is PythonIdentity.BUILTIN_CLASSMETHOD:
                 if len(node.args) != 1 or node.keywords:
                     return CALL_NOT_HANDLED
                 func_val = self.visit(node.args[0])
@@ -624,7 +641,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 res = MoltValue(self.next_var(), type_hint="classmethod")
                 self.emit(MoltOp(kind="CLASSMETHOD_NEW", args=[func_val], result=res))
                 return res
-            if func_id == "staticmethod":
+            if builtin is PythonIdentity.BUILTIN_STATICMETHOD:
                 if len(node.args) != 1 or node.keywords:
                     return CALL_NOT_HANDLED
                 func_val = self.visit(node.args[0])
@@ -636,7 +653,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 res = MoltValue(self.next_var(), type_hint="staticmethod")
                 self.emit(MoltOp(kind="STATICMETHOD_NEW", args=[func_val], result=res))
                 return res
-            if func_id == "property":
+            if builtin is PythonIdentity.BUILTIN_PROPERTY:
                 if any(kw.arg is None for kw in node.keywords):
                     return CALL_NOT_HANDLED
                 if len(node.args) > 4:
@@ -734,7 +751,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                         )
                     )
                 return res
-            if func_id == "print":
+            if builtin is PythonIdentity.BUILTIN_PRINT:
                 # Print is an ordinary value-producing builtin call. Its runtime
                 # authority owns per-argument writes, conversion failures, stream
                 # lookup, keyword binding, and the Python None result.
@@ -1232,7 +1249,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 return res
 
             builtin_result = self._try_emit_named_builtin_call(
-                node, func_id, needs_bind
+                node, builtin, needs_bind
             )
             if builtin_result is not CALL_NOT_HANDLED:
                 return builtin_result

@@ -23,7 +23,7 @@ compile_error!("feature `source_extension_loader` is unsupported on wasm32 targe
 // contract. `#[used]` keeps the witness in static archives until link admission.
 #[cfg(not(feature = "free-threaded"))]
 #[used]
-#[unsafe(export_name = "molt_generated_object_abi_69bab6cda2adac1b_gil_v7")]
+#[unsafe(export_name = "molt_generated_object_abi_b353df98e047c49b_gil_v8")]
 pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
 
 const _: () = assert!(
@@ -34,7 +34,7 @@ const _: () = assert!(
 
 #[cfg(feature = "free-threaded")]
 #[used]
-#[unsafe(export_name = "molt_generated_object_abi_69bab6cda2adac1b_free_threaded_v7")]
+#[unsafe(export_name = "molt_generated_object_abi_b353df98e047c49b_free_threaded_v8")]
 pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
 
 // Read-only semantic identity. Callable construction uses fn_addr! below to
@@ -121,6 +121,11 @@ mod bridge;
 mod builtins;
 mod c_api;
 mod call;
+mod marshal;
+pub use marshal::{
+    molt_marshal_dump, molt_marshal_dumps, molt_marshal_load, molt_marshal_loads,
+    molt_marshal_version,
+};
 #[cfg(feature = "stdlib_collections")]
 mod collections_bridge;
 mod concurrency;
@@ -543,6 +548,7 @@ pub(crate) use crate::builtins::attr::{
 pub use crate::builtins::attributes::*;
 pub use crate::builtins::binding_guards::molt_guard_builtin_bindings;
 pub use crate::builtins::callable::*;
+pub use crate::builtins::class_builder::{molt_build_class_builtin, molt_class_builder_check};
 pub(crate) use crate::builtins::classes::{
     BuiltinClasses, builtin_classes, builtin_classes_if_initialized,
     builtin_classes_retire_identities, builtin_classes_shutdown, builtin_type_bits,
@@ -582,9 +588,9 @@ pub(crate) use crate::builtins::exceptions::{
     exception_suppress_bits, exception_trace_bits, exceptions_clear_runtime_state,
     format_exception_message, format_exception_with_traceback, generator_raise_active,
     molt_async_work_poll_and_exception_last_pending, molt_async_work_poll_and_exception_pending,
-    molt_exception_active, molt_exception_clear, molt_exception_kind, molt_exception_last,
-    molt_exception_last_pending, molt_exception_match_handler, molt_exception_pending,
-    molt_exception_set_last, molt_exception_trace_prepend, molt_raise,
+    molt_exception_active, molt_exception_clear, molt_exception_frame_origin, molt_exception_kind,
+    molt_exception_last, molt_exception_last_pending, molt_exception_match_handler,
+    molt_exception_pending, molt_exception_set_last, molt_exception_trace_prepend, molt_raise,
     molt_unraisable_hook_args_is_exact, raise_exception, raise_key_error_with_key,
     raise_not_iterable, raise_unicode_decode_error, raise_unicode_encode_error, record_exception,
     record_memory_error_without_allocation, set_generator_raise, set_task_raise_active,
@@ -600,9 +606,9 @@ pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errn
 pub use crate::builtins::fcntl::*;
 pub(crate) use crate::builtins::frames::{
     exception_materialize_traceback_bits, frame_stack_active_globals_bits, frame_stack_pop,
-    frame_stack_push_owned, frame_stack_set_line, molt_getframe, molt_globals_builtin,
-    molt_locals_builtin, traceback_payload_code_bits, traceback_payload_col,
-    traceback_payload_end_col, traceback_payload_line, traceback_payload_next_bits,
+    frame_stack_push_owned, molt_getframe, molt_globals_builtin, molt_locals_builtin,
+    traceback_payload_code_bits, traceback_payload_col, traceback_payload_end_col,
+    traceback_payload_line, traceback_payload_next_bits,
 };
 pub use crate::builtins::functions::*;
 pub use crate::builtins::functions_fnmatch::*;
@@ -788,17 +794,17 @@ pub(crate) use crate::object::{
     Buffer2D, ClassEdgeOwnership, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING,
     HEADER_FLAG_CORO_RUNNING, HEADER_FLAG_CORO_STARTED, HEADER_FLAG_FUNC_REQUIRES_BINDER,
     HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE, HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAG_TASK_DONE,
-    HEADER_FLAG_TASK_QUEUED, HEADER_FLAG_TASK_RUNNING, HEADER_FLAG_TASK_WAKE_PENDING,
-    HEADER_FLAG_TRACEBACK_SUPPRESSED, MemoryView, MemoryViewFormat, MemoryViewFormatKind,
-    MoltFileHandle, MoltFileState, ObjectAuxPreselection, PtrSlot, alloc_object,
-    alloc_object_with_aux, alloc_object_zeroed_with_aux, bits_from_ptr, buffer2d_ptr, bytes_data,
-    bytes_len, dec_ref_bits, file_handle_ptr, header_from_obj_ptr, inc_ref_bits, init_atomic_bits,
-    instance_dict_bits, instance_set_dict_bits, maybe_ptr_from_bits, memoryview_base_bits,
-    memoryview_data, memoryview_format_bits, memoryview_itemsize, memoryview_len, memoryview_ndim,
-    memoryview_offset, memoryview_owner_bits, memoryview_ptr, memoryview_readonly,
-    memoryview_released, memoryview_shape, memoryview_stride, memoryview_strides, obj_from_bits,
-    object_class_bits, object_is_exact_builtin_dict, object_mark_has_ptrs, object_payload_size,
-    object_type_id, pending_bits_i64, ptr_from_bits, string_bytes, string_len,
+    HEADER_FLAG_TASK_QUEUED, HEADER_FLAG_TASK_RUNNING, HEADER_FLAG_TASK_WAKE_PENDING, MemoryView,
+    MemoryViewFormat, MemoryViewFormatKind, MoltFileHandle, MoltFileState, ObjectAuxPreselection,
+    PtrSlot, alloc_object, alloc_object_with_aux, alloc_object_zeroed_with_aux, bits_from_ptr,
+    buffer2d_ptr, bytes_data, bytes_len, dec_ref_bits, file_handle_ptr, header_from_obj_ptr,
+    inc_ref_bits, init_atomic_bits, instance_dict_bits, instance_set_dict_bits,
+    maybe_ptr_from_bits, memoryview_base_bits, memoryview_data, memoryview_format_bits,
+    memoryview_itemsize, memoryview_len, memoryview_ndim, memoryview_offset, memoryview_owner_bits,
+    memoryview_ptr, memoryview_readonly, memoryview_released, memoryview_shape, memoryview_stride,
+    memoryview_strides, obj_from_bits, object_class_bits, object_is_exact_builtin_dict,
+    object_mark_has_ptrs, object_payload_size, object_type_id, pending_bits_i64, ptr_from_bits,
+    string_bytes, string_len,
 };
 pub use crate::object::{
     MoltHeader, bump_type_version, global_type_version, molt_dec_ref, molt_inc_ref,
@@ -811,11 +817,10 @@ pub(crate) use crate::state::runtime_state::{runtime_state, runtime_state_for_gi
 #[allow(unused_imports)]
 pub(crate) use crate::state::{
     CONTEXT_STACK, DEFAULT_RECURSION_LIMIT, EXPECTED_LIVE_OBJECTS, FRAME_STACK, PARSE_ARENA,
-    REPR_DEPTH, REPR_SET, REPR_STACK, TRACE_FRAME_PUSH_STACK, TRACEBACK_SUPPRESS,
-    leak_assertion_enabled, process_memory_snapshot, profile_enabled, profile_enabled_unchecked,
-    profile_hit, profile_hit_bytes, profile_hit_bytes_unchecked, profile_hit_unchecked,
-    recursion_guard_enter, recursion_guard_exit, recursion_limit_get, recursion_limit_set,
-    traceback_suppress_enter, traceback_suppress_exit, traceback_suppressed,
+    REPR_DEPTH, REPR_SET, REPR_STACK, TRACE_FRAME_PUSH_STACK, leak_assertion_enabled,
+    process_memory_snapshot, profile_enabled, profile_enabled_unchecked, profile_hit,
+    profile_hit_bytes, profile_hit_bytes_unchecked, profile_hit_unchecked, recursion_guard_enter,
+    recursion_guard_exit, recursion_limit_get, recursion_limit_set,
 };
 #[allow(unused_imports)]
 pub(crate) use molt_obj_model::{

@@ -647,6 +647,7 @@ class RssViolation:
 @dataclass(frozen=True, slots=True)
 class ChildExitResourceUsage:
     max_rss_kb: int
+    cpu_seconds: float | None = None
 
 
 def elapsed_seconds_from_ps(value: str) -> int | None:

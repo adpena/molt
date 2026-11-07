@@ -298,6 +298,10 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "exception_prepare_raise",
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::ExceptionFrameOrigin,
+        name: "exception_frame_origin",
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionTracePrepend,
         name: "exception_trace_prepend",
     },
@@ -612,6 +616,14 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::GuardBuiltinBindings,
         name: "guard_builtin_bindings",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::BuildClassBuiltin,
+        name: "build_class_builtin",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ClassBuilderCheck,
+        name: "class_builder_check",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TypesCellContentsGet,
@@ -1972,6 +1984,26 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::SysVersionInfo,
         name: "sys_version_info",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::MarshalVersion,
+        name: "marshal_version",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::MarshalDumps,
+        name: "marshal_dumps",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::MarshalLoads,
+        name: "marshal_loads",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::MarshalDump,
+        name: "marshal_dump",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::MarshalLoad,
+        name: "marshal_load",
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassesInitTrampoline,
@@ -11292,6 +11324,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_frame_cell_publish" => Some(WasmRuntimeImport::FrameCellPublish),
         "exception_prepare_raise" => Some(WasmRuntimeImport::ExceptionPrepareRaise),
         "molt_exception_prepare_raise" => Some(WasmRuntimeImport::ExceptionPrepareRaise),
+        "exception_frame_origin" => Some(WasmRuntimeImport::ExceptionFrameOrigin),
+        "molt_exception_frame_origin" => Some(WasmRuntimeImport::ExceptionFrameOrigin),
         "exception_trace_prepend" => Some(WasmRuntimeImport::ExceptionTracePrepend),
         "molt_exception_trace_prepend" => Some(WasmRuntimeImport::ExceptionTracePrepend),
         "exception_active" => Some(WasmRuntimeImport::ExceptionActive),
@@ -11458,6 +11492,10 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_cell_ge" => Some(WasmRuntimeImport::CellGe),
         "guard_builtin_bindings" => Some(WasmRuntimeImport::GuardBuiltinBindings),
         "molt_guard_builtin_bindings" => Some(WasmRuntimeImport::GuardBuiltinBindings),
+        "build_class_builtin" => Some(WasmRuntimeImport::BuildClassBuiltin),
+        "molt_build_class_builtin" => Some(WasmRuntimeImport::BuildClassBuiltin),
+        "class_builder_check" => Some(WasmRuntimeImport::ClassBuilderCheck),
+        "molt_class_builder_check" => Some(WasmRuntimeImport::ClassBuilderCheck),
         "types_cell_contents_get" => Some(WasmRuntimeImport::TypesCellContentsGet),
         "molt_types_cell_contents_get" => Some(WasmRuntimeImport::TypesCellContentsGet),
         "types_cell_contents_set" => Some(WasmRuntimeImport::TypesCellContentsSet),
@@ -12140,6 +12178,16 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_sys_version" => Some(WasmRuntimeImport::SysVersion),
         "sys_version_info" => Some(WasmRuntimeImport::SysVersionInfo),
         "molt_sys_version_info" => Some(WasmRuntimeImport::SysVersionInfo),
+        "marshal_version" => Some(WasmRuntimeImport::MarshalVersion),
+        "molt_marshal_version" => Some(WasmRuntimeImport::MarshalVersion),
+        "marshal_dumps" => Some(WasmRuntimeImport::MarshalDumps),
+        "molt_marshal_dumps" => Some(WasmRuntimeImport::MarshalDumps),
+        "marshal_loads" => Some(WasmRuntimeImport::MarshalLoads),
+        "molt_marshal_loads" => Some(WasmRuntimeImport::MarshalLoads),
+        "marshal_dump" => Some(WasmRuntimeImport::MarshalDump),
+        "molt_marshal_dump" => Some(WasmRuntimeImport::MarshalDump),
+        "marshal_load" => Some(WasmRuntimeImport::MarshalLoad),
+        "molt_marshal_load" => Some(WasmRuntimeImport::MarshalLoad),
         "dataclasses_init_trampoline" => Some(WasmRuntimeImport::DataclassesInitTrampoline),
         "molt_dataclasses_init_trampoline" => Some(WasmRuntimeImport::DataclassesInitTrampoline),
         "chan_drop" => Some(WasmRuntimeImport::ChanDrop),

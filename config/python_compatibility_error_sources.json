@@ -1,5 +1,12 @@
 {
   "schema_version": 1,
+  "aot_boundaries": {
+    "MarshalCodeObject": {
+      "exception": "ValueError",
+      "message": "cannot unmarshal code objects across Molt's AOT boundary",
+      "contract": "docs/design/marshal.md"
+    }
+  },
   "sources": [
     {
       "version": "3.12.0",
@@ -62,39 +69,39 @@
       "sha256": "8e81dc644129386dfc8d10fbb57a8e15ca31f7b07baf289d9685695b06745769"
     },
     {
-      "version": "3.12.15",
-      "url": "https://raw.githubusercontent.com/python/cpython/e848e4b09ca4bc67c0041c9ce7526dae471d4c36/Lib/dataclasses.py",
+      "version": "3.12.16",
+      "url": "https://raw.githubusercontent.com/python/cpython/2c2462afc5d978d31f3d073001fc202d269917ff/Lib/dataclasses.py",
       "path": "Lib/dataclasses.py",
       "sha256": "d242aea5fcf6408b1c1f622442f88f68b9526ce1f8bd2890d74a144677c427d9",
-      "revision": "e848e4b09ca4bc67c0041c9ce7526dae471d4c36"
+      "revision": "2c2462afc5d978d31f3d073001fc202d269917ff"
     },
     {
-      "version": "3.12.15",
-      "url": "https://raw.githubusercontent.com/python/cpython/e848e4b09ca4bc67c0041c9ce7526dae471d4c36/Lib/importlib/_bootstrap_external.py",
+      "version": "3.12.16",
+      "url": "https://raw.githubusercontent.com/python/cpython/2c2462afc5d978d31f3d073001fc202d269917ff/Lib/importlib/_bootstrap_external.py",
       "path": "Lib/importlib/_bootstrap_external.py",
       "sha256": "e6ad72f3f0f9b65c99ab52598cd02ab748511dcdce1dd51f18dace9be9a680c6",
-      "revision": "e848e4b09ca4bc67c0041c9ce7526dae471d4c36"
+      "revision": "2c2462afc5d978d31f3d073001fc202d269917ff"
     },
     {
-      "version": "3.12.15",
-      "url": "https://raw.githubusercontent.com/python/cpython/e848e4b09ca4bc67c0041c9ce7526dae471d4c36/Lib/logging/__init__.py",
+      "version": "3.12.16",
+      "url": "https://raw.githubusercontent.com/python/cpython/2c2462afc5d978d31f3d073001fc202d269917ff/Lib/logging/__init__.py",
       "path": "Lib/logging/__init__.py",
       "sha256": "43f86bbc08fdd5c7b6e697abffe1381f534a92bb32e1f1aee8360d6a142592a1",
-      "revision": "e848e4b09ca4bc67c0041c9ce7526dae471d4c36"
+      "revision": "2c2462afc5d978d31f3d073001fc202d269917ff"
     },
     {
-      "version": "3.12.15",
-      "url": "https://raw.githubusercontent.com/python/cpython/e848e4b09ca4bc67c0041c9ce7526dae471d4c36/Modules/_io/iobase.c",
+      "version": "3.12.16",
+      "url": "https://raw.githubusercontent.com/python/cpython/2c2462afc5d978d31f3d073001fc202d269917ff/Modules/_io/iobase.c",
       "path": "Modules/_io/iobase.c",
       "sha256": "ccdd159eeb82fe58906242e1357f6d558a1a089c033cb3c7eabcc638bb11b71f",
-      "revision": "e848e4b09ca4bc67c0041c9ce7526dae471d4c36"
+      "revision": "2c2462afc5d978d31f3d073001fc202d269917ff"
     },
     {
-      "version": "3.12.15",
-      "url": "https://raw.githubusercontent.com/python/cpython/e848e4b09ca4bc67c0041c9ce7526dae471d4c36/Objects/memoryobject.c",
+      "version": "3.12.16",
+      "url": "https://raw.githubusercontent.com/python/cpython/2c2462afc5d978d31f3d073001fc202d269917ff/Objects/memoryobject.c",
       "path": "Objects/memoryobject.c",
       "sha256": "43728748a34eab47c0f7c7d3e3d7b0f155ee236ce6eb768ba64d202c902f9bb5",
-      "revision": "e848e4b09ca4bc67c0041c9ce7526dae471d4c36"
+      "revision": "2c2462afc5d978d31f3d073001fc202d269917ff"
     },
     {
       "version": "3.13.0",
@@ -169,39 +176,39 @@
       "sha256": "34a371c5d2b84bd74c2499997594ab8b4044427705fa971b7e0b2d9ef646089f"
     },
     {
-      "version": "3.13.17",
-      "url": "https://raw.githubusercontent.com/python/cpython/64e080d38154391ff2d2caa1161c298bb7cd8f30/Lib/dataclasses.py",
+      "version": "3.13.18",
+      "url": "https://raw.githubusercontent.com/python/cpython/0d4bd512fc429e3d4eacdd113c975e161f21644d/Lib/dataclasses.py",
       "path": "Lib/dataclasses.py",
       "sha256": "71aef7961f18bacf223566a83730def028c7fd3d6854b2d27ee23732f3d10f83",
-      "revision": "64e080d38154391ff2d2caa1161c298bb7cd8f30"
+      "revision": "0d4bd512fc429e3d4eacdd113c975e161f21644d"
     },
     {
-      "version": "3.13.17",
-      "url": "https://raw.githubusercontent.com/python/cpython/64e080d38154391ff2d2caa1161c298bb7cd8f30/Lib/importlib/_bootstrap_external.py",
+      "version": "3.13.18",
+      "url": "https://raw.githubusercontent.com/python/cpython/0d4bd512fc429e3d4eacdd113c975e161f21644d/Lib/importlib/_bootstrap_external.py",
       "path": "Lib/importlib/_bootstrap_external.py",
       "sha256": "283ca9ae00bd7758aa006df9be93f4b6b8d3228e3509f662cf54b1518797fbde",
-      "revision": "64e080d38154391ff2d2caa1161c298bb7cd8f30"
+      "revision": "0d4bd512fc429e3d4eacdd113c975e161f21644d"
     },
     {
-      "version": "3.13.17",
-      "url": "https://raw.githubusercontent.com/python/cpython/64e080d38154391ff2d2caa1161c298bb7cd8f30/Lib/logging/__init__.py",
+      "version": "3.13.18",
+      "url": "https://raw.githubusercontent.com/python/cpython/0d4bd512fc429e3d4eacdd113c975e161f21644d/Lib/logging/__init__.py",
       "path": "Lib/logging/__init__.py",
       "sha256": "4106cc3aa4e722116bbf0a3ffae3a8c7bc4981468ca7998ca35ed201a5605519",
-      "revision": "64e080d38154391ff2d2caa1161c298bb7cd8f30"
+      "revision": "0d4bd512fc429e3d4eacdd113c975e161f21644d"
     },
     {
-      "version": "3.13.17",
-      "url": "https://raw.githubusercontent.com/python/cpython/64e080d38154391ff2d2caa1161c298bb7cd8f30/Modules/_io/iobase.c",
+      "version": "3.13.18",
+      "url": "https://raw.githubusercontent.com/python/cpython/0d4bd512fc429e3d4eacdd113c975e161f21644d/Modules/_io/iobase.c",
       "path": "Modules/_io/iobase.c",
       "sha256": "6386f179c88d51d74a0374aad35671e5371578fcc8e1f89cb901a9d355d66c14",
-      "revision": "64e080d38154391ff2d2caa1161c298bb7cd8f30"
+      "revision": "0d4bd512fc429e3d4eacdd113c975e161f21644d"
     },
     {
-      "version": "3.13.17",
-      "url": "https://raw.githubusercontent.com/python/cpython/64e080d38154391ff2d2caa1161c298bb7cd8f30/Objects/memoryobject.c",
+      "version": "3.13.18",
+      "url": "https://raw.githubusercontent.com/python/cpython/0d4bd512fc429e3d4eacdd113c975e161f21644d/Objects/memoryobject.c",
       "path": "Objects/memoryobject.c",
       "sha256": "3dc91a84d6700f95e55b1c7a44c20a7e9e11503ed18a28e311fbb31031f31be9",
-      "revision": "64e080d38154391ff2d2caa1161c298bb7cd8f30"
+      "revision": "0d4bd512fc429e3d4eacdd113c975e161f21644d"
     },
     {
       "version": "3.14.0",
@@ -276,67 +283,67 @@
       "sha256": "7141679d2d4d1ac7faa9f17b4fa3596e042bbd4d32bbab659bb5336c24b79d95"
     },
     {
-      "version": "3.14.9",
-      "url": "https://raw.githubusercontent.com/python/cpython/ead82c07db1f111d613926ed1b6667411d768125/Lib/dataclasses.py",
+      "version": "3.14.10",
+      "url": "https://raw.githubusercontent.com/python/cpython/b703b2c5e704341d61e367b9b940b77ed11dded0/Lib/dataclasses.py",
       "path": "Lib/dataclasses.py",
       "sha256": "e8439c8b111856645a8b31e0dbbba532b494426399bad456079c0e5730ad322e",
-      "revision": "ead82c07db1f111d613926ed1b6667411d768125"
+      "revision": "b703b2c5e704341d61e367b9b940b77ed11dded0"
     },
     {
-      "version": "3.14.9",
-      "url": "https://raw.githubusercontent.com/python/cpython/ead82c07db1f111d613926ed1b6667411d768125/Lib/importlib/_bootstrap_external.py",
+      "version": "3.14.10",
+      "url": "https://raw.githubusercontent.com/python/cpython/b703b2c5e704341d61e367b9b940b77ed11dded0/Lib/importlib/_bootstrap_external.py",
       "path": "Lib/importlib/_bootstrap_external.py",
       "sha256": "2740a0b98f64ebee8347fb723b3863a7851161e1f136a6e968f010a9321ed90e",
-      "revision": "ead82c07db1f111d613926ed1b6667411d768125"
+      "revision": "b703b2c5e704341d61e367b9b940b77ed11dded0"
     },
     {
-      "version": "3.14.9",
-      "url": "https://raw.githubusercontent.com/python/cpython/ead82c07db1f111d613926ed1b6667411d768125/Lib/logging/__init__.py",
+      "version": "3.14.10",
+      "url": "https://raw.githubusercontent.com/python/cpython/b703b2c5e704341d61e367b9b940b77ed11dded0/Lib/logging/__init__.py",
       "path": "Lib/logging/__init__.py",
       "sha256": "4106cc3aa4e722116bbf0a3ffae3a8c7bc4981468ca7998ca35ed201a5605519",
-      "revision": "ead82c07db1f111d613926ed1b6667411d768125"
+      "revision": "b703b2c5e704341d61e367b9b940b77ed11dded0"
     },
     {
-      "version": "3.14.9",
-      "url": "https://raw.githubusercontent.com/python/cpython/ead82c07db1f111d613926ed1b6667411d768125/Modules/_io/iobase.c",
+      "version": "3.14.10",
+      "url": "https://raw.githubusercontent.com/python/cpython/b703b2c5e704341d61e367b9b940b77ed11dded0/Modules/_io/iobase.c",
       "path": "Modules/_io/iobase.c",
-      "sha256": "a85fdf5cb43a8217757e271de886e6ed86f4dd929a1059dc875708a366044a62",
-      "revision": "ead82c07db1f111d613926ed1b6667411d768125"
+      "sha256": "a739bad098c79af4912cbaf804dbd2ba356f84c2786ff6c38308bccdae6c2059",
+      "revision": "b703b2c5e704341d61e367b9b940b77ed11dded0"
     },
     {
-      "version": "3.14.9",
-      "url": "https://raw.githubusercontent.com/python/cpython/ead82c07db1f111d613926ed1b6667411d768125/Objects/memoryobject.c",
+      "version": "3.14.10",
+      "url": "https://raw.githubusercontent.com/python/cpython/b703b2c5e704341d61e367b9b940b77ed11dded0/Objects/memoryobject.c",
       "path": "Objects/memoryobject.c",
       "sha256": "d72422b672d25b5decb9ab027e0a9b7d9d56500a372adcd9d401bb582f820301",
-      "revision": "ead82c07db1f111d613926ed1b6667411d768125"
+      "revision": "b703b2c5e704341d61e367b9b940b77ed11dded0"
     },
     {
-      "version": "3.15.1",
-      "url": "https://raw.githubusercontent.com/python/cpython/c37e74cb6bcdadcd5f46f289498f6b3298ddee61/Lib/dataclasses.py",
+      "version": "3.15.2",
+      "url": "https://raw.githubusercontent.com/python/cpython/5e58eaad7c58df58dfa8ea549c87996e01dd1077/Lib/dataclasses.py",
       "path": "Lib/dataclasses.py",
       "sha256": "85284c01e378472f3f431bb699c73cf1ccaaff10d122d72c3bd1b75b548dd813",
-      "revision": "c37e74cb6bcdadcd5f46f289498f6b3298ddee61"
+      "revision": "5e58eaad7c58df58dfa8ea549c87996e01dd1077"
     },
     {
-      "version": "3.15.1",
-      "url": "https://raw.githubusercontent.com/python/cpython/c37e74cb6bcdadcd5f46f289498f6b3298ddee61/Lib/importlib/_bootstrap_external.py",
+      "version": "3.15.2",
+      "url": "https://raw.githubusercontent.com/python/cpython/5e58eaad7c58df58dfa8ea549c87996e01dd1077/Lib/importlib/_bootstrap_external.py",
       "path": "Lib/importlib/_bootstrap_external.py",
       "sha256": "12645e50f67f8743825adc03c129429c9e4ee99e7d679c2410e6d2fc045327ac",
-      "revision": "c37e74cb6bcdadcd5f46f289498f6b3298ddee61"
+      "revision": "5e58eaad7c58df58dfa8ea549c87996e01dd1077"
     },
     {
-      "version": "3.15.1",
-      "url": "https://raw.githubusercontent.com/python/cpython/c37e74cb6bcdadcd5f46f289498f6b3298ddee61/Lib/logging/__init__.py",
+      "version": "3.15.2",
+      "url": "https://raw.githubusercontent.com/python/cpython/5e58eaad7c58df58dfa8ea549c87996e01dd1077/Lib/logging/__init__.py",
       "path": "Lib/logging/__init__.py",
       "sha256": "87a1907cd9081e07c3a92e678015f94cd77acb2fe8987b70a4d589bcf89338ea",
-      "revision": "c37e74cb6bcdadcd5f46f289498f6b3298ddee61"
+      "revision": "5e58eaad7c58df58dfa8ea549c87996e01dd1077"
     },
     {
-      "version": "3.15.1",
-      "url": "https://raw.githubusercontent.com/python/cpython/c37e74cb6bcdadcd5f46f289498f6b3298ddee61/Modules/_io/iobase.c",
+      "version": "3.15.2",
+      "url": "https://raw.githubusercontent.com/python/cpython/5e58eaad7c58df58dfa8ea549c87996e01dd1077/Modules/_io/iobase.c",
       "path": "Modules/_io/iobase.c",
-      "sha256": "d38b6f321127cbca71700fe1587e27ff67c8db09bda54d2a92584d0ca5dd45cf",
-      "revision": "c37e74cb6bcdadcd5f46f289498f6b3298ddee61"
+      "sha256": "b5afef9fb621ed5a07e4b9c2e4e5980b25e38aad26e9a5a737a41a2f069766a0",
+      "revision": "5e58eaad7c58df58dfa8ea549c87996e01dd1077"
     }
   ]
 }

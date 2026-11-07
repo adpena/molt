@@ -9,6 +9,10 @@ from typing import (
 )
 
 from molt.builtin_callables import BUILTIN_FUNC_SPECS
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    BUILTIN_NAMES_BY_IDENTITY,
+    PythonIdentity,
+)
 from molt.frontend._types import (
     MoltOp,
     MoltValue,
@@ -21,8 +25,9 @@ from molt.frontend._mixin_base import GeneratorMixinBase
 
 class CallNamedBuiltinFallbackDispatchMixin(GeneratorMixinBase):
     def _try_emit_named_builtin_fallback_call(
-        self, node: ast.Call, func_id: str, needs_bind: bool
+        self, node: ast.Call, builtin: PythonIdentity, needs_bind: bool
     ) -> Any:
+        func_id = BUILTIN_NAMES_BY_IDENTITY[builtin]
         if func_id in BUILTIN_FUNC_SPECS:
             spec = BUILTIN_FUNC_SPECS[func_id]
             # Publication declares special binding protocols. Keep this call's
@@ -30,6 +35,7 @@ class CallNamedBuiltinFallbackDispatchMixin(GeneratorMixinBase):
             needs_bind = needs_bind or (
                 (spec.bind_kind is not None and spec.bind_kind.requires_custom_binding)
                 or spec.vararg is not None
+                or spec.varkw is not None
                 or bool(spec.kwonly_params)
             )
             callee = self._emit_builtin_function(func_id)

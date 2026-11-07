@@ -438,6 +438,14 @@ def render_model(table: dict) -> str:
     return "".join(out)
 
 
+def builtin_bound_names(table: dict) -> frozenset[str]:
+    """Every exception spelling some target binds in builtins."""
+    return frozenset(
+        {row["name"] for row in table["builtin"] if row["builtin_binding"]}
+        | {row["name"] for row in table["alias"]}
+    )
+
+
 def _variant_of(builtins: list[dict], name: str) -> str:
     for row in builtins:
         if row["name"] == name and row["name_lookup"]:
@@ -459,10 +467,7 @@ def render_python(table: dict) -> str:
         if row["name_lookup"]:
             out.append(f'    "{row["name"]}": {index + 1},\n')
     out.append("}\n\n")
-    names = sorted(
-        {row["name"] for row in table["builtin"] if row["builtin_binding"]}
-        | {row["name"] for row in table["alias"]}
-    )
+    names = sorted(builtin_bound_names(table))
     out.append(
         "# Every spelling some target binds in builtins (version and platform\n"
         "# gating stays with the runtime schema rows).\n"

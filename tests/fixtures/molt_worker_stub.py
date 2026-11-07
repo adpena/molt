@@ -115,6 +115,10 @@ def main() -> None:
             except Exception as exc:
                 status = "InvalidInput"
                 error = str(exc)
+        elif entry == "health":
+            # runtime/molt-worker's health entry ignores its payload and
+            # answers {"ok": true} in the export's codec.
+            response_payload = encode_payload({"ok": True}, codec)
         elif entry == "__error__":
             status = "InternalError"
             error = "boom"

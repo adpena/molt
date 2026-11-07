@@ -412,6 +412,20 @@ def write_summary_json(
         ),
         "elapsed_s": result.elapsed_s,
         "child_elapsed_s": result.child_elapsed_s,
+        "child_cpu_seconds": result.child_cpu_seconds,
+        "timeout_output": (
+            {
+                name: value[-8192:].decode("utf-8", errors="replace")
+                if isinstance(value, bytes)
+                else value[-8192:]
+                for name, value in (
+                    ("stdout_tail", result.stdout),
+                    ("stderr_tail", result.stderr),
+                )
+            }
+            if result.timed_out
+            else None
+        ),
         "cleanup_elapsed_s": result.cleanup_elapsed_s,
         "max_rss_kb": max_rss_kb,
         "max_rss_gb": max_rss_kb / (1024 * 1024),

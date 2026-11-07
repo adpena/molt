@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 from tools import harness_memory_guard
 from molt.process_guard import raise_for_guard_outcome
+from molt.python_environment_identity import PYTHON_IDENTITY_PROBE_TIMEOUT_S
 from molt.temporary_artifacts import new_guarded_directory
 from molt.cargo_execution_policy import (
     default_nested_process_timeout_seconds,
@@ -616,7 +617,7 @@ def check_output_guarded_test_process(
 def run_custody_subject_process(
     args: Sequence[str],
     *,
-    timeout: float = 120.0,
+    timeout: float | None = None,
     **kwargs: Any,
 ) -> subprocess.CompletedProcess[Any]:
     """Run the exact child whose raw process behavior is the test subject.
@@ -632,6 +633,14 @@ def run_custody_subject_process(
     command = [str(arg) for arg in args]
     if not command:
         raise ValueError("custody subject command must not be empty")
+    if timeout is None:
+        from tools.proof_command_argv import is_python_command
+
+        # HF-623: nine nested managed Python runs hit the old 120 s bound
+        # behind disk/first-exec waits. Reuse the owning capture deadline.
+        timeout = (
+            PYTHON_IDENTITY_PROBE_TIMEOUT_S if is_python_command(command[0]) else 120.0
+        )
     if timeout <= 0:
         raise ValueError("custody subject timeout must be positive")
     if "timeout" in kwargs:
@@ -642,7 +651,7 @@ def run_custody_subject_process(
 def check_output_custody_subject_process(
     args: Sequence[str],
     *,
-    timeout: float = 120.0,
+    timeout: float | None = None,
     **kwargs: Any,
 ) -> str | bytes:
     if "stdout" in kwargs:

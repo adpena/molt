@@ -4,7 +4,7 @@ from contextlib import contextmanager
 import sys
 from pathlib import Path
 
-from tools import check_translation_validation, parity_gate
+from tools import parity_gate
 
 
 def _fake_scope(calls: list[dict[str, object]]):
@@ -19,42 +19,6 @@ def _fake_scope(calls: list[dict[str, object]]):
         yield Scope()
 
     return fake_guarded_harness_scope
-
-
-def test_check_translation_validation_uses_conformance_guard_scope(
-    monkeypatch, tmp_path: Path
-) -> None:
-    module = check_translation_validation
-    src = tmp_path / "case.py"
-    src.write_text("print('ok')\n", encoding="utf-8")
-    calls: list[dict[str, object]] = []
-    monkeypatch.setattr(
-        module.harness_memory_guard,
-        "guarded_harness_scope",
-        _fake_scope(calls),
-    )
-    monkeypatch.setattr(
-        module,
-        "validate_file",
-        lambda source, profile, timeout, verbose=False: module.ValidationResult(
-            source,
-            module.ValidationResult.PASS,
-            "",
-            0.01,
-        ),
-    )
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["tools/check_translation_validation.py", str(src)],
-    )
-
-    rc = module.main()
-
-    assert rc == 0
-    assert calls[0]["prefix"] == "MOLT_CONFORMANCE"
-    assert calls[0]["repo_root"] == module.REPO_ROOT
-    assert calls[0]["label"] == "check_translation_validation"
 
 
 def test_parity_gate_uses_conformance_guard_scope(monkeypatch, tmp_path: Path) -> None:

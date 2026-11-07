@@ -41,7 +41,7 @@ def test_reserved_reap_cannot_signal_reused_pid_before_publication(monkeypatch):
     def wait4(pid, flags):
         reaped.set()
         assert publish.wait(2)
-        return pid, 0, SimpleNamespace(ru_maxrss=123)
+        return pid, 0, SimpleNamespace(ru_maxrss=123, ru_utime=0.0, ru_stime=0.0)
 
     os_api = SimpleNamespace(
         name="posix",
@@ -95,7 +95,11 @@ def test_blocking_reserved_exit_wait_does_not_block_owned_signal(monkeypatch):
     os_api = SimpleNamespace(
         name="posix",
         waitid=waitid,
-        wait4=lambda pid, flags: (pid, 0, SimpleNamespace(ru_maxrss=123)),
+        wait4=lambda pid, flags: (
+            pid,
+            0,
+            SimpleNamespace(ru_maxrss=123, ru_utime=0.0, ru_stime=0.0),
+        ),
         WNOWAIT=1,
         WEXITED=2,
         P_PID=3,
@@ -137,7 +141,11 @@ def test_kqueue_registration_race_only_reaps_owned_reserved_child(monkeypatch):
         # ESRCH at attach means exiting; WNOHANG cannot reap until the child
         # is a zombie, so only the blocking reap (flags 0) succeeds.
         waits.append(flags)
-        return (pid, 0, SimpleNamespace(ru_maxrss=64)) if flags == 0 else (0, 0, None)
+        return (
+            (pid, 0, SimpleNamespace(ru_maxrss=64, ru_utime=0.0, ru_stime=0.0))
+            if flags == 0
+            else (0, 0, None)
+        )
 
     monkeypatch.setattr(
         process_custody,
@@ -229,7 +237,11 @@ def test_kqueue_blocking_exit_watch_does_not_hold_signal_lock(monkeypatch):
 
     def wait4(pid, flags):
         waits.append(flags)
-        return (pid, 0, SimpleNamespace(ru_maxrss=64)) if flags == 0 else (0, 0, None)
+        return (
+            (pid, 0, SimpleNamespace(ru_maxrss=64, ru_utime=0.0, ru_stime=0.0))
+            if flags == 0
+            else (0, 0, None)
+        )
 
     monkeypatch.setattr(
         process_custody,
@@ -286,7 +298,11 @@ def test_kqueue_exit_notification_before_zombie_waits_for_reapable_child(
 
     def wait4(pid, flags):
         waits.append(flags)
-        return (pid, 0, SimpleNamespace(ru_maxrss=64)) if flags == 0 else (0, 0, None)
+        return (
+            (pid, 0, SimpleNamespace(ru_maxrss=64, ru_utime=0.0, ru_stime=0.0))
+            if flags == 0
+            else (0, 0, None)
+        )
 
     monkeypatch.setattr(
         process_custody,
@@ -327,7 +343,9 @@ def test_kqueue_error_event_is_registration_evidence_not_exit(monkeypatch):
         def wait4(pid, flags):
             waits.append(flags)
             return (
-                (pid, 0, SimpleNamespace(ru_maxrss=64)) if flags == 0 else (0, 0, None)
+                (pid, 0, SimpleNamespace(ru_maxrss=64, ru_utime=0.0, ru_stime=0.0))
+                if flags == 0
+                else (0, 0, None)
             )
 
         monkeypatch.setattr(
@@ -508,7 +526,11 @@ def _census_os(events, *, waitid=True):
         # A kqueue NOTE_EXIT can precede the zombie: only flags 0 reaps then.
         events.append(f"wait4:{flags}")
         reaped = waitid or flags == 0
-        return (pid, 0, SimpleNamespace(ru_maxrss=64)) if reaped else (0, 0, None)
+        return (
+            (pid, 0, SimpleNamespace(ru_maxrss=64, ru_utime=0.0, ru_stime=0.0))
+            if reaped
+            else (0, 0, None)
+        )
 
     api = SimpleNamespace(
         name="posix",

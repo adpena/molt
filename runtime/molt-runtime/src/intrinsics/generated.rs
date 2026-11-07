@@ -24,6 +24,41 @@ pub(crate) struct IntrinsicSpec {
 
 pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
+        name: "molt_marshal_version",
+        symbol: "molt_marshal_version",
+        arity: 0,
+        defaults: &[],
+        public: None,
+    },
+    IntrinsicSpec {
+        name: "molt_marshal_dumps",
+        symbol: "molt_marshal_dumps",
+        arity: 2,
+        defaults: &[],
+        public: None,
+    },
+    IntrinsicSpec {
+        name: "molt_marshal_loads",
+        symbol: "molt_marshal_loads",
+        arity: 1,
+        defaults: &[],
+        public: None,
+    },
+    IntrinsicSpec {
+        name: "molt_marshal_dump",
+        symbol: "molt_marshal_dump",
+        arity: 3,
+        defaults: &[],
+        public: None,
+    },
+    IntrinsicSpec {
+        name: "molt_marshal_load",
+        symbol: "molt_marshal_load",
+        arity: 1,
+        defaults: &[],
+        public: None,
+    },
+    IntrinsicSpec {
         name: "molt_native_callable_reduce",
         symbol: "molt_native_callable_reduce",
         arity: 1,
@@ -7908,6 +7943,13 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         public: None,
     },
     IntrinsicSpec {
+        name: "molt_exception_frame_origin",
+        symbol: "molt_exception_frame_origin",
+        arity: 1,
+        defaults: &[],
+        public: None,
+    },
+    IntrinsicSpec {
         name: "molt_async_work_poll_and_exception_pending",
         symbol: "molt_async_work_poll_and_exception_pending",
         arity: 0,
@@ -8415,6 +8457,20 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_guard_builtin_bindings",
         symbol: "molt_guard_builtin_bindings",
         arity: 1,
+        defaults: &[],
+        public: None,
+    },
+    IntrinsicSpec {
+        name: "molt_build_class_builtin",
+        symbol: "molt_build_class_builtin",
+        arity: 2,
+        defaults: &[],
+        public: Some(super::public_objects_generated::PublicObjectId::BuildClassBuiltin),
+    },
+    IntrinsicSpec {
+        name: "molt_class_builder_check",
+        symbol: "molt_class_builder_check",
+        arity: 0,
         defaults: &[],
         public: None,
     },

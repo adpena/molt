@@ -293,6 +293,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_exception_pending",
             crate::molt_exception_pending as *const (),
         )),
+        "molt_exception_frame_origin" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_exception_frame_origin",
+            crate::molt_exception_frame_origin as *const (),
+        )),
         "molt_async_work_poll_and_exception_pending" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_async_work_poll_and_exception_pending",
@@ -384,6 +388,14 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_guard_builtin_bindings" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_guard_builtin_bindings",
             crate::molt_guard_builtin_bindings as *const (),
+        )),
+        "molt_build_class_builtin" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_build_class_builtin",
+            crate::molt_build_class_builtin as *const (),
+        )),
+        "molt_class_builder_check" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_class_builder_check",
+            crate::molt_class_builder_check as *const (),
         )),
         "molt_types_cell_contents_get" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_types_cell_contents_get",

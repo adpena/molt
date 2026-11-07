@@ -38,7 +38,8 @@ def main(argv: list[str] | None = None) -> int:
     if host is None:
         parser.exit(
             127,
-            f"molt-wasm-host is missing for Cargo profile {args.cargo_profile!r}; "
+            f"molt-wasm-host is missing or older than its sources for Cargo profile "
+            f"{args.cargo_profile!r}; "
             "build it in CARGO_TARGET_DIR or set MOLT_WASM_HOST_BIN\n",
         )
     result = _COMMANDS.run([host, *host_args], cwd=ROOT)

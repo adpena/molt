@@ -37,3 +37,23 @@ except RuntimeError:
     except* ValueError:
         print("subgroup-all-consumed", True)
     print("subgroup-no-spurious-error", sys.exception() is outer)
+
+
+def else_failure(fail_body, divisor):
+    try:
+        print("try-star-else", fail_body)
+        if fail_body:
+            raise ExceptionGroup("body", [ValueError("body")])
+    except* ValueError:
+        print("handled-star-body")
+    else:
+        print(10 // divisor)
+    finally:
+        print("star-else-finally")
+
+
+for fail_body in (False, True):
+    try:
+        else_failure(fail_body, 0)
+    except ZeroDivisionError:
+        print("handled-star-else")

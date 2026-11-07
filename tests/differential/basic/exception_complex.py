@@ -48,3 +48,23 @@ def flow_test(trigger_error):
 
 flow_test(False)
 flow_test(True)
+
+
+def else_failure(fail_body, divisor):
+    try:
+        print("try-else-failure", fail_body)
+        if fail_body:
+            raise ValueError("body")
+    except ValueError:
+        print("handled-body")
+    else:
+        print(10 // divisor)
+    finally:
+        print("else-failure-finally")
+
+
+for fail_body in (False, True):
+    try:
+        else_failure(fail_body, 0)
+    except ZeroDivisionError:
+        print("handled-else")

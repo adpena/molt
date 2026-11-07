@@ -410,7 +410,7 @@ One runner owns main. Agents enqueue and continue.
   changed-crate Clippy; `tools/molt_dev_precheck.py`) within
   `PRECHECK_BUDGET` (the static gates run to their verdict outside it; the
   budget clock starts with the try run; repairs are unbounded and outside the
-  15-minute claim), so a lint, format, generator, policy or direct-reader
+  try-run budget), so a lint, format, generator, policy or direct-reader
   test failure costs that lane alone instead of a batch run; GitHub's merge
   queue likewise admits only changes whose required checks passed, Zuul runs
   its check pipeline before its gate pipeline, and Chromium's commit queue and
@@ -758,7 +758,7 @@ or frontend lane well under the 90 min ceiling on a warm target. The proof
 measures three recent lanes against their retained precheck receipts. The
 receipt's evidence is censored (the budget cut the cohort at 599 s), so the
 numbers come from the measurement, not from it. A miss is reported with its
-dominant gate; there is no waiver flag.
+dominant gate; there is no waiver flag (section 10).
 
 #### 4.2 Changed-crate lib tests: `tools/check_changed_crate_tests.py`
 
@@ -1081,6 +1081,68 @@ reviewers (8 blockers, 20 majors in total); round 2, design and
 implementation-readiness reviewers (3 blockers, 10 majors). Every blocker and
 major was resolved in the text above or recorded under "Out of scope".
 
+### 10. Expected failures and slow cases in the landing presubmit (HF-623)
+
+Owner, 2026-11-05: "Do not turn every bug into a new registry, receipt
+schema, orchestrator, or policy gate." and "Before landing, complete the
+affected consumer migration and run the focused checks required to trust
+that change." The landing presubmit runs the static gates and the focused
+readers of the changed authorities, within about 600 s; heavy suites run in
+postsubmit and at release milestones.
+
+**Expected failures.** The typed `flaky(OpenFindingId)` marker
+(`tests/findings/__init__.py`) is the only expected-failure form, as LLVM lit
+`XFAIL:` lines, rustc compiletest `//@ ignore-*` directives and Chromium
+[TestExpectations](https://chromium.googlesource.com/chromium/src/+/HEAD/docs/testing/web_test_expectations.md)
+keep theirs in the tree, reviewed like code and tied to a tracking issue.
+Collection refuses a marker whose finding is not open, so the marker expires
+with its row. Presubmit skips a marked test; postsubmit's `--run-flaky` runs
+it with normal pass and fail. There is no per-landing waiver flag, no waiver
+receipt field and no audit tool: the marker is in the tree, so
+`git grep -n "flaky(" -- tests` is the audit. A per-landing `--waive` design
+was reviewed twice and retired by the owner before any code landed.
+
+**Slow cases.** The `slow` marker (pyproject.toml) already names the tests
+that exercise long toolchain paths, and the CI fast cells deselect them.
+Presubmit runs no `slow` case: every selected file's cohort passes
+`--skip-slow`, and `tests/conftest.py` skips its `slow` cases, even in a test
+file the lane edits. Owner, 2026-11-06: presubmit stays within minutes and
+postsubmit on the farm owns the slow cases (revert on a new failure). Readers
+and edited files used to run whole, and the linked WASM end-to-end cases (one
+`molt-wasm-host` peaked at 9.8-11.0 GB on main and on the batch alike) failed
+landings on the per-gate memory slice, not on the change. A skip, not
+`-m "not slow"`, keeps a cohort whose cases are all slow from ending with
+pytest's exit status 5. Postsubmit keeps each owner's selector and runs every
+slow case. The provisioning cases that publish real Python images
+(`PUBLISHES_IMAGES` in `tests/test_checkout_provisioning.py`, 22-214 s per
+case in landing gate logs) are now `slow`; `repository.docs-tests` declares no
+selector, so CI coverage is unchanged.
+
+Measured on this host: over the last 36 first-parent commits on `main`, the
+presubmit graph selected a median of 3.5 and a p90 of 101 test files (914 at
+most, for `src/molt/cli/__init__.py`); 2.5 and 22 of them (89 at most) import
+the change. A marshal change selects 90 files and runs one whole; the
+image-publishing provisioning cases now skip there and still run when
+`src/molt/checkout_provisioning.py` changes.
+
+**Importers only (owner decision, 2026-11-06).** Presubmit runs the changed
+tests and the tests that import or run a changed non-stdlib source
+(`DirectReaders.importers`). A test that reads a changed path as data, through
+a directory or by compiling a changed stdlib source is a data reader: presubmit
+leaves it to postsubmit, which selects it through the whole graph. Over 36 main
+commits this moves the p90 from 101 to 22 files (89 at most). Two exceptions
+keep a data reader in presubmit: a recent postsubmit failure, and a reader that
+a curated rule runs anyway. A data reader with no landing envelope (a build
+cell, or no cell) keeps its `deferred` entry, because postsubmit cannot run it
+either. The landing receipt names the readers left to postsubmit
+(`postsubmit_only`, part of `selection_sha256`); the commit message counts them.
+The trade-off is accepted: presubmit no longer runs data-authority readers (for
+example the readers of `tools/proof_plan.toml`); `tools/generators.py check`
+still runs as a static gate. Landing attempt 16 (a combined candidate) had
+selected about 1,000 files and stopped twice on host memory pressure. Postsubmit
+must still prove that every left reader ran before last-green moves (next
+step).
+
 ## Costs
 
 Commit metadata comes from one typed, NUL-framed Git history read: original
@@ -1206,3 +1268,96 @@ batches and bisection, which replaces every private landing wrapper.
 3. Linux and Windows cells on the farm.
 4. Rollups and bisection are implemented. Result reuse remains deferred under
    the observed-input design.
+
+## Executor-owned landing budget and stall evidence (HF-623, HF-779, HF-780)
+
+The 2026-11-05 host sample found 15 stalled-child failures in 174 landing
+try runs: nine managed-Python commands at 120 seconds, five fresh executable
+launches at 10/60 seconds and one guardian acknowledgement at 30 seconds.
+Four pytest gates each sizing against all 18 host CPUs could start 72 workers.
+The operator cap of three avoided that oversubscription, but a capped try run
+took 1423 seconds against its 900-second deadline. These are the motivating
+measurements, not qualification of the changes below.
+
+The proof executor owns one CPU budget for its batch, using the existing
+`molt.host_capacity` authority: affinity/quota, with performance cores first
+on macOS. It divides that budget among the possible concurrent pytest gates
+within their resource limits. Every pytest gate reserves at least one CPU,
+including serial `-n 0`; a one-CPU host serializes pytest sessions. The runner
+bounds each share by its existing memory slice and declared per-worker memory,
+then passes an explicit `-n`. Receipts retain declared and executed argv,
+worker count, wall duration and child CPU usage from the guard's sole reaper.
+No operator worker override or cross-process jobserver owns this allocation.
+Non-pytest build commands retain their existing toolchain resource policies.
+
+Keep deadlines, not a progress-based hang detector: CPU silence cannot tell
+blocked I/O from a hang. Managed-Python consumers reuse the existing 900-second
+identity-probe bound, rather than imposing an outer 120-second deadline.
+Fresh native launches and guardian handoffs use their owning named bounds,
+with the measured scan/host-wait cause beside each definition. The try-run
+budget follows the owner's 2026-11-05 19:50Z correction: a 600-second presubmit
+p90 target, met by selecting actual readers rather than allowing longer runs.
+Failure history prioritizes readers without admitting unrelated failures.
+The enclosing cancellation still wins over a child deadline or retry. Diagnostic
+and cleanup grace remain bounded. A reader that the change reaches only
+through its pytest harness or its data runs its fast cases and leaves its
+`slow` cases to postsubmit (section 10 of the fast landing). Such readers can
+still number in the hundreds for a broad change, so the full presubmit wall
+time is not yet qualified from receipts. It does not promise admission against
+foreign processes or prove that Gatekeeper caused a particular wait.
+
+D1's `flaky(OpenFindingId)` quarantine is distinct from strict expected failures:
+collection validates the open identity, presubmit skips with its finding reason,
+and postsubmit passes `--run-flaky` and executes normally. It is the only
+expected-failure form (section 10 of the fast landing). A slow test is not a
+flake; no current test is quarantined without evidence. `ci_triage` owns the
+exhaustive infrastructure-retry classification. Only a typed launch resource
+failure (EAGAIN or ENOMEM) before payload execution can receive one retry.
+`Popen` may fork and reap a child whose exec failed, so this is not a claim
+that no child was ever born; pre-exec CPU usage is unknown. Its controlled
+pre-exec hook only sets limits and writes its startup pipe. See
+[CPython's launch exception contract](https://docs.python.org/3/library/subprocess.html#exceptions).
+Source drift, cancellation, product failures, timeout alone and unresolved
+custody do not qualify. Both attempts retain separate streams and classified
+records; they share the enclosing try-run bound. There is no retry ladder.
+
+For a timed-out direct Python child, enable CPython's `-X faulthandler` and use
+its fatal SIGABRT dump before the existing tree termination. This is a timeout
+termination signal, not a harmless diagnostic request. Send only to the owned
+root under the sole reaper's signal lock; do not signal arbitrary descendants.
+The flag is part of the launch: as with `subprocess.run`, the result's `args`,
+a timeout's or failure's `cmd` and every receipt's executed argv name the
+launched argv, while a repro command names the request, because the guard adds
+the flag again. An exec, disabled handler or interpreter not yet initialized can
+leave the dump unavailable. Windows has no POSIX signal dump. Output tails stay attached to the
+timeout exception and its diagnostic; incident profiles follow the run's durable
+evidence directory, outside reclaimable scratch. Never let diagnostic collection
+block the guard's independent deadline backstop.
+
+`molt doctor` reports a fresh directly executed shebang script's first and warm
+launch durations on macOS, along with the limited read-only Developer Tools
+policy observation available on that host. Timing indicates first-exec overhead,
+not proof of a native Gatekeeper scan; per-app permission may remain unknown.
+It links the owner instructions and never changes security settings.
+
+The implementation must migrate executor callbacks, both command runners,
+receipt projections, timeout readers and test witnesses together. Unsupported
+shell pytest programs refuse before spawn; recognized argv wrappers use the
+one proof-command parser. Independent tests observe simultaneous allocations
+on 1/2/6/18-CPU hosts, actual child argv, memory pressure, serial mode,
+retry refusal/attempt retention, a real timeout's named blocked frame, and
+flaky collection versus postsubmit execution. Native/WASM program semantics
+are unaffected. Worker precheck is distinct from parent-owned landing under
+worker load.
+
+Design review, 2026-11-05: two sequential isolated read-only Goldfish reviews
+(design and implementation readiness). The first identified seven gaps;
+dispositions tightened diagnostic signal custody, launch retry eligibility,
+enclosing-budget precedence, serial/memory floors, supported wrapper parsing,
+probe interpretation and evidence required to quarantine a test. The second
+identified a shell-budget escape; unsupported shell pytest now must refuse.
+No design finding remains unresolved. Full design and review records belong
+in the lane's external evidence, not tracked per-run logs. Primary precedents:
+[pytest-xdist explicit workers](https://pytest-xdist.readthedocs.io/en/stable/distribution.html),
+[Ninja job pools](https://cmake.org/cmake/help/latest/prop_gbl/JOB_POOLS.html), and
+[CPython faulthandler](https://docs.python.org/3/library/faulthandler.html).

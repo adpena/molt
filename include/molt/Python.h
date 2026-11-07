@@ -2011,50 +2011,10 @@ static inline PyObject *_molt_datetime_timezone_utc(void) {
 #include "shared/_context_exports.h"
 
 /* ========================================================================
- * Marshal C API — delegates to pickle for serialization
+ * Marshal C API — the same wire codec used by compiled Python
  * ======================================================================== */
 
-static inline PyObject *PyMarshal_WriteObjectToString(PyObject *value, int version) {
-    PyObject *mod, *fn, *args, *result;
-    (void)version;
-    if (value == NULL) {
-        PyErr_SetString(PyExc_TypeError, "cannot marshal NULL object");
-        return NULL;
-    }
-    mod = PyImport_ImportModule("pickle");
-    if (mod == NULL) return NULL;
-    fn = PyObject_GetAttrString(mod, "dumps");
-    Py_DECREF(mod);
-    if (fn == NULL) return NULL;
-    args = PyTuple_Pack(1, value);
-    if (args == NULL) { Py_DECREF(fn); return NULL; }
-    result = PyObject_CallObject(fn, args);
-    Py_DECREF(args);
-    Py_DECREF(fn);
-    return result;
-}
-
-static inline PyObject *PyMarshal_ReadObjectFromString(const char *data, Py_ssize_t len) {
-    PyObject *mod, *fn, *bytes_obj, *args, *result;
-    if (data == NULL || len <= 0) {
-        PyErr_SetString(PyExc_ValueError, "cannot unmarshal empty data");
-        return NULL;
-    }
-    mod = PyImport_ImportModule("pickle");
-    if (mod == NULL) return NULL;
-    fn = PyObject_GetAttrString(mod, "loads");
-    Py_DECREF(mod);
-    if (fn == NULL) return NULL;
-    bytes_obj = PyBytes_FromStringAndSize(data, len);
-    if (bytes_obj == NULL) { Py_DECREF(fn); return NULL; }
-    args = PyTuple_Pack(1, bytes_obj);
-    Py_DECREF(bytes_obj);
-    if (args == NULL) { Py_DECREF(fn); return NULL; }
-    result = PyObject_CallObject(fn, args);
-    Py_DECREF(args);
-    Py_DECREF(fn);
-    return result;
-}
+#include "shared/_marshal_exports.h"
 
 /* ========================================================================
  * Dunder-dispatch helper (internal)

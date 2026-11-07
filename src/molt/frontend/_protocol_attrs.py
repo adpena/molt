@@ -42,6 +42,7 @@ from molt.frontend._types import (
 if TYPE_CHECKING:
     from molt.frontend.lowering.class_resolution import ClassDefinitionIndex
     from molt.frontend.lowering.builtin_guards import GuardArmKind
+    from molt.frontend.lowering.midend_telemetry import MidendMemoryProfiler
     from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
     from molt.compiler_analysis.python_lexical_scope import PythonDependencyAuthority
     from molt.compiler_analysis.python_binding_facts import PythonNodeKey
@@ -61,11 +62,13 @@ class _GeneratorProtocolAttrs(Protocol):
     _emitted_syntax_warnings: set[tuple[str, int, str]]
     _exception_subclass_memo: dict[ClassId, bool]
     _expr_col: tuple[int, int] | None
+    _expr_line: tuple[int, int] | None
     _gpu_body_origin_candidates: dict[int, dict[str, Any]]
     _lexical_dependency_cache: PythonDependencyAuthority | None
     _lexical_dependency_index: PythonBindingIndex | None
     _list_int_containers: set[str]
     _midend_env_snapshot: Any
+    _midend_memory_profiler: MidendMemoryProfiler | None
     _midend_stats_reported: Any
     _module_attr_type_hints: dict[str, TypeHint]
     _module_pressure_funcs_map_ref: Any
@@ -76,6 +79,7 @@ class _GeneratorProtocolAttrs(Protocol):
     _op_by_result: dict[str, MoltOp]
     _sema: SemaResult | None
     _source_is_stdlib_module: Any
+    _statement_site: tuple[int, int, int | None, int | None] | None
     active_exceptions: list[ActiveException]
     annotation_name_counter: Any
     app_callable_bindings: dict[str, dict[str, Any]]
@@ -146,5 +150,3 @@ class _GeneratorProtocolAttrs(Protocol):
     global_imported_modules: dict[str, str]
     global_imported_names: dict[str, str]
     globals: dict[str, MoltValue]
-    imported_attr_names: dict[str, str]
-    imported_module_attr_mutations: set[tuple[str, str]]

@@ -5899,6 +5899,8 @@ pub(crate) fn prepare_cpython_hooks() -> bool {
                 slice_new: slice::hook_slice_new,
                 slice_item: slice::hook_slice_item,
                 object_contains: hook_object_contains,
+                marshal_write: Some(crate::marshal::c_api::write),
+                marshal_read: Some(crate::marshal::c_api::read),
                 context_type_admit: contextvars::type_admit,
                 context_new: contextvars::new,
                 context_copy_current: contextvars::copy_current,

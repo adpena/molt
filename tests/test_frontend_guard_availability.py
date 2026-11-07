@@ -97,15 +97,22 @@ def test_guard_cannot_hoist_across_dynamic_branch_truth_callback() -> None:
     assert result[0].kind == "IF"
 
 
-def test_callback_control_preserves_control_class_but_advances_heap_epoch() -> None:
+def test_callback_control_preserves_control_class_but_invalidates_heap_reads() -> None:
     gen = SimpleTIRGenerator()
     args = [MoltValue("task"), MoltValue("slot"), MoltValue("pending"), 1]
     control = op("STATE_TRANSITION", *args)
     assert gen._op_effect_class(control) == "control"
     assert gen._op_may_access_arbitrary_heap(control)
     state = gen._empty_canonicalization_state()
-    _, state = gen._canonicalize_block_with_state([control], state, induction_steps={})
-    assert state["memory_epoch"] == 1
+    first = op("TYPE_OF", MoltValue("obj"), result="before")
+    second = op("TYPE_OF", MoltValue("obj"), result="after")
+    rewritten, _ = gen._canonicalize_block_with_state(
+        [first, control, second], state, induction_steps={}
+    )
+    assert [item.result.name for item in rewritten if item.kind == "TYPE_OF"] == [
+        "before",
+        "after",
+    ]
 
 
 def test_guard_failure_order_is_not_sorted_across_branches() -> None:

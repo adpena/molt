@@ -178,7 +178,7 @@ discovery_only = false
 [[generator]]
 tool = "tools/gen_release_matrix.py"
 outputs = ["src/molt/release_matrix.py"]
-source = "config/release_targets.toml + src/molt/target_python.py + tools/generator_io.py"
+source = "config/release_targets.toml + config/release_acceptance_matrix.toml + src/molt/target_python_policy.py + src/molt/_python_release_generated.py + tools/generator_io.py"
 check_mode = true
 toolchains = []
 check_command = "tools/gen_release_matrix.py --check"
@@ -281,7 +281,7 @@ outputs = [
   "src/molt/compiler_analysis/python_identity_catalog_generated.py",
   "runtime/molt-runtime/src/builtins/types/dataclasses/initializer_spec_generated.rs",
 ]
-source = "src/molt/compiler_analysis/python_identity_catalog.toml + runtime/molt-runtime/src/intrinsics/manifest.pyi + tools/intrinsic_manifest.py + tools/generator_io.py"
+source = "src/molt/compiler_analysis/python_identity_catalog.toml + runtime/molt-runtime/src/intrinsics/manifest.pyi + runtime/builtin_binding_guards.toml + runtime/exception_kinds.toml + tools/gen_exception_kinds.py + tools/intrinsic_manifest.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_python_identity_catalog.py --check"
 toolchains = []
@@ -662,7 +662,9 @@ discovery_only = false
 
 [[generator]]
 tool = "tools/gen_stdlib_module_union.py"
-outputs = ["src/molt/_python_release_generated.py"]
+# .python-version is the default target's pinned final release: uv, CI
+# bootstrap and checkout provisioning read its exact bytes (no header).
+outputs = ["src/molt/_python_release_generated.py", ".python-version"]
 output_family = "tools/stdlib_module_union.py and tools/stdlib_module_union_<major>_<minor>.py for the canonical admitted target catalog; pending pins produce no module baseline"
 source = "config/cpython_stdlib_snapshot.json (stdlib, AST, startup, ABI, release-note and token source inputs at config/cpython_regrtest_sources.toml revisions; pending source evidence is distinct from admitted target projections) + src/molt/target_python_policy.py + tools/generator_io.py"
 check_mode = true

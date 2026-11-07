@@ -5,9 +5,9 @@ The bundle also joins the findings ledger at its source revision. The gate
 reads the ledger blob and the `pyproject.toml` blob that `source_sha` names. It
 records every open finding (`tools/finding_status.py`) and the project version
 (`tools/release/release_model.py`). Status is PASS only when every typed receipt
-passes and no finding is open. Every public release, the first one (v0.0.1)
-included, is held to the v1.0 quality contract; the version number never
-relaxes it.
+passes and no finding is open. This holds every version to the 1.x rule; the
+decided 0.x rule (docs/spec/PUBLIC_CONTRACT_V1.md, "Versioning and release
+gating") lands with the release-line slice of docs/design/v0_1_support_matrix.md.
 """
 
 from __future__ import annotations

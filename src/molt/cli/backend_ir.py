@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import ExceptionEdgeKind
+
 from molt.compilation_target import ArtifactTarget, Target, TargetKind
 
 from dataclasses import dataclass
@@ -275,7 +277,11 @@ def _guard_initialization_ops(
             (int(op["value"]) for op in ops if op.get("kind") == "label"),
             default=0,
         )
-    check: SimpleIROp = {"kind": "check_exception", "value": failure_label}
+    check: SimpleIROp = {
+        "kind": "check_exception",
+        "exception_edge": ExceptionEdgeKind.ORIGIN,
+        "value": failure_label,
+    }
     guarded: list[SimpleIROp] = []
     for op in ops:
         if op == check and guarded and guarded[-1] == check:
@@ -387,7 +393,13 @@ def _build_isolate_import_ops(
                     "out": init_out,
                 }
             )
-            import_ops.append({"kind": "check_exception", "value": import_failed_label})
+            import_ops.append(
+                {
+                    "kind": "check_exception",
+                    "exception_edge": ExceptionEdgeKind.ORIGIN,
+                    "value": import_failed_label,
+                }
+            )
             if idx < len(module_init_symbols) - 1:
                 import_ops.append({"kind": "else"})
         import_ops.extend({"kind": "end_if"} for _ in module_init_symbols)
@@ -860,19 +872,31 @@ def _native_callable_wrapper_function(
         params = ["args", "kwargs"]
         ops: list[SimpleIROp] = [
             {"kind": "callargs_new", "out": "v0"},
-            {"kind": "check_exception", "value": 2},
+            {
+                "kind": "check_exception",
+                "exception_edge": ExceptionEdgeKind.ORIGIN,
+                "value": 2,
+            },
             {
                 "kind": "callargs_expand_star",
                 "args": ["v0", "args"],
                 "out": "v1",
             },
-            {"kind": "check_exception", "value": 1},
+            {
+                "kind": "check_exception",
+                "exception_edge": ExceptionEdgeKind.ORIGIN,
+                "value": 1,
+            },
             {
                 "kind": "callargs_expand_kwstar",
                 "args": ["v0", "kwargs"],
                 "out": "v2",
             },
-            {"kind": "check_exception", "value": 1},
+            {
+                "kind": "check_exception",
+                "exception_edge": ExceptionEdgeKind.ORIGIN,
+                "value": 1,
+            },
         ]
         payload = ["v0"]
         result = "v3"
@@ -892,7 +916,13 @@ def _native_callable_wrapper_function(
             "native_callable_symbol": export.symbol,
         }
     )
-    ops.append({"kind": "check_exception", "value": 1})
+    ops.append(
+        {
+            "kind": "check_exception",
+            "exception_edge": ExceptionEdgeKind.ORIGIN,
+            "value": 1,
+        }
+    )
     if uses_callargs:
         ops.append({"kind": "release", "args": ["v0"]})
     ops.append({"kind": "ret", "args": [result]})
@@ -1133,7 +1163,11 @@ def _append_static_native_module_attr_export_ops(
                     "args": [],
                     "out": provider_init_var,
                 },
-                {"kind": "check_exception", "value": failure_label},
+                {
+                    "kind": "check_exception",
+                    "exception_edge": ExceptionEdgeKind.ORIGIN,
+                    "value": failure_label,
+                },
             ]
         )
         provider_name_var = f"v{next_var}"
@@ -1169,7 +1203,11 @@ def _append_static_native_module_attr_export_ops(
                         "args": [provider_module_var, attr_name_var],
                         "out": attr_value_var,
                     },
-                    {"kind": "check_exception", "value": failure_label},
+                    {
+                        "kind": "check_exception",
+                        "exception_edge": ExceptionEdgeKind.ORIGIN,
+                        "value": failure_label,
+                    },
                     {
                         "kind": "module_set_attr",
                         "args": [module_var, attr_name_var, attr_value_var],
@@ -1275,7 +1313,11 @@ def _build_registry_native_module_init_ops(
                     "native_callable_abi": NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
                     "native_callable_symbol": spec.init_symbol,
                 },
-                {"kind": "check_exception", "value": 1},
+                {
+                    "kind": "check_exception",
+                    "exception_edge": ExceptionEdgeKind.ORIGIN,
+                    "value": 1,
+                },
             ]
         )
     else:
@@ -1369,7 +1411,11 @@ def _build_static_native_module_init_ops(
                     "args": [],
                     "out": provider_init_var,
                 },
-                {"kind": "check_exception", "value": 1},
+                {
+                    "kind": "check_exception",
+                    "exception_edge": ExceptionEdgeKind.ORIGIN,
+                    "value": 1,
+                },
                 {
                     "kind": "const_str",
                     "s_value": spec.alias_of,
@@ -1398,7 +1444,11 @@ def _build_static_native_module_init_ops(
                     "native_callable_abi": NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
                     "native_callable_symbol": spec.init_symbol,
                 },
-                {"kind": "check_exception", "value": 1},
+                {
+                    "kind": "check_exception",
+                    "exception_edge": ExceptionEdgeKind.ORIGIN,
+                    "value": 1,
+                },
             ]
         )
     else:
@@ -1547,7 +1597,11 @@ def _attach_static_native_publication_to_source_init(
         **function,
         "ops": [
             *ops[:insertion_index],
-            {"kind": "check_exception", "value": failure_label},
+            {
+                "kind": "check_exception",
+                "exception_edge": ExceptionEdgeKind.ORIGIN,
+                "value": failure_label,
+            },
             *guarded_publication,
             *ops[insertion_index:],
         ],

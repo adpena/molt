@@ -137,7 +137,10 @@ def test_signature_plan_builds_candidate_before_its_compiled_oracle(changed):
         assert matched == [owner]
         assert len(gates) == 2
         build, compare = _cargo_chain(
-            [_local_command(i, gate, "local") for i, gate in enumerate(gates)]
+            [
+                _local_command(i, gate, "local", repo=root)
+                for i, gate in enumerate(gates)
+            ]
         )
         assert (
             "internal-runtime-wasm-build --build-profile dev --stdlib-profile full"

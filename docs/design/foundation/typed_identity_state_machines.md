@@ -68,13 +68,14 @@ A semantics-bearing transformation states its preconditions as checked facts
 and proves itself against the formal model, not by example alone.
 
 - Semantics: the Lean model under `formal/lean`.
-- Passes: translation validation (`tools/translation_validate.py`) checks a
-  rewrite's input and output against that model.
+- Passes: no checker yet proves a rewrite against that model. Differential
+  execution (`tests/molt_diff.py`) checks observable behavior of the programs
+  it runs; a bounded per-pass validator is open work (HF-800).
 - Scope: the verified subset
   (`docs/spec/areas/compat/contracts/verified_subset_contract.md`) bounds what
   the model must cover.
-- Search: differential fuzzing against CPython (HF-95) derives programs from
-  the subset and reduces each failure to a typed finding test.
+- Search (planned, HF-95): differential fuzzing against CPython derives programs
+  from the subset and reduces each failure to a typed finding test.
 
 Prior art: CompCert's verified compiler passes, Alive2's translation validation
 for LLVM, CakeML, seL4, and Csmith and YARPGen for differential fuzzing.

@@ -770,26 +770,78 @@ def test_verifier_owns_managed_state_through_child_exit(
 
 
 def test_verifier_rebuilds_after_completed_target_retirement(tmp_path, monkeypatch):
+    import shutil
+
     import tools.rust_ir_verifier as verifier_module
 
-    binary = tmp_path / "debug" / verifier_module._BINARY_NAME
+    target = tmp_path / "target"
+    binary = target / "debug" / verifier_module._BINARY_NAME
     builds = []
 
     class Commands:
         def run(self, command, **kwargs):
             builds.append(tuple(command))
             binary.parent.mkdir(parents=True, exist_ok=True)
-            binary.write_bytes(b"compiled output")
+            if not binary.exists():
+                binary.write_bytes(b"compiled output")
 
     monkeypatch.setattr(verifier_module, "_COMMANDS", Commands())
-    monkeypatch.setattr(verifier_module, "_BINARY_READY", set())
+    monkeypatch.setattr(verifier_module, "_BINARY_READY", {})
     monkeypatch.setattr(
         verifier_module, "require_cargo_build_capacity", lambda *a, **k: None
     )
-    environment = {"CARGO_TARGET_DIR": str(tmp_path)}
-    assert verifier_module.verifier_binary(env=environment) == binary
-    assert verifier_module.verifier_binary(env=environment) == binary
+    environment = {"CARGO_TARGET_DIR": str(target)}
+    pinned = verifier_module.verifier_binary(env=environment)
+    assert pinned.read_bytes() == b"compiled output"
+    assert pinned.parent.parent == target / verifier_module._PIN_DIRECTORY
+    assert verifier_module.verifier_binary(env=environment) == pinned
     assert len(builds) == 1
-    binary.unlink()  # Simulate retirement after its preceding user completed.
-    assert verifier_module.verifier_binary(env=environment) == binary
+    shutil.rmtree(target)  # Retirement after its preceding user completed.
+    assert verifier_module.verifier_binary(env=environment).is_file()
     assert len(builds) == 2
+
+
+def test_verifier_runs_a_pin_that_cargo_uplifts_never_remove(tmp_path, monkeypatch):
+    """Cargo uplifts target/debug/molt-ir-verify by removing the old name and
+    linking a new one, even for a fresh build; parallel workers each build it,
+    so the name could vanish between one worker's build and its spawn (a
+    watcher saw it absent 4 times in 5,908 polls under 12 parallel builds,
+    2026-11-06). Each caller runs a hard link of the bytes its build produced."""
+    import tools.rust_ir_verifier as verifier_module
+
+    target = tmp_path / "target"
+    binary = target / "debug" / verifier_module._BINARY_NAME
+    generation = iter((b"first build", b"second build"))
+
+    class Commands:
+        def run(self, command, **kwargs):
+            binary.parent.mkdir(parents=True, exist_ok=True)
+            # An uplift: remove the old name, then publish the new inode.
+            binary.unlink(missing_ok=True)
+            binary.write_bytes(next(generation))
+
+    monkeypatch.setattr(verifier_module, "_COMMANDS", Commands())
+    monkeypatch.setattr(verifier_module, "_BINARY_READY", {})
+    monkeypatch.setattr(
+        verifier_module, "require_cargo_build_capacity", lambda *a, **k: None
+    )
+    environment = {"CARGO_TARGET_DIR": str(target)}
+    first = verifier_module.verifier_binary(env=environment)
+    # Another worker's uplift removes the public name mid-use.
+    binary.unlink()
+    assert first.is_file() and first.read_bytes() == b"first build"
+    assert verifier_module.verifier_binary(env=environment) == first
+    # A rebuild (another process) pins the new content beside the old pin,
+    # which a live worker may still be starting: no pin is removed.
+    verifier_module._BINARY_READY.clear()
+    second = verifier_module.verifier_binary(env=environment)
+    assert second != first and second.read_bytes() == b"second build"
+    assert first.is_file() and first.read_bytes() == b"first build"
+    # Identical bytes from another worker's build share one pin.
+    verifier_module._BINARY_READY.clear()
+    binary.unlink()
+    binary.write_bytes(b"second build")
+    generation = iter((b"second build",))
+    assert verifier_module.verifier_binary(env=environment) == second
+    pins = target / verifier_module._PIN_DIRECTORY
+    assert not [p for p in pins.iterdir() if p.name.endswith(".tmp")]

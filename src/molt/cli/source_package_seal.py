@@ -15,6 +15,7 @@ the record state was updated is recognized and completed idempotently.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 import hashlib
 import os
 from pathlib import Path, PurePosixPath
@@ -120,6 +121,13 @@ class SourcePackageSeal:
         return self.root / _PAYLOAD_DIRECTORY
 
 
+class SealCommitState(StrEnum):
+    """A seal publication's commit record: PREPARED, then COMMITTED."""
+
+    PREPARED = "prepared"  # candidate copied beside the destination
+    COMMITTED = "committed"  # destination verified; the candidate copy is removed
+
+
 @dataclass(frozen=True, slots=True)
 class SourcePackageSealCommit:
     """Durable state for one immutable, digest-addressed publication."""
@@ -130,7 +138,7 @@ class SourcePackageSealCommit:
     seal_sha256: str
     candidate_root: Path
     destination: Path
-    state: str
+    state: SealCommitState
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -632,8 +640,9 @@ def load_source_package_seal_commit(
             "commit candidate path does not match its immutable identity"
         )
     state = document["state"]
-    if not isinstance(state, str) or state not in {"prepared", "committed"}:
+    if not isinstance(state, str) or state not in set(SealCommitState):
         raise SourcePackageSealVerificationError(f"invalid commit state: {state!r}")
+    state = SealCommitState(state)
     commit = SourcePackageSealCommit(
         transaction_root=transaction_root,
         record_path=record_path,
@@ -736,10 +745,10 @@ def prepare_source_package_seal_commit(
             )
         return existing
 
-    state = "prepared"
+    state = SealCommitState.PREPARED
     if destination.exists():
         verify_source_package_seal(destination, expected_sha256=verified.seal_sha256)
-        state = "committed"
+        state = SealCommitState.COMMITTED
     else:
         _copy_seal_candidate(seal_root, candidate, verified.seal_sha256)
     commit = SourcePackageSealCommit(
@@ -767,7 +776,7 @@ def commit_source_package_seal(
         current.candidate_root.parent, retirement_scope=current.candidate_root.name
     )
     destination_exists = current.destination.exists()
-    if current.state == "committed":
+    if current.state is SealCommitState.COMMITTED:
         if not destination_exists:
             raise SourcePackageSealVerificationError(
                 "committed seal destination is missing"
@@ -814,7 +823,7 @@ def commit_source_package_seal(
         seal_sha256=current.seal_sha256,
         candidate_root=current.candidate_root,
         destination=current.destination,
-        state="committed",
+        state=SealCommitState.COMMITTED,
     )
     _write_commit_record(committed)
     return load_source_package_seal_commit(

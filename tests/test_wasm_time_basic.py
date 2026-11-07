@@ -1,3 +1,4 @@
+import pytest
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -18,6 +19,10 @@ def _work_dir(root: Path):
         yield Path(td)
 
 
+# A cold linked WASM build of this program took up to 251 s under landing
+# load on 2026-11-05 (Molt compile latency, HF-791): presubmit skips it for
+# harness-only readers; WASM changes and postsubmit run it.
+@pytest.mark.slow
 def test_wasm_time_intrinsics_basic() -> None:
     require_wasm_toolchain()
 

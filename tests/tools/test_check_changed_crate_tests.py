@@ -13,10 +13,12 @@ from pathlib import Path
 import pytest
 
 from tools import check_changed_crate_tests as gate
+from tools.proof_plan import excluded_backend_crates, excluded_backends
 from tools.check_changed_clippy import Reach, Workspace, reach
 
 ROOT = Path(__file__).resolve().parents[2]
 HOST = "aarch64-apple-darwin"
+EXPERIMENTAL = excluded_backend_crates(excluded_backends(ROOT))
 
 
 @pytest.fixture(scope="module")
@@ -41,6 +43,7 @@ def _select(plan, libs, *packages: str) -> gate.Selection:
         _reach(*packages),
         libs,
         gate.runtime_gate(plan),
+        experimental=EXPERIMENTAL,
     )
 
 
@@ -123,6 +126,7 @@ def test_a_crate_no_source_names_runs_its_default_truth_unit(plan, libs) -> None
         and lib.harnessed
         and name not in named
         and name != "molt-runtime"
+        and name not in EXPERIMENTAL
     )
     assert undeclared, "every member has a declared source; pick another witness"
     selection = _select(plan, libs, undeclared[0])
@@ -138,6 +142,20 @@ def test_a_crate_no_source_names_runs_its_default_truth_unit(plan, libs) -> None
         "--no-fail-fast",
     )
     assert not cell.declared
+
+
+def test_an_experimental_backend_crate_runs_in_no_presubmit_cell(plan, libs) -> None:
+    # HF-620 removed the Luau packages from every presubmit source; without the
+    # exclusion the crate fell to its default-truth unit, whose Lune oracles
+    # need a toolchain the plan no longer provisions.
+    assert "molt-backend-luau" in EXPERIMENTAL
+    selection = _select(plan, libs, "molt-backend-luau", "molt-backend-native")
+    assert not _cells_for(selection, "molt-backend-luau")
+    assert _cells_for(selection, "molt-backend-native")
+    assert any(
+        note.startswith("molt-backend-luau: experimental backend")
+        for note in selection.unverified
+    )
 
 
 def test_sources_parse_features_targets_and_filters() -> None:
@@ -208,7 +226,9 @@ def test_features_filter_per_source_then_cells_merge_by_key() -> None:
             host=HOST,
         ),
     ]
-    selection = gate.select(sources, _reach("a", "b"), libs, None)
+    selection = gate.select(
+        sources, _reach("a", "b"), libs, None, experimental=frozenset()
+    )
     # rule:one's bare feature is a/x; rule:two loses c/z (c is not reached).
     (cell,) = selection.cells
     assert cell.sources == ["rule:one", "rule:two"]

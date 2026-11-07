@@ -112,7 +112,7 @@ def lease(tmp_path, monkeypatch):
     record = {
         "schema": suite.SCHEMA,
         "token": "a" * 32,
-        "state": "active",
+        "state": suite.SuiteCustodyState.ACTIVE,
         "owner_pid": 10,
         "owner_started_at_ns": 100,
         "guardian_pid": os.getpid(),
@@ -241,7 +241,7 @@ def test_unheld_or_closed_lease_cannot_adopt(tmp_path):
     record = {
         "schema": suite.SCHEMA,
         "token": "a" * 32,
-        "state": "active",
+        "state": suite.SuiteCustodyState.ACTIVE,
         "owner_pid": 10,
         "owner_started_at_ns": 100,
         "guardian_pid": os.getpid(),
@@ -422,7 +422,7 @@ def test_changed_suite_scratch_never_acquires_launch_or_deletion_authority(
     assert payload.read_bytes() == expected
     receipt = json.loads((path.parent / "drain.json").read_text(encoding="utf-8"))
     assert receipt["closed"] is True
-    assert receipt["scratch"]["state"] == "blocked"
+    assert receipt["scratch"]["state"] == suite.ScratchOutcome.BLOCKED
 
 
 def test_verified_daemon_closure_does_not_hide_scratch_reclamation_failure(
@@ -445,7 +445,10 @@ def test_verified_daemon_closure_does_not_hide_scratch_reclamation_failure(
     assert (path.parent / "scratch").is_dir()
     receipt = json.loads((path.parent / "drain.json").read_text(encoding="utf-8"))
     assert receipt["closed"] is True
-    assert receipt["scratch"] == {"state": "blocked", "error": "OSError: denied"}
+    assert receipt["scratch"] == {
+        "state": suite.ScratchOutcome.BLOCKED,
+        "error": "OSError: denied",
+    }
     assert not suite.drain_lease(path)
     assert attempts == [scratch]
     assert payload.read_bytes() == b"unfinished deletion"
@@ -1888,10 +1891,16 @@ def test_seal_actual_encoded_byte_cap_preserves_readable_index(lease, monkeypatc
     index_path = path.parent / "adoption-index.json"
     original = index_path.read_bytes()
     monkeypatch.setattr(suite, "_ADOPTION_BYTES", len(original))
-    errors = suite._seal_adoption_index(path, lease=record, state="closing")
-    assert errors and "byte limit" in errors[0]
+    errors = suite._seal_adoption_index(
+        path, lease=record, state=suite.SuiteCustodyState.CLOSING
+    )
+    assert errors and errors[0].kind is suite.SealFailureKind.INVALID
+    assert not errors[0].retryable and "byte limit" in errors[0].detail
     assert index_path.read_bytes() == original
-    assert suite._read_adoption_index(path, lease=record)["state"] == "active"
+    assert (
+        suite._read_adoption_index(path, lease=record)["state"]
+        is suite.SuiteCustodyState.ACTIVE
+    )
 
 
 @pytest.mark.parametrize(
@@ -1992,7 +2001,11 @@ def test_transient_closing_seal_failure_retries_within_drain_budget(lease, monke
     def seal(*args, **kwargs):
         calls.append(kwargs["state"])
         if len(calls) == 1:
-            return ["adoption seal: OSError: injected transient seal timeout"]
+            return [
+                suite.SealFailure(
+                    suite.SealFailureKind.STORAGE, "OSError: injected transient seal"
+                )
+            ]
         return original(*args, **kwargs)
 
     monkeypatch.setattr(suite, "_seal_adoption_index", seal)
@@ -2000,7 +2013,8 @@ def test_transient_closing_seal_failure_retries_within_drain_budget(lease, monke
     monkeypatch.setattr(suite, "_DRAIN_BUDGET_S", 0.5)
     deterministic_drain_clock(monkeypatch)
     assert suite.drain_lease(path)
-    assert calls[:2] == ["closing", "closing"] and calls[-1] == "closed"
+    closing, closed = suite.SuiteCustodyState.CLOSING, suite.SuiteCustodyState.CLOSED
+    assert calls[:2] == [closing, closing] and calls[-1] is closed
 
 
 def test_read_only_scope_scan_never_grants_new_export(lease, tmp_path, monkeypatch):
@@ -2363,7 +2377,12 @@ def test_sentinel_busy_adoption_lock_skips_discovery_and_retains_known_births(
 
 
 @pytest.mark.parametrize(
-    "state,renumbered", [("closed", False), ("closed", True), ("active", False)]
+    "state,renumbered",
+    [
+        (suite.SuiteCustodyState.CLOSED, False),
+        (suite.SuiteCustodyState.CLOSED, True),
+        (suite.SuiteCustodyState.ACTIVE, False),
+    ],
 )
 def test_current_suite_reader_never_adopts_or_rekeys_old_scratch(
     tmp_path, state, renumbered
@@ -2417,3 +2436,97 @@ def test_current_suite_reader_never_adopts_or_rekeys_old_scratch(
         for p in old.parent.rglob("*")
         if p.is_file()
     } == before
+
+
+class _GuardianStub:
+    def __init__(self, pid: int, returncode: int | None) -> None:
+        self.pid = pid
+        self._returncode = returncode
+
+    def poll(self) -> int | None:
+        return self._returncode
+
+
+def test_guardian_handoff_failure_names_an_exit_and_its_log_tail(
+    tmp_path: Path,
+) -> None:
+    log = tmp_path / "guardian.log"
+    log.write_bytes(b"x" * 4096 + b"\nTraceback: guardian import failed\n")
+    error = suite._guardian_handoff_failure(
+        _GuardianStub(4242, 3), "use acknowledgement", 30.0, log
+    )
+    message = str(error)
+    assert "use acknowledgement unavailable" in message
+    assert "guardian pid 4242 exited with 3" in message
+    assert "still running" not in message
+    assert str(log) in message
+    assert message.endswith("Traceback: guardian import failed")
+    # Only the tail is carried, never the whole log.
+    assert len(message) < 4096
+
+
+def test_guardian_handoff_failure_names_a_missed_bound(tmp_path: Path) -> None:
+    error = suite._guardian_handoff_failure(
+        _GuardianStub(4243, None), "birth", 2.0, tmp_path / "absent.log"
+    )
+    message = str(error)
+    assert "birth unavailable: guardian pid 4243 still running after 2 s" in message
+    assert "exited" not in message
+    assert "<unreadable:" in message
+
+
+@pytest.mark.parametrize(
+    "kind, retried",
+    [
+        (suite.SealFailureKind.STORAGE, True),
+        (suite.SealFailureKind.LOCK_TIMEOUT, True),
+        (suite.SealFailureKind.INVALID, False),
+        (suite.SealFailureKind.RECOVERY, False),
+    ],
+)
+def test_seal_retry_follows_the_typed_failure_kind(lease, monkeypatch, kind, retried):
+    """Retry was decided by matching message text ("adoption seal: OSError:",
+    "... lock timed out"); a reworded message silently changed the policy.
+    The failure's kind decides it now."""
+    path, record, _handle = lease
+    original = suite._seal_adoption_index
+    calls = []
+
+    def seal(*args, **kwargs):
+        calls.append(kwargs["state"])
+        if len(calls) == 1:
+            return [suite.SealFailure(kind, "injected")]
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(suite, "_seal_adoption_index", seal)
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: lease_samples(record))
+    monkeypatch.setattr(suite, "_DRAIN_BUDGET_S", 0.5)
+    deterministic_drain_clock(monkeypatch)
+    closed = suite.drain_lease(path)
+    closing = suite.SuiteCustodyState.CLOSING
+    if retried:
+        assert closed and calls[:2] == [closing, closing]
+    else:
+        assert not closed and calls == [closing]
+
+
+def test_seal_classifies_the_lock_timeout_by_type(lease, monkeypatch):
+    path, record, _handle = lease
+
+    def timed_out(*_args, **_kwargs):
+        raise suite.FileLockTimeout("any wording at all")
+
+    monkeypatch.setattr(suite, "_adoption_transaction", timed_out)
+    (failure,) = suite._seal_adoption_index(
+        path, lease=record, state=suite.SuiteCustodyState.CLOSING
+    )
+    assert failure.kind is suite.SealFailureKind.LOCK_TIMEOUT and failure.retryable
+
+
+def test_lease_reader_parses_state_and_refuses_unknown_states(lease):
+    path, _record, _handle = lease
+    assert suite.read_lease(path)["state"] is suite.SuiteCustodyState.ACTIVE
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    stored["state"] = "draining"
+    path.write_text(json.dumps(stored), encoding="utf-8")
+    assert suite.read_lease(path) is None

@@ -21,6 +21,10 @@ section 9.4.2):
   reported as narrowed; `molt-runtime` is tested by its declared runtime gate
   (tools/run_runtime_test_gate.py), which owns its fresh-process witnesses;
   a crate no source names runs its default-truth unit, `cargo test -p C --lib`;
+* exclusions: an experimental backend's crate (`excluded_backend` in
+  config/release_acceptance_matrix.toml) runs in no presubmit cell, as proof-plan
+  validation requires of every static command; it is reported unverified and
+  the schedule runs it;
 * accounting: each `Running unittests` binary is bound to its package through
   Cargo's compiler-artifact records, and its `test result:` line to that
   package. A cell that exits non-zero, a selected crate without a summary,
@@ -64,7 +68,11 @@ from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.proof_queue_pkg.command_admission import parse_cargo_invocation  # noqa: E402
 from tools.run_cargo_test_truth import compiler_artifact_record  # noqa: E402
 from tools.runtime_test_gate_plan import SEMANTIC_IMAGES  # noqa: E402
-from tools.proof_plan import ProofPlan  # noqa: E402
+from tools.proof_plan import (  # noqa: E402
+    ProofPlan,
+    excluded_backend_crates,
+    excluded_backends,
+)
 from tools.toolchain_env import ToolchainNotProvisioned, toolchain_environment  # noqa: E402
 from tools.runtime_test_gate_plan import parse_arguments as runtime_gate_arguments  # noqa: E402
 
@@ -321,8 +329,13 @@ def select(
     reach: Reach,
     libs: Mapping[str, Library],
     runner: tuple[tuple[str, ...], frozenset[str]] | None,
+    *,
+    experimental: frozenset[str],
 ) -> Selection:
-    """The cells that run every reached crate's whole lib in its declared cells."""
+    """The cells that run every reached crate's whole lib in its declared cells.
+
+    `experimental` names the excluded backends' crates; none gets a cell.
+    """
     runner_argv, runner_owned = runner if runner is not None else (None, frozenset())
     reached = frozenset(reach.packages)
     unverified = [
@@ -331,6 +344,12 @@ def select(
     ]
     testable: set[str] = set()
     for name in sorted(reached):
+        if name in experimental:
+            unverified.append(
+                f"{name}: experimental backend; the schedule runs it "
+                "(config/release_acceptance_matrix.toml)"
+            )
+            continue
         lib = libs.get(name)
         if lib is None or not lib.present:
             unverified.append(
@@ -520,6 +539,7 @@ def selection_for(base: str, *, root: Path = ROOT) -> Selection:
         reach,
         libraries(root),
         runtime_gate(plan),
+        experimental=excluded_backend_crates(excluded_backends(root)),
     )
 
 

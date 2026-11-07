@@ -72,7 +72,7 @@ REQUIRED_KEY_PHRASES: dict[str, str] = {
     "GIT_CUSTODY": "NEVER `git add -A`",
     "BUILD_ENV": "never change source, seal, worktree, or toolchain custody",
     "DISTILL": "advances the assigned outcome",
-    "MODEL_TIER": "Respect operator concurrency limits",
+    "MODEL_TIER": "Never delegate",
     "TRIALITY_WIRING": "all three legs",
     "PREMISE_VERIFICATION": "before your first Write",
     "DESIGN_REVIEW": "Elephant Goldfish",

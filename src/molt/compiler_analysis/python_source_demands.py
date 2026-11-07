@@ -25,6 +25,7 @@ from molt.compiler_analysis.python_imports import (
     normalize_stdlib_module_name,
 )
 from molt.compiler_analysis.python_source_keys import PythonSourceKey
+from molt.compiler_analysis.python_parameter_classes import representative_arguments
 from molt.compiler_analysis.python_identity_catalog_generated import (
     PythonIdentity,
     INTRINSIC_ACQUISITION_IDENTITIES,
@@ -191,7 +192,10 @@ class PythonSourceDemands:
         self.attributes: dict[SourceValue, tuple[str, frozenset[PythonSourceKey]]] = {}
         self.import_bindings: dict[SourceValue, _SourceImportBinding] = {}
         self.value_jobs: set[SourceValue] = set()
+        # Body scans by class representative, and every argument tuple that
+        # activated each body, so a changed parameter fact re-maps them.
         self.body_jobs: dict[SourceValue, set[tuple[str, ...]]] = {}
+        self.body_activations: dict[SourceValue, set[tuple[str, ...]]] = {}
         self.activated: set[
             tuple[
                 SourceCandidate,
@@ -404,7 +408,12 @@ class PythonSourceDemands:
                 self.completions.get(value, frozenset()) | origins,
             )
         for parameters in scan.source_values.parameters:
-            self._publish(self.parameters, (module_name, parameters.owner), parameters)
+            value = (module_name, parameters.owner)
+            if self._publish(self.parameters, value, parameters):
+                # A premise change can shrink a literal class (a raised
+                # builtin loses its proof); re-map every activation of it.
+                for arguments in self.body_activations.get(value, ()):
+                    self._schedule_body(value, arguments)
         for result in scan.source_values.functions:
             value = (module_name, result.owner)
             previous = self.functions.get(value)
@@ -1079,19 +1088,29 @@ class PythonSourceDemands:
                         | result.yielded_exposed
                     ):
                         self.demand((module_name, source), "escape")
-            body_arguments = self.body_jobs.setdefault(origin.value, set())
-            if arguments not in body_arguments:
-                body_arguments.add(arguments)
-                for source, requested_phase, count in self.owner_demands.get(
-                    (module_name, owner), ()
-                ):
-                    self.demand(
-                        (module_name, source),
-                        requested_phase,
-                        argument_count=count,
-                        consumer=module_name,
-                    )
-                self.queue_body(module_name, owner, arguments)
+            self.body_activations.setdefault(origin.value, set()).add(arguments)
+            self._schedule_body(origin.value, arguments)
+
+    def _schedule_body(self, value: SourceValue, arguments: tuple[str, ...]) -> None:
+        """Scan a body once per argument class (``python_parameter_classes``)."""
+        module_name, owner = value
+        parameters = self.parameters.get(value)
+        if parameters is not None:
+            arguments = representative_arguments(arguments, parameters.literal_classes)
+        body_arguments = self.body_jobs.setdefault(value, set())
+        if arguments in body_arguments:
+            return
+        body_arguments.add(arguments)
+        for source, requested_phase, count in self.owner_demands.get(
+            (module_name, owner), ()
+        ):
+            self.demand(
+                (module_name, source),
+                requested_phase,
+                argument_count=count,
+                consumer=module_name,
+            )
+        self.queue_body(module_name, cast(PythonSourceKey, owner), arguments)
 
     def process_value(self, value: SourceValue) -> None:
         self.value_jobs.discard(value)

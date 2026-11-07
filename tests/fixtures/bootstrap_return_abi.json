@@ -9,6 +9,7 @@
     },
     {
       "kind": "check_exception",
+      "exception_edge": "origin",
       "value": 1
     },
     {
@@ -17,6 +18,7 @@
     },
     {
       "kind": "check_exception",
+      "exception_edge": "origin",
       "value": 1
     },
     {

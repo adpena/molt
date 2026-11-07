@@ -916,6 +916,19 @@ fn build_intrinsic_func(
     default_values: &[IntrinsicDefaultValue],
     public: Option<PublicObjectId>,
 ) -> Option<u64> {
+    if public == Some(PublicObjectId::BuildClassBuiltin) {
+        return class_builder_bits(_py);
+    }
+    alloc_intrinsic_func(_py, fn_ptr, arity, default_values, public)
+}
+
+fn alloc_intrinsic_func(
+    _py: &PyToken<'_>,
+    fn_ptr: u64,
+    arity: u8,
+    default_values: &[IntrinsicDefaultValue],
+    public: Option<PublicObjectId>,
+) -> Option<u64> {
     if let Some(public) = public
         && let Some(signature) =
             public.call_signature(crate::object::ops_sys::runtime_target_at_least(_py, 3, 14))
@@ -1390,6 +1403,26 @@ pub(crate) fn try_resolve_intrinsic_func(
             Err(())
         }
     }
+}
+
+/// Publication and implicit reads select the same typed, runtime-owned object.
+pub(crate) fn class_builder_bits(py: &PyToken<'_>) -> Option<u64> {
+    crate::object::builders::canonical_class_builder_bits(py, || {
+        let identity = PublicObjectId::BuildClassBuiltin;
+        let signature = identity
+            .call_signature(crate::object::ops_sys::runtime_target_at_least(py, 3, 14))
+            .expect("class builder has a generated public call signature");
+        alloc_intrinsic_func(
+            py,
+            fn_addr!(crate::molt_build_class_builtin),
+            signature
+                .arity
+                .try_into()
+                .expect("generated intrinsic arity fits its ABI"),
+            &[],
+            Some(identity),
+        )
+    })
 }
 
 /// Register a synthetic `_intrinsics` module in the module cache so that

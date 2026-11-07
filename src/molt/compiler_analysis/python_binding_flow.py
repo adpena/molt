@@ -62,6 +62,10 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
     UNBOUND_IDENTITY,
 )
 from molt.compiler_analysis.python_call_arguments import call_argument_schedule
+from molt.compiler_analysis.python_parameter_classes import (
+    CallEvidence,
+    parameter_literal_classes,
+)
 from molt.compiler_analysis.python_namespace_writes import (
     _resolved_python_namespace_summary,
 )
@@ -246,7 +250,7 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 65
+_ANALYSIS_SCHEMA: Final = 66
 _BUILTIN_SHAPE_IDENTITY_MASK: Final[IdentityMask] = sum(BUILTIN_SHAPE_NAMES_BY_IDENTITY)
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
@@ -2618,6 +2622,7 @@ class _Analyzer:
         self._class_cell_slots: dict[int, int] = {}
         self._class_cell_slot_mask = 0
         self.expressions: dict[PythonNodeKey, PythonExpressionFact] = {}
+        self.class_builder_reads: dict[PythonNodeKey, IdentityMask] = {}
         self.source_attributes: dict[
             PythonSourceKey, tuple[str, frozenset[PythonSourceKey]]
         ] = {}
@@ -2629,7 +2634,9 @@ class _Analyzer:
         self.source_classes: dict[PythonSourceKey, PythonSourceClass] = {}
         self.source_callables: dict[PythonSourceKey, IdentityMask] = {}
         self.source_completions: dict[PythonSourceKey, frozenset[PythonSourceKey]] = {}
-        self.source_parameters: dict[PythonSourceKey, PythonSourceParameters] = {}
+        self.source_parameter_owners: dict[
+            PythonSourceKey, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
+        ] = {}
         self.source_function_results: dict[PythonSourceKey, PythonFunctionResult] = {}
         self.source_namespaces: dict[
             PythonSourceKey, dict[str, frozenset[PythonSourceKey]]
@@ -3582,6 +3589,7 @@ class _Analyzer:
                 result, release_may_call=False, _publication_release_stable=True
             )
         name_lookup: PythonNameLookup = "none"
+        star_export_lookup = False
         if isinstance(node, ast.Name):
             slot = self._slot_for_name(scope, node.id)
             if (owner := scope.namespace_lookup_owner(node.id)) is not None:
@@ -3620,6 +3628,7 @@ class _Analyzer:
             ):
                 # The read may find a star-bound name: it selects that name
                 # from the star-imported modules, as an attribute read would.
+                star_export_lookup = True
                 source_key = python_node_source_key(node)
                 result = replace(
                     result, source_origins=result.source_origins | {source_key}
@@ -3657,6 +3666,8 @@ class _Analyzer:
             | (
                 previous.module_metadata_effects if previous is not None else NO_EFFECTS
             ),
+            star_export_lookup=star_export_lookup
+            or (previous is not None and previous.star_export_lookup),
         )
         scope.deferred_execution |= deferred_execution
         scope.module_metadata_effects |= module_metadata_effects
@@ -7515,6 +7526,34 @@ class _Analyzer:
                 result = self.eval_expr(expression, state_id, scope)
                 state_id = result.state_id
                 effects |= result.effects
+            # LOAD_BUILD_CLASS is after decorator evaluation and before bases
+            # and keywords. It bypasses globals and the class-local mapping.
+            builder = self._guarded_member_identity(
+                state_id,
+                int(PythonIdentity.BUILTINS_MODULE),
+                PythonIdentity.BUILTINS_MODULE,
+                PythonIdentity.BUILTIN_BUILD_CLASS,
+                PythonMember.BUILTINS_BUILD_CLASS,
+            )
+            custom_builtins_possible = (
+                self._builtins_mapping_rebindable()
+                or not scope.activation_namespace_stable
+            )
+            if custom_builtins_possible:
+                builder |= OTHER_IDENTITY
+            builder_key = self._node_key(node)
+            self.class_builder_reads[builder_key] = (
+                self.class_builder_reads.get(builder_key, NO_IDENTITIES) | builder
+            )
+            if builder != int(PythonIdentity.BUILTIN_BUILD_CLASS):
+                # A custom builtins mapping can run __getitem__ at this read.
+                lookup_effects = RAISES | (
+                    EXECUTES_ARBITRARY_PYTHON
+                    if custom_builtins_possible
+                    else NO_EFFECTS
+                )
+                effects |= lookup_effects
+                state_id = self._apply_effects(state_id, lookup_effects)
             state_id, definition_scope = self._type_parameter_scope(
                 node, state_id, scope
             )
@@ -8246,13 +8285,19 @@ class _Analyzer:
             )
         return flow
 
-    def _analyze_function_job(self, job: _FunctionJob, outer_state: int) -> None:
-        node = job.node
+    def _source_parameters(
+        self,
+        owner: PythonSourceKey,
+        node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+    ) -> PythonSourceParameters:
+        """Project a function's parameter facts after the fixpoint.
+
+        Literal classes read final call facts (callee identities and source
+        reach), so a premise that changes them republishes the classes.
+        """
         arguments = node.args
-        parameters = function_parameter_names(arguments)
-        parameter_nodes = function_parameter_nodes(arguments)
-        self.source_parameters[python_node_source_key(node)] = PythonSourceParameters(
-            python_node_source_key(node),
+        return PythonSourceParameters(
+            owner,
             tuple(
                 python_node_source_key(arg)
                 for arg in (*arguments.posonlyargs, *arguments.args)
@@ -8267,7 +8312,24 @@ class _Analyzer:
             python_node_source_key(arguments.kwarg)
             if arguments.kwarg is not None
             else None,
+            parameter_literal_classes(node, call_evidence=self._call_evidence),
         )
+
+    def _call_evidence(self, call: ast.Call) -> CallEvidence | None:
+        fact = self.calls.get(PythonNodeKey.from_node(call))
+        if fact is None:
+            return None
+        return CallEvidence(
+            fact.callee_identities,
+            python_node_source_key(call) in self.source_calls,
+        )
+
+    def _analyze_function_job(self, job: _FunctionJob, outer_state: int) -> None:
+        node = job.node
+        arguments = node.args
+        parameters = function_parameter_names(arguments)
+        parameter_nodes = function_parameter_nodes(arguments)
+        self.source_parameter_owners[python_node_source_key(node)] = node
         body = (
             node.body
             if isinstance(node.body, list)
@@ -8371,14 +8433,7 @@ class _Analyzer:
         # Build reverse edges once; each effect bit traverses each edge once.
         owners = {}
         for (key, _parent, _kind), scope in self._source_scopes.items():
-            source = (
-                key.lineno,
-                key.col_offset,
-                key.end_lineno,
-                key.end_col_offset,
-                key.kind,
-            )
-            owners.setdefault(source, []).append(scope.scope_id)
+            owners.setdefault(key.source_key, []).append(scope.scope_id)
         effects = [
             value
             for scope in self.scopes
@@ -8736,6 +8791,7 @@ class _Analyzer:
         )
         facts = PythonBindingFacts.create(
             source_digest=self.source_digest,
+            class_builder_reads=self.class_builder_reads,
             callbacks_rewrite_metadata=self._callback_module_names is None
             or not self._callback_module_names.isdisjoint(_METADATA_NAMES),
             source_namespaces=tuple(
@@ -8763,7 +8819,8 @@ class _Analyzer:
             ),
             source_callables=tuple(sorted(self.source_callables.items())),
             source_parameters=tuple(
-                value for _, value in sorted(self.source_parameters.items())
+                self._source_parameters(owner, node)
+                for owner, node in sorted(self.source_parameter_owners.items())
             ),
             source_function_results=tuple(
                 value for _owner, value in sorted(self.source_function_results.items())

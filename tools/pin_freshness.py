@@ -117,6 +117,8 @@ from tools import (  # noqa: E402
 from tools.dependency_manifests import tracked_manifest_dirs  # noqa: E402
 
 PROOF_PLAN = Path("tools/proof_plan.toml")
+# The project interpreter pin; proof_plan.toml derives its python policy from it.
+PYTHON_VERSION_FILE = ".python-version"
 USER_AGENT = "molt-pin-freshness"
 TIMEOUT_SECONDS = 60
 LOCK_TIMEOUT_SECONDS = 900
@@ -562,12 +564,20 @@ def select_target(
 
 
 def _toolchain_policies(root: Path) -> dict[str, str]:
+    """Each policy's pinned version; a ``version_file`` policy reads its file."""
+    from tools.proof_plan import pinned_version_file
+
     plan = tomllib.loads((root / PROOF_PLAN).read_text(encoding="utf-8"))
-    return {
-        str(policy["name"]): str(policy["setup_value"])
-        for policy in plan["toolchain_policy"]
-        if "setup_value" in policy
-    }
+    versions = {}
+    for policy in plan["toolchain_policy"]:
+        name = str(policy["name"])
+        if "version_file" in policy:
+            versions[name] = pinned_version_file(
+                root, name, str(policy["version_file"])
+            )
+        elif "setup_value" in policy:
+            versions[name] = str(policy["setup_value"])
+    return versions
 
 
 # Upstream repositories of `config/tool_releases.toml` tools published as
@@ -632,7 +642,7 @@ def collect_pins(
         # its own held arc.
         Pin(
             "python-patch",
-            plan,
+            PYTHON_VERSION_FILE,
             policies["python"],
             lambda: [
                 release
@@ -640,7 +650,7 @@ def collect_pins(
                 if release.version.rsplit(".", 1)[0] == python_line
             ],
         ),
-        Pin("python", plan, policies["python"], python),
+        Pin("python", PYTHON_VERSION_FILE, policies["python"], python),
         Pin("node", manifest, tools["node"].version, lambda: node_releases(fetch)),
         Pin(
             "llvm",
@@ -680,15 +690,15 @@ def collect_pins(
             osv_version_advisories("npm", "@informalsystems/quint", fetchers),
         ),
     ]
-    reference_authority = Path("config/verified_subset.toml")
-    references = load_verified_subset_policy(root / reference_authority)
+    references = load_verified_subset_policy(root / "config/verified_subset.toml")
     for line, reference in zip(
         references.python_versions, references.reference_cpython, strict=True
     ):
         pins.append(
             Pin(
                 f"reference-python-{line}",
-                str(reference_authority),
+                # A reference patch is the pinned source's release.
+                "config/cpython_regrtest_sources.toml",
                 reference,
                 lambda line=line: [
                     release
@@ -2134,8 +2144,12 @@ def update(
                 manifest: rewrite_toml_fields(
                     manifest.read_text(encoding="utf-8"), table_edits
                 ),
-                plan_path: rewrite_policy(plan_text, name, pin.current, latest),
             }
+            # A tool release that a proof command consumes has a toolchain
+            # policy beside it; one that only provisioning uses (sccache) has
+            # none, and its move must not require one.
+            if name in _toolchain_policies(root):
+                edits[plan_path] = rewrite_policy(plan_text, name, pin.current, latest)
             if name == "npm":
                 edits.update(package_manager_edits(root, latest))
 

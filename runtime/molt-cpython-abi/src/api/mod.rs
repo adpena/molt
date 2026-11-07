@@ -41,6 +41,7 @@ pub mod errors;
 pub mod eval;
 pub mod imports;
 pub mod mapping;
+pub mod marshal;
 pub mod memory;
 pub mod modules;
 pub mod numbers;

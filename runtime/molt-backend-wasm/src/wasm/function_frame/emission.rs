@@ -266,6 +266,51 @@ impl WasmFunctionFrame {
             .expect("frame home ops require the frame's lent homes")
     }
 
+    pub(in crate::wasm) fn emit_origin_homes(&self, func: &mut Function) {
+        if let Some(homes) = self.frame_homes {
+            func.instruction(&Instruction::LocalGet(homes.local));
+            func.instruction(&Instruction::I64ExtendI32U);
+        } else {
+            func.instruction(&Instruction::I64Const(0));
+        }
+    }
+
+    /// The taken Origin edge: store the site's own LocationId when the
+    /// placement pass proved one, then capture this activation.
+    pub(in crate::wasm) fn emit_exception_origin(
+        &self,
+        func: &mut Function,
+        import_ids: &TrackedImportIds,
+        reloc_enabled: bool,
+        frame_location: Option<i64>,
+    ) {
+        if let Some(location) = frame_location {
+            self.emit_frame_location(func, location);
+        }
+        self.emit_origin_homes(func);
+        emit_call(
+            func,
+            reloc_enabled,
+            import_ids[WasmRuntimeImport::ExceptionFrameOrigin],
+        );
+        func.instruction(&Instruction::Drop);
+    }
+
+    pub(in crate::wasm) fn emit_frame_location(&self, func: &mut Function, location: i64) {
+        let homes = self.frame_homes();
+        func.instruction(&Instruction::LocalGet(homes.local));
+        func.instruction(&Instruction::I32Const(
+            molt_codegen_abi::FRAME_LOCATION_OFFSET,
+        ));
+        func.instruction(&Instruction::I32Add);
+        func.instruction(&Instruction::I64Const(location));
+        func.instruction(&Instruction::I64Store(wasm_encoder::MemArg {
+            align: 3,
+            offset: 0,
+            memory_index: 0,
+        }));
+    }
+
     fn frame_home_args(slot: i64) -> (wasm_encoder::MemArg, wasm_encoder::MemArg) {
         let offset = u64::try_from(slot * molt_codegen_abi::FRAME_HOME_BYTES)
             .expect("admitted frame home slot");

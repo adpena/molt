@@ -796,9 +796,8 @@ class AttributeAccessMixin(GeneratorMixinBase):
             self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", slot], result=merged))
             return merged
 
-        # Sync, non-phi path: a single SSA value updated in both branches.
-        merged = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=merged))
+        # Non-PHI transport uses an explicit promotable local home.
+        home = self._new_compiler_local("Any")
         self.emit(MoltOp(kind="IF", args=[guard], result=MoltValue("none")))
         fast_val = MoltValue(self.next_var())
         self.emit(
@@ -808,7 +807,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 result=fast_val,
             )
         )
-        self.emit(MoltOp(kind="COPY", args=[fast_val], result=merged))
+        self._store_compiler_local(home, fast_val)
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         slow_val = MoltValue(self.next_var(), type_hint="Any")
         self.emit(
@@ -818,8 +817,9 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 result=slow_val,
             )
         )
-        self.emit(MoltOp(kind="COPY", args=[slow_val], result=merged))
+        self._store_compiler_local(home, slow_val)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        merged = self._load_compiler_local(home)
         if fast_val.type_hint == slow_val.type_hint:
             merged.type_hint = fast_val.type_hint
         return merged
@@ -906,13 +906,12 @@ class AttributeAccessMixin(GeneratorMixinBase):
             self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", slot], result=merged))
             return merged
 
-        # Sync, non-phi path: a single SSA value updated in both branches.
-        merged = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=merged))
+        # Non-PHI transport uses an explicit promotable local home.
+        home = self._new_compiler_local("Any")
         self.emit(MoltOp(kind="IF", args=[guard], result=MoltValue("none")))
         fast_val = MoltValue(self.next_var(), type_hint=fast_hint)
         self.emit(MoltOp(kind="CALL", args=[getter_symbol, obj], result=fast_val))
-        self.emit(MoltOp(kind="COPY", args=[fast_val], result=merged))
+        self._store_compiler_local(home, fast_val)
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         slow_val = MoltValue(self.next_var(), type_hint="Any")
         self.emit(
@@ -922,8 +921,9 @@ class AttributeAccessMixin(GeneratorMixinBase):
                 result=slow_val,
             )
         )
-        self.emit(MoltOp(kind="COPY", args=[slow_val], result=merged))
+        self._store_compiler_local(home, slow_val)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        merged = self._load_compiler_local(home)
         if fast_hint == slow_val.type_hint:
             merged.type_hint = fast_hint
         return merged

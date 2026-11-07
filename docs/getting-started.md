@@ -6,7 +6,7 @@ development; consult [current status](spec/STATUS.md) for compatibility limits.
 ## Prerequisites
 
 - A [supported CPython compiler host](../packaging/INSTALL.md#requirements)
-  (the repository pins its development host to CPython 3.12.15 through `uv`)
+  (the repository pins its development host's exact CPython patch in `.python-version`)
 - Rust via `rustup`, using the version pinned in `rust-toolchain.toml`
 - `uv`
 - A native C compiler and linker: a platform toolchain on macOS/Linux, or MSVC
@@ -34,6 +34,8 @@ themselves establish that a release is available or accepted for your target.
 Follow the [binary installation guide](../packaging/INSTALL.md) for explicit
 private-dependency setup. `molt doctor --json` reports the active source,
 interpreter and competing PATH installations; it does not remove or repair them.
+On macOS, its [first-execution check](OPERATIONS.md#macos-first-execution-delays)
+reports timing and read-only Developer Tools information without changing settings.
 
 ### Local repo workflow
 
@@ -186,7 +188,8 @@ This compares one program, not the whole verified subset. The compiler frontend
 baseline is CPython 3.12+, including 3.15. Its interpreter and target semantics
 are separate: `molt build --python-version` selects an admitted target policy
 (currently `3.12`, `3.13`, or `3.14`; 3.15 completion is tracked in
-[V1-35](agent/V1_HANDOFF_FINDINGS.md)). Select the source
+[V1-35](agent/V1_HANDOFF_FINDINGS.md), and 3.15 is in every v0.1 Tier 1 cell:
+see [the v0.1 claim](spec/PUBLIC_CLAIM_V0_1.md)). Select the source
 frontend with uv in the same command; it must be at least as new as the target:
 
 ```bash
@@ -210,7 +213,8 @@ pinned CPython release (a dotted patch such as `3.14.9` is exact). The harness
 interpreter compiles when it is that release; otherwise the harness compiles
 under a managed image of the release, published once per checkout. A missing
 release stops the run before any test and names its `uv python install`
-command; every target cell needs `uv python install 3.12.15 3.13.17 3.14.9`
+command; every target cell needs each target minor's pinned release
+(`src/molt/_python_release_generated.py`) installed with `uv python install`
 ([design](design/target_frontend_selection.md)).
 Compiled programs require no host or fallback Python. See
 [compatibility](spec/areas/compat/README.md) for version- and target-scoped proof.

@@ -6,9 +6,9 @@ from types import MappingProxyType
 
 CPYTHON_RELEASES: Mapping[str, tuple[int, int, int, str, int]] = MappingProxyType(
     {
-        "3.12": (3, 12, 15, "final", 0),
-        "3.13": (3, 13, 17, "final", 0),
-        "3.14": (3, 14, 9, "final", 0),
-        "3.15": (3, 15, 1, "final", 0),
+        "3.12": (3, 12, 16, "final", 0),
+        "3.13": (3, 13, 18, "final", 0),
+        "3.14": (3, 14, 10, "final", 0),
+        "3.15": (3, 15, 2, "final", 0),
     }
 )

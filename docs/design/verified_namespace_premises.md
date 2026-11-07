@@ -223,7 +223,14 @@ receiver behavior.
    real function/class values escape, are recreated or have visible attribute mutations
    retain conservative activation. Exact callees transfer arguments through their
    existing formal-parameter worklist; merely passing an argument does not expose
-   its whole namespace. Literal `getattr`/`hasattr`/`delattr` select real member
+   its whole namespace. A body is scanned once per argument class, not once per
+   argument: a positional parameter that the body observes only through
+   string-literal tests, branches those tests narrow, and the message of a raise
+   that reaches no source callee shares one scan for every argument outside its
+   literals (`python_parameter_classes`, the `literal_classes` field of
+   `PythonSourceParameters`). The classes read typed call facts (callee identity
+   masks, source reach) after the base fixpoint; the solver keeps each original
+   argument tuple and re-maps it when a rescan changes a class. Literal `getattr`/`hasattr`/`delattr` select real member
    sources; unknown selectors retain protocol and escape effects. Class allocation
    and method folding additionally require unexposed definition/method identities.
    A declined constructor proof calls the actual class protocol.
@@ -542,7 +549,8 @@ counted loop; the frontend already emitted these operations before this change.
   standalone compilation therefore keeps today's guards.
 - A slow arm honors exact facts but never opens or trusts a guard.
 - A named lowering of a catalogued builtin implies a proof at its callee read.
-  This invariant covers catalogued builtins only; see "Open siblings".
+  This lane covered catalogued builtins only; the HF-776 section below
+  extends the invariant to every builtin read.
 
 ### Costs
 
@@ -583,15 +591,15 @@ or replaces `__builtins__` therefore still calls the canonical `type` where
 CPython calls the replacement. Each needs a catalog identity, as this lane
 gives `isinstance` and `issubclass`; that changes discovery for every program
 and needs its own census. The lane reports this family to the integrator for
-its own ledger row.
+its own ledger row (HF-776; see "Every named builtin lowering requires a
+proof" below).
 
-Main also fails to persist the frontend lowering record of a module that
+Main also failed to persist the frontend lowering record of a module that
 defines a dataclass: `local_classes` carries `dataclass_init_projection`, a
-tuple of `DataclassInitField` dataclasses, and `_write_persisted_module_lowering`
-raises `TypeError: Object of type DataclassInitField is not JSON serializable`
-(`cache_keys._json_ir_default`). Any cold build of the
-`dataclass_construction` primitive with the lowering cache enabled fails. This
-is outside this lane's mechanism; the lane reports it to the integrator.
+tuple of `DataclassInitField` dataclasses, and the lowering cache codec had no
+case for it. HF-777 fixed this: `cache_keys._json_ir_default` writes a tagged
+schema and `module_cache` restores it through `DataclassInitField.from_schema`,
+which refuses a malformed payload.
 
 ### Acceptance and evidence rules
 
@@ -692,6 +700,452 @@ builds with symbols kept, CPython 3.12.16 as oracle and denominator.
   kernels, bench programs and a differential sample) admits the same modules
   on main and on this lane: 2,226 admissions each, no program gains or loses
   a module, no refusals.
+
+## Every named builtin lowering requires a proof (HF-776)
+
+Status: implemented on lane `lane/hf776-builtin-proofs` (base origin/main
+6cbf288f590b10cac4e13b2d18027f9829d391c1), 2026-11-05. The problem section
+holds measured base evidence; "Implementation changes after review" and
+"Results of this lane" record what changed and what was measured. This section closes the
+HF-226 open sibling "Named lowerings of builtins without a catalog identity".
+The HF-226 sibling about fast-arm typing of `str(source)` at module scope stays
+open, and so does `__build_class__` (see "Open siblings" below).
+
+### Problem (base 6cbf288f59)
+
+The frontend picks an operation from a builtin's spelling in three places, and
+only one of them asks for a proof:
+
+1. `_try_emit_named_builtin_call` (`call_dispatch_named_builtins.py`) checks
+   `_named_builtin_unproved`, but that check covers catalogued names only.
+   The scalar, iterator and fallback dispatchers then lower the uncatalogued
+   names in the inventory below with no proof.
+2. `_try_emit_named_call` (`call_dispatch_named.py`) lowers ten exception
+   constructors (`EXCEPTION_NEW_*`), `abs` (`ABS`), `globals`, `locals`,
+   `vars`, `dir`, `getattr`, `setattr`, `delattr`, `hasattr`, zero-argument
+   `super()` (`molt_super_from_frame`), `classmethod`, `staticmethod`,
+   `property` and `print` before it reaches item 1, so even the catalogued
+   names among them have no proof check.
+3. `_load_name_expression` (`expressions.py`) lowers a read of `NotImplemented`
+   or `Ellipsis` to a constant, a read of any builtin exception to
+   `EXCEPTION_CLASS` (the canonical class, by spelling), and `locals` and
+   `__import__` to a `builtins` attribute read.
+
+A read that the binding flow marks invalidated already takes the live path
+(`visit_Call`). The defect is every other unproved read: a guard's slow arm,
+and reads after a `builtins` member writer, a `__builtins__` writer or a
+foreign writer that does not invalidate them. Measured on base (macOS arm64):
+with `builtins.type` and `builtins.ord` replaced, the HF-226 repro prints
+`replaced <class 'int'> 97`; CPython 3.12.16 prints `replaced replaced-type -1`.
+This lane commits the repro as
+`tests/differential/basic/named_builtin_replaced_repro.py`.
+
+A probe on base measured the runtime side: dynamic calls of `globals`,
+`locals`, `vars` and zero-argument `super` through a local alias give
+CPython's results inside a method. The runtime callables read the caller's
+frame. The probe covers one scope only, so the test plan adds a differential
+that calls every frame-reading name through its live read in each scope kind.
+
+### Inventory (search by mechanism)
+
+The mechanism is "an operation or runtime callable chosen from `node.id`".
+The search covered every comparison of `node.id`, `func_id` or `name` with a
+builtin spelling or a builtin table (`BUILTIN_FUNC_SPECS`, `BUILTIN_TYPE_TAGS`,
+`BUILTIN_EXCEPTION_NAMES`, `BUILTIN_SHAPE_NAMES`, `_name_resolves_to_builtin`)
+under `src/molt/frontend`, and every caller of `_emit_builtin_function`,
+`_emit_builtin_type_value`, `_emit_exception_class` and
+`_emit_exception_new_from_args`.
+
+| Family | Names without a catalog identity on base | Named lowering |
+|---|---|---|
+| Scalar calls | `type`, `object`, `id`, `ord`, `chr`, `repr`, `callable` | `TYPE_OF`, `OBJECT_NEW`, `ID`, `ORD`/`ORD_AT`, `CHR`, repr, `IS_CALLABLE` |
+| Iterator calls | `slice`, `aiter`, `anext`, `any`, `all`, `sum`, `map`, `zip`, `min`, `max`, `iter` | `SLICE_NEW`, `ANEXT`, inline reductions, runtime callables |
+| Named calls | `abs`, `dir`, `super`, `print` | `ABS`, `BUILTIN_FUNC`, `molt_super_from_frame` |
+| Fallback calls | `ascii`, `bin`, `compile`, `divmod`, `enumerate`, `filter`, `format`, `hash`, `hex`, `next`, `oct`, `reversed`, `sorted` | `BUILTIN_FUNC` and `CALL_FUNC`/`CALL_BIND` |
+| Constants | `NotImplemented`, `Ellipsis` | `CONST_NOT_IMPLEMENTED`, `CONST_ELLIPSIS` |
+| Exceptions | the 69 builtins exception spellings present on every supported target | `EXCEPTION_CLASS`, `EXCEPTION_NEW_*` |
+
+The partition of the two builtin tables on base:
+
+| Table | Names | Already catalogued | No named lowering | New rows |
+|---|---:|---|---|---:|
+| `BUILTIN_FUNC_SPECS` | 45 | 12: `__import__`, `delattr`, `getattr`, `globals`, `hasattr`, `isinstance`, `issubclass`, `len`, `locals`, `open`, `setattr`, `vars` | `pow`, `round` (they always keep the live callable) | 31 |
+| `BUILTIN_TYPE_TAGS` | 22 | 15: the 12 shape types, `classmethod`, `staticmethod`, `property` | `memoryview` (value reads only, live unless proved); `BaseException`, `Exception` (counted with the exceptions) | 4: `type`, `object`, `slice`, `super` |
+
+`eval` and `exec` are catalogued already and are not in either table: they have
+no named call lowering, so the gate does not touch them. `__import__` keeps its
+row; its call lowering is the fallback `BUILTIN_FUNC` when proved and the
+dynamic call otherwise.
+
+These catalogued names keep their identity and only gain the gate: `globals`,
+`locals`, `vars`, `getattr`, `setattr`, `delattr`, `hasattr`, `classmethod`,
+`staticmethod`, `property` (item 2), and `locals` and `__import__` (item 3).
+
+Supported targets are CPython 3.12 and newer, so every exception added before
+3.12 (`ExceptionGroup`, `EncodingWarning`) exists on every target. The
+frontend's availability authority (`_builtin_exception_is_available`) gates two
+spellings: `PythonFinalizationError` (3.13 and newer) and `WindowsError`
+(win32). They get no identity, so their reads stay live on every target, as
+they are today on targets without them. On 3.13 a `PythonFinalizationError`
+read and on win32 a `WindowsError` read become live reads; this lane accepts
+that cost for two rarely read names. The availability gate still applies first
+in every path that uses it (class bases, construction), so a target without
+the name raises `NameError` as before. A catalog row for them would claim a
+binding that is absent on some targets. The aliases `IOError`,
+`EnvironmentError` (and `WindowsError`) name the `OSError` class, but each
+spelling is rebound on its own, so each catalogued alias has its own row.
+
+Sites that test a builtin spelling for another reason keep their behavior:
+
+- `_maybe_record_local_intrinsic_wrapper` (`callable`, `globals`) recognizes a
+  wrapper shape and lowers nothing from the builtin.
+- `attribute_access.py` and `analysis_collect_static.py` read
+  `globals`/`locals`/`vars`/`setattr`/`delattr` calls only to stay
+  conservative.
+- `assert` raises through CPython's `LOAD_ASSERTION_ERROR`, which loads the
+  canonical class with no namespace read, so it is not a builtin read.
+- `raise X` and `except X` read `X` as an ordinary name: item 3 covers them.
+- Loop, comprehension and fused consumers already ask
+  `_specializable_builtin_name`, the HF-226 authority. The inline reductions
+  in `call_reductions.py` (`sum`, `any`, `all`, `min`, `max`) are reached only
+  from the iterator dispatcher, so the dispatcher's gate covers them.
+- Canonical objects that CPython also uses without a namespace read stay:
+  the `type(x) is list` checks of `str.split` and loop typing
+  (`call_dispatch_split.py`, `loop_lowering.py`), the metaclass result check
+  in `classes.py`, the sequence and mapping checks of `match`
+  (`pattern_match.py`, CPython's `MATCH_SEQUENCE` and `MATCH_MAPPING` use type
+  flags), and the bare `except*` class in `statement_control_flow.py`.
+
+### Prior art
+
+- CPython 3.12 specializes builtin calls by object identity, not by name:
+  `specialize_c_call` (`Python/specialize.c`) compares the callable with
+  `interp->callable_cache.len` and `.isinstance` before it selects
+  `CALL_NO_KW_LEN` or `CALL_NO_KW_ISINSTANCE`, and `LOAD_SUPER_ATTR`
+  (`Python/bytecodes.c`) checks that the global `super` is the builtin type. A
+  replaced builtin is a different object, so it gets the generic call.
+- Molt's HF-226 section above: a closed-world exact identity or a guard's fast
+  arm proves the read, and the named lowering keys on that proof. This
+  section extends the same authority to every name; it adds no second one.
+
+### Mechanism
+
+1. **Catalog.** `python_identity_catalog.toml` gains one `[[builtin]]` row for
+   each name in the inventory: 35 callables and types, 2 constants and 69
+   exceptions. Each row appends one identity bit `BUILTIN_<NAME>` and one
+   member guard bit `BUILTINS_<NAME>` (`<NAME>` is the spelling in upper case,
+   for example `BUILTIN_VALUEERROR`), so no existing bit moves. `shape =
+   false` for all; the shape family is unchanged. The generator already
+   projects `BUILTIN_IDENTITIES` and `BUILTIN_NAMES_BY_IDENTITY` from the rows,
+   and `_member_write_mask` already maps `builtins.<name>` writes to the row's
+   guard and a computed member write to every guard. The generator gains one
+   check: every name in the binding-guard table
+   (`runtime/builtin_binding_guards.toml`) has a row, because the guard's fast
+   arm proves a name and the dispatch below needs its identity.
+2. **One typed proof query.** `_proven_builtin_identity(node)` returns the
+   `PythonIdentity` that a closed-world exact read or an enclosing guard's
+   fast arm proves, or None. `_proven_builtin_name` becomes its projection
+   through `BUILTIN_NAMES_BY_IDENTITY`; both keep HF-226's two authorities.
+3. **Call dispatch keyed on the proof.** `_try_emit_named_call` computes the
+   proved identity of the callee once and passes it on. The dispatchers take
+   `builtin: PythonIdentity` instead of `func_id: str`, and each branch tests
+   that typed identity:
+
+   | File | Function | Base test | New test |
+   |---|---|---|---|
+   | `call_dispatch_named.py` | `_try_emit_named_call` | `func_id == "abs"`, `in {"BaseException", ...}` and 14 more | `builtin is PythonIdentity.BUILTIN_ABS`, exception identities |
+   | `call_dispatch_named_builtins.py` | `_try_emit_named_builtin_call` | `_named_builtin_unproved(node, func_id)` | dispatch only when `builtin` is not None |
+   | `call_dispatch_builtin_scalar.py` | `_try_emit_named_builtin_scalar_call` | `func_id == "type"` and 8 more | `builtin is PythonIdentity.BUILTIN_TYPE` and 8 more |
+   | `call_dispatch_builtin_iter.py` | `_try_emit_named_builtin_iter_call` | `func_id == "slice"` and 10 more | identity tests |
+   | `call_dispatch_builtin_fallback.py` | `_try_emit_named_builtin_fallback_call` | `func_id in BUILTIN_FUNC_SPECS` | the proved name is in `BUILTIN_FUNC_SPECS` |
+   | `builtin_guards.py` | `_named_builtin_unproved`, `_FRAME_REFLECTIVE_BUILTINS` | catalogued-only gate | deleted |
+
+   `call_reductions.py` keeps its `func_id` parameter, which its only caller
+   now derives from the proved identity.
+
+   A read without a proof has no identity, so no builtin branch can match.
+   It falls through to the class, function and local paths, which select a
+   callee only from a source-class or source-function fact (`_class_reference`,
+   `Func:` hints), never from a builtin spelling, and then to the live read and
+   dynamic call that the chain already ends with. A proved read of `globals`,
+   `locals` or `vars` keeps its frame-aware lowering; an unproved one is the
+   dynamic call, which the probe shows is correct. `eval` and `exec` have no
+   named lowering, and `__import__` follows the fallback rule. The dispatchers
+   no longer receive a spelling, so a branch that tests one would have to reach
+   back to `node.id`; review, not the type checker, guards that.
+4. **One value authority.** `_emit_proven_builtin_value` lowers a proved read:
+   a type tag to `BUILTIN_TYPE` (as today), an exception to `EXCEPTION_CLASS`,
+   `NotImplemented` and `Ellipsis` to their constants, and a function to the
+   live read. `_load_name_expression` deletes its spelling branches for these
+   names (including `locals` and `__import__`); an unproved read is the live
+   `MODULE_GET_GLOBAL`.
+5. **Guards.** The guard model does not change. A guard-table name in a
+   function gets a guard only when the flow does not prove it, and its slow
+   arm is now the dynamic call. Bare `super()` keeps its exclusion from the
+   call guard.
+
+There is no new op, runtime entry or cache. Every backend already lowers the
+operations named above. Persisted frontend records key on
+`_frontend_semantic_tooling_fingerprint`, which digests all of
+`src/molt/compiler_analysis` and `src/molt/frontend`
+(`_FRONTEND_COMPILER_INPUTS`), so a catalog change invalidates them with no
+schema bump, as HF-226's catalog change did.
+
+### Invariants
+
+- Every named lowering of a builtin read, call or value, implies a proved
+  identity at that read. No name list decides correctness: a builtin without
+  a row can never be proved, so it can only lose speed. (`assert` is not a
+  builtin read; see the inventory.)
+- Under a closed premise with no writer, outside
+  `opaque_activation_sources` and `__builtins__` custody, every inventory read
+  except the two target-gated exceptions is exact, so it lowers as on base and
+  a function needs no guard for it.
+- A catalog identity only adds proofs; it never removes the live path.
+- Each exception spelling needs its own identity: `BUILTIN_NAMES_BY_IDENTITY`
+  maps an exact identity to the one name the lowering selects, and a write to
+  `builtins.ValueError` must keep only `ValueError` reads unproved. One family
+  bit could name no class and would let one writer unprove every exception.
+- The new identities are not shape identities, so they never set
+  `callee_elision_safe` lowering (`CallFact.exact_builtin_name` projects shape
+  identities only). Their call effects stay `UNKNOWN_EFFECTS` (the default arm
+  of `_call_semantics`), and their operand escape is the default, as for
+  `OTHER`. No other flow consumer tests them: the audited consumers are the
+  `_call_semantics` arms (shape, intrinsic, namespace-reader, globals
+  mutation, import machinery, `getattr`/`setattr` family), `callee_may_be` and
+  `callee_is` (import call kinds), `python_dynamic_import_facts_required` and
+  the source-callable identities of `module_graph_cache.py`; each tests fixed
+  identities that this change does not add. The census checks the claim that
+  discovery does not change.
+
+### Costs
+
+Compile time: per builtin read, the flow's builtin fallback computes a guarded
+member identity instead of `OTHER | UNBOUND`: one dict lookup and two mask
+operations. Identity masks widen from 82 to 188 bits and member masks from 51
+to 157 bits (CPython integers of seven and six 30-bit digits). Persisted masks
+are integers in the records, so no key layout changes.
+
+Emitted code: a proved read in a function loses its guard call and slow arm.
+An unproved read costs one namespace lookup and a dynamic call, as CPython's
+generic path does. Reads become unproved only with a writer, in an opaque
+activation, or under an open premise. A normal build has a closed premise for
+every admitted module, but a module whose foreign writes include a computed
+name has an open premise (`foreign_writes is None`), so its function reads
+after a callback are unproved. Standalone compilation (the frontend called
+without a module graph, as unit tests do; every `molt build` passes the graph
+premise) has no premise. In both cases guard-table names keep their guard,
+while the other inventory reads (exceptions, `dir`, `getattr` and the rest)
+become live. The IR count below measures how many sites that is in a normal
+build. No runtime state is added. The proof covers lowering only:
+`BUILTIN_FUNC` and `EXCEPTION_CLASS` still find their object by spelling at
+run time (see "Open siblings").
+
+### Test plan
+
+- `tests/test_frontend_builtin_binding_guards.py`: for one name per family
+  (`type`, `ord`, `sum`, `sorted`, `abs`, `print`, `getattr`, `ValueError`
+  called and read, `NotImplemented`), a `builtins` member writer gives the
+  live read and no named operation; the closed premise with no writer gives
+  the named operation with no guard. The repro's slow arm emits `TYPE_OF` on
+  base, so the new test fails there. One closed-premise program with no
+  writer reads every family in a function and must emit no
+  `module_get_global` and no guard call for them.
+- `tests/test_gen_python_identity_catalog.py`: every guard name has a row; the
+  rows cover every `BUILTIN_FUNC_SPECS` name except `pow` and `round`, every
+  `BUILTIN_TYPE_TAGS` name except `memoryview`, and
+  exactly the `BUILTIN_EXCEPTION_NAMES` spellings that are present on every
+  target, each present in `dir(builtins)` of the running interpreter.
+- Differentials against CPython 3.12.16 on native, LLVM and WASM:
+  - `named_builtin_replaced_repro.py`;
+  - one program per dispatch family (`replaced_builtin_scalar_calls.py`,
+    `replaced_builtin_iterator_calls.py`, `replaced_builtin_fallback_calls.py`,
+    `replaced_builtin_constants.py`), plus `replaced_builtin_print.py` and
+    `replaced_builtin_super.py`, which need their own output channel and
+    class context. For each newly catalogued callable, type and constant in
+    turn, the program replaces it at module level and through a `builtins.`
+    attribute, reads or calls it from module and function scope, and
+    restores it; a final `__builtins__` mapping replaces all of them for the
+    functions defined after it. The lane first wrote one program per name
+    (37); on the shared host each build took about eight minutes, so the
+    family programs keep the per-name coverage in 6 programs;
+  - `replaced_builtin_exceptions.py`: each of the 69 exception spellings is
+    read and checked against `builtins.<name>` unreplaced, then replaced in
+    the three forms. The spellings share one lowering, so one program covers
+    them;
+  - `proven_builtin_exception_identity.py`: with no writer, every proved
+    exception read, in a function and at module scope, is the object
+    `builtins` publishes under its spelling, and the ten constructions build
+    that class;
+  - `unproved_frame_builtins.py`: a writer that stores the same object
+    (`builtins.locals = builtins.locals`) makes the reads unproved; `globals`,
+    `locals`, `vars`, `dir` and `super` are then called at module scope, in a
+    method, a comprehension, a generator, a coroutine and a closure;
+  - `proven_class_body_builtins.py`: proved builtin reads in a class body
+    before its first call, and live reads after it, select the objects
+    `builtins` publishes.
+- Census of the 144 programs, binary sizes and module counts for hello and
+  `loop`, the five-pair primitive A/B, and a count of named-lowering operations
+  against dynamic calls in the emitted IR of hello and `loop` on base and head
+  (every admitted stdlib module included), which shows how many sites lose a
+  proof in a normal build.
+
+### Acceptance
+
+The primitive A/B passes when no axis ratio rises beyond its noise bound. The
+census passes when no program admits a module that base does not. Binary sizes
+and the hello and `loop` module counts must not grow, and the IR count must
+show no named-lowering site that becomes a dynamic call in a normal build
+without a writer, other than sites in modules with an open premise, which the
+lane reports by count. Every differential cell must pass. The catalog lands in
+family commits (callables and types, constants, exceptions); if the census or
+the IR count shows a change, the lane measures each family commit to find its
+source before it lands.
+
+### Implementation changes after review
+
+- **Class bodies.** Keying the lowering on the proof made every class-body
+  builtin read live, where base lowered it by spelling: HF-226 proves only
+  `global` lookups, and a class-body read that misses the class mapping is a
+  `class_global` lookup. `exact_builtin_name` now accepts `class_global`
+  reads too. The flow
+  gives such a read a builtin identity only when the class mapping cannot run
+  code (`_namespace_can_call`: no `__prepare__` result, no reflection) and the
+  class-local binding is unbound, so the proof needs no new fact. The flow
+  withdraws it after the first call in the body, which may reflect the
+  namespace; base lowered every class-body call after a call dynamically for
+  the same reason (measured: identical live reads on base and head for
+  `x = compute(); ns = locals(); ...`). `_builtin_read_replaces_guard` keeps
+  `global` reads only: a class body is not an activation, so its proved shape
+  calls keep the call fact's elision proof, as module code does.
+- **Frame-reading builtins.** The differential runs showed a pre-existing
+  gap: `locals()`, `vars()` and zero-argument `dir()` in a module-level class
+  body return the module namespace, not the class mapping. Base and head
+  lower a proved call there to `molt_globals_builtin` (measured on the
+  frontend output of both), and a dynamic call reads the enclosing frame;
+  base also fails an aliased call (`alias = locals`, then `alias()` in the
+  body). `_FRAME_REFLECTIVE_BUILTINS` never covered a class body (base
+  routes an unproved call to the dynamic path before named dispatch), so
+  deleting it changes no class-body lowering. `unproved_frame_builtins.py`
+  covers the function scopes and module scope, where both paths are correct;
+  `proven_class_body_builtins.py` covers the other proved class-body reads.
+- **`__import__` provenance.** The IR count showed two `__import__(...)`
+  calls in the `loop` program (`_frozen_importlib.spec_from_loader`,
+  `typing._require_importlib_util_module`) that base lowered to `BUILTIN_FUNC`
+  and the head lowered to the dynamic call with no writer. The flow records a
+  read of a canonical import callable (`SOURCE_CALLABLE_IDENTITIES`) as its own
+  source origin, for import discovery, and `exact_builtin_name` refused every
+  read with a source origin, a rule meant for star imports. So no
+  `__import__` read could be proved. A star lookup now sets its own fact
+  (`PythonExpressionFact.star_export_lookup`), and `exact_builtin_name`
+  accepts a read whose only origin is its own import provenance. With no
+  writer, `__import__(...)` lowers to `BUILTIN_FUNC` as on base; a member
+  writer, a `__builtins__` writer or a star import keeps the live call.
+  `replaced_builtin_fallback_calls.py` replaces `__import__` in the three
+  forms.
+
+### Open siblings
+
+- Class construction (HF-803 B) records its implicit `__build_class__` read
+  after decorators and before bases/keywords. A proved canonical read retains
+  inline construction. Otherwise the existing binding guard admits the fast
+  arm, and its slow arm reads only the executing frame's builtins and checks
+  the exact public object. Missing bindings raise `NameError`; noncanonical
+  and direct builders raise the static-class-model `TypeError` specified by
+  [spec 0216](../spec/areas/compat/contracts/dynamic_execution_policy_contract.md).
+  Replace-then-restore remains supported; this adds no body-callable ABI.
+- Class-base classification (HF-803 A) now uses the same proved builtin
+  identity as named lowering. `_base_class_reference` creates a builtin MRO
+  entry only from `_proven_builtin_identity`; exception classification consumes
+  that proved MRO. The implicit language `object` base is not a source read.
+  `class_replaced_exception_base.py` checks replaced exception/type bases with
+  a metaclass: the old classification skipped its `__prepare__` calls.
+- `locals()`, `vars()` and zero-argument `dir()` in a class body return the
+  module namespace or the enclosing frame, proved or not (see above). Correct
+  class-body calls, and a replaced `builtins.locals` in a class body, need a
+  runtime class-body frame or mapping handle. Not in this lane.
+- A parameter whose default reads a builtin without a catalog identity
+  (`memoryview`, `pow`, `round`) inherits the default's `OTHER | UNBOUND`
+  identity, so each read of it reloads the frame home and checks for an
+  unbound value (measured: `def f(*, category=memoryview)`). A parameter is
+  always bound at entry; the flow can drop `UNBOUND` from formal bindings.
+  Speed only. Not in this lane.
+- `BUILTIN_FUNC` and `EXCEPTION_CLASS` still find their object by its
+  spelling at run time (`lookup_builtin_name`, `exception_type_bits`). A typed
+  runtime handle for each catalogued builtin would remove those lookups; it is
+  a runtime design, not part of this proof.
+
+### Review record
+
+Round 1 (egm-design and egm-implementation-readiness, Sonnet, design file
+only): ten and fourteen findings, no blockers. Fixed in this text: the
+changed-function table, the inventory method and the `BUILTIN_FUNC_SPECS`
+accounting, the version and platform rule for exceptions, the qualified
+exactness invariant, `callee_elision_safe` and operand escape, cache
+invalidation through the tooling fingerprint, the corrected mask widths,
+named differential files with a frame-builtin differential for every scope
+kind, the IR count of sites that lose a proof, the staged fallback if the
+census changes, the HF-226 text that this section supersedes, the narrowed
+status and the `__build_class__` sibling. Answered, not adopted:
+
+- A source lint against spelled comparisons: the dispatchers now take a
+  `PythonIdentity`, so the type checker enforces it, and project policy
+  removes scraping audits that the type system covers.
+- A per-name exception program: the 69 spellings share one lowering, and the
+  one program reads each spelling by name and checks it against
+  `builtins.<name>`, which catches a wrong table entry per name.
+- Staging the catalog over several lanes: HF-226's census rule is per change,
+  not per identity; this lane runs it once and splits only if it fails.
+- A version field per exception row: every non-gated spelling exists on every
+  supported target (3.12 and newer); the generator test checks it.
+
+Round 2 (egm-zoom-out and egm-codebase-details, Sonnet, design file only):
+ten findings each. The codebase reviewer marked two blockers, both about the
+`BUILTIN_FUNC_SPECS` accounting: `input` and `breakpoint` are not in that
+table (it has 45 names), but `eval` and `exec` are catalogued already, which
+the text had wrong. Fixed: the partition table, `eval`, `exec` and
+`__import__` after the exemption is gone, `memoryview`, the inline
+reductions and the canonical-object sites, the alias rows, the audited mask
+consumers, open premises from computed foreign writes, the target-gated cost
+as an accepted cost, the per-name exception identity reason, the no-writer
+test, family commits, the softened type-checker claim, the lowering-only scope
+of the proof and the class-base sibling. Not adopted: dropping the
+changed-function table (round 1 asked for it), and a standalone IR bound
+(standalone compilation is the unit-test entry, not a shipped mode).
+
+### Results of this lane
+
+Measured 2026-11-05 on macOS arm64 against origin/main 6cbf288f59, with
+CPython 3.12.16 as oracle and denominator.
+
+- **Primitive A/B** (`tools/perf_scoreboard.py primitives`, five pairs per
+  leg, legs run separately, frontend lowering cache disabled in both). No
+  axis rises beyond its noise bound. The largest rise is 0.93%
+  (`tuple_unpack` startup, bound 20.3%); the largest per-operation rise is
+  0.28% (`reduce_ex`, bound 26.1%). A proved read in a function loses its
+  guard: `id` per operation goes from 0.549 to 0.452 times CPython (0.823x),
+  `memo_get` from 1.446 to 1.369 (0.947x), `memo_set` from 1.247 to 1.143
+  (0.916x).
+- **Binaries and modules.** hello stays at 13,505,480 bytes; `loop` goes from
+  32,269,752 to 32,220,216. hello admits 7 modules and `loop` 29 on both,
+  with identical module-registry digests.
+- **Emitted IR** (hello and `loop`, every admitted stdlib module). In `loop`,
+  guards go from 281 to 266, named operations from 1,362 to 1,420, and live
+  builtin reads from 782 to 704. One site gains a live read: `__future__`
+  reads `globals` in a module-level loop that writes `globals()[name]` with a
+  computed name. That write can bind any global, so the read is unproved, as
+  CPython's semantics require. Seven parameter reloads leave `warnings` and
+  `typing`: base gave a default that reads an uncatalogued builtin
+  (`category=Warning`) the identity `OTHER | UNBOUND`, and the parameter
+  inherited the possibly-unbound check (see "Open siblings").
+- **Census.** Module-graph discovery of the 144 census programs admits the
+  same modules on main and on this lane: 2,226 admissions each, no program
+  gains or loses a module, no refusals. The `__import__` provenance change
+  reads no fact that discovery consumes.
+- **Differentials.** The 11 programs pass on native, LLVM and WASM against
+  CPython 3.12.16 (33 cells; native and LLVM through `molt_dev.py
+  difftest`, WASM through `tests/molt_diff.py`). On main the repro prints
+  `replaced <class 'int'> 97`.
 
 ## Tests
 

@@ -15,7 +15,12 @@ from tests.process_guard_common import run_guarded_test_process
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _workers(tmp_path: Path, *options: str, env: dict[str, str] | None = None) -> int:
+def _workers(
+    tmp_path: Path,
+    *options: str,
+    env: dict[str, str] | None = None,
+    allocation: int | None = None,
+) -> int:
     project = tmp_path / "project"
     project.mkdir(exist_ok=True)
     (project / "pyproject.toml").write_text(
@@ -36,21 +41,28 @@ def _workers(tmp_path: Path, *options: str, env: dict[str, str] | None = None) -
         environment["PYTEST_XDIST_AUTO_NUM_WORKERS"] = env[
             "PYTEST_XDIST_AUTO_NUM_WORKERS"
         ]
+    command = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "-p",
+        "molt.pytest_capacity_plugin",
+        "-p",
+        "no:cacheprovider",
+        "-n",
+        "auto",
+        *options,
+        str(project / "test_count.py"),
+    ]
+    if allocation is not None:
+        from tools.proof_command_argv import allocated_pytest_argv
+
+        command, _count = allocated_pytest_argv(
+            command, root=project, cpus=allocation, environment=environment
+        )
     result = run_guarded_test_process(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-q",
-            "-p",
-            "molt.pytest_capacity_plugin",
-            "-p",
-            "no:cacheprovider",
-            "-n",
-            "auto",
-            *options,
-            str(project / "test_count.py"),
-        ],
+        command,
         cwd=project,
         env=environment,
         timeout=180.0,
@@ -251,3 +263,78 @@ def test_compiled_contract_worker_estimate_limits_actual_capacity_planner(
     monkeypatch.setattr(host_capacity, "cpu_count", lambda: 32)
     config = SimpleNamespace(getoption=lambda name: row.data["pytest_worker_memory_gb"])
     assert pytest_capacity_plugin.pytest_xdist_auto_num_workers(config) == expected
+
+
+@pytest.mark.parametrize(
+    "options,expected",
+    [
+        (("-n", "auto"), 2),
+        (("-n18",), 2),
+        (("--numprocesses=8",), 2),
+        (("-n", "0"), 0),
+        (("-o", "example=-n18"), 2),
+    ],
+)
+def test_executor_resolves_worker_options_with_pytests_parser(
+    monkeypatch, options, expected
+):
+    from tools.proof_command_argv import allocated_pytest_argv, pytest_arguments
+    from molt.pytest_memory_guard_bootstrap import _pytest_argument_parser
+
+    gib = 1024**3
+    monkeypatch.setattr(
+        host_capacity,
+        "memory_capacity",
+        lambda env: host_capacity.MemoryCapacity(64 * gib, 40 * gib),
+    )
+    argv, workers = allocated_pytest_argv(
+        (
+            sys.executable,
+            "-m",
+            "pytest",
+            *options,
+            "tests/test_pytest_capacity_plugin.py",
+        ),
+        root=ROOT,
+        cpus=2,
+        environment=dict(os.environ),
+    )
+    namespace, _ = _pytest_argument_parser(True).parse_known_and_unknown_args(
+        list(pytest_arguments(argv, root=ROOT))
+    )
+    assert namespace.numprocesses == expected == workers
+
+
+def test_executor_memory_bound_and_positional_boundary_survive_worker_override(
+    monkeypatch,
+):
+    from tools.proof_command_argv import allocated_pytest_argv
+
+    gib = 1024**3
+    monkeypatch.setattr(
+        host_capacity,
+        "memory_capacity",
+        lambda env: host_capacity.MemoryCapacity(64 * gib, 1 * gib, 1 * gib),
+    )
+    argv, workers = allocated_pytest_argv(
+        (
+            sys.executable,
+            "-m",
+            "pytest",
+            "-n",
+            "8",
+            "--molt-worker-memory-gb=1",
+            "--",
+            "tests/example.py",
+        ),
+        root=ROOT,
+        cpus=6,
+        environment=dict(os.environ, PYTEST_XDIST_AUTO_NUM_WORKERS="18"),
+    )
+    assert workers == 1
+    assert argv[-4:] == ("-n", "1", "--", "tests/example.py")
+
+
+def test_executor_count_reaches_actual_pytest_despite_operator_override(tmp_path):
+    environment = dict(os.environ, PYTEST_XDIST_AUTO_NUM_WORKERS="18")
+    assert _workers(tmp_path, "-n18", env=environment, allocation=2) == 2

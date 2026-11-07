@@ -943,6 +943,20 @@ pub(crate) fn reserved_wasm_runtime_callable_dispatch_for_index(
 #[rustfmt::skip]
 pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
+            public: crate::intrinsics::public_objects_generated::PublicObjectId::BuildClassBuiltin,
+            text_signature: None,
+            runtime_name: "molt_build_class_builtin",
+            arity: 2,
+            posonly_params: &[],
+            pos_or_kw_params: &[],
+            kwonly_params: &[],
+            vararg: Some("args"),
+            varkw: Some("kwargs"),
+            defaults: &[],
+            kw_defaults: &[],
+            bind_kind: None,
+        },
+        PythonBuiltinFunctionInfo {
             public: crate::intrinsics::public_objects_generated::PublicObjectId::ImportlibImportTransaction,
             text_signature: Some("($module, /, name, globals=None, locals=None, fromlist=(),\n           level=0)"),
             runtime_name: "molt_importlib_import_transaction",
@@ -1593,6 +1607,7 @@ pub(crate) fn resolve_test_python_builtin_symbol(symbol: &str) -> Option<u64> {
         "molt_any_builtin" => crate::molt_any_builtin as *const (),
         "molt_ascii_from_obj" => crate::molt_ascii_from_obj as *const (),
         "molt_bin_builtin" => crate::molt_bin_builtin as *const (),
+        "molt_build_class_builtin" => crate::molt_build_class_builtin as *const (),
         "molt_callable_builtin" => crate::molt_callable_builtin as *const (),
         "molt_chr" => crate::molt_chr as *const (),
         "molt_compile_builtin" => crate::molt_compile_builtin as *const (),

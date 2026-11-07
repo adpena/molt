@@ -344,6 +344,7 @@ for (const test of config.cases) {
   refcount_admission: () => 0n, // isolated image: no runtime execution custody
 
     trace_set_line(line) { lines.push(Number(line)); return none; },
+    exception_frame_origin(homes) { assert.equal(homes,0n); assert.equal(polls,failAt); return none; },
     exception_pending() { return ++polls === failAt ? 1n : 0n; },
     obj_get_state(task) { assert.equal(task, 64n); return savedState; },
     obj_set_state() { throw Error('no state publication in this guest'); },

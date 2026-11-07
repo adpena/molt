@@ -10,7 +10,6 @@ import subprocess
 import sys
 import sysconfig
 import re
-import tomllib
 from pathlib import Path
 from typing import Literal
 
@@ -122,10 +121,14 @@ def _release_header(
     )
 
 
-def _evidence_inputs(python: str) -> tuple[gen.SourceInput, ...]:
+def _evidence_inputs(python: str, micro: int = 1) -> tuple[gen.SourceInput, ...]:
     inputs = []
     for role, template in gen.EVIDENCE_PATHS:
-        text = _release_header(python) if role == "release" else f"{role} fixture\n"
+        text = (
+            _release_header(python, micro=micro)
+            if role == "release"
+            else f"{role} fixture\n"
+        )
         inputs.append(
             gen.SourceInput(
                 role,
@@ -166,7 +169,11 @@ def _snapshot(
         header_lines=header,
         lib_object="b" * 40,
         lib_entries=entries,
-        inputs=_evidence_inputs(python),
+        # Like a real CPython checkout, the receipted patchlevel.h names the
+        # tagged release.
+        inputs=_evidence_inputs(
+            python, int(re.match(r"\d+", tag.rsplit(".", 1)[1])[0])
+        ),
     )
 
 
@@ -198,6 +205,7 @@ def fixture_authority(monkeypatch, tmp_path: Path) -> Path:
     monkeypatch.setattr(
         gen, "OUT_RELEASE_PATH", tmp_path / "_python_release_generated.py"
     )
+    monkeypatch.setattr(gen, "DEV_PYTHON_PIN_PATH", tmp_path / ".python-version")
     return tmp_path
 
 
@@ -315,7 +323,8 @@ def test_committed_outputs_render_offline(monkeypatch, capsys) -> None:
     monkeypatch.setattr(gen, "harness_memory_guard", NoSubprocess())
 
     assert gen.main(["--check"]) == 0
-    assert "5 generated output(s) current" in capsys.readouterr().out
+    # Facade, three per-version modules, release facts and .python-version.
+    assert "6 generated output(s) current" in capsys.readouterr().out
 
 
 def test_committed_snapshot_covers_every_supported_pin() -> None:
@@ -755,7 +764,18 @@ def test_projection_tracks_membership_without_repeating_source_provenance(
         gen.render_snapshot({"3.12": advanced}), encoding="utf-8"
     )
     assert gen.pinned_snapshots(("3.12",))["3.12"] == advanced
-    assert gen.generated_outputs() == before
+    moved = gen.generated_outputs()
+    release_facts = {gen.OUT_RELEASE_PATH, gen.DEV_PYTHON_PIN_PATH}
+
+    def membership(outputs):
+        return {
+            path: text for path, text in outputs.items() if path not in release_facts
+        }
+
+    # Membership modules repeat no tag or revision; the release facts follow
+    # the patch the new pin's patchlevel.h names.
+    assert membership(moved) == membership(before)
+    assert moved[gen.DEV_PYTHON_PIN_PATH] == "3.12.2\n"
 
     changed = replace(
         advanced,
@@ -786,7 +806,10 @@ def test_generated_outputs_derive_every_supported_version(
         output,
         fixture_authority / "stdlib_module_union_3_12.py",
         gen.OUT_RELEASE_PATH,
+        gen.DEV_PYTHON_PIN_PATH,
     }
+    # The development pin is the default target's pinned release (v3.12.1).
+    assert rendered[gen.DEV_PYTHON_PIN_PATH] == "3.12.1\n"
     assert not any(path.exists() for path in rendered)
     for path, text in rendered.items():
         path.write_text(text, encoding="utf-8")
@@ -851,29 +874,48 @@ def test_pending_source_capture_does_not_admit_or_generate_target(
     assert gen.DEFAULT_PYTHONS == ("3.12",)
     gen.OUT_RELEASE_PATH.write_text(outputs[gen.OUT_RELEASE_PATH], encoding="utf-8")
     namespace = runpy.run_path(str(gen.OUT_RELEASE_PATH))
+    # Each release is the one its pin's tag names (v3.12.1, v3.15.0).
     assert namespace["CPYTHON_RELEASES"] == {
         "3.12": (3, 12, 1, "final", 0),
-        "3.15": (3, 15, 1, "final", 0),
+        "3.15": (3, 15, 0, "final", 0),
     }
 
 
 @pytest.mark.parametrize(
-    ("level", "serial", "expected"),
+    ("level", "serial", "expected", "tag"),
     [
-        ("ALPHA", 2, "alpha"),
-        ("BETA", 5, "beta"),
-        ("GAMMA", 7, "candidate"),
-        ("FINAL", 0, "final"),
+        ("ALPHA", 2, "alpha", "v3.12.19a2"),
+        ("BETA", 5, "beta", "v3.12.19b5"),
+        ("GAMMA", 7, "candidate", "v3.12.19rc7"),
+        ("FINAL", 0, "final", "v3.12.19"),
     ],
 )
-def test_release_fields_come_from_receipted_header_not_tag_or_host(
-    level, serial, expected
+def test_release_fields_come_from_receipted_header_and_must_match_the_tag(
+    level, serial, expected, tag
 ):
-    snapshot = _with_release(
-        _snapshot(tag="v3.12.1"),
-        _release_header("3.12", micro=19, level=level, serial=serial),
-    )
+    header = _release_header("3.12", micro=19, level=level, serial=serial)
+    snapshot = _with_release(_snapshot(tag=tag), header)
     assert gen.derive_python_release(snapshot) == (3, 12, 19, expected, serial)
+    # The header owns the fields; a tag naming another release is refused,
+    # so no projection can carry two patches for one pin row.
+    with pytest.raises(ValueError, match="does not match pinned tag v3.12.1"):
+        gen.derive_python_release(_with_release(_snapshot(tag="v3.12.1"), header))
+
+
+def test_dev_python_pin_is_the_default_targets_final_release():
+    default = gen.DEFAULT_TARGET_PYTHON_SHORT_VERSION
+    major, minor = default.split(".")
+    tag = f"v{default}.7"
+    final = _with_release(
+        _snapshot(python=default, tag=tag), _release_header(default, micro=7)
+    )
+    assert gen.render_dev_python_pin({default: final}) == f"{major}.{minor}.7\n"
+    candidate = _with_release(
+        _snapshot(python=default, tag=f"{tag}rc1"),
+        _release_header(default, micro=7, level="GAMMA", serial=1),
+    )
+    with pytest.raises(ValueError, match="needs a final one"):
+        gen.render_dev_python_pin({default: candidate})
 
 
 @pytest.mark.parametrize(
@@ -994,6 +1036,7 @@ gen.PINS_PATH = root / "pins.toml"
 gen.SNAPSHOT_PATH = root / "snapshot.json"
 gen.OUT_PATH = root / "stdlib_module_union.py"
 gen.OUT_RELEASE_PATH = root / "_python_release_generated.py"
+gen.DEV_PYTHON_PIN_PATH = root / ".python-version"
 gen.DEFAULT_PYTHONS = ("3.12",)
 assert gen.main(["--write"]) == 0
 assert runpy.run_path(str(gen.OUT_RELEASE_PATH))["CPYTHON_RELEASES"] == {"3.12": (3, 12, 1, "final", 0)}
@@ -1004,24 +1047,6 @@ print("release projection repaired")
         check=True,
     )
     assert "release projection repaired" in result.stdout
-
-
-def _comparison_reference_policy(root: Path, references: list[str]) -> Path:
-    text = gen.REFERENCE_POLICY.read_text(encoding="utf-8")
-    source = tomllib.loads(text)
-    for suite in source["differential_suites"]:
-        (root / suite["path"]).mkdir(parents=True, exist_ok=True)
-    path = root / "config" / "verified_subset.toml"
-    path.parent.mkdir(exist_ok=True)
-    path.write_text(
-        re.sub(
-            r"(?m)^reference_cpython = .*?$",
-            "reference_cpython = " + json.dumps(references),
-            text,
-        ),
-        encoding="utf-8",
-    )
-    return path
 
 
 def _comparison_implementation(monkeypatch, tmp_path: Path) -> Path:
@@ -1071,18 +1096,11 @@ def test_source_comparison_reports_literal_delta_and_reference_mismatch(
     gen.SNAPSHOT_PATH.write_text(
         gen.render_snapshot({"3.12": before, "3.15": after}), encoding="utf-8"
     )
-    policy = _comparison_reference_policy(
-        fixture_authority, ["3.12.9", "3.13.11", "3.14.3"]
-    )
-    monkeypatch.setattr(gen, "REFERENCE_POLICY", policy)
     report = gen.source_comparison("3.12", "3.15")
     assert report["stdlib_membership"]["modules"] == {
         "added": ["new_api"],
         "removed": ["abc"],
     }
-    assert report["before"]["configured_reference"] == "3.12.9"
-    assert report["before"]["source_matches_reference_patch"] is False
-    assert report["after"]["configured_reference"] is None
     assert report["after"]["admitted_target"] is False
     assert (
         report["after"]["qualification"] == "requires-source-bound-execution-receipts"
@@ -1230,15 +1248,10 @@ def test_source_comparison_future_major_is_source_only(fixture_authority, monkey
         gen.PINS_PATH, {key: (row.tag, row.revision) for key, row in snapshots.items()}
     )
     gen.SNAPSHOT_PATH.write_text(gen.render_snapshot(snapshots), encoding="utf-8")
-    policy = _comparison_reference_policy(
-        fixture_authority, ["3.12.13", "3.13.11", "3.14.3"]
-    )
-    monkeypatch.setattr(gen, "REFERENCE_POLICY", policy)
     for candidate in ("4.0", "4.12"):
         report = gen.source_comparison("3.12", candidate)
         assert report["after"]["python"] == candidate
         assert report["after"]["admitted_target"] is False
-        assert report["after"]["configured_reference"] is None
         assert all(
             row["introduced_in_delta"]
             for row in report["prerequisites"]["syntax_families"]
@@ -1320,15 +1333,9 @@ def test_source_evidence_rejects_missing_misbound_and_forged_bytes(
         gen.load_snapshot(gen.SNAPSHOT_PATH)
 
 
-def test_comparison_rejects_unpinned_version_and_ambiguous_reference(
-    fixture_authority, monkeypatch
-):
+def test_comparison_rejects_an_unpinned_version(fixture_authority, monkeypatch):
     with pytest.raises(RuntimeError, match="pins no CPython source"):
         gen.source_comparison("3.12", "3.99")
-    policy = _comparison_reference_policy(fixture_authority, ["3.12.1", "3.12.2"])
-    monkeypatch.setattr(gen, "REFERENCE_POLICY", policy)
-    with pytest.raises(ValueError, match="minors must be unique"):
-        gen.source_comparison("3.12", "3.12")
 
 
 @pytest.mark.parametrize(
@@ -1551,10 +1558,6 @@ def test_grammar_only_change_is_reported_when_ast_schema_is_identical(
     gen.SNAPSHOT_PATH.write_text(
         gen.render_snapshot({"3.12": before, "3.15": after}), encoding="utf-8"
     )
-    policy = _comparison_reference_policy(
-        fixture_authority, ["3.12.1", "3.13.11", "3.14.3"]
-    )
-    monkeypatch.setattr(gen, "REFERENCE_POLICY", policy)
     report = gen.source_comparison("3.12", "3.15")
     rows = {row["role"]: row for row in report["source_inputs"]}
     assert rows["ast_schema"]["changed"] is False

@@ -2666,25 +2666,13 @@ def test_portability_image_donor_resolves_groups_after_verified_python() -> None
     ("workflow", "job"),
     [("ci.yml", "rust-build-unit-smoke"), ("molt-wasm-ci.yml", "wasm-build")],
 )
-def test_ci_luau_runner_uses_digest_bound_prebuilt_authority(
-    workflow: str, job: str
-) -> None:
+def test_ci_provisions_no_luau_runner(workflow: str, job: str) -> None:
+    # Luau runs in no presubmit or postsubmit cell (owner decision 2026-11-05,
+    # HF-620), so no CI job provisions its runner.
     text = _read(f".github/workflows/{workflow}")
     steps = yaml.safe_load(text)["jobs"][job]["steps"]
-    provision = next(
-        step
-        for step in steps
-        if step.get("name") == "Install pinned executable Luau proof runner"
-    )
-    assert provision["run"] == (
-        'python3 -m molt.tool_releases provision lune --github-path "$GITHUB_PATH"'
-    )
-    assert "cargo install lune" not in text
-    assert steps.index(provision) < next(
-        index
-        for index, step in enumerate(steps)
-        if "--run-family" in step.get("run", "")
-    )
+    assert not any("lune" in str(step.get("run", "")) for step in steps)
+    assert "lune" not in text
 
 
 def test_ci_push_path_is_cheap_only() -> None:
@@ -4550,7 +4538,7 @@ def test_named_proof_lanes_fail_closed_and_share_counted_verdict_authority() -> 
         "tools/check_reproducible_build.py",
         "tools/verify_ir_suite.py",
         "tools/mutation_test.py",
-        "tools/translation_validate.py",
+        "tests/molt_diff.py",
     ):
         text = _read(tool)
         assert "fail_closed_proof_exit_code(" in text

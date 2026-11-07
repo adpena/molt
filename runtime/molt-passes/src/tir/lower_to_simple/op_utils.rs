@@ -59,6 +59,9 @@ pub(super) fn annotate_lowered_op(
         tir_op.attrs.get("passes_execution_context"),
         Some(AttrValue::Bool(true))
     );
+    opir.exception_edge = tir_op.exception_edge_kind();
+    opir.exception_source = tir_op.exception_source_kind();
+    opir.frame_location = tir_op.frame_location();
     opir.async_work_poll = tir_op.opcode != OpCode::CheckException && tir_op.is_async_work_poll();
     // A source call's typed operand custody is aligned with its operands,
     // which the call's lowering emits as `args`, in order.

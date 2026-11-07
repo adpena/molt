@@ -11,6 +11,7 @@ path takes the checkout it reads as ``root``.
 from __future__ import annotations
 
 from pathlib import Path
+import math
 import re
 from typing import Mapping, Sequence
 
@@ -696,3 +697,54 @@ def pytest_run_selections(arguments: Sequence[str], *, root: Path) -> tuple[str,
             ) from None
         selections[relative] = None
     return tuple(selections)
+
+
+def allocated_pytest_argv(
+    argv: Sequence[str],
+    *,
+    root: Path,
+    cpus: int,
+    environment: Mapping[str, str],
+) -> tuple[tuple[str, ...], int]:
+    """Resolve a recognized pytest launch to the executor's explicit count.
+
+    Use pytest's parser, including plugin options, so a value of -k/-o never
+    becomes a worker option. The final -n overrides config/addopts and earlier
+    worker flags; insert before -- so positional target semantics survive.
+    """
+    from molt import host_capacity
+    from molt.pytest_memory_guard_bootstrap import _pytest_argument_parser
+
+    arguments = pytest_arguments(argv, root=root)
+    if arguments is None or cpus < 1:
+        raise ValueError(
+            "pytest allocation requires a recognized launch and positive CPUs"
+        )
+    if any(value.startswith("@") for value in arguments):
+        raise ValueError("executor pytest commands cannot use argument files")
+    namespace, _unknown = _pytest_argument_parser(True).parse_known_and_unknown_args(
+        list(arguments)
+    )
+    gigabytes = namespace.molt_worker_memory_gb
+    if (
+        not math.isfinite(gigabytes)
+        or gigabytes <= 0
+        or not math.isfinite(gigabytes * 1024**3)
+        or gigabytes * 1024**3 < 1
+    ):
+        raise ValueError("--molt-worker-memory-gb must be positive and finite")
+    capacity = host_capacity.memory_capacity(environment)
+    total, available = capacity.bounded_bytes
+    workers = host_capacity.worker_count_from_samples(
+        bytes_per_worker=int(gigabytes * 1024**3),
+        headroom_bytes=host_capacity.headroom_bytes(capacity),
+        total_memory_bytes=total,
+        available_memory_bytes=available,
+        cpus=cpus,
+    )
+    requested = namespace.numprocesses
+    if isinstance(requested, int):
+        workers = min(workers, requested)
+    offset = len(argv) - len(arguments)
+    boundary = offset + (arguments.index("--") if "--" in arguments else len(arguments))
+    return (*argv[:boundary], "-n", str(workers), *argv[boundary:]), workers

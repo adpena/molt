@@ -148,29 +148,28 @@ impl HostReaderTask {
             .is_none_or(thread::JoinHandle::is_finished)
     }
 
-    pub(super) fn close(&mut self, deadline: Instant) -> Result<()> {
+    /// Cancel, then join. A reader never blocks: its pipe is nonblocking and
+    /// the cancel flag is checked between reads, so after `cancel` the thread
+    /// ends within one read poll plus the consumer's current step. Consumers
+    /// must not block on anything but their reader (the production consumers
+    /// send to unbounded channels). Close therefore has no wall-clock deadline:
+    /// a timer here only raced the scheduler under load (HF-802). A stuck child
+    /// keeps its own deadline in `close_owned_child` and `reap_owned_child`.
+    pub(super) fn close(&mut self) -> Result<()> {
         self.cancel();
-        while let Some(thread) = self.thread.as_ref() {
-            if thread.is_finished() {
-                let thread = self.thread.take().expect("owned reader task");
-                return thread
-                    .join()
-                    .map_err(|_| wasmtime::Error::msg("host pipe reader panicked"))?;
-            }
-            if Instant::now() >= deadline {
-                bail!("host pipe reader did not stop before close deadline");
-            }
-            thread::sleep(Duration::from_millis(5));
-        }
-        Ok(())
+        let Some(thread) = self.thread.take() else {
+            return Ok(());
+        };
+        thread
+            .join()
+            .map_err(|_| wasmtime::Error::msg("host pipe reader panicked"))?
     }
 }
 
 impl Drop for HostReaderTask {
     fn drop(&mut self) {
-        // Managers own the shared wait budget. Drop may cancel/reap an already
-        // finished task, but cannot add another per-reader wait to that budget.
-        if let Err(err) = self.close(Instant::now()) {
+        // Close cancels and joins; a reader that never blocks ends at once.
+        if let Err(err) = self.close() {
             eprintln!("host reader fallback cleanup failed: {err:#}");
         }
     }
@@ -313,7 +312,7 @@ impl ProcessManager {
             let mut closed = true;
             for reader in &mut entry.readers {
                 let reader_result = reader
-                    .close(deadline)
+                    .close()
                     .with_context(|| format!("close process {handle} reader"));
                 if reader_result.is_err() {
                     closed = false;
@@ -1199,13 +1198,61 @@ mod host_resource_tests {
             },
         )
         .unwrap();
-        task.close(Instant::now() + Duration::from_secs(1)).unwrap();
+        task.close().unwrap();
         assert!(task.thread.is_none());
         assert_eq!(
             rx.try_recv().unwrap(),
             std::io::ErrorKind::ConnectionAborted
         );
-        task.close(Instant::now()).unwrap();
+        task.close().unwrap();
+    }
+
+    #[test]
+    fn reader_close_completes_while_every_core_is_busy() {
+        // HF-802: a 250 ms close deadline failed under parallel landing load.
+        // Close now joins a reader that cannot block, so saturation only
+        // delays it; it never turns a healthy reader into a close error.
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let burners: Vec<_> = (0..thread::available_parallelism().map_or(4, |n| n.get()) * 2)
+            .map(|_| {
+                let stop = Arc::clone(&stop);
+                thread::spawn(move || {
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        std::hint::spin_loop();
+                    }
+                })
+            })
+            .collect();
+        let mut tasks: Vec<_> = (0..32)
+            .map(|index| {
+                let (pipe, writer) = os_pipe::pipe().unwrap();
+                let task = HostReaderTask::spawn(
+                    &format!("test-loaded-reader-{index}"),
+                    HostPipeReader::new(pipe).unwrap(),
+                    move |mut reader| {
+                        let mut buf = [0; 64];
+                        loop {
+                            match reader.read(&mut buf) {
+                                Ok(0) => return Ok(()),
+                                Ok(_) => {}
+                                Err(err) if is_reader_cancelled(&err) => return Ok(()),
+                                Err(err) => return Err(err.into()),
+                            }
+                        }
+                    },
+                )
+                .unwrap();
+                (task, writer)
+            })
+            .collect();
+        for (task, _writer) in &mut tasks {
+            task.close().unwrap();
+            assert!(task.thread.is_none());
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        for burner in burners {
+            burner.join().unwrap();
+        }
     }
 
     #[test]
@@ -1219,7 +1266,7 @@ mod host_resource_tests {
             },
         )
         .unwrap();
-        assert!(task.close(Instant::now() + Duration::from_secs(1)).is_err());
+        assert!(task.close().is_err());
         assert!(task.thread.is_none());
     }
 
@@ -1237,15 +1284,13 @@ mod host_resource_tests {
             },
         )
         .unwrap();
-        let error = task
-            .close(Instant::now() + Duration::from_secs(1))
-            .unwrap_err();
+        let error = task.close().unwrap_err();
         assert_eq!(
             error.downcast_ref::<std::io::Error>().unwrap().kind(),
             std::io::ErrorKind::PermissionDenied
         );
         assert!(task.thread.is_none());
-        task.close(Instant::now()).unwrap();
+        task.close().unwrap();
     }
 
     #[test]

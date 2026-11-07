@@ -534,7 +534,6 @@ pub(crate) fn runtime_profile_payload(
     let alloc_bytes_callargs = ALLOC_BYTES_CALLARGS.load(AtomicOrdering::Relaxed);
     let tb_builds = TRACEBACK_BUILD_COUNT.load(AtomicOrdering::Relaxed);
     let tb_frames = TRACEBACK_BUILD_FRAMES.load(AtomicOrdering::Relaxed);
-    let tb_suppressed = TRACEBACK_SUPPRESS_COUNT.load(AtomicOrdering::Relaxed);
     let async_polls = ASYNC_POLL_COUNT.load(AtomicOrdering::Relaxed);
     let async_pending = ASYNC_PENDING_COUNT.load(AtomicOrdering::Relaxed);
     let async_wakeups = ASYNC_WAKEUP_COUNT.load(AtomicOrdering::Relaxed);
@@ -635,7 +634,6 @@ pub(crate) fn runtime_profile_payload(
         alloc_bytes_callargs,
         tb_builds,
         tb_frames,
-        tb_suppressed,
         async_polls,
         async_pending,
         async_wakeups,

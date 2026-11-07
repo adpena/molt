@@ -1278,3 +1278,77 @@ int main(void) {
         [str(output)], cwd=tmp_path, capture_output=True, text=True, check=False
     )
     assert result.returncode == (41 if private_copy else 0), result.stderr
+
+
+@pytest.mark.parametrize("transport", ["source-linked", "source-host", "abi-linked"])
+def test_marshal_headers_route_exact_version_and_buffer_to_shared_exports(
+    tmp_path: Path, transport: str
+) -> None:
+    """Transport proof; real codec/ownership behavior lives in runtime --lib tests."""
+    compiler = shutil.which("clang")
+    if compiler is None:
+        pytest.skip("clang is required for C-API transport execution")
+    root = Path(__file__).resolve().parents[2]
+    header = "Python.h" if transport == "abi-linked" else "molt/Python.h"
+    probe = tmp_path / "probe.c"
+    probe.write_text(
+        f"#include <{header}>\n"
+        + r"""
+extern void *marshal_value;
+extern void *marshal_bytes;
+extern const char *marshal_data;
+int main(void) {
+    if (PyMarshal_WriteObjectToString((PyObject *)marshal_value, 99) != marshal_bytes) return 1;
+    if (PyMarshal_WriteObjectToString((PyObject *)marshal_value, -7) != NULL) return 2;
+    if (PyMarshal_ReadObjectFromString(marshal_data, 5) != marshal_value) return 3;
+    if (PyMarshal_ReadObjectFromString(marshal_data, 4) != NULL) return 4;
+    return 0;
+}
+""",
+        encoding="utf-8",
+    )
+    owner = tmp_path / "owner.c"
+    owner.write_text(
+        r"""#include <stddef.h>
+#include <stdint.h>
+#ifdef _WIN32
+#define EXPORT __declspec(dllexport)
+#else
+#define EXPORT
+#endif
+static int value_token, bytes_token;
+void *marshal_value = &value_token;
+void *marshal_bytes = &bytes_token;
+const char *marshal_data = "i\1\0\0\0";
+EXPORT void *PyMarshal_WriteObjectToString(void *value, int version) {
+    return value == marshal_value && version == 99 ? marshal_bytes : NULL;
+}
+EXPORT void *PyMarshal_ReadObjectFromString(const char *data, intptr_t length) {
+    return data == marshal_data && length == 5 ? marshal_value : NULL;
+}
+""",
+        encoding="utf-8",
+    )
+    includes = _source_extension_include_dirs_for_abi_tier(
+        molt_root=root,
+        abi_tier="cpython-abi" if transport == "abi-linked" else "source-compat",
+    )
+    command = [compiler, "-O2", "-std=c11", *(f"-I{path}" for path in includes)]
+    if transport == "source-host":
+        command.append("-DMOLT_EXTENSION_HOST_ABI")
+        if sys.platform == "darwin":
+            command.append("-Wl,-export_dynamic")
+        elif sys.platform != "win32":
+            command.extend(["-Wl,--export-dynamic", "-ldl"])
+    output = tmp_path / ("probe.exe" if sys.platform == "win32" else "probe")
+    result = run_cli_test_process(
+        [*command, str(probe), str(owner), "-o", str(output)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    result = run_cli_test_process(
+        [str(output)], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr

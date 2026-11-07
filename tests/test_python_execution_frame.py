@@ -11,6 +11,127 @@ from molt.frontend.lowering.function_lifecycle import FunctionLifecycleMixin
 from tools.check_ir_structure import verify_frontend_tir
 
 
+def test_exception_check_coalescing_preserves_origin_before_unwind():
+    from molt.frontend.lowering.op_kinds_generated import ExceptionEdgeKind
+
+    generator = SimpleTIRGenerator(target_python=(3, 12))
+    origin = MoltOp(
+        kind="CHECK_EXCEPTION",
+        args=[7],
+        result=MoltValue("none"),
+        exception_edge=ExceptionEdgeKind.ORIGIN,
+    )
+    unwind = MoltOp(
+        kind="CHECK_EXCEPTION",
+        args=[7],
+        result=MoltValue("none"),
+        exception_edge=ExceptionEdgeKind.UNWIND,
+    )
+    assert generator._coalesce_check_exception_ops([origin, unwind]) == [origin, unwind]
+    assert generator._coalesce_check_exception_ops([origin, origin]) == [origin]
+
+
+def test_location_encoding_is_decoded_by_cpython_without_source_inference():
+    from molt.frontend.lowering.frame_locations import SourcePosition, encode_locations
+
+    positions = [
+        SourcePosition(7, 7, -1, -1),
+        SourcePosition(13, 15, 4, 19),
+        SourcePosition(9, 9, 2, 8),
+        SourcePosition(1000, 1001, 200, 250),
+    ]
+    # CPython's own code-table reader is independent of Molt's encoder/decoder.
+    code = compile("pass", "<location-oracle>", "exec").replace(
+        co_firstlineno=7, co_linetable=encode_locations(7, positions)
+    )
+    assert list(code.co_positions()) == [
+        (7, 7, None, None),
+        (13, 15, 4, 19),
+        (9, 9, 2, 8),
+        (1000, 1001, 200, 250),
+    ]
+
+
+def test_multiline_frame_reads_publish_the_expression_position():
+    source = "def sample(frame):\n    return (\n        frame.f_lineno,\n        frame.f_lasti,\n    )\n"
+    _, ir = compile_source(source, (3, 12))
+    function = next(f for f in ir["functions"] if f["name"].endswith("__sample"))
+    module = next(f for f in ir["functions"] if f["name"] == "molt_main")
+    definitions = {op["out"]: op for op in module["ops"] if op.get("out")}
+    constructor = next(
+        op
+        for op in module["ops"]
+        if op["kind"] == "code_slot_set" and op["s_value"] == function["name"]
+    )
+    code = definitions[constructor["args"][0]]
+    table = bytes(definitions[code["args"][3]]["bytes"])
+    positions = list(
+        compile("pass", "<position-oracle>", "exec")
+        .replace(co_firstlineno=1, co_linetable=table)
+        .co_positions()
+    )
+    published = [
+        positions[op["value"]]
+        for op in function["ops"]
+        if op["kind"] == "frame_set_location"
+    ]
+    assert (3, 3, 8, 22) in published
+    assert (4, 4, 8, 21) in published
+    assert (2, 5, 4, 5) in published, "a pure return still publishes its terminal range"
+
+
+def test_location_tables_do_not_replace_shared_none_metadata():
+    _, ir = compile_source(
+        "def sample(value: int) -> tuple:\n    return (value,)\n", (3, 12)
+    )
+    for function in ir["functions"]:
+        definitions = {op["out"]: op for op in function["ops"] if op.get("out")}
+        for op in function["ops"]:
+            if (
+                op["kind"] != "call"
+                or op.get("s_value") != "molt_function_init_metadata_packed"
+            ):
+                continue
+            metadata = definitions[op["args"][1]]
+            # These fields accept None, never the immutable location byte table.
+            for index in (6, 7, 8, 9, 10):
+                assert definitions[metadata["args"][index]]["kind"] == "const_none"
+            code = definitions[op["args"][2]]
+            assert definitions[code["args"][3]]["kind"] == "const_bytes"
+
+
+def test_counted_range_loop_index_machinery_emits_no_exception_check():
+    # range() bounds are exact ints (operator.index results since CPython 3.10),
+    # so the counted loop's index start, bound compare, simple-name binding and
+    # increment cannot raise and own no Origin event. Each exceptional check
+    # there would be a pending read per iteration (call_anatomy.md, "Location
+    # publication cost", M3). The authored body keeps its own checks.
+    source = (
+        "def run(n):\n"
+        "    total = 0\n"
+        "    for i in range(n):\n"
+        "        total += i\n"
+        "    return total\n"
+    )
+    _, ir = compile_source(source, (3, 12))
+    ops = next(f for f in ir["functions"] if f["name"].endswith("__run"))["ops"]
+    start = next(i for i, op in enumerate(ops) if op["kind"] == "loop_index_start")
+    body = next(i for i in range(start, len(ops)) if ops[i]["kind"] == "line")
+    step = next(i for i in range(body, len(ops)) if ops[i]["kind"] == "loop_index_next")
+    latch = next(
+        i for i in range(step, body, -1) if ops[i].get("out") == ops[step]["args"][0]
+    )
+    end = next(i for i in range(step, len(ops)) if ops[i]["kind"] == "loop_continue")
+    machinery = ops[start:body] + ops[latch : end + 1]
+    assert {op["kind"] for op in machinery} >= {"lt", "frame_home_store", "add"}
+    assert [op for op in machinery if op["kind"] == "check_exception"] == []
+    authored = ops[body:latch]
+    assert any(
+        op["kind"] == "check_exception" and op["exception_edge"] == "origin"
+        for op in authored
+    ), "the body's own operations keep their Origin checks"
+
+
 def compile_source(source, target=(3, 14)):
     generator = SimpleTIRGenerator(target_python=target)
     generator.visit(ast.parse(source))

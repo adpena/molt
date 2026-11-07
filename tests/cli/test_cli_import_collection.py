@@ -4083,6 +4083,7 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
     ]
     assert extension_ops[extension_ops.index(invoke_ops[0]) + 1] == {
         "kind": "check_exception",
+        "exception_edge": "origin",
         "value": 1,
     }
     extension_call_targets = [
@@ -9166,10 +9167,15 @@ def test_direct_native_callable_wrapper_owns_ffi_and_publication_metadata() -> N
     assert invoke_ops[0]["native_callable_symbol"] == "molt_nativepkg_run"
     assert not any(op["kind"] == "invoke_ffi" for op in init_ops)
     assert sum(op["kind"] == "release" for op in wrapper_ops) == 2
-    assert wrapper_ops[1] == {"kind": "check_exception", "value": 2}
+    assert wrapper_ops[1] == {
+        "kind": "check_exception",
+        "exception_edge": "origin",
+        "value": 2,
+    }
     invoke_index = wrapper_ops.index(invoke_ops[0])
     assert wrapper_ops[invoke_index + 1] == {
         "kind": "check_exception",
+        "exception_edge": "origin",
         "value": 1,
     }
     assert wrapper_ops[invoke_index + 2] == {"kind": "release", "args": ["v0"]}
@@ -9249,6 +9255,7 @@ def _source_init_for_native_callable_publication(
             },
             {
                 "kind": "check_exception",
+                "exception_edge": "origin",
                 "value": 7,
             },
             {"kind": "label", "value": 2},
@@ -9257,7 +9264,7 @@ def _source_init_for_native_callable_publication(
                 "s_value": "source-body-finished",
                 "out": "v3",
             },
-            {"kind": "check_exception", "value": 7},
+            {"kind": "check_exception", "exception_edge": "origin", "value": 7},
             {"kind": "trace_exit"},
             {"kind": "ret_void"},
             {"kind": "label", "value": 7},
@@ -9398,7 +9405,11 @@ def test_native_callable_publication_augments_existing_source_init_once(
         < normal_trace_exit
     )
     assert publication_insert_index == frame_locals_index + 1
-    assert ops[publication_insert_index] == {"kind": "check_exception", "value": 7}
+    assert ops[publication_insert_index] == {
+        "kind": "check_exception",
+        "exception_edge": "origin",
+        "value": 7,
+    }
 
     const_strings = {
         op["out"]: op["s_value"] for op in ops if op["kind"] == "const_str"
@@ -9445,6 +9456,7 @@ def test_native_callable_publication_augments_existing_source_init_once(
     assert frame_locals_index + 1 < provider_call_index < source_end
     assert ops[provider_call_index + 1] == {
         "kind": "check_exception",
+        "exception_edge": "origin",
         "value": 7,
     }
     source_body_index = ops.index({"kind": "label", "value": 2})
@@ -9456,6 +9468,7 @@ def test_native_callable_publication_augments_existing_source_init_once(
         ):
             assert ops[index + 1] == {
                 "kind": "check_exception",
+                "exception_edge": "origin",
                 "value": 7,
             }
 
@@ -9610,6 +9623,7 @@ def test_compiled_source_init_publishes_before_capture_and_rebinding(
     assert frame_locals_index + 1 < wrapper_index
     assert init_ops[frame_locals_index + 1] == {
         "kind": "check_exception",
+        "exception_edge": "origin",
         "value": publication_failure_label,
     }
 
@@ -10202,7 +10216,11 @@ def test_static_extension_pyinit_is_the_single_publication_owner(
     assert pyinit["native_callable_abi"] == "molt.pyinit_module_v1"
     assert pyinit["native_callable_symbol"] == "PyInit__native"
     pyinit_index = ops.index(pyinit)
-    assert ops[pyinit_index + 1] == {"kind": "check_exception", "value": 1}
+    assert ops[pyinit_index + 1] == {
+        "kind": "check_exception",
+        "exception_edge": "origin",
+        "value": 1,
+    }
     assert all(
         pyinit["out"] not in op.get("args", []) for op in ops[: pyinit_index + 2]
     )
@@ -16012,6 +16030,9 @@ def test_backend_source_paths_are_feature_aware() -> None:
         # Cargo.lock is a separately admitted compiler dependency projection.
         "src/molt/backend_environment.json",
         "src/molt/backend_daemon_protocol_version.txt",
+        # molt-ir's build script publishes through the shared write-if-changed
+        # helper, a declared build input.
+        "runtime/build_support/out_file.rs",
         # Maintained [patch.crates-io] sources: molt-backend always links
         # `object`, and the lock closure is conservative over features.
         "vendor/rust/cranelift-object",
@@ -32527,8 +32548,16 @@ def test_emitted_ir_preserves_exact_backend_control_flow(tmp_path: Path) -> None
                 "ops": [
                     {"kind": "state_switch", "state_targets": [[37, 81]]},
                     {"kind": "try_start", "value": 42},
-                    {"kind": "check_exception", "value": 42},
-                    {"kind": "async_work_poll", "value": 42},
+                    {
+                        "kind": "check_exception",
+                        "exception_edge": "origin",
+                        "value": 42,
+                    },
+                    {
+                        "kind": "async_work_poll",
+                        "exception_edge": "origin",
+                        "value": 42,
+                    },
                     {"kind": "state_set", "value": 37},
                     {"kind": "ret", "args": ["frame"]},
                     {"kind": "state_label", "value": 81},
@@ -35725,6 +35754,43 @@ def test_programs_share_the_lowered_form_of_every_imported_module(
     cold, warm = first["frontend_lowering_cache"], second["frontend_lowering_cache"]
     assert cold["hits"] == 0 and cold["observed"] == warm["observed"] > 2
     assert warm["hits"] == warm["observed"] - 1
+
+
+@pytest.mark.slow
+@pytest.mark.long_pole
+@pytest.mark.parametrize("workers", [0, 2])
+def test_warm_module_products_reuse_optimized_ir_without_entering_midend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workers: int
+) -> None:
+    from molt.frontend import SimpleTIRGenerator
+    from molt.frontend._types import _MIDEND_ENV_KEYS
+
+    for name in _MIDEND_ENV_KEYS:
+        monkeypatch.delenv(name, raising=False)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text(
+        "from collections import ChainMap\nprint(ChainMap({'x': 42})['x'])\n",
+        encoding="utf-8",
+    )
+    records: list[dict[str, object]] = []
+    with _real_frontend_fake_backend(project, tmp_path / "cache", workers, records):
+        cold = _cli_build_diagnostics(project, "main.py", "program.o")
+
+        def unexpected_midend(*args, **kwargs):
+            pytest.fail("a warm module product entered the midend")
+
+        monkeypatch.setattr(
+            SimpleTIRGenerator, "_run_ir_midend_passes", unexpected_midend
+        )
+        warm = _cli_build_diagnostics(project, "main.py", "program.o")
+    assert len(records) == 2 and records[0] == records[1]
+    assert cold["midend"] == warm["midend"]
+    cache = warm["frontend_lowering_cache"]
+    assert cache["observed"] > 2 and cache["hits"] == cache["observed"]
+    modes = {row["mode"] for row in warm["frontend_parallel"]["worker_timings"]}
+    assert modes <= {"serial_cache_hit", "parallel_cache_hit"}
+    assert ("parallel_cache_hit" if workers else "serial_cache_hit") in modes
 
 
 # Each frontend worker mode under two fixed and two independently random hash

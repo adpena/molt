@@ -15,9 +15,11 @@ license = "Apache-2.0"
 # Files outside this crate that its build reads, relative to this crate as
 # cargo:rerun-if-changed paths are. Every source closure that reaches the
 # crate keys them, and Cargo's own reads verify the list after each build.
-# build.rs embeds the backend environment catalog.
+# build.rs embeds the backend environment catalog and publishes its output
+# through the shared write-if-changed helper.
 build-inputs = [
   "../../src/molt/backend_environment.json",
+  "../build_support/out_file.rs",
 ]
 
 [dependencies]

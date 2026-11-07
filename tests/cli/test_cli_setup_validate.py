@@ -2207,3 +2207,83 @@ def test_missing_cmake_and_ninja_are_reported_not_setup_errors(
     assert not any(error.startswith(("cmake:", "ninja:")) for error in report.errors)
     assert any(warning.startswith("cmake:") for warning in report.warnings)
     assert any(warning.startswith("ninja:") for warning in report.warnings)
+
+
+@pytest.mark.parametrize("first,warm", [(0.145, 0.007), (0.007, 0.007)])
+def test_macos_first_exec_report_distinguishes_timing_from_permission(
+    tmp_path, monkeypatch, first, warm
+):
+    from types import SimpleNamespace
+
+    install_module_view(
+        monkeypatch, "platform", platform, SETUP_READINESS, system=lambda: "Darwin"
+    )
+    calls = []
+    durations = iter((first, warm))
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[0] == "/usr/sbin/DevToolsSecurity":
+            assert command[1:] == ["-status"]
+            return SimpleNamespace(
+                returncode=0, stdout="Developer mode is currently enabled.\n", stderr=""
+            )
+        script = Path(command[0])
+        assert script.read_text(encoding="utf-8") == "#!/bin/sh\nexit 0\n"
+        return SimpleNamespace(
+            returncode=0, stdout="", stderr="", child_elapsed_s=next(durations)
+        )
+
+    monkeypatch.setattr(SETUP_READINESS, "_run_completed_command", run)
+    report = SETUP_READINESS._macos_execution_check(tmp_path)
+    assert calls[0] == calls[1]
+    assert report["first_seconds"] == first and report["warm_seconds"] == warm
+    assert report["developer_tools_state"].startswith("unknown")
+    assert "does not prove" in report["detail"]
+    assert "not the invoking app" in report["developer_authorization_policy"]["scope"]
+    assert all("enable" not in arg for call in calls for arg in call)
+
+
+def test_macos_first_exec_report_marks_unavailable_and_other_hosts(
+    monkeypatch, tmp_path
+):
+    platform_view = install_module_view(
+        monkeypatch, "platform", platform, SETUP_READINESS, system=lambda: "Linux"
+    )
+    assert SETUP_READINESS._macos_execution_check(tmp_path) is None
+    platform_view.system = lambda: "Darwin"
+    monkeypatch.setattr(
+        SETUP_READINESS,
+        "_run_completed_command",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("exec unavailable")),
+    )
+    report = SETUP_READINESS._macos_execution_check(tmp_path)
+    assert report["ok"] is False
+    assert "unavailable" in report["detail"]
+    assert "first_seconds" not in report
+
+
+def test_doctor_reports_unavailable_exec_probe_without_failing_strict_capabilities(
+    monkeypatch, tmp_path
+):
+    report = SETUP_READINESS._ToolchainReport([], [], [], {}, [], {}, {})
+    emitted = []
+    monkeypatch.setattr(SETUP_READINESS, "compiler_source_root", lambda: tmp_path)
+    monkeypatch.setattr(SETUP_READINESS, "_require_molt_root", lambda *args: None)
+    monkeypatch.setattr(SETUP_READINESS, "_build_toolchain_report", lambda root: report)
+    monkeypatch.setattr(
+        SETUP_READINESS,
+        "_macos_execution_check",
+        lambda root: {
+            "name": "macos_first_execution",
+            "ok": False,
+            "detail": "probe unavailable",
+            "level": "warning",
+        },
+    )
+    monkeypatch.setattr(
+        SETUP_READINESS, "_emit_json", lambda payload, **kwargs: emitted.append(payload)
+    )
+    assert SETUP_READINESS.doctor(json_output=True, strict=True) == 0
+    assert emitted[0]["warnings"] == ["macos_first_execution: probe unavailable"]
+    assert emitted[0]["errors"] == []

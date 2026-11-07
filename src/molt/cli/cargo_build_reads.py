@@ -845,6 +845,31 @@ def _read_dep_info(path: Path) -> _RustcDepInfo:
     return _RustcDepInfo(path, tuple(outputs), tuple(entries), environment)
 
 
+def cargo_output_is_current(output: Path, *, dep_info_base: Path) -> bool:
+    """Whether an uplifted Cargo output is current by Cargo's own rule.
+
+    Cargo writes the output's dep-info (``<output stem>.d``) beside it. The
+    output is current when that dep-info exists and every input it lists
+    exists and is no newer than the output, the comparison Cargo's fingerprint
+    makes. An output without readable dep-info is not provably current, so a
+    consumer must build it rather than run an artifact from older sources.
+    Relative inputs resolve against ``dep_info_base`` (Cargo's
+    ``build.dep-info-basedir``, else the workspace root).
+    """
+    try:
+        built = output.stat().st_mtime_ns
+        dep_info = _read_dep_info(output.with_suffix(".d"))
+        for name in dep_info.files:
+            source = Path(name)
+            if not source.is_absolute():
+                source = dep_info_base / source
+            if source.stat().st_mtime_ns > built:
+                return False
+    except (OSError, CargoBuildReadsError):
+        return False
+    return True
+
+
 def _unescape_env(value: str) -> str:
     # Cargo decodes exactly these escapes in both variable names and values.
     result: list[str] = []
