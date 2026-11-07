@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Generator, Mapping, MutableMapping
 from dataclasses import dataclass
+from enum import StrEnum
 import atexit
 import contextlib
 import hashlib
@@ -26,6 +27,7 @@ from molt.durable_file_identity import (
     DurableFileIdentity,
 )
 from molt.file_locks import (
+    FileLockTimeout,
     _FileLockHandle,
     _acquire_file_lock,
     _enter_file_lock_fork_protocol,
@@ -40,6 +42,48 @@ from molt.process_model import CustodyInterest
 
 LEASE_ENV = "MOLT_BACKEND_DAEMON_SUITE_LEASE"
 SCHEMA = "molt.backend_daemon.suite-lease.v3"
+
+
+class SuiteCustodyState(StrEnum):
+    """A suite lease and its adoption index: ACTIVE -> CLOSING -> CLOSED.
+
+    CLOSING repeats on a retried drain; a CLOSED record is never rewritten.
+    """
+
+    ACTIVE = "active"
+    CLOSING = "closing"
+    CLOSED = "closed"
+
+
+class ScratchOutcome(StrEnum):
+    """What a drain did with the suite's scratch allocation."""
+
+    RECLAIMED = "reclaimed"
+    ABSENT = "absent"  # an earlier drain already reclaimed it
+    PRESERVED = "preserved"  # daemon closure unverified: never delete
+    BLOCKED = "blocked"  # deletion failed; the remainder is kept
+
+
+class SealFailureKind(StrEnum):
+    STORAGE = "storage"  # OSError writing the index: retryable
+    LOCK_TIMEOUT = "lock_timeout"  # the adoption transaction lock: retryable
+    INVALID = "invalid"  # a malformed or oversized index: not retryable
+    RECOVERY = "recovery"  # adoption recovery refused: not retryable
+
+
+@dataclass(frozen=True, slots=True)
+class SealFailure:
+    kind: SealFailureKind
+    detail: str
+
+    @property
+    def retryable(self) -> bool:
+        return self.kind in (SealFailureKind.STORAGE, SealFailureKind.LOCK_TIMEOUT)
+
+    def __str__(self) -> str:
+        return f"adoption seal ({self.kind}): {self.detail}"
+
+
 _TOKEN = re.compile(r"[0-9a-f]{32}")
 _SHA = re.compile(r"[0-9a-f]{64}")
 
@@ -223,7 +267,10 @@ def _scratch_target(path: Path, lease: Mapping) -> Path:
 def _finish_scratch(path: Path, lease: Mapping, *, closed: bool) -> dict:
     """Only the EOF guardian's verified daemon drain authorizes reclamation."""
     if not closed:
-        return {"state": "preserved", "reason": "daemon closure unverified"}
+        return {
+            "state": ScratchOutcome.PRESERVED,
+            "reason": "daemon closure unverified",
+        }
     try:
         target = _scratch_target(path, lease)
         removed, error = delete_path(target)
@@ -231,12 +278,15 @@ def _finish_scratch(path: Path, lease: Mapping, *, closed: bool) -> dict:
             raise OSError(error)
     except FileNotFoundError:
         # Repeated drain of an already reclaimed lease has no payload to delete.
-        return {"state": "absent"}
+        return {"state": ScratchOutcome.ABSENT}
     except (OSError, ValueError) as exc:
         # A partial deletion can remove the receipt before its payload. The
         # next drain preserves that ambiguous remainder instead of guessing.
-        return {"state": "blocked", "error": f"{type(exc).__name__}: {exc}"}
-    return {"state": "reclaimed"}
+        return {
+            "state": ScratchOutcome.BLOCKED,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    return {"state": ScratchOutcome.RECLAIMED}
 
 
 def read_lease(path: Path) -> dict | None:
@@ -300,7 +350,9 @@ def read_lease(path: Path) -> dict | None:
         return None
     if not isinstance(record.get("interpreter"), str) or not record["interpreter"]:
         return None
-    if record.get("state") not in {"active", "closing", "closed"}:
+    try:
+        record["state"] = SuiteCustodyState(record.get("state"))
+    except ValueError:
         return None
     scratch = record.get("scratch")
     if not isinstance(scratch, dict) or set(scratch) != {
@@ -325,7 +377,7 @@ def read_lease(path: Path) -> dict | None:
 def live_lease(path: Path, *, project_root: Path, samples: Mapping) -> dict | None:
     """Admit only a held suite lease with matching owner and guardian births."""
     record = read_lease(path)
-    if record is None or record["state"] != "active":
+    if record is None or record["state"] is not SuiteCustodyState.ACTIVE:
         return None
     try:
         if Path(record["project_root"]).resolve() != project_root.resolve():
@@ -435,7 +487,7 @@ def _new_adoption_index(lease: dict) -> dict:
         "schema": ADOPTION_INDEX_SCHEMA,
         "lease_token": lease["token"],
         "source_digest": lease["source_digest"],
-        "state": "active",
+        "state": SuiteCustodyState.ACTIVE,
         "receipts": {},
         "pending": {},
     }
@@ -454,7 +506,7 @@ def _read_adoption_index(path: Path, *, lease: dict) -> dict:
         or index["schema"] != ADOPTION_INDEX_SCHEMA
         or index["lease_token"] != lease["token"]
         or index["source_digest"] != lease["source_digest"]
-        or index.get("state") not in {"active", "closing", "closed"}
+        or index.get("state") not in tuple(SuiteCustodyState)
         or not isinstance(index["receipts"], dict)
         or not isinstance(index.get("pending"), dict)
     ):
@@ -467,6 +519,7 @@ def _read_adoption_index(path: Path, *, lease: dict) -> dict:
             or not _SHA.fullmatch(digest)
         ):
             raise ValueError("suite adoption index receipt is malformed")
+    index["state"] = SuiteCustodyState(index["state"])
     return index
 
 
@@ -617,7 +670,7 @@ def _record_adoption(
         current = read_lease(path)
         if (
             current is None
-            or current["state"] != "active"
+            or current["state"] is not SuiteCustodyState.ACTIVE
             or current["token"] != lease["token"]
             or current["source_digest"] != lease["source_digest"]
         ):
@@ -638,7 +691,7 @@ def _record_adoption(
         index = _read_adoption_index(path, lease=lease)
         if _recover_adoption_index(path, lease=lease, index=index):
             return False
-        if index["state"] != "active":
+        if index["state"] is not SuiteCustodyState.ACTIVE:
             return False
         actual = {entry.name for entry in receipt.parent.glob("*.identity.json")}
         if actual != set(index["receipts"]):
@@ -682,7 +735,9 @@ def _record_adoption(
         if (
             len(encode_exact(payload)) > _ADOPTION_BYTES
             or len(encode_exact(staged_index)) > _ADOPTION_BYTES
-            or len(encode_exact({**committed_index, "state": "closing"}))
+            or len(
+                encode_exact({**committed_index, "state": SuiteCustodyState.CLOSING})
+            )
             > _ADOPTION_BYTES
         ):
             return False
@@ -812,24 +867,35 @@ def sentinel_sampling_interest(
 
 
 def _seal_adoption_index(
-    path: Path, *, lease: dict, state: str, timeout_s: float = _ADOPTION_LOCK_S
-) -> list[str]:
+    path: Path,
+    *,
+    lease: dict,
+    state: SuiteCustodyState,
+    timeout_s: float = _ADOPTION_LOCK_S,
+) -> list[SealFailure]:
     lock = None
     try:
         lock = _adoption_transaction(path, timeout_s=timeout_s)
         index = _read_adoption_index(path, lease=lease)
         recovery_errors = _recover_adoption_index(path, lease=lease, index=index)
         if recovery_errors:
-            return recovery_errors
+            return [
+                SealFailure(SealFailureKind.RECOVERY, error)
+                for error in recovery_errors
+            ]
         # Never reopen an index, including on a repeated drain attempt.
-        if index["state"] != "closed":
+        if index["state"] is not SuiteCustodyState.CLOSED:
             candidate = {**index, "state": state}
             if len(encode_exact(candidate)) > _ADOPTION_BYTES:
                 raise ValueError("sealed adoption index exceeds byte limit")
             write_exact(path.parent / "adoption-index.json", candidate)
         return []
-    except (OSError, ValueError, RecursionError, RuntimeError) as exc:
-        return [f"adoption seal: {type(exc).__name__}: {exc}"]
+    except FileLockTimeout as exc:
+        return [SealFailure(SealFailureKind.LOCK_TIMEOUT, str(exc))]
+    except OSError as exc:
+        return [SealFailure(SealFailureKind.STORAGE, f"{type(exc).__name__}: {exc}")]
+    except (ValueError, RecursionError, RuntimeError) as exc:
+        return [SealFailure(SealFailureKind.INVALID, f"{type(exc).__name__}: {exc}")]
     finally:
         if lock is not None:
             _release_file_lock(lock)
@@ -969,7 +1035,7 @@ def persistent_daemon_env(environ: Mapping[str, str]) -> dict[str, str]:
     if raw:
         path = Path(raw)
         lease = read_lease(path)
-        if lease is None or lease["state"] != "active":
+        if lease is None or lease["state"] is not SuiteCustodyState.ACTIVE:
             raise ValueError("suite daemon scratch requires an active lease")
         target = _scratch_target(path, lease)
         for key in ("TMPDIR", "TMP", "TEMP"):
@@ -1106,7 +1172,7 @@ class SuiteDaemonLease:
                 record = {
                     "schema": SCHEMA,
                     "token": token,
-                    "state": "active",
+                    "state": SuiteCustodyState.ACTIVE,
                     "owner_pid": os.getpid(),
                     "owner_started_at_ns": owner_birth,
                     "guardian_pid": guardian.pid,
@@ -1177,7 +1243,7 @@ class SuiteDaemonLease:
                     # start() never returned this lease to a daemon producer, and
                     # its sole launched child is now stopped. No transfer exists.
                     outcome = _finish_scratch(path, {"scratch": scratch}, closed=True)
-                    if outcome["state"] == "blocked":
+                    if outcome["state"] is ScratchOutcome.BLOCKED:
                         error.add_note(
                             f"unpublished suite scratch preserved: {outcome}"
                         )
@@ -1195,7 +1261,7 @@ class SuiteDaemonLease:
         ):
             return
         try:
-            self.record["state"] = "closing"
+            self.record["state"] = SuiteCustodyState.CLOSING
             write_exact(self.path, self.record)
             with _lease_descriptor_mutation():
                 if self.write_fd != -1:
@@ -1207,7 +1273,7 @@ class SuiteDaemonLease:
                 raise RuntimeError(
                     f"suite daemon guardian failed: {self.path.parent / 'drain.json'}"
                 )
-            self.record["state"] = "closed"
+            self.record["state"] = SuiteCustodyState.CLOSED
             write_exact(self.path, self.record)
             if self.state_use is not None:
                 self.state_use.close()
@@ -1280,10 +1346,10 @@ def drain_lease(path: Path) -> bool:
     seal_errors = _seal_adoption_index(
         path,
         lease=lease,
-        state="closing",
+        state=SuiteCustodyState.CLOSING,
         timeout_s=min(_ADOPTION_LOCK_S, max(0.0, deadline - time.perf_counter())),
     )
-    errors: list[str] = list(seal_errors)
+    errors: list[str] = [str(failure) for failure in seal_errors]
     unresolved: list[int] = []
     failed_pass = bool(seal_errors)
     clean_passes = 0
@@ -1307,21 +1373,17 @@ def drain_lease(path: Path) -> bool:
         return samples
 
     while True:
-        retryable_seal = any(
-            error.startswith("adoption seal: OSError:")
-            or "suite adoption transaction lock timed out" in error
-            for error in seal_errors
-        )
+        retryable_seal = any(failure.retryable for failure in seal_errors)
         if retryable_seal and time.perf_counter() < deadline:
             seal_errors = _seal_adoption_index(
                 path,
                 lease=lease,
-                state="closing",
+                state=SuiteCustodyState.CLOSING,
                 timeout_s=min(
                     _ADOPTION_LOCK_S, max(0.0, deadline - time.perf_counter())
                 ),
             )
-            errors.extend(seal_errors)
+            errors.extend(str(failure) for failure in seal_errors)
         failed_pass = bool(seal_errors)
         try:
             samples = bounded_sample()
@@ -1486,10 +1548,10 @@ def drain_lease(path: Path) -> bool:
         final_seal_errors = _seal_adoption_index(
             path,
             lease=lease,
-            state="closed",
+            state=SuiteCustodyState.CLOSED,
             timeout_s=min(_ADOPTION_LOCK_S, max(0.0, deadline - time.perf_counter())),
         )
-        errors.extend(final_seal_errors)
+        errors.extend(str(failure) for failure in final_seal_errors)
         closed = not final_seal_errors
     scratch = _finish_scratch(path, lease, closed=closed)
     write_exact(
@@ -1510,7 +1572,10 @@ def drain_lease(path: Path) -> bool:
             },
         },
     )
-    return closed and scratch["state"] in {"reclaimed", "absent"}
+    return closed and scratch["state"] in (
+        ScratchOutcome.RECLAIMED,
+        ScratchOutcome.ABSENT,
+    )
 
 
 def main():

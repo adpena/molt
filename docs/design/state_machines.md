@@ -35,7 +35,7 @@ owner named; nobody has audited their reachable invalid states yet.
 | Checkout namespace | typed (`NamespaceState`) | `src/molt/checkout_state.py` | parallel worktrees | inventory |
 | Artifact binding | typed (`ArtifactBindingState`) | `src/molt/dx.py` | build reuse | inventory |
 | Checkout input | typed `Literal` (`InputState`) | `src/molt/checkout_provisioning.py` | image provisioning | inventory |
-| Backend daemon suite custody | untyped (`"closing"`, `"closed"`) | `src/molt/backend_daemon_suite_custody.py` | daemon clients | inventory |
+| Backend daemon suite custody | typed (`SuiteCustodyState`, `ScratchOutcome`, `SealFailure`) since 2026-11-07 | `src/molt/backend_daemon_suite_custody.py` | daemon clients, drain retries | deep |
 | Source extension candidate | untyped (`"prepared"`) | `src/molt/cli/source_extension_candidate_transaction.py` | build transaction | inventory |
 | Source package seal | untyped (`"committed"`) | `src/molt/cli/source_package_seal.py` | build transaction | inventory |
 | Runtime lifecycles: generator and coroutine frames, async tasks, import locks, runtime initialization | runtime types | `docs/design/foundation/26_real-async-generators.md`, `28_asyncio-frontier-runtime.md`, `docs/spec/areas/runtime/0024_RUNTIME_STATE_LIFECYCLE.md` | free-threaded design | inventory |
@@ -188,6 +188,33 @@ failure) names suspects and revert commands; `CANCELLED` and `INCONCLUSIVE`
 implicate no commit. Matches over the enum are exhaustive. No reachable invalid
 transition was found.
 
+## Backend daemon suite custody (`src/molt/backend_daemon_suite_custody.py`)
+
+A suite lease and its adoption index share one lifecycle, parsed into
+`SuiteCustodyState` when read; an unknown state refuses the record.
+
+| From | Event | To |
+| --- | --- | --- |
+| (none) | lease or index created | `ACTIVE` |
+| `ACTIVE` | `close()` starts / drain seals the index | `CLOSING` |
+| `CLOSING` | retried drain seal | `CLOSING` |
+| `CLOSING` | guardian drained / final seal | `CLOSED` |
+| `CLOSED` | any write | refused (never reopened) |
+
+Drain results are `ScratchOutcome` (`RECLAIMED`, `ABSENT`, `PRESERVED`,
+`BLOCKED`); only `RECLAIMED` and `ABSENT` count as a clean drain.
+
+- **SM-5 (confirmed, fixed 2026-11-07): retry was decided by message text.**
+  The drain retried a seal when an error string started with
+  `adoption seal: OSError:` or contained `suite adoption transaction lock timed
+  out`; rewording either message silently changed the retry policy. Seal
+  failures are typed now (`SealFailureKind`: `STORAGE` and `LOCK_TIMEOUT` retry;
+  `INVALID` and `RECOVERY` do not); the lock timeout is caught as
+  `FileLockTimeout`, whatever its wording. Tests:
+  `test_seal_retry_follows_the_typed_failure_kind`,
+  `test_seal_classifies_the_lock_timeout_by_type`,
+  `test_lease_reader_parses_state_and_refuses_unknown_states`.
+
 ## Artifact publication journal (`src/molt/artifact_publication.py`)
 
 The exemplar for the others: typed states and events and one transition map.
@@ -205,5 +232,5 @@ The exemplar for the others: typed states and events and one transition map.
 | Run lifecycle: typed states, failure exit, immutable terminal states | SM-1A, SM-1B, SM-1C | lost verdicts; stuck records; wrong failure class | fixed (this audit) |
 | Landing request closes exactly once | SM-2 | a failed request retested or landed twice; rewritten history | fixed (this audit) |
 | Farm allocation retention and orphaned runs | SM-3 | farm disk exhaustion (blocked the LLVM bootstrap on 2026-11-06) | open, HF-694 defect 3 |
-| Untyped residual vocabularies | backend daemon suite custody: three vocabularies in about 20 sites of `src/molt/backend_daemon_suite_custody.py` (index `active`/`closing`/`closed`, outcome `blocked`, scratch `reclaimed`/`absent`), lease-critical, needs its own transition audit and tests; `source_tree_state` (`clean`, `dirty`, `unknown`) in proof and landing receipts; source extension candidate (`prepared`) and source package seal (`committed`) | a typo or new value passes unseen; no exhaustive match rejects a stale consumer | open, integrator (next arc) |
+| Untyped residual vocabularies | `source_tree_state` (`clean`, `dirty`, `unknown`) in proof and landing receipts; source extension candidate (`prepared`) and source package seal (`committed`) | a typo or new value passes unseen; no exhaustive match rejects a stale consumer | open, integrator |
 | Inventory machines not yet audited | see Catalog | unknown | open |
