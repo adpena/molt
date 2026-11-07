@@ -26,6 +26,7 @@ from tools.test_dependency_graph import (
     RepositoryTree,
     build_graph,
     graph_selection,
+    build_bound_commands,
     landing_envelopes,
     ObservedTestInputs,
     OBSERVED_SCHEMA,
@@ -805,6 +806,39 @@ def test_landing_envelopes_come_from_pre_push_cells_without_builds():
     assert others["tests/test_built.py"] == ("build",)
     assert envelopes["tests/test_late.py"].targets == ("tests/test_late.py",)
     assert "tests/test_late.py" not in others
+
+
+def test_a_command_that_needs_a_build_through_its_dependencies_keeps_its_cell():
+    # 2026-11-07: wasm.host.runner-fixtures depends on wasm.build.host, so a
+    # landing that ran its tests executed whatever host an earlier build left.
+    def command(name, *, deps=(), resource="python-tests", pytest=()):
+        return {
+            "id": name,
+            "tiers": ["pre-push", "pr"],
+            "resource_class": resource,
+            "toolchains": ["python"],
+            "dependencies": list(deps),
+            "pytest": list(pytest),
+        }
+
+    commands = [
+        command("host-build", resource="compiler-build-resource"),
+        command("fixtures", deps=["host-build"], pytest=["tests/test_host.py"]),
+        command("indirect", deps=["fixtures"], pytest=["tests/test_indirect.py"]),
+        command("unknown", deps=["no-such-command"], pytest=["tests/test_unknown.py"]),
+        command("plain", pytest=["tests/test_plain.py"]),
+    ]
+    assert build_bound_commands(commands) == {
+        "host-build",
+        "fixtures",
+        "indirect",
+        "unknown",
+    }
+    envelopes, others = landing_envelopes(commands)
+    assert set(envelopes) == {"tests/test_plain.py"}
+    assert others["tests/test_host.py"] == ("fixtures",)
+    assert others["tests/test_indirect.py"] == ("indirect",)
+    assert others["tests/test_unknown.py"] == ("unknown",)
 
 
 @pytest.fixture(scope="module")

@@ -1748,6 +1748,37 @@ LANDING_TIER = "pre-push"
 BUILD_RESOURCE_CLASS = "compiler-build-resource"
 
 
+def build_bound_commands(commands: Iterable[Mapping]) -> frozenset[str]:
+    """Ids of commands whose tests need a compiler build.
+
+    A build-resource command needs one, and so does every command whose
+    dependency closure reaches one (wasm.host.runner-fixtures runs only after
+    wasm.build.host). A landing's pytest consumers do not provision builds,
+    so these commands' own proof cells run their tests; a landing that ran
+    them would execute whatever binary an earlier build left (2026-11-07: a
+    WASM host five days older than its sources). A dependency the given
+    commands do not name is not provably build-free.
+    """
+    by_id = {str(command["id"]): command for command in commands}
+    bound: dict[str, bool] = {}
+
+    def needs_build(command_id: str) -> bool:
+        if command_id in bound:
+            return bound[command_id]
+        command = by_id.get(command_id)
+        bound[command_id] = True  # Unknown or cyclic: keep it with its cell.
+        if command is not None:
+            bound[command_id] = command.get(
+                "resource_class"
+            ) == BUILD_RESOURCE_CLASS or any(
+                needs_build(str(dependency))
+                for dependency in command.get("dependencies") or ()
+            )
+        return bound[command_id]
+
+    return frozenset(command_id for command_id in by_id if needs_build(command_id))
+
+
 @dataclass(frozen=True)
 class LandingEnvelope:
     """The targets and tools under which the landing runs one test file.
@@ -1820,12 +1851,18 @@ def landing_envelopes(
     *,
     mode: LandingMode = LandingMode.PRESUBMIT,
     foreign_cells: frozenset[str] = frozenset(),
+    build_bound: frozenset[str] | None = None,
 ) -> tuple[dict[str, LandingEnvelope], dict[str, tuple[str, ...]]]:
     """(landing envelopes, other owners) of every test file the plan names.
 
     A command of a ``foreign_cells`` cell verifies another platform (its hosted
-    toolchains are absent here), so its own cell owns its tests.
+    toolchains are absent here), so its own cell owns its tests, as does a
+    command that needs a compiler build (``build_bound``, computed from
+    ``commands`` unless the caller passes the whole plan's).
     """
+    commands = tuple(commands)
+    if build_bound is None:
+        build_bound = build_bound_commands(commands)
     whole: dict[str, list[Mapping]] = {}
     nodes: dict[str, list[tuple[str, Mapping]]] = {}
     slow_whole: dict[str, list[Mapping]] = {}
@@ -1847,7 +1884,7 @@ def landing_envelopes(
                 assert_never(mode)
         landing = (
             selected_tier
-            and command.get("resource_class") != BUILD_RESOURCE_CLASS
+            and str(command["id"]) not in build_bound
             and command.get("cell") not in foreign_cells
         )
         for target in targets:
@@ -1857,7 +1894,7 @@ def landing_envelopes(
                 if (
                     mode is LandingMode.PRESUBMIT
                     and cell_selector(command) == ("-m", "slow")
-                    and command.get("resource_class") != BUILD_RESOURCE_CLASS
+                    and str(command["id"]) not in build_bound
                 ):
                     if separator:
                         slow_nodes.setdefault(path, []).append((target, command))
@@ -1920,8 +1957,9 @@ def graph_selection(
     observations: ObservedTestInputs | None = None,
 ) -> GraphSelection:
     commands = tuple(commands)
+    build_bound = build_bound_commands(commands)
     envelopes, others = landing_envelopes(
-        commands, mode=mode, foreign_cells=foreign_cells
+        commands, mode=mode, foreign_cells=foreign_cells, build_bound=build_bound
     )
     run: dict[str, LandingEnvelope] = {}
     deferred: dict[str, tuple[str, ...]] = {}
@@ -1952,7 +1990,9 @@ def graph_selection(
             # Postsubmit runs a data reader only through a landing envelope; one
             # without (a build cell, or no cell) keeps its deferral below. A
             # foreign cell counts: postsubmit on that OS's host runs it.
-            post_envelopes, _ = landing_envelopes(commands, mode=LandingMode.POSTSUBMIT)
+            post_envelopes, _ = landing_envelopes(
+                commands, mode=LandingMode.POSTSUBMIT, build_bound=build_bound
+            )
             postsubmit_only = []
             for target in dict.fromkeys(readers.data_readers):
                 if target in selected:
@@ -2006,7 +2046,7 @@ def graph_selection(
         if command.get("cell") not in foreign_cells:
             continue
         # Apply exactly the same tier/build eligibility as ordinary envelopes.
-        eligible, _ = landing_envelopes((command,), mode=mode)
+        eligible, _ = landing_envelopes((command,), mode=mode, build_bound=build_bound)
         targets = tuple(
             dict.fromkeys(
                 target
