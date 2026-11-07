@@ -126,7 +126,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `posix-uname` | `executable` | — | `^.+$` | `.` | `host POSIX utility` | 1 |
 | `posix-file` | `executable` | — | `^file-[0-9]+\.` | `.` | `host file utility` | 1 |
 | `uv` | `executable` | — | `^uv 0\.13\.6\b` | `.` | `0.13.6` | 2 |
-| `node` | `executable` | — | `^v26\.12\.1$` | `.` | `26.12.1` | 3 |
+| `node` | `executable` | — | `^v26\.13\.0$` | `.` | `26.13.0` | 3 |
 | `target-pythons.3.12` | `executable` | — | `^Python 3\.12\.[0-9]+$` | `.` | `3.12` | 1 |
 | `target-pythons.3.13` | `executable` | — | `^Python 3\.13\.[0-9]+$` | `.` | `3.13` | 1 |
 | `target-pythons.3.14` | `executable` | — | `^Python 3\.14\.[0-9]+$` | `.` | `3.14` | 1 |
@@ -152,7 +152,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `ld64.lld` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `lld-link` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `lean` | `executable` | — | `version 4\.35\.0\b` | `formal/lean` | `4.35.0` | 3 |
-| `quint` | `executable` | — | `^(?:Quint\s+)?0\.33\.0$` | `.` | `0.33.0` | 1 |
+| `quint` | `executable` | — | `^(?:Quint\s+)?0\.33\.1$` | `.` | `0.33.1` | 1 |
 | `cargo-deny` | `executable` | — | `^cargo-deny 0\.20\.2\b` | `.` | `0.20.2` | 1 |
 | `cargo-audit` | `executable` | — | `^cargo-audit 0\.22\.2\b` | `.` | `0.22.2` | 1 |
 | `llvm-ar` | `executable` | — | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
@@ -161,7 +161,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `llvm-strip` | `executable` | `compiler:native-strip` | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `wasm-opt` | `executable` | `compiler:wasm-opt` | `^wasm-opt version 133(?: \(version_133\))?$` | `.` | `133` | 1 |
 | `wasm-ld` | `executable` | — | `\bLLD 23\.1\.0\b` | `.` | `23.1.0` | 2 |
-| `wasm-tools` | `executable` | — | `^wasm-tools 1\.262\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$` | `.` | `1.262.0` | 2 |
+| `wasm-tools` | `executable` | — | `^wasm-tools 1\.263\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$` | `.` | `1.263.0` | 2 |
 
 ## Cargo execution contracts
 

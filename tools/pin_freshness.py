@@ -2134,8 +2134,12 @@ def update(
                 manifest: rewrite_toml_fields(
                     manifest.read_text(encoding="utf-8"), table_edits
                 ),
-                plan_path: rewrite_policy(plan_text, name, pin.current, latest),
             }
+            # A tool release that a proof command consumes has a toolchain
+            # policy beside it; one that only provisioning uses (sccache) has
+            # none, and its move must not require one.
+            if name in _toolchain_policies(root):
+                edits[plan_path] = rewrite_policy(plan_text, name, pin.current, latest)
             if name == "npm":
                 edits.update(package_manager_edits(root, latest))
 

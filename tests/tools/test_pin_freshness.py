@@ -2229,3 +2229,26 @@ def test_package_manager_drift_is_a_check_failure(tmp_path) -> None:
     assert (
         "deploy/cloudflare/package.json packageManager is 'npm@0.0.1'" in out.getvalue()
     )
+
+
+def test_tool_update_without_a_toolchain_policy_moves_only_its_release(tmp_path):
+    """sccache is a provisioning-only release: no proof command names it, so
+    tools/proof_plan.toml has no policy for it. `--update sccache` failed with
+    "tools/proof_plan.toml has 0 'sccache' policies" while `--check` reported
+    it stale; the move must not require a policy that does not exist."""
+    root = _pin_root(tmp_path)
+    assert "sccache" not in pin_freshness._toolchain_policies(root)
+    release = tool_releases.load_tool_releases(root)["sccache"]
+    upstream = _tool_upstream(release, "9.9.9")
+    plan_before = (root / "tools/proof_plan.toml").read_bytes()
+
+    message = pin_freshness.update(root, "sccache", upstream.fetchers(), now=NOW)
+
+    assert message.startswith(f"sccache: {release.version} -> 9.9.9")
+    moved = tool_releases.load_tool_releases(root)["sccache"]
+    assert moved.version == "9.9.9"
+    for key, asset in moved.assets.items():
+        assert asset.sha256 == hashlib.sha256(upstream.blobs[asset.url]).hexdigest(), (
+            key
+        )
+    assert (root / "tools/proof_plan.toml").read_bytes() == plan_before

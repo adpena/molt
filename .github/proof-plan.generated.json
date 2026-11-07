@@ -14388,15 +14388,15 @@
       "projection": "tool-release",
       "setup_command": "python -m molt.tool_releases provision node",
       "setup_evidence": [
-        "config/tool_releases.toml::version = \"26.12.1\"",
+        "config/tool_releases.toml::version = \"26.13.0\"",
         ".github/actions/setup-project/action.yml::uses: actions/setup-node@",
         ".github/workflows/formal.yml::node-version: pinned"
       ],
-      "setup_value": "26.12.1",
+      "setup_value": "26.13.0",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^v26\\.12\\.1$"
+      "version_pattern": "^v26\\.13\\.0$"
     },
     {
       "content_path_command": [
@@ -14870,13 +14870,13 @@
       "name": "quint",
       "node_package": "@informalsystems/quint",
       "setup_evidence": [
-        ".github/workflows/formal.yml::@informalsystems/quint@0.33.0"
+        ".github/workflows/formal.yml::@informalsystems/quint@0.33.1"
       ],
-      "setup_value": "0.33.0",
+      "setup_value": "0.33.1",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^(?:Quint\\s+)?0\\.33\\.0$"
+      "version_pattern": "^(?:Quint\\s+)?0\\.33\\.1$"
     },
     {
       "executable": "cargo-deny",
@@ -14988,14 +14988,14 @@
       "name": "wasm-tools",
       "projection": "tool-release",
       "setup_evidence": [
-        "config/tool_releases.toml::version = \"1.262.0\"",
+        "config/tool_releases.toml::version = \"1.263.0\"",
         ".github/workflows/molt-wasm-ci.yml::python3 -m molt.tool_releases provision wasm-tools"
       ],
-      "setup_value": "1.262.0",
+      "setup_value": "1.263.0",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^wasm-tools 1\\.262\\.0(?: \\([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\\))?$"
+      "version_pattern": "^wasm-tools 1\\.263\\.0(?: \\([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\\))?$"
     }
   ]
 }
