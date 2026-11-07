@@ -2384,7 +2384,12 @@ def test_label_threading_preserves_region_handler_identity(
 ) -> None:
     ops = [
         MoltOp("TRY_START", [10], MoltValue("none")),
-        MoltOp("CHECK_EXCEPTION", [10], MoltValue("none")),
+        MoltOp(
+            "CHECK_EXCEPTION",
+            [10],
+            MoltValue("none"),
+            exception_edge=ExceptionEdgeKind.UNWIND,
+        ),
         MoltOp("TRY_END", [10], MoltValue("none")),
         MoltOp("ret_void", [], MoltValue("none")),
         MoltOp("LABEL", [10], MoltValue("none")),
@@ -3068,10 +3073,20 @@ def test_branch_tail_merge_preserves_structured_phi_attachment() -> None:
     ops = [
         MoltOp("IF", [flag], MoltValue("none")),
         MoltOp("CONST_STR", ["left"], left),
-        MoltOp("CHECK_EXCEPTION", [5729], MoltValue("none")),
+        MoltOp(
+            "CHECK_EXCEPTION",
+            [5729],
+            MoltValue("none"),
+            exception_edge=ExceptionEdgeKind.ORIGIN,
+        ),
         MoltOp("ELSE", [], MoltValue("none")),
         MoltOp("CONST_STR", ["right"], right),
-        MoltOp("CHECK_EXCEPTION", [5729], MoltValue("none")),
+        MoltOp(
+            "CHECK_EXCEPTION",
+            [5729],
+            MoltValue("none"),
+            exception_edge=ExceptionEdgeKind.ORIGIN,
+        ),
         MoltOp("END_IF", [], MoltValue("none")),
         MoltOp("PHI", [left, right], selected),
         MoltOp("ret", [selected], MoltValue("none")),
@@ -6423,6 +6438,7 @@ def test_definite_assignment_matches_paths_without_definition() -> None:
                         kind="CHECK_EXCEPTION",
                         args=[f"b{rng.randrange(8)}"],
                         result=MoltValue("none"),
+                        exception_edge=ExceptionEdgeKind.UNWIND,
                     ),
                     MoltOp(
                         kind="JUMP",
@@ -6464,7 +6480,14 @@ def test_definite_assignment_matches_paths_without_definition() -> None:
 
 def test_definite_assignment_rejects_after_check_and_resume_producers() -> None:
     for prefix in (
-        [MoltOp(kind="CHECK_EXCEPTION", args=["use"], result=MoltValue("none"))],
+        [
+            MoltOp(
+                kind="CHECK_EXCEPTION",
+                args=["use"],
+                result=MoltValue("none"),
+                exception_edge=ExceptionEdgeKind.UNWIND,
+            )
+        ],
         [
             MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")),
             MoltOp(kind="STATE_YIELD", args=[], result=MoltValue("none")),
@@ -6490,7 +6513,12 @@ def test_phi_operands_keep_their_branch_edges_across_exception_checks() -> None:
         MoltOp("ELSE", [], MoltValue("none")),
         MoltOp("CONST", [22], MoltValue("right")),
         MoltOp("END_IF", [], MoltValue("none")),
-        MoltOp("CHECK_EXCEPTION", [572], MoltValue("none")),
+        MoltOp(
+            "CHECK_EXCEPTION",
+            [572],
+            MoltValue("none"),
+            exception_edge=ExceptionEdgeKind.UNWIND,
+        ),
         MoltOp("PHI", [MoltValue("left"), MoltValue("right")], MoltValue("selected")),
         MoltOp("ret", [MoltValue("selected")], MoltValue("none")),
         MoltOp("LABEL", [572], MoltValue("none")),
@@ -6522,7 +6550,12 @@ def test_sccp_retains_linear_facts_across_shared_handler_fanin(count: int) -> No
         ops.extend(
             [
                 MoltOp("CONST", [index], MoltValue(f"v{index}")),
-                MoltOp("CHECK_EXCEPTION", ["handler"], MoltValue("none")),
+                MoltOp(
+                    "CHECK_EXCEPTION",
+                    ["handler"],
+                    MoltValue("none"),
+                    exception_edge=ExceptionEdgeKind.UNWIND,
+                ),
             ]
         )
     ops.extend(
@@ -7354,7 +7387,12 @@ def test_spilled_results_are_published_only_after_the_exception_check() -> None:
     gen.current_ops[:] = [
         MoltOp("STATE_SWITCH", [], MoltValue("none")),
         MoltOp("CALL", ["effect"], value),
-        MoltOp("CHECK_EXCEPTION", [900], MoltValue("none")),
+        MoltOp(
+            "CHECK_EXCEPTION",
+            [900],
+            MoltValue("none"),
+            exception_edge=ExceptionEdgeKind.ORIGIN,
+        ),
         MoltOp("STATE_YIELD", [], MoltValue("none")),
         MoltOp("STATE_LABEL", [901], MoltValue("none")),
         MoltOp("ret", [value], MoltValue("none")),
