@@ -6314,6 +6314,14 @@ _HOOK_TAIL = "    raise AttributeError(f'no attribute {name!r}')\n"
             "    if name == 'a' or name == 'b':\n        return name\n" + _HOOK_TAIL,
             None,
         ),
+        # Only `==` and `in` narrow, and only a terminal chain hides later code
+        # from outside arguments (adversarial review, 2026-11-07: accepting
+        # `!=`/`not in`, or any positive `if`, collapses a hook unsoundly).
+        # A negative test observes one literal soundly; it never narrows a use.
+        ("    if name != 'x':\n        return 1\n" + _HOOK_TAIL, frozenset({"x"})),
+        ("    if name != 'x':\n        return name\n" + _HOOK_TAIL, None),
+        ("    if name not in ('a', 'b'):\n        return name\n" + _HOOK_TAIL, None),
+        ("    if name == 'x':\n        pass\n    return name\n", None),
         ("    raise AttributeError(f'{name:>10}')\n", None),
         ("    raise AttributeError('x') from name\n", None),
         ("    raise AttributeError(str(name))\n", None),

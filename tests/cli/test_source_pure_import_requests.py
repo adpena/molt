@@ -3188,6 +3188,15 @@ _UNCLASSED_HOOK = (
     "    raise AttributeError(f'{name}')\n"
 )
 
+# A positive test without a terminal else hides nothing: every argument reaches
+# the import below it, so no class may collapse them.
+_UNTERMINATED_HOOK = (
+    "import importlib\n"
+    "def __getattr__(name):\n"
+    "    if name == 'x':\n        pass\n"
+    "    return importlib.import_module(name)\n"
+)
+
 
 @pytest.mark.parametrize(
     "text, literal_class, outside, inside",
@@ -3199,8 +3208,9 @@ _UNCLASSED_HOOK = (
             ("tasks", "events"),
         ),
         (_UNCLASSED_HOOK, None, ("alpha",), ("log",)),
+        (_UNTERMINATED_HOOK, None, ("alpha",), ("log",)),
     ],
-    ids=["classed", "augmented"],
+    ids=["classed", "augmented", "unterminated"],
 )
 def test_argument_class_representative_scans_like_every_member(
     tmp_path, text, literal_class, outside, inside
