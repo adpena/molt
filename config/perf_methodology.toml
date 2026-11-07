@@ -28,7 +28,7 @@ schema = "molt-perf-methodology-v1"
 # guarded identity. Admitted workloads and instruction counts can change;
 # earlier reports retain their recorded comparison class.
 version = 33
-content_sha256 = "734d4a78decd9a36bb5cc00409bcf4f088424e6e5c86fd6f75c3d839c5964dfe"
+content_sha256 = "f696a57b5817d6187ef05c814be23b0ada42296433f01fe500db3f99575a0d5d"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -345,6 +345,10 @@ role = "canonical source/import analysis used to admit benchmark workload depend
 [[methodology]]
 path = "src/molt/compiler_analysis/python_binding_flow.py"
 role = "canonical source/import analysis used to admit benchmark workload dependencies"
+
+[[methodology]]
+path = "src/molt/compiler_analysis/python_parameter_classes.py"
+role = "argument classes that decide which activations binding flow analyzes (HF-773), so admitted benchmark workload dependencies"
 
 [[methodology]]
 path = "src/molt/compiler_analysis/python_builtin_shapes.py"
