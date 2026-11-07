@@ -110,12 +110,12 @@ their physical predecessors before discharging the semantic resume obligations. 
 pinned helper's already-sealed private blocks; identify its new block-ID range rather than
 reimplementing sparse-switch lowering. Internal refcount emission also calls `builder.seal_block`
 directly. Bring its successful seals into the same native lifecycle when used inside a function.
-Standalone trampoline/JIT builders retain their separate lifecycle unless they consume the changed
-helper. They are not falsely classified as function-compiler blocks.
+Task trampolines use the same native builder and checked completion boundary; their errors flow
+through function-object lowering. Standalone JIT probes retain their explicit local seals.
 
 At function completion, assert that every materialized native block has zero remaining obligations
-and a successful seal record. Check all allocated IDs, including the opaque switch helper's
-internal range. Any allocated-but-unused block must be proven pristine, outside layout, without
+and a successful seal record. Check all native-owned allocated IDs; the pinned switch helper's
+internal IDs remain helper-owned. Any allocated-but-unused block must be proven pristine, outside layout, without
 incoming edges or live parameters; allocate specialized loop blocks only when needed where this
 avoids such remnants. No cleanup loop may seal unknown blocks to make the assertion pass.
 Cranelift's own finalize assertion is debug-only; the Molt missing-seal check must also run in the

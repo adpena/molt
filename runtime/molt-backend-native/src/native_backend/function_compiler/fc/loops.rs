@@ -353,7 +353,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 // Why not explicit params?  When loop_index_next does
                 // def_var(counter_var, new_val), and the loop header
                 // also has def_var(counter_var, block_param), Cranelift's
-                // seal_all_blocks adds a DUPLICATE implicit param for
+                // SSA sealing adds a DUPLICATE implicit param for
                 // counter_var alongside the explicit one.  This breaks
                 // remove_constant_phis (assertion: 30 args vs 29 params).
                 //
@@ -635,7 +635,6 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 let loop_block = builder.create_block();
                 let body_block = builder.create_block();
                 let after_block = builder.create_block();
-                builder.append_block_param(loop_block, types::I64);
                 *is_block_filled = true;
                 loop_stack.push(LoopFrame {
                     loop_block,

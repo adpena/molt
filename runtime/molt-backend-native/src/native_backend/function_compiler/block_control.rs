@@ -279,9 +279,8 @@ pub(in crate::native_backend::function_compiler) fn collect_slot_backed_join_nam
     // Stateful functions (generators / async / comprehension polls) carry their
     // SSA values across state_yield / state_label resume points the same way
     // exception-bearing functions carry values across check_exception splits.
-    // The state machine generates many block edges that aren't eagerly sealed,
-    // so phi resolution at seal_all_blocks() time can explode block-parameter
-    // counts past regalloc2's u32-indexed entity tables (u32::MAX panic).
+    // Persistent local storage keeps its memory custody across suspension;
+    // prompt sealing of transient SSA values does not replace that boundary.
     //
     // Treat stateful functions like exception functions: route all store_var
     // targets through stack slots so the state machine carries memory values,
@@ -295,8 +294,8 @@ pub(in crate::native_backend::function_compiler) fn collect_slot_backed_join_nam
     let mut exception_written_locals: BTreeSet<String> = BTreeSet::new();
 
     // Collect ALL persistent local-slot mutation targets that appear anywhere
-    // in a function with exception handling or stateful resume points. When the function defers
-    // block sealing to seal_all_blocks(), Cranelift must resolve SSA phi
+    // in a function with exception handling or stateful resume points. Without
+    // memory custody, Cranelift must resolve SSA phi
     // nodes for every variable that has definitions reaching from different
     // predecessors. Each check_exception or state_yield creates a new block
     // split, and variables carried across these splits become block

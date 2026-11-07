@@ -67,6 +67,7 @@ enum IncomingState {
 #[derive(Default)]
 struct NativeBlock {
     sealed: bool,
+    has_predecessor: bool,
     source: Option<usize>,
     incoming: Option<Vec<(usize, IncomingState)>>,
     remaining: usize,
@@ -256,6 +257,7 @@ impl<'a> FunctionBuilder<'a> {
         else {
             return;
         };
+        state.has_predecessor = true;
         if let Some(incoming) = state.incoming.as_mut() {
             if let Some((_, status)) = incoming.iter_mut().find(|(id, _)| Some(*id) == source) {
                 match status {
@@ -322,9 +324,15 @@ impl<'a> FunctionBuilder<'a> {
         let missing = self.blocks.iter().enumerate().find_map(|(id, state)| {
             let state = state.as_ref()?;
             let block = Block::from_u32(id as u32);
-            (self.inner.func.layout.is_block_inserted(block)
-                && (!state.sealed || state.remaining != 0))
-                .then_some((block, NativeBlockIssue::Unsealed))
+            let inserted = self.inner.func.layout.is_block_inserted(block);
+            let unfinished = if inserted {
+                !state.sealed || state.remaining != 0
+            } else {
+                state.has_predecessor
+                    || state.remaining != 0
+                    || !self.inner.func.dfg.block_params(block).is_empty()
+            };
+            unfinished.then_some((block, NativeBlockIssue::Unsealed))
         });
         match self.error.or(missing) {
             Some((block, issue)) => Err(NativeBlockError {

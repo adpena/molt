@@ -358,7 +358,8 @@ fn pointer_decode_preserves_unsigned_bit_47_in_emitted_arithmetic() {
             input,
         );
         builder.ins().return_(&[]);
-        builder.seal_all_blocks();
+        builder.seal_block(entry);
+        builder.check_sealed("field_access").unwrap();
         builder.finalize(crate::test_support::host_frontend_config());
         (input, output)
     };

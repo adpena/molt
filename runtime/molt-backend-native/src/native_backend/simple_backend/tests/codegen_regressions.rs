@@ -21,7 +21,10 @@ fn native_completion_retires_dead_builder_components_without_traps() {
         builder.insert_block_after(dead_header, entry);
         builder.switch_to_block(dead_body);
         builder.ins().jump(dead_header, &[]);
-        builder.seal_all_blocks();
+        builder.seal_block(entry);
+        builder.seal_block(dead_header);
+        builder.seal_block(dead_body);
+        builder.check_sealed("dead_components").unwrap();
         builder.finalize(backend.module.target_config());
     }
     assert!(context.func.layout.is_block_inserted(dead_header));
@@ -59,7 +62,9 @@ fn native_completion_rejects_reachable_empty_builder_blocks() {
         builder.switch_to_block(entry);
         builder.ins().jump(empty_target, &[]);
         builder.insert_block_after(empty_target, entry);
-        builder.seal_all_blocks();
+        builder.seal_block(entry);
+        builder.seal_block(empty_target);
+        builder.check_sealed("reachable_empty").unwrap();
         builder.finalize(backend.module.target_config());
     }
     super::super::deferred_codegen::complete_native_control_flow(

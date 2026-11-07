@@ -22,6 +22,18 @@ fn native_completion_returns_a_named_error_for_a_seeded_missing_seal() {
 }
 
 #[test]
+fn native_completion_rejects_an_unmaterialized_parameter_producer() {
+    let mut function = Function::new();
+    let mut context = FunctionBuilderContext::new();
+    let mut builder = FunctionBuilder::new(&mut function, &mut context);
+    let orphan = builder.create_block();
+    builder.append_block_param(orphan, types::I64);
+    let error = builder.check_sealed("orphaned_parameter").unwrap_err();
+    assert_eq!(error.function, "orphaned_parameter");
+    assert_eq!(error.block, orphan);
+}
+
+#[test]
 fn final_label_predecessor_seals_before_the_first_variable_read() {
     let ops = vec![
         OpIR {

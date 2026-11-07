@@ -1204,7 +1204,7 @@ impl SimpleBackend {
             // repeats whole live sets even for operations that never split.
             pending_definition_op = Some(op_idx);
             let operation_origin = builder.current_block();
-            let operation_flow = (|| {
+            let operation_flow = (|| -> Result<fc::OpFlow, NativeBlockError> {
                 match op_family {
                     fc::NativeOpFamily::NoCodegen => {
                         assert!(
@@ -1227,7 +1227,7 @@ impl SimpleBackend {
                             local_inc_ref_obj,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1257,7 +1257,7 @@ impl SimpleBackend {
                             &mut block_tracked_ptr,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1276,7 +1276,7 @@ impl SimpleBackend {
                             &nbc,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1294,7 +1294,7 @@ impl SimpleBackend {
                             &nbc,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1314,7 +1314,7 @@ impl SimpleBackend {
                             &nbc,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1334,7 +1334,7 @@ impl SimpleBackend {
                             &mut block_tracked_ptr,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1378,7 +1378,7 @@ impl SimpleBackend {
                             &mut block_tracked_ptr,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1397,7 +1397,7 @@ impl SimpleBackend {
                             &mut block_tracked_ptr,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1416,7 +1416,7 @@ impl SimpleBackend {
                             &mut block_tracked_ptr,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1435,7 +1435,7 @@ impl SimpleBackend {
                             &mut block_tracked_ptr,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1609,7 +1609,7 @@ impl SimpleBackend {
                             &nbc,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1633,7 +1633,7 @@ impl SimpleBackend {
                             &nbc,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1671,9 +1671,9 @@ impl SimpleBackend {
                             local_inc_ref_obj,
                             local_dec_ref_obj,
                             &nbc,
-                        );
+                        )?;
                         match __flow {
-                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1928,7 +1928,7 @@ impl SimpleBackend {
                             &nbc,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -1966,7 +1966,7 @@ impl SimpleBackend {
                             &nbc,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -2001,7 +2001,7 @@ impl SimpleBackend {
                             &nbc,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -2020,7 +2020,7 @@ impl SimpleBackend {
                             &nbc,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -2062,7 +2062,7 @@ impl SimpleBackend {
                             &nbc,
                         );
                         match __flow {
-                            fc::OpFlow::Continue => return fc::OpFlow::Continue,
+                            fc::OpFlow::Continue => return Ok(fc::OpFlow::Continue),
                             fc::OpFlow::Proceed => {}
                         }
                     }
@@ -2095,8 +2095,8 @@ impl SimpleBackend {
                     }
                 }
 
-                fc::OpFlow::Proceed
-            })();
+                Ok(fc::OpFlow::Proceed)
+            })()?;
             // Generated internal branches do not change a SimpleIR operation's
             // ownership scope. Preserve its cleanup candidates across the final
             // continuation, including handlers that skip the common epilogue.

@@ -306,7 +306,8 @@ fn native_call_frame_trampoline_forwards_the_canonical_three_argument_abi() {
             closure_size: 0,
             target_has_ret: true,
         },
-    );
+    )
+    .expect("native trampoline codegen");
 
     assert_eq!(trampoline_ids.len(), 1);
     assert_eq!(trampoline_ids.values().next(), Some(&trampoline_id));

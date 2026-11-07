@@ -33,7 +33,8 @@ pub use crate::passes::{
 pub use molt_backend_native::llvm_backend;
 #[cfg(feature = "native-backend")]
 pub use molt_backend_native::{
-    CompileOutput, NativeBackendModuleContext, SimpleBackend, prepare_native_application_ir,
+    CompileOutput, NativeBackendModuleContext, NativeBlockError, NativeBlockIssue,
+    NativeCompileError, SimpleBackend, prepare_native_application_ir,
 };
 /// The representation lattice element (the orthogonal carrier axis to
 /// `TirType`). Re-exported publicly because it appears in the signature of the

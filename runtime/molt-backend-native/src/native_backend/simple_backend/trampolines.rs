@@ -14,7 +14,7 @@ impl SimpleBackend {
         func_name: &str,
         linkage: Linkage,
         spec: TrampolineSpec,
-    ) -> cranelift_module::FuncId {
+    ) -> Result<cranelift_module::FuncId, NativeBlockError> {
         Self::ensure_trampoline_with_inspector(
             module,
             trampoline_ids,
@@ -34,7 +34,7 @@ impl SimpleBackend {
         linkage: Linkage,
         spec: TrampolineSpec,
         inspect: F,
-    ) -> cranelift_module::FuncId
+    ) -> Result<cranelift_module::FuncId, NativeBlockError>
     where
         F: FnOnce(&Context),
     {
@@ -56,7 +56,7 @@ impl SimpleBackend {
             target_has_ret,
         };
         if let Some(id) = trampoline_ids.get(&key) {
-            return *id;
+            return Ok(*id);
         }
         let closure_suffix = if has_closure { "_closure" } else { "" };
         let import_suffix = if is_import { "_import" } else { "" };
@@ -292,7 +292,7 @@ impl SimpleBackend {
                 Self::import_runtime_func_id_split(module, import_ids, MOLT_REFCOUNT_ADMISSION);
             module.declare_func_in_func(id, builder.func)
         });
-        builder.seal_all_blocks();
+        builder.check_sealed(&trampoline_name)?;
         builder.finalize(module.target_config());
         inspect(&ctx);
 
@@ -303,7 +303,7 @@ impl SimpleBackend {
             panic!("Failed to define trampoline {trampoline_name}: {err:?}");
         }
         trampoline_ids.insert(key, trampoline_id);
-        trampoline_id
+        Ok(trampoline_id)
     }
 
     #[cfg(test)]
@@ -323,7 +323,8 @@ impl SimpleBackend {
             Linkage::Import,
             spec,
             |ctx| clif = Some(ctx.func.clone()),
-        );
+        )
+        .expect("task trampoline codegen");
         clif.expect("new task trampoline must expose generated CLIF")
     }
 }

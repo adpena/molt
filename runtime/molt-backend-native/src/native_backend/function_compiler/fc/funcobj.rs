@@ -270,7 +270,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
     local_inc_ref_obj: NativeRefcountSite,
     local_dec_ref_obj: NativeRefcountSite,
     nbc: &crate::NanBoxConsts,
-) -> OpFlow {
+) -> Result<OpFlow, NativeBlockError> {
     let var_get_boxed_overflow_safe = |module: &mut dyn Module,
                                        import_ids: &mut BTreeMap<
         &'static str,
@@ -298,7 +298,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
     match op.kind {
         OpKind::BuiltinFunc => {
             let Some(func_name) = op.s_value.as_ref() else {
-                return OpFlow::Continue;
+                return Ok(OpFlow::Continue);
             };
             let abi = molt_ir::runtime_callable_abi_generated::runtime_callable_abi(func_name)
                 .unwrap_or_else(|| {
@@ -342,7 +342,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                     closure_size: 0,
                     target_has_ret: true,
                 },
-            );
+            )?;
             let tramp_ref = module.declare_func_in_func(tramp_id, builder.func);
             let tramp_addr = builder.ins().func_addr(types::I64, tramp_ref);
             let arity_val = builder.ins().iconst(types::I64, arity as i64);
@@ -388,7 +388,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
         }
         OpKind::FuncNew => {
             let Some(func_name) = op.s_value.as_ref() else {
-                return OpFlow::Continue;
+                return Ok(OpFlow::Continue);
             };
             let arity = op.value.unwrap_or(0);
             let kind = task_kinds
@@ -445,7 +445,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                     closure_size,
                     target_has_ret,
                 },
-            );
+            )?;
             let tramp_ref = module.declare_func_in_func(tramp_id, builder.func);
             let tramp_addr = builder.ins().func_addr(types::I64, tramp_ref);
             let arity_val = builder.ins().iconst(types::I64, arity);
@@ -475,7 +475,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
         }
         OpKind::FuncNewClosure => {
             let Some(func_name) = op.s_value.as_ref() else {
-                return OpFlow::Continue;
+                return Ok(OpFlow::Continue);
             };
             let arity = op.value.unwrap_or(0);
             let kind = task_kinds
@@ -556,7 +556,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                     closure_size,
                     target_has_ret,
                 },
-            );
+            )?;
             let tramp_ref = module.declare_func_in_func(tramp_id, builder.func);
             let tramp_addr = builder.ins().func_addr(types::I64, tramp_ref);
             let arity_val = builder.ins().iconst(types::I64, arity);
@@ -1184,7 +1184,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             // Exception tracebacks still get correct line info from
             // the last line op before the loop or at loop entry.
             if in_loop {
-                return OpFlow::Continue;
+                return Ok(OpFlow::Continue);
             }
             let line = op.value.unwrap_or(0);
             let line_val = builder.ins().iconst(types::I64, line);
@@ -1259,7 +1259,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
         }
         _ => unreachable!("non-function-object op routed to handle_funcobj_op"),
     }
-    OpFlow::Proceed
+    Ok(OpFlow::Proceed)
 }
 
 /// Narrow handler for native GPU runtime intrinsics that sit in the same
