@@ -13507,3 +13507,31 @@ def test_queue_request_closes_exactly_once_across_an_interrupted_close(
         paths, second, status=queue.LandingStatus.LANDED, detail="ok", landed="c" * 40
     )
     assert queue.pending(paths) == []
+
+
+@pytest.mark.parametrize("state", ["clean", "dirty", "other-branch"])
+def test_land_fast_keeps_the_main_checkout_a_mirror_of_main(tmp_path, state):
+    """After a landing, a clean main checkout on main fast-forwards to the
+    published tip; a dirty or switched checkout is reported and left alone."""
+    from tools import molt_dev as drv
+    from tools.molt_dev_land_fast import _sync_main_worktree
+
+    main = tmp_path / "main"
+    _init_repo(main)
+    base = _commit_file(main, "a.txt", "1\n", "base")
+    lane = tmp_path / "lane"
+    _git(main, "worktree", "add", "-q", "-b", "lane/x", str(lane))
+    published = _commit_file(lane, "a.txt", "2\n", "landed")
+    # The lane's landing is what origin/main now names.
+    _git(main, "update-ref", "refs/remotes/origin/main", published)
+    if state == "dirty":
+        (main / "a.txt").write_text("local edit\n", encoding="utf-8")
+    elif state == "other-branch":
+        _git(main, "switch", "-q", "-c", "elsewhere")
+
+    _sync_main_worktree(drv.Git(lane), remote="origin", branch="main")
+
+    head = _git(main, "rev-parse", "HEAD").stdout.strip()
+    assert head == (published if state == "clean" else base)
+    if state == "dirty":
+        assert (main / "a.txt").read_text(encoding="utf-8") == "local edit\n"

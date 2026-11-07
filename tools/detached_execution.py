@@ -290,6 +290,55 @@ def _detached_worker_main(
     return 0
 
 
+def require_finished_run(state: Path) -> None:
+    """Raise DriverError unless the run at ``state`` is over.
+
+    Over means a terminal rc, or an acknowledged worker proven dead. A
+    running worker, an unresolved or unreadable state is never over.
+    """
+    rc_file = state / "rc"
+    try:
+        # Existing terminal authority: the worker writes rc only after
+        # its owned command returns. A PID alone is not this proof.
+        int(rc_file.read_text(encoding="utf-8").strip())
+    except FileNotFoundError:
+        try:
+            payload = json.loads((state / "worker.json").read_text(encoding="utf-8"))
+            token = payload["use_token"]
+            if not isinstance(token, str):
+                raise ValueError("detached use token is not text")
+            pid = detached_worker_pid(state / "state-use-ready.json", token)
+            if pid is None:
+                raise ValueError("no acknowledged worker")
+            observation = probe_pid(pid)
+            if observation["alive"]:
+                raise DriverError(
+                    f"detached-run: {state.name!r} is already RUNNING (pid {pid}). "
+                    "This driver NEVER kills - wait or use a new --name."
+                )
+            if observation["alive"] is None:
+                raise ValueError("worker death is not established")
+        except DriverError:
+            raise
+        except (
+            OSError,
+            ValueError,
+            KeyError,
+            TypeError,
+            RuntimeError,
+        ) as error:
+            raise DriverError(
+                f"detached-run: state for {state.name!r} is INCOMPLETE or "
+                "unresolved; no terminal result or acknowledged dead worker "
+                "permits replacement. Preserve this state and use a new --name."
+            ) from error
+    except (OSError, ValueError) as error:
+        raise DriverError(
+            f"detached-run: terminal state for {state.name!r} is unreadable; "
+            "preserve it and use a new --name."
+        ) from error
+
+
 @contextmanager
 def _detached_launch_admission(state: Path, *, replace: bool) -> Generator[None]:
     """Serialize this existing name's check/replace/start; never erase unknown use."""
@@ -302,49 +351,7 @@ def _detached_launch_admission(state: Path, *, replace: bool) -> Generator[None]
         raise DriverError(f"detached-run: launch admission is busy for {state.name!r}")
     try:
         if state.exists():
-            rc_file = state / "rc"
-            try:
-                # Existing terminal authority: the worker writes rc only after
-                # its owned command returns. A PID alone is not this proof.
-                int(rc_file.read_text(encoding="utf-8").strip())
-            except FileNotFoundError:
-                try:
-                    payload = json.loads(
-                        (state / "worker.json").read_text(encoding="utf-8")
-                    )
-                    token = payload["use_token"]
-                    if not isinstance(token, str):
-                        raise ValueError("detached use token is not text")
-                    pid = detached_worker_pid(state / "state-use-ready.json", token)
-                    if pid is None:
-                        raise ValueError("no acknowledged worker")
-                    observation = probe_pid(pid)
-                    if observation["alive"]:
-                        raise DriverError(
-                            f"detached-run: {state.name!r} is already RUNNING (pid {pid}). "
-                            "This driver NEVER kills - wait or use a new --name."
-                        )
-                    if observation["alive"] is None:
-                        raise ValueError("worker death is not established")
-                except DriverError:
-                    raise
-                except (
-                    OSError,
-                    ValueError,
-                    KeyError,
-                    TypeError,
-                    RuntimeError,
-                ) as error:
-                    raise DriverError(
-                        f"detached-run: state for {state.name!r} is INCOMPLETE or "
-                        "unresolved; no terminal result or acknowledged dead worker "
-                        "permits replacement. Preserve this state and use a new --name."
-                    ) from error
-            except (OSError, ValueError) as error:
-                raise DriverError(
-                    f"detached-run: terminal state for {state.name!r} is unreadable; "
-                    "preserve it and use a new --name."
-                ) from error
+            require_finished_run(state)
             if not replace:
                 raise DriverError(
                     f"detached-run: state for {state.name!r} already exists at "

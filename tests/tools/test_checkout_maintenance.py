@@ -140,6 +140,41 @@ def test_existing_epoch_keeps_unresolved_evidence_and_stamp(
     assert not root.joinpath(*GC_STAMP).exists()
 
 
+def test_an_ended_epoch_is_set_aside_and_attempted_again(
+    tmp_path, monkeypatch, published_source
+):
+    """A run whose acknowledged worker died without an rc is evidence, not
+    custody: the scheduler keeps it under a new name and launches again."""
+    import subprocess
+
+    root = tmp_path / "artifacts"
+    state = root / "logs/disk_guard/automatic/gc-initial"
+    state.mkdir(parents=True)
+    finished = subprocess.run([sys.executable, "-c", "pass"], check=True)
+    del finished
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    token = "a" * 32
+    (state / "worker.json").write_text(
+        json.dumps({"use_token": token}), encoding="utf-8"
+    )
+    (state / "state-use-ready.json").write_text(
+        json.dumps({"schema_version": 1, "pid": dead.pid, "use_token": token}),
+        encoding="utf-8",
+    )
+    launched = []
+    monkeypatch.setattr(
+        detached, "launch_detached", lambda path, *_a, **_k: launched.append(path)
+    )
+    maintenance.schedule(root, {}, cwd=tmp_path)
+    assert launched == [state]
+    kept = [p for p in state.parent.iterdir() if p.name.startswith("gc-initial.ended-")]
+    assert len(kept) == 1
+    assert json.loads((kept[0] / "worker.json").read_text(encoding="utf-8")) == {
+        "use_token": token
+    }
+
+
 def test_missing_published_detached_worker_keeps_epoch_and_state_unclaimed(
     tmp_path, published_source
 ):

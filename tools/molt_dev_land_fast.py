@@ -368,6 +368,7 @@ def cmd_land_fast(args: argparse.Namespace) -> int:
         )
         if outcome is Publication.LANDED:
             _ok(f"landed in {time.monotonic() - started:.0f} s")
+            _sync_main_worktree(git, remote=args.remote, branch=args.branch)
             if lane.startswith("lane/"):
                 _install_hooks(repo)
                 _say(
@@ -378,6 +379,39 @@ def cmd_land_fast(args: argparse.Namespace) -> int:
         head = git.head_sha()
     _fail(f"main moved during each of {MAX_ATTEMPTS} attempts; nothing was published")
     return EXIT_FAIL
+
+
+def _sync_main_worktree(git, *, remote: str, branch: str) -> None:
+    """Keep the main checkout a clean mirror of the branch just published.
+
+    Sessions start in the main worktree and read its AGENTS.md, and nothing
+    else moves it: it fell 2,446 commits behind (2026-11-07). A clean
+    checkout on the branch fast-forwards; anything else is reported, never
+    forced or reset.
+    """
+    main = git.worktree_paths()[0]
+    mirror = type(git)(main)
+    current = mirror._run(
+        ["symbolic-ref", "--quiet", "--short", "HEAD"], check=False
+    ).stdout.strip()
+    if current != branch:
+        _warn(
+            f"main checkout {main} is on {current or 'a detached HEAD'}, not {branch}; not updated"
+        )
+        return
+    if mirror._run(["status", "--porcelain", "--untracked-files=no"]).stdout.strip():
+        _warn(f"main checkout {main} has uncommitted changes; not updated")
+        return
+    merged = mirror._run(
+        ["merge", "--ff-only", "--quiet", f"{remote}/{branch}"], check=False
+    )
+    if merged.returncode != 0:
+        _warn(
+            f"main checkout {main} cannot fast-forward to {remote}/{branch}: "
+            f"{merged.stderr.strip()}"
+        )
+        return
+    _ok(f"main checkout {main} is at {remote}/{branch}")
 
 
 def _install_hooks(repo: Path) -> None:
