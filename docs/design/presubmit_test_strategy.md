@@ -130,8 +130,8 @@ The apparatus work ends when all four hold; the integrator owns it until then.
    (b00696d2fd: 30 gates, 624 s, first try).
 2. CI returns real verdicts: the proof executor runs in the synced environment (3be76b90fb), and
    `main` CI failures are product failures, not provisioning.
-3. One environment per checkout (`docs/design/one_environment.md`, stages 1-3).
-4. The fixed small landing suite (`one_environment.md` stage 4): WASM end-to-end in postsubmit
+3. One environment mechanism (`docs/design/one_environment.md`, stages 1-3).
+4. The fixed small landing suite: WASM end-to-end in postsubmit
    except one linked cell, a calibrated CPython differential smoke in presubmit, first-hop
    importers selected by changed function, and `tools/gate_yield.py` showing presubmit p90 at or
    under 10 minutes for compiler lanes.
