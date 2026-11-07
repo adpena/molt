@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import pytest
 
+from tests.process_guard_common import run_guarded_test_process
 from tools import consumer_gate
 from tools.test_dependency_graph import DirectReaders
 
 
-def _git(root: Path, *args: str) -> None:
-    subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+def _git(root: Path, *args: str) -> str:
+    return run_guarded_test_process(["git", "-C", str(root), *args], check=True).stdout
 
 
 @pytest.fixture
@@ -112,11 +112,5 @@ def test_commit_tree_matches_what_a_pathspec_commit_records(repo):
         "--",
         "lib.py",
     )
-    recorded = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "HEAD^{tree}"],
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    ).stdout.strip()
+    recorded = _git(repo, "rev-parse", "HEAD^{tree}").strip()
     assert tree == recorded

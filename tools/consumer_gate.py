@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import tomllib
@@ -33,11 +32,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.command_execution import CommandExecutor  # noqa: E402
+
+# Git probes and the importer-test child run under the developer-test guard.
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV_TEST")
+
 SCHEMA = "molt.consumer-receipt.v1"
 
 
 def _git(root: Path, *args: str, env: dict[str, str] | None = None) -> str:
-    return subprocess.run(
+    return _COMMANDS.run(
         ["git", "-C", str(root), *args],
         check=True,
         capture_output=True,
@@ -99,7 +103,7 @@ def run(root: Path, paths: list[str], *, pytest_args: list[str]) -> int:
         argv = [sys.executable, "-m", "pytest", "-q", *pytest_args]
         argv += list(readers.importers)
         print("consumer-gate: " + " ".join(argv), flush=True)
-        if subprocess.run(argv, cwd=root).returncode != 0:
+        if _COMMANDS.run(argv, cwd=root).returncode != 0:
             print("consumer-gate: importer tests failed; no receipt", file=sys.stderr)
             return 1
     if commit_tree(root, paths) != tree:
