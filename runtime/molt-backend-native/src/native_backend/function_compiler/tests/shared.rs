@@ -1,5 +1,5 @@
 use super::*;
-use cranelift_codegen::ir::{Block, ExternalName, Inst, InstructionData, ValueDef};
+use cranelift_codegen::ir::{ExternalName, Inst, InstructionData, ValueDef};
 use cranelift_frontend::Variable;
 use molt_ir::OpKind;
 

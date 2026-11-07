@@ -4,6 +4,7 @@
 use super::*;
 use cranelift_codegen::ir::{DataFlowGraph, Inst, InstBuilderBase, InstructionData, Type};
 use cranelift_frontend::FunctionBuilder as CraneliftFunctionBuilder;
+use molt_ir::OpKind;
 
 #[derive(Debug)]
 pub enum NativeCompileError {
@@ -123,10 +124,7 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     pub(crate) fn seal_block(&mut self, block: Block) {
-        let state = self.blocks[block.as_u32() as usize]
-            .as_mut()
-            .expect("native-owned block");
-        if !state.sealed {
+        if !self.is_sealed(block) {
             self.inner.seal_block(block);
             self.blocks[block.as_u32() as usize]
                 .as_mut()
@@ -350,6 +348,9 @@ impl<'b> InstBuilderBase<'b> for NativeInstBuilder<'b, '_> {
     }
     fn data_flow_graph_mut(&mut self) -> &mut DataFlowGraph {
         &mut self.0.inner.func.dfg
+    }
+    fn build_aux_inst(&mut self, data: InstructionData, ty: Type) -> Inst {
+        NativeInstBuilder(&mut *self.0).build(data, ty).0
     }
     fn build(self, data: InstructionData, ty: Type) -> (Inst, &'b mut DataFlowGraph) {
         let source = self.0.inner.current_block().and_then(|block| {
