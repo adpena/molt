@@ -46,10 +46,17 @@ def test_c_entry_helpers_publish_access_only_after_success(
     tools = verified_llvm_tools()
     root = Path(__file__).resolve().parents[2]
     source = tmp_path / "initialize.c"
+    # Py_FatalError aborts, as CPython's does. Exit from SIGABRT instead of
+    # dumping core so the OS crash reporter (ReportCrash on macOS) never holds
+    # the expected failure past the guard timeout under host load.
     source.write_text(
         "#include <molt/Python.h>\n"
+        "#include <signal.h>\n"
+        "#include <stdlib.h>\n"
         "extern int initialization_calls(void);\n"
+        "static void exit_on_abort(int sig) { _Exit(128 + sig); }\n"
         "int main(void) {\n"
+        "    signal(SIGABRT, exit_on_abort);\n"
         f"    if (Py_IsInitialized() != {0 if initializes else 1}) return 2;\n"
         f"    {entry};\n"
         f"    if (initialization_calls() != {1 if initializes else 0} || Py_IsInitialized() != 1 ||\n"
