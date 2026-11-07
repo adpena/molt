@@ -705,7 +705,7 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
         for id in 0..cfg_liveness.names.len() {
             let name = cfg_liveness.names.name(id as u32);
             if !representation_plan.carrier_refcount_is_noop(name) {
-                ssa_values.exclude(&cfg_liveness.names, name);
+                ssa_values.exclude_cleanup_definition(id as u32);
             }
         }
     }

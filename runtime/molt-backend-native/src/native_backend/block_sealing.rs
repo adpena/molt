@@ -114,7 +114,7 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
-    pub(crate) fn install_ssa_values(&mut self, values: function_compiler::NativeSsaValues) {
+    pub(super) fn install_ssa_values(&mut self, values: function_compiler::NativeSsaValues) {
         self.ssa_values = Some(values);
     }
 

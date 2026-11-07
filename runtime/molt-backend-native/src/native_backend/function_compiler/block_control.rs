@@ -194,6 +194,22 @@ impl NativeSsaValues {
         self.emitted[id as usize]
     }
 
+    pub(in crate::native_backend::function_compiler) fn exclude_cleanup_definition(
+        &mut self,
+        id: u32,
+    ) {
+        // Borrowed invocation parameters never acquire a native cleanup root.
+        // Only operation-produced owner carriers can be scrubbed on release.
+        if matches!(
+            self.definitions[id as usize],
+            Some(crate::tir::simple_def_use::SimpleDefinitionSite::Operation(
+                _
+            ))
+        ) {
+            self.definitions[id as usize] = None;
+        }
+    }
+
     pub(in crate::native_backend) fn read(&self, var: Variable, operation: usize) -> Option<Value> {
         let id = self
             .names_by_variable
@@ -222,7 +238,8 @@ impl NativeSsaValues {
             }
             if let Some(&var) = vars.get(name) {
                 if self.names_by_variable.len() <= var.as_u32() as usize {
-                    self.names_by_variable.resize(var.as_u32() as usize + 1, None);
+                    self.names_by_variable
+                        .resize(var.as_u32() as usize + 1, None);
                 }
                 self.names_by_variable[var.as_u32() as usize] = Some(id as u32);
                 *binding = Some(NativeTransportBinding {

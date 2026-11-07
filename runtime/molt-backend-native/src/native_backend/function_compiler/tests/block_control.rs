@@ -161,6 +161,63 @@ fn materialize_label_block_does_not_self_jump_current_resume_block() {
 // â”€â”€ scan_loop_int_sum_reduction tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
+fn immutable_reads_do_not_construct_phis_in_unsealed_native_blocks() {
+    let ops = vec![
+        OpIR {
+            out: Some("immutable".into()),
+            value: Some(37),
+            ..OpIR::new(OpKind::Const)
+        },
+        OpIR {
+            args: Some(vec!["immutable".into()]),
+            ..OpIR::new(OpKind::Ret)
+        },
+    ];
+    let cfg = crate::tir::cfg::CFG::build(&ops);
+    let names = crate::tir::cfg_liveness::analyze_simple_cfg_liveness_facts(&ops).names;
+    let mut values = NativeSsaValues::for_test(&[], &ops, &names);
+    let mut sig = Signature::new(CallConv::SystemV);
+    sig.returns.push(AbiParam::new(types::I64));
+    let mut function = Function::with_name_signature(UserFuncName::default(), sig);
+    let mut context = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut function, &mut context);
+        let entry = builder.create_block();
+        builder.switch_to_block(entry);
+        let var = builder.declare_var(types::I64);
+        let expected = builder.ins().iconst(types::I64, 37);
+        builder.def_var(var, expected);
+        values.project_variables(
+            &names,
+            &BTreeMap::from([("immutable".into(), var)]),
+            &ScalarRepresentationPlan::default(),
+            &BTreeMap::new(),
+        );
+        builder.plan_labels(&ops, &cfg, &BTreeMap::new());
+        builder.install_ssa_values(values);
+        builder.capture_operation(0, &ops[0], &names);
+        builder.begin_op(1, &ops[1]);
+        let mut blocks = vec![entry];
+        for _ in 0..128 {
+            let next = builder.create_block();
+            builder.ins().jump(next, &[]);
+            builder.switch_to_block(next);
+            blocks.push(next);
+        }
+        let before = builder.func.dfg.num_values();
+        assert_eq!(builder.use_var(var), expected);
+        assert_eq!(builder.func.dfg.num_values(), before);
+        builder.ins().return_(&[expected]);
+        for block in blocks {
+            builder.seal_block(block);
+        }
+        builder.check_sealed("immutable_unsealed_chain").unwrap();
+        builder.finalize(crate::test_support::host_frontend_config());
+    }
+    verify_function(&function, &settings::Flags::new(settings::builder())).unwrap();
+}
+
+#[test]
 fn unique_dominating_definition_still_requires_earlier_emission() {
     let initializer = OpIR {
         out: Some("immutable".into()),
