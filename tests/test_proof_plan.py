@@ -2427,11 +2427,12 @@ def test_matrix_family_budget_binds_each_cell() -> None:
     errors = replace(PLAN, commands=commands).validate()
     # Harness holds one Python slot until 2401 s; custody, binding,
     # frontend, CLI and surface fill the other until 2700 s. Runtime artifacts
-    # then run on the first slot until 3001 s; the 120 s boundary ends at
-    # 2820 s on the second. The dedicated compiled cell has its own
-    # 1800 s dependency chain. Only ordinary Mac tooling exceeds its fixed cap.
+    # then run on the first slot until 3001 s and linked-WASM smoke (120 s)
+    # after them until 3121 s; the 120 s boundary ends at 2820 s on the
+    # second. The dedicated compiled cell has its own 1800 s dependency
+    # chain. Only ordinary Mac tooling exceeds its fixed cap.
     assert [error for error in errors if "timeout envelope" in error] == [
-        "python_unit: projected resource-aware timeout envelope 3001s in matrix "
+        "python_unit: projected resource-aware timeout envelope 3121s in matrix "
         "cell macos-arm64-py312-unit plus job reserve 60s exceeds GitHub job budget 2580s"
     ]
 
@@ -11721,11 +11722,16 @@ def test_mac_compiled_coordinate_provisions_its_exact_wasm_tools_before_admissio
         "python.unit.surface-contracts.macos",
     ):
         command = rows[command_id]
-        # Its WASM smoke tests validate with the pinned wasm-tools; admission
+        assert set(command.toolchains) == {"python", "uv", "node"}
+        assert "tests/test_generate_worker.py" in command.argv
+        assert not command.dependencies
+    for command_id in ("python.unit.surface-wasm", "python.unit.surface-wasm.macos"):
+        command = rows[command_id]
+        # Linked-WASM programs validate with the pinned wasm-tools; admission
         # provisions each declared pinned release on every cell, so no
         # workflow step is cell-specific for it.
         assert set(command.toolchains) == {"python", "uv", "node", "wasm-tools"}
-        assert "tests/test_generate_worker.py" in command.argv
+        assert command.data["pytest_worker_memory_gb"] >= 4.0
         assert not command.dependencies
 
 
