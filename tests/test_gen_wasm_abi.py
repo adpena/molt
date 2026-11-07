@@ -3771,7 +3771,13 @@ def test_shared_boxed_op_mapping_uses_explicit_symbol_not_kind_spelling() -> Non
     assert rows[0]["runtime_name"] == "molt_different_export"
     gen = gen_wasm_abi
     source = gen.render_runtime_boxed_abi_rs(data)
-    assert "crate::OpKind::Len => Some(&RUNTIME_BOXED_ABIS[0])" in source
+    # The op names its runtime function, never a table position, so adding an
+    # intrinsic cannot renumber this mapping.
+    assert (
+        "crate::OpKind::Len => Some(RuntimeFn::DifferentExport.boxed_abi())" in source
+    )
+    assert "RUNTIME_BOXED_ABIS[0]" not in source
+    assert "DifferentExport = " not in source
     assert 'symbol: "molt_different_export"' in source
     assert "molt_len" not in source
 
