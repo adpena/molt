@@ -76,7 +76,6 @@ impl BlockTransportPlan {
         &self,
         builder: &mut FunctionBuilder<'_>,
         block: Block,
-        ssa_values: &NativeSsaValues,
     ) {
         let params = builder.block_params(block).to_vec();
         assert_eq!(
@@ -88,7 +87,7 @@ impl BlockTransportPlan {
             builder.def_var(var, param);
         }
         for &(id, var) in &self.direct {
-            let value = ssa_values.emitted[id as usize].unwrap_or_else(|| {
+            let value = builder.canonical_ssa_value(id).unwrap_or_else(|| {
                 panic!("proven canonical SSA definition #{id} was not captured before block materialization")
             });
             builder.def_var(var, value);
@@ -107,11 +106,12 @@ struct NativeTransportBinding {
 /// Variable/representation/storage projections are resolved once after setup;
 /// they never establish identity or create another name registry.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) struct NativeSsaValues {
+pub(in crate::native_backend) struct NativeSsaValues {
     definitions: Vec<Option<crate::tir::simple_def_use::SimpleDefinitionSite>>,
     dominance: Option<crate::tir::dominators::SimpleExecutionDominance>,
     emitted: Vec<Option<Value>>,
     bindings: Vec<Option<NativeTransportBinding>>,
+    names_by_variable: Vec<Option<u32>>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -130,6 +130,7 @@ impl NativeSsaValues {
             dominance,
             emitted: vec![None; names.len()],
             bindings: vec![None; names.len()],
+            names_by_variable: Vec::new(),
         }
     }
 
@@ -153,16 +154,58 @@ impl NativeSsaValues {
         stateful: bool,
         names: &crate::tir::cfg_liveness::SimpleNameTable,
     ) -> Self {
-        // Backend-managed loop carriers and resume-frame values do not expose
-        // every definition as an immutable value in this invocation.
-        let explicit_definitions =
-            !stateful && !func.ops.iter().any(|op| op.kind.is_pre_ssa_rewritten());
-        Self::with_facts(
+        let mut values = Self::with_facts(
             &func.params,
             &func.ops,
             names,
-            explicit_definitions.then(|| cfg.execution_points(&func.ops)),
+            Some(cfg.execution_points(&func.ops)),
+        );
+        // These carriers have native writes outside their SimpleIR definition.
+        // Their neighbouring immutable temporaries still use dominance facts.
+        for op in &func.ops {
+            if let Some(binding) = simple_ir_binding(op) {
+                values.exclude(names, binding.destination);
+            }
+            if op.kind == OpKind::LoopIndexStart
+                && let Some(name) = op.out.as_deref()
+            {
+                values.exclude(names, name);
+            }
+        }
+        if stateful {
+            for name in &func.params {
+                values.exclude(names, name);
+            }
+        }
+        values
+    }
+
+    pub(in crate::native_backend::function_compiler) fn exclude(
+        &mut self,
+        names: &crate::tir::cfg_liveness::SimpleNameTable,
+        name: &str,
+    ) {
+        if let Some(id) = names.id(name) {
+            self.definitions[id as usize] = None;
+        }
+    }
+
+    pub(in crate::native_backend) fn emitted(&self, id: u32) -> Option<Value> {
+        self.emitted[id as usize]
+    }
+
+    pub(in crate::native_backend) fn read(&self, var: Variable, operation: usize) -> Option<Value> {
+        let id = self
+            .names_by_variable
+            .get(var.as_u32() as usize)
+            .copied()
+            .flatten()?;
+        self.can_bind_directly(
+            id,
+            crate::tir::dominators::SimpleProgramPoint::Before(operation),
         )
+        .then(|| self.emitted(id))
+        .flatten()
     }
 
     pub(in crate::native_backend::function_compiler) fn project_variables(
@@ -178,6 +221,10 @@ impl NativeSsaValues {
                 continue;
             }
             if let Some(&var) = vars.get(name) {
+                if self.names_by_variable.len() <= var.as_u32() as usize {
+                    self.names_by_variable.resize(var.as_u32() as usize + 1, None);
+                }
+                self.names_by_variable[var.as_u32() as usize] = Some(id as u32);
                 *binding = Some(NativeTransportBinding {
                     var,
                     ty: if representation_plan.is_float_unboxed(name) {
@@ -232,7 +279,7 @@ impl NativeSsaValues {
         }
     }
 
-    pub(in crate::native_backend::function_compiler) fn capture_operation(
+    pub(in crate::native_backend) fn capture_operation(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
         index: usize,
@@ -377,7 +424,6 @@ pub(in crate::native_backend::function_compiler) fn materialize_label_block(
     block: Block,
     is_block_filled: &mut bool,
     transport: Option<&BlockTransportPlan>,
-    ssa_values: &NativeSsaValues,
 ) {
     ensure_block_in_layout(builder, block);
     // If we're already inside `block` and it's still open, the label has
@@ -398,7 +444,7 @@ pub(in crate::native_backend::function_compiler) fn materialize_label_block(
         crate::switch_to_block_tracking(builder, block, is_block_filled);
     }
     if let Some(plan) = transport {
-        plan.bind_block_params(builder, block, ssa_values);
+        plan.bind_block_params(builder, block);
     }
 }
 

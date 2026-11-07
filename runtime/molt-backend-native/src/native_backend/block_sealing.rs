@@ -84,6 +84,7 @@ pub(crate) struct FunctionBuilder<'a> {
     current_op: Option<usize>,
     error: Option<(Block, NativeBlockIssue)>,
     completed_switches: usize,
+    ssa_values: Option<function_compiler::NativeSsaValues>,
 }
 
 impl<'a> std::ops::Deref for FunctionBuilder<'a> {
@@ -109,6 +110,40 @@ impl<'a> FunctionBuilder<'a> {
             current_op: None,
             error: None,
             completed_switches: 0,
+            ssa_values: None,
+        }
+    }
+
+    pub(crate) fn install_ssa_values(&mut self, values: function_compiler::NativeSsaValues) {
+        self.ssa_values = Some(values);
+    }
+
+    /// One typed read boundary for semantic and internal Variables alike.
+    pub(crate) fn use_var(&mut self, var: Variable) -> Value {
+        if let Some(value) = self
+            .current_op
+            .and_then(|op| self.ssa_values.as_ref()?.read(var, op))
+        {
+            return value;
+        }
+        self.inner.use_var(var)
+    }
+
+    pub(crate) fn canonical_ssa_value(&self, id: u32) -> Option<Value> {
+        self.ssa_values.as_ref()?.emitted(id)
+    }
+
+    pub(crate) fn capture_operation(
+        &mut self,
+        index: usize,
+        op: &OpIR,
+        names: &crate::tir::cfg_liveness::SimpleNameTable,
+    ) {
+        if let Some(mut values) = self.ssa_values.take() {
+            // Capture the final value after native diamonds have joined, using
+            // the underlying variable rather than a preceding retained value.
+            values.capture_operation(self, index, op, names);
+            self.ssa_values = Some(values);
         }
     }
 

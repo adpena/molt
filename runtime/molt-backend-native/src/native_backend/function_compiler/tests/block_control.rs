@@ -99,7 +99,7 @@ fn block_transport_plan_emits_typed_args_and_rebinds_values() {
     builder.seal_block(entry);
 
     switch_to_block_materialized(&mut builder, target);
-    plan.bind_block_params(&mut builder, target, &empty_ssa_values());
+    plan.bind_block_params(&mut builder, target);
 
     assert_eq!(builder.use_var(float_var), builder.block_params(target)[0]);
     assert_eq!(builder.use_var(word_var), builder.block_params(target)[1]);
@@ -121,13 +121,7 @@ fn materialize_label_block_defines_unreached_forward_label() {
     builder.seal_block(entry);
 
     let mut is_block_filled = true;
-    materialize_label_block(
-        &mut builder,
-        detached_label,
-        &mut is_block_filled,
-        None,
-        &empty_ssa_values(),
-    );
+    materialize_label_block(&mut builder, detached_label, &mut is_block_filled, None);
 
     assert!(
         builder.func.layout.is_block_inserted(detached_label),
@@ -151,13 +145,7 @@ fn materialize_label_block_does_not_self_jump_current_resume_block() {
     switch_to_block_materialized(&mut builder, resume_block);
 
     let mut is_block_filled = false;
-    materialize_label_block(
-        &mut builder,
-        resume_block,
-        &mut is_block_filled,
-        None,
-        &empty_ssa_values(),
-    );
+    materialize_label_block(&mut builder, resume_block, &mut is_block_filled, None);
 
     assert_eq!(builder.current_block(), Some(resume_block));
     assert!(
@@ -171,14 +159,6 @@ fn materialize_label_block_does_not_self_jump_current_resume_block() {
 }
 
 // â”€â”€ scan_loop_int_sum_reduction tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-fn empty_ssa_values() -> NativeSsaValues {
-    NativeSsaValues::for_test(
-        &[],
-        &[],
-        &crate::tir::cfg_liveness::SimpleNameTable::default(),
-    )
-}
 
 #[test]
 fn unique_dominating_definition_still_requires_earlier_emission() {

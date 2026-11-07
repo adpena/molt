@@ -21,6 +21,7 @@ mod shared;
 use shared::*;
 mod block_control;
 use block_control::*;
+pub(super) use block_control::NativeSsaValues;
 mod preanalysis;
 use preanalysis::*;
 
@@ -1034,6 +1035,7 @@ impl SimpleBackend {
         }
         let ops = &func_ir.ops;
         builder.plan_labels(ops, &cfg, &label_blocks);
+        builder.install_ssa_values(ssa_values);
         // 2. Implementation
         let mut skip_ops: BTreeSet<usize> = BTreeSet::new();
         let metadata_loop_ops = fc::loops::metadata_only_structured_loop_ops(ops);
@@ -1094,7 +1096,7 @@ impl SimpleBackend {
                     .current_block()
                     .is_some_and(|block| !block_has_terminator(&builder, block))
             {
-                ssa_values.capture_operation(&mut builder, index, &ops[index], &cfg_liveness.names);
+                builder.capture_operation(index, &ops[index], &cfg_liveness.names);
             }
             if skip_ops.contains(&op_idx) || metadata_loop_ops.contains(&op_idx) {
                 // Structured lowering materializes SSA-only join operations at
@@ -1107,8 +1109,7 @@ impl SimpleBackend {
                         .current_block()
                         .is_some_and(|block| !block_has_terminator(&builder, block))
                 {
-                    ssa_values.capture_operation(
-                        &mut builder,
+                    builder.capture_operation(
                         op_idx,
                         &ops[op_idx],
                         &cfg_liveness.names,
@@ -2045,7 +2046,6 @@ impl SimpleBackend {
                             &mut reachable_blocks,
                             &label_blocks,
                             &label_transport_plans,
-                            &ssa_values,
                             function_exception_label_id,
                             &slot_backed_join_slots,
                             &raw_backed_slot_names,

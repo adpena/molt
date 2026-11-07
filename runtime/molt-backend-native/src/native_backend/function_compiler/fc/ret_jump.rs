@@ -49,7 +49,6 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
     reachable_blocks: &mut BTreeSet<Block>,
     label_blocks: &BTreeMap<i64, Block>,
     label_transport_plans: &BTreeMap<i64, BlockTransportPlan>,
-    ssa_values: &NativeSsaValues,
     function_exception_label_id: Option<i64>,
     slot_backed_join_slots: &BTreeMap<String, cranelift_codegen::ir::StackSlot>,
     raw_backed_slot_names: &BTreeSet<String>,
@@ -352,13 +351,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 // hot execution path for better i-cache/branch behavior.
                 builder.set_cold_block(block);
                 reachable_blocks.insert(block);
-                materialize_label_block(
-                    &mut *builder,
-                    block,
-                    &mut *is_block_filled,
-                    transport,
-                    ssa_values,
-                );
+                materialize_label_block(&mut *builder, block, &mut *is_block_filled, transport);
                 if backend_env::var(BackendEnv::MOLT_DEBUG_LABEL_BINDINGS).as_deref()
                     == Ok(func_name)
                 {
@@ -376,13 +369,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 // the block even when no already-emitted predecessor
                 // has reached it yet; later backedges / deferred
                 // branches may still target it.
-                materialize_label_block(
-                    &mut *builder,
-                    block,
-                    &mut *is_block_filled,
-                    transport,
-                    ssa_values,
-                );
+                materialize_label_block(&mut *builder, block, &mut *is_block_filled, transport);
                 if backend_env::var(BackendEnv::MOLT_DEBUG_LABEL_BINDINGS).as_deref()
                     == Ok(func_name)
                 {
