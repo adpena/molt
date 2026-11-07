@@ -133,7 +133,10 @@ fn lir_import_result_sink_rejects_width_and_lifetime_mismatches() {
     );
     let body = lower_tir_to_wasm(&function);
     assert_eq!(body.bail_to_generic_reason(), None);
-    assert!(body.test_view().runtime_calls.contains(&"dec_ref_obj"));
+    assert_eq!(
+        body.test_view().refcount_calls,
+        [molt_codegen_abi::inline_refcount::RefcountOperation::Release]
+    );
     executable_module(&body);
 }
 
@@ -217,7 +220,11 @@ fn lir_import_result_contracts_execute_owned_borrowed_raw_and_void_paths() {
         let body = sink_body(call, &args, result, box_args);
         assert_eq!(body.bail_to_generic_reason(), None, "{name}");
         if name == "boxed_bool" {
-            assert_eq!(body.test_view().runtime_calls, vec!["eq", "dec_ref_obj"]);
+            assert_eq!(body.test_view().runtime_calls, vec!["eq"]);
+            assert_eq!(
+                body.test_view().refcount_calls,
+                [molt_codegen_abi::inline_refcount::RefcountOperation::Release]
+            );
         }
         let path = directory.join(format!("{name}.wasm"));
         fs::write(&path, executable_module(&body)).unwrap();

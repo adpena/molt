@@ -512,7 +512,7 @@ fn native_callable_callargs_wrapper_releases_only_after_builder_allocation() {
     assert!(
         calls
             .iter()
-            .filter(|&&index| index == imports["dec_ref_obj"])
+            .filter(|&&index| index == wasm_refcount_site_callees(&wasm)["release"])
             .count()
             >= 2,
         "success and post-allocation failure paths must each lower a builder release; calls={calls:?}"

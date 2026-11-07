@@ -26,6 +26,7 @@ impl WasmBody {
             WasmBodyOp::Call(WasmCallTarget::BailToGenericPath(reason)) => Some(*reason),
             WasmBodyOp::Instruction(_)
             | WasmBodyOp::Call(WasmCallTarget::RuntimeImport(_))
+            | WasmBodyOp::Call(WasmCallTarget::RefcountBody(_))
             | WasmBodyOp::ConstMaterialization(_)
             | WasmBodyOp::ProgramSlot(_, _)
             | WasmBodyOp::DataPtrI32(_) => None,
@@ -39,9 +40,9 @@ impl WasmBody {
             WasmBodyOp::ConstMaterialization(materialization) => {
                 Some(materialization.runtime_import())
             }
-            WasmBodyOp::Instruction(_) | WasmBodyOp::Call(WasmCallTarget::BailToGenericPath(_)) => {
-                None
-            }
+            WasmBodyOp::Instruction(_)
+            | WasmBodyOp::Call(WasmCallTarget::BailToGenericPath(_))
+            | WasmBodyOp::Call(WasmCallTarget::RefcountBody(_)) => None,
             WasmBodyOp::DataPtrI32(_) | WasmBodyOp::ProgramSlot(_, _) => None,
         })
     }

@@ -64,6 +64,9 @@ impl WasmBackend {
         self.func_import_count = self.func_count;
         let sentinel_func_idx =
             type_layout.emit_call_indirect_exports_and_sentinel(&mut self, reloc_enabled);
+        // Every function body calls these, and the table layout below derives
+        // user function indices from `func_count`, so they are emitted here.
+        super::refcount::emit_refcount_bodies(&mut self, reloc_enabled);
 
         // Callable table ABI: function indices, table slots, trampolines,
         // and relocatable element payloads share one layout authority.

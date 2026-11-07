@@ -72,9 +72,12 @@ specialization refines it; custody, terminal and overflow boundaries retain
 unchanged cold dispatch. Header-kind validation is not general stale-address
 protection: neither a tag nor a valid kind establishes pointer liveness.
 
-Each emitted RC site has one cold call. Native and WASM spell its blocks
-directly. LLVM generates internal `alwaysinline` bodies with two arguments
-(word and invocation admission); its caller's TIR/phi CFG is unchanged. The
+Each dynamic RC site has one cold call. Native spells its blocks at the site.
+WASM writes the decision once per module, as one internal body per operation
+with two arguments (word and invocation admission), and every dynamic site
+calls its operation's body ([WASM transitions](#wasm-one-generated-body-per-transition)).
+LLVM generates the same internal two-argument bodies and forces them inline;
+its caller's TIR/phi CFG is unchanged. The
 machine-emission check must establish that the selected LLVM pipeline actually
 inlines them. A source-level `alwaysinline` attribute alone is insufficient.
 LLVM creates its entry block first and the other TIR blocks in `BlockId` order.
@@ -159,6 +162,11 @@ runner precheck remain distinct evidence cells. Performance uses the exact
 primitive scoreboard identity, loop anatomy, 0 versus ten-million-iteration
 instruction slopes, and binary size. No performance or release verdict follows
 from type checking or the symbolic generator oracle alone.
+
+On WASM the header-access and window obligations are evidence on the two
+generated bodies. Per site, the evidence is that a dynamic site calls its
+operation's body, and that a producer-elided site calls neither a body nor a
+runtime RC entry.
 
 ## Observed original native tradeoff (2026-11-02)
 
@@ -312,3 +320,52 @@ without rebuilding. Five paired medians are 222.05758 control, 223.08928 E and
 is 0.42874. Pair spreads are 0.84% control, 1.06% E and
 0.86% CPython. The small control/E difference lies within this
 noise envelope; heap inlining does not establish an immediate-loop gain.
+
+## WASM: one generated body per transition (2026-11-07, HF-808)
+
+Variant E spelled the whole decision at every WASM site, and the adapter routed
+each intermediate through a fresh `local.set`/`local.get` pair and re-emitted
+each 64-bit constant. Measured on 2026-11-07 (macOS arm64, main `9bf913bce`),
+these sequences were 76.0% of hello.py's compiled code and 78% of the largest
+Falcon module body, at 208-247 bytes per site. Falcon's compiled code after
+`-O3` grew from 7.9 MB (2026-10-30) to 47 MB; its linked module reached about
+93 MB, `wasm-opt -Oz` timed out at 300 s, and the Tier 1 Workers witness
+(64 MiB uncompressed, 1 s startup; HF-790) stopped building. Native paid the
+same trade at a smaller ratio (+31% whole binary, table above).
+
+The WASM backend now declares the retain and release bodies after the
+call_indirect wrappers and the sentinel, before the callable-table layout fixes
+user function indices, and `generate_refcount` writes each body once. A dynamic
+site is `local.get $admission; call $body` with the word on the operand stack:
+about 8 object bytes instead of 208-247. Op-loop, LIR and task-trampoline sites
+use the same bodies; per-function RC scratch is the admission local alone. The
+algebra, window, custody encoding, cold runtime transaction, admission (one
+per-invocation local passed by value), debug `HardenedPlain` behavior, native
+and LLVM lowering, the runtime ABI and retain/release placement (HF-214) are
+unchanged.
+
+Prediction (go/no-go): RC was 76-78% of code, so compiled code should fall to
+about 22% + 78% x 8/220 = 25% of its size, the linked Falcon module to about
+25-35 MB, and `wasm-opt` should finish within 300 s. A result far from the
+prediction means the attribution is wrong.
+
+Three arms on one source decide speed: inline (control), generated bodies, and
+a plain runtime-import call at every site. Speed is recorded on Node (V8) and
+Wasmtime for loop, id, memo_get, getattr_miss, recursion and
+dataclass_construction, and gates nothing while the control cannot build
+Falcon. If the bodies are not faster than the runtime call on V8, the WASM
+adapter is deleted in favor of that call.
+
+One rule can serve every backend: the generator owns one `(word, admission)`
+body per operation, every dynamic site calls it, and an inliner or a
+measurement decides where to inline. LLVM would drop `alwaysinline`; Cranelift
+has no inliner, so native inlines only where a measurement on the primitives
+above and text size shows a gain. Profile-guided placement stays with HF-733.
+Downstream generic coders (Binaryen `Outlining.cpp`, LLVM MachineOutliner,
+function merging) recover only residual repetition; Binaryen's outliner skips
+sequences that touch locals, so producer-side bodies come first. The
+compression survey and its sources are in the lane's private evidence.
+
+Prior art: Swift and Objective-C ARC call runtime retain/release entries, and
+Xcode 14 shrank those call sites further with per-register stubs; CPython 3.12
+`Py_INCREF` is a static inline function whose inlining the C compiler decides.

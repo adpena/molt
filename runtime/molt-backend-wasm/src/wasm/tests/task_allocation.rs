@@ -45,6 +45,7 @@ fn ordinary_task_initialization_is_success_only_and_preserves_result() {
             .wasm;
             wasmparser::Validator::new().validate_all(&wasm).unwrap();
             let imports = wasm_function_import_indices(&wasm);
+            let rc = wasm_refcount_site_callees(&wasm);
             let task_new = imports["task_new"];
             let mut checked = false;
             for payload in Parser::new(0).parse_all(&wasm) {
@@ -103,7 +104,7 @@ fn ordinary_task_initialization_is_success_only_and_preserves_result() {
                     let register = imports["task_register_execution"];
                     assert!(initialize[..end].iter().any(|op| matches!(op, wasmparser::Operator::Call {function_index} if *function_index == register)));
                 }
-                let releases = imports.get("dec_ref_obj").map_or(0, |release| {
+                let releases = rc.get("release").map_or(0, |release| {
                 ops.iter().filter(|op| matches!(op, wasmparser::Operator::Call {function_index} if function_index == release)).count()
             });
                 assert_eq!(
@@ -112,7 +113,7 @@ fn ordinary_task_initialization_is_success_only_and_preserves_result() {
                     "{op_kind}/{task_kind}/{result:?}"
                 );
                 if !bound {
-                    let release = imports["dec_ref_obj"];
+                    let release = rc["release"];
                     let position = ops
                         .iter()
                         .position(|op| {

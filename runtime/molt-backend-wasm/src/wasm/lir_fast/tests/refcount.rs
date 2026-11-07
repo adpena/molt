@@ -22,9 +22,14 @@ fn lir_fast_lane_dec_ref_emits_named_runtime_call() {
     entry.terminator = Terminator::Return { values: vec![] };
 
     let output = lower_tir_to_wasm(&func).test_view();
+    assert_eq!(
+        output.refcount_calls,
+        [molt_codegen_abi::inline_refcount::RefcountOperation::Release],
+        "WASM LIR fast lane must consume shared DecRef through the generated release body"
+    );
     assert!(
-        output.runtime_calls.contains(&"dec_ref_obj"),
-        "WASM LIR fast lane must consume shared DecRef through dec_ref_obj; got {:?}",
+        output.runtime_calls.contains(&"refcount_admission"),
+        "a dynamic RC site borrows the invocation admission: {:?}",
         output.runtime_calls
     );
 }
@@ -51,9 +56,14 @@ fn lir_fast_lane_del_boundary_emits_named_dec_ref_runtime_call() {
     entry.terminator = Terminator::Return { values: vec![] };
 
     let output = lower_tir_to_wasm(&func).test_view();
+    assert_eq!(
+        output.refcount_calls,
+        [molt_codegen_abi::inline_refcount::RefcountOperation::Release],
+        "WASM LIR fast lane must consume DelBoundary through the generated release body"
+    );
     assert!(
-        output.runtime_calls.contains(&"dec_ref_obj"),
-        "WASM LIR fast lane must consume DelBoundary through dec_ref_obj; got {:?}",
+        output.runtime_calls.contains(&"refcount_admission"),
+        "a dynamic RC site borrows the invocation admission: {:?}",
         output.runtime_calls
     );
 }
@@ -95,10 +105,11 @@ fn producer_proven_none_has_no_refcount_instructions_or_admission() {
         "proven None has no RC or invocation-admission operation: {:?}",
         output.runtime_calls
     );
-    assert!(!output.instructions.iter().any(|inst| matches!(
-        inst,
-        Instruction::I32Load(_) | Instruction::I32Store(_) | Instruction::I64Load32U(_)
-    )));
+    assert!(
+        output.refcount_calls.is_empty(),
+        "proven None calls no RC transition body: {:?}",
+        output.refcount_calls
+    );
 }
 
 #[test]
@@ -158,6 +169,11 @@ fn boxed_proven_scalars_have_no_refcount_or_fallible_boxing_boundary() {
             output.runtime_calls.is_empty(),
             "{opcode:?}: boxed proven scalar needs no RC, admission, fallible allocation or temporary-owner cleanup: {:?}",
             output.runtime_calls
+        );
+        assert!(
+            output.refcount_calls.is_empty(),
+            "{opcode:?}: boxed proven scalar calls no RC transition body: {:?}",
+            output.refcount_calls
         );
     }
 }
