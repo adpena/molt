@@ -48,7 +48,7 @@ The ledger owner records resulting qualification; this design does not duplicate
 
 ## Prior art and reuse
 
-Cranelift's pinned `cranelift-frontend` 0.137.0 source is the API authority, not a different online
+Cranelift's pinned `cranelift-frontend` 0.137.1 source is the API authority, not a different online
 version. `frontend.rs::seal_block` says to call it as soon as the last branch to the block exists;
 `ssa.rs::find_var` allocates a block parameter when it cannot find an existing definition.
 An unsealed block defers predecessor lookup. Prompt sealing allows its single-predecessor shortcut
@@ -156,8 +156,7 @@ obligation identities, branch-instruction deduplication, exception/resume regres
 verifier address it. Overcounting leaves a block open and must fail rather than reintroduce the
 sweep. Late reads can still create parameters even in sealed multi-predecessor blocks; early
 sealing is not a claim of linear SSA construction for every function. The remaining many-handler
-cost may justify later direct SSA work. Measurement instrumentation can itself consume memory;
-aggregate by class and never retain one event per Value. No emitted-program ABI, runtime behavior,
+cost may justify later direct SSA work. The measurement reads the existing DFG allocation total without retaining per-Value events. No emitted-program ABI, runtime behavior,
 external service, credential handling, or new security boundary changes.
 
 ## Implementation and proof plan
@@ -218,7 +217,7 @@ implementation starts after settled findings return to its owner.
 - Seal-record consumers, even when a site's semantics stay unchanged:
   `function_compiler/fc/{arith,arith_division,bitwise_shift,callargs,calls,compare,const_literals,funcobj,memory,subscript_get,truthiness,unary_logic}.rs`;
   `simple_backend/{variables,value_encoding,refcount,app_resolver}.rs`.
-- Separate helper ownership: `simple_backend/{trampolines,jit}.rs`; pinned Cranelift 0.137.0
+- Separate helper ownership: `simple_backend/{trampolines,jit}.rs`; pinned Cranelift 0.137.1
   `src/{frontend,ssa,switch}.rs`. Refcount and Switch direct seals cannot disappear from the review.
 - Real-boundary fixtures: `function_compiler/tests.rs` and
   `function_compiler/tests/{block_control,shared,cleanup_roots,scalar_carriers,preanalysis_classification,list_index_fast_path,literal_ownership}.rs`;
