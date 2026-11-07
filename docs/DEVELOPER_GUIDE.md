@@ -933,9 +933,12 @@ cargo nextest run -p molt-runtime --all-targets
 ```
 
 ### Build caching (Rust)
-Molt never downloads a tool on its own. Provision the pinned `sccache` once;
+A build never downloads a tool on its own. Provision the pinned `sccache` once;
 Molt then sets `RUSTC_WRAPPER` for its Cargo builds, and warns with this command
 while the release is missing. Set `MOLT_USE_SCCACHE=0` to build without it.
+Proof admission is the one explicit provisioning point: it provisions each
+pinned release (`config/tool_releases.toml`) that its selected commands declare,
+digest-verified, before it fingerprints them.
 ```bash
 python -m molt.tool_releases provision sccache
 ```

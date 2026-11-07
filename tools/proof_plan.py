@@ -4379,35 +4379,38 @@ def _runtime_command(
     return command
 
 
-def _provision_runtime_tools(
+def _provision_tool_releases(
     policies: Iterable[ToolchainPolicy],
     names: tuple[str, ...],
     *,
     root: Path,
     environment: Mapping[str, str],
 ) -> str | None:
-    """Provision each selected runtime tool release (npm) before admission.
+    """Provision each selected pinned tool release before admission.
 
-    It runs on its pinned runtime through ``molt.tool_releases``, which
-    provisions it on use, so admission provisions it too, as it provisions
-    a checkout input from its lock, instead of refusing until a person does.
+    Admission is an explicit provisioning point, as it provisions a checkout
+    input from its lock: a moved pin in config/tool_releases.toml reaches every
+    host that runs a gate selecting the tool, instead of refusing until a
+    person provisions it (landing 25, 2026-11-07: wasm-tools 1.263.0).
     """
-    from molt.tool_releases import ToolReleaseError
+    from molt.tool_releases import ToolReleaseError, pinned_command
 
     selected = set(names)
     errors = []
     for policy in policies:
-        if policy.name in selected and policy.projection == "runtime-tool-release":
-            try:
-                _runtime_command(
-                    str(policy.data["executable"]),
-                    root,
-                    environment,
-                    root,
-                    provision=True,
+        if policy.name not in selected or policy.projection not in RELEASE_PROJECTIONS:
+            continue
+        tool = str(policy.data["executable"])
+        try:
+            if policy.projection == "runtime-tool-release":
+                # Cached: projection reuses the provisioned command.
+                _runtime_command(tool, root, environment, root, provision=True)
+            else:
+                pinned_command(
+                    tool, root, environ=environment, cwd=root, provision=True
                 )
-            except ToolReleaseError as exc:
-                errors.append(f"{policy.name}: {exc}")
+        except ToolReleaseError as exc:
+            errors.append(f"{policy.name}: {exc}")
     return "; ".join(errors) or None
 
 
@@ -4836,11 +4839,11 @@ def admit_toolchains(
     is not installed; a refusal names what to install. A selected tool that a
     checkout input supplies (``checkout_input``) is provisioned from its lock
     first, as ``uv run`` syncs before it runs (`molt.checkout_provisioning`),
-    and a selected runtime tool release (npm) is provisioned the same way.
+    and a selected pinned tool release (node, npm) is provisioned the same way.
     """
     policies = tuple(policies)
     names = toolchain_closure(policies, names)
-    runtime_error = _provision_runtime_tools(
+    release_error = _provision_tool_releases(
         policies, names, root=root, environment=environ
     )
     projection = project_toolchains(policies, names, environ=environ, root=root)
@@ -4848,9 +4851,9 @@ def admit_toolchains(
     provisioning_error = _provision_checkout_inputs(
         policies, names, root=root, environment=environment
     )
-    if runtime_error is not None:
+    if release_error is not None:
         provisioning_error = "; ".join(
-            error for error in (runtime_error, provisioning_error) if error
+            error for error in (release_error, provisioning_error) if error
         )
     absent: tuple[str, ...] = ()
     try:

@@ -47,6 +47,7 @@ from molt.file_locks import (
     _acquire_file_lock,
     _file_lock_owned_operation,
     _release_file_lock,
+    lock_wait_s,
 )
 from molt.file_publication import (
     canonical_file_leaf,
@@ -957,8 +958,11 @@ def provision_tool(
             lock_path = prefix.parent / f".molt-provision-{release.prefix_name}.lock"
             busy = f"{release.name} {release.version} is being provisioned: {lock_path}"
             try:
+                # Wait while another provisioner holds the lock (its download
+                # bounds itself); a fixed timer failed waiters during a slow
+                # download it could not shorten.
                 lock = _acquire_file_lock(
-                    lock_path, timeout_s=600, timeout_message=busy
+                    lock_path, timeout_s=lock_wait_s(), timeout_message=busy
                 )
             except RuntimeError as exc:
                 if str(exc) != busy:

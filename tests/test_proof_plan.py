@@ -3939,7 +3939,7 @@ def test_toolchain_content_probe_ignores_provisioner_stderr(
     [
         ("exit", "exit status 23"),
         ("missing-command", "FileNotFoundError"),
-        ("timeout", "timed out after 5s"),
+        ("timeout", f"timed out after {toolchain_probe.PROBE_TIMEOUT_S}s"),
         ("empty-path", "exactly one non-empty line"),
         ("multiple-paths", "exactly one non-empty line"),
         ("missing-path", "invalid resolved path (FileNotFoundError)"),
@@ -3977,12 +3977,18 @@ def test_toolchain_content_probe_failure_preserves_selection_cause(
     def run(argv, **kwargs):
         calls.append(list(argv))
         assert list(argv) == command, "failure must not launch a version fallback"
-        assert kwargs["cwd"] == tmp_path and kwargs["timeout"] == 5
+        assert (
+            kwargs["cwd"] == tmp_path
+            and kwargs["timeout"] == toolchain_probe.PROBE_TIMEOUT_S
+        )
         if failure == "timeout":
             # TimeoutExpired may carry bytes even when text=True. Preserve its
             # partial observations without sleeping through the real deadline.
             raise subprocess.TimeoutExpired(
-                argv, 5, output=b"partial-\xffpath\n", stderr=b"selector-lock\n"
+                argv,
+                toolchain_probe.PROBE_TIMEOUT_S,
+                output=b"partial-\xffpath\n",
+                stderr=b"selector-lock\n",
             )
         return original_run(argv, **kwargs)
 
@@ -4056,7 +4062,7 @@ def test_toolchain_content_probe_failure_bounds_both_output_excerpts(
     [
         ("exit", "exit status 23"),
         ("launch", "FileNotFoundError"),
-        ("timeout", "timed out after 5s"),
+        ("timeout", f"timed out after {toolchain_probe.PROBE_TIMEOUT_S}s"),
     ],
 )
 def test_toolchain_version_probe_failure_preserves_selection_cause(
@@ -4083,12 +4089,17 @@ def test_toolchain_version_probe_failure_preserves_selection_cause(
     def run(argv, **kwargs):
         calls.append(list(argv))
         assert list(argv) == command
-        assert kwargs["cwd"] == tmp_path and kwargs["timeout"] == 5
+        assert (
+            kwargs["cwd"] == tmp_path
+            and kwargs["timeout"] == toolchain_probe.PROBE_TIMEOUT_S
+        )
         assert kwargs["stderr"] == subprocess.STDOUT
         if failure == "launch":
             raise FileNotFoundError(2, "selected image disappeared", argv[0])
         if failure == "timeout":
-            raise subprocess.TimeoutExpired(argv, 5, output=b"partial-\xffversion\n")
+            raise subprocess.TimeoutExpired(
+                argv, toolchain_probe.PROBE_TIMEOUT_S, output=b"partial-\xffversion\n"
+            )
         return original_run(argv, **kwargs)
 
     install_module_view(monkeypatch, "subprocess", subprocess, toolchain_probe, run=run)
@@ -4180,7 +4191,10 @@ def test_toolchain_probe_sibling_stage_failures_are_aggregated(
     )
 
     def run(argv, **kwargs):
-        assert kwargs["timeout"] == 5 and kwargs["cwd"] == tmp_path
+        assert (
+            kwargs["timeout"] == toolchain_probe.PROBE_TIMEOUT_S
+            and kwargs["cwd"] == tmp_path
+        )
         barrier.wait(timeout=5)
         if list(argv) == [sys.executable, "--version"]:
             return subprocess.CompletedProcess(argv, 21, "selected 1.0\n", None)
@@ -11165,9 +11179,9 @@ def test_a_toolchain_claim_covers_the_policies_it_depends_on():
 def test_admission_provisions_a_selected_runtime_tool_and_refuses_offline_with_its_cause(
     tmp_path, monkeypatch
 ) -> None:
-    """Admission itself provisions npm (HF-456 A-N4) and, offline, refuses
-    with the provisioning failure, never a raw URLError, and never claims
-    that it does not download (A-N3)."""
+    """Admission itself provisions npm and its runtime node (HF-456 A-N4)
+    and, offline, refuses with each provisioning failure, never a raw
+    URLError, and never claims that it does not download (A-N3)."""
     import urllib
     import urllib.error
     import urllib.request
@@ -11202,9 +11216,15 @@ def test_admission_provisions_a_selected_runtime_tool_and_refuses_offline_with_i
             python_executable=Path(sys.executable),
         )
     message = str(refused.value)
-    npm = tool_releases.tool_release("npm", proof_plan.ROOT)
-    assert attempts == [tool_releases.host_asset(npm).url]
-    assert f"npm: cannot provision archive {attempts[0]}" in message, message
+    node, npm = (
+        tool_releases.tool_release(name, proof_plan.ROOT) for name in ("node", "npm")
+    )
+    assert attempts == [
+        tool_releases.host_asset(node).url,
+        tool_releases.host_asset(npm).url,
+    ]
+    assert f"node: cannot provision archive {attempts[0]}" in message, message
+    assert f"npm: cannot provision archive {attempts[1]}" in message, message
     assert "admission's provisioning failed" in message
     assert "never downloads" not in message
 
@@ -11252,7 +11272,7 @@ def test_a_failed_checkout_input_never_claims_admission_does_not_download(
     """A checkout input (the Acorn tree) provisions npm itself; when that
     fails, the refusal must not say the command never downloads (HF-456 v3
     review A3-1)."""
-    monkeypatch.setattr(proof_plan, "_provision_runtime_tools", lambda *a, **k: None)
+    monkeypatch.setattr(proof_plan, "_provision_tool_releases", lambda *a, **k: None)
     monkeypatch.setattr(
         proof_plan,
         "_provision_checkout_inputs",
@@ -11375,6 +11395,46 @@ def test_a_long_lived_runner_verifies_again_when_a_pin_or_an_installation_moves(
     assert len(verified) == before + 2
 
 
+def test_admission_provisions_an_absent_native_tool_release(tmp_path) -> None:
+    from molt import tool_releases
+    from tests.test_tool_releases import _runtime_root
+
+    # Landing 25 (2026-11-07): a moved wasm-tools pin reached the repository but
+    # no host had provisioned it, and admission only reported it missing.
+    # Offline fixture: real pin metadata and cached archives; provisioning,
+    # extraction, attestation and discovery all stay real.
+    root = _runtime_root(tmp_path)
+    environment = {"PATH": "", "MOLT_TARGET_ROOT": str(tmp_path / "target-root")}
+    node = replace(
+        {policy.name: policy for policy in PLAN.toolchain_policies}["node"], root=root
+    )
+    assert node.projection == "tool-release"
+    assert tool_releases.discover_pinned_tool("node", root, environ=environment) is None
+    unprovisioned = proof_plan.project_toolchains(
+        (node,), ("node",), environ=environment, root=root
+    )
+    assert unprovisioned.missing == (
+        "node: python3 -m molt.tool_releases provision node",
+    )
+
+    assert (
+        proof_plan._provision_tool_releases(
+            (node,), ("node",), root=root, environment=environment
+        )
+        is None
+    )
+    installed = tool_releases.discover_pinned_tool("node", root, environ=environment)
+    assert installed is not None
+    assert installed.executable.read_bytes() == b"node runtime"
+    projected = proof_plan.project_toolchains(
+        (node,), ("node",), environ=environment, root=root
+    )
+    assert projected.missing == ()
+    assert projected.delta["PATH"].split(os.pathsep)[0] == str(
+        installed.executable.parent
+    )
+
+
 @pytest.mark.parametrize("retired_installation", ["tool", "runtime"])
 def test_a_runtime_tool_is_admitted_by_its_attested_installation(
     tmp_path, monkeypatch, retired_installation
@@ -11419,7 +11479,7 @@ def test_a_runtime_tool_is_admitted_by_its_attested_installation(
 
     monkeypatch.setattr(proof_plan.toolchain_probe, "run_toolchain_probe", probe)
     assert (
-        proof_plan._provision_runtime_tools(
+        proof_plan._provision_tool_releases(
             (npm,), ("npm",), root=root, environment=environment
         )
         is None
