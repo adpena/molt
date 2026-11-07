@@ -117,8 +117,8 @@ For the full setup and troubleshooting path, use
 
 ```bash
 uv sync --group dev
-uv run --python 3.12 molt doctor --json
-uv run --python 3.12 molt run examples/hello.py
+uv run molt doctor --json
+uv run molt run examples/hello.py
 ```
 
 Run these commands from the repository root after installing the
@@ -136,8 +136,8 @@ language policy through `--python-version`; see
 [version selection](docs/getting-started.md#compare-against-cpython).
 
 ```bash
-uv run --python 3.12 molt run examples/hello.py --release
-uv run --python 3.12 molt compare examples/hello.py
+uv run molt run examples/hello.py --release
+uv run molt compare examples/hello.py
 ```
 
 `molt run` defaults to `dev`; `molt build` defaults to `release`. Both accept

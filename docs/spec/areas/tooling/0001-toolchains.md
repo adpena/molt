@@ -770,10 +770,10 @@ WASM targets:
   require only the inputs declared by their target plan, not an unrelated Rust
   standard library.
 - Provision the host wasi-sdk explicitly with
-  `uv run --python 3.12 python tools/provision_wasi_sdk.py`. It installs under
+  `uv run python tools/provision_wasi_sdk.py`. It installs under
   the [selected toolchain state root](#toolchain-state-selection)
   (or explicit `--toolchain-root`) and prints the
-  install prefix. `uv run --python 3.12 python -m molt.llvm_toolchain
+  install prefix. `uv run python -m molt.llvm_toolchain
   --verify-wasm --wasi-sdk <install> --format json` verifies it and reports the
   `wasi_sysroot`, `wasm_ld`, and `llvm_nm` paths to export as
   `MOLT_WASI_SYSROOT`, `MOLT_WASM_LD`, and `MOLT_LLVM_NM` (or set

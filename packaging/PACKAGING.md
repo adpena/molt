@@ -274,7 +274,7 @@ access to list unpublished drafts. Neither step creates a release or a tag.
 ## Stage and dispatch
 
 Assemble the complete same-source bundle with `tools/release_exit_gate.py`, then
-create its canonical ZIP using `uv run --python 3.12 python -m
+create its canonical ZIP using `uv run python -m
 tools.release.release_authority archive-exit --manifest <bundle>/release-exit.json
 --source-sha <commit> --source-date-epoch <commit-epoch> --output
 molt-release-exit-<commit>.zip`. The archive command verifies the bytes it actually
@@ -292,9 +292,9 @@ protected environments. They cannot publish or mutate compiler release assets.
 ## Local structural checks
 
 ```bash
-uv run --python 3.12 python -m tools.release.release_authority validate
-uv run --python 3.12 python -m pytest -q tests/tools/test_release_supply_chain.py tests/tools/test_release_archive.py tests/tools/test_phase_exit_manifest.py
-uv run --python 3.12 python tools/gen_proof_plan.py --check
+uv run python -m tools.release.release_authority validate
+uv run python -m pytest -q tests/tools/test_release_supply_chain.py tests/tools/test_release_archive.py tests/tools/test_phase_exit_manifest.py
+uv run python tools/gen_proof_plan.py --check
 ```
 
 The release workflow itself is the cross-platform executable proof. Local tests
@@ -307,7 +307,7 @@ rejection, pinned download validation, and topology teeth without publishing.
 template renderer:
 
 ```bash
-uv run --python 3.12 python -m tools.release.update_manifests release_manifest.json
+uv run python -m tools.release.update_manifests release_manifest.json
 ```
 
 External package repositories consume the already-published manifest and never

@@ -8,22 +8,22 @@ programs within Molt's supported subset and uses differential testing
 
 ```bash
 # Generate and differentially test 100 random programs
-uv run --python 3.12 python3 tools/fuzz_compiler.py --count 100
+uv run python3 tools/fuzz_compiler.py --count 100
 
 # Reproducible run with a fixed seed
-uv run --python 3.12 python3 tools/fuzz_compiler.py --seed 42 --count 1000
+uv run python3 tools/fuzz_compiler.py --seed 42 --count 1000
 
 # Just generate programs (no compilation or testing)
-uv run --python 3.12 python3 tools/fuzz_compiler.py --generate-only --count 10 --out-dir /tmp/fuzz
+uv run python3 tools/fuzz_compiler.py --generate-only --count 10 --out-dir /tmp/fuzz
 
 # Shrink failing programs to minimal reproducers
-uv run --python 3.12 python3 tools/fuzz_compiler.py --count 500 --shrink --output-dir /tmp/fuzz_failures
+uv run python3 tools/fuzz_compiler.py --count 500 --shrink --output-dir /tmp/fuzz_failures
 
 # Test rejected-dynamic-feature programs
-uv run --python 3.12 python3 tools/fuzz_compiler.py --mode reject --count 50
+uv run python3 tools/fuzz_compiler.py --mode reject --count 50
 
 # Compile-only mode (no execution, just check for crashes)
-uv run --python 3.12 python3 tools/fuzz_compiler.py --mode compile-only --count 200
+uv run python3 tools/fuzz_compiler.py --mode compile-only --count 200
 ```
 
 ## Modes
@@ -59,7 +59,7 @@ The `SafeProgramGenerator` produces type-tracked programs covering:
 ## Smoke Test
 
 ```bash
-uv run --python 3.12 python3 -m pytest tests/fuzz/test_fuzz_smoke.py -v
+uv run python3 -m pytest tests/fuzz/test_fuzz_smoke.py -v
 ```
 
 ## Environment

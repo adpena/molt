@@ -199,7 +199,8 @@ def check(root: Path, paths: list[str]) -> int:
         f"consumer-gate: no passing importer-test receipt for tree {tree[:12]} "
         f"({len(changed)} changed path(s)). Trace and run the tests that import "
         "the change first:\n"
-        f"  uv run --python 3.12 python tools/consumer_gate.py run -- {shown}",
+        "  uv run --no-project python tools/venv_exec.py python tools/consumer_gate.py "
+        f"run -- {shown}",
         file=sys.stderr,
     )
     return 1

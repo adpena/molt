@@ -10,10 +10,10 @@ and semantic invariants stay in sync across:
 All expected values are parsed from source files -- nothing is hardcoded.
 
 Usage:
-    uv run --python 3.12 python3 tools/check_correspondence.py
-    uv run --python 3.12 python3 tools/check_correspondence.py --verbose
-    uv run --python 3.12 python3 tools/check_correspondence.py --json
-    uv run --python 3.12 python3 tools/check_correspondence.py --category nanbox
+    uv run python3 tools/check_correspondence.py
+    uv run python3 tools/check_correspondence.py --verbose
+    uv run python3 tools/check_correspondence.py --json
+    uv run python3 tools/check_correspondence.py --category nanbox
 """
 
 from __future__ import annotations

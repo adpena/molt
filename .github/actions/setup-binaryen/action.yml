@@ -17,7 +17,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        PYTHONPATH=src uv run --no-project --python 3.12 \
+        PYTHONPATH=src uv run --no-project \
           python -m tools.provision_binaryen \
           --output "$RUNNER_TEMP/molt-binaryen" \
           --github-output "$GITHUB_OUTPUT"

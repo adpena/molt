@@ -86,7 +86,7 @@ is modelled EXACTLY on ``tools/degrade_to_slow_gate.py`` + its registry ratchet:
 
 Run standalone::
 
-    uv run --active --project . --python 3.12 python tools/fail_closed_gate.py
+    uv run --active --project . python tools/fail_closed_gate.py
 
 Exit 0 = green, 1 = drift / ratchet / anchor failure (violations printed).
 """

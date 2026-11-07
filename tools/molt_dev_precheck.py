@@ -312,7 +312,7 @@ class PrecheckResult:
                 ""
                 if self.refusal.record is None
                 else "\n    rerun them on this commit with the landing executor:\n"
-                f"      uv run --python 3.12 python tools/trunk_landing.py --record "
+                f"      uv run python tools/trunk_landing.py --record "
                 f"{self.refusal.record} --output {self.refusal.record.parent / 'rerun'}"
             )
         )

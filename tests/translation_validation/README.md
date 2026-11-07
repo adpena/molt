@@ -48,5 +48,5 @@ that a compiler pass preserves meaning for other programs.
 diffing:
 
 ```bash
-uv run --python 3.12 python3 -m molt.cli debug ir --stage=all --format json --out logs/debug/ir/hello.json examples/hello.py
+uv run python3 -m molt.cli debug ir --stage=all --format json --out logs/debug/ir/hello.json examples/hello.py
 ```

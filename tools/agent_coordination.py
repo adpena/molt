@@ -324,8 +324,8 @@ PROOF_LANE_RULES = (
             "AGENTS.md",
         ),
         commands=(
-            "uv run --python 3.12 python -m pytest -q tests/test_agent_coordination.py",
-            "uv run --python 3.12 python tools/check_subprocess_guard_coverage.py",
+            "uv run python -m pytest -q tests/test_agent_coordination.py",
+            "uv run python tools/check_subprocess_guard_coverage.py",
         ),
         reason="coordination changes need focused protocol coverage plus subprocess-custody audit",
     ),
@@ -335,9 +335,7 @@ PROOF_LANE_RULES = (
         shared_target_root="target",
         priority="P1",
         path_prefixes=("tools/check_subprocess_guard_coverage.py",),
-        commands=(
-            "uv run --python 3.12 python tools/check_subprocess_guard_coverage.py",
-        ),
+        commands=("uv run python tools/check_subprocess_guard_coverage.py",),
         reason="raw subprocess/signal policy changes must keep the static custody audit green",
     ),
     ProofLaneRule(
@@ -363,7 +361,7 @@ PROOF_LANE_RULES = (
             "docs/spec/areas/compiler/luau_support_matrix.generated.md",
         ),
         commands=(
-            "uv run --python 3.12 python -m pytest -q tests/tools/test_gen_luau_support_matrix.py",
+            "uv run python -m pytest -q tests/tools/test_gen_luau_support_matrix.py",
             "cargo test -p molt-backend-luau --features luau-backend test_compile_checked_lowers_call_async_poll_target_directly -- --nocapture",
         ),
         reason="Luau support claims need generated matrix coverage plus feature-enabled backend tests",
@@ -383,9 +381,7 @@ PROOF_LANE_RULES = (
         shared_target_root="target",
         priority="P2",
         path_prefixes=("src/molt/frontend/",),
-        commands=(
-            "uv run --python 3.12 python -m pytest -q tests/test_frontend_midend_passes.py",
-        ),
+        commands=("uv run python -m pytest -q tests/test_frontend_midend_passes.py",),
         reason="frontend lowering changes should prove midend/frontend pass contracts",
     ),
     ProofLaneRule(
@@ -1034,9 +1030,7 @@ def _claims_context(
         "counts": summary.as_dict()["counts"],
         "live": [active_claim(state) for state in summary.live],
         "stale": [active_claim(state) for state in summary.stale],
-        "full_detail_command": (
-            "uv run --python 3.12 python tools/claims_status.py --json"
-        ),
+        "full_detail_command": ("uv run python tools/claims_status.py --json"),
     }
 
 
@@ -1168,8 +1162,7 @@ def _proof_audit_context(
         "frontier_failures": [project_frontier(item) for item in frontier[:3]],
         "frontier_failures_omitted": max(0, len(frontier) - 3),
         "full_detail_command": (
-            "uv run --python 3.12 python tools/proof_queue.py audit --json "
-            "--max-issues 0"
+            "uv run python tools/proof_queue.py audit --json --max-issues 0"
         ),
     }
 
@@ -1461,8 +1454,7 @@ def proof_recommendations(
                 "reason": "changed differential fixtures should be run directly before broad sweeps",
                 "covered_paths": diff_paths,
                 "commands": [
-                    "uv run --python 3.12 python tests/molt_diff.py "
-                    + " ".join(diff_paths)
+                    "uv run python tests/molt_diff.py " + " ".join(diff_paths)
                 ],
             }
         )
@@ -1500,8 +1492,8 @@ def proof_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
         "input_paths": paths,
         "recommendations": recommendations,
         "coordination": {
-            "before_long_lane": "uv run --python 3.12 python tools/agent_coordination.py check",
-            "init_template": "uv run --python 3.12 python tools/agent_coordination.py init <task> --role <role> --lane <lane>",
+            "before_long_lane": "uv run python tools/agent_coordination.py check",
+            "init_template": "uv run python tools/agent_coordination.py init <task> --role <role> --lane <lane>",
         },
     }
 

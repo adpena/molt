@@ -11,7 +11,7 @@ available under the harness `PYTHONNOUSERSITE=1` environment.
 ## Run
 
 ```bash
-UV_NO_SYNC=1 uv run --python 3.12 python3 tools/bench_friends.py \
+UV_NO_SYNC=1 uv run python3 tools/bench_friends.py \
   --manifest bench/friends/manifest.toml \
   --dry-run
 ```

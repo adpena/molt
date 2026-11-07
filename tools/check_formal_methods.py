@@ -7,9 +7,9 @@ Checks:
   3. Known-bad Quint model FAILS (meta-test)
 
 Usage:
-    uv run --python 3.12 python3 tools/check_formal_methods.py
-    uv run --python 3.12 python3 tools/check_formal_methods.py --lean-only
-    uv run --python 3.12 python3 tools/check_formal_methods.py --quint-only
+    uv run python3 tools/check_formal_methods.py
+    uv run python3 tools/check_formal_methods.py --lean-only
+    uv run python3 tools/check_formal_methods.py --quint-only
 """
 
 from __future__ import annotations

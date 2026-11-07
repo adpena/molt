@@ -103,7 +103,7 @@ every consumer needed to delete or unify the old lane.
   `tools/proof_queue.py`: Cargo builds, WASM/browser proofs, benchmark lanes,
   conformance shards, stress tests, and any test likely to contend for shared
   build/runtime resources. Run
-  `uv run --active --project . --python 3.12 python tools/proof_queue.py status`
+  `uv run --active --project . python tools/proof_queue.py status`
   before submitting work, use `exec` or a TOML DSL with a clear `--reason`,
   `--resource-family`, `--contention-key`, `--scope`, and `--note`, then cite
   the queue log/evidence path. Read `docs/agent/PROOF_QUEUE.md` for the full
@@ -116,7 +116,7 @@ every consumer needed to delete or unify the old lane.
   do not submit raw `cargo ...` through `exec`, TOML DSL, shell backgrounding,
   or interactive sessions because the cargo lane owns uv, `guarded_exec`,
   contention keys, timeouts, logs, and detached runners. Queue commands that
-  invoke `uv run` must use `uv run --active --project . --python 3.12 ...`;
+  invoke `uv run` must use `uv run --active --project . ...`;
   non-active `uv run` commands are rejected because they create throwaway
   environments and destroy proof latency. The queue derives `MOLT_SESSION_ID`
   from the contention key so
@@ -155,7 +155,7 @@ every consumer needed to delete or unify the old lane.
   or exact live-proved Molt-owned PID cleanup with an incident record. Plan
   future long commands so they can finish, timeout, or be owned by the queue.
 - Do not run raw workspace-wide `cargo fmt` for Molt DX or proof cleanup. Use
-  `uv run --active --project . --python 3.12 python tools/check_rustfmt.py --changed`
+  `uv run --active --project . python tools/check_rustfmt.py --changed`
   to check changed human Rust, and add `--write` only when you intend to format
   those human Rust files. `tools/dev.py fmt-check` and `tools/dev.py fmt` route
   through the same authority. Write mode compares `rustfmt --emit stdout`
@@ -611,7 +611,7 @@ kill behavior. Do not add ad hoc name/path matching elsewhere.
 certainly EXISTS.** Read `tools/REGISTRY.md` first — the canonical, agent-facing catalog
 of molt's highest-signal tools. Agents have re-authored the same tool twice (two
 independent `perf_authority.py`; the float and int repr cuts built from opposite ends);
-that waste is forbidden. Run `uv run --python 3.12 python3 tools/ci_gate.py` to run every
+that waste is forbidden. Run `uv run python3 tools/ci_gate.py` to run every
 wired gate by default. A tool counts as real only when it is **wired** (run by ci_gate /
 a workflow / the build pipeline), **fast** (under its tier wall-clock budget), and
 **registered** in `tools/REGISTRY.md`; the `check_tool_registry` + `check_ci_walltime_budget`

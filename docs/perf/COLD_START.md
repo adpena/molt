@@ -33,7 +33,7 @@ Run:
 ```bash
 export MOLT_SESSION_ID=perfscore
 eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"
-uv run --python 3.12 python3 tools/cold_start_decompose.py \
+uv run python3 tools/cold_start_decompose.py \
     --profile release-fast --profile release-output --samples 15
 # -> bench/scoreboard/cold_start_decomposition.json
 ```

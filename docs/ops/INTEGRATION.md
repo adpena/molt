@@ -1016,7 +1016,7 @@ them and the doc records them so they are canonical, not tribal.
 - **One lane per change, from `origin/main`.** Each parallel agent works in
   its own lane:
   ```bash
-  uv run --python 3.12 python tools/molt_dev.py lane start <slug> --rows HF-n
+  uv run python tools/molt_dev.py lane start <slug> --rows HF-n
   ```
   It prints the worktree path. Retire the lane with `lane retire <slug>`
   once it lands.

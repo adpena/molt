@@ -9724,7 +9724,7 @@ def test_proof_queue_diagnoses_stale_running_log_with_live_work_child(
                 pid=work_pid,
                 ppid=child_pid,
                 rss_kb=2048,
-                command="uv run --active --project . --python 3.12 pytest tests/example.py",
+                command="uv run --active --project . pytest tests/example.py",
             ),
             compile_pid: memory_guard.ProcessSample(
                 pid=compile_pid,

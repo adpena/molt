@@ -36,7 +36,7 @@ def unsupported_frontend_python() -> str | None:
         f"Molt requires {FRONTEND_PYTHON_REQUIREMENT}, but this process runs "
         f"{implementation} {found} ({sys.executable or 'unknown executable'}). "
         "Run Molt through uv, which selects a supported CPython: "
-        "`uv run --python 3.12 molt ...` in a Molt checkout. An installed Molt "
+        "`uv run molt ...` in a Molt checkout. An installed Molt "
         "must be installed into a supported CPython."
     )
 

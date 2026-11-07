@@ -22,11 +22,11 @@ Exit codes:
   2 — input/configuration error
 
 Usage:
-    uv run --python 3.12 python3 tools/perf_regression.py \\
+    uv run python3 tools/perf_regression.py \\
       --current bench/results/bench.json \\
       --baseline bench/baseline.json
 
-    uv run --python 3.12 python3 tools/perf_regression.py \\
+    uv run python3 tools/perf_regression.py \\
       --current bench/results/bench.json \\
       --baseline-dir bench/baselines/ \\
       --json-out /tmp/perf_report.json

@@ -47,7 +47,7 @@ Tier 1 widens only by owner decision.
 
 Never written by hand. Generate the list from the findings ledger:
 
-    uv run --python 3.12 python -B tools/known_issues.py
+    uv run python -B tools/known_issues.py
 
 It lists the open rows that block v0.1 (including any row not yet classified), the Tier 2 rows and the
 rows deferred past v0.1.

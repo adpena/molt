@@ -365,22 +365,22 @@ export MOLT_SESSION_ID=perfscore
 eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"
 
 # Self-test: 1 benchmark × 1 backend, proves the pipeline + schema.
-uv run --python 3.12 python3 tools/perf_scoreboard.py --self-test
+uv run python3 tools/perf_scoreboard.py --self-test
 
 # Full baseline run (the gate): core suite × native+llvm × release-fast.
-uv run --python 3.12 python3 tools/perf_scoreboard.py \
+uv run python3 tools/perf_scoreboard.py \
     --set core --backend native --backend llvm --profile release-fast \
     --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent
 
 # Diff a fresh run against the last stored scoreboard (newly-red / regressed).
-uv run --python 3.12 python3 tools/perf_scoreboard.py --set core --backend native --baseline
+uv run python3 tools/perf_scoreboard.py --set core --backend native --baseline
 
 # Measure-only (do not fail CI on RED): add --no-gate.
 
 # WARM-HOT cycle attribution (#76): looped + symbolicated sample of the warm
 # hot path (NOT a speedup gate). One backend; writes hot_profile_<backend>_<rev>.json.
 # Exits 1 if ANY benchmark is REFUSED (launch still dominated, or not loopable).
-uv run --python 3.12 python3 tools/perf_scoreboard.py --sample-hot-only \
+uv run python3 tools/perf_scoreboard.py --sample-hot-only \
     --backend native --inner-repeat 40 \
     --benchmark tests/benchmarks/bench_exception_heavy.py \
     --benchmark tests/benchmarks/bench_etl_orders.py
@@ -422,15 +422,15 @@ including missing guard metrics, and cannot create a compatibility exclusion. `-
 
 ```bash
 # Add the PyPy + Codon comparator lanes (auto-detect, or pass an explicit path).
-uv run --python 3.12 python3 tools/perf_scoreboard.py --set core --backend native \
+uv run python3 tools/perf_scoreboard.py --set core --backend native \
     --pypy --codon
 
 # Local debugging on a divergent tree (e.g. an in-flight scoreboard-tool commit):
 #   classifies real numbers, board stays authoritative=false, gate won't FAIL_STALE.
-uv run --python 3.12 python3 tools/perf_scoreboard.py --set core --allow-nonauthoritative
+uv run python3 tools/perf_scoreboard.py --set core --allow-nonauthoritative
 
 # Make cold-floor warnings hard-fail too:
-uv run --python 3.12 python3 tools/perf_scoreboard.py --set core --strict-cold
+uv run python3 tools/perf_scoreboard.py --set core --strict-cold
 ```
 
 ### Recoverability

@@ -8,9 +8,9 @@ numerical tolerances and proof procedure.
 ## Reproduce
 
 ```bash
-uv run --python 3.12 python tools/build_browser_simd.py
+uv run python tools/build_browser_simd.py
 node --no-liftoff tests/e2e/bench_simd.js deploy/browser/simd-ops.wasm
-uv run --python 3.12 python -m pytest -q tests/e2e/test_simd_differential.py
+uv run python -m pytest -q tests/e2e/test_simd_differential.py
 ```
 
 The benchmark accepts any explicit candidate artifact and emits
