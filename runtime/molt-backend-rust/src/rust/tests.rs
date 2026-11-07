@@ -421,6 +421,39 @@ fn compile_checked_rejects_async_work_poll_runtime_requirement_without_boundary(
 }
 
 #[test]
+fn compile_checked_rejects_python_class_frame_intrinsics() {
+    for symbol in [
+        "molt_class_frame_enter",
+        "molt_class_frame_exit",
+        "molt_frame_class_locals_set",
+        "molt_class_frame_set_location",
+    ] {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".into(),
+                return_abi: molt_ir::FunctionReturnAbi::Void,
+                ops: vec![
+                    OpIR {
+                        s_value: Some(symbol.into()),
+                        ..OpIR::new(molt_ir::OpKind::CallInternal)
+                    },
+                    OpIR::new(molt_ir::OpKind::RetVoid),
+                ],
+                ..FunctionIR::default()
+            }],
+            profile: None,
+        };
+        let error = RustBackend::new()
+            .compile_checked(&ir)
+            .expect_err("class reflection requires Python-visible frame authority");
+        assert!(
+            error.contains("exact Python-visible frame objects"),
+            "{symbol}: {error}"
+        );
+    }
+}
+
+#[test]
 fn compile_keeps_annotation_functions_when_referenced() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {

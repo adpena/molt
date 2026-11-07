@@ -153,7 +153,7 @@ def publish_frame_locations(
         for op in function["ops"]:
             position = SourcePosition.from_operation(op)
             if position is not None:
-                sites[owner].add(position)
+                sites[op.get("class_frame", owner)].add(position)
 
     indices: dict[str, dict[SourcePosition, int]] = {}
     for owner, (table, first_line) in declarations.items():
@@ -170,17 +170,29 @@ def publish_frame_locations(
 
     for function in functions:
         owner = owners.get(function["name"])
+        reserved = {
+            op[field]
+            for op in function["ops"]
+            for field in ("out", "var")
+            if op.get(field)
+        } | set(function.get("params", ()))
         entered = function.get("execution_context") == "inherited"
         last_location: int | None = None
+        last_owner = owner
         rewritten: list[dict[str, Any]] = []
         for op in function["ops"]:
+            class_owner = op.pop("class_frame", None)
+            site_owner = class_owner or owner
+            if site_owner != last_owner:
+                last_location = None
+                last_owner = site_owner
             position = SourcePosition.from_operation(op)
             # This frontend-only end-line fact is captured in the code table;
             # the explicit publication carries its index through every IR.
             op.pop("source_end_line", None)
             kind = op["kind"]
             if (
-                owner is not None
+                site_owner is not None
                 and entered
                 and position is not None
                 and kind not in _PURE_WIRE
@@ -196,6 +208,7 @@ def publish_frame_locations(
                         WireKinds.FRAME_HOME_STORE,
                         WireKinds.FRAME_HOME_CELL,
                         WireKinds.FRAME_HOME_PRIVATE_CELL,
+                        WireKinds.CALL,
                     }
                 )
                 and not (
@@ -204,17 +217,42 @@ def publish_frame_locations(
                     and rewritten[-1]["kind"] == WireKinds.TRACE_EXIT
                 )
             ):
-                location = indices[owner][position]
+                location = indices[site_owner][position]
                 if location != last_location:
-                    rewritten.append(
-                        {
-                            "kind": WireKinds.FRAME_SET_LOCATION,
-                            "value": location,
-                            "source_line": position.line,
-                            "col_offset": position.column,
-                            "end_col_offset": position.end_column,
-                        }
-                    )
+                    if class_owner is not None:
+                        # The inline region still borrows its enclosing
+                        # function's homes. Publish into the class entry rather
+                        # than storing through those homes' location address.
+                        location_value = f"__molt_class_location_{len(rewritten)}"
+                        while location_value in reserved:
+                            location_value += "_"
+                        reserved.add(location_value)
+                        rewritten.extend(
+                            [
+                                {
+                                    "kind": WireKinds.CONST,
+                                    "out": location_value,
+                                    "value": location,
+                                },
+                                {
+                                    "kind": WireKinds.CALL,
+                                    "s_value": "molt_class_frame_set_location",
+                                    "args": [location_value],
+                                    "out": "none",
+                                    "exception_source": ExceptionEdgeKind.UNWIND,
+                                },
+                            ]
+                        )
+                    else:
+                        rewritten.append(
+                            {
+                                "kind": WireKinds.FRAME_SET_LOCATION,
+                                "value": location,
+                                "source_line": position.line,
+                                "col_offset": position.column,
+                                "end_col_offset": position.end_column,
+                            }
+                        )
                     last_location = location
             rewritten.append(op)
             # A check's normal successor is this fallthrough. It changes no

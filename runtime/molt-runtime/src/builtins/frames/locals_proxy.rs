@@ -4,7 +4,7 @@
 //! A frame object records the object that holds its frame's bindings in a
 //! typed field of its `TYPES_FRAME` payload, never in its `__dict__`: an
 //! optimized activation's `FRAME_BINDINGS` payload (synchronous or stateful),
-//! or a module body's namespace mapping. `f_locals` reads it afresh on every
+//! or a module/class body's namespace mapping. `f_locals` reads it afresh on every
 //! access. Before PEP 667 an optimized frame reports its activation's one
 //! refreshed dict; from 3.13 a `FrameLocalsProxy` over the same payload.
 //! Proxy reads project the frame's binding storage when called; proxy writes
@@ -21,7 +21,7 @@ use super::bindings::{
 };
 use crate::object::{ObjectShapeId, object_shape_id};
 use crate::{
-    FRAME_STACK, PyToken, TYPE_ID_DICT, TYPE_ID_FRAME_BINDINGS, TYPE_ID_TUPLE, TYPE_ID_TYPE,
+    PyToken, TYPE_ID_DICT, TYPE_ID_FRAME_BINDINGS, TYPE_ID_TUPLE, TYPE_ID_TYPE,
     alloc_dict_with_pairs, alloc_instance_for_class, alloc_list, alloc_string, alloc_tuple,
     dec_ref_bits, exception_pending, inc_ref_bits, molt_contains, molt_dict_get, molt_eq,
     molt_index, molt_iter, molt_len, molt_repr_from_obj, obj_from_bits, object_type_id,
@@ -32,14 +32,18 @@ const WORD: usize = std::mem::size_of::<u64>();
 
 enum FrameSource {
     Empty,
+    UnmaterializedClass,
     /// An optimized activation's `FRAME_BINDINGS` payload.
     Bindings(u64),
-    /// A module body's namespace.
+    /// A module or class body's namespace.
     Mapping(u64),
 }
 
 /// Classify a source the runtime stored.
 fn frame_source(bits: u64) -> FrameSource {
+    if bits == MoltObject::none().bits() {
+        return FrameSource::UnmaterializedClass;
+    }
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return FrameSource::Empty;
     };
@@ -285,6 +289,11 @@ pub extern "C" fn molt_frame_f_locals_get(_descriptor_bits: u64, frame_bits: u64
         let source = unsafe { *slot };
         match frame_source(source) {
             FrameSource::Empty => empty_dict(py),
+            FrameSource::UnmaterializedClass => raise_exception::<_>(
+                py,
+                BuiltinExc::TypeError,
+                super::UNMATERIALIZED_CLASS_LOCALS,
+            ),
             FrameSource::Mapping(bits) => {
                 inc_ref_bits(py, bits);
                 bits
@@ -302,7 +311,7 @@ pub extern "C" fn molt_frame_f_locals_get(_descriptor_bits: u64, frame_bits: u64
 /// `frame.clear()` (CPython `frame_clear`), through the owner `f_locals`
 /// reads. An executing frame raises `RuntimeError`; a stateful frame follows
 /// the target's generator rules; a finished optimized frame releases what its
-/// frame object owns in the explicit-clear order; a finished module body's
+/// frame object owns in the explicit-clear order; a finished module/class body's
 /// frame drops its namespace. Returns None; a failure leaves its exception
 /// pending.
 #[unsafe(no_mangle)]
@@ -316,19 +325,21 @@ pub extern "C" fn molt_frame_clear(frame_bits: u64) -> u64 {
             FrameSource::Bindings(payload) => {
                 let _ = frame_bindings_clear(py, payload);
             }
-            FrameSource::Mapping(mapping) => {
-                let executing = FRAME_STACK.with(|stack| {
-                    stack
-                        .borrow()
-                        .iter()
-                        .any(|entry| entry.locals_bits == mapping)
-                });
-                if executing {
-                    return raise_exception::<u64>(
+            FrameSource::UnmaterializedClass | FrameSource::Mapping(_) => {
+                // Prepared mappings can be shared by different activations.
+                // The frame's typed owner, not mapping identity, decides life.
+                let owner = obj_from_bits(frame_bits)
+                    .as_ptr()
+                    .and_then(|ptr| unsafe { location_owner_slot(ptr) });
+                let Some(owner) = owner else {
+                    return raise_exception::<_>(
                         py,
-                        BuiltinExc::RuntimeError,
-                        "cannot clear an executing frame",
+                        BuiltinExc::SystemError,
+                        "frame has no location owner",
                     );
+                };
+                if frame_bindings_clear(py, unsafe { *owner }).is_err() {
+                    return MoltObject::none().bits();
                 }
                 let previous = unsafe { slot.replace(0) };
                 dec_ref_bits(py, previous);
@@ -349,7 +360,7 @@ fn proxy_source(py: &PyToken<'_>, self_bits: u64) -> Result<u64, ()> {
     };
     match frame_source(unsafe { *slot }) {
         FrameSource::Bindings(payload) => Ok(payload),
-        FrameSource::Empty | FrameSource::Mapping(_) => {
+        FrameSource::Empty | FrameSource::UnmaterializedClass | FrameSource::Mapping(_) => {
             raise_exception::<u64>(
                 py,
                 BuiltinExc::SystemError,
