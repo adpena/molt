@@ -151,9 +151,17 @@ def test_conditional_annotation_items_reload_shared_lexical_cells():
     assert execution_cell["s_value"] == "molt_cell_new"
     (execution_map,) = execution_cell["args"]
     assert definitions[execution_map]["kind"] == "dict_new"
-    assert outer.index(definitions[execution_map]) < next(
-        index for index, op in enumerate(outer) if op.get("kind") == "if"
+    # The map exists before the class body's `if flag:` begins: its test reads
+    # `flag` through the class namespace first. Position is not the anchor:
+    # HF-803's builtin-binding guard emits an earlier `if` in the same function.
+    flag_read = next(
+        index
+        for index, op in enumerate(outer)
+        if op.get("kind") == "call"
+        and op.get("s_value") == "molt_namespace_get"
+        and definitions[op["args"][1]].get("s_value") == "flag"
     )
+    assert outer.index(definitions[execution_map]) < flag_read
     marks = [
         op
         for op in outer
