@@ -40,7 +40,13 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 bind_repository_imports(__file__)
 
 from molt.exact_json import canonical_json_bytes, loads_exact  # noqa: E402
-from molt.release_matrix import RELEASE_TARGETS, SUPPORTED_CPYTHON_VERSIONS  # noqa: E402
+from dataclasses import asdict  # noqa: E402
+
+from molt.release_matrix import (  # noqa: E402
+    RELEASE_TARGETS,
+    SUPPORTED_CPYTHON_VERSIONS,
+    TIER1_CELLS,
+)
 from molt.cli.entrypoint_parser import _build_entrypoint_parser  # noqa: E402
 from tools import phase_exit_manifest as pem  # noqa: E402
 
@@ -49,7 +55,7 @@ DECLARATION_PATH = ROOT / "config" / "public_contract_v1.toml"
 SURFACE_PATH = ROOT / "config" / "public_contract_v1.surface.json"
 NATIVE_CALLABLE_ABI_PATH = ROOT / "runtime" / "native_callable_abi.toml"
 DECLARATION_SCHEMA = "molt.public-contract.v1"
-SURFACE_SCHEMA = "molt.public-contract-surface.v2"
+SURFACE_SCHEMA = "molt.public-contract-surface.v3"
 TIERS = frozenset({"stable", "preview", "internal"})
 _SCALAR = (str, int, float, bool, type(None))
 
@@ -253,6 +259,8 @@ def live_surface(declaration: Mapping[str, Any]) -> dict[str, Any]:
         "release_targets": [
             dict(sorted(dict(target).items())) for target in RELEASE_TARGETS
         ],
+        # The Tier 1 support claim: a change here is a visible contract change.
+        "tier1_cells": [dict(sorted(asdict(cell).items())) for cell in TIER1_CELLS],
         "verified_subset_matrix_digest": pem.generated_matrix_digest(),
         "native_callable_abi": native_callable_abi_tokens(),
         "public_schemas": live_public_schemas(),

@@ -830,7 +830,7 @@ def test_rewrite_lowers_literal_module_import_to_ensure() -> None:
             "ops": [
                 {"kind": "const_str", "s_value": "pkg.sub", "out": "v0"},
                 {"kind": "module_import", "args": ["v0"], "out": "v1"},
-                {"kind": "check_exception", "value": 1},
+                {"kind": "check_exception", "exception_edge": "origin", "value": 1},
                 {"kind": "const_str", "s_value": "not_in_registry", "out": "v2"},
                 {"kind": "module_import", "args": ["v2"], "out": "v3"},
                 {"kind": "ret_void"},
@@ -870,7 +870,7 @@ def test_rewrite_lowers_literal_module_import_to_ensure() -> None:
     assert len(remaining_imports) == 1
     assert remaining_imports[0]["args"] == ["v2"]
     # The pre-existing exception edge is preserved.
-    assert {"kind": "check_exception", "value": 1} in ops
+    assert {"kind": "check_exception", "exception_edge": "origin", "value": 1} in ops
 
 
 def test_rewrite_preserves_public_transactions_and_siteless_functions() -> None:

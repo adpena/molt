@@ -40,6 +40,56 @@ def _context_body_start(ops: list[MoltOp]) -> int:
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("star", [False, True])
+@pytest.mark.parametrize("with_finally", [False, True])
+def test_try_normal_completion_bypasses_exception_dispatch(
+    asynchronous: bool, star: bool, with_finally: bool
+) -> None:
+    prefix = "async " if asynchronous else ""
+    clause = "except*" if star else "except"
+    source = (
+        f"{prefix}def f(callback):\n"
+        "    try:\n"
+        "        callback()\n"
+        f"    {clause} ValueError:\n"
+        "        callback()\n"
+        "    else:\n"
+        "        callback()\n"
+    )
+    if with_finally:
+        source += "    finally:\n        callback()\n"
+    ops = _function_ops(source, "__f_poll" if asynchronous else "__f")
+    region = next(op.args for op in ops if op.kind == "TRY_START")
+    normal_close = next(
+        i for i, op in enumerate(ops) if op.kind == "TRY_END" and op.args == region
+    )
+    normal_jump = ops[normal_close + 1]
+    assert normal_jump.kind == "JUMP"
+    landing = next(
+        i for i, op in enumerate(ops) if op.kind == "LABEL" and op.args == region
+    )
+    continuation = next(
+        i
+        for i, op in enumerate(ops)
+        if op.kind == "LABEL" and op.args == normal_jump.args
+    )
+    assert normal_close < landing < continuation
+    # The landing, not successful completion, owns the raised-slot read.
+    observer = next(
+        i
+        for i in range(landing, continuation)
+        if ops[i].kind == "EXCEPTION_LAST_PENDING"
+    )
+    observed = ops[observer].result
+    assert not any(
+        op.kind == "IS" and observed in op.args for op in ops[observer:continuation]
+    )
+    dispatch_exit = ops[continuation - 1]
+    assert dispatch_exit.kind == "JUMP"
+    assert dispatch_exit.args != normal_jump.args
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
 def test_suspended_context_reopens_one_operand_named_region(asynchronous: bool) -> None:
     prefix = "async " if asynchronous else ""
     ops = _function_ops(

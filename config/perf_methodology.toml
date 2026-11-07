@@ -24,8 +24,11 @@ schema = "molt-perf-methodology-v1"
 # descendant facts at callbacks (deb45c66df, 67236970f1, 6caf9faa68), so
 # instruction counts and admitted workload modules can move. These landed on
 # main without the lock (HF-601). Earlier reports retain their recorded class.
-version = 30
-content_sha256 = "0997310507aae32ac8c0592ef5def76702c8cf3deb860d42daeb13c21746a7f0"
+# v32: HF-803 adds the implicit class-builder read, its callback effects and
+# guarded identity. Admitted workloads and instruction counts can change;
+# earlier reports retain their recorded comparison class.
+version = 33
+content_sha256 = "f696a57b5817d6187ef05c814be23b0ada42296433f01fe500db3f99575a0d5d"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -342,6 +345,10 @@ role = "canonical source/import analysis used to admit benchmark workload depend
 [[methodology]]
 path = "src/molt/compiler_analysis/python_binding_flow.py"
 role = "canonical source/import analysis used to admit benchmark workload dependencies"
+
+[[methodology]]
+path = "src/molt/compiler_analysis/python_parameter_classes.py"
+role = "argument classes that decide which activations binding flow analyzes (HF-773), so admitted benchmark workload dependencies"
 
 [[methodology]]
 path = "src/molt/compiler_analysis/python_builtin_shapes.py"

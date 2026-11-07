@@ -65,21 +65,27 @@ pub(super) struct ClonedPoll {
 }
 
 /// True if `op` is a generator-frame bookkeeping op the splice drops: trace
-/// slots, exception-stack save/restore, source-line markers. These are frame
-/// activation/teardown overhead with no fused-loop meaning.
+/// slots, exception-stack save/restore, source-line markers, and source
+/// location stores. These are frame activation/teardown overhead with no
+/// fused-loop meaning. A location store's index addresses the generator's
+/// own location table; copied into the consumer it would publish another
+/// function's index into the consumer's frame (a wrong line, or an index past
+/// the consumer's table). The consumer keeps its own last store, which is the
+/// line CPython reports for the consumer's frame.
 pub(super) fn is_bookkeeping_op(op: &TirOp) -> bool {
-    matches!(
-        attr_original_kind(op),
-        Some(
-            molt_ir::OpKind::TraceEnterSlot
-                | molt_ir::OpKind::TraceExit
-                | molt_ir::OpKind::ExceptionStackEnter
-                | molt_ir::OpKind::ExceptionStackDepth
-                | molt_ir::OpKind::ExceptionStackExit
-                | molt_ir::OpKind::ExceptionStackSetDepth
-                | molt_ir::OpKind::Line
+    op.opcode == OpCode::FrameSetLocation
+        || matches!(
+            attr_original_kind(op),
+            Some(
+                molt_ir::OpKind::TraceEnterSlot
+                    | molt_ir::OpKind::TraceExit
+                    | molt_ir::OpKind::ExceptionStackEnter
+                    | molt_ir::OpKind::ExceptionStackDepth
+                    | molt_ir::OpKind::ExceptionStackExit
+                    | molt_ir::OpKind::ExceptionStackSetDepth
+                    | molt_ir::OpKind::Line
+            )
         )
-    )
 }
 
 /// The generator's exception-stack save/restore values: the results of the

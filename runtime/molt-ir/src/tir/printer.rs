@@ -238,6 +238,7 @@ pub fn print_dialect(dialect: Dialect) -> &'static str {
 /// Return the lowercase opcode name (e.g. "add", "const_int").
 pub fn print_opcode(op: &OpCode) -> &'static str {
     match op {
+        OpCode::FrameSetLocation => "frame_set_location",
         OpCode::Add => "add",
         OpCode::CheckedAdd => "checked_add",
         OpCode::Sub => "sub",

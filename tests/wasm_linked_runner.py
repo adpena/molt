@@ -185,8 +185,9 @@ def require_wasm_toolchain() -> None:
     )
     if host_bin is None:
         pytest.skip(
-            "prebuilt molt-wasm-host dev-fast binary is required for linked wasm "
-            "parity test (set MOLT_WASM_HOST_BIN or CARGO_TARGET_DIR)."
+            "a current prebuilt molt-wasm-host dev-fast binary (no older than its "
+            "sources) is required for linked wasm parity test (build it, or set "
+            "MOLT_WASM_HOST_BIN or CARGO_TARGET_DIR)."
         )
     require_wasm_build_toolchain()
 
@@ -275,8 +276,6 @@ def wasm_linked_build_command(
     )
     if isinstance(src, ModuleEntry):
         env["MOLT_MODULE_ROOTS"] = str(src.root)
-    env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "2")
-    env.setdefault("MOLT_CSE_MAX_ITERS", "6")
     env[ARTIFACT_ROOT_ENV] = str(test_artifact_root)
     tmp_root = scratch_root(root, env)
     tmp_root.mkdir(parents=True, exist_ok=True)

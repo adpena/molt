@@ -759,6 +759,12 @@ runtime_name = "molt_exception_prepare_raise"
 callable_arity = 2
 
 [[import]]
+name = "exception_frame_origin"
+type = 2
+runtime_name = "molt_exception_frame_origin"
+callable_arity = 1
+
+[[import]]
 name = "exception_trace_prepend"
 type = 2
 runtime_name = "molt_exception_trace_prepend"
@@ -1168,6 +1174,18 @@ name = "guard_builtin_bindings"
 type = 2
 runtime_name = "molt_guard_builtin_bindings"
 callable_arity = 1
+
+[[import]]
+name = "build_class_builtin"
+type = 3
+runtime_name = "molt_build_class_builtin"
+callable_arity = 2
+
+[[import]]
+name = "class_builder_check"
+type = 0
+runtime_name = "molt_class_builder_check"
+callable_arity = 0
 
 [[import]]
 name = "types_cell_contents_get"
@@ -2882,6 +2900,36 @@ name = "sys_version_info"
 type = 0
 runtime_name = "molt_sys_version_info"
 callable_arity = 0
+
+[[import]]
+name = "marshal_version"
+type = 0
+runtime_name = "molt_marshal_version"
+callable_arity = 0
+
+[[import]]
+name = "marshal_dumps"
+type = 3
+runtime_name = "molt_marshal_dumps"
+callable_arity = 2
+
+[[import]]
+name = "marshal_loads"
+type = 2
+runtime_name = "molt_marshal_loads"
+callable_arity = 1
+
+[[import]]
+name = "marshal_dump"
+type = 4
+runtime_name = "molt_marshal_dump"
+callable_arity = 3
+
+[[import]]
+name = "marshal_load"
+type = 2
+runtime_name = "molt_marshal_load"
+callable_arity = 1
 
 [[import]]
 name = "dataclasses_init_trampoline"

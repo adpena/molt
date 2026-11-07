@@ -1421,7 +1421,7 @@ def _compatibility_findings(path: Path, root: Path, inventory) -> list[Finding]:
             else "compatibility_error_applicability",
             severity="info" if hit.proved else "high",
             title=(
-                "proved CPython error outcome"
+                "proved compatibility outcome"
                 if hit.proved
                 else "unproved compatibility error"
             )

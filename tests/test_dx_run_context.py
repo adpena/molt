@@ -2731,7 +2731,7 @@ def test_capsule_selected_session_records_only_its_canonical_checkout_state(
     assert not (foreign / checkout_state.OWNER_RECORD).exists()
 
 
-@pytest.mark.parametrize("writer", ["transpiler", "translation", "tv", "proof"])
+@pytest.mark.parametrize("writer", ["transpiler", "tv", "proof"])
 def test_scratch_writers_bind_the_root_before_allocating(tmp_path, monkeypatch, writer):
     from molt.checkout_state import read_checkout_owner
 
@@ -2756,13 +2756,6 @@ def test_scratch_writers_bind_the_root_before_allocating(tmp_path, monkeypatch, 
 
         monkeypatch.setattr(check_transpiler_determinism, "_repo_root", lambda: source)
         assert check_transpiler_determinism._tmp_root() == selected
-    elif writer == "translation":
-        from tools import translation_validate
-
-        monkeypatch.setattr(translation_validate, "_REPO_ROOT", source)
-        assert translation_validate._temp_root(environment) == selected
-        assert not selected.exists(), "a projection must remain read-only"
-        assert translation_validate._temp_root(environment, create=True) == selected
     elif writer == "tv":
         from molt.frontend import tv_hooks
 
@@ -3494,3 +3487,34 @@ def test_declared_proof_fixture_roots_are_explicit_storage_outputs(tmp_path):
     ):
         target = path.resolve(strict=False)
         assert dx._storage_write_admitted(check, target) is admitted, path
+
+
+def test_reclaimer_resolves_a_bound_root_below_the_capacity_floor(
+    bound_artifact_family, monkeypatch
+):
+    """tools/disk_guard.py --ensure-free refused to run on a full volume
+    (2026-11-07: 20.98 GB free against a 21.47 GB floor), because it resolved
+    the root through the build-time health check, capacity included. A
+    reclaimer exists to restore that floor; it still requires the bound
+    directory's identity, so a replaced or unmounted root is never reclaimed."""
+    from molt import disk_capacity
+    from tools import disk_guard
+
+    main, _lane, artifacts = bound_artifact_family
+    monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", lambda _: 1024**3)
+    monkeypatch.setattr(
+        disk_capacity, "_darwin_important_usage_bytes", lambda _: 1024**3
+    )
+    with pytest.raises(dx.DxConfigError, match="unavailable or unhealthy"):
+        dx.configured_artifact_root({}, relative_to=main)
+    assert dx.reclaimable_artifact_root({}, relative_to=main) == artifacts
+    monkeypatch.chdir(main)
+    assert disk_guard.resolve_root(None, env={}) == artifacts
+    # An explicit root needs no binding at all.
+    assert disk_guard.resolve_root(str(artifacts), env={}) == artifacts
+
+    replaced = artifacts.with_name("artifacts-old")
+    artifacts.rename(replaced)
+    artifacts.mkdir()
+    with pytest.raises(dx.DxConfigError, match="identity changed"):
+        dx.reclaimable_artifact_root({}, relative_to=main)

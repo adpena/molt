@@ -115,11 +115,18 @@ def build_receipt(
     waived: Sequence[str] = (),
     unverified: Sequence[str] = (),
     narrowed: Sequence[str] = (),
+    postsubmit_only: Sequence[str] = (),
 ) -> dict[str, object]:
+    """``postsubmit_only`` names the data readers presubmit did not run; they
+    passed nothing here, and postsubmit runs them."""
     if mode not in {"fast", "queue"}:
         raise ValueError(f"unknown landing mode {mode!r}")
     selection = json.dumps(
-        {"gates": [gate["command"] for gate in gates], "waived": list(waived)},
+        {
+            "gates": [gate["command"] for gate in gates],
+            "waived": list(waived),
+            "postsubmit_only": list(postsubmit_only),
+        },
         sort_keys=True,
     )
     return {
@@ -138,6 +145,7 @@ def build_receipt(
         "waived": list(waived),
         "unverified": list(unverified),
         "narrowed": list(narrowed),
+        "postsubmit_only": list(postsubmit_only),
     }
 
 
@@ -253,6 +261,12 @@ def commit_message(subject: str, receipt: Mapping[str, object]) -> str:
         items = list(receipt.get(key, ()))  # type: ignore[arg-type]
         if items:
             lines.append(f"{label}: " + "; ".join(items) + ".")
+    left = len(list(receipt.get("postsubmit_only", ())))  # type: ignore[arg-type]
+    if left:
+        lines.append(
+            f"Left to postsubmit: {left} data-reader test file(s); "
+            "presubmit ran the importers."
+        )
     body = [wrapped for line in lines for wrapped in _wrap(line)]
     # A path is one token; it stays whole on its own line.
     body.append(f"Receipt: landing-receipts/{receipt['tree']}.{receipt['base']}.json")

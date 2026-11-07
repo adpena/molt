@@ -51,6 +51,12 @@ def probe_failure(
     )
 
 
+# A probe bound catches a hung tool, not normal latency. A new executable's
+# first launch pays the host's assessment: node 26.13.0's first `--version`
+# took 23.44 s on macOS (its second 0.01 s), which a 5 s bound failed.
+PROBE_TIMEOUT_S = 120
+
+
 def run_toolchain_probe(
     policy_name: str,
     argv: list[str],
@@ -89,7 +95,7 @@ def run_toolchain_probe(
             if stage == "content resolver"
             else subprocess.STDOUT,
             text=True,
-            timeout=5,
+            timeout=PROBE_TIMEOUT_S,
             env=child_environment,
             encoding="utf-8",
         )

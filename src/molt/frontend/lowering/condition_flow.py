@@ -5,7 +5,7 @@ selected operand unchanged. Tested values carry an observed truth only where
 CPython's target-version lowering permits it: explicit comparison/conditional
 value boundaries, and pre-3.14 nested BoolOps, retain their observable retest.
 Flat boolean/comparison chains are emitted iteratively, with one merge authority
-for synchronous PHI/COPY and suspension-safe asynchronous scratch storage.
+for synchronous PHI/local-home transport and suspension-safe async storage.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from typing import Literal
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import (
     MoltOp,
+    CompilerLocalHome,
     MoltValue,
     ScratchCell,
     TypeHint,
@@ -40,7 +41,7 @@ class _ConditionBindingState:
 @dataclass
 class _ConditionMerge:
     cells: tuple[ScratchCell, ...]
-    copies: tuple[MoltValue, ...]
+    homes: tuple[CompilerLocalHome, ...]
     entry: _ConditionBindingState
     true_state: _ConditionBindingState | None = None
 
@@ -98,13 +99,12 @@ class ConditionFlowMixin(GeneratorMixinBase):
             return _ConditionMerge(
                 tuple(self._new_scratch_cell() for _ in range(width)), (), entry
             )
-        copies: list[MoltValue] = []
-        if not self.enable_phi:
-            for _ in range(width):
-                value = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=value))
-                copies.append(value)
-        return _ConditionMerge((), tuple(copies), entry)
+        homes = (
+            tuple(self._new_compiler_local("Any") for _ in range(width))
+            if not self.enable_phi
+            else ()
+        )
+        return _ConditionMerge((), homes, entry)
 
     def _condition_else(self, merge: _ConditionMerge) -> None:
         merge.true_state = self._capture_condition_bindings(tuple(merge.entry.locals))
@@ -118,9 +118,9 @@ class ConditionFlowMixin(GeneratorMixinBase):
             for cell, value in zip(merge.cells, values, strict=True):
                 self._store_scratch_cell(cell, value)
             return values
-        if merge.copies:
-            for target, value in zip(merge.copies, values, strict=True):
-                self.emit(MoltOp(kind="COPY", args=[value], result=target))
+        if merge.homes:
+            for home, value in zip(merge.homes, values, strict=True):
+                self._store_compiler_local(home, value)
             return values
         # Branch-local definitions are required even for an unchanged operand:
         # the backend must identify the predecessor owning each PHI input.
@@ -183,8 +183,8 @@ class ConditionFlowMixin(GeneratorMixinBase):
             if merge.cells:
                 value = self._consume_scratch_cell(merge.cells[index])
                 value.type_hint = hint
-            elif merge.copies:
-                value = merge.copies[index]
+            elif merge.homes:
+                value = self._load_compiler_local(merge.homes[index])
                 value.type_hint = hint
             else:
                 value = MoltValue(self.next_var(), type_hint=hint)

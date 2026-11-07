@@ -166,6 +166,26 @@ def _report_executed_code(ledger: _build_record.InputLedger) -> None:
             ledger.file(filename, _input_report.stat_token(filename), None)
 
 
+def _guard_profile_roots(compiler_root: Path) -> tuple[Path, ...]:
+    """The guard's command-profile log and its incident directory.
+
+    A guarded child appends to the profile log (MOLT_GUARD_PROFILE_LOG, set
+    by bench tools and landing gates) and may retain an incident beside it:
+    guard custody, never an input of the binary. An installed product has no
+    guard tools and writes neither.
+    """
+    from molt import process_guard
+
+    try:
+        guard = process_guard.load_harness_memory_guard(
+            None, guard_source_root=compiler_root
+        )
+    except RuntimeError:
+        return ()
+    log = guard.command_profile_log_path(os.environ, repo_root=compiler_root)
+    return (log, guard.command_profile_incident_dir(log))
+
+
 def _excluded_read_roots(request: BuildRequest) -> tuple[Path, ...]:
     """Directories that hold only content-verified caches, scratch files and
     build products, never inputs. Each is a named product root. A source
@@ -198,6 +218,7 @@ def _excluded_read_roots(request: BuildRequest) -> tuple[Path, ...]:
         runtime_paths._cargo_target_root(compiler_root),
         memory_guard_paths.memory_guard_state_root(compiler_root, os.environ),
         temporary_artifacts.scratch_root(compiler_root, os.environ),
+        *_guard_profile_roots(compiler_root),
         # The generation stores of Rust products and runtime WASM pairs hold
         # immutable generations named by the identity the recorded inputs
         # select, plus a retention ledger and lock that any checkout's build

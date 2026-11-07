@@ -11,7 +11,7 @@ import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 
 from .cargo_execution_policy import cargo_subprocess_environment
 from .process_environment import NameRule as NameRule
@@ -23,6 +23,27 @@ from .process_spawn import ProcessStateUse, native_popen_command
 
 
 CLI_MEMORY_GUARD_PREFIX: GuardStem = "MOLT_CLI"
+# HF-780, 2026-11-05: fresh native images hit 10 s, then 60 s, while
+# serial syspolicyd scans took 18/41/97 s. Ten times the latest fired bound;
+# correctness-only first execs use this, never deliberate hang witnesses.
+# The same loaded precheck also exhausted 30 s in a freshly written
+# cargo -> sccache shell-wrapper chain; it uses this first-exec family too.
+FRESH_EXECUTABLE_TIMEOUT_S: Final[float] = 600.0
+
+
+class GuardTimeoutExpired(subprocess.TimeoutExpired):
+    """A normal timeout diagnostic includes the child's bounded output tail."""
+
+    def __str__(self) -> str:
+        parts = [super().__str__()]
+        for name, value in (("stdout", self.output), ("stderr", self.stderr)):
+            if value:
+                tail = value[-8192:]
+                if isinstance(tail, bytes):
+                    tail = tail.decode("utf-8", errors="replace")
+                parts.append(f"child {name} tail:\n{tail}")
+        return "\n".join(parts)
+
 
 # The memory budgets a child inherits when its caller passes an explicit
 # environment: the registry's memory ``[[family]]`` suffixes.
@@ -125,8 +146,10 @@ def raise_for_guard_outcome(
                 "guarded subprocess reported a timeout without a requested "
                 "timeout; timeout custody is inconsistent"
             )
-        error = subprocess.TimeoutExpired(
-            command,
+        # As subprocess.run does, name the launched argv (``result.args``),
+        # which carries the guard's ``-X faulthandler`` for a timed Python child.
+        error = GuardTimeoutExpired(
+            result.args,
             timeout,
             output=result.stdout,
             stderr=result.stderr,
@@ -390,7 +413,7 @@ def run_completed_command(
     if check and result.returncode != 0:
         error = subprocess.CalledProcessError(
             result.returncode,
-            command,
+            result.args,
             output=result.stdout,
             stderr=result.stderr,
         )

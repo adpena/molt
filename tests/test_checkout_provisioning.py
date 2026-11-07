@@ -27,6 +27,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVER = REPO_ROOT / "tools" / "molt_dev.py"
 
 
+# These cases publish real Python images: 22-214 s per case in landing
+# gate logs (2026-10-31 to 11-05). Landing presubmit skips them unless the
+# change reaches this file's own imports (--skip-slow); docs-tests and
+# postsubmit run them.
+PUBLISHES_IMAGES = pytest.mark.slow
+
+
+@PUBLISHES_IMAGES
 @pytest.mark.skipif(os.name == "nt", reason="POSIX fake uv installation links")
 @pytest.mark.parametrize(
     "fault", ["drift", "unrecorded", "exact", "explicit", "reader", "refresh"]
@@ -183,6 +191,7 @@ def test_development_interpreter_freshness_and_in_place_replacement(
     assert not cp.ensure_input(spec).provisioned
 
 
+@PUBLISHES_IMAGES
 def test_unrecorded_real_python_image_retires_without_probing_under_exclusive_lock(
     tmp_path, monkeypatch
 ):
@@ -902,6 +911,7 @@ def test_declared_inputs_name_their_locks_and_trees(tmp_path: Path) -> None:
     assert cp.declares(uv)
 
 
+@PUBLISHES_IMAGES
 @pytest.mark.parametrize("editable", [False, True], ids=["unpublished", "published"])
 @pytest.mark.parametrize("named", [False, True], ids=["projected", "explicit"])
 def test_uv_environment_selects_published_images_and_refuses_mutable_roots(
@@ -1016,6 +1026,7 @@ def test_uv_environment_selects_published_images_and_refuses_mutable_roots(
     image.manifest_path.write_bytes(manifest)
 
 
+@PUBLISHES_IMAGES
 @pytest.mark.parametrize("record_kind", ["absent", "malformed", "dangling-link"])
 def test_development_selection_distinguishes_new_intent_from_invalid_record(
     tmp_path: Path,
@@ -1109,6 +1120,7 @@ def test_development_contract_upgrade_selects_new_intent_without_repairing_old_i
     assert old.manifest_path.read_bytes() == old_manifest_bytes
 
 
+@PUBLISHES_IMAGES
 @pytest.mark.parametrize("api", ["input", "single", "all"])
 def test_runtime_refresh_reselects_changed_runtime_without_rewriting_old_image(
     tmp_path, monkeypatch, api
@@ -1243,6 +1255,7 @@ def test_runtime_refresh_cli_routes_and_rejects_invalid_modes(tmp_path, monkeypa
     assert len(calls) == 1
 
 
+@PUBLISHES_IMAGES
 def test_implicit_evicted_generation_republishes_through_existing_owner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

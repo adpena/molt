@@ -232,6 +232,7 @@ pub fn opcode_name(op: &OpCode) -> &'static str {
 
 fn mlir_opcode(op: &OpCode) -> &'static str {
     match op {
+        OpCode::FrameSetLocation => "frame_set_location",
         OpCode::Add | OpCode::InplaceAdd => "add",
         OpCode::CheckedAdd => "checked_add",
         OpCode::CheckedMul => "checked_mul",

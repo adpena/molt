@@ -170,6 +170,7 @@ pub(crate) enum NameId {
     DunderBases,
     DunderBool,
     DunderBuffer,
+    DunderBuildClass,
     DunderBuiltins,
     DunderBytes,
     DunderCached,
@@ -850,7 +851,7 @@ pub(crate) enum NameId {
     Zipimporter,
 }
 impl NameId {
-    pub(crate) const ALL: [Self; 844] = [
+    pub(crate) const ALL: [Self; 845] = [
         Self::A2bBase64,
         Self::A2bHex,
         Self::A2bQp,
@@ -1017,6 +1018,7 @@ impl NameId {
         Self::DunderBases,
         Self::DunderBool,
         Self::DunderBuffer,
+        Self::DunderBuildClass,
         Self::DunderBuiltins,
         Self::DunderBytes,
         Self::DunderCached,
@@ -1864,6 +1866,7 @@ impl NameId {
             Self::DunderBases => "__bases__",
             Self::DunderBool => "__bool__",
             Self::DunderBuffer => "__buffer__",
+            Self::DunderBuildClass => "__build_class__",
             Self::DunderBuiltins => "__builtins__",
             Self::DunderBytes => "__bytes__",
             Self::DunderCached => "__cached__",
@@ -2712,6 +2715,7 @@ impl NameId {
             b"__bases__" => Some(Self::DunderBases),
             b"__bool__" => Some(Self::DunderBool),
             b"__buffer__" => Some(Self::DunderBuffer),
+            b"__build_class__" => Some(Self::DunderBuildClass),
             b"__builtins__" => Some(Self::DunderBuiltins),
             b"__bytes__" => Some(Self::DunderBytes),
             b"__cached__" => Some(Self::DunderCached),

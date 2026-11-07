@@ -61,6 +61,21 @@ def cpu_count(
     return count
 
 
+def execution_cpu_count() -> int:
+    """One batch's CPU budget, preferring macOS performance cores.
+
+    Efficiency cores remain available to other host work. Intel Macs and
+    other platforms use the affinity/cgroup-bounded count. A fractional Linux
+    quota retains cpu_count's one-execution floor.
+    """
+    count = cpu_count()
+    if sys.platform == "darwin":
+        performance = _darwin_sysctl_integer("hw.perflevel0.physicalcpu")
+        if performance is not None and performance > 0:
+            count = min(count, performance)
+    return count
+
+
 def cgroup_cpu_quota(
     *,
     cgroup_root: Path = _CGROUP_ROOT,

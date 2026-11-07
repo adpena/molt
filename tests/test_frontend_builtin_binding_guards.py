@@ -19,7 +19,10 @@ from molt.compiler_analysis.builtin_binding_guards_generated import (
 import pytest
 
 from molt.compiler_analysis.python_binding_flow import analyze_python_source_bindings
-from molt.compiler_analysis.python_identity_catalog_generated import PythonMember
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    BUILTIN_IDENTITIES,
+    PythonMember,
+)
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from molt.frontend import SimpleTIRGenerator, compile_to_tir
 
@@ -38,6 +41,37 @@ def _ops(source: str, suffix: str) -> list[dict]:
 # The premise a closed graph supplies when no module writes this one, no code
 # writes a canonical member and no source body escapes into another activation.
 CLOSED = PythonNamespacePremise((), 0, 0, (), ())
+
+
+def test_implicit_class_builder_read_keeps_the_proved_inline_arm():
+    ops = _premise_ops("class C: pass\n", "molt_main")
+    assert not _guards(ops)
+    assert not any(op.get("s_value") == "molt_class_builder_check" for op in ops)
+    assert any(op["kind"] == "class_def" for op in ops)
+
+
+def test_implicit_class_builder_guard_precedes_base_evaluation():
+    ops = _premise_ops(
+        "import builtins\n"
+        "builtins.__build_class__ = None\n"
+        "def base(): return object\n"
+        "class C(base()): pass\n",
+        "molt_main",
+    )
+    guard = next(
+        guard
+        for guard in _guards(ops)
+        if _guard_mask(ops, guard) == BUILTIN_BINDING_GUARD_BITS["__build_class__"]
+    )
+    checked = next(op for op in ops if op.get("s_value") == "molt_class_builder_check")
+    base_call = next(
+        op
+        for op in ops
+        if op["kind"].startswith("call")
+        and op.get("source_line") == 4
+        and op.get("col_offset") == 8
+    )
+    assert ops.index(guard) < ops.index(checked) < ops.index(base_call)
 
 
 def _premise_ops(
@@ -304,7 +338,7 @@ def test_builtin_call_shape_is_proved_separately_from_the_callee() -> None:
     assert "len" not in _kinds(module)
 
 
-def test_frame_reflective_builtins_keep_their_lowering() -> None:
+def test_builtin_function_values_keep_their_live_read() -> None:
     ops = _premise_ops("def f():\n    return globals\n", "f")
     assert "globals" in _global_reads(ops)
     assert "builtin_func" not in _kinds(ops)
@@ -332,11 +366,113 @@ def test_star_import_source_origins_withdraw_the_builtin_proof() -> None:
 
     The flow publishes star exports as source origins of later global reads,
     not as identity bits, so the identity alone still reads BUILTIN_LEN.
+    `__import__` carries its own read as an origin too (import provenance);
+    the star lookup, not that origin, withdraws its proof (HF-776).
     """
     source = (
-        "def measure(xs):\n    return len(xs)\n\n"
+        "def measure(xs):\n    return len(xs), __import__(xs)\n\n"
         "measure([1])\nfrom support import *\nmeasure([1])\n"
     )
     ops = _premise_ops(source, "measure")
-    assert "len" in _global_reads(ops)
-    assert "len" not in _kinds(ops)
+    assert {"len", "__import__"} <= set(_global_reads(ops))
+    assert not {"len", "builtin_func"} & set(_kinds(ops))
+
+
+# HF-776: one call or value per family of named builtin lowering, with the
+# operation its proved read lowers to.
+NAMED_LOWERINGS = [
+    ("type", "type(x)", "type_of"),
+    ("ord", "ord(x)", "ord"),
+    ("abs", "abs(x)", "abs"),
+    ("sum", "sum(x)", "builtin_func"),
+    ("sorted", "sorted(x)", "builtin_func"),
+    ("print", "print(x)", "builtin_func"),
+    ("getattr", "getattr(x, 'a')", "get_attr_name_default"),
+    ("dir", "dir(x)", "builtin_func"),
+    ("ValueError", "ValueError(x)", "exception_new_builtin_one"),
+    ("KeyError", "KeyError", "exception_class"),
+    ("NotImplemented", "NotImplemented", "const_not_implemented"),
+    ("Ellipsis", "Ellipsis", "const_ellipsis"),
+    # Its read is also its own import provenance origin.
+    ("__import__", "__import__(x)", "builtin_func"),
+]
+
+
+def _member_writer(name: str) -> PythonNamespacePremise:
+    member = int(BUILTIN_IDENTITIES[name][1])
+    return PythonNamespacePremise((), member, member, (), ())
+
+
+@pytest.mark.parametrize(
+    "name,expression,operation", NAMED_LOWERINGS, ids=[c[0] for c in NAMED_LOWERINGS]
+)
+def test_every_named_builtin_lowering_requires_its_proof(
+    name: str, expression: str, operation: str
+) -> None:
+    """HF-776: the named lowering keys on the proved identity, not the spelling.
+
+    Main lowered every uncatalogued builtin by name in both guard arms, so a
+    `builtins` member writer could not replace `type` or `ord` (CPython calls
+    the writer's object).
+    """
+    source = f"def f(x):\n    return {expression}\n"
+    proved = _premise_ops(source, "f")
+    assert operation in _kinds(proved)
+    assert not _guards(proved) and name not in _global_reads(proved)
+    ops = _premise_ops(source, "f", _member_writer(name))
+    guards = _guards(ops)
+    if name in BUILTIN_BINDING_GUARD_BITS:
+        # The guard's fast arm proves the read; its slow arm has no proof.
+        (guard,) = guards
+        fast, slow = _arms(ops, guard)
+        assert operation in _kinds(fast)
+        assert operation not in _kinds(slow)
+        assert name in _global_reads(slow)
+    else:
+        assert not guards
+        assert operation not in _kinds(ops)
+        assert name in _global_reads(ops)
+
+
+def test_closed_premise_proves_every_family_without_guard_or_lookup() -> None:
+    names = [name for name, _, _ in NAMED_LOWERINGS]
+    body = ", ".join(expression for _, expression, _ in NAMED_LOWERINGS)
+    ops = _premise_ops(f"def f(x):\n    return {body}\n", "f")
+    assert not _guards(ops)
+    assert not set(names) & set(_global_reads(ops))
+
+
+def test_module_scope_member_writer_keeps_the_live_call() -> None:
+    """The base repro: a module-level `builtins.type` write before the call."""
+    source = (
+        "import builtins\nbuiltins.type = lambda value: 'replaced'\nresult = type(1)\n"
+    )
+    ops = _premise_ops(source, "molt_main")
+    assert "type_of" not in _kinds(ops)
+    assert "type" in _global_reads(ops)
+
+
+CLASS_BODY = """
+class Body:
+    error = ValueError
+    kind = type
+    marker = NotImplemented
+    names = sorted(locals())
+    later = type(2)
+"""
+
+
+def test_class_body_reads_are_proved_until_a_call() -> None:
+    """HF-776: a class-body read that misses the plain class mapping is global.
+
+    The flow proves it until the first call, which may reflect the class
+    namespace; the later `type` read keeps the live lookup, as on main.
+    """
+    ops = _premise_ops(CLASS_BODY, "molt_main")
+    assert _global_reads(ops) == ["type"]
+    assert {"exception_class", "builtin_type", "const_not_implemented"} <= set(
+        _kinds(ops)
+    )
+    writer = _premise_ops(CLASS_BODY, "molt_main", _member_writer("ValueError"))
+    assert "ValueError" in _global_reads(writer)
+    assert "exception_class" not in _kinds(writer)

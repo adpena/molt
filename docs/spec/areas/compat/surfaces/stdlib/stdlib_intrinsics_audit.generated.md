@@ -19,9 +19,9 @@
 ## Progress Summary (Generated)
 - Total audited modules: `949`
 - `intrinsic-backed`: `39`
-- `intrinsic-partial`: `163`
+- `intrinsic-partial`: `164`
 - `intrinsic-support`: `26`
-- `python-compiled`: `345`
+- `python-compiled`: `344`
 - `stub`: `376`
 - `policy-gate`: `0`
 
@@ -216,6 +216,7 @@
 - `logging`
 - `logging.config`
 - `lzma`
+- `marshal`
 - `multiprocessing._core`
 - `os`
 - `pathlib`
@@ -548,7 +549,6 @@
 - `json.scanner`
 - `json.tool`
 - `logging.handlers`
-- `marshal`
 - `mimetypes`
 - `molt.stdlib`
 - `multiprocessing`

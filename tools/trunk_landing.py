@@ -27,6 +27,7 @@ bind_repository_imports(__file__)
 from tools.driver_errors import CandidateFailure, DriverError  # noqa: E402
 from tools.molt_dev_policy import GateConfig, SelectedGate  # noqa: E402
 from tools.proof_plan import CargoTargetAccess  # noqa: E402
+from tools.proof_receipts import SourceTreeState  # noqa: E402
 
 SCHEMA = "molt.remote-landing.v1"
 HOST_SETTING = "MOLT_LANDING_GATE_HOST"
@@ -51,6 +52,33 @@ def decode_gates(records: list[dict]) -> tuple[SelectedGate, ...]:
     return tuple(gates)
 
 
+def landing_request(commit: str, tree: str, gates) -> dict:
+    """The selected gates of one exact commit, as the landing executor reads them."""
+    return {
+        "commit": commit,
+        "tree": tree,
+        "gates": gate_records(gates),
+        "toolchains": sorted({name for gate in gates for name in gate.toolchains}),
+    }
+
+
+def host_os(repo: Path, host: str) -> str:
+    """The farm host's OS (its execution platform) from tools/cross_hosts.toml."""
+    from tools import cross_run
+
+    record = next(
+        (
+            item
+            for item in cross_run.parse_inventory(repo / "tools/cross_hosts.toml")
+            if item.name == host
+        ),
+        None,
+    )
+    if record is None or record.os is None:
+        raise DriverError(f"{host}: tools/cross_hosts.toml declares no host os")
+    return str(record.os)
+
+
 def request_digest(request: dict) -> str:
     return hashlib.sha256(
         json.dumps(request, sort_keys=True, separators=(",", ":")).encode()
@@ -62,17 +90,24 @@ def admit_result(receipt: dict, request: dict) -> None:
         "schema": SCHEMA,
         "source_commit": request["commit"],
         "source_tree": request["tree"],
-        "source_tree_state": "clean",
+        "source_tree_state": SourceTreeState.CLEAN,
         "request_sha256": request_digest(request),
     }
     if any(receipt.get(key) != value for key, value in expected.items()):
         raise DriverError(
             "remote landing receipt has different source, tree or gate selection"
         )
-    status = receipt.get("status")
-    if status == "failure":
+    from tools.trunk_loop import TerminalStatus
+
+    try:
+        status = TerminalStatus(receipt.get("status"))
+    except ValueError as exc:
+        raise DriverError(
+            f"remote landing receipt has an unknown status: {receipt.get('status')!r}"
+        ) from exc
+    if status is TerminalStatus.FAILURE:
         raise CandidateFailure(f"remote landing gate failed: {receipt.get('error')}")
-    if status != "success":
+    if status is not TerminalStatus.SUCCESS:
         raise DriverError(
             f"remote landing infrastructure stopped: {receipt.get('error')}"
         )
@@ -88,7 +123,11 @@ def admit_result(receipt: dict, request: dict) -> None:
         raise DriverError("remote landing receipt omits gate outcomes")
 
 
-def run_remote(repo: Path, commit: str, gates, *, host: str) -> list[tuple[float, str]]:
+def run_remote(
+    repo: Path, commit: str, gates, *, host: str
+) -> tuple[list[tuple[float, str]], Path]:
+    """Run ``gates`` on ``host``; return their seconds and the collected output
+    directory, which holds each gate's ``gate-NNN`` logs in request order."""
     try:
         return _run_remote(repo, commit, gates, host=host)
     except DriverError:
@@ -101,16 +140,11 @@ def run_remote(repo: Path, commit: str, gates, *, host: str) -> list[tuple[float
 
 def _run_remote(
     repo: Path, commit: str, gates, *, host: str
-) -> list[tuple[float, str]]:
+) -> tuple[list[tuple[float, str]], Path]:
     from tools import trunk_loop
 
     tree = trunk_loop.checked(["git", "-C", str(repo), "rev-parse", commit + "^{tree}"])
-    request = {
-        "commit": commit,
-        "tree": tree,
-        "gates": gate_records(gates),
-        "toolchains": sorted({name for gate in gates for name in gate.toolchains}),
-    }
+    request = landing_request(commit, tree, gates)
     args = SimpleNamespace(
         inventory=repo / "tools/cross_hosts.toml",
         host=host,
@@ -133,12 +167,16 @@ def _run_remote(
     from tools import molt_dev
 
     molt_dev._assert_integration_source(molt_dev.Git(repo), commit)
-    return [(float(seconds), str(command)) for seconds, command in receipt["seconds"]]
+    return (
+        [(float(seconds), str(command)) for seconds, command in receipt["seconds"]],
+        result.parent,
+    )
 
 
 def execute(record: dict, output: Path) -> int:
     from tools import molt_dev as drv, trunk_loop
     from tools.molt_dev_gates import admit_selected_output_capacity, run_selected_gates
+    from tools.trunk_loop import TerminalStatus
     from molt.dx import RunContext
 
     request = record["landing"]
@@ -151,9 +189,9 @@ def execute(record: dict, output: Path) -> int:
         "schema": SCHEMA,
         "source_commit": request["commit"],
         "source_tree": request["tree"],
-        "source_tree_state": "unknown",
+        "source_tree_state": SourceTreeState.UNKNOWN,
         "request_sha256": request_digest(request),
-        "status": "infrastructure",
+        "status": TerminalStatus.INFRASTRUCTURE,
         "passed": [],
         "seconds": seconds,
         "toolchains": {},
@@ -204,17 +242,23 @@ def execute(record: dict, output: Path) -> int:
             raise DriverError("remote executor omitted selected gates")
         drv._assert_integration_source(git, request["commit"])
         result.update(
-            status="success", source_tree_state="clean", passed=list(range(len(gates)))
+            status=TerminalStatus.SUCCESS,
+            source_tree_state=SourceTreeState.CLEAN,
+            passed=list(range(len(gates))),
         )
     except CandidateFailure as exc:
-        result.update(status="failure", source_tree_state="clean", error=str(exc))
+        result.update(
+            status=TerminalStatus.FAILURE,
+            source_tree_state=SourceTreeState.CLEAN,
+            error=str(exc),
+        )
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
         # BaseException and unresolved owned children must never publish completion.
         if getattr(exc, "owned_process", None) is not None:
             raise
     trunk_loop.write_json(output / "receipt.json", result)
-    return 0 if result["status"] == "success" else 1
+    return 0 if result["status"] is TerminalStatus.SUCCESS else 1
 
 
 def main() -> int:

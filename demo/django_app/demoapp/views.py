@@ -317,10 +317,18 @@ def offload_table(request: Any) -> JsonResponse:
     return JsonResponse({"rows": rows, "sample": data[:5]}, status=200)
 
 
+def _health_payload(request: Any) -> dict[str, Any]:
+    # The worker's health entry takes no input. Without its own builder the
+    # decorator falls back to the list_items builder, which requires user_id
+    # and answers the readiness probe with 400 before any IPC (HF-789).
+    return {}
+
+
 @molt_offload(
     entry="health",
     codec="json",
     timeout_ms=100,
+    payload_builder=_health_payload,
     idempotent=True,
     retry_on_timeout=True,
     retry_backoff_ms=10,

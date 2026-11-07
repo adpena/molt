@@ -6,6 +6,7 @@ from molt.compilation_target import admit_target
 
 import hashlib
 import os
+import sqlite3
 from pathlib import Path
 import subprocess
 import time
@@ -1738,3 +1739,113 @@ def test_unchanged_cache_lookup_never_publishes_a_sqlite_transaction(
         # SQLite's independent connection counter observes committed writes,
         # including an unchanged PRAGMA user_version assignment.
         assert observer.execute("PRAGMA data_version").fetchone()[0] == before
+
+
+def _sqlite_error(
+    kind: type[sqlite3.Error], message: str, result_code: int
+) -> sqlite3.Error:
+    # SQLite-raised errors carry their extended result code (CPython 3.11+).
+    error = kind(message)
+    error.sqlite_errorcode = result_code
+    return error
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows never consults the cache")
+def test_digest_cache_contention_is_a_miss_not_a_build_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """SQLITE_PROTOCOL ("locking protocol") under WAL contention failed builds that
+    only needed a digest. The store saves rehashing, so contention must hash, say
+    so once, and stop loading the contended store."""
+    monkeypatch.setattr(identity, "DIGEST_RACY_WINDOW_NS", 0)
+    first_data, second_data = b"first runtime header", b"second runtime header"
+    first = _settled_file(tmp_path / "first.h", first_data)
+    second = _settled_file(tmp_path / "second.h", second_data)
+    cache = identity.FileDigestCache(tmp_path / "digests.sqlite", max_age_ns=10**18)
+    connects = 0
+
+    def contended() -> sqlite3.Connection:
+        nonlocal connects
+        connects += 1
+        raise _sqlite_error(
+            sqlite3.OperationalError, "locking protocol", sqlite3.SQLITE_PROTOCOL
+        )
+
+    monkeypatch.setattr(cache, "_connect", contended)
+
+    assert cache.identity(first, label="header").sha256 == (
+        hashlib.sha256(first_data).hexdigest()
+    )
+    assert cache.identity(second, label="header").sha256 == (
+        hashlib.sha256(second_data).hexdigest()
+    )
+    cache.flush()
+    assert connects == 1, "a contended store must not be retried by this process"
+    assert capsys.readouterr().err.count("[molt digest-cache]") == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows never consults the cache")
+@pytest.mark.parametrize(
+    ("message", "result_code"),
+    [
+        ("database is locked", sqlite3.SQLITE_BUSY),
+        ("database is locked", sqlite3.SQLITE_BUSY_SNAPSHOT),
+    ],
+)
+def test_digest_cache_contention_at_flush_keeps_the_hashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, message: str, result_code: int
+) -> None:
+    monkeypatch.setattr(identity, "DIGEST_RACY_WINDOW_NS", 0)
+    data = b"flushed header"
+    header = _settled_file(tmp_path / "api.h", data)
+    cache = identity.FileDigestCache(tmp_path / "digests.sqlite", max_age_ns=10**18)
+    assert cache.identity(header, label="header").sha256 == (
+        hashlib.sha256(data).hexdigest()
+    )
+
+    def busy() -> sqlite3.Connection:
+        raise _sqlite_error(sqlite3.OperationalError, message, result_code)
+
+    monkeypatch.setattr(cache, "_connect", busy)
+    cache.flush()
+    assert cache.identity(header, label="header").sha256 == (
+        hashlib.sha256(data).hexdigest()
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows never consults the cache")
+def test_digest_cache_statement_defects_stay_loud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SQLITE_ERROR is a code defect, not contention: it must not switch the cache
+    off silently, as an unencodable fact once switched the lowering cache off."""
+    header = _settled_file(tmp_path / "api.h", b"header")
+    cache = identity.FileDigestCache(tmp_path / "digests.sqlite", max_age_ns=10**18)
+
+    def defect() -> sqlite3.Connection:
+        raise _sqlite_error(
+            sqlite3.OperationalError, "no such column: inode", sqlite3.SQLITE_ERROR
+        )
+
+    monkeypatch.setattr(cache, "_connect", defect)
+    with pytest.raises(sqlite3.OperationalError, match="no such column"):
+        cache.identity(header, label="header")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows never consults the cache")
+def test_digest_cache_corruption_stays_loud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    header = _settled_file(tmp_path / "api.h", b"header")
+    cache = identity.FileDigestCache(tmp_path / "digests.sqlite", max_age_ns=10**18)
+
+    def corrupt() -> sqlite3.Connection:
+        raise _sqlite_error(
+            sqlite3.DatabaseError,
+            "database disk image is malformed",
+            sqlite3.SQLITE_CORRUPT,
+        )
+
+    monkeypatch.setattr(cache, "_connect", corrupt)
+    with pytest.raises(sqlite3.DatabaseError, match="malformed"):
+        cache.identity(header, label="header")

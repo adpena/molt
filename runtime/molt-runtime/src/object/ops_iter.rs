@@ -782,7 +782,7 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                     let name_bits = unsafe { code_name_bits(code_ptr) };
                     let name = string_obj_to_owned(obj_from_bits(name_bits))
                         .unwrap_or_else(|| "<code>".to_string());
-                    return (name, frame.line);
+                    return (name, frame.source_line());
                 }
                 ("<no-frame>".to_string(), -1)
             });

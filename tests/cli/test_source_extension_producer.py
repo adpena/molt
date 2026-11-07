@@ -4412,3 +4412,38 @@ def test_editable_publication_refuses_missing_selected_reader_without_fallback(
         )
     assert not spec[0].exists()
     assert not build_environment.environment_provisioning_record_path(spec[0]).exists()
+
+
+def test_publication_transitions_are_exactly_the_documented_compare_and_swap(tmp_path):
+    from molt.cli import source_extension_publication as publication
+    from molt.cli.source_package_seal import SourcePackageSealVerificationError
+
+    State = publication.PublicationState
+    Event = publication.PublicationEvent
+    # Independent statement (docs/design/state_machines.md): retire the
+    # incumbent, publish the candidate, verify and commit; resume may skip a
+    # journal write a crash lost; any unfinished state aborts and restores.
+    unfinished = (State.PREPARED, State.RETIRED, State.PUBLISHED)
+    expected = {
+        (State.PREPARED, Event.RETIRE): State.RETIRED,
+        (State.PREPARED, Event.PUBLISH): State.PUBLISHED,
+        (State.RETIRED, Event.PUBLISH): State.PUBLISHED,
+        **{(state, Event.COMMIT): State.COMMITTED for state in unfinished},
+        **{(state, Event.ABORT): State.ABORTED_RESTORED for state in unfinished},
+    }
+    journal = tmp_path / "identity-publication.json"
+    for state in State:
+        for event in Event:
+            record = {"state": state}
+            if (state, event) in expected:
+                advanced = publication._advance(journal, record, event)
+                assert advanced["state"] is expected[(state, event)]
+                assert json.loads(journal.read_text(encoding="utf-8"))["state"] == (
+                    expected[(state, event)].value
+                )
+            else:
+                with pytest.raises(
+                    SourcePackageSealVerificationError,
+                    match=f"cannot {event} from {state}",
+                ):
+                    publication._advance(journal, record, event)

@@ -1406,12 +1406,17 @@ class DependencyGraph:
 
     def direct_readers(
         self, changed: Iterable[str], *, observations: ObservedTestInputs | None = None
-    ) -> tuple[str, ...]:
+    ) -> "DirectReaders":
         """Tests at the first hop, without walking their import closure.
 
         The existing scanner already records each test's direct data reads,
         harness inputs and executed sources. Only the test's own outgoing
         edges are added here; an importer's importer belongs to postsubmit.
+        Importers (a changed test, a changed conftest above it, or an imported
+        or executed non-stdlib source) are separate from data readers (a test
+        that reads a changed path as data, through a directory, or compiles a
+        changed stdlib source): presubmit runs importers only (owner decision
+        2026-11-06, docs/design/landing_queue.md section 9.10).
         """
         changed = frozenset(changed)
         read = {path for path in changed if not is_test_file(path)}
@@ -1426,40 +1431,40 @@ class DependencyGraph:
         coarse_directories = {
             str(parent) for path in coarse for parent in PurePosixPath(path).parents
         }
-        selected = []
+        importers: list[str] = []
+        data_readers: list[str] = []
         for test in self.tests:
             inputs = self.inputs[test]
             sources = {
                 node_path(node)
                 for node in inputs.roots | self.nodes.get(test, Dependencies()).execs
             }
-            source_change = (
+            if (
                 test in changed
                 or any(
                     not path.startswith("src/molt/stdlib/")
                     for path in sources & changed
                 )
                 or any(conftest in changed for conftest in self.conftests[test])
-                or bool(
-                    inputs.files & coarse or inputs.directories & coarse_directories
-                )
-            )
-            if source_change:
-                selected.append(test)
+            ):
+                importers.append(test)
+            elif inputs.files & coarse or inputs.directories & coarse_directories:
+                # A data read the observations cannot refine keeps the whole file.
+                data_readers.append(test)
             else:
                 static_reader = bool(
                     sources & changed
                     or inputs.files & read
                     or inputs.directories & directories
                 )
-                selected.extend(
+                data_readers.extend(
                     observations.readers(test, read, retain_unknown=static_reader)
                     if observations is not None
                     else (test,)
                     if static_reader
                     else ()
                 )
-        return tuple(selected)
+        return DirectReaders(tuple(importers), tuple(data_readers))
 
     def programs_reached(
         self, changed: Iterable[str], programs: Iterable[str]
@@ -1743,13 +1748,46 @@ LANDING_TIER = "pre-push"
 BUILD_RESOURCE_CLASS = "compiler-build-resource"
 
 
+def build_bound_commands(commands: Iterable[Mapping]) -> frozenset[str]:
+    """Ids of commands whose tests need a compiler build.
+
+    A build-resource command needs one, and so does every command whose
+    dependency closure reaches one (wasm.host.runner-fixtures runs only after
+    wasm.build.host). A landing's pytest consumers do not provision builds,
+    so these commands' own proof cells run their tests; a landing that ran
+    them would execute whatever binary an earlier build left (2026-11-07: a
+    WASM host five days older than its sources). A dependency the given
+    commands do not name is not provably build-free.
+    """
+    by_id = {str(command["id"]): command for command in commands}
+    bound: dict[str, bool] = {}
+
+    def needs_build(command_id: str) -> bool:
+        if command_id in bound:
+            return bound[command_id]
+        command = by_id.get(command_id)
+        bound[command_id] = True  # Unknown or cyclic: keep it with its cell.
+        if command is not None:
+            bound[command_id] = command.get(
+                "resource_class"
+            ) == BUILD_RESOURCE_CLASS or any(
+                needs_build(str(dependency))
+                for dependency in command.get("dependencies") or ()
+            )
+        return bound[command_id]
+
+    return frozenset(command_id for command_id in by_id if needs_build(command_id))
+
+
 @dataclass(frozen=True)
 class LandingEnvelope:
     """The targets and tools under which the landing runs one test file.
 
     Pre-push and main plan commands supply the file's declared prerequisites.
-    Presubmit runs its direct inputs unfiltered. Postsubmit also admits the
-    existing slow cell; complementary selectors run the file unfiltered.
+    Presubmit runs its direct inputs unfiltered, except that ``skip_slow``
+    always skips the file's ``slow`` tests (``--skip-slow``), even for a test
+    file the change edits. Postsubmit runs every slow case on the farm and
+    reverts on a new failure; complementary selectors run the file unfiltered.
     Cells that require a compiler build retain their separate proof owner.
     """
 
@@ -1758,6 +1796,22 @@ class LandingEnvelope:
     owners: tuple[str, ...]
     select: tuple[str, ...] = ()
     cells: tuple[str, ...] = ()
+    skip_slow: bool = False
+
+
+@dataclass(frozen=True)
+class DirectReaders:
+    """First-hop readers of a change, by how they depend on it."""
+
+    # Changed tests, tests under a changed conftest, and tests that import or
+    # execute a changed non-stdlib source.
+    importers: tuple[str, ...]
+    # Tests that read a changed path as data or through a directory, or that
+    # compile a changed stdlib source.
+    data_readers: tuple[str, ...]
+
+    def __iter__(self):
+        raise TypeError("choose importers or data_readers; their landings differ")
 
 
 @dataclass(frozen=True)
@@ -1771,6 +1825,9 @@ class GraphSelection:
     # Foreign portability requests remain selected commands. GateConfig.prepare
     # resolves their execution-cell prerequisite through the ordinary outcome.
     foreign: tuple[LandingEnvelope, ...] = ()
+    # Presubmit only: data readers of the change. They are not selected here;
+    # postsubmit selects them through the whole graph and runs them.
+    postsubmit_only: tuple[str, ...] = ()
 
 
 _SELECTOR_OPTIONS = frozenset({"-k", "-m"})
@@ -1794,12 +1851,18 @@ def landing_envelopes(
     *,
     mode: LandingMode = LandingMode.PRESUBMIT,
     foreign_cells: frozenset[str] = frozenset(),
+    build_bound: frozenset[str] | None = None,
 ) -> tuple[dict[str, LandingEnvelope], dict[str, tuple[str, ...]]]:
     """(landing envelopes, other owners) of every test file the plan names.
 
     A command of a ``foreign_cells`` cell verifies another platform (its hosted
-    toolchains are absent here), so its own cell owns its tests.
+    toolchains are absent here), so its own cell owns its tests, as does a
+    command that needs a compiler build (``build_bound``, computed from
+    ``commands`` unless the caller passes the whole plan's).
     """
+    commands = tuple(commands)
+    if build_bound is None:
+        build_bound = build_bound_commands(commands)
     whole: dict[str, list[Mapping]] = {}
     nodes: dict[str, list[tuple[str, Mapping]]] = {}
     slow_whole: dict[str, list[Mapping]] = {}
@@ -1821,7 +1884,7 @@ def landing_envelopes(
                 assert_never(mode)
         landing = (
             selected_tier
-            and command.get("resource_class") != BUILD_RESOURCE_CLASS
+            and str(command["id"]) not in build_bound
             and command.get("cell") not in foreign_cells
         )
         for target in targets:
@@ -1831,7 +1894,7 @@ def landing_envelopes(
                 if (
                     mode is LandingMode.PRESUBMIT
                     and cell_selector(command) == ("-m", "slow")
-                    and command.get("resource_class") != BUILD_RESOURCE_CLASS
+                    and str(command["id"]) not in build_bound
                 ):
                     if separator:
                         slow_nodes.setdefault(path, []).append((target, command))
@@ -1894,30 +1957,63 @@ def graph_selection(
     observations: ObservedTestInputs | None = None,
 ) -> GraphSelection:
     commands = tuple(commands)
+    build_bound = build_bound_commands(commands)
     envelopes, others = landing_envelopes(
-        commands, mode=mode, foreign_cells=foreign_cells
+        commands, mode=mode, foreign_cells=foreign_cells, build_bound=build_bound
     )
     run: dict[str, LandingEnvelope] = {}
     deferred: dict[str, tuple[str, ...]] = {}
     changed = tuple(changed)
     match mode:
         case LandingMode.PRESUBMIT:
-            recent = (
+            recent = {
                 target.partition("::")[0]
                 for target in recent_failures
                 if target.partition("::")[0] in graph.tests
-            )
+            }
+            readers = graph.direct_readers(changed, observations=observations)
+            # A data reader that recently failed postsubmit stays in presubmit:
+            # this change touches what it reads.
             selected = tuple(
                 dict.fromkeys(
                     (
-                        *recent,
                         *(path for path in changed if path in graph.tests),
-                        *graph.direct_readers(changed, observations=observations),
+                        *readers.importers,
+                        *(
+                            target
+                            for target in readers.data_readers
+                            if target.partition("::")[0] in recent
+                        ),
                     )
+                )
+            )
+            # Postsubmit runs a data reader only through a landing envelope; one
+            # without (a build cell, or no cell) keeps its deferral below. A
+            # foreign cell counts: postsubmit on that OS's host runs it.
+            post_envelopes, _ = landing_envelopes(
+                commands, mode=LandingMode.POSTSUBMIT, build_bound=build_bound
+            )
+            postsubmit_only = []
+            for target in dict.fromkeys(readers.data_readers):
+                if target in selected:
+                    continue
+                path = target.partition("::")[0]
+                if _owned_by(path, post_envelopes) is not None:
+                    postsubmit_only.append(target)
+                else:
+                    other = _owned_by(path, others)
+                    deferred[target] = others[other] if other is not None else ()
+            postsubmit_only = tuple(postsubmit_only)
+            # Failure history orders actual readers; an unrelated failure
+            # belongs to postsubmit triage, not every later lane's presubmit.
+            selected = tuple(
+                sorted(
+                    selected, key=lambda target: target.partition("::")[0] not in recent
                 )
             )
         case LandingMode.POSTSUBMIT:
             selected = graph.select(changed)
+            postsubmit_only = ()
         case _:
             assert_never(mode)
     whole_files = {target for target in selected if "::" not in target}
@@ -1930,15 +2026,17 @@ def graph_selection(
         owner = _owned_by(test.partition("::")[0], envelopes)
         if owner is not None:
             envelope = envelopes[owner]
-            # Every presubmit graph target is a changed test, direct reader or
-            # recent failure. Exercise slow probes too at this direct boundary.
-            selector = () if mode is LandingMode.PRESUBMIT else envelope.select
+            # Every presubmit graph target is a changed test or direct reader.
+            # Presubmit runs no slow case; postsubmit runs them all and reverts
+            # on a new failure (docs/design/landing_queue.md, 9.10).
+            presubmit = mode is LandingMode.PRESUBMIT
             run[test] = LandingEnvelope(
                 (test,) if owner != test else envelope.targets,
                 envelope.toolchains,
                 envelope.owners,
-                selector,
+                () if presubmit else envelope.select,
                 envelope.cells,
+                skip_slow=presubmit,
             )
         else:
             other = _owned_by(test.partition("::")[0], others)
@@ -1948,7 +2046,7 @@ def graph_selection(
         if command.get("cell") not in foreign_cells:
             continue
         # Apply exactly the same tier/build eligibility as ordinary envelopes.
-        eligible, _ = landing_envelopes((command,), mode=mode)
+        eligible, _ = landing_envelopes((command,), mode=mode, build_bound=build_bound)
         targets = tuple(
             dict.fromkeys(
                 target
@@ -1970,7 +2068,7 @@ def graph_selection(
         )
         for target in targets:
             deferred.pop(target.partition("::")[0], None)
-    return GraphSelection(selected, run, deferred, tuple(foreign))
+    return GraphSelection(selected, run, deferred, tuple(foreign), postsubmit_only)
 
 
 _GRAPHS: dict[tuple[Path, str | None], DependencyGraph] = {}
@@ -2006,6 +2104,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--dependencies-of", metavar="TEST", help="list what selects one test file"
     )
+    parser.add_argument(
+        "--direct",
+        action="store_true",
+        help="list the first-hop importers and data readers separately: the "
+        "tests to read and run before committing a change",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     started = time.perf_counter()
@@ -2013,6 +2117,31 @@ def main(argv: list[str] | None = None) -> int:
     if args.dependencies_of:
         rows = sorted(graph.dependencies(args.dependencies_of))
         print("\n".join(rows))
+        return 0
+    if args.direct:
+        readers = graph.direct_readers(args.paths)
+        elapsed = round(time.perf_counter() - started, 3)
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "importers": readers.importers,
+                        "data_readers": readers.data_readers,
+                        "stats": {**graph.stats, "seconds": elapsed},
+                    },
+                    indent=1,
+                )
+            )
+        else:
+            for label, tests in (
+                ("importers", readers.importers),
+                ("data readers", readers.data_readers),
+            ):
+                print(f"# {label} ({len(tests)})")
+                print("\n".join(tests))
+            print(
+                f"test-dependency-graph: direct readers in {elapsed}s", file=sys.stderr
+            )
         return 0
     selected = graph.select(args.paths)
     elapsed = round(time.perf_counter() - started, 3)

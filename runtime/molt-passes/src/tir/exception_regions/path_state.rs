@@ -108,7 +108,7 @@ fn op_exception_successors_with_state(
     let Some(&target) = label_to_block.get(&label) else {
         return Vec::new();
     };
-    let successor = state
+    let mut successor = state
         .enter_handler(label, anonymous_destinations)
         .unwrap_or_else(|| {
             // A transfer can first enter an ownership landing block or leave the
@@ -118,6 +118,7 @@ fn op_exception_successors_with_state(
             pending.pending_must_transfer = true;
             pending
         });
+    successor.pending_source = PendingSource::Unwind;
     vec![(target, successor)]
 }
 
@@ -136,12 +137,23 @@ pub(super) struct ExceptionRegionCustody {
     pub(super) phase: ExceptionRegionPhase,
 }
 
+/// Compile-time provenance of a possibly pending transfer, never runtime state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(super) enum PendingSource {
+    #[default]
+    Clear,
+    Origin,
+    Unwind,
+    Mixed,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct ExceptionPathState {
     // Phase changes never reorder custody: a nested active/closed region must
     // pop before its enclosing handler, just like a nested handler does.
     pub(super) regions: Vec<ExceptionRegionCustody>,
     pub(super) pending_must_transfer: bool,
+    pub(super) pending_source: PendingSource,
 }
 
 impl ExceptionPathState {
@@ -195,8 +207,19 @@ impl ExceptionPathState {
         Some(next)
     }
 
-    fn after_op(&self, position: ExceptionOpPosition, op: &TirOp) -> Self {
+    fn after_op(&self, position: ExceptionOpPosition, op: &TirOp, func: &TirFunction) -> Self {
         let mut next = self.clone();
+        if op.opcode == OpCode::CheckException {
+            next.pending_source = PendingSource::Clear;
+            return next;
+        }
+        if op.origin == Some(molt_ir::OpKind::ExceptionSetLast) {
+            next.pending_source = PendingSource::Unwind;
+            return next;
+        }
+        if op.origin == Some(molt_ir::OpKind::ExceptionLast) && self.handler_owner().is_some() {
+            next.pending_source = PendingSource::Clear;
+        }
         if op.opcode == OpCode::TryStart {
             let token = label_value(op)
                 .map(ExceptionRegionToken::Labeled)
@@ -253,10 +276,30 @@ impl ExceptionPathState {
         }
         if op.opcode == OpCode::Raise {
             next.pending_must_transfer = true;
+            next.pending_source = PendingSource::Unwind;
             return next;
         }
         if op_clears_pending_exception(op) {
             next.pending_must_transfer = false;
+            next.pending_source = PendingSource::Clear;
+        } else if op.exception_source_kind()
+            == Some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind)
+        {
+            // Static compiler transport preserves source-event provenance.
+        } else if (op.origin == Some(molt_ir::OpKind::TraceEnterSlot)
+            || !op
+                .origin
+                .is_some_and(crate::tir::op_kinds_generated::kind_defers_source_exception_check))
+            && crate::tir::passes::check_exception_elim::classify::op_may_raise(
+                &func.value_types,
+                &HashMap::new(),
+                op,
+            )
+        {
+            next.pending_source = match next.pending_source {
+                PendingSource::Clear | PendingSource::Origin => PendingSource::Origin,
+                PendingSource::Unwind | PendingSource::Mixed => PendingSource::Mixed,
+            };
         }
         next
     }
@@ -434,10 +477,12 @@ fn collect_state_resume_stacks_once(
         let pos = ExceptionOpPosition { block, op_index };
         match state_id(op, const_int_values) {
             Ok(Some(resume_state)) => {
-                observed
-                    .entry(resume_state)
-                    .or_default()
-                    .insert(state.clone());
+                // Suspension saves region custody, never a pending event: a
+                // resumed activation starts with nothing pending, and a thrown
+                // value enters as its own Origin at the resume point.
+                let mut saved = state.clone();
+                saved.pending_source = PendingSource::Clear;
+                observed.entry(resume_state).or_default().insert(saved);
             }
             Ok(None) => {}
             Err(reason) => {
@@ -454,7 +499,7 @@ fn collect_state_resume_stacks_once(
                     });
             }
         }
-        let next_state = state.after_op(pos, op);
+        let next_state = state.after_op(pos, op, func);
         for (succ, succ_state) in op_exception_successors_with_state(
             label_to_block,
             anonymous_destinations,
@@ -565,7 +610,7 @@ pub(super) fn reachable_region_pops(
             continue;
         }
         let pos = ExceptionOpPosition { block, op_index };
-        let next_state = state.after_op(pos, op);
+        let next_state = state.after_op(pos, op, func);
         for (succ, succ_state) in op_exception_successors_with_state(
             label_to_block,
             anonymous_destinations,
@@ -618,7 +663,7 @@ pub(super) fn path_states_before(
         }
         let op = &tir_block.ops[op_index];
         let pos = ExceptionOpPosition { block, op_index };
-        let next_state = state.after_op(pos, op);
+        let next_state = state.after_op(pos, op, func);
         for (succ, succ_state) in op_exception_successors_with_state(
             label_to_block,
             anonymous_destinations,
@@ -674,7 +719,7 @@ pub(super) fn lexical_handlers_before(
         }
         let op = &tir_block.ops[op_index];
         let pos = ExceptionOpPosition { block, op_index };
-        let next_state = state.after_op(pos, op);
+        let next_state = state.after_op(pos, op, func);
         for (succ, succ_state) in op_exception_successors_with_state(
             label_to_block,
             anonymous_destinations,
@@ -682,6 +727,63 @@ pub(super) fn lexical_handlers_before(
             &next_state,
         ) {
             queue.push_back((succ, 0, succ_state));
+        }
+        if op_normal_fallthrough_reachable(&state, op) {
+            queue.push_back((block, op_index + 1, next_state));
+        }
+    }
+    handlers
+}
+
+pub(super) fn event_sources_before(
+    func: &TirFunction,
+    label_to_block: &BTreeMap<i64, BlockId>,
+    state_resume_stacks: &StateResumeStacks,
+    anonymous_destinations: &AnonymousHandlerDestinations,
+) -> BTreeMap<ExceptionOpPosition, BTreeSet<PendingSource>> {
+    let mut queue = VecDeque::new();
+    queue.push_back((func.entry_block, 0usize, ExceptionPathState::default()));
+    let mut visited = BTreeSet::new();
+    let mut handlers: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+    while let Some((block, op_index, state)) = queue.pop_front() {
+        if !visited.insert((block, op_index, state.clone())) {
+            continue;
+        }
+        let Some(tir_block) = func.blocks.get(&block) else {
+            continue;
+        };
+        handlers
+            .entry(ExceptionOpPosition { block, op_index })
+            .or_default()
+            .insert(state.pending_source);
+        if op_index >= tir_block.ops.len() {
+            for (succ, succ_state) in terminator_successors_with_state(
+                &tir_block.terminator,
+                label_to_block,
+                &func.label_id_map,
+                anonymous_destinations,
+                &state,
+                state_resume_stacks,
+            ) {
+                queue.push_back((succ, 0, succ_state));
+            }
+            continue;
+        }
+        let op = &tir_block.ops[op_index];
+        let pos = ExceptionOpPosition { block, op_index };
+        let next_state = state.after_op(pos, op, func);
+        // Custody intentionally considers every physical exception edge. Event
+        // provenance instead excludes edges with no possible pending producer;
+        // fabricating an error here would manufacture mixed-source joins.
+        if state.pending_source != PendingSource::Clear || op.is_async_work_poll() {
+            for (succ, succ_state) in op_exception_successors_with_state(
+                label_to_block,
+                anonymous_destinations,
+                op,
+                &next_state,
+            ) {
+                queue.push_back((succ, 0, succ_state));
+            }
         }
         if op_normal_fallthrough_reachable(&state, op) {
             queue.push_back((block, op_index + 1, next_state));
@@ -743,7 +845,7 @@ pub fn exception_pop_owner_states(
         }
         let op = &tir_block.ops[op_index];
         let pos = ExceptionOpPosition { block, op_index };
-        let next_state = state.after_op(pos, op);
+        let next_state = state.after_op(pos, op, func);
         for (succ, succ_state) in op_exception_successors_with_state(
             &label_to_block,
             &anonymous_destinations,

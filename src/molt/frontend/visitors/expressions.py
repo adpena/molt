@@ -9,11 +9,11 @@ SimpleTIRGenerator MRO via self.<method>.
 
 from __future__ import annotations
 
-from molt.builtin_callables import BUILTIN_FUNC_SPECS
 from molt.opcode_literal_payloads import integer_literal_bytes
 
 import ast
 from molt.compiler_analysis.python_identity_catalog_generated import (
+    BUILTIN_IDENTITIES,
     BUILTIN_SHAPE_NAMES,
     UNBOUND_IDENTITY,
 )
@@ -24,7 +24,6 @@ from typing import (
 from molt.frontend._types import (
     _INLINE_INT_MAX,
     _INLINE_INT_MIN,
-    BUILTIN_TYPE_TAGS,
     ClassId,
     MoltOp,
     MoltValue,
@@ -199,14 +198,6 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
                     # A Python reference must capture the live object, not
                     # manufacture a new builtin wrapper from its spelling.
                     return self._emit_global_get(node.id)
-                if node.id == "NotImplemented":
-                    res = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(MoltOp(kind="CONST_NOT_IMPLEMENTED", args=[], result=res))
-                    return res
-                if node.id == "Ellipsis":
-                    res = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(MoltOp(kind="CONST_ELLIPSIS", args=[], result=res))
-                    return res
                 if node.id in self.module_chunk_globals:
                     return self._emit_global_get(node.id)
                 if (
@@ -221,17 +212,14 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
                         if self._source_callable_candidate(node) is not None:
                             return self._emit_source_callable_ref(node)
                         return self._emit_global_get(node.id)
-                if node.id in {"locals", "__import__"}:
-                    return self._emit_module_attr_get_on("builtins", node.id)
-                if node.id in BUILTIN_TYPE_TAGS:
-                    # Python names read the captured live builtins namespace.
-                    # Type tags remain an internal runtime representation, not
-                    # authority to replace a rebound Python callable.
+                if node.id in BUILTIN_IDENTITIES or self._name_resolves_to_builtin(
+                    node.id
+                ):
+                    # A proved builtin read lowered above
+                    # (`_emit_proven_builtin_value`). Any other read of a
+                    # builtin name is the live lookup: a writer may have
+                    # replaced the object its spelling names (HF-776).
                     return self._emit_global_get(node.id)
-                if node.id in BUILTIN_FUNC_SPECS:
-                    return self._emit_global_get(node.id)
-                if self._builtin_exception_is_available(node.id):
-                    return self._emit_exception_class(node.id)
                 if node.id in self.stdlib_allowlist:
                     module_val = self._emit_module_load(node.id)
                     if self.current_func_name == "molt_main":
@@ -479,9 +467,11 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
                             "Formatted value conversion not supported",
                         )
                 if item.format_spec is None:
-                    if item.conversion != -1:
+                    if item.conversion != -1 and value.type_hint == "str":
                         parts.append(value)
                     else:
+                        # FORMAT_VALUE still calls a subclass's __format__
+                        # after !s/!r; only an exact str can skip that call.
                         parts.append(self._emit_string_format(value, ""))
                     continue
                 spec_val = self._emit_format_spec_value(item.format_spec)

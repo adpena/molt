@@ -290,6 +290,63 @@ def test_provisioning_installs_and_attests_only_a_byte_exact_download(
     )
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows never consults the digest cache")
+def test_warm_discovery_reuses_the_executable_digest_and_sees_a_rewrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    from molt import toolchain_facts, toolchain_identity
+
+    monkeypatch.setattr(toolchain_identity, "DIGEST_RACY_WINDOW_NS", 0)
+    store = toolchain_facts.file_digest_cache_path(
+        toolchain_facts._default_molt_cache()
+    )
+
+    def next_process() -> None:
+        # A new process: a fresh cache over the same host store.
+        toolchain_identity._FILE_DIGEST_CACHES.pop(store, None)
+
+    release, archive = _pinned_release(tmp_path, b"demo binary")
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    (downloads / archive.name).write_bytes(archive.read_bytes())
+    toolchain_root = tmp_path / "target-root"
+    provisioned = tool_releases.provision_tool(
+        release, toolchain_root, downloads=downloads
+    )
+    time.sleep(0.01)  # the install now predates every cache made below
+    next_process()
+    assert tool_releases.discover_tool(release, toolchain_root) == provisioned
+
+    next_process()
+    opened: list[str] = []
+    real_os_open, real_io_open = os.open, io.open
+
+    def os_open(path, *args, **kwargs):
+        opened.append(os.fspath(path))
+        return real_os_open(path, *args, **kwargs)
+
+    def io_open(file, *args, **kwargs):
+        if isinstance(file, (str, bytes, os.PathLike)):
+            opened.append(os.fsdecode(file))
+        return real_io_open(file, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as reads:
+        reads.setattr(os, "open", os_open)
+        reads.setattr(io, "open", io_open)
+        assert tool_releases.discover_tool(release, toolchain_root) == provisioned
+    executable = provisioned.executable.name
+    assert [path for path in opened if Path(path).name == executable] == []
+
+    # Same size, same mtime: only ctime (which no caller can set) shows the write.
+    before = provisioned.executable.stat()
+    provisioned.executable.write_bytes(b"demo binarX")
+    os.utime(provisioned.executable, ns=(before.st_atime_ns, before.st_mtime_ns))
+    next_process()
+    assert tool_releases.discover_tool(release, toolchain_root) is None
+
+
 def test_tampered_or_stale_installs_are_not_discoveries(tmp_path: Path) -> None:
     release, archive = _pinned_release(tmp_path, b"demo binary")
     downloads = tmp_path / "downloads"

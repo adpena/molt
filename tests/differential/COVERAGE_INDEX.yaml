@@ -685,6 +685,7 @@ stdlib:
       - tests/differential/stdlib/marshal_basic.py
       - tests/differential/stdlib/marshal_edge_cases.py
       - tests/differential/stdlib/marshal_version_basic.py
+      - tests/differential/stdlib/marshal_wire_format.py
   mmap:
     tests:
       - tests/differential/stdlib/stdlib_capability_smoke_fs_b.py
@@ -980,6 +981,8 @@ stdlib:
       - tests/differential/stdlib/logging_record_thread_process.py
   traceback:
     tests:
+      - tests/differential/stdlib/frame_exception_events.py
+      - tests/differential/stdlib/frame_location_lifecycle.py
       - tests/differential/stdlib/traceback_tb_next_assignment.py
       - tests/differential/stdlib/traceback_chain.py
       - tests/differential/stdlib/traceback_extract_tb_payload.py

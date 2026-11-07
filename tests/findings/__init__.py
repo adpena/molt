@@ -49,6 +49,17 @@ def finding(finding_id: OpenFindingId) -> pytest.MarkDecorator:
     return pytest.mark.finding(finding_id)
 
 
+def flaky(finding_id: OpenFindingId) -> pytest.MarkDecorator:
+    """Quarantine a proven random flake until its open finding is resolved.
+
+    Postsubmit's --run-flaky executes it with ordinary pass/fail semantics;
+    this marker never converts a deterministic defect into an expected pass.
+    """
+    import pytest
+
+    return pytest.mark.flaky(finding_id)
+
+
 def finding_problem(finding_id: object) -> str | None:
     """Why *finding_id* cannot own an expectation, or None when it is open."""
     if finding_id in OPEN_FINDING_IDS:

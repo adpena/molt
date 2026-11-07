@@ -18,6 +18,7 @@ from molt import python_file_node_custody as files
 from molt import python_runtime_identity as runtime
 from molt.exact_json import canonical_json_sha256
 from molt.python_identity_common import PythonEnvironmentIdentityError
+from molt.python_environment_identity import PYTHON_IDENTITY_PROBE_TIMEOUT_S
 from tests.process_guard_common import (
     run_custody_subject_process,
     run_guarded_test_process,
@@ -326,7 +327,8 @@ def test_base_lib_dynload_matches_cpython_in_a_venv_of_each_pinned_release(
     base = found.stdout.strip().splitlines()[0]
     venv = tmp_path / "venv"
     made = run_guarded_test_process(
-        [base, "-I", "-m", "venv", "--without-pip", str(venv)], timeout=120
+        [base, "-I", "-m", "venv", "--without-pip", str(venv)],
+        timeout=PYTHON_IDENTITY_PROBE_TIMEOUT_S,
     )
     assert made.returncode == 0, made.stderr
     probe = (
@@ -344,7 +346,8 @@ def test_base_lib_dynload_matches_cpython_in_a_venv_of_each_pinned_release(
         " 'build_time': {k: data.build_time_vars.get(k) for k in keys}}))\n"
     )
     result = run_guarded_test_process(
-        [str(venv / "bin" / "python"), "-I", "-B", "-c", probe], timeout=120
+        [str(venv / "bin" / "python"), "-I", "-B", "-c", probe],
+        timeout=PYTHON_IDENTITY_PROBE_TIMEOUT_S,
     )
     assert result.returncode == 0, result.stderr
     observed = json.loads(result.stdout.strip().splitlines()[-1])

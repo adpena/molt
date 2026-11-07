@@ -26,10 +26,12 @@ executable tests and generated evidence win when prose drifts.
 
 ## First Release Milestone
 
-Molt's first public release is numbered v0.0.1 and must meet the v1.0 quality
-standard: the version number does not lower the bar. It must be useful for real work,
-and measured correctness, conformance, performance and security evidence must
-back every claim it makes. Release acceptance follows the
+Molt's first public release is v0.1 (owner decision 2026-11-05): a narrow claim
+proven by two flagship witnesses in four Tier 1 cells, with a generated
+known-issues list ([the v0.1 claim](docs/spec/PUBLIC_CLAIM_V0_1.md)). It must be
+useful for real work, and measured correctness, conformance, performance and
+security evidence must back every claim it makes. The v1.0 plan below continues
+after v0.1. Release acceptance follows the
 [packaging authority](packaging/PACKAGING.md) and the
 [performance acceptance scope](tools/PERF_AUTHORITY.md#v10-acceptance-scope).
 A missing measurement is a gap, not a pass. A demonstration or one green cell

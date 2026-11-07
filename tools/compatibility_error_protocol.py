@@ -1,4 +1,4 @@
-"""Closed CPython compatibility outcomes; runtime projection and audit authority.
+"""Closed CPython compatibility and explicit AOT-boundary outcomes.
 
 This is an executable semantic protocol, not an exception-site exemption list.
 Each outcome owns its target applicability, exception class and exact message.
@@ -17,6 +17,7 @@ import hashlib
 import json
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from enum import Enum
 from functools import cache
 from pathlib import Path
 import re
@@ -64,6 +65,11 @@ REFERENCE_FILES = (
 )
 
 
+class OutcomeProvenance(Enum):
+    CPYTHON = "cpython"
+    AOT_BOUNDARY = "aot_boundary"
+
+
 @dataclass(frozen=True)
 class Outcome:
     operations: tuple[str, ...]
@@ -73,9 +79,19 @@ class Outcome:
     reference: str
     witness: str
     pinned_source_paths: tuple[str, ...] = ()
+    provenance: OutcomeProvenance = OutcomeProvenance.CPYTHON
 
 
 OUTCOMES = {
+    "MarshalCodeObject": Outcome(
+        ("marshal.load", "marshal.loads", "PyMarshal_ReadObjectFromString"),
+        TARGETS,
+        ("all",),
+        "a code-object record reaches the AOT marshal reader",
+        "docs/design/marshal.md",
+        "tests/differential/stdlib/marshal_wire_format.py",
+        provenance=OutcomeProvenance.AOT_BOUNDARY,
+    ),
     "ImportlibCacheTagUnavailable": Outcome(
         ("importlib.util.cache_from_source",),
         (*TARGETS, "3.15"),
@@ -254,6 +270,7 @@ use crate::{
 };
 
 pub(crate) enum CompatibilityError<'a> {
+    MarshalCodeObject,
     DataclassReplaceInitFalse { field: &'a str },
     DataclassReplaceMissingInitVar { field_repr: &'a str },
     ImportlibCacheTagUnavailable {
@@ -305,6 +322,7 @@ impl CompatibilityError<'_> {
             return Err("unsupported compatibility-error target");
         }
         let message = match self {
+            Self::MarshalCodeObject => __MARSHAL_CODE_MESSAGE__.to_owned(),
             Self::DataclassReplaceInitFalse { field } => {
                 format!("field {field} is declared with init=False, it cannot be specified with replace()")
             }
@@ -372,6 +390,7 @@ impl CompatibilityError<'_> {
 
     fn exception_kind(&self, py: &PyToken<'_>) -> BuiltinExc {
         match self {
+            Self::MarshalCodeObject => BuiltinExc::ValueError,
             Self::DataclassReplaceInitFalse { .. } | Self::DataclassReplaceMissingInitVar { .. } => {
                 let target = crate::object::ops_sys::runtime_target_python_info(runtime_state(py));
                 if (target.major, target.minor) == (3, 12) {
@@ -571,8 +590,44 @@ def _rust_projection(source: str) -> str:
     return rustfmt_source(source, label=RUST_PATH)
 
 
+def _parse_aot_boundaries(data: object) -> dict[str, dict[str, str]]:
+    """Molt contracts have explicit provenance, never fabricated CPython receipts."""
+    if not isinstance(data, dict):
+        raise ValueError("invalid compatibility outcome authority")
+    rows = data.get("aot_boundaries")
+    expected = {
+        name: facts
+        for name, facts in OUTCOMES.items()
+        if facts.provenance is OutcomeProvenance.AOT_BOUNDARY
+    }
+    if not isinstance(rows, dict) or rows.keys() != expected.keys():
+        raise ValueError("AOT compatibility outcomes are missing or unknown")
+    for name, row in rows.items():
+        if (
+            not isinstance(row, dict)
+            or row.keys() != {"exception", "message", "contract"}
+            or row["exception"] != "ValueError"
+            or not isinstance(row["message"], str)
+            or not row["message"]
+            or row["contract"] != expected[name].reference
+            or expected[name].pinned_source_paths
+        ):
+            raise ValueError(f"invalid AOT compatibility outcome: {name}")
+    return rows
+
+
+def _aot_boundaries(root: Path) -> dict[str, dict[str, str]]:
+    return _parse_aot_boundaries(
+        json.loads((root / SOURCE_RECEIPTS).read_text(encoding="utf-8"))
+    )
+
+
 def projections() -> dict[str, str]:
-    return {PYTHON_PATH: PYTHON_SOURCE, RUST_PATH: _rust_projection(RUST_SOURCE)}
+    aot = _aot_boundaries(ROOT)
+    source = RUST_SOURCE.replace(
+        "__MARSHAL_CODE_MESSAGE__", json.dumps(aot["MarshalCodeObject"]["message"])
+    )
+    return {PYTHON_PATH: PYTHON_SOURCE, RUST_PATH: _rust_projection(source)}
 
 
 @dataclass(frozen=True)
@@ -595,9 +650,8 @@ def _reference_coordinates(
     )
     if pins is None:
         pins = load_cpython_sources(root / CPYTHON_SOURCES.relative_to(_REPO_ROOT))
-    for version in TARGETS:
-        if pins[version].tag != "v" + references[version]:
-            raise ValueError(f"CPython {version} reference and source pin disagree")
+    # References derive from each pin's patchlevel.h, and the release
+    # generator refuses a tag that disagrees with it: no copy to compare here.
     coordinates: dict[tuple[str, str], str | None] = {
         (
             references[version] if path == "Objects/memoryobject.c" else version + ".0",
@@ -760,15 +814,12 @@ def refresh_sources(
             identity, label="compatibility source authority", hash_content=True
         )
     destination = root / SOURCE_RECEIPTS
-    try:
-        destination.lstat()
-    except FileNotFoundError:
-        prior_identity, prior_bytes = None, None
-    else:
-        prior_identity, prior_bytes = capture_stable_regular_file(
-            destination, label="compatibility source receipt"
-        )
-    prior = _receipt_sources(json.loads(prior_bytes)) if prior_bytes is not None else {}
+    prior_identity, prior_bytes = capture_stable_regular_file(
+        destination, label="compatibility source receipt"
+    )
+    prior_data = json.loads(prior_bytes)
+    prior = _receipt_sources(prior_data)
+    aot_boundaries = _parse_aot_boundaries(prior_data)
     rows = []
     versions = sorted(
         {version for version, _path in expected},
@@ -801,24 +852,20 @@ def refresh_sources(
                     f"CPython {version} {path}: unchanged coordinate differs from its receipt; nothing was written"
                 )
             rows.append(row)
-    text = json.dumps({"schema_version": 1, "sources": rows}, indent=2) + "\n"
+    text = (
+        json.dumps(
+            {"schema_version": 1, "aot_boundaries": aot_boundaries, "sources": rows},
+            indent=2,
+        )
+        + "\n"
+    )
     for identity in inputs:
         verify_stable_regular_file_identity(
             identity, label="compatibility source authority", hash_content=True
         )
-    if prior_identity is not None:
-        verify_stable_regular_file_identity(
-            prior_identity, label="compatibility source receipt", hash_content=True
-        )
-    else:
-        try:
-            destination.lstat()
-        except FileNotFoundError:
-            pass
-        else:
-            raise ValueError(
-                "compatibility source receipt appeared during capture; nothing was written"
-            )
+    verify_stable_regular_file_identity(
+        prior_identity, label="compatibility source receipt", hash_content=True
+    )
     if not generated_file_matches(destination, text):
         write_generated_text(destination, text)
         print(f"wrote {SOURCE_RECEIPTS}; now run --write")
@@ -828,6 +875,10 @@ def refresh_sources(
 def source_errors(root: Path) -> list[str]:
     """Pinned CPython source receipts and differential witnesses for every outcome."""
     errors = []
+    try:
+        _aot_boundaries(root)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        errors.append(str(exc))
     try:
         sources = _receipt_sources(
             json.loads((root / SOURCE_RECEIPTS).read_text(encoding="utf-8"))
@@ -878,6 +929,11 @@ def generated_outputs() -> dict[Path, str]:
 
 def describe(outcome: str) -> str:
     facts = OUTCOMES[outcome]
+    reference_label = (
+        "AOT contract"
+        if facts.provenance is OutcomeProvenance.AOT_BOUNDARY
+        else "CPython"
+    )
     availability = ",".join(
         operation
         + "@"
@@ -892,7 +948,7 @@ def describe(outcome: str) -> str:
         f"{outcome}; operations={','.join(facts.operations)}; "
         f"versions={','.join(facts.versions)}; platforms={','.join(facts.platforms)}; "
         f"availability={availability}; predicate={facts.predicate}; "
-        f"CPython={facts.reference}; witness={facts.witness}"
+        f"{reference_label}={facts.reference}; witness={facts.witness}"
     )
 
 

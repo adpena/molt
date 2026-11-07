@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::tir::op_kinds_generated::ExceptionEdgeKind;
 
 #[test]
 fn none_annotation_cannot_replace_a_borrowed_boxed_word() {
@@ -541,7 +542,7 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
             source_span: None,
         });
         // The enclosing operation, not a private return, owns exception routing.
-        entry.ops.push(TirOp {
+        let mut check = TirOp {
             origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
@@ -549,7 +550,9 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
             results: vec![],
             attrs: AttrDict::from([("value".into(), AttrValue::Int(17))]),
             source_span: None,
-        });
+        };
+        check.set_exception_edge_kind(ExceptionEdgeKind::Origin);
+        entry.ops.push(check);
         entry.terminator = Terminator::Return {
             values: vec![if has_result { result_id } else { first }],
         };
@@ -624,13 +627,34 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
         );
         assert!(merge.contains("@molt_exception_pending()"), "{ir}");
         assert!(merge.contains("icmp ne i64 %check_exc, 0"), "{ir}");
+        let origin = llvm_fn
+            .get_basic_blocks()
+            .into_iter()
+            .find(|block| block_text(*block).contains("@molt_exception_frame_origin("))
+            .expect("the operation's taken Origin edge captures before the handler");
+        let origin_name = origin.get_name().to_str().unwrap();
+        let origin_text = block_text(origin);
         assert!(
             merge.contains(&format!(
-                "br i1 %check_exc_pending, label %bb{}, label %check_exc_cont",
-                handler_id.0
+                "br i1 %check_exc_pending, label %{origin_name}, label %check_exc_cont",
             )),
             "{ir}"
         );
+        assert_eq!(
+            ir.matches("@molt_exception_frame_origin(").count(),
+            1,
+            "{ir}"
+        );
+        assert!(
+            origin_text.contains(&format!("br label %bb{}", handler_id.0)),
+            "{ir}"
+        );
+        for normal_path in [&source, &success, &merge] {
+            assert!(
+                !normal_path.contains("@molt_exception_frame_origin("),
+                "{ir}"
+            );
+        }
         assert!(!merge.contains("ret "), "{ir}");
         for block_name in [format!("bb{}", handler_id.0), "check_exc_cont".into()] {
             let destination = block_text(
@@ -648,6 +672,10 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
             assert!(destination.contains("ret i64"), "{ir}");
             assert!(!destination.contains(&format!("@{runtime}(")), "{ir}");
             assert!(!destination.contains("@__molt_inline_release("), "{ir}");
+            assert!(
+                !destination.contains("@molt_exception_frame_origin("),
+                "{ir}"
+            );
         }
         assert!(
             !merge.contains("@__molt_inline_release(") && !merge.contains("ptr_unbox"),

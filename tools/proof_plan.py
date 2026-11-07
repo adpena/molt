@@ -81,7 +81,10 @@ from molt.cargo_execution_policy import (  # noqa: E402
     normalize_cargo_environment,
 )
 
-from tools.proof_executor import execute_commands as _execute_commands  # noqa: E402
+from tools.proof_executor import (  # noqa: E402
+    CommandAllocation,
+    execute_commands as _execute_commands,
+)
 
 from tools import proof_plan_cli as _proof_plan_cli  # type: ignore  # noqa: E402
 
@@ -486,6 +489,25 @@ class ToolchainPolicy:
         return str(self.data.get("executable") or self.name)
 
 
+_EXACT_VERSION = re.compile(r"\d+\.\d+\.\d+")
+
+
+def pinned_version_file(root: Path, name: str, relative: str) -> str:
+    """The exact X.Y.Z a policy's ``version_file`` pins (`.python-version`)."""
+    path = root / relative
+    try:
+        version = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ValueError(
+            f"{name}: version_file {relative} is unreadable: {exc}"
+        ) from exc
+    if not _EXACT_VERSION.fullmatch(version):
+        raise ValueError(
+            f"{name}: version_file {relative} must hold one X.Y.Z version, not {version!r}"
+        )
+    return version
+
+
 def _selected_target_python_versions(root: Path) -> tuple[str, ...]:
     """Query the selected source authority without rebinding driver imports."""
     source = root / "src/molt/target_python_policy.py"
@@ -573,6 +595,24 @@ def load_toolchain_policies(
         name = str(row.get("name", ""))
         if row.get("executable") == "{python}":
             row["python_identity_role"] = "environment"
+        if "version_file" in row:
+            # One authority: the policy derives its contract from the pin file
+            # and never restates it (docs/design/python_version_authority.md).
+            restated = {"version_pattern", "setup_value"} & row.keys()
+            if restated:
+                raise ValueError(
+                    f"{name}: version_file derives {sorted(restated)}; remove them"
+                )
+            relative = str(row.pop("version_file"))
+            version = pinned_version_file(root, name, relative)
+            row.update(
+                version_pattern=rf"^Python {re.escape(version)}$",
+                setup_value=version,
+                setup_evidence=[
+                    f"{relative}::{version}",
+                    *row.get("setup_evidence", []),
+                ],
+            )
         if row.get("python_versions") == "supported-targets":
             row["members"] = []
             for version in _selected_target_python_versions(root):
@@ -1771,6 +1811,56 @@ class Selection:
 _REPOSITORY_SOURCE_ROOTS = ("examples", "formal", "src", "tests", "tools")
 
 
+ACCEPTANCE_MATRIX = Path("config/release_acceptance_matrix.toml")
+
+
+@functools.cache
+def excluded_backends(root: Path = ROOT) -> frozenset[str]:
+    """The experimental backends: the release acceptance matrix's exclusions."""
+    document = tomllib.loads((root / ACCEPTANCE_MATRIX).read_text(encoding="utf-8"))
+    return frozenset(str(item["backend"]) for item in document["excluded_backend"])
+
+
+def excluded_backend_crates(excluded: frozenset[str]) -> frozenset[str]:
+    """The Cargo package of each excluded backend, `molt-backend-<backend>`."""
+    return frozenset(f"molt-backend-{name}" for name in excluded)
+
+
+def experimental_backend_selection(
+    argv: Sequence[object], cwd: object, excluded: frozenset[str]
+) -> str | None:
+    """The argv token or cwd that runs an excluded backend, or None.
+
+    The owner approved (2026-11-05) that the experimental backends run in no
+    presubmit or postsubmit cell; the schedule may still run them. A selection
+    is `molt build --target <backend>`, the Cargo package
+    `molt-backend-<backend>`, a `<backend>-backend` feature or a `cwd` in that
+    crate. A whole-workspace lint with those features off compiles their code
+    but runs none of it, and stays.
+    """
+    crates = excluded_backend_crates(excluded)
+    features = {f"{name}-backend" for name in excluded}
+    tokens = [str(token) for token in argv]
+    for index, token in enumerate(tokens):
+        flag, equals, inline = token.partition("=")
+        value = (
+            inline if equals else (tokens[index + 1] if index + 1 < len(tokens) else "")
+        )
+        if flag == "--target" and value in excluded:
+            return f"--target {value}"
+        if flag in ("-p", "--package") and value in crates:
+            return f"{flag} {value}"
+        if flag in ("-F", "--features") and any(
+            item.rsplit("/", 1)[-1] in features for item in value.split(",")
+        ):
+            return f"{flag} {value}"
+    if isinstance(cwd, str) and any(
+        PurePosixPath(cwd).parts[:2] == ("runtime", crate) for crate in crates
+    ):
+        return f"cwd {cwd}"
+    return None
+
+
 def argv_repository_paths(argv: Iterable[object]) -> tuple[str, ...]:
     """The repository paths that an argv names, read from their spelling.
 
@@ -2189,6 +2279,35 @@ class ProofPlan:
         # One directory listing per checkout directory for every declared target.
         listings: dict[Path, frozenset[str]] = {}
         self._validate_named_lanes(errors, listings)
+        excluded = excluded_backends()
+        # The schedule may run an experimental backend; presubmit (pre-push,
+        # pr, landing rules, named lanes) and postsubmit (main) may not.
+        selections = [
+            (f"command {command.id}", command.argv, command.data.get("cwd"))
+            for command in self.commands
+            if set(command.data.get("tiers") or ()) - {"scheduled"}
+        ]
+        selections += [
+            (f"named lane {lane.id}", lane.argv, lane.data.get("cwd"))
+            for lane in self.named_lanes
+        ]
+        selections += [
+            (
+                f"rule {rule.get('name')}",
+                shlex.split(gate) if isinstance(gate, str) else list(gate),
+                None,
+            )
+            for rule in self.local_rules
+            for gate in rule.get("gates", ())
+        ]
+        for owner, argv, cwd in selections:
+            selected = experimental_backend_selection(argv, cwd, excluded)
+            if selected is not None:
+                errors.append(
+                    f"{owner} runs an experimental backend ({selected}); the "
+                    "excluded backends of config/release_acceptance_matrix.toml run "
+                    "in no presubmit or postsubmit cell"
+                )
         if self.executor_max_workers <= 0:
             errors.append("executor_max_workers must be positive")
         if not 1 <= self.inventory_hash_workers <= 32:
@@ -4297,35 +4416,44 @@ def _runtime_command(
     return command
 
 
-def _provision_runtime_tools(
+def _provision_tool_releases(
     policies: Iterable[ToolchainPolicy],
     names: tuple[str, ...],
     *,
     root: Path,
     environment: Mapping[str, str],
 ) -> str | None:
-    """Provision each selected runtime tool release (npm) before admission.
+    """Provision each selected pinned tool release before admission.
 
-    It runs on its pinned runtime through ``molt.tool_releases``, which
-    provisions it on use, so admission provisions it too, as it provisions
-    a checkout input from its lock, instead of refusing until a person does.
+    Admission is an explicit provisioning point, as it provisions a checkout
+    input from its lock: a moved pin in config/tool_releases.toml reaches every
+    host that runs a gate selecting the tool, instead of refusing until a
+    person provisions it (landing 25, 2026-11-07: wasm-tools 1.263.0).
     """
-    from molt.tool_releases import ToolReleaseError
+    from molt.tool_releases import (
+        ToolReleaseError,
+        discover_pinned_tool,
+        pinned_command,
+    )
 
     selected = set(names)
     errors = []
     for policy in policies:
-        if policy.name in selected and policy.projection == "runtime-tool-release":
-            try:
-                _runtime_command(
-                    str(policy.data["executable"]),
-                    root,
-                    environment,
-                    root,
-                    provision=True,
-                )
-            except ToolReleaseError as exc:
-                errors.append(f"{policy.name}: {exc}")
+        if policy.name not in selected or policy.projection not in RELEASE_PROJECTIONS:
+            continue
+        tool = str(policy.data["executable"])
+        try:
+            if policy.projection == "runtime-tool-release":
+                # Cached: projection reuses the provisioned command.
+                _runtime_command(tool, root, environment, root, provision=True)
+            elif (
+                discover_pinned_tool(tool, root, environ=environment, cwd=None) is None
+            ):
+                # The warm path is the discovery projection repeats; only an
+                # absent release reads the manifest and provisions.
+                pinned_command(tool, root, environ=environment, provision=True)
+        except ToolReleaseError as exc:
+            errors.append(f"{policy.name}: {exc}")
     return "; ".join(errors) or None
 
 
@@ -4754,11 +4882,11 @@ def admit_toolchains(
     is not installed; a refusal names what to install. A selected tool that a
     checkout input supplies (``checkout_input``) is provisioned from its lock
     first, as ``uv run`` syncs before it runs (`molt.checkout_provisioning`),
-    and a selected runtime tool release (npm) is provisioned the same way.
+    and a selected pinned tool release (node, npm) is provisioned the same way.
     """
     policies = tuple(policies)
     names = toolchain_closure(policies, names)
-    runtime_error = _provision_runtime_tools(
+    release_error = _provision_tool_releases(
         policies, names, root=root, environment=environ
     )
     projection = project_toolchains(policies, names, environ=environ, root=root)
@@ -4766,9 +4894,9 @@ def admit_toolchains(
     provisioning_error = _provision_checkout_inputs(
         policies, names, root=root, environment=environment
     )
-    if runtime_error is not None:
+    if release_error is not None:
         provisioning_error = "; ".join(
-            error for error in (runtime_error, provisioning_error) if error
+            error for error in (release_error, provisioning_error) if error
         )
     absent: tuple[str, ...] = ()
     try:
@@ -5318,6 +5446,7 @@ def _run_command(
     *,
     environment: Mapping[str, str],
     memory_share: int | None,
+    allocation: CommandAllocation | None = None,
 ) -> dict[str, Any]:
     relative_cwd = str(command.data.get("cwd", "."))
     cache = _cache_disposition(command)
@@ -5366,9 +5495,20 @@ def _run_command(
     custody_error: Exception | None = None
     cancellation_started: float | None = None
     cancellation_elapsed: float | None = None
+    executed_argv = resolved_command_argv(command)
+    pytest_workers = None
+    if allocation is not None and allocation.pytest_cpus is not None:
+        from tools.proof_command_argv import allocated_pytest_argv
+
+        executed_argv, pytest_workers = allocated_pytest_argv(
+            executed_argv,
+            root=ROOT / relative_cwd,
+            cpus=allocation.pytest_cpus,
+            environment=child_env,
+        )
     try:
         process = _COMMANDS.start_guarded(
-            resolved_command_argv(command),
+            executed_argv,
             cwd=ROOT / relative_cwd,
             env=child_env,
             timeout=timeout,
@@ -5476,6 +5616,13 @@ def _run_command(
             break
     record = {
         **proof_receipts.command_record(command),
+        "launch_argv": list(executed_argv),
+        # A valid record's child_process is the startup's launch record.
+        "executed_argv": metrics["child_process"]["command"] if metrics_valid else None,
+        "pytest_workers": pytest_workers,
+        "child_cpu_seconds": metrics.get("child_cpu_seconds")
+        if metrics_valid
+        else None,
         "started_at": started_at,
         "duration_seconds": (
             round(float(metrics["duration_seconds"]), 6) if metrics_valid else None
@@ -5513,37 +5660,16 @@ def _run_command(
         },
         "termination_escalated": False,
         "guard_returncode": completed_returncode,
-        "guard_custody": {
-            "launch_id": process.launch_id,
-            "launch_pid": process.pid,
-            "guard_pid": process.guard_pid,
-            "startup_path": str(process.startup_path),
-            "summary_path": str(process.summary_path),
-            "cancellation_path": str(process.cancellation_path),
-            "evidence_path": str(process.evidence_path),
-            "terminal": process.terminal,
-            "cancellation_observation_seconds": cancellation_elapsed,
-            "cancellation_observation_budget_seconds": (
+        "guard_custody": proof_receipts.guarded_command_custody(
+            process,
+            cancellation_elapsed=cancellation_elapsed,
+            cancellation_budget=(
                 GUARD_CANCELLATION_OBSERVATION_SECONDS
                 if cancellation_started is not None
                 else None
             ),
-            "observation_error": None
-            if custody_error is None
-            else {
-                "type": type(custody_error).__name__,
-                "message": str(custody_error),
-                "closure": "confirmed" if process.terminal else "unresolved",
-                "cleanup_error": (
-                    None
-                    if getattr(custody_error, "cleanup_error", None) is None
-                    else {
-                        "type": type(custody_error.cleanup_error).__name__,
-                        "message": str(custody_error.cleanup_error),
-                    }
-                ),
-            },
-        },
+            observation_error=custody_error,
+        ),
         "environment_policies_applied": list(applied_environment_policies),
         "evidence_outputs": evidence_outputs,
     }
@@ -5601,12 +5727,21 @@ def execute_commands(
         _normalized_os=_normalized_os,
         _normalized_arch=_normalized_arch,
         _required_toolchains=lambda command: closures[command.id],
-        _run_command=lambda plan, command, event: _run_command(
+        _run_command=lambda plan, command, event, allocation: _run_command(
             plan,
             command,
             event,
-            environment=environments[closures[command.id]],
+            environment=MappingProxyType(
+                {
+                    **environments[closures[command.id]],
+                    "MOLT_GUARD_PROFILE_LOG": str(
+                        receipt_path.with_suffix(".d")
+                        / f"{command.id}.attempt-{allocation.attempt}.profile.jsonl"
+                    ),
+                }
+            ),
             memory_share=memory_share,
+            allocation=allocation,
         ),
         _cache_disposition=_cache_disposition,
     )

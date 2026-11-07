@@ -1234,6 +1234,22 @@ def _render_public_objects() -> tuple[str, str]:
     rust.append("            _ => None,\n        }\n    }\n}\n")
     rust.append(_render_public_constructors(objects))
     python.append("}\n")
+    python.extend(
+        [
+            "\n@dataclass(frozen=True)\nclass PublicCallSignature:\n",
+            "    posonly: tuple[str, ...]\n    positional: tuple[str, ...]\n",
+            "    defaults: tuple[str, ...]\n    kwonly: tuple[str, ...]\n",
+            "    kwdefaults: tuple[str, ...]\n    vararg: str | None\n    varkw: str | None\n\n",
+            "PUBLIC_CALL_SIGNATURES: dict[str, PublicCallSignature] = {\n",
+        ]
+    )
+    for runtime, identity in objects.items():
+        if (call := identity.call) is not None:
+            python.append(
+                f"    {runtime!r}: PublicCallSignature({call.posonly!r}, {call.positional!r}, "
+                f"{call.defaults!r}, {call.kwonly!r}, {call.kwdefaults!r}, {call.vararg!r}, {call.varkw!r}),\n"
+            )
+    python.append("}\n")
     return "".join(rust), "".join(python)
 
 

@@ -43,6 +43,25 @@ pub(crate) fn preserve_native_batch_worker_failure_artifacts(
 
     let copied_object = preserve_partial_object(object_path, &artifact_dir)?;
     let replay_object = artifact_dir.join("replay.o");
+    // Replay runs the executable that spawned the failed worker, with the
+    // worker's own arguments (worker/spawn.rs); a fixed build path names a
+    // binary that release and daemon builds never had.
+    let executable = std::env::current_exe().map_err(|err| {
+        io::Error::other(format!(
+            "failed to resolve the backend executable for the replay command: {err}"
+        ))
+    })?;
+    let mut argv = vec![
+        executable.display().to_string(),
+        "--native-batch-job-file".to_string(),
+        copied_job.display().to_string(),
+        "--output".to_string(),
+        replay_object.display().to_string(),
+    ];
+    if let Some(scope) = crate::backend_process::origin::current_scope() {
+        argv.push("--emission-scope".to_string());
+        argv.push(scope.to_string());
+    }
     let manifest = serde_json::json!({
         "schema_version": 2,
         "label": label,
@@ -54,13 +73,7 @@ pub(crate) fn preserve_native_batch_worker_failure_artifacts(
         "replay": {
             "environment": job.codegen_environment.values,
             "environment_null_means": "unset before replay",
-            "argv": [
-                "target/debug/molt-backend",
-                "--native-batch-job-file",
-                copied_job.display().to_string(),
-                "--output",
-                replay_object.display().to_string()
-            ]
+            "argv": argv
         }
     });
     write_json_artifact(&manifest_marker, &manifest)?;

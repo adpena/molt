@@ -87,6 +87,20 @@ class GateCancellation(DriverError):
         self.unresolved = unresolved
 
 
+class GateMemoryPressure(DriverError):
+    """The guard stopped a gate at its memory share, and closed its tree.
+
+    The share is the free memory divided among the gates running at once, so
+    the same gate can pass alone. The landing reruns the stopped gates alone
+    once before it fails (2026-11-06: one `molt-wasm-host` needed 9.8-11.0 GB,
+    above a 7.3-8.3 GB share, on main and on the batch). ``shown`` names them.
+    """
+
+    def __init__(self, message: str, shown: tuple[str, ...]) -> None:
+        super().__init__(message)
+        self.shown = shown
+
+
 class Gate(Protocol):
     @property
     def command(self) -> str | tuple[str, ...]: ...
@@ -333,6 +347,9 @@ class GateRuntime:
     # Every gate that passed, in completion order: the typed outcome a caller
     # reads instead of matching rendered commands.
     passed: list[Gate] = field(default_factory=list)
+    # The stdout log of the run that passed, by shown command: after a rerun,
+    # the rerun's log, never the failed first attempt's (landing receipt counts).
+    passed_logs: dict[str, Path] = field(default_factory=dict)
 
 
 def gate_runs_pytest(gate: Gate, *, repo: Path) -> bool:
@@ -349,9 +366,14 @@ def gate_runs_pytest(gate: Gate, *, repo: Path) -> bool:
 
 
 def _pytest_report_command(
-    command: str | tuple[str, ...], gate: Gate, runtime: GateRuntime, ordinal: int
+    command: str | tuple[str, ...],
+    gate: Gate,
+    runtime: GateRuntime,
+    ordinal: int,
+    log_dir: Path,
 ) -> str | tuple[str, ...]:
-    """JUnit is pytest's own test-level failure evidence, kept with gate logs."""
+    """JUnit is pytest's own test-level failure evidence, kept with the gate's
+    other logs in ``log_dir``."""
     match runtime.mode:
         case LandingMode.PRESUBMIT:
             return command
@@ -363,10 +385,10 @@ def _pytest_report_command(
             argv = tuple(shlex.split(command)) if isinstance(command, str) else command
             return (
                 *argv,
+                "--run-flaky",
                 "-o",
                 "junit_family=xunit1",
-                "--junitxml="
-                + str(runtime.output_dir / f"gate-{ordinal:03d}.junit.xml"),
+                "--junitxml=" + str(log_dir / f"gate-{ordinal:03d}.junit.xml"),
             )
         case _:
             assert_never(runtime.mode)
@@ -614,15 +636,77 @@ def run_selected_gates(
         _check_cancellation(runtime)
         _run_serial_gate(ordinal, gate, runtime, gate_seconds)
     _check_cancellation(runtime)
-    if len(heavy) >= 2:
+    if heavy:
+        _run_heavy_gates(heavy, runtime, gate_seconds, host_limit)
+    _check_cancellation(runtime)
+
+
+def _run_heavy_gates(
+    heavy: list[tuple[int, Gate]],
+    runtime: GateRuntime,
+    gate_seconds: list[tuple[float, str]],
+    host_limit: Callable[[], int],
+) -> None:
+    """Run the heavy block; on a gate failure or a memory stop, rerun the
+    failed gates alone once, then the gates the stop cancelled.
+
+    A gate that passes alone failed on the load beside it or on a flake, not on
+    the candidate (Chromium's retry rule; Meta's probabilistic flakiness score);
+    a second failure is the candidate's and raises at once. Custody, closure,
+    cancellation and runner faults stop at once, as before: a retry must never
+    hide them, so a gate failure retries only with a clean closure.
+    """
+    try:
         _run_executor_block(
             heavy, runtime, gate_seconds, host_limit(), receipt_kind="heavy"
         )
-    else:
-        for ordinal, gate in heavy:
-            _check_cancellation(runtime)
-            _run_serial_gate(ordinal, gate, runtime, gate_seconds)
-    _check_cancellation(runtime)
+        return
+    except (GateFailure, GateMemoryPressure) as first:
+        if runtime.cancelled() or (
+            isinstance(first, GateFailure) and not first.clean_closure
+        ):
+            raise
+        failed = [
+            (ordinal, gate)
+            for ordinal, gate in heavy
+            if display(gate.command) in first.shown
+        ]
+        if not failed:
+            raise
+        runtime.say(
+            f"    retry: {len(failed)} failed heavy gate(s) alone after: "
+            f"{str(first).splitlines()[0]}"
+        )
+        try:
+            _run_executor_block(
+                failed,
+                runtime,
+                gate_seconds,
+                1,
+                receipt_kind="heavy-retry",
+                log_dir=runtime.output_dir / "heavy-retry",
+            )
+        except BaseException as second:
+            second.add_note(f"first attempt, beside other gates: {first}")
+            raise
+        runtime.say(
+            "    retry passed: the first failure was load or a flake, not the "
+            f"candidate: {str(first).splitlines()[0]}"
+        )
+        rest = [
+            (ordinal, gate)
+            for ordinal, gate in heavy
+            if gate not in runtime.passed and (ordinal, gate) not in failed
+        ]
+        if rest:
+            _run_executor_block(
+                rest,
+                runtime,
+                gate_seconds,
+                host_limit(),
+                receipt_kind="heavy-rest",
+                log_dir=runtime.output_dir / "heavy-rest",
+            )
 
 
 def _run_serial_gate(
@@ -636,7 +720,7 @@ def _run_serial_gate(
     cmd = gate.collection_command if collection else gate.command
     assert cmd is not None
     if not collection:
-        cmd = _pytest_report_command(cmd, gate, runtime, ordinal)
+        cmd = _pytest_report_command(cmd, gate, runtime, ordinal, runtime.output_dir)
     assert isinstance(gate.cargo_target_access, CargoTargetAccess)
     phase = "collection" if collection else "gate"
     shown = display(cmd)
@@ -732,6 +816,8 @@ def _run_serial_gate(
         raise gate_failure(rc, elapsed, shown, timings, record)
     if not collection:
         runtime.passed.append(gate)
+        if streams is not None:
+            runtime.passed_logs[display(gate.command)] = streams[0]
     runtime.ok(
         f"pytest collection passed in {elapsed:.1f} s (execution still required): {shown}"
         if collection
@@ -802,9 +888,25 @@ def _memory_slice(plan: _LocalGatePlan, classes: dict[str, int]) -> int | None:
     return max(1, usable // concurrency)
 
 
-def _local_command(ordinal: int, gate: Gate, cell: str) -> _LocalGateCommand:
+def _local_command(
+    ordinal: int, gate: Gate, cell: str, *, repo: Path
+) -> _LocalGateCommand:
     cmd = gate.command
     argv = ("/bin/sh", "-c", cmd) if isinstance(cmd, str) else tuple(cmd)
+    pytest_gate = gate_runs_pytest(gate, repo=repo)
+    if pytest_gate and isinstance(cmd, str):
+        import shlex
+
+        lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|<>()")
+        lexer.whitespace_split = True
+        words = tuple(lexer)
+        if any(word and set(word) <= set(";&|<>()") for word in words) or any(
+            character in cmd for character in "$`\n"
+        ):
+            raise DriverError(
+                "pytest gates require a simple argv; shell programs bypass worker allocation"
+            )
+        argv = words
     assert isinstance(gate.cargo_target_access, CargoTargetAccess)
     return _LocalGateCommand(
         id=f"local.{'always' if gate.concurrent else 'gate'}.{ordinal}",
@@ -814,6 +916,7 @@ def _local_command(ordinal: int, gate: Gate, cell: str) -> _LocalGateCommand:
             "tiers": ["local-integration"],
             "resource_class": gate_resource_class(gate),
             "toolchains": list(gate.toolchains),
+            "pytest": pytest_gate,
             "cargo_target_access": gate.cargo_target_access.value,
             # Local always gates keep their unbounded deadline.
             "timeout_budget": "none",
@@ -832,8 +935,15 @@ def _run_executor_block(
     host: int,
     *,
     receipt_kind: str | None = None,
+    log_dir: Path | None = None,
 ) -> None:
-    """Run the block through the proof executor; report it in declared order."""
+    """Run the block through the proof executor; report it in declared order.
+
+    ``log_dir`` holds the block's gate logs; it defaults to the run's
+    ``output_dir``. A block that reruns gates passes its own directory: gate
+    streams are created exclusively, and a rerun keeps the first run's logs.
+    """
+    log_dir = runtime.output_dir if log_dir is None else log_dir
     from tools.proof_plan import _normalized_arch, _normalized_os
 
     classes: dict[str, int] = {}
@@ -843,7 +953,10 @@ def _run_executor_block(
     plan = _local_plan(runtime, classes, host)
     cell = f"{_normalized_os()}-{_normalized_arch()}-local"
     commands = _cargo_chain(
-        [_local_command(ordinal, gate, cell) for ordinal, gate in gates]
+        [
+            _local_command(ordinal, gate, cell, repo=runtime.repo)
+            for ordinal, gate in gates
+        ]
     )
     outcomes: dict[str, GateOutcome | BaseException] = {}
     receipt_path = (
@@ -868,7 +981,10 @@ def _run_executor_block(
     }
 
     def run_command(
-        _plan: Any, command: _LocalGateCommand, cancel: threading.Event
+        _plan: Any,
+        command: _LocalGateCommand,
+        cancel: threading.Event,
+        allocation: proof_executor.CommandAllocation,
     ) -> dict[str, Any]:
         record: dict[str, Any] = {
             **proof_receipts.command_record(command),
@@ -897,10 +1013,38 @@ def _run_executor_block(
         required = runtime.capacity_requirements.get(command.gate.toolchains, 0)
         started = time.monotonic()
         streams, stream_error = prepare_gate_streams(
-            runtime.output_dir, command.ordinal
+            log_dir
+            if allocation.attempt == 1
+            else log_dir / f"attempt-{allocation.attempt}",
+            command.ordinal,
         )
         record.update(stream_record(streams, stream_error))
         try:
+            environment = environments[command.gate.toolchains].overlay(
+                {
+                    "MOLT_GUARD_PROFILE_LOG": str(
+                        log_dir
+                        / f"gate-{command.ordinal:03d}.attempt-{allocation.attempt}.profile.jsonl"
+                    )
+                }
+            )
+            argv = command.gate.command
+            if allocation.pytest_cpus is not None:
+                from tools.proof_command_argv import allocated_pytest_argv
+
+                argv, workers = allocated_pytest_argv(
+                    command.argv,
+                    root=runtime.repo,
+                    cpus=allocation.pytest_cpus,
+                    environment=environment.environment,
+                )
+                record["pytest_workers"] = workers
+            argv = _pytest_report_command(
+                argv, command.gate, runtime, command.ordinal, log_dir
+            )
+            record["launch_argv"] = (
+                list(argv) if not isinstance(argv, str) else ["/bin/sh", "-c", argv]
+            )
             before = (
                 runtime.observe_capacity(
                     paths, required_bytes=required, phase="before", gate=shown
@@ -909,11 +1053,9 @@ def _run_executor_block(
                 else ()
             )
             outcome = runtime.run_captured_gate(
-                _pytest_report_command(
-                    command.gate.command, command.gate, runtime, command.ordinal
-                ),
+                argv,
                 runtime.repo,
-                environments[command.gate.toolchains],
+                environment,
                 lambda: cancel.is_set() or runtime.cancelled(),
                 streams,
             )
@@ -923,6 +1065,8 @@ def _run_executor_block(
                 cancel_requested=cancel.is_set() or runtime.cancelled(),
                 cargo_target_access=command.gate.cargo_target_access,
             )
+            record["executed_argv"] = list(outcome.guard_result.args)
+            record["child_cpu_seconds"] = outcome.guard_result.child_cpu_seconds
             if paths:
                 runtime.observe_capacity(
                     paths,
@@ -936,6 +1080,8 @@ def _run_executor_block(
             # this record (its streams and duration) for the receipt; the
             # declared-order report below raises the original error.
             outcomes[command.id] = exc
+            from molt.process_spawn import ProcessLaunchError
+
             return {
                 **record,
                 "duration_seconds": round(time.monotonic() - started, 6),
@@ -944,6 +1090,11 @@ def _run_executor_block(
                 "executor_error": f"{type(exc).__name__}: {exc}",
                 "failure_scope": "global",
                 "failure_reason": "the gate runner raised",
+                **(
+                    {"launch_failure": exc.json_payload()}
+                    if isinstance(exc, ProcessLaunchError)
+                    else {}
+                ),
             }
         except BaseException as exc:  # an interrupt stops the block at once
             outcomes[command.id] = exc
@@ -986,6 +1137,8 @@ def _run_executor_block(
 
     runner_errors: list[BaseException] = []
     control_failures: list[str] = []
+    # Control failures that are only the guard's memory stop with a closed tree.
+    memory_stops: list[str] = []
     # Cancelled gates whose guard closure stayed indeterminate.
     unresolved: list[str] = []
     for command in commands:
@@ -1032,11 +1185,17 @@ def _run_executor_block(
             continue
         # The executor observed the source after every completion; a gate
         # that changed it reports the canonical clean-source refusal.
-        if record.get("source_tree_state_after") == "changed":
+        if record.get("source_changed") is True:
             runtime.check_source()
         if status == "failure" and outcome.returncode != 0:
             if record.get("failure_scope") == "global":
                 control_failures.append(f"at {shown}: {record.get('failure_reason')}")
+                guard = record.get("guard_outcome") or {}
+                if (
+                    guard.get("memory_violation") is not None
+                    and outcome.guard_result.descendants_closed is True
+                ):
+                    memory_stops.append(shown)
             continue
         if status != "success":
             control_failures.append(
@@ -1044,6 +1203,8 @@ def _run_executor_block(
             )
             continue
         runtime.passed.append(command.gate)
+        if "stdout_path" in record:
+            runtime.passed_logs[shown] = Path(record["stdout_path"])
         runtime.ok(f"gate passed in {elapsed:.1f} s: {shown}")
     if (
         runtime.cancelled()
@@ -1089,6 +1250,8 @@ def _run_executor_block(
             failure.add_note(evidence)
         if runner_errors:
             failure.guard_errors = tuple(runner_errors)
+        failure.clean_closure = not (unresolved or control_failures or runner_errors)
+        failure.shown = (display(command.gate.command),)
         raise failure
     if (
         unresolved
@@ -1106,6 +1269,10 @@ def _run_executor_block(
             error.guard_errors = tuple(runner_errors)
         raise error
     if control_failures:
+        if len(memory_stops) == len(control_failures) and not unresolved:
+            raise GateMemoryPressure(
+                stopped("; ".join(control_failures)).args[0], tuple(memory_stops)
+            )
         raise stopped("; ".join(control_failures))
     if receipt.get("status") != "success":
         raise stopped("without a classified gate failure")

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import shlex
 import tomllib
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
@@ -117,7 +117,7 @@ PRECHECK_TOOLCHAINS = frozenset({"generators", "git", "python", "rustfmt", "uv"}
 
 @dataclass(frozen=True)
 class PrecheckBudget:
-    """The wall-clock limit of one lane try run (HF-710: 15 minutes at p90).
+    """The wall-clock limit of one lane try run, including any allowed retry.
 
     The static gates and the repairs before them run outside it. The try run
     stops at the limit: its running gates are cancelled through
@@ -132,7 +132,11 @@ class PrecheckBudget:
             raise ValueError("a precheck budget must be positive")
 
 
-PRECHECK_BUDGET = PrecheckBudget(seconds=15 * 60)
+# Owner correction, 2026-11-05 19:50Z: presubmit targets 600 s p90 by
+# selecting changed tests and their actual readers, never by a larger budget.
+# Static/repair wall time remains visible outside this try-run guard; the
+# whole-presubmit p90 must be qualified from the retained run measurements.
+PRECHECK_BUDGET = PrecheckBudget(seconds=10 * 60)
 # The ceiling of one `land --fast` attempt's try run (docs/design/
 # landing_queue.md, section 9). A fast landing pushes only a complete run, so
 # a refusal at this ceiling fails the landing instead of queueing its gates.
@@ -289,6 +293,9 @@ class GateConfig:
     dependency_graph: Callable[[], DependencyGraph] | None = None
     # Mechanical repairs, in order; `land` applies them before its precheck.
     repair: list[str] = field(default_factory=list)
+    # One graph selection per request: the gates it selects and the receipt
+    # that names what it left to postsubmit read the same object.
+    _graph_selections: dict = field(default_factory=dict, repr=False, compare=False)
 
     @staticmethod
     def load(path: Path) -> "GateConfig":
@@ -451,6 +458,21 @@ class GateConfig:
         """The tests that read a touched path, and where each one runs."""
         if self.dependency_graph is None or not (touched or recent_failures):
             return None
+        # The provider is part of the request: a reassigned graph is another one.
+        key = (self.dependency_graph, tuple(touched), mode, tuple(recent_failures))
+        if key not in self._graph_selections:
+            self._graph_selections[key] = self._compute_graph_selection(
+                touched, mode=mode, recent_failures=recent_failures
+            )
+        return self._graph_selections[key]
+
+    def _compute_graph_selection(
+        self,
+        touched: list[str],
+        *,
+        mode: LandingMode,
+        recent_failures: Collection[str],
+    ) -> GraphSelection:
         from tools.test_dependency_graph import (
             ObservedTestInputs,
             graph_selection,
@@ -483,17 +505,25 @@ class GateConfig:
             ),
         )
 
-    def foreign_cells(self) -> frozenset[str]:
+    def foreign_cells(self, host_os: str | None = None) -> frozenset[str]:
         """Portability cells of another OS: they verify that OS's hosted shells
-        and compilers, which this host does not provide."""
+        and compilers, which the executing host does not provide. ``host_os``
+        names the executing host; it defaults to this one."""
         from molt.native_target import resolve_native_target_spec
 
-        host_os = resolve_native_target_spec(None).os
+        if host_os is None:
+            host_os = resolve_native_target_spec(None).os
         return frozenset(
             str(cell["id"])
             for cell in self.matrix_cells
             if cell.get("profile") == "portability" and cell.get("os") != host_os
         )
+
+    @staticmethod
+    def runs_on(gate: SelectedGate, foreign: frozenset[str]) -> bool:
+        """Whether a host whose foreign cells are ``foreign`` can run ``gate``:
+        a gate bound only to foreign cells runs on another OS's host."""
+        return not gate.cells or not set(gate.cells) <= foreign
 
     def prepare(
         self,
@@ -519,11 +549,7 @@ class GateConfig:
 
         try:
             foreign = self.foreign_cells()
-            local = [
-                gate
-                for gate in gates
-                if not gate.cells or not set(gate.cells) <= foreign
-            ]
+            local = [gate for gate in gates if self.runs_on(gate, foreign)]
             absent_assets = provision_pinned_assets(
                 self.pinned_assets,
                 tuple(
@@ -593,7 +619,7 @@ class GateConfig:
                         Prerequisite(PrerequisiteKind.EXECUTION_CELL, cell)
                         for cell in gate.cells
                     )
-                    if gate.cells and set(gate.cells) <= foreign
+                    if not self.runs_on(gate, foreign)
                     else (
                         *(
                             Prerequisite(
@@ -910,7 +936,11 @@ class GateConfig:
         # Rule-owned pytest commands retain their exact declared invocation.
         filtered: dict[
             tuple[
-                tuple[bool, bool], tuple[str, ...], tuple[str, ...], CargoTargetAccess
+                tuple[bool, bool],
+                tuple[str, ...],
+                bool,
+                tuple[str, ...],
+                CargoTargetAccess,
             ],
             list[str],
         ] = {}
@@ -919,44 +949,57 @@ class GateConfig:
             access = CargoTargetAccess.resolve(envelope.toolchains)
             path = target.partition("::")[0]
             priority = (path not in recent_paths, path not in touched)
-            key = (priority, envelope.select, envelope.toolchains, access)
+            key = (
+                priority,
+                envelope.select,
+                envelope.skip_slow,
+                envelope.toolchains,
+                access,
+            )
             filtered.setdefault(key, []).append(target)
-        for (_, select, cohort_tools, cohort_access), targets in sorted(
+        for (_, select, skip_slow, cohort_tools, cohort_access), targets in sorted(
             filtered.items(), key=lambda item: item[0][0]
         ):
             match mode:
                 case LandingMode.PRESUBMIT:
-                    options = (*select, "--maxfail=1")
+                    # tests/conftest.py skips `slow` tests under --skip-slow; a
+                    # skip, unlike -m "not slow", never empties the session.
+                    options = (
+                        *select,
+                        "--maxfail=1",
+                        *(("--skip-slow",) if skip_slow else ()),
+                    )
                 case LandingMode.POSTSUBMIT:
                     options = select
                 case _:
                     assert_never(mode)
-            command = local_pytest_argv(
-                targets, options, memory_units=self.pytest_memory_units
-            )
-            pytest_commands.add(command_key(command))
-            graph_commands.add(command_key(command))
-            add(
-                command,
-                cohort_tools,
-                cargo_target_access=cohort_access,
-                pytest=True,
-                # Changed tests and their direct readers: the lane's try run.
-                try_run=mode is LandingMode.PRESUBMIT,
-                cells=tuple(
-                    dict.fromkeys(
-                        cell
-                        for target, envelope in graph_runs
-                        if target in targets
-                        for cell in envelope.cells
-                    )
-                ),
-                collection_command=(
-                    local_pytest_collection_argv(command)
-                    if any("::" in target for target in targets)
-                    else None
-                ),
-            )
+            for shard in pytest_shards(targets):
+                command = local_pytest_argv(
+                    shard, options, memory_units=self.pytest_memory_units
+                )
+                pytest_commands.add(command_key(command))
+                graph_commands.add(command_key(command))
+                add(
+                    command,
+                    cohort_tools,
+                    cargo_target_access=cohort_access,
+                    pytest=True,
+                    # Changed tests and their direct readers: the lane's try run.
+                    try_run=mode is LandingMode.PRESUBMIT,
+                    cells=tuple(
+                        dict.fromkeys(
+                            cell
+                            for target, envelope in graph_runs
+                            if target in shard
+                            for cell in envelope.cells
+                        )
+                    ),
+                    collection_command=(
+                        local_pytest_collection_argv(command)
+                        if any("::" in target for target in shard)
+                        else None
+                    ),
+                )
         for envelope in selection.foreign if selection else ():
             add(
                 local_pytest_argv(
@@ -1162,6 +1205,53 @@ class GateConfig:
 # --------------------------------------------------------------------------
 # Content marker byte membership
 # --------------------------------------------------------------------------
+
+
+#: Test files per pytest gate. A cohort is sharded into gates of at most this
+#: many files: each gate's workers import fewer test modules, its process tree
+#: closes quickly, and a failure or a retry costs one shard. Landing attempts
+#: 15-17 ran one 300-file cohort: 8.6 GiB, two memory-pressure stops and one
+#: indeterminate descendant closure after its tests had passed to 99%.
+PYTEST_SHARD_FILES: Final = 40
+
+
+def pytest_shards(targets: Sequence[str]) -> list[list[str]]:
+    """``targets`` in order, cut into shards of at most ``PYTEST_SHARD_FILES``
+    files; the nodes of one file stay in one shard."""
+    shards: list[list[str]] = []
+    files: set[str] = set()
+    for target in targets:
+        path = target.partition("::")[0]
+        if path not in files and len(files) == PYTEST_SHARD_FILES:
+            shards.append([])
+            files = set()
+        if not shards:
+            shards.append([])
+        files.add(path)
+        shards[-1].append(target)
+    return shards
+
+
+def left_to_postsubmit(
+    selection: "GraphSelection | None", gates: Sequence[SelectedGate]
+) -> tuple[str, ...]:
+    """The data readers presubmit leaves to postsubmit (owner 2026-11-06,
+    importers only), less any target a selected gate runs anyway: a curated
+    rule cohort that runs a node or a whole file covers it here."""
+    if selection is None:
+        return ()
+    ran = {
+        argument
+        for gate in gates
+        if isinstance(gate.command, tuple)
+        for argument in gate.command
+        if isinstance(argument, str) and argument.startswith("tests/")
+    }
+    return tuple(
+        target
+        for target in selection.postsubmit_only
+        if target not in ran and target.partition("::")[0] not in ran
+    )
 
 
 def select_landing_gates(

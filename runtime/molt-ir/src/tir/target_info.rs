@@ -217,6 +217,11 @@ pub struct ProfileData {
 pub struct SimpleIrLoweringFeatures {
     /// Scalarizes the small tuples escape analysis marks `stack_eligible`.
     pub non_escaping_tuple_scalarization: bool,
+    /// Stores a check's `frame_location` into the frame's location word on its
+    /// taken Origin edge and at the start of a poll's service path, so the
+    /// frame-location placement pass may delete publications no reader sees
+    /// (call_anatomy.md, "Location publication cost").
+    pub cold_origin_frame_location: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -308,13 +313,17 @@ impl TargetInfo {
         match target {
             TargetKind::NativeCranelift => SimpleIrLoweringFeatures {
                 non_escaping_tuple_scalarization: true,
+                cold_origin_frame_location: true,
             },
-            TargetKind::Wasm
-            | TargetKind::Llvm
-            | TargetKind::Luau
-            | TargetKind::Rust
-            | TargetKind::Mlir => SimpleIrLoweringFeatures {
+            TargetKind::Wasm | TargetKind::Llvm => SimpleIrLoweringFeatures {
                 non_escaping_tuple_scalarization: false,
+                cold_origin_frame_location: true,
+            },
+            // Luau publishes line and columns with each location and has no
+            // code table to recover them; the Rust target captures no Origin.
+            TargetKind::Luau | TargetKind::Rust | TargetKind::Mlir => SimpleIrLoweringFeatures {
+                non_escaping_tuple_scalarization: false,
+                cold_origin_frame_location: false,
             },
         }
     }

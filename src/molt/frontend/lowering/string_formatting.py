@@ -41,17 +41,19 @@ class StringFormattingMixin(GeneratorMixinBase):
         return None
 
     def _emit_str_from_obj(self, value: MoltValue) -> MoltValue:
-        res = MoltValue(self.next_var(), type_hint="str")
+        # PyObject_Str preserves a str subclass returned by a Python hook.
+        # The constructor caller may project a separately proved exact result.
+        res = MoltValue(self.next_var(), type_hint="Any")
         self.emit(MoltOp(kind="STR_FROM_OBJ", args=[value], result=res))
         return res
 
     def _emit_repr_from_obj(self, value: MoltValue) -> MoltValue:
-        res = MoltValue(self.next_var(), type_hint="str")
+        res = MoltValue(self.next_var(), type_hint="Any")
         self.emit(MoltOp(kind="REPR_FROM_OBJ", args=[value], result=res))
         return res
 
     def _emit_ascii_from_obj(self, value: MoltValue) -> MoltValue:
-        res = MoltValue(self.next_var(), type_hint="str")
+        res = MoltValue(self.next_var(), type_hint="Any")
         self.emit(MoltOp(kind="ASCII_FROM_OBJ", args=[value], result=res))
         return res
 
@@ -71,7 +73,8 @@ class StringFormattingMixin(GeneratorMixinBase):
         return res
 
     def _emit_string_format_value(self, value: MoltValue, spec: MoltValue) -> MoltValue:
-        res = MoltValue(self.next_var(), type_hint="str")
+        # __format__, including object.__format__'s str(value), admits subclasses.
+        res = MoltValue(self.next_var(), type_hint="Any")
         self.emit(MoltOp(kind="STRING_FORMAT", args=[value, spec], result=res))
         return res
 

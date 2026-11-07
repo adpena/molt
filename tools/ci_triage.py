@@ -35,6 +35,8 @@ failures, 1 failures.
 from __future__ import annotations
 
 import argparse
+import errno
+from enum import StrEnum
 import json
 import re
 import sys
@@ -85,6 +87,35 @@ _TEST_LINE_LIMIT = 240
 # in the operation they name stay apart; reports print a shorter prefix.
 _CAUSE_KEY_LIMIT = 600
 _CAUSE_LINE_LIMIT = 320
+
+
+class InfrastructureClassification(StrEnum):
+    """Retry permission requires positive evidence, not a suspicious exit code."""
+
+    LAUNCH_RESOURCE = "launch_resource_unavailable"
+    NOT_RETRYABLE = "not_retryable"
+
+
+def classify_infrastructure_failure(
+    record: Mapping[str, Any],
+) -> InfrastructureClassification:
+    failure = record.get("launch_failure")
+    if (
+        record.get("status") == "failure"
+        and not record.get("guard_outcome")
+        and record.get("child_returncode") is None
+        and not record.get("timed_out")
+        and not record.get("cancelled_by_global_stop")
+        and not record.get("guard_custody")
+        and isinstance(failure, dict)
+        and failure.get("schema") == "molt.process-launch-failure.v1"
+        and failure.get("payload_started") is False
+        and failure.get("cleanup_closed") is True
+        and type(failure.get("errno")) is int
+        and failure["errno"] in {errno.EAGAIN, errno.ENOMEM}
+    ):
+        return InfrastructureClassification.LAUNCH_RESOURCE
+    return InfrastructureClassification.NOT_RETRYABLE
 
 
 def clean_log(text: str) -> list[str]:

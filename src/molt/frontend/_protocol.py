@@ -46,6 +46,7 @@ from molt.frontend._types import (
     ClassInfo,
     ClassRef,
     CodeSlotDeclaration,
+    CompilerLocalHome,
     ComprehensionBinding,
     ControlMaps,
     DeclaredClass,
@@ -63,6 +64,7 @@ from molt.frontend._types import (
     MidendTierClassification,
     MoltOp,
     MoltValue,
+    PythonIdentity,
     SCCPResult,
     ScratchCell,
     SimpleIROp,
@@ -89,6 +91,7 @@ if TYPE_CHECKING:
     from molt.frontend.lowering.builtin_guards import MoltBuiltinGuardArmExpr
     from molt.frontend.lowering.builtin_guards import MoltBuiltinGuardTest
     from molt.frontend.lowering.exception_lowering import MoltSyntaxError
+    from molt.frontend.lowering.midend_telemetry import PassMemorySample
     from molt.compiler_analysis.python_binding_facts import PythonBindingIndex
     from molt.compiler_analysis.python_lexical_scope import PythonCellStoragePlan
     from molt.compiler_analysis.python_lexical_scope import PythonCodeNameLayout
@@ -109,6 +112,8 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
+    imported_attr_names: dict[str, str]
+    imported_module_attr_mutations: Any
     imported_module_provenance: dict[str, frozenset[str]]
     imported_modules: dict[str, str]
     imported_names: dict[str, str]
@@ -407,17 +412,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _can_tail_merge_op(self, op: MoltOp) -> bool: ...
 
-    def _canonicalization_state_signature(
-        self, state: CanonicalizationState
-    ) -> tuple[
-        tuple[tuple[str, str], ...],
-        tuple[tuple[str, int], ...],
-        tuple[tuple[str, int], ...],
-        tuple[tuple[tuple[Any, ...], str], ...],
-        tuple[tuple[str, int], ...],
-        tuple[tuple[str, int], ...],
-        int,
-    ]: ...
+    @staticmethod
+    def _canonicalization_states_equal(
+        left: CanonicalizationState, right: CanonicalizationState
+    ) -> bool: ...
 
     def _canonicalize_block_with_state(
         self,
@@ -473,6 +471,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> tuple[MoltValue, MoltValue]: ...
 
     def _capture_state_attrs(self, attrs: tuple[str, ...]) -> dict[str, Any]: ...
+
+    def _check_is_transparent_label_forwarder(
+        self, op: MoltOp, protected_labels: set[str]
+    ) -> bool: ...
 
     def _claim_function_symbol(
         self, symbol: str, name: str, *, kind: FunctionKind = ...
@@ -1207,7 +1209,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         delta_expr: ast.expr,
     ) -> None: ...
 
-    def _emit_generator_falloff(self) -> None: ...
+    def _emit_generator_falloff(self, source_node: ast.AST) -> None: ...
 
     def _emit_generic_attribute_load(
         self,
@@ -1588,7 +1590,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, kind: FrontendOpKind, args: list[MoltValue]
     ) -> None: ...
 
-    def _emit_return_value(self, value: MoltValue) -> None: ...
+    def _emit_return_value(
+        self, value: MoltValue, source_node: ast.AST | None = ...
+    ) -> None: ...
 
     def _emit_runtime_call(
         self,
@@ -1775,6 +1779,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _exact_primitive_operand_types(
         self, op: MoltOp, const_by_name: dict[str, Any] | None = ...
     ) -> tuple[str | None, ...]: ...
+
+    def _exception_routing_labels(self, ops: list[MoltOp]) -> set[str]: ...
 
     def _exit_frame_restore_scope(self, scope: FrameRestoreScope) -> None: ...
 
@@ -1983,10 +1989,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, name: str | None, value: MoltValue | None = ...
     ) -> None: ...
 
-    def _invalidate_canonicalization_state_signature(
-        self, state: CanonicalizationState
-    ) -> None: ...
-
     def _invalidate_loop_guard(self, name: str) -> None: ...
 
     def _invalidate_loop_guards_for_class(self, class_id: ClassId) -> None: ...
@@ -2078,6 +2080,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _load_boxed_cell(self, name: str) -> MoltValue | None: ...
 
+    def _load_compiler_local(self, home: CompilerLocalHome) -> MoltValue: ...
+
     def _load_comprehension_slot(self, binding: ComprehensionBinding) -> MoltValue: ...
 
     def _load_free_var_cell(self, name: str) -> MoltValue | None: ...
@@ -2108,10 +2112,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _load_type_parameter(self, name: str) -> MoltValue | None: ...
 
     def _local_name_shadows_import_binding(self, name: str) -> bool: ...
-
-    def _log_degrade_levels(
-        self, degrade_level: int, reasons: list[str], budget_ms: float
-    ) -> None: ...
 
     def _lookup_func_defaults(
         self, module_name: str | None, func_id: str
@@ -2228,13 +2228,13 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _name_resolves_to_builtin(self, name: str) -> bool: ...
 
-    def _named_builtin_unproved(self, node: ast.Call, func_id: str) -> bool: ...
-
     def _named_callee_value(self, node: ast.Call) -> MoltValue: ...
 
     def _new_async_internal_slot(self) -> int: ...
 
     def _new_call_args_builder(self, form: CallForm) -> MoltValue: ...
+
+    def _new_compiler_local(self, type_hint: TypeHint) -> CompilerLocalHome: ...
 
     def _new_condition_merge(
         self, width: int, names: tuple[str, ...]
@@ -2346,6 +2346,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _prove_monotonic_loop_compare(self, fact: LoopBoundFact) -> bool | None: ...
 
+    def _proven_builtin_identity(self, node: ast.AST) -> PythonIdentity | None: ...
+
     def _proven_builtin_name(self, node: ast.AST) -> str | None: ...
 
     def _proven_shape_builtin_call(self, node: ast.Call) -> str | None: ...
@@ -2436,8 +2438,19 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, target: MoltValue, target_name: str | None, elem_hint: TypeHint | None
     ) -> None: ...
 
+    def _record_midend_coverage(
+        self, *, input_ops: int, output_ops: int, counter_baseline: dict[str, int]
+    ) -> None: ...
+
     def _record_midend_pass_sample(
-        self, pass_name: str, *, elapsed_ms: float, accepted: bool, degraded: bool = ...
+        self,
+        pass_name: str,
+        *,
+        elapsed_ms: float,
+        accepted: bool | None,
+        degraded: bool = ...,
+        executed: bool = ...,
+        memory: PassMemorySample | None = ...,
     ) -> None: ...
 
     def _record_midend_policy_outcome(
@@ -2696,6 +2709,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _source_imports_use_transaction(self) -> bool: ...
 
+    @contextmanager
+    def _source_location_scope(self, node: ast.AST | None) -> Any: ...
+
     def _specializable_builtin_name(self, node: ast.AST) -> str | None: ...
 
     def _spill_async_temporaries(self) -> None: ...
@@ -2709,6 +2725,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _stamp_exact_class(self, value: MoltValue, class_id: ClassId) -> MoltValue: ...
 
+    def _start_midend_pass_memory(self) -> PassMemorySample | None: ...
+
     def _stateful_locals_layout(
         self,
         frame_plan: StatefulFunctionFramePlan,
@@ -2721,6 +2739,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> tuple[str | None, str | None]: ...
 
     def _static_truth_kwargs(self) -> StaticTruthKwargs: ...
+
+    def _store_compiler_local(
+        self, home: CompilerLocalHome, value: MoltValue
+    ) -> None: ...
 
     def _store_comprehension_local_value(self, name: str, value: MoltValue) -> None: ...
 
@@ -2806,19 +2828,19 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _try_emit_inline_sum_genexpr(self, node: ast.Call) -> MoltValue | None: ...
 
     def _try_emit_named_builtin_call(
-        self, node: ast.Call, func_id: str, needs_bind: bool
+        self, node: ast.Call, builtin: PythonIdentity | None, needs_bind: bool
     ) -> Any: ...
 
     def _try_emit_named_builtin_fallback_call(
-        self, node: ast.Call, func_id: str, needs_bind: bool
+        self, node: ast.Call, builtin: PythonIdentity, needs_bind: bool
     ) -> Any: ...
 
     def _try_emit_named_builtin_iter_call(
-        self, node: ast.Call, func_id: str, needs_bind: bool
+        self, node: ast.Call, builtin: PythonIdentity, needs_bind: bool
     ) -> Any: ...
 
     def _try_emit_named_builtin_scalar_call(
-        self, node: ast.Call, func_id: str, needs_bind: bool
+        self, node: ast.Call, builtin: PythonIdentity, needs_bind: bool
     ) -> Any: ...
 
     def _try_emit_named_call(self, node: ast.Call, needs_bind: bool) -> Any: ...
@@ -2887,10 +2909,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         const_int_values: dict[str, int],
         value_type_tags: dict[str, int],
         induction_steps: dict[str, int],
-        *,
-        alias_epochs: dict[str, int],
-        object_epochs: dict[str, int],
-        memory_epoch: int,
     ) -> tuple[Any, ...] | None: ...
 
     def _varnames_from_params(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import hashlib
 import ctypes
 from ctypes import wintypes
 from contextlib import ExitStack
@@ -25,6 +26,7 @@ SRC = ROOT / "src"
 from molt.process_environment import ProcessEnvironment  # noqa: E402
 from molt.cargo_execution_policy import require_cargo_build_capacity  # noqa: E402
 from molt.dx import development_artifact_env  # noqa: E402
+from molt.file_locks import _acquire_file_lock, _release_file_lock  # noqa: E402
 from molt.checkout_state import (  # noqa: E402
     checkout_state_command_roots,
     checkout_state_environment_roots,
@@ -35,7 +37,11 @@ from molt.windows_process_api import bind_process_query_api  # noqa: E402
 
 _BINARY_NAME = "molt-ir-verify.exe" if os.name == "nt" else "molt-ir-verify"
 _BUILD_LOCK = threading.Lock()
-_BINARY_READY: set[Path] = set()
+# Cargo's uplifted binary path -> this process's pinned executable.
+_BINARY_READY: dict[Path, Path] = {}
+# Cargo builds of molt-ir may take minutes cold; callers serialize on the lock.
+_BUILD_LOCK_TIMEOUT_S = 1800.0
+_PIN_DIRECTORY = "molt-ir-verify-pins"
 _PROCESS_LOCAL_LOCK = threading.Lock()
 _COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_IR_VERIFY")
 _DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0
@@ -184,22 +190,72 @@ _BUILD_COMMAND = ("cargo", "build", "-p", "molt-ir", "--bin", "molt-ir-verify")
 
 
 def verifier_binary(*, env: Mapping[str, str] | None = None) -> Path:
+    """Build the verifier and return a pinned executable no Cargo run touches.
+
+    Cargo uplifts ``target/debug/molt-ir-verify`` by removing the old name and
+    linking the new one, even for a fresh build. Parallel test workers each
+    build it, so one worker's uplift could remove the name between another's
+    build and its check or spawn ("build did not produce", 2026-11-06). Builds
+    now serialize on a cross-process lock, and each caller runs a hard link of
+    the built binary under ``molt-ir-verify-pins``, keyed by its content.
+    """
     env = _verifier_environment() if env is None else env
     target_root = Path(env["CARGO_TARGET_DIR"])
-    binary = target_root / "debug" / _BINARY_NAME
+    uplifted = target_root / "debug" / _BINARY_NAME
     with _BUILD_LOCK:
-        if binary in _BINARY_READY and binary.is_file():
-            return binary
+        pinned = _BINARY_READY.get(uplifted)
         # A completed use may be retired before the next verifier starts.
         # The process-local receipt cannot prove that its binary still exists.
+        if pinned is not None and pinned.is_file():
+            return pinned
         # Cargo compiles whenever the binary is stale; below the build
         # floor no Cargo starts, even for an up-to-date binary.
         require_cargo_build_capacity(_BUILD_COMMAND, cwd=ROOT, env=env)
-        _COMMANDS.run(list(_BUILD_COMMAND), cwd=ROOT, env=env, check=True)
-        if not binary.is_file():
-            raise FileNotFoundError(f"Rust IR verifier build did not produce {binary}")
-        _BINARY_READY.add(binary)
-        return binary
+        lock_path = target_root / _PIN_DIRECTORY / ".build.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = _acquire_file_lock(
+            lock_path,
+            timeout_s=_BUILD_LOCK_TIMEOUT_S,
+            timeout_message=(
+                f"another Rust IR verifier build held {lock_path} for "
+                f"{_BUILD_LOCK_TIMEOUT_S:.0f} s"
+            ),
+        )
+        try:
+            _COMMANDS.run(list(_BUILD_COMMAND), cwd=ROOT, env=env, check=True)
+            pinned = _pin_uplifted_binary(uplifted, lock_path.parent)
+        finally:
+            _release_file_lock(handle)
+        _BINARY_READY[uplifted] = pinned
+        return pinned
+
+
+def _pin_uplifted_binary(uplifted: Path, pins: Path) -> Path:
+    """Hard-link Cargo's uplifted binary to a name keyed by its content.
+
+    The caller holds the build lock. Workers whose builds produced the same
+    bytes share one pin. No pin is ever removed here: another worker may be
+    starting it (removing live pins killed concurrent verifiers with SIGKILL
+    in a 4-worker run, 2026-11-06). Pins grow only with real rebuilds and go
+    with the checkout target when its retirement admits it.
+    """
+    staging = pins / f".{_BINARY_NAME}.{os.getpid()}.{threading.get_ident()}.tmp"
+    staging.unlink(missing_ok=True)
+    try:
+        os.link(uplifted, staging)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            f"Rust IR verifier build did not produce {uplifted}"
+        ) from exc
+    try:
+        digest = hashlib.sha256(staging.read_bytes()).hexdigest()[:24]
+        pinned = pins / digest / _BINARY_NAME
+        if not pinned.is_file():
+            pinned.parent.mkdir(exist_ok=True)
+            os.replace(staging, pinned)
+    finally:
+        staging.unlink(missing_ok=True)
+    return pinned
 
 
 class RustIrVerifier:

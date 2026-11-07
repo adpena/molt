@@ -85,7 +85,16 @@ fn full_width_box_keeps_its_cross_block_exception_observer() {
                     opcode: OpCode::CheckException,
                     operands: vec![],
                     results: vec![],
-                    attrs: AttrDict::from([("value".into(), AttrValue::Int(17))]),
+                    // Observes the box allocation's own failure: Origin.
+                    attrs: AttrDict::from([
+                        ("value".into(), AttrValue::Int(17)),
+                        (
+                            "exception_edge".into(),
+                            AttrValue::Int(
+                                crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin as i64,
+                            ),
+                        ),
+                    ]),
                     ..box_op(raw, boxed)
                 },
                 unbox_op(boxed, unboxed),

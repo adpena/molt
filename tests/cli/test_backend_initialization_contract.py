@@ -130,10 +130,14 @@ def test_import_setup_and_each_module_call_share_one_failure_exit() -> None:
         module_init_symbols=[("sys", "molt_init_sys"), ("json", "molt_init_json")],
     )
     assert not any(op["kind"] == "exception_clear" for op in ops)
-    assert ops[1] == {"kind": "check_exception", "value": 1}
+    assert ops[1] == {"kind": "check_exception", "exception_edge": "origin", "value": 1}
     for index, op in enumerate(ops[:-3]):
         if op["kind"] in {"call", "module_cache_get", "const_str", "string_eq"}:
-            assert ops[index + 1] == {"kind": "check_exception", "value": 1}
+            assert ops[index + 1] == {
+                "kind": "check_exception",
+                "exception_edge": "origin",
+                "value": 1,
+            }
     assert ops[-3] == {"kind": "label", "value": 1}
     assert ops[-1] == {"kind": "ret", "args": [ops[-2]["out"]]}
     assert not any(
@@ -202,10 +206,10 @@ def test_guard_preserves_control_structure_and_uses_fresh_exit_label() -> None:
         body[0],
         body[1],
         body[2],
-        {"kind": "check_exception", "value": 8},
+        {"kind": "check_exception", "exception_edge": "origin", "value": 8},
         body[3],
         body[4],
-        {"kind": "check_exception", "value": 8},
+        {"kind": "check_exception", "exception_edge": "origin", "value": 8},
         body[5],
         body[6],
         {"kind": "label", "value": 8},

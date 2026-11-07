@@ -6,9 +6,9 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 ## Counts
 
-- `authority-routed` files: 69
-- `operational-tooling` files: 76
-- `scattered-assumption` files: 356
+- `authority-routed` files: 70
+- `operational-tooling` files: 79
+- `scattered-assumption` files: 358
 
 ## Files
 
@@ -45,6 +45,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/frontend/lowering/condition_flow.py` | 2 | authority-routed | `3.14` |
 | `src/molt/frontend/lowering/generator_state.py` | 3 | authority-routed | `3.14` |
 | `src/molt/frontend/lowering/local_bindings.py` | 3 | authority-routed | `3.13` |
+| `src/molt/frontend/lowering/midend_pipeline.py` | 1 | scattered-assumption | `3.4` |
 | `src/molt/frontend/lowering/string_formatting.py` | 2 | scattered-assumption | `3.14` |
 | `src/molt/frontend/lowering/type_annotations.py` | 2 | authority-routed | `3.13` |
 | `src/molt/frontend/sema/constenv.py` | 1 | operational-tooling | `sys.version_info` |
@@ -61,7 +62,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `src/molt/python_interpreter.py` | 5 | authority-routed | `3.12` |
 | `src/molt/python_runtime_admission.py` | 1 | scattered-assumption | `3.5` |
 | `src/molt/python_runtime_identity.py` | 13 | operational-tooling | `sys.version_info` |
-| `src/molt/release_matrix.py` | 3 | operational-tooling | `3.12` |
+| `src/molt/release_matrix.py` | 7 | operational-tooling | `3.12` |
 | `src/molt/stdlib/__future__.py` | 3 | operational-tooling | `sys.version_info` |
 | `src/molt/stdlib/_collections_abc.py` | 1 | scattered-assumption | `3.17` |
 | `src/molt/stdlib/_compression.py` | 1 | scattered-assumption | `3.12` |
@@ -293,6 +294,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime/src/builtins/frames/bindings.rs` | 20 | scattered-assumption | `3.14` |
 | `runtime/molt-runtime/src/builtins/frames/bindings_tests.rs` | 2 | scattered-assumption | `3.14` |
 | `runtime/molt-runtime/src/builtins/frames/locals_proxy.rs` | 3 | scattered-assumption | `3.13` |
+| `runtime/molt-runtime/src/builtins/frames/locations.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/functions/function_abi.rs` | 3 | scattered-assumption | `3.13` |
 | `runtime/molt-runtime/src/builtins/functools/partial_identity.rs` | 3 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/inspect.rs` | 3 | scattered-assumption | `3.12` |
@@ -343,6 +345,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime/src/gpu_runtime_tests.rs` | 30 | scattered-assumption | `3.0` |
 | `runtime/molt-runtime/src/intrinsics/public_objects.toml` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/itertools_class.rs` | 1 | scattered-assumption | `3.14` |
+| `runtime/molt-runtime/src/marshal/tests.rs` | 3 | authority-routed | `3.12` |
 | `runtime/molt-runtime/src/math_bridge.rs` | 1 | scattered-assumption | `3.0` |
 | `runtime/molt-runtime/src/object/code_layout/tests.rs` | 1 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/object/gc.rs` | 7 | authority-routed | `3.12` |
@@ -424,9 +427,9 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `config/llvm_toolchain_releases.toml` | 1 | scattered-assumption | `3.20` |
 | `config/public_contract_v1.toml` | 1 | scattered-assumption | `3.12` |
 | `config/python_numeric_errors.toml` | 4 | scattered-assumption | `3.12` |
+| `config/release_targets.toml` | 5 | scattered-assumption | `3.15` |
 | `config/scientific_stack_versions.toml` | 2 | scattered-assumption | `3.12` |
 | `config/source_extension_package_sets.toml` | 2 | scattered-assumption | `3.12` |
-| `config/verified_subset.toml` | 3 | scattered-assumption | `3.12` |
 | `tools/agent_coordination.py` | 10 | operational-tooling | `3.12` |
 | `tools/artifact_poison_gate.py` | 2 | scattered-assumption | `3.11` |
 | `tools/bench.py` | 2 | scattered-assumption | `3.11` |
@@ -445,9 +448,10 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/command_execution.py` | 1 | scattered-assumption | `3.12` |
 | `tools/compatibility_error_protocol.py` | 20 | authority-routed | `3.12` |
 | `tools/compile_progress.py` | 2 | scattered-assumption | `3.12` |
+| `tools/consumer_gate.py` | 1 | operational-tooling | `3.12` |
 | `tools/correctness_dashboard.py` | 3 | operational-tooling | `3.12` |
 | `tools/cpython_census/public_objects.py` | 1 | operational-tooling | `sys.version_info` |
-| `tools/cpython_regrtest.py` | 13 | authority-routed | `3.12` |
+| `tools/cpython_regrtest.py` | 3 | authority-routed | `3.12` |
 | `tools/cross_hosts.toml` | 1 | scattered-assumption | `3.0` |
 | `tools/cross_run.py` | 3 | scattered-assumption | `3.12` |
 | `tools/dashboard_delta.py` | 1 | operational-tooling | `3.12` |
@@ -463,16 +467,19 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/gen_cpython_type_slots.py` | 1 | scattered-assumption | `3.12` |
 | `tools/gen_diff_lanes.py` | 3 | operational-tooling | `3.12` |
 | `tools/gen_intrinsics.py` | 1 | scattered-assumption | `3.11` |
+| `tools/gen_release_matrix.py` | 1 | authority-routed | `3.15` |
 | `tools/generator_manifest.toml` | 1 | authority-routed | `3.12` |
 | `tools/generators.py` | 1 | operational-tooling | `sys.version_info` |
 | `tools/hooks/session_digest.py` | 2 | operational-tooling | `3.12` |
 | `tools/hosted_ci_env.py` | 1 | operational-tooling | `3.12` |
 | `tools/kdtree_3d.py` | 2 | scattered-assumption | `3.0` |
+| `tools/known_issues.py` | 1 | operational-tooling | `3.12` |
 | `tools/linear_hygiene.py` | 1 | scattered-assumption | `3.12` |
 | `tools/memory_graph.py` | 2 | scattered-assumption | `3.0` |
 | `tools/memory_guard_core/process_custody.py` | 1 | scattered-assumption | `3.12` |
 | `tools/molt_dev.py` | 5 | authority-routed | `3.12` |
 | `tools/molt_dev_detached.py` | 1 | scattered-assumption | `3.9` |
+| `tools/molt_dev_precheck.py` | 1 | operational-tooling | `3.12` |
 | `tools/molt_regrtest_shim.py` | 1 | operational-tooling | `sys.version_info` |
 | `tools/mutation_test.py` | 1 | operational-tooling | `3.12` |
 | `tools/native_cext_driver.c` | 1 | scattered-assumption | `3.12` |
@@ -493,7 +500,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/perf_scoreboard_resolver.py` | 6 | scattered-assumption | `3.11` |
 | `tools/proof_command_argv.py` | 2 | operational-tooling | `3.12` |
 | `tools/proof_executor.py` | 2 | operational-tooling | `sys.version_info` |
-| `tools/proof_plan.toml` | 91 | authority-routed | `3.12` |
+| `tools/proof_plan.toml` | 93 | authority-routed | `3.12` |
 | `tools/public_contract_gate.py` | 2 | authority-routed | `3.12` |
 | `tools/pyperformance_adapter.py` | 1 | scattered-assumption | `3.12` |
 | `tools/quint_trace_to_tests.py` | 8 | operational-tooling | `3.12` |
@@ -512,6 +519,5 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/theorem_to_test.py` | 1 | operational-tooling | `3.12` |
 | `tools/throughput_matrix.py` | 2 | scattered-assumption | `3.12` |
 | `tools/tinygrad_off_shelf_adapter.py` | 5 | scattered-assumption | `3.0` |
-| `tools/translation_validate.py` | 10 | authority-routed | `3.12` |
 | `tools/verified_subset.py` | 10 | authority-routed | `sys.version_info` |
 | `tools/wasm_abi_gen/manifest.py` | 1 | scattered-assumption | `3.11` |

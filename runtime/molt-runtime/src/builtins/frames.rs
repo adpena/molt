@@ -6,12 +6,13 @@ use crate::runtime_flags::{self, RuntimeFlag};
 use crate::{
     FRAME_STACK, MoltHeader, TRACEBACK_BUILD_COUNT, TRACEBACK_BUILD_FRAMES, TYPE_ID_CODE,
     TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_FRAME_BINDINGS, TYPE_ID_MODULE,
-    TYPE_ID_TRACEBACK_PAYLOAD, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_dict_with_pairs,
-    alloc_instance_for_class, alloc_object, builtin_classes, code_filename_bits, code_firstlineno,
-    code_linetable_bits, code_name_bits, dec_ref_bits, dict_get_in_place, exception_pending,
-    inc_ref_bits, instance_dict_bits, instance_set_dict_bits, module_dict_bits, obj_from_bits,
-    object_mark_has_ptrs, object_type_id, profile_enabled, string_obj_to_owned, to_i64,
+    TYPE_ID_TRACEBACK_PAYLOAD, TYPE_ID_TYPE, alloc_dict_with_pairs, alloc_instance_for_class,
+    alloc_object, builtin_classes, code_filename_bits, code_firstlineno, code_name_bits,
+    dec_ref_bits, dict_get_in_place, exception_pending, inc_ref_bits, instance_set_dict_bits,
+    module_dict_bits, obj_from_bits, object_mark_has_ptrs, object_type_id, profile_enabled,
+    string_obj_to_owned, to_i64,
 };
+use locations::LocationId;
 use molt_obj_model::MoltObject;
 use num_traits::ToPrimitive;
 use std::sync::atomic::Ordering as AtomicOrdering;
@@ -21,6 +22,7 @@ mod activation;
 mod activation_tests;
 mod bindings;
 mod locals_proxy;
+pub(crate) mod locations;
 mod namespace;
 #[cfg(test)]
 mod namespace_tests;
@@ -38,11 +40,12 @@ pub(crate) use bindings::{
 };
 pub(crate) use locals_proxy::{
     frame_locals_proxy_detach, frame_locals_proxy_visit, frame_object_detach, frame_object_visit,
-    molt_frame_clear, molt_frame_f_locals_get, molt_frame_locals_proxy_contains,
-    molt_frame_locals_proxy_copy, molt_frame_locals_proxy_delitem, molt_frame_locals_proxy_eq,
-    molt_frame_locals_proxy_get, molt_frame_locals_proxy_getitem, molt_frame_locals_proxy_items,
-    molt_frame_locals_proxy_iter, molt_frame_locals_proxy_keys, molt_frame_locals_proxy_len,
-    molt_frame_locals_proxy_pop, molt_frame_locals_proxy_repr, molt_frame_locals_proxy_setdefault,
+    molt_frame_clear, molt_frame_f_lasti_get, molt_frame_f_lineno_get, molt_frame_f_locals_get,
+    molt_frame_locals_proxy_contains, molt_frame_locals_proxy_copy,
+    molt_frame_locals_proxy_delitem, molt_frame_locals_proxy_eq, molt_frame_locals_proxy_get,
+    molt_frame_locals_proxy_getitem, molt_frame_locals_proxy_items, molt_frame_locals_proxy_iter,
+    molt_frame_locals_proxy_keys, molt_frame_locals_proxy_len, molt_frame_locals_proxy_pop,
+    molt_frame_locals_proxy_repr, molt_frame_locals_proxy_setdefault,
     molt_frame_locals_proxy_setitem, molt_frame_locals_proxy_update,
     molt_frame_locals_proxy_values,
 };
@@ -209,13 +212,8 @@ pub extern "C" fn molt_frame_context_set(
 #[derive(Clone, Copy)]
 pub(crate) struct FrameEntry {
     pub(crate) code_bits: u64,
-    pub(crate) line: i64,
-    /// 0-based column offset for traceback caret annotations.
-    /// -1 means "not available" (fall back to inference).
-    pub(crate) col_offset: i64,
-    /// 0-based end column offset for traceback caret annotations.
-    /// -1 means "not available".
-    pub(crate) end_col_offset: i64,
+    /// A traceback's frozen site. Live entries use their arena location word.
+    pub(crate) location_snapshot: Option<LocationId>,
     /// The namespace mapping of a module body (`frame_locals_set`): its
     /// `f_locals` and `locals()`. Owned by the entry. An optimized frame's
     /// bindings are `bindings`, never a dict here.
@@ -252,10 +250,12 @@ const TRACEBACK_PAYLOAD_GLOBALS_OFFSET: usize = 5 * std::mem::size_of::<u64>();
 /// namespace mapping.
 const TRACEBACK_PAYLOAD_SOURCE_OFFSET: usize = 6 * std::mem::size_of::<u64>();
 const TRACEBACK_PAYLOAD_BUILTINS_OFFSET: usize = 7 * std::mem::size_of::<u64>();
+const TRACEBACK_PAYLOAD_LOCATION_OFFSET: usize = 8 * std::mem::size_of::<u64>();
+const TRACEBACK_PAYLOAD_LOCATION_OWNER_OFFSET: usize = 9 * std::mem::size_of::<u64>();
 const TRACEBACK_PAYLOAD_SIZE: usize =
-    std::mem::size_of::<MoltHeader>() + 8 * std::mem::size_of::<u64>();
+    std::mem::size_of::<MoltHeader>() + 10 * std::mem::size_of::<u64>();
 
-pub(crate) const TRACEBACK_PAYLOAD_OWNED_SLOTS: [usize; 5] = [0, 4, 5, 6, 7];
+pub(crate) const TRACEBACK_PAYLOAD_OWNED_SLOTS: [usize; 6] = [0, 4, 5, 6, 7, 9];
 
 pub(crate) unsafe fn traceback_payload_code_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(TRACEBACK_PAYLOAD_CODE_OFFSET) as *const u64) }
@@ -287,15 +287,17 @@ unsafe fn traceback_payload_frame_entry(ptr: *mut u8) -> FrameEntry {
             .is_some_and(|source| object_type_id(source) == TYPE_ID_FRAME_BINDINGS);
         FrameEntry {
             code_bits: traceback_payload_code_bits(ptr),
-            line: traceback_payload_line(ptr),
-            col_offset: traceback_payload_col(ptr),
-            end_col_offset: traceback_payload_end_col(ptr),
+            location_snapshot: Some(LocationId::from_word(
+                *(ptr.add(TRACEBACK_PAYLOAD_LOCATION_OFFSET) as *const u64),
+            )),
             globals_bits: *(ptr.add(TRACEBACK_PAYLOAD_GLOBALS_OFFSET) as *const u64),
             locals_bits: if payload { 0 } else { source },
             builtins_bits: *(ptr.add(TRACEBACK_PAYLOAD_BUILTINS_OFFSET) as *const u64),
             activation_bits: 0,
             python_context: PythonFrameContext::default(),
-            bindings: bindings::FrameBindings::captured(if payload { source } else { 0 }),
+            bindings: bindings::FrameBindings::captured(
+                *(ptr.add(TRACEBACK_PAYLOAD_LOCATION_OWNER_OFFSET) as *const u64),
+            ),
         }
     }
 }
@@ -386,23 +388,10 @@ pub(crate) fn frame_stack_push_owned(
     activation_bits: u64,
 ) {
     crate::gil_assert();
-    let line = if let Some(ptr) = obj_from_bits(code_bits).as_ptr() {
-        unsafe {
-            if object_type_id(ptr) == TYPE_ID_CODE {
-                code_firstlineno(ptr)
-            } else {
-                0
-            }
-        }
-    } else {
-        0
-    };
     FRAME_STACK.with(|stack| {
         stack.borrow_mut().push(FrameEntry {
             code_bits,
-            line,
-            col_offset: -1,
-            end_col_offset: -1,
+            location_snapshot: None,
             locals_bits: 0,
             globals_bits,
             builtins_bits,
@@ -416,13 +405,24 @@ pub(crate) fn frame_stack_push_owned(
 /// Give the entry just pushed for a synchronous activation the homes its code
 /// slot's `plan` calls for. `false`: the arena could not grow; the entry keeps
 /// no homes and its exit still pops it.
-pub(crate) fn frame_stack_enter_homes(plan: FramePlan) -> bool {
-    let Some(bindings) = bindings::FrameBindings::enter(plan) else {
+pub(crate) fn frame_stack_enter_homes(py: &PyToken<'_>, plan: FramePlan) -> bool {
+    let Some(mut bindings) = bindings::FrameBindings::enter(plan) else {
         return false;
     };
     FRAME_STACK.with(|stack| {
         let mut stack = stack.borrow_mut();
         let entry = stack.last_mut().expect("frame entry was just pushed");
+        if let Some(task) = obj_from_bits(entry.activation_bits).as_ptr() {
+            bindings.set_location(LocationId::from_word(
+                crate::object::aux_header::object_frame_location(task),
+            ));
+            let payload = crate::object::aux_header::object_frame_bindings_bits(task);
+            if let Some(ptr) = obj_from_bits(payload).as_ptr() {
+                inc_ref_bits(py, payload);
+                bindings.payload_bits = payload;
+                bindings::lend_location(ptr, bindings.location_address());
+            }
+        }
         entry.bindings = bindings;
     });
     true
@@ -431,9 +431,16 @@ pub(crate) fn frame_stack_enter_homes(plan: FramePlan) -> bool {
 /// A synchronous Python body implemented by a runtime plan. It has the same
 /// homes, live locals, namespace and exit custody as a compiled Python entry.
 /// No code-slot registry or secondary locals dictionary is introduced.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RuntimeBodyState {
+    Binding,
+    Executing,
+}
+
 pub(crate) struct PythonFunctionFrame<'a, 'py> {
     py: &'a PyToken<'py>,
     homes: *mut u64,
+    body_state: RuntimeBodyState,
     code: u64,
     depth: usize,
 }
@@ -466,10 +473,11 @@ impl<'a, 'py> PythonFunctionFrame<'a, 'py> {
         let mut frame = Self {
             py,
             homes: std::ptr::null_mut(),
+            body_state: RuntimeBodyState::Binding,
             code,
             depth,
         };
-        if !frame_stack_enter_homes(plan) {
+        if !frame_stack_enter_homes(py, plan) {
             crate::record_memory_error_without_allocation(py);
             return Err(());
         }
@@ -512,6 +520,15 @@ impl<'a, 'py> PythonFunctionFrame<'a, 'py> {
                 PythonArgumentZero::Home
             };
         });
+        FRAME_STACK.with(|stack| {
+            stack
+                .borrow()
+                .last()
+                .unwrap()
+                .bindings
+                .set_location(LocationId::from_word(0))
+        });
+        frame.body_state = RuntimeBodyState::Executing;
         Ok(frame)
     }
 
@@ -554,6 +571,9 @@ impl Drop for PythonFunctionFrame<'_, '_> {
             self.depth + 1,
             "runtime Python frame custody is not LIFO"
         );
+        if self.body_state == RuntimeBodyState::Executing && exception_pending(self.py) {
+            crate::builtins::exceptions::molt_exception_frame_origin(self.homes as u64);
+        }
         frame_stack_pop(self.py);
     }
 }
@@ -612,27 +632,21 @@ pub(crate) fn frame_stack_active_namespaces() -> Option<(u64, u64)> {
     })
 }
 
-pub(crate) fn frame_stack_set_line(line: i64) {
-    FRAME_STACK.with(|stack| {
-        if let Some(entry) = stack.borrow_mut().last_mut() {
-            entry.line = line;
-            entry.col_offset = -1;
-            entry.end_col_offset = -1;
-        }
-    });
-}
-
-pub(crate) fn frame_stack_set_line_col(line: i64, col_offset: i64, end_col_offset: i64) {
-    FRAME_STACK.with(|stack| {
-        if let Some(entry) = stack.borrow_mut().last_mut() {
-            entry.line = line;
-            entry.col_offset = col_offset;
-            entry.end_col_offset = end_col_offset;
-        }
-    });
-}
-
 impl FrameEntry {
+    pub(crate) fn source_position(self) -> Option<locations::CodeLocation> {
+        let code = obj_from_bits(self.code_bits).as_ptr()?;
+        if unsafe { object_type_id(code) } != TYPE_ID_CODE {
+            return None;
+        }
+        let id = self
+            .location_snapshot
+            .unwrap_or_else(|| self.bindings.location());
+        unsafe { locations::code_location(code, id) }
+    }
+
+    pub(crate) fn source_line(self) -> i64 {
+        unsafe { frame_line_from_entry(self) }.unwrap_or(0)
+    }
     fn retain(self, py: &PyToken<'_>) {
         for bits in [
             self.code_bits,
@@ -671,7 +685,17 @@ impl FrameEntry {
     /// homes go back once those releases finish, then the entry's own edges
     /// are released.
     pub(crate) fn exit(self, py: &PyToken<'_>) {
-        bindings::frame_bindings_exit(py, &self.bindings);
+        if let Some(task) = obj_from_bits(self.activation_bits).as_ptr() {
+            crate::object::aux_header::object_set_frame_location(
+                task,
+                self.bindings.location().word(),
+            );
+            if let Some(ptr) = obj_from_bits(self.bindings.payload_bits).as_ptr() {
+                bindings::freeze_location(ptr);
+            }
+        } else {
+            bindings::frame_bindings_exit(py, &self.bindings);
+        }
         self.bindings.exit();
         self.release(py);
     }
@@ -759,10 +783,10 @@ pub(crate) fn frame_stack_top_info(_py: &PyToken<'_>) -> Option<(String, i64, St
                 .unwrap_or_else(|| "<module>".to_string());
             Some((
                 filename,
-                entry.line,
+                entry.source_line(),
                 name,
-                entry.col_offset,
-                entry.end_col_offset,
+                entry.source_position().map_or(-1, |site| site.column),
+                entry.source_position().map_or(-1, |site| site.end_column),
             ))
         }
     })
@@ -909,40 +933,11 @@ struct FrameField {
     owned: bool,
 }
 
-/// Update the current line number on the top frame stack entry.
-/// Called by `line` ops in module chunk functions for accurate tracebacks.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_set_line(line: i64) -> u64 {
-    frame_stack_set_line(line);
-    0
-}
-
-/// Update line and column offsets on the top frame stack entry.
-/// Called by `line` ops that carry column offset info for caret annotations.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_set_line_col(line: i64, col_offset: i64, end_col_offset: i64) -> u64 {
-    frame_stack_set_line_col(line, col_offset, end_col_offset);
-    0
-}
-
-/// Update only column offsets on the top frame entry (line unchanged).
-/// Called before potentially-raising ops that carry expression-level col info.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_frame_set_col(col_offset: i64, end_col_offset: i64) -> u64 {
-    FRAME_STACK.with(|stack| {
-        if let Some(entry) = stack.borrow_mut().last_mut() {
-            entry.col_offset = col_offset;
-            entry.end_col_offset = end_col_offset;
-        }
-    });
-    0
-}
-
 /// What holds a frame's bindings for its frame objects and tracebacks, borrowed
 /// from the entry: an optimized frame's payload, else a module body's
 /// namespace mapping, else zero.
 fn frame_binding_source(entry: &FrameEntry) -> u64 {
-    if entry.bindings.payload_bits != 0 {
+    if entry.bindings.payload_bits != 0 && entry.bindings.has_python_bindings() {
         entry.bindings.payload_bits
     } else {
         entry.locals_bits
@@ -958,11 +953,13 @@ unsafe fn frame_line_from_entry(entry: FrameEntry) -> Option<i64> {
         if object_type_id(code_ptr) != TYPE_ID_CODE {
             return None;
         }
-        let mut line = entry.line;
-        if line <= 0 {
-            line = code_firstlineno(code_ptr);
+        let location = entry
+            .location_snapshot
+            .unwrap_or_else(|| entry.bindings.location());
+        if location == LocationId::ABSENT {
+            return Some(code_firstlineno(code_ptr));
         }
-        Some(line)
+        locations::code_location(code_ptr, location).map(|location| location.line)
     }
 }
 
@@ -1001,13 +998,7 @@ fn frame_globals_field(_py: &PyToken<'_>, entry: FrameEntry) -> Option<FrameFiel
     None
 }
 
-unsafe fn alloc_frame_obj(
-    _py: &PyToken<'_>,
-    entry: FrameEntry,
-    line: i64,
-    back_bits: u64,
-    lasti: i64,
-) -> Option<u64> {
+unsafe fn alloc_frame_obj(_py: &PyToken<'_>, entry: FrameEntry, back_bits: u64) -> Option<u64> {
     unsafe {
         let name = |name: crate::NameId| {
             let bits = name.bits(_py);
@@ -1016,8 +1007,6 @@ unsafe fn alloc_frame_obj(
         // Stop at the first failed intern before another allocation can replace
         // its exception or an unpublished frame acquires cleanup obligations.
         let f_code_bits = name(crate::NameId::FCode)?;
-        let f_lineno_bits = name(crate::NameId::FLineno)?;
-        let f_lasti_bits = name(crate::NameId::FLasti)?;
         let f_back_bits = name(crate::NameId::FBack)?;
         let f_globals_bits = name(crate::NameId::FGlobals)?;
         let f_builtins_bits = name(crate::NameId::FBuiltins)?;
@@ -1033,6 +1022,14 @@ unsafe fn alloc_frame_obj(
         }
         let frame_bits = alloc_instance_for_class(_py, class_ptr);
         let frame_ptr = obj_from_bits(frame_bits).as_ptr()?;
+        if !locals_proxy::frame_object_set_location_owner(
+            _py,
+            frame_ptr,
+            entry.bindings.payload_bits,
+        ) {
+            dec_ref_bits(_py, frame_bits);
+            return None;
+        }
         let Some(globals) = frame_globals_field(_py, entry) else {
             dec_ref_bits(_py, frame_bits);
             return None;
@@ -1048,17 +1045,11 @@ unsafe fn alloc_frame_obj(
             dec_ref_bits(_py, frame_bits);
             return None;
         }
-        let line_bits = MoltObject::from_int(line).bits();
-        let lasti_bits = MoltObject::from_int(lasti).bits();
         let dict_ptr = alloc_dict_with_pairs(
             _py,
             &[
                 f_code_bits,
                 entry.code_bits,
-                f_lineno_bits,
-                line_bits,
-                f_lasti_bits,
-                lasti_bits,
                 f_back_bits,
                 back_bits,
                 f_globals_bits,
@@ -1086,7 +1077,7 @@ unsafe fn alloc_frame_obj(
 /// and a finished activation has none left. The frame object shares the
 /// activation's bindings payload, which reads the task payload while the
 /// activation lives and takes its bindings over when it finishes.
-pub(crate) unsafe fn suspended_frame_bits(py: &PyToken<'_>, ptr: *mut u8, lasti: i64) -> u64 {
+pub(crate) unsafe fn suspended_frame_bits(py: &PyToken<'_>, ptr: *mut u8) -> u64 {
     unsafe {
         let [globals_bits, builtins_bits, code_bits] =
             crate::object::aux_header::object_frame_context_bits(ptr);
@@ -1106,21 +1097,19 @@ pub(crate) unsafe fn suspended_frame_bits(py: &PyToken<'_>, ptr: *mut u8, lasti:
             globals_bits,
             builtins_bits,
             locals_bits: 0,
-            line: 0,
-            col_offset: -1,
-            end_col_offset: -1,
+            location_snapshot: None,
             activation_bits: 0,
             python_context: PythonFrameContext::default(),
             bindings: bindings::FrameBindings::captured(payload),
         };
-        let Some(line) = frame_line_from_entry(entry) else {
+        if frame_line_from_entry(entry).is_none() {
             return raise_exception::<u64>(
                 py,
                 BuiltinExc::SystemError,
                 "suspended frame has invalid code",
             );
-        };
-        alloc_frame_obj(py, entry, line, MoltObject::none().bits(), lasti)
+        }
+        alloc_frame_obj(py, entry, MoltObject::none().bits())
             .unwrap_or_else(|| MoltObject::none().bits())
     }
 }
@@ -1130,82 +1119,9 @@ unsafe fn alloc_traceback_obj(
     frame_bits: u64,
     line: i64,
     next_bits: u64,
+    lasti: i64,
 ) -> Option<u64> {
     unsafe {
-        fn compute_tb_lasti(_py: &PyToken<'_>, frame_bits: u64, line: i64) -> Result<i64, ()> {
-            let Some(frame_ptr) = obj_from_bits(frame_bits).as_ptr() else {
-                return Ok(-1);
-            };
-            unsafe {
-                let dict_bits = instance_dict_bits(frame_ptr);
-                let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-                    return Ok(-1);
-                };
-                if object_type_id(dict_ptr) != TYPE_ID_DICT {
-                    return Ok(-1);
-                }
-                let f_code_bits = crate::NameId::FCode.bits(_py);
-                let Some(code_bits) = dict_get_in_place(_py, dict_ptr, f_code_bits)? else {
-                    return Ok(-1);
-                };
-                let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() else {
-                    return Ok(-1);
-                };
-                if object_type_id(code_ptr) != TYPE_ID_CODE {
-                    return Ok(-1);
-                }
-                let linetable_bits = code_linetable_bits(code_ptr);
-                let Some(linetable_ptr) = obj_from_bits(linetable_bits).as_ptr() else {
-                    return Ok(-1);
-                };
-                if object_type_id(linetable_ptr) != TYPE_ID_TUPLE {
-                    return Ok(-1);
-                }
-                let Some(linetable) = crate::object::seq_access::pin_tuple(_py, linetable_ptr)
-                else {
-                    return Ok(-1);
-                };
-                let mut best: Option<(usize, i64)> = None;
-                for (idx, entry_bits) in linetable.iter().copied().enumerate() {
-                    let Some(entry_ptr) = obj_from_bits(entry_bits).as_ptr() else {
-                        continue;
-                    };
-                    if object_type_id(entry_ptr) != TYPE_ID_TUPLE {
-                        continue;
-                    }
-                    let Some(parts) =
-                        crate::object::seq_access::with_immutable_tuple_slice(entry_ptr, |parts| {
-                            (parts.len() >= 4).then(|| [parts[0], parts[1], parts[2], parts[3]])
-                        })
-                        .flatten()
-                    else {
-                        continue;
-                    };
-                    let Some(start_line) = to_i64(obj_from_bits(parts[0])) else {
-                        continue;
-                    };
-                    if start_line != line {
-                        continue;
-                    }
-                    let start_col = to_i64(obj_from_bits(parts[2])).unwrap_or(-1);
-                    let end_col = to_i64(obj_from_bits(parts[3])).unwrap_or(start_col);
-                    let span = if start_col >= 0 && end_col >= start_col {
-                        end_col - start_col
-                    } else {
-                        -1
-                    };
-                    match best {
-                        Some((_, best_span)) if span <= best_span => {}
-                        _ => best = Some((idx, span)),
-                    }
-                }
-                if let Some((idx, _)) = best {
-                    return Ok((idx as i64) * 2);
-                }
-                Ok(-1)
-            }
-        }
-
         let builtins = builtin_classes(_py);
         let class_obj = obj_from_bits(builtins.traceback);
         let class_ptr = class_obj.as_ptr()?;
@@ -1219,13 +1135,6 @@ unsafe fn alloc_traceback_obj(
         let tb_next_bits = crate::NameId::TbNext.bits(_py);
         let tb_lasti_bits = crate::NameId::TbLasti.bits(_py);
         let line_bits = MoltObject::from_int(line).bits();
-        let lasti = match compute_tb_lasti(_py, frame_bits, line) {
-            Ok(value) => value,
-            Err(()) => {
-                dec_ref_bits(_py, tb_bits);
-                return None;
-            }
-        };
         let lasti_bits = MoltObject::from_int(lasti).bits();
         let dict_ptr = alloc_dict_with_pairs(
             _py,
@@ -1267,12 +1176,20 @@ unsafe fn alloc_traceback_payload_obj(
         }
         *(ptr.add(TRACEBACK_PAYLOAD_CODE_OFFSET) as *mut u64) = entry.code_bits;
         *(ptr.add(TRACEBACK_PAYLOAD_LINE_OFFSET) as *mut i64) = line;
-        *(ptr.add(TRACEBACK_PAYLOAD_COL_OFFSET) as *mut i64) = entry.col_offset;
-        *(ptr.add(TRACEBACK_PAYLOAD_END_COL_OFFSET) as *mut i64) = entry.end_col_offset;
+        let site = entry.source_position();
+        *(ptr.add(TRACEBACK_PAYLOAD_COL_OFFSET) as *mut i64) = site.map_or(-1, |site| site.column);
+        *(ptr.add(TRACEBACK_PAYLOAD_END_COL_OFFSET) as *mut i64) =
+            site.map_or(-1, |site| site.end_column);
         *(ptr.add(TRACEBACK_PAYLOAD_NEXT_OFFSET) as *mut u64) = next_bits;
         *(ptr.add(TRACEBACK_PAYLOAD_GLOBALS_OFFSET) as *mut u64) = entry.globals_bits;
         *(ptr.add(TRACEBACK_PAYLOAD_SOURCE_OFFSET) as *mut u64) = frame_binding_source(&entry);
         *(ptr.add(TRACEBACK_PAYLOAD_BUILTINS_OFFSET) as *mut u64) = entry.builtins_bits;
+        *(ptr.add(TRACEBACK_PAYLOAD_LOCATION_OFFSET) as *mut u64) = entry
+            .location_snapshot
+            .unwrap_or_else(|| entry.bindings.location())
+            .word();
+        *(ptr.add(TRACEBACK_PAYLOAD_LOCATION_OWNER_OFFSET) as *mut u64) =
+            entry.bindings.payload_bits;
         for slot in TRACEBACK_PAYLOAD_OWNED_SLOTS {
             inc_ref_bits(
                 _py,
@@ -1284,25 +1201,34 @@ unsafe fn alloc_traceback_payload_obj(
     }
 }
 
-unsafe fn build_frame_chain(_py: &PyToken<'_>, entries: &[FrameEntry]) -> Option<Vec<(u64, i64)>> {
+unsafe fn build_frame_chain(
+    _py: &PyToken<'_>,
+    entries: &[FrameEntry],
+) -> Option<Vec<(u64, i64, LocationId)>> {
     unsafe {
-        let mut out: Vec<(u64, i64)> = Vec::with_capacity(entries.len());
+        let mut out: Vec<(u64, i64, LocationId)> = Vec::with_capacity(entries.len());
         let mut back_bits = MoltObject::none().bits();
         for entry in entries {
             let Some(line) = frame_line_from_entry(*entry) else {
                 continue;
             };
-            let frame_bits = match alloc_frame_obj(_py, *entry, line, back_bits, -1) {
+            let frame_bits = match alloc_frame_obj(_py, *entry, back_bits) {
                 Some(bits) => bits,
                 None => {
-                    for (bits, _) in out {
+                    for (bits, _, _) in out {
                         dec_ref_bits(_py, bits);
                     }
                     return None;
                 }
             };
             back_bits = frame_bits;
-            out.push((frame_bits, line));
+            out.push((
+                frame_bits,
+                line,
+                entry
+                    .location_snapshot
+                    .unwrap_or_else(|| entry.bindings.location()),
+            ));
         }
         Some(out)
     }
@@ -1343,12 +1269,12 @@ pub(crate) fn frame_at_depth(_py: &PyToken<'_>, depth: usize) -> Result<Option<u
         return Err(());
     };
     if exception_pending(_py) {
-        for (bits, _) in frames {
+        for (bits, _, _) in frames {
             dec_ref_bits(_py, bits);
         }
         return Err(());
     }
-    let Some((selected_bits, _)) = frames.last().copied() else {
+    let Some((selected_bits, _, _)) = frames.last().copied() else {
         raise_exception::<()>(
             _py,
             BuiltinExc::SystemError,
@@ -1357,31 +1283,20 @@ pub(crate) fn frame_at_depth(_py: &PyToken<'_>, depth: usize) -> Result<Option<u
         return Err(());
     };
     inc_ref_bits(_py, selected_bits);
-    for (bits, _) in frames {
+    for (bits, _, _) in frames {
         dec_ref_bits(_py, bits);
     }
     Ok(Some(selected_bits))
 }
 
-pub(crate) fn frame_stack_trace_payload_bits(
-    _py: &PyToken<'_>,
-    handler_frame_index: Option<usize>,
-    include_caller_frame: bool,
-) -> Option<u64> {
-    frame_stack_trace_payload_prepend_bits(
-        _py,
-        handler_frame_index,
-        include_caller_frame,
-        MoltObject::none().bits(),
-    )
+#[cfg(test)]
+pub(crate) fn frame_stack_trace_payload_bits(py: &PyToken<'_>) -> Option<u64> {
+    frame_stack_trace_payload_prepend_bits(py, MoltObject::none().bits())
 }
 
-/// Return an owned prefix+tail chain. A missing prefix leaves the caller's tail
-/// untouched. The tail can be either a lazy payload or an observed traceback.
+/// Capture exactly this activation's Origin event, ahead of the current tail.
 pub(crate) fn frame_stack_trace_payload_prepend_bits(
     _py: &PyToken<'_>,
-    handler_frame_index: Option<usize>,
-    include_caller_frame: bool,
     tail_bits: u64,
 ) -> Option<u64> {
     // Each recorded frame shares its activation's bindings payload, as a
@@ -1390,20 +1305,7 @@ pub(crate) fn frame_stack_trace_payload_prepend_bits(
     // capture exactly as a failed traceback allocation does: the raise keeps
     // its own exception and any traceback it already owns, and no second error
     // is recorded through this path. Observers of such a frame diagnose it.
-    let snapshot = FrameStackSnapshot::capture(_py, |len| {
-        let start = handler_frame_index
-            .map(|idx| {
-                if include_caller_frame {
-                    idx.saturating_sub(1)
-                } else {
-                    idx
-                }
-            })
-            .unwrap_or(0)
-            .min(len);
-        start..len
-    })
-    .ok()?;
+    let snapshot = FrameStackSnapshot::capture(_py, |len| len.saturating_sub(1)..len).ok()?;
     let active = &snapshot.entries;
     if active.is_empty() {
         return None;
@@ -1474,13 +1376,14 @@ pub(crate) fn traceback_payload_to_traceback_bits(
                 let mut next_bits = current_bits;
                 let mut built_any = false;
                 let mut frames_built: u64 = 0;
-                for (frame_bits, line) in frames.iter().rev().copied() {
-                    let Some(tb_bits) = alloc_traceback_obj(_py, frame_bits, line, next_bits)
+                for (frame_bits, line, location) in frames.iter().rev().copied() {
+                    let Some(tb_bits) =
+                        alloc_traceback_obj(_py, frame_bits, line, next_bits, location.lasti()?)
                     else {
                         if !obj_from_bits(next_bits).is_none() {
                             dec_ref_bits(_py, next_bits);
                         }
-                        for (bits, _) in frames.iter().copied() {
+                        for (bits, _, _) in frames.iter().copied() {
                             dec_ref_bits(_py, bits);
                         }
                         return None;
@@ -1492,7 +1395,7 @@ pub(crate) fn traceback_payload_to_traceback_bits(
                     built_any = true;
                     frames_built += 1;
                 }
-                for (bits, _) in frames.iter().copied() {
+                for (bits, _, _) in frames.iter().copied() {
                     dec_ref_bits(_py, bits);
                 }
                 if !built_any || obj_from_bits(next_bits).is_none() {
@@ -1600,7 +1503,13 @@ fn top_user_frame_entry() -> Option<FrameEntry> {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_locals_builtin() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if let Some(index) = FRAME_STACK.with(|stack| stack.borrow().len().checked_sub(1)) {
+        if let Some(index) = FRAME_STACK.with(|stack| {
+            let stack = stack.borrow();
+            stack
+                .last()
+                .filter(|entry| entry.bindings.has_python_bindings() || entry.activation_bits != 0)
+                .map(|_| stack.len() - 1)
+        }) {
             match bindings::frame_bindings_observe(_py, index) {
                 Ok(0) => {}
                 Ok(payload) => {
@@ -1676,18 +1585,21 @@ mod tests {
         let name_bits = MoltObject::from_ptr(name_ptr).bits();
         let empty_tuple_ptr = alloc_tuple(_py, &[]);
         let empty_tuple_bits = MoltObject::from_ptr(empty_tuple_ptr).bits();
+        let table_ptr = crate::alloc_bytes(_py, b"\xe8\x00\xe8\x06\xe8\x14");
+        let table = MoltObject::from_ptr(table_ptr).bits();
         let code_ptr = alloc_code_obj(
             _py,
             filename_bits,
             name_bits,
             7,
-            MoltObject::none().bits(),
+            table,
             empty_tuple_bits,
             empty_tuple_bits,
             0,
             0,
             0,
         );
+        dec_ref_bits(_py, table);
         dec_ref_bits(_py, empty_tuple_bits);
         dec_ref_bits(_py, filename_bits);
         dec_ref_bits(_py, name_bits);

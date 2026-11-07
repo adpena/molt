@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import textwrap
@@ -49,8 +48,6 @@ def _build_entry_wasm(
         "MOLT_SESSION_ID",
         f"test-wasm-importlib-package-bootstrap-{session_name}",
     )
-    env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "2")
-    env.setdefault("MOLT_CSE_MAX_ITERS", "6")
     # Runtime, cache and artifact state stay beside the test outputs, as the
     # linked runner keeps them, never in the checkout's wasm root.
     test_artifact_root = _linked_test_artifact_root(root, out_dir)
@@ -82,7 +79,7 @@ def _build_entry_wasm(
         cmd.append("--require-linked")
 
     build_timeout = timeout_from_env(
-        "MOLT_WASM_TEST_BUILD",
+        "MOLT_WASM_TEST",
         env,
         default=900.0,
     )
@@ -156,6 +153,7 @@ def test_wasm_importlib_package_bootstrap_target_dir_defaults_to_repo_pytest_tar
 def test_build_entry_wasm_uses_wasm_test_memory_guard(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setenv("MOLT_WASM_TEST_TIMEOUT_SEC", "37")
     source = tmp_path / "pkg_main.py"
     source.write_text("print('ok')\n", encoding="utf-8")
     out_dir = tmp_path / "out"
@@ -181,11 +179,7 @@ def test_build_entry_wasm_uses_wasm_test_memory_guard(
     assert isinstance(cmd, list)
     assert "--split-runtime" in cmd
     assert kwargs["cwd"] == tmp_path
-    assert kwargs["timeout"] == timeout_from_env(
-        "MOLT_WASM_TEST_BUILD",
-        os.environ,
-        default=900.0,
-    )
+    assert kwargs["timeout"] == 37.0
 
 
 def _write_probe_package(root: Path) -> ModuleEntry:

@@ -17,6 +17,8 @@ state on the same iterator or index, so nothing is evaluated twice.
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import ExceptionEdgeKind
+
 from molt.frontend.lowering.op_kinds_generated import FrontendOpKind
 
 import ast
@@ -1354,6 +1356,7 @@ class LoopLoweringMixin(GeneratorMixinBase):
                 self.emit(
                     MoltOp(
                         kind="CHECK_EXCEPTION",
+                        exception_edge=ExceptionEdgeKind.UNWIND,
                         args=[handler_label],
                         result=MoltValue("none"),
                     )

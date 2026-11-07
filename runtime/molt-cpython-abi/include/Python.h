@@ -1007,6 +1007,7 @@ extern int       PyTraceMalloc_Untrack (unsigned int domain, uintptr_t ptr);
 
 /* Context variables: opaque runtime-owned objects. */
 #include <_context_exports.h>
+#include <_marshal_exports.h>
 
 /* Function objects */
 

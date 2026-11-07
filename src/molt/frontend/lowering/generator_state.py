@@ -116,6 +116,9 @@ FUNCTION_CACHE_STATE_ATTRS = (
     "_op_by_result",
     "in_generator",
     "current_line",
+    "_expr_col",
+    "_expr_line",
+    "_statement_site",
 )
 
 FUNCTION_CONTROL_FLOW_STATE_ATTRS = (
@@ -276,6 +279,9 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self._op_by_result = {}
         self.in_generator = False
         self.current_line = None
+        self._expr_col = None
+        self._expr_line = None
+        self._statement_site = None
 
     def _reset_control_flow_state(
         self,
@@ -370,6 +376,8 @@ class GeneratorStateMixin(GeneratorMixinBase):
         # that was already used while lowering a nested function.
         self._next_exact_class_token = 0
         self._reset_local_binding_state(reset_del_targets=True)
+        self._expr_line: tuple[int, int] | None = None
+        self._statement_site: tuple[int, int, int | None, int | None] | None = None
         self._expr_col: tuple[int, int] | None = (
             None  # expression-level col_offset for traceback carets
         )

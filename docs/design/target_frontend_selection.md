@@ -29,10 +29,12 @@ Measured evidence (this host, 2026-11-04):
 - `molt_diff` asks for a minor (`resolve_target_python_command`), so uv returns
   its minor link, which points at the newest installed patch:
   `cpython-3.12-…` → 3.12.16, `cpython-3.13-…` → 3.13.18,
-  `cpython-3.14-…` → 3.14.10. The pinned target releases (`CPYTHON_RELEASES`;
-  `config/verified_subset.toml` `reference_cpython`) are 3.12.15, 3.13.17 and
-  3.14.9. Each `uv python install` of a newer patch moves the oracle. That is
-  the HF-760 mechanism, in the oracle selection.
+  `cpython-3.14-…` → 3.14.10. The pinned target releases are
+  `CPYTHON_RELEASES` (`src/molt/_python_release_generated.py`, derived from each
+  pinned source's `Include/patchlevel.h`; see
+  [python_version_authority.md](python_version_authority.md)). Each
+  `uv python install` of a newer patch moved the oracle. That is the HF-760
+  mechanism, in the oracle selection.
 - Image costs with the existing authority (`ensure("uv-environment",
   python=..., groups=())`): 3.13.17 published in 24.8 s (26.3 s process wall,
   2.96 s user), 36 MB. The fast path on a current image, in a fresh process:
@@ -89,8 +91,8 @@ adds no second publisher, registry or cache.
 
 1. **An explicit version selects an exact release.** For
    `molt_diff.py --python-version V`: a patch in `V` is exact
-   (`tools/verified_subset.py` passes `reference_cpython`, for example
-   3.13.17); a bare minor selects the target's pinned release from
+   (`tools/verified_subset.py` passes the policy's reference patch, which
+   is the minor's `CPYTHON_RELEASES` entry); a bare minor selects the target's pinned release from
    `TargetPythonVersion` (`CPYTHON_RELEASES`, which
    `tests/test_target_python_oracle.py` already checks against
    `config/cpython_regrtest_sources.toml`). This is the rule that
@@ -102,7 +104,7 @@ adds no second publisher, registry or cache.
    in place of `resolve_target_python_command`. The existing version check also
    applies to the override, so `MOLT_DIFF_PYTHON` must report that release.
    The product CLI's `resolve_target_python` (`molt compare`,
-   `tools/molt_dev.py python-oracle`, `tools/translation_validate.py`) keeps
+   `tools/molt_dev.py python-oracle`) keeps
    its minor request: what an installed Molt demands of its host is the later
    HF-726 slice.
 3. **The compiler frontend runs the oracle's CPython release.** The oracle

@@ -43,7 +43,7 @@ impl LuauBackend {
         self.emit_line("if molt_main then");
         self.push_indent();
         if has_execution_frames {
-            self.emit_line("local __molt_ok, __molt_error = xpcall(molt_main, function(error_value) local context, owner = molt_frame_context(); local exception, _restored = molt_frame_finalize(context, owner, 0, error_value, true); return exception end)");
+            self.emit_line("local __molt_ok, __molt_error = xpcall(molt_main, function(error_value) local context, owner = molt_frame_context(); local exception, _restored = molt_frame_finalize(context, owner, 0, error_value); return exception end)");
             self.emit_line("if not __molt_ok then error(__molt_error, 0) end");
         } else {
             self.emit_line("molt_main()");

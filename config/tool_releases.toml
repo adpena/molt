@@ -12,43 +12,43 @@ schema_version = 3
 # the downloaded archive.
 
 [tools.wasm-tools]
-version = "1.262.0"
+version = "1.263.0"
 executable = "wasm-tools"
 
 [tools.wasm-tools.provenance]
 kind = "github-release"
-url = "https://api.github.com/repos/bytecodealliance/wasm-tools/releases/tags/v1.262.0"
-release_id = 412152331
+url = "https://api.github.com/repos/bytecodealliance/wasm-tools/releases/tags/v1.263.0"
+release_id = 429461395
 
 [tools.wasm-tools.assets.x86_64-windows]
-url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.262.0/wasm-tools-1.262.0-x86_64-windows.zip"
-size = 4697594
-sha256 = "a39100cadac426e174e449a80db669f191b6a2e14f27c369553580ca6e9ea7e3"
-archive_member = "wasm-tools-1.262.0-x86_64-windows/wasm-tools.exe"
+url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.263.0/wasm-tools-1.263.0-x86_64-windows.zip"
+size = 4715259
+sha256 = "0803df158b4dbea6b029d11f4206c414f432f0447af91542817061e4f0bd912e"
+archive_member = "wasm-tools-1.263.0-x86_64-windows/wasm-tools.exe"
 
 [tools.wasm-tools.assets.x86_64-linux]
-url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.262.0/wasm-tools-1.262.0-x86_64-linux.tar.gz"
-size = 5951367
-sha256 = "655b8df67d54c3ef9b52fc237c4e94bbfbb5f5f43825245cb0940a7002a9ed65"
-archive_member = "wasm-tools-1.262.0-x86_64-linux/wasm-tools"
+url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.263.0/wasm-tools-1.263.0-x86_64-linux.tar.gz"
+size = 5976062
+sha256 = "21c036c1740a0552124c79c6e2170cb61c5b016005671a6d5bc06cf642165431"
+archive_member = "wasm-tools-1.263.0-x86_64-linux/wasm-tools"
 
 [tools.wasm-tools.assets.aarch64-linux]
-url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.262.0/wasm-tools-1.262.0-aarch64-linux.tar.gz"
-size = 6015840
-sha256 = "729dc47a114305ed60873ce6199d403eed1da89c3aa2367eef292da358b1e8d3"
-archive_member = "wasm-tools-1.262.0-aarch64-linux/wasm-tools"
+url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.263.0/wasm-tools-1.263.0-aarch64-linux.tar.gz"
+size = 6055053
+sha256 = "773b5e6bf957f0d93a9a337c9c5fc4c35509706301a80799f57a76fa367fd1ca"
+archive_member = "wasm-tools-1.263.0-aarch64-linux/wasm-tools"
 
 [tools.wasm-tools.assets.x86_64-macos]
-url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.262.0/wasm-tools-1.262.0-x86_64-macos.tar.gz"
-size = 5633028
-sha256 = "970b078911cad1a01a645c769de722cd44feee3355dcc4170c2ac3066154e5e9"
-archive_member = "wasm-tools-1.262.0-x86_64-macos/wasm-tools"
+url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.263.0/wasm-tools-1.263.0-x86_64-macos.tar.gz"
+size = 5657377
+sha256 = "909061aba8c069aeed8cb0933e50973a9c8e869bbd6a7819176b49871a338424"
+archive_member = "wasm-tools-1.263.0-x86_64-macos/wasm-tools"
 
 [tools.wasm-tools.assets.aarch64-macos]
-url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.262.0/wasm-tools-1.262.0-aarch64-macos.tar.gz"
-size = 5191137
-sha256 = "801b237643cc0f4ab27ebd1745e7863e23bf194a038bc6ca8ce5618212e43669"
-archive_member = "wasm-tools-1.262.0-aarch64-macos/wasm-tools"
+url = "https://github.com/bytecodealliance/wasm-tools/releases/download/v1.263.0/wasm-tools-1.263.0-aarch64-macos.tar.gz"
+size = 5227062
+sha256 = "b568f04746a699c4068b8d751779b60b501cf2cab6d259a3bc973eb5eeb1f62b"
+archive_member = "wasm-tools-1.263.0-aarch64-macos/wasm-tools"
 
 [tools.lune]
 version = "0.11.1"
@@ -96,90 +96,90 @@ sha256 = "0592c9b37c06f208f7d90e5d750e76101b9ba6191cd693ef34667f4f1f1063d4"
 archive_member = "lune"
 
 [tools.sccache]
-version = "0.18.0"
+version = "0.19.0"
 executable = "sccache"
 
 [tools.sccache.provenance]
 kind = "github-release"
-url = "https://api.github.com/repos/mozilla/sccache/releases/tags/v0.18.0"
-release_id = 388303267
+url = "https://api.github.com/repos/mozilla/sccache/releases/tags/v0.19.0"
+release_id = 422659845
 
 [tools.sccache.assets.x86_64-windows]
-url = "https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-x86_64-pc-windows-msvc.zip"
-size = 9694400
-sha256 = "8965c74d5e8a225244f741e18ad2f3f504f48228dc1bac948fc22761a348363d"
-archive_member = "sccache-v0.18.0-x86_64-pc-windows-msvc/sccache.exe"
+url = "https://github.com/mozilla/sccache/releases/download/v0.19.0/sccache-v0.19.0-x86_64-pc-windows-msvc.zip"
+size = 9830245
+sha256 = "28be8c61f6b2c89b9eb2869f6af7f78e6f992e78a8abae0ce855fcc129cbeac1"
+archive_member = "sccache-v0.19.0-x86_64-pc-windows-msvc/sccache.exe"
 
 [tools.sccache.assets.x86_64-linux]
-url = "https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-x86_64-unknown-linux-musl.tar.gz"
-size = 9730540
-sha256 = "45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89"
-archive_member = "sccache-v0.18.0-x86_64-unknown-linux-musl/sccache"
+url = "https://github.com/mozilla/sccache/releases/download/v0.19.0/sccache-v0.19.0-x86_64-unknown-linux-musl.tar.gz"
+size = 9879308
+sha256 = "aa73c7270c997894038c0d8f0d297865f57569e1687883322bc431713d4bb9dd"
+archive_member = "sccache-v0.19.0-x86_64-unknown-linux-musl/sccache"
 
 [tools.sccache.assets.aarch64-linux]
-url = "https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-aarch64-unknown-linux-musl.tar.gz"
-size = 8968665
-sha256 = "2b3284d5da3b46a47dc4229e75bb7b88ac4aa99c8d754fb7d2f84997e5a4354a"
-archive_member = "sccache-v0.18.0-aarch64-unknown-linux-musl/sccache"
+url = "https://github.com/mozilla/sccache/releases/download/v0.19.0/sccache-v0.19.0-aarch64-unknown-linux-musl.tar.gz"
+size = 9122840
+sha256 = "3e47fc4a71b1ddd1b4294a0de9d34498922fdf41e3cd0bda5df3954e3d6deb9d"
+archive_member = "sccache-v0.19.0-aarch64-unknown-linux-musl/sccache"
 
 [tools.sccache.assets.x86_64-macos]
-url = "https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-x86_64-apple-darwin.tar.gz"
-size = 9259357
-sha256 = "1dade83cc49eeb42337565eccd534b05982820a8e44b851bd7937467a18c7aef"
-archive_member = "sccache-v0.18.0-x86_64-apple-darwin/sccache"
+url = "https://github.com/mozilla/sccache/releases/download/v0.19.0/sccache-v0.19.0-x86_64-apple-darwin.tar.gz"
+size = 9401024
+sha256 = "2db7344bb96de350df79cd9f0124dd4e9baa47b3de2fac1e63e1346b66b20684"
+archive_member = "sccache-v0.19.0-x86_64-apple-darwin/sccache"
 
 [tools.sccache.assets.aarch64-macos]
-url = "https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-aarch64-apple-darwin.tar.gz"
-size = 7997637
-sha256 = "308184519b646f5125289e8515b36f6ca65a13a041923994aebe702348674e8e"
-archive_member = "sccache-v0.18.0-aarch64-apple-darwin/sccache"
+url = "https://github.com/mozilla/sccache/releases/download/v0.19.0/sccache-v0.19.0-aarch64-apple-darwin.tar.gz"
+size = 8161190
+sha256 = "a35a0b7d622618774bc1bb8102d72562dfb21e619f88b153b370d7f89bc286af"
+archive_member = "sccache-v0.19.0-aarch64-apple-darwin/sccache"
 
 # Node runs the WASM witness/browser lanes (`wasm/run_wasm.js` under the queue's
 # child-custody preload). Official nodejs.org distribution, digests from the
 # release's SHASUMS256.txt; only the interpreter binary is installed.
 [tools.node]
-version = "26.12.1"
+version = "26.13.0"
 executable = "node"
 
 [tools.node.provenance]
 kind = "checksum-manifest"
-url = "https://nodejs.org/dist/v26.12.1/SHASUMS256.txt"
+url = "https://nodejs.org/dist/v26.13.0/SHASUMS256.txt"
 
 [tools.node.assets.x86_64-windows]
-url = "https://nodejs.org/dist/v26.12.1/node-v26.12.1-win-x64.zip"
-size = 41901456
-sha256 = "b3efd5c70cba3308ed46e7e699a9b8aac075bbc6b027fcb39c84c31acc25e2b4"
-archive_member = "node-v26.12.1-win-x64/node.exe"
+url = "https://nodejs.org/dist/v26.13.0/node-v26.13.0-win-x64.zip"
+size = 41157375
+sha256 = "dcc60d59a0746999f99064a01c020445d54d84228c691cdbf25b49ac3b59150a"
+archive_member = "node-v26.13.0-win-x64/node.exe"
 
 [tools.node.assets.aarch64-windows]
-url = "https://nodejs.org/dist/v26.12.1/node-v26.12.1-win-arm64.zip"
-size = 37275911
-sha256 = "34567581ee63967b37afb6b7a0cc63a2d550a43d5d838adb75982d7e356f2e2c"
-archive_member = "node-v26.12.1-win-arm64/node.exe"
+url = "https://nodejs.org/dist/v26.13.0/node-v26.13.0-win-arm64.zip"
+size = 37005985
+sha256 = "a9427139595156ef484e1fb08957676e09d4232368dd1743a2a9f93f3d241b14"
+archive_member = "node-v26.13.0-win-arm64/node.exe"
 
 [tools.node.assets.x86_64-linux]
-url = "https://nodejs.org/dist/v26.12.1/node-v26.12.1-linux-x64.tar.gz"
-size = 62907493
-sha256 = "0fd1eb7770598f52a21995edf6ed35fc690400fa437c2386af329519e9143132"
-archive_member = "node-v26.12.1-linux-x64/bin/node"
+url = "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-x64.tar.gz"
+size = 62893692
+sha256 = "5848553868b402d3fabb5b09270649977780a390f832155721025a08b5104455"
+archive_member = "node-v26.13.0-linux-x64/bin/node"
 
 [tools.node.assets.aarch64-linux]
-url = "https://nodejs.org/dist/v26.12.1/node-v26.12.1-linux-arm64.tar.gz"
-size = 62602144
-sha256 = "a6c01af459dd8972ab3fb08ee5da81244d26ba8c4944a62d5bbba8c597ae154f"
-archive_member = "node-v26.12.1-linux-arm64/bin/node"
+url = "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-arm64.tar.gz"
+size = 62611009
+sha256 = "439e9c438acdf6a6ffe47418da709153d66c4bed812e30a473faacb107dd2791"
+archive_member = "node-v26.13.0-linux-arm64/bin/node"
 
 [tools.node.assets.x86_64-macos]
-url = "https://nodejs.org/dist/v26.12.1/node-v26.12.1-darwin-x64.tar.gz"
-size = 59800211
-sha256 = "b85c2ea4420ad0bc4abf2dc6cf1f55130ed681f1cabf60cf3f526e4c9e2712ff"
-archive_member = "node-v26.12.1-darwin-x64/bin/node"
+url = "https://nodejs.org/dist/v26.13.0/node-v26.13.0-darwin-x64.tar.gz"
+size = 59802926
+sha256 = "525c9b29bb0263d687de60a4cec0e2a6db876a8eb032369e5795eca71e7c358e"
+archive_member = "node-v26.13.0-darwin-x64/bin/node"
 
 [tools.node.assets.aarch64-macos]
-url = "https://nodejs.org/dist/v26.12.1/node-v26.12.1-darwin-arm64.tar.gz"
-size = 58334853
-sha256 = "1901d539912c02afa10d1cc126943a8855a7eedebe830119463470db5e6c59e8"
-archive_member = "node-v26.12.1-darwin-arm64/bin/node"
+url = "https://nodejs.org/dist/v26.13.0/node-v26.13.0-darwin-arm64.tar.gz"
+size = 58334661
+sha256 = "d38bd5e5a2ddce6bbb5ce45e46e208337da4d51fffe611e567fd32073d6439f6"
+archive_member = "node-v26.13.0-darwin-arm64/bin/node"
 
 # npm, the package manager of every npm project here. A runtime tool: its
 # registry tarball's `package/` tree runs on the pinned Node as

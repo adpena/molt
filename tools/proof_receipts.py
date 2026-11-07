@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import shutil
 from collections.abc import Callable, Iterable, Mapping
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Protocol
 
 from molt.file_publication import is_link_like, resolve_owned_path
@@ -20,12 +21,67 @@ from molt.exact_json import encode_exact, read_exact, write_exact
 from molt.portable_paths import portable_relative_path
 from tools.git_identity import require_git_object_id
 
+
+class SourceTreeState(StrEnum):
+    """What a receipt proves about the tree it ran on.
+
+    CLEAN is commit-backed (only CLEAN receipts are admitted); DIRTY carried
+    uncommitted changes; UNKNOWN never observed the tree (an infrastructure
+    failure before execution).
+    """
+
+    CLEAN = "clean"
+    DIRTY = "dirty"
+    UNKNOWN = "unknown"
+
+
 if TYPE_CHECKING:
+    from tools.command_execution import GuardedCommand
     from tools.proof_plan import ProofCommand, ProofPlan, ToolchainPolicy
 
 RECEIPT_SCHEMA = "molt.proof-receipt.v4"
 SELECTION_SCHEMA = "molt.proof-selection.v1"
 SELECTION_MAX_BYTES = 16 * 1024 * 1024
+
+
+def guarded_command_custody(
+    process: GuardedCommand,
+    *,
+    cancellation_elapsed: float | None,
+    cancellation_budget: float | None,
+    observation_error: Exception | None,
+) -> dict[str, Any]:
+    """Serialize owned-launch observations; never decide terminal admission."""
+    cleanup_error = (
+        None
+        if observation_error is None
+        else getattr(observation_error, "cleanup_error", None)
+    )
+    return {
+        "launch_id": process.launch_id,
+        "launch_pid": process.pid,
+        "guard_pid": process.guard_pid,
+        "startup_path": str(process.startup_path),
+        "summary_path": str(process.summary_path),
+        "cancellation_path": str(process.cancellation_path),
+        "evidence_path": str(process.evidence_path),
+        "terminal": process.terminal,
+        "cancellation_observation_seconds": cancellation_elapsed,
+        "cancellation_observation_budget_seconds": cancellation_budget,
+        "observation_error": None
+        if observation_error is None
+        else {
+            "type": type(observation_error).__name__,
+            "message": str(observation_error),
+            "closure": "confirmed" if process.terminal else "unresolved",
+            "cleanup_error": None
+            if cleanup_error is None
+            else {
+                "type": type(cleanup_error).__name__,
+                "message": str(cleanup_error),
+            },
+        },
+    }
 
 
 def _selection_context(
@@ -149,7 +205,7 @@ def selection_record(
         "schema": SELECTION_SCHEMA,
         "source_commit": source_identity["commit"],
         "source_tree": source_identity["tree"],
-        "source_tree_state": "clean",
+        "source_tree_state": SourceTreeState.CLEAN,
         "authority_sha256": authority_sha256,
         "tier": tier,
         "github_context": context,
@@ -197,7 +253,7 @@ def validate_selection(
         "schema": SELECTION_SCHEMA,
         "source_commit": source_identity["commit"],
         "source_tree": source_identity["tree"],
-        "source_tree_state": "clean",
+        "source_tree_state": SourceTreeState.CLEAN,
         "authority_sha256": authority_sha256,
         "tier": tier,
         "github_context": context,
@@ -293,7 +349,7 @@ def receipt_context(
     authority_sha256: str,
     source_commit: object,
     source_tree: object,
-    source_tree_state: str,
+    source_tree_state: SourceTreeState,
     environment: Mapping[str, Any],
     toolchains: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -374,7 +430,7 @@ def new_receipt(
             authority_sha256=authority_sha256,
             source_commit=source_identity["commit"],
             source_tree=source_identity["tree"],
-            source_tree_state="clean",
+            source_tree_state=SourceTreeState.CLEAN,
             environment=environment,
             toolchains=toolchains,
         ),
@@ -659,7 +715,7 @@ def verify_receipts(
                 f"{path}: receipt source tree identity does not match checkout"
             )
             continue
-        if payload.get("source_tree_state") != "clean":
+        if payload.get("source_tree_state") != SourceTreeState.CLEAN:
             errors.append(f"{path}: receipt source tree is not clean and commit-backed")
             continue
         environment = payload.get("environment")

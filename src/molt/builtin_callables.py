@@ -10,7 +10,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 from enum import IntEnum
-from molt._public_objects_generated import PUBLIC_OBJECTS
+from molt._public_objects_generated import PUBLIC_CALL_SIGNATURES, PUBLIC_OBJECTS
 
 
 class BuiltinBindingPolicy(IntEnum):
@@ -35,6 +35,7 @@ class BuiltinFuncSpec:
     params: tuple[str, ...]
     defaults: tuple[ast.expr, ...] = ()
     vararg: str | None = None
+    varkw: str | None = None
     pos_or_kw_params: tuple[str, ...] = ()
     kwonly_params: tuple[str, ...] = ()
     kw_defaults: tuple[ast.expr | None, ...] = ()
@@ -300,10 +301,33 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
     PUBLIC_OBJECTS[spec.runtime].name: spec for spec in _BUILTIN_FUNC_SIGNATURES
 }
 
+# Public intrinsic signatures own their Python call shape once. Publication,
+# intrinsic materialization and named lowering all consume that declaration.
+for _runtime, _call in PUBLIC_CALL_SIGNATURES.items():
+    _identity = PUBLIC_OBJECTS[_runtime]
+    if _identity.module != "builtins":
+        continue
+    if _identity.name in BUILTIN_FUNC_SPECS:
+        raise ValueError(f"duplicate builtin signature authority: {_identity.name}")
+    BUILTIN_FUNC_SPECS[_identity.name] = BuiltinFuncSpec(
+        _runtime,
+        _call.posonly,
+        tuple(ast.parse(value, mode="eval").body for value in _call.defaults),
+        vararg=_call.vararg,
+        varkw=_call.varkw,
+        pos_or_kw_params=_call.positional,
+        kwonly_params=_call.kwonly,
+        kw_defaults=tuple(
+            ast.parse(value, mode="eval").body for value in _call.kwdefaults
+        ),
+    )
+
 
 def builtin_func_declared_arity(spec: BuiltinFuncSpec) -> int:
     arity = len(spec.params) + len(spec.pos_or_kw_params) + len(spec.kwonly_params)
     if spec.vararg is not None:
+        arity += 1
+    if spec.varkw is not None:
         arity += 1
     return arity
 

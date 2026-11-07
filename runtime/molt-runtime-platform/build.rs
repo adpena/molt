@@ -8,6 +8,8 @@ use std::path::PathBuf;
 )]
 #[path = "../build_support/c_codegen.rs"]
 mod c_codegen;
+#[path = "../build_support/out_file.rs"]
+mod out_file;
 #[path = "../build_support/target_errno.rs"]
 mod target_errno;
 mod native_error_names {
@@ -52,14 +54,14 @@ fn main() {
     c_codegen::apply_source_path_policy(&mut build, &manifest, &out);
     let values = target_errno::evaluate(&declaration, &shape, &mut build, &out)
         .expect("selected native C errno evaluation");
-    fs::write(
+    out_file::write_if_changed(
         out.join("errno_constants.rs"),
         declaration
             .rust_source(&values)
             .expect("render native errno publication"),
     )
     .expect("write native errno publication");
-    fs::write(
+    out_file::write_if_changed(
         out.join("native_error_codes.rs"),
         declaration
             .native_error_rust_source(&values, native_error_names::NATIVE_ERROR_NAMES)
@@ -67,7 +69,8 @@ fn main() {
     )
     .expect("write native resolver code publication");
     // Actual-C controls use the same Cargo-selected host/target coordinate.
-    fs::write(out.join("errno_target.txt"), &target).expect("write errno test target");
+    out_file::write_if_changed(out.join("errno_target.txt"), &target)
+        .expect("write errno test target");
     for (name, value) in [
         ("arch", required("CARGO_CFG_TARGET_ARCH")),
         ("os", required("CARGO_CFG_TARGET_OS")),
@@ -76,7 +79,7 @@ fn main() {
         ("pointer_width", required("CARGO_CFG_TARGET_POINTER_WIDTH")),
         ("endian", required("CARGO_CFG_TARGET_ENDIAN")),
     ] {
-        fs::write(out.join(format!("errno_{name}.txt")), value)
+        out_file::write_if_changed(out.join(format!("errno_{name}.txt")), value)
             .expect("write errno test coordinate");
     }
     for path in [

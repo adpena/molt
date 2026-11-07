@@ -512,6 +512,7 @@ fn clear_runtime_callback_roots(
     changed |= runtime_extension_states_clear_and_drop(state);
     changed |= modules.drain(state);
     changed |= modules_clear_runtime_state(py, state);
+    changed |= crate::object::builders::clear_class_builder(py, state);
     changed |= crate::object::gc::gc_clear_api_roots(py);
     changed |= platform_clear_runtime_state(py, state);
     changed |= io_clear_runtime_state(py, state);

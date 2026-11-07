@@ -155,6 +155,7 @@ for (const test of config.cases) {
     exception_push: () => { handlers++; return none; },
     exception_pop: () => { assert.equal(handlers,1); handlers--; return none; },
     exception_pending: () => pending ? 1n : 0n,
+    exception_frame_origin: homes => { assert.equal(homes,0n); assert.ok(pending); return none; },
     raise: bits => {
       assert.equal(bits,yes); assert.equal(handlers,1); pending=true;
       handed.push(new DataView(imports.env.memory.buffer).getBigInt64(handoff,true));

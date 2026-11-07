@@ -128,5 +128,4 @@ thread_local! {
     pub(crate) static REPR_STACK: RefCell<Vec<PtrSlot>> = const { RefCell::new(Vec::new()) };
     pub(crate) static REPR_SET: RefCell<HashSet<PtrSlot>> = RefCell::new(HashSet::new());
     pub(crate) static REPR_DEPTH: Cell<usize> = const { Cell::new(0) };
-    pub(crate) static TRACEBACK_SUPPRESS: Cell<usize> = const { Cell::new(0) };
 }

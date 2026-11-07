@@ -18,6 +18,13 @@ from that intended scope. The restrictions concern:
   class is created with, so a reassignment would invalidate them across the
   program. The assignment raises `TypeError`; differential cases that exercise it
   carry the expected-failure policy below.
+- replacing `builtins.__build_class__` with a noncanonical builder, or directly
+  calling that builder: Molt compiles class layouts, method resolution and
+  closures against the static class-body model. Arbitrary builders could
+  defer, repeat or replace that body and invalidate those compiled facts.
+  These operations raise `TypeError` (the `dynamic_execution_policy` scope). Restoring the
+  canonical binding before a class statement is supported; a missing binding
+  raises `NameError`, as CPython's `LOAD_BUILD_CLASS` does.
 - unrestricted reflection/introspection lanes that block static reasoning
 
 Each exclusion requires a concrete performance or compilation rationale. Missing

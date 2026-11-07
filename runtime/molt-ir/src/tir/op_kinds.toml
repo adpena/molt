@@ -262,6 +262,9 @@ primitive_operator_effect_cases = [
 #                  that belong to generator/async/coroutine state machines and
 #                  therefore cannot be linearly spliced by the TIR function
 #                  inliner or module-slot promotion.
+#   - temporary_release_opcodes - opcode-only callback-cause fact: the only
+#                  Python callback is finalizing a drop-inserted temporary.
+#                  Frame-location placement does not treat it as a read.
 #   - inliner_numeric_raw_lane_consumer_opcodes - opcode-only fact for direct
 #                  call results that feed scalar numeric consumers. The inliner
 #                  owns call/result shape and safety gates; this registry owns
@@ -440,7 +443,7 @@ simpleir_runtime_neutral_semantics_kinds = [
 simpleir_execution_frame_semantics_kinds = [
     "frame_context_set", "frame_home_cell", "frame_home_clear", "frame_home_load",
     "frame_home_private_cell", "frame_home_store", "frame_home_take", "frame_locals",
-    "frame_locals_set", "line", "trace_enter_slot", "trace_exit",
+    "frame_locals_set", "frame_set_location", "line", "trace_enter_slot", "trace_exit",
 ]
 # Python-visible frame introspection. A target claiming this capability must
 # provide exact f_back/f_locals/f_globals/f_builtins and tracing semantics.
@@ -662,12 +665,25 @@ simpleir_host_capability_semantics_kinds = [
 # Independent callback contracts for preserved primitives. Physical guards and
 # source-location updates do not dispatch; lifetime releases are explicit in
 # finalized TIR. Trace frame lifecycle operations are deliberately absent.
-# call_async only constructs an unstarted task; print_newline writes host stdout.
+# call_async only constructs an unstarted task; print_newline writes host stdout;
+# binding_alias only retains its operand (+1) and releases nothing.
 callback_free_copy_kinds = [
-    "call_async", "guard_bool", "guard_float", "guard_int",
+    "binding_alias", "call_async", "guard_bool", "guard_float", "guard_int",
     "guard_layout", "guard_none", "guard_str", "guard_tag", "guard_type",
     "line", "missing", "nop", "print_newline",
 ]
+
+# Preserved primitives whose successful result is an exact `int` of any
+# magnitude (TirType BigInt, a boxed carrier). `operator.index` returns an exact
+# int on every supported target (PyNumber_Index). The exact scalar solver reads
+# this.
+exact_int_result_copy_kinds = ["operator_index"]
+
+# Preserved primitives whose only Python callback is releasing the previous
+# binding of frame home `value` (a finalizer). Frame-location placement treats
+# that release as a location read only when the slot's previous binding is not
+# proven finalizer-free (call_anatomy.md, "Location publication cost", M2.1).
+binding_release_copy_kinds = ["frame_home_clear", "frame_home_store"]
 
 async_work_poll_after_kinds = [
     "builtin_func",
@@ -1280,6 +1296,13 @@ generator_fusion_iter_use_roles = [
 # inlining/promotion even though it is not side_effecting for DCE. Generated
 # exhaustively over OpCode so a new suspension/control opcode cannot silently
 # become inlinable or promotable through a default-false hand-set.
+# temporary_release_opcodes: opcodes whose only Python callback is finalizing
+# a temporary that drop insertion releases at its last use. That point is not
+# a CPython release point, so frame-location placement does not treat the
+# finalizer as a location read (call_anatomy.md, "Location publication cost",
+# M2.1). Every member must have may_call_python = true.
+temporary_release_opcodes = ["DecRef"]
+
 state_machine_opcodes = [
     "AllocTask",
     "StateBlockEnd",
@@ -2003,6 +2026,12 @@ kind = "frame_context_set"
 family = "execution_frame"
 operands = 3
 value_rule = "unconstrained"
+
+[[simpleir_op_shape]]
+kind = "frame_set_location"
+family = "execution_frame"
+operands = 0
+value_rule = "nonnegative"
 
 # The value is the code slot index into the frame's homes. A store's operand
 # is the binding (a boxed object or a raw integer carrier), the frame's cell,
@@ -2870,6 +2899,17 @@ operand = "all"
 #                     may be absent. Effects still execute; this only admits
 #                     zero bindings through opcode_accepts_result_count.
 # ===========================================================================
+
+[[opcode]]
+name = "FrameSetLocation"
+may_call_python = false
+operand_arity = 0
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Add"
@@ -4250,6 +4290,11 @@ aliases = []
 mapper_opcode = "Add"
 
 [[kind]]
+canonical = "frame_set_location"
+aliases = []
+mapper_opcode = "FrameSetLocation"
+
+[[kind]]
 canonical = "sub"
 aliases = []
 mapper_opcode = "Sub"
@@ -5554,6 +5599,10 @@ wire_kind = "ret_void"
 # Direct wire production does not imply a frontend MoltOp identity.
 [[frontend_lowering_kind]]
 kinds = []
+wire_kind = "copy"
+
+[[frontend_lowering_kind]]
+kinds = []
 wire_kind = "string_eq"
 
 [[frontend_effect_kind]]
@@ -6016,10 +6065,6 @@ kind = "IS_NOT"
 opcode = "IsNot"
 
 [[frontend_check_exception_skip]]
-kind = "COPY"
-opcode = "Copy"
-
-[[frontend_check_exception_skip]]
 kind = "INC_REF"
 opcode = "IncRef"
 
@@ -6413,3 +6458,14 @@ wasm = "runtime"
 mlir = "unsupported"
 luau = "luau_dict_storage"
 rust = "unsupported"
+
+# CPython error versus exception_unwind event, carried by exceptional checks.
+[[exception_edge_kind]]
+name = "Origin"
+wire = "origin"
+tag = 0
+
+[[exception_edge_kind]]
+name = "Unwind"
+wire = "unwind"
+tag = 1

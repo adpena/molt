@@ -665,6 +665,24 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     if op.async_work_poll && !op.kind.may_carry_async_work_poll_marker() {
         return Err(format!("op `{}` cannot carry async_work_poll", op.kind));
     }
+    if op.kind.is_exception_check() != op.exception_edge.is_some() {
+        return Err(format!(
+            "op `{}` requires an exceptional edge kind exactly when it is a check",
+            op.kind
+        ));
+    }
+    if op.kind.is_exception_check() && op.exception_source.is_some() {
+        return Err("exceptional checks carry an edge kind, not a producer source kind".into());
+    }
+    if let Some(location) = op.frame_location
+        && (location < 0
+            || op.exception_edge != Some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin))
+    {
+        return Err(format!(
+            "op `{}` may carry a nonnegative frame_location only as an Origin check",
+            op.kind
+        ));
+    }
     validate_argument_custody(op)?;
     validate_native_callable_fields(op)?;
     Ok(())

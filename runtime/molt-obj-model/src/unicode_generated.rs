@@ -2,30 +2,30 @@
 // Third-party notices: src/molt/stdlib/collections/LICENSE.cpython.
 use super::{CaseSequence, Record, UnicodeData};
 pub(super) const SHIFT: usize = 7;
-// CPython v3.12.15 (e848e4b09ca4bc67c0041c9ce7526dae471d4c36)
+// CPython v3.12.16 (2c2462afc5d978d31f3d073001fc202d269917ff)
 // Objects/unicodetype_db.h sha256=ab60f0ca6db86dc14bb19ca5bcce6b0274282172500dd1c3ef61030e4b080cc8
 // Modules/unicodedata_db.h sha256=f029c909cbb1714dea177fe80662a35d1f8e21a2c505060e8d8674b0bbed8e57
 // Tools/unicode/makeunicodedata.py sha256=237eaa98c41ca86c6d7bca3acceb7697a49600aa2e6e9604c68d0e0af26c0a18
 // Objects/unicodectype.c sha256=9d7a35ac40018ad087c5d2d15f8214d5831456947d858e5b5c0cd9d529e4ce61
 // Modules/unicodedata.c sha256=a40b4820ef1bcc6c45899f5da1c8063610bbba2341a6129a4d5f646316ebf11e
-// CPython v3.13.17 (64e080d38154391ff2d2caa1161c298bb7cd8f30)
+// CPython v3.13.18 (0d4bd512fc429e3d4eacdd113c975e161f21644d)
 // Objects/unicodetype_db.h sha256=a9d936c873431a4e310d6bcc068c41fc12b6b980306991e2e971243a8a07f26e
 // Modules/unicodedata_db.h sha256=17281e9dd67de57c23ad16903a21dd1ce2f027eb3ac739609b29ea9a0cee2d7a
 // Tools/unicode/makeunicodedata.py sha256=6c4a119ec7e0cb029407c205b948aaee1115506b11af44c9a79644afd4726828
 // Objects/unicodectype.c sha256=9d7a35ac40018ad087c5d2d15f8214d5831456947d858e5b5c0cd9d529e4ce61
 // Modules/unicodedata.c sha256=d44b25f8269744833467d512a6c6a0c7095818e2d2e058290318ef5d9ffa0893
-// CPython v3.14.9 (ead82c07db1f111d613926ed1b6667411d768125)
+// CPython v3.14.10 (b703b2c5e704341d61e367b9b940b77ed11dded0)
 // Objects/unicodetype_db.h sha256=14ec556848551d98523554080f2d09f6d0a64c83854f43b92c51e10440af2134
 // Modules/unicodedata_db.h sha256=00a5ed9e602bb55e9f080333ac8cbc360352eea9de960eec69efdb0c3d68b110
 // Tools/unicode/makeunicodedata.py sha256=2091d24acfb56441da85cafad45aa1953be6b171b17ab9643fab5d00a466fe12
 // Objects/unicodectype.c sha256=9d7a35ac40018ad087c5d2d15f8214d5831456947d858e5b5c0cd9d529e4ce61
 // Modules/unicodedata.c sha256=26c0f0332c1760aa972565afeda0d113a5e382c761b3cce3ba7b8dcddbe08af9
-// CPython v3.15.1 (c37e74cb6bcdadcd5f46f289498f6b3298ddee61)
+// CPython v3.15.2 (5e58eaad7c58df58dfa8ea549c87996e01dd1077)
 // Objects/unicodetype_db.h sha256=5b72ffbdf59e76701ec4d9b41a3fa0cd0eb11bfbf4c11158dc063b59b44a98a5
 // Modules/unicodedata_db.h sha256=72d255787e46683c3642e338ea07e7b37fc77d7052ca283c84f8611235a1d75e
 // Tools/unicode/makeunicodedata.py sha256=651bcc8999cffbc6f022b38fb64e0c2931afb7c0955c0e12df99880b168b1a94
 // Objects/unicodectype.c sha256=6007fd9b579c060b5582c2ac9adec32b6a2c8845aeabf9bef03c0844e5b06661
-// Modules/unicodedata.c sha256=45174172557c9ec001dfd0a277af0d8f0c659b67de9538444eab1b56486fe05f
+// Modules/unicodedata.c sha256=5f68a333aa0b99c841f993ecb6d17ec99452b111419b9bfef5c5345e70101a1b
 pub(super) const CATEGORIES: &[&str] = &["Cc", "Cf", "Cn", "Co", "Cs", "Ll", "Lm", "Lo", "Lt", "Lu", "Mc", "Me", "Mn", "Nd", "Nl", "No", "Pc", "Pd", "Pe", "Pf", "Pi", "Po", "Ps", "Sc", "Sk", "Sm", "So", "Zl", "Zp", "Zs"];
 pub(super) const BIDIRECTIONAL: &[&str] = &["", "AL", "AN", "B", "BN", "CS", "EN", "ES", "ET", "FSI", "L", "LRE", "LRI", "LRO", "NSM", "ON", "PDF", "PDI", "R", "RLE", "RLI", "RLO", "S", "WS"];
 pub(super) const WIDTHS: &[&str] = &["A", "F", "H", "N", "Na", "W"];

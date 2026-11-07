@@ -1772,3 +1772,24 @@ def test_run_stops_before_any_case_when_the_frontend_release_is_missing(
     with pytest.raises(molt_diff.checkout_provisioning.ProvisioningError):
         molt_diff.run_diff(suite.files, sys.executable, jobs=1)
     assert suite.calls == []
+
+
+@pytest.mark.parametrize(
+    ("counts", "expected"),
+    [
+        ({"total": 3, "failed": 0, "not_run": 0}, 0),
+        ({"total": 3, "failed": 1, "not_run": 0}, 1),
+        # Nothing executed: an empty selection must not pass.
+        ({"total": 0, "failed": 0, "not_run": 0}, 2),
+        # Files left unrun make the run incomplete, even when the rest passed.
+        ({"total": 2, "failed": 0, "not_run": 1}, 2),
+        ({"total": 2, "failed": 1, "not_run": 1}, 2),
+    ],
+)
+def test_the_run_status_fails_closed(counts: dict[str, int], expected: int) -> None:
+    assert molt_diff._summary_exit_code({**counts, "guard_signal": None}) == expected
+
+
+def test_a_guard_signal_keeps_its_conventional_status() -> None:
+    summary = {"total": 3, "failed": 0, "not_run": 0, "guard_signal": 15}
+    assert molt_diff._summary_exit_code(summary) == 143

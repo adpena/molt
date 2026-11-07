@@ -40,6 +40,7 @@ from molt.default_paths import (
     _default_molt_cache,
     shared_cache_lock_path,
 )
+from molt.sqlite_failure import SqliteFailure, classify_sqlite_failure
 
 RecordKind = Literal[
     "import-scan", "intrinsic-facts", "module-analysis", "module-lowering"
@@ -290,10 +291,12 @@ class SourceRecordUnmigrated(SourceRecordUnavailable):
 
 
 def _maintenance_error(error: sqlite3.Error) -> SourceRecordUnavailable:
-    # Extended SQLite result codes retain their primary category in low8 bits.
-    # LOCKED is a different same-connection/shared-cache ownership failure.
-    code = getattr(error, "sqlite_errorcode", None)
-    if type(code) is int and code & 0xFF == sqlite3.SQLITE_BUSY:
+    # Another writer owns the lock, or committed after this read began; a later
+    # maintenance pass starts a new transaction and can succeed.
+    if classify_sqlite_failure(error) in (
+        SqliteFailure.CONTENTION,
+        SqliteFailure.STALE_SNAPSHOT,
+    ):
         return SourceRecordBusy("source record maintenance is busy")
     return SourceRecordUnavailable("source record maintenance is unavailable")
 

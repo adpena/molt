@@ -1,5 +1,56 @@
 use super::*;
 
+#[test]
+fn text_protocol_results_do_not_mint_exact_string_or_alias_operand_facts() {
+    // CPython accepts overriding str subclasses from __str__, __repr__, and
+    // __format__. A generic conversion cannot prove an exact result or alias.
+    for (kind, arity) in [
+        (molt_ir::OpKind::StrFromObj, 1),
+        (molt_ir::OpKind::ReprFromObj, 1),
+        (molt_ir::OpKind::AsciiFromObj, 1),
+        (molt_ir::OpKind::StringFormat, 2),
+    ] {
+        let mut func = single_block_func(
+            vec![
+                make_op(OpCode::ConstStr, vec![], vec![ValueId(0)], {
+                    let mut attrs = AttrDict::new();
+                    attrs.insert("s_value".into(), AttrValue::Str(String::new()));
+                    attrs
+                }),
+                make_op(OpCode::Copy, vec![], vec![ValueId(1)], int_attr(0))
+                    .with_origin(molt_ir::OpKind::FrameHomeLoad),
+                make_op(
+                    OpCode::Copy,
+                    if arity == 2 {
+                        vec![ValueId(1), ValueId(0)]
+                    } else {
+                        vec![ValueId(1)]
+                    },
+                    vec![ValueId(2)],
+                    AttrDict::new(),
+                )
+                .with_origin(kind),
+                make_op(
+                    OpCode::Copy,
+                    vec![ValueId(2)],
+                    vec![ValueId(3)],
+                    AttrDict::new(),
+                )
+                .with_origin(molt_ir::OpKind::CopyVar),
+            ],
+            4,
+        );
+        refine_types(&mut func);
+        let types = extract_type_map(&func);
+        let exact = extract_exact_scalar_map(&func);
+        assert_eq!(types[&ValueId(0)], TirType::Str);
+        for value in [ValueId(1), ValueId(2), ValueId(3)] {
+            assert_eq!(types[&value], TirType::DynBox, "{kind:?}: {value:?}");
+            assert!(!exact.contains_key(&value), "{kind:?}: {value:?}");
+        }
+    }
+}
+
 fn scalar_home_store(operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     let attrs = int_attr(0);
 
