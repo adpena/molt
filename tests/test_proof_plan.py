@@ -11721,7 +11721,10 @@ def test_mac_compiled_coordinate_provisions_its_exact_wasm_tools_before_admissio
         "python.unit.surface-contracts.macos",
     ):
         command = rows[command_id]
-        assert set(command.toolchains) == {"python", "uv", "node"}
+        # Its WASM smoke tests validate with the pinned wasm-tools; admission
+        # provisions each declared pinned release on every cell, so no
+        # workflow step is cell-specific for it.
+        assert set(command.toolchains) == {"python", "uv", "node", "wasm-tools"}
         assert "tests/test_generate_worker.py" in command.argv
         assert not command.dependencies
 

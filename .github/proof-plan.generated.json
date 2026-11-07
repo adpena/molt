@@ -6432,7 +6432,8 @@
       "toolchains": [
         "python",
         "uv",
-        "node"
+        "node",
+        "wasm-tools"
       ]
     },
     {
@@ -6801,7 +6802,8 @@
       "toolchains": [
         "python",
         "uv",
-        "node"
+        "node",
+        "wasm-tools"
       ]
     },
     {
