@@ -107,7 +107,24 @@ def static_gates(root: Path, tree: str) -> list[str]:
     from tools.molt_dev_policy import select_landing_gates
 
     head = _git(root, "rev-parse", "HEAD")
-    probe = _git(root, "commit-tree", tree, "-p", head, "-m", "consumer-gate probe")
+    # A dangling, never-published probe: it names its own identity so a host
+    # with no Git user configured (a farm checkout) can create it.
+    identity = {
+        "GIT_AUTHOR_NAME": "molt consumer gate",
+        "GIT_AUTHOR_EMAIL": "consumer-gate@molt.invalid",
+        "GIT_COMMITTER_NAME": "molt consumer gate",
+        "GIT_COMMITTER_EMAIL": "consumer-gate@molt.invalid",
+    }
+    probe = _git(
+        root,
+        "commit-tree",
+        tree,
+        "-p",
+        head,
+        "-m",
+        "consumer-gate probe",
+        env=dict(os.environ, **identity),
+    )
     _policy, _config, _touched, gates, _rules = select_landing_gates(
         drv.Git(root), root, probe, head, extra=[]
     )
