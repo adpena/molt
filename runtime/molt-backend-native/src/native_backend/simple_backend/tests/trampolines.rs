@@ -319,7 +319,7 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
     let chunk0 = "__molt_chunk_demo__molt_module_chunk_1_0".to_string();
     let chunk1 = "__molt_chunk_demo__molt_module_chunk_1_1".to_string();
     let stub = "demo__molt_module_chunk_1".to_string();
-    let clif = compile_function_to_clif_text(
+    let compiled = compile_function_to_clif_with_imports(
         vec![
             FunctionIR {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -387,12 +387,23 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
         ],
         &stub,
     );
-    let local_callees: Vec<String> = clif
-        .lines()
-        .map(str::trim)
-        .filter_map(|line| {
-            line.split_once(" = colocated")
-                .map(|(name, _)| name.to_string())
+    // A local callee is any callee that is not a runtime import: every call
+    // from object code is colocated now, so colocation no longer tells them
+    // apart (code_owner.rs `declare_func_in_func`).
+    let imports: std::collections::BTreeSet<u32> =
+        compiled.import_ids.values().map(|id| id.as_u32()).collect();
+    let func = &compiled.function;
+    let clif = func.display().to_string();
+    let local_callees: Vec<String> = func
+        .dfg
+        .ext_funcs
+        .iter()
+        .filter_map(|(func_ref, data)| match &data.name {
+            cranelift_codegen::ir::ExternalName::User(name) => {
+                let index = func.params.user_named_funcs()[*name].index;
+                (!imports.contains(&index)).then(|| func_ref.to_string())
+            }
+            _ => None,
         })
         .collect();
     assert_eq!(

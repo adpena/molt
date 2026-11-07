@@ -39,7 +39,7 @@ RECENT_LANDING_RESULTS = 3
 
 def _section_start(out: io.StringIO) -> None:
     out.write(
-        "START: AGENTS.md; `uv run --python 3.12 python tools/agent_coordination.py "
+        "START: AGENTS.md; `uv run python tools/agent_coordination.py "
         "context` (lanes, records, claims); open v1.0 findings: "
         "docs/agent/V1_HANDOFF_FINDINGS.md.\n"
     )
@@ -80,7 +80,7 @@ def _section_worktrees(out: io.StringIO, root: Path) -> None:
     count = drift_harvest.live_worktree_count(root)
     limit = drift_harvest.MAX_LIVE_WORKTREES
     over = (
-        "; over the threshold: `uv run --python 3.12 python tools/drift_harvest.py "
+        "; over the threshold: `uv run python tools/drift_harvest.py "
         "--report`, then retire landed lanes"
         if count > limit
         else ""

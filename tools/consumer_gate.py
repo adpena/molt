@@ -107,7 +107,24 @@ def static_gates(root: Path, tree: str) -> list[str]:
     from tools.molt_dev_policy import select_landing_gates
 
     head = _git(root, "rev-parse", "HEAD")
-    probe = _git(root, "commit-tree", tree, "-p", head, "-m", "consumer-gate probe")
+    # A dangling, never-published probe: it names its own identity so a host
+    # with no Git user configured (a farm checkout) can create it.
+    identity = {
+        "GIT_AUTHOR_NAME": "molt consumer gate",
+        "GIT_AUTHOR_EMAIL": "consumer-gate@molt.invalid",
+        "GIT_COMMITTER_NAME": "molt consumer gate",
+        "GIT_COMMITTER_EMAIL": "consumer-gate@molt.invalid",
+    }
+    probe = _git(
+        root,
+        "commit-tree",
+        tree,
+        "-p",
+        head,
+        "-m",
+        "consumer-gate probe",
+        env=dict(os.environ, **identity),
+    )
     _policy, _config, _touched, gates, _rules = select_landing_gates(
         drv.Git(root), root, probe, head, extra=[]
     )
@@ -199,7 +216,8 @@ def check(root: Path, paths: list[str]) -> int:
         f"consumer-gate: no passing importer-test receipt for tree {tree[:12]} "
         f"({len(changed)} changed path(s)). Trace and run the tests that import "
         "the change first:\n"
-        f"  uv run --python 3.12 python tools/consumer_gate.py run -- {shown}",
+        "  uv run --no-project python tools/venv_exec.py python tools/consumer_gate.py "
+        f"run -- {shown}",
         file=sys.stderr,
     )
     return 1

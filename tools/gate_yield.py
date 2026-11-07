@@ -10,8 +10,10 @@ its peak memory, and its failures split three ways:
   commit passed;
 * flake: it failed (nonzero or memory pressure) and a retry of the same gate
   on the same commit passed;
-* infrastructure: cancellation, memory pressure, guard or runner faults
-  without a passing retry.
+* cancelled: the executor stopped it after a sibling gate failed (no
+  verdict, and no fault of its own);
+* infrastructure: memory pressure, guard or runner faults without a
+  passing retry.
 
 A costly gate with no candidate failures over many landings is a postsubmit
 candidate. Prior art: Google TAP and Meta's predictive test selection keep
@@ -45,6 +47,7 @@ class GateYield:
     peak_rss_bytes: int = 0
     candidate: int = 0
     flake: int = 0
+    cancelled: int = 0
     infrastructure: int = 0
     commits: set[str] = field(default_factory=set)
 
@@ -57,6 +60,7 @@ class GateYield:
             "peak_rss_bytes": self.peak_rss_bytes,
             "candidate_failures": self.candidate,
             "flakes": self.flake,
+            "cancelled": self.cancelled,
             "infrastructure_failures": self.infrastructure,
             "commits": len(self.commits),
         }
@@ -105,6 +109,8 @@ def gate_yields(receipts: list[tuple[Path, dict]]) -> list[GateYield]:
                 gate.flake += 1
             elif _is_exit(reason):
                 gate.candidate += 1
+            elif reason == "executor cancellation":
+                gate.cancelled += 1
             else:
                 gate.infrastructure += 1
     return sorted(gates.values(), key=lambda gate: -gate.seconds)
@@ -143,13 +149,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     total = sum(gate.seconds for gate in gates) or 1.0
     print(
-        f"{'hours':>6} {'share':>6} {'runs':>5} {'cand':>4} {'flake':>5} {'infra':>5}  gate"
+        f"{'hours':>6} {'share':>6} {'runs':>5} {'cand':>4} {'flake':>5} "
+        f"{'cancl':>5} {'infra':>5}  gate"
     )
     for gate in gates[: args.top]:
         print(
             f"{gate.seconds / 3600:6.1f} {100 * gate.seconds / total:5.1f}% "
             f"{gate.runs:5d} {gate.candidate:4d} {gate.flake:5d} "
-            f"{gate.infrastructure:5d}  {gate.command[:110]}"
+            f"{gate.cancelled:5d} {gate.infrastructure:5d}  {gate.command[:110]}"
         )
     print(
         f"gate-yield: {len(gates)} gates, {total / 3600:.1f} gate-hours in {directory}"

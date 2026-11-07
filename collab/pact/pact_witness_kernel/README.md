@@ -52,14 +52,14 @@ The Molt-side browser/WASM attempt is no longer a raw local command. Route it
 through the proof queue:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools/proof_queue.py status
-uv run --active --project . --python 3.12 python tools/proof_queue.py pact-witness-acceptance
+uv run --active --project . python tools/proof_queue.py status
+uv run --active --project . python tools/proof_queue.py pact-witness-acceptance
 ```
 
 For the smallest queued oracle check, run:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools/proof_queue.py pact-witness-oracle
+uv run --active --project . python tools/proof_queue.py pact-witness-oracle
 ```
 
 The oracle lane regenerates ignored `.npz` outputs in a temporary directory and

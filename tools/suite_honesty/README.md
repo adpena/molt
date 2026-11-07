@@ -64,7 +64,7 @@ have a `fail` entry here, and every `fail` entry must still be failing.
 
 ## What the ratchet enforces (fail-closed)
 
-The guard (`uv run --python 3.12 python tools/check_suite_honesty.py`) exits non-zero when:
+The guard (`uv run python tools/check_suite_honesty.py`) exits non-zero when:
 
 **Manifest lint** (always fatal):
 - a dimension status is invalid, or a backend is unknown;
@@ -112,7 +112,7 @@ or expired entry.
    ```
 3. Re-run calibration so the snapshot agrees (`--calibrate`, or re-run
    `tests/molt_diff.py` with `MOLT_DIFF_RESULTS_JSONL=tools/suite_honesty/native_calibration.jsonl`).
-4. `uv run --python 3.12 python tools/check_suite_honesty.py --update-baseline` — refused unless the
+4. `uv run python tools/check_suite_honesty.py --update-baseline` — refused unless the
    ceiling stays flat or **falls**. Adding a debt without fixing one is rejected by
    design; the honest path when a real regression lands is to **fix it**, not widen
    the baseline.
@@ -121,7 +121,7 @@ or expired entry.
 
 1. Fix the test so it matches CPython.
 2. Re-calibrate; the test now records raw `pass`.
-3. `uv run --python 3.12 python tools/check_suite_honesty.py` will go **RED** with "remove the entry —
+3. `uv run python tools/check_suite_honesty.py` will go **RED** with "remove the entry —
    it's fixed" until you delete the `fail` dimension.
 4. Delete it, then `--update-baseline` (the ceiling falls — always allowed).
 
@@ -164,24 +164,24 @@ failure queue and raw JSONL instead of replacing its outcome with a later pass.
 ## Commands
 
 ```bash
-uv run --python 3.12 python tools/check_suite_honesty.py                 # check vs snapshot+baseline (CI gate)
-uv run --python 3.12 python tools/check_suite_honesty.py --verbose       # + per-backend table (native + wasm)
-uv run --python 3.12 python tools/check_suite_honesty.py --show TEST     # one test's expectations
-uv run --python 3.12 python tools/check_suite_honesty.py --lint-only     # manifest lint only (no reality)
-uv run --python 3.12 python tools/check_suite_honesty.py --execution-results execution.json
+uv run python tools/check_suite_honesty.py                 # check vs snapshot+baseline (CI gate)
+uv run python tools/check_suite_honesty.py --verbose       # + per-backend table (native + wasm)
+uv run python tools/check_suite_honesty.py --show TEST     # one test's expectations
+uv run python tools/check_suite_honesty.py --lint-only     # manifest lint only (no reality)
+uv run python tools/check_suite_honesty.py --execution-results execution.json
         # exact Rust/target/build red-set check
-uv run --python 3.12 python tools/check_suite_honesty.py --update-baseline   # down-only
-uv run --python 3.12 python tools/check_suite_honesty.py --reconcile --results FILE
+uv run python tools/check_suite_honesty.py --update-baseline   # down-only
+uv run python tools/check_suite_honesty.py --reconcile --results FILE
         # rewrite native dims FROM a calibration run (placeholders to fill)
-uv run --python 3.12 python tools/check_suite_honesty.py --calibrate [paths...]
+uv run python tools/check_suite_honesty.py --calibrate [paths...]
         # run molt_diff to (re)generate native_calibration.jsonl
-uv run --python 3.12 python tools/check_suite_honesty.py --calibrate-wasm [paths...]
+uv run python tools/check_suite_honesty.py --calibrate-wasm [paths...]
         # run molt_diff --target wasm to (re)generate wasm_calibration.jsonl
 
 # Long serial calibration that survives the launcher (poll RUN.done for exit code):
 MOLT_DIFF_RESULTS_JSONL=/tmp/stdlib.jsonl \
-uv run --python 3.12 python tools/calib_daemon.py --log RUN.log --pidfile RUN.pid --donefile RUN.done -- \
-  uv run --python 3.12 python tests/molt_diff.py --build-profile release --jobs 1 \
+uv run python tools/calib_daemon.py --log RUN.log --pidfile RUN.pid --donefile RUN.done -- \
+  uv run python tests/molt_diff.py --build-profile release --jobs 1 \
     --files-from STDLIB_LIST.txt
 ```
 

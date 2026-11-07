@@ -202,9 +202,8 @@ discovery_only = false
 tool = "tools/gen_cpython_coverage.py"
 outputs = [
   "docs/spec/areas/compat/surfaces/cpython_abi_coverage.generated.md",
-  "docs/spec/areas/compat/surfaces/cpython_version_assumptions.generated.md",
 ]
-source = "config/cpython_coverage.toml (declares version_assumption_audit.source_roots admitted through src/molt/source_admission.py) + config/cpython_stable_abi_3_12.toml + runtime/molt-cpython-abi/src + runtime/molt-cpython-abi/shims/pyarg_variadic.exports + tools/generator_io.py"
+source = "config/cpython_coverage.toml + config/cpython_stable_abi_3_12.toml + runtime/molt-cpython-abi/src + runtime/molt-cpython-abi/shims/pyarg_variadic.exports + tools/generator_io.py"
 check_mode = true
 toolchains = []
 check_command = "tools/gen_cpython_coverage.py --check"

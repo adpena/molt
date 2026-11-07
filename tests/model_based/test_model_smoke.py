@@ -5,7 +5,7 @@ Python test programs are syntactically valid (compile without error).
 
 Usage::
 
-    uv run --python 3.12 python3 -m pytest tests/model_based/test_model_smoke.py -v
+    uv run python3 -m pytest tests/model_based/test_model_smoke.py -v
 """
 
 from __future__ import annotations

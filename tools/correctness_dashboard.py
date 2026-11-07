@@ -9,9 +9,9 @@ Collects and reports correctness coverage across all verification layers:
   - End-to-end proof chain status
 
 Usage:
-    uv run --python 3.12 python3 tools/correctness_dashboard.py
-    uv run --python 3.12 python3 tools/correctness_dashboard.py --json
-    uv run --python 3.12 python3 tools/correctness_dashboard.py --verbose
+    uv run python3 tools/correctness_dashboard.py
+    uv run python3 tools/correctness_dashboard.py --json
+    uv run python3 tools/correctness_dashboard.py --verbose
 """
 
 from __future__ import annotations

@@ -175,9 +175,8 @@ def test_a_tool_change_selects_the_repository_policy_gates():
             ["git", "-C", str(root), "write-tree"], env=env, check=True
         ).stdout.strip()
     selected = consumer_gate.static_gates(root, tree)
-    for policy in (
-        "tools/check_test_ownership.py",
-        "tools/check_subprocess_guard_coverage.py",
-        "tools/encoding_gate.py",
-    ):
-        assert any(policy in command for command in selected), policy
+    # Which policy checks a tool change selects is the landing policy's
+    # contract (tests/test_committed_gate_policy.py); the gate's contract is
+    # that it runs that non-empty static selection before any test.
+    assert selected
+    assert all(isinstance(command, str) and command for command in selected)

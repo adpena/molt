@@ -328,7 +328,12 @@ pub enum RuntimeFn {
     ChanTrySend,
     Chr,
     ClassApplySetName,
+    ClassBodyBuiltins,
     ClassBuilderCheck,
+    ClassDefNamespace,
+    ClassFrameEnter,
+    ClassFrameExit,
+    ClassFrameSetLocation,
     ClassNew,
     ClassSetBase,
     ClassmethodGet,
@@ -360,6 +365,7 @@ pub enum RuntimeFn {
     CmathTan,
     CmathTanh,
     CodeNew,
+    CodeSetClassBody,
     CodeSlotSet,
     CodeSlotsInit,
     CodecsBomUtf16Be,
@@ -930,6 +936,7 @@ pub enum RuntimeFn {
     FractionToStr,
     FractionTruediv,
     FrameCellPublish,
+    FrameClassLocalsSet,
     FrameContextSet,
     FrameLocalsBegin,
     FrozensetAdd,
@@ -4180,8 +4187,33 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
+        symbol: "molt_class_body_builtins",
+        arity: 1,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
         symbol: "molt_class_builder_check",
         arity: 0,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_class_def_namespace",
+        arity: 6,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_class_frame_enter",
+        arity: 3,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_class_frame_exit",
+        arity: 0,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_class_frame_set_location",
+        arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -4337,6 +4369,11 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_code_new",
         arity: 9,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_code_set_class_body",
+        arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -7187,6 +7224,11 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_frame_cell_publish",
         arity: 2,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_frame_class_locals_set",
+        arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {

@@ -47,7 +47,6 @@ class PythonFrameContextScope:
     cleanup_label: int
     done_label: int
     outer_handler: int | None
-    outer_class_body: bool
 
 
 @dataclass(frozen=True)
@@ -72,7 +71,7 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         with self._suppress_check_exception(emit_on_exit=False):
             no_value = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=no_value))
-            class_body = self.python_class_body_context
+            class_body = self.python_class_frame_owner is not None
             name = None if class_body else self.current_python_first_arg
             kind = 0
             value = no_value
@@ -120,7 +119,7 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         if (
             self.python_frame_context_active
             and self.frame_home_slots is None
-            and not self.python_class_body_context
+            and self.python_class_frame_owner is None
             and name == self.current_python_first_arg
             and (cell or not self._python_argument_zero_is_cell(name))
         ):
@@ -134,19 +133,14 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         binding = self.comprehension_bindings.get(name)
         return binding.is_cell if binding is not None else name in self.boxed_locals
 
-    def _enter_python_frame_context_scope(
-        self, *, class_body: bool = False
-    ) -> PythonFrameContextScope:
+    def _enter_python_frame_context_scope(self) -> PythonFrameContextScope:
         scope = PythonFrameContextScope(
             self.next_label(),
             self.next_label(),
             self.try_end_labels[-1]
             if self.try_end_labels
             else self.function_exception_label,
-            self.python_class_body_context,
         )
-        if class_body:
-            self.python_class_body_context = True
         self.try_end_labels.append(scope.cleanup_label)
         self._publish_python_frame_context()
         return scope
@@ -155,7 +149,6 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         self, scope: PythonFrameContextScope, *, emit_cleanup: bool = True
     ) -> None:
         assert self.try_end_labels.pop() == scope.cleanup_label
-        self.python_class_body_context = scope.outer_class_body
         if not emit_cleanup:
             return
         # The caller has restored compiler scope before this emission. Both

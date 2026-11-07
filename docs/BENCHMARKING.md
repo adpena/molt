@@ -69,7 +69,7 @@ before runtime measurements are accepted.
 
 
 Maintainer and agent benchmark/profiling runs should enter through the active
-project environment, for example `uv run --active --project . --python 3.12 ...`.
+project environment, for example `uv run --active --project . ...`.
 Harness internals must reuse `sys.executable` for nested Molt builds and helper
 tools instead of launching another `uv run`; otherwise a warm benchmark loop can
 still pay project-env setup and extra launcher/process churn.
@@ -78,7 +78,7 @@ The citable release performance authority is the canonical scoreboard, not the
 developer harness:
 
 ```bash
-uv run --python 3.12 python3 tools/perf_scoreboard.py \
+uv run python3 tools/perf_scoreboard.py \
   --set core --backend native --backend llvm --profile release-fast \
   --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent
 ```
@@ -144,13 +144,13 @@ is not the default throughput mode.
 For performance parity work, prefer linked WASM artifacts (`tools/bench_wasm.py --linked`)
 and use the linked runner path by default.
 If you build standalone WASM artifacts for perf validation, use
-`uv run --python 3.12 python3 -m molt.cli build --target wasm --require-linked`
+`uv run python3 -m molt.cli build --target wasm --require-linked`
 to ensure only linked output is produced.
 Use `tools/bench_wasm.py --require-linked` to fail fast when linking is unavailable.
 For targeted wasm failure triage, use benchmark filtering plus control-runner checks:
 
 ```bash
-uv run --python 3.12 python3 tools/bench_wasm.py \
+uv run python3 tools/bench_wasm.py \
   --bench bench_async_await \
   --bench bench_channel_throughput \
   --runner node \
@@ -421,7 +421,7 @@ For apples-to-apples validation against friend priorities, use the
 friend manifest harness:
 
 ```bash
-uv run --python 3.12 python3 tools/bench_friends.py \
+uv run python3 tools/bench_friends.py \
   --manifest bench/friends/manifest.toml \
   --include-disabled \
   --dry-run
@@ -430,7 +430,7 @@ uv run --python 3.12 python3 tools/bench_friends.py \
 Then enable and run pinned suites:
 
 ```bash
-uv run --python 3.12 python3 tools/bench_friends.py \
+uv run python3 tools/bench_friends.py \
   --manifest bench/friends/manifest.toml \
   --suite codon_benchmarks \
   --checkout \
@@ -441,7 +441,7 @@ uv run --python 3.12 python3 tools/bench_friends.py \
 PyPerformance lane (uses `molt run --profile dev` for the Molt runner):
 
 ```bash
-uv run --python 3.12 python3 tools/bench_friends.py \
+uv run python3 tools/bench_friends.py \
   --manifest bench/friends/manifest.toml \
   --suite pyperformance_benchmarks \
   --checkout \
@@ -451,7 +451,7 @@ uv run --python 3.12 python3 tools/bench_friends.py \
 Upstream tinygrad lane:
 
 ```bash
-uv run --python 3.12 python3 tools/bench_friends.py \
+uv run python3 tools/bench_friends.py \
   --manifest bench/friends/manifest.toml \
   --suite tinygrad_off_the_shelf \
   --dry-run
@@ -461,7 +461,7 @@ To run against an already-pinned local checkout without editing the manifest,
 override both the suite root and the expected ref:
 
 ```bash
-uv run --python 3.12 python3 tools/bench_friends.py \
+uv run python3 tools/bench_friends.py \
   --manifest bench/friends/manifest.toml \
   --suite tinygrad_off_the_shelf \
   --suite-root tinygrad_off_the_shelf=/path/to/tinygrad \
@@ -583,7 +583,7 @@ MLIR/MIL lowering, and profiler work.
 NumPy off-the-shelf lane:
 
 ```bash
-uv run --python 3.12 python3 tools/bench_friends.py \
+uv run python3 tools/bench_friends.py \
   --manifest bench/friends/manifest.toml \
   --suite numpy_off_the_shelf \
   --dry-run
@@ -638,7 +638,7 @@ but never feed speedup math.
 SciPy off-the-shelf C-API lane:
 
 ```bash
-uv run --python 3.12 python3 tools/bench_friends.py \
+uv run python3 tools/bench_friends.py \
   --manifest bench/friends/manifest.toml \
   --suite scipy_off_the_shelf \
   --runner c_api_scan
@@ -739,11 +739,11 @@ fixes Gatekeeper *trust*, not launch *speed*.
 Run the audit and feed it into the report:
 
 ```bash
-uv run --python 3.12 python3 tools/uv_project_env.py \
+uv run python3 tools/uv_project_env.py \
   --python 3.14 --purpose output-startup-size -- \
   uv run --python 3.14 python3 tools/output_startup_size_audit.py \
   --out-dir bench/results --json
-uv run --python 3.12 python3 tools/uv_project_env.py \
+uv run python3 tools/uv_project_env.py \
   --python 3.14 --purpose bench-report -- \
   uv run --python 3.14 python3 tools/bench_report.py \
   --manifest bench/results/docs_manifest.json \
@@ -835,7 +835,7 @@ For runtime attribution work, emit machine-readable counters from compiled runs:
 ```bash
 PYTHONPATH=src \
 MOLT_PROFILE=1 \
-uv run --python 3.12 python3 -m molt.cli run --profile dev --trusted \
+uv run python3 -m molt.cli run --profile dev --trusted \
   bench/friends/repos/codon_benchmarks/bench/codon/sum.py
 ```
 
@@ -910,11 +910,11 @@ like the build host.
 ## Compile Throughput Tuning
 
 - Bootstrap a consistent throughput environment first:
-  - `uv run --python 3.12 python -m molt.cli dx env`
+  - `uv run python -m molt.cli dx env`
   - or run the command directly under the same facts:
-    `uv run --python 3.12 python -m molt.cli dx run -- <command>`
+    `uv run python -m molt.cli dx run -- <command>`
   - shell activation remains available with
-    `uv run --python 3.12 python -m molt.cli dx env --format posix`
+    `uv run python -m molt.cli dx env --format posix`
     or `--format powershell`; `tools/throughput_env.sh --apply` is a POSIX
     compatibility wrapper over that resolver and still runs cache prune policy.
 - Every OS has one automatic artifact authority: the checkout's custody root
@@ -970,7 +970,7 @@ like the build host.
     `molt dx env` / `molt dx run`)
 - One-file import/stdlib regression loops should use the first-class diff
   stdlib-profile flag and the persistent diff cache root:
-  - `uv run --python 3.12 python3 -u tests/molt_diff.py --jobs 1 --stdlib-profile full --json tests/differential/stdlib/importlib_import_module_basic.py`
+  - `uv run python3 -u tests/molt_diff.py --jobs 1 --stdlib-profile full --json tests/differential/stdlib/importlib_import_module_basic.py`
 - For differential throughput, wrappers are disabled by default for portability; opt in only on stable hosts:
   - `MOLT_DIFF_ALLOW_RUSTC_WRAPPER=1`
 
@@ -980,7 +980,7 @@ like the build host.
 export MOLT_SESSION_ID="bench-baseline"
 eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"
 MOLT_USE_SCCACHE=1 \
-uv run --python 3.12 python3 -m molt.cli build examples/hello.py --build-profile dev --cache-report
+uv run python3 -m molt.cli build examples/hello.py --build-profile dev --cache-report
 ```
 
 ### Python Source-Closure Cost
@@ -1008,7 +1008,7 @@ across profile and wrapper modes:
 ```bash
 export MOLT_SESSION_ID="throughput-matrix"
 eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"
-uv run --python 3.12 python3 tools/throughput_matrix.py \
+uv run python3 tools/throughput_matrix.py \
   --concurrency 2 \
   --timeout-sec 75 \
   --shared-target-dir "$CARGO_TARGET_DIR" \
@@ -1039,7 +1039,7 @@ case definitions (cold/warm, cache-hit/no-cache, daemon on/off, and
 `release-fast` iteration lanes):
 
 ```bash
-uv run --python 3.12 python3 tools/compile_progress.py --clean-state
+uv run python3 tools/compile_progress.py --clean-state
 ```
 
 Add `--diagnostics` to collect per-case compiler phase timings/module reason
@@ -1070,7 +1070,7 @@ nonzero result; an existing build failure keeps its primary error and code.
   - `--diagnostics`
   - `--diagnostics-file <path>`
   - Example:
-    `uv run --python 3.12 python3 -m molt.cli build --build-profile dev --no-cache --diagnostics --diagnostics-file build_diag.json examples/hello.py`
+    `uv run python3 -m molt.cli build --build-profile dev --no-cache --diagnostics --diagnostics-file build_diag.json examples/hello.py`
   - Midend payloads include tiering telemetry (`tier_base_summary`,
     `promoted_functions`, `promotion_source_summary`,
     `promotion_hotspots_top`) for PGO-guided tier promotion audits.
@@ -1103,7 +1103,7 @@ allocation diagnostics, and final binary/startup evidence. Existing tools remain
 the producers; the capsule is the coupled schema and cross-check gate.
 
 ```bash
-uv run --python 3.12 python tools/analysis_capsule.py \
+uv run python tools/analysis_capsule.py \
   --build-diagnostics bench/results/build_diag.json \
   --binary-size-json bench/results/binary_size.json \
   --startup-audit bench/results/output_startup_size_audit.json \

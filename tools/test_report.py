@@ -8,16 +8,16 @@ and produces markdown summaries with trend analysis.
 Usage::
 
     # Show most recent report
-    uv run --python 3.12 python3 tools/test_report.py
+    uv run python3 tools/test_report.py
 
     # Show last 5 reports
-    uv run --python 3.12 python3 tools/test_report.py --last 5
+    uv run python3 tools/test_report.py --last 5
 
     # Compare two specific dates
-    uv run --python 3.12 python3 tools/test_report.py --compare 2026-03-10 2026-03-12
+    uv run python3 tools/test_report.py --compare 2026-03-10 2026-03-12
 
     # Custom report directory
-    uv run --python 3.12 python3 tools/test_report.py --report-dir tmp/reports
+    uv run python3 tools/test_report.py --report-dir tmp/reports
 """
 
 from __future__ import annotations

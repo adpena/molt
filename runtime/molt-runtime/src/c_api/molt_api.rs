@@ -19,7 +19,11 @@ pub extern "C" fn molt_c_api_version() -> u32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_init() -> i32 {
-    if molt_runtime_init() == 0 { -1 } else { 0 }
+    if molt_runtime_init() == 0 || !crate::cpython_abi_hooks::expose_cpython_types() {
+        -1
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -50,6 +54,10 @@ pub extern "C" fn molt_gil_acquire() -> i32 {
     };
     if outermost {
         molt_runtime_ensure_gil();
+        if !crate::cpython_abi_hooks::expose_cpython_types() {
+            let _ = molt_gil_release();
+            return -1;
+        }
     }
     0
 }

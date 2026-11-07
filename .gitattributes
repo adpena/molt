@@ -26,7 +26,6 @@ docs/agent/V1_HANDOFF_FINDINGS.md merge=molt-ledger
 "/docs/environment-variables.generated.md" merge=binary
 "/docs/spec/STATUS.md" merge=binary
 "/docs/spec/areas/compat/surfaces/cpython_abi_coverage.generated.md" merge=binary
-"/docs/spec/areas/compat/surfaces/cpython_version_assumptions.generated.md" merge=binary
 "/docs/spec/areas/compiler/luau_support_matrix.generated.md" merge=binary
 "/docs/spec/areas/security/host_capabilities.generated.md" merge=binary
 "/include/molt/shared/_molt_type_layout.generated.h" merge=binary

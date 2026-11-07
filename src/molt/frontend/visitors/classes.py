@@ -25,6 +25,10 @@ from molt.compiler_analysis.builtin_binding_guards_generated import (
     BUILTIN_BINDING_GUARD_BITS,
 )
 from molt.compiler_analysis.python_source_keys import python_node_source_key
+from molt.compiler_analysis.python_effects_generated import (
+    NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS,
+    NO_NAMESPACE_REFLECTION_FORBIDDEN_EFFECTS,
+)
 from molt.compiler_analysis.python_lexical_scope import (
     PythonLexicalScopeVisitor,
     DefinitionLexicalRegions,
@@ -536,6 +540,13 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             self._emit_intrinsic_call("molt_class_builder_check", [], type_hint="None")
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
+        # MAKE_FUNCTION captures these before bases/keywords can rebind
+        # globals['__builtins__']. The class frame is entered only after prepare.
+        body_globals = self._emit_globals_dict()
+        body_builtins = self._emit_intrinsic_call(
+            "molt_class_body_builtins", [body_globals], type_hint="Any"
+        )
+
         type_param_vals, type_param_map = self._emit_type_params_values(node)
         if type_param_map:
             merged = dict(self.type_parameter_bindings)
@@ -624,8 +635,28 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         # names; the straight-line static fast path is untouched.  (P0 #50.)
         assert self._sema is not None, "module sema must be populated before lowering"
         body_needs_block = id(node) in self._sema.class_facts.block_exec_class_nodes
+        # Only a body proved to run no callback and no namespace reflection
+        # may keep its namespace in SSA. Missing facts never authorize elision.
+        namespace_forbidden = (
+            NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS
+            | NO_NAMESPACE_REFLECTION_FORBIDDEN_EFFECTS
+        )
+        body_has_no_callbacks_or_reflection = (
+            self.python_binding_index is not None
+            and all(
+                (fact := self.python_binding_index.statement_fact(item)) is not None
+                and not fact.effects & namespace_forbidden
+                for item in node.body
+            )
+        )
+        if (
+            self.python_binding_index is not None
+            and self.python_binding_index.class_annotation_namespace_required(node)
+        ):
+            body_has_no_callbacks_or_reflection = False
         if body_needs_block:
             dynamic_build = True
+        materialize_namespace = dynamic_build or not body_has_no_callbacks_or_reflection
         if not has_explicit_bases:
             bases = [OBJECT_CLASS]
 
@@ -648,7 +679,12 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         # Repeated bases build dynamically like any multi-base class, and
         # molt_class_set_base raises CPython's TypeError when the statement
         # runs; base names cannot decide identity at compile time.
-        dynamic = dynamic_build or len(bases) > 1
+        # An observable namespace can acquire structural attributes through a
+        # callback. Keep generic instance/layout facts while still using the
+        # canonical constructor when the metaclass and bases are proved.
+        dynamic = (
+            dynamic_build or len(bases) > 1 or not body_has_no_callbacks_or_reflection
+        )
         opaque = (
             self.namespace_premise.opaque_activation_sources
             if self.namespace_premise is not None
@@ -998,6 +1034,53 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         module_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=module_val))
 
+        code_symbol = class_id.body_code_symbol
+        self._register_code_symbol(code_symbol)
+        file_val = self._emit_const_value(self.source_path or "<unknown>")
+        first_line = self._emit_const_value(
+            node.decorator_list[0].lineno if node.decorator_list else node.lineno
+        )
+        no_table = self._emit_const_value(None)
+        empty_names = MoltValue(self.next_var(), type_hint="tuple")
+        self.emit(MoltOp(kind="TUPLE_NEW", args=[], result=empty_names))
+        code_names = []
+        for code_name in self._collect_code_names_for_body(
+            node.body, varnames=[], free_vars=[], module_scope=True
+        ):
+            code_names.append(self._emit_const_value(code_name))
+        names_tuple = MoltValue(self.next_var(), type_hint="tuple")
+        self.emit(MoltOp(kind="TUPLE_NEW", args=code_names, result=names_tuple))
+        zero = self._emit_const_value(0)
+        body_code = MoltValue(self.next_var(), type_hint="code")
+        self.emit(
+            MoltOp(
+                kind="CODE_NEW",
+                args=[
+                    file_val,
+                    name_val,
+                    first_line,
+                    no_table,
+                    empty_names,
+                    names_tuple,
+                    zero,
+                    zero,
+                    zero,
+                ],
+                result=body_code,
+            )
+        )
+        self._emit_intrinsic_call(
+            "molt_code_set_class_body", [body_code], type_hint="None"
+        )
+        self.emit(
+            MoltOp(
+                kind="CODE_SLOT_SET",
+                args=[body_code, body_globals],
+                result=MoltValue("none"),
+                metadata={"code_symbol": code_symbol},
+            )
+        )
+
         dynamic_namespace: MoltValue | None = None
         # ``classcell_val`` is created earlier (before the method loop) when
         # ``needs_classcell`` so it can be threaded into method closures; do not
@@ -1152,6 +1235,10 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
 
             dynamic_namespace = namespace_val
 
+        if dynamic_namespace is None and materialize_namespace:
+            dynamic_namespace = MoltValue(self.next_var(), type_hint="dict")
+            self.emit(MoltOp(kind="DICT_NEW", args=[], result=dynamic_namespace))
+
         saved_locals = self.locals
         self.locals = {}
         self._class_body_depth += 1
@@ -1199,12 +1286,29 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             self._class_ns_store(class_ns_scope, name, value)
             self.locals[name] = value
 
-        # All consumers share one namespace owner. Static bodies retain an SSA
-        # projection until a deferred evaluator requires a captured mapping.
+        # All consumers share one namespace owner. Only bodies proved to run
+        # no callbacks or reflection retain their bindings solely in SSA.
         class_import_state = self._capture_class_import_state()
+        # Entry owns an attempted-entry marker even on failure. Open cleanup
+        # first so both entry failure and every body exit consume it once.
+        frame_scope = self._enter_frame_restore_scope(
+            lambda: self._emit_intrinsic_call(
+                "molt_class_frame_exit", [], type_hint="None"
+            )
+        )
+        self._emit_intrinsic_call(
+            "molt_class_frame_enter",
+            [body_code, body_globals, body_builtins],
+            type_hint="None",
+        )
+        if dynamic_namespace is not None:
+            self._emit_intrinsic_call(
+                "molt_frame_class_locals_set", [dynamic_namespace], type_hint="None"
+            )
         self._class_ns_stack.append(class_ns_scope)
         self._push_qualname(python_definition_name(node), False, qualname=qualname)
-        python_frame_scope = self._enter_python_frame_context_scope(class_body=True)
+        outer_class_frame = self.python_class_frame_owner
+        self.python_class_frame_owner = class_id
         class_body_complete = False
         try:
             if dynamic_namespace is not None:
@@ -1244,6 +1348,10 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     )
                 )
             self._setup_class_annotations(node, class_ns_scope)
+            docstring = ast.get_docstring(node, clean=False)
+            if docstring is not None:
+                with self._source_location_scope(node.body[0]):
+                    bind_class_name("__doc__", self._emit_const_value(docstring))
             for item in node.body:
                 if isinstance(item, (ast.Global, ast.Nonlocal)):
                     # Class directives belong to this namespace, never to the
@@ -1353,9 +1461,11 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 class_ns_scope.global_names,
                 class_ns_scope.nonlocal_names,
             )
-            self._exit_python_frame_context_scope(
-                python_frame_scope, emit_cleanup=class_body_complete
-            )
+            self.python_class_frame_owner = outer_class_frame
+            if class_body_complete:
+                self._exit_frame_restore_scope(frame_scope)
+            else:
+                assert self.try_end_labels.pop() == frame_scope.cleanup_label
 
         if dynamic_build:
             if (
@@ -1426,8 +1536,12 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         else:
             # Outlined class definition: collect attrs, emit single CLASS_DEF op
             class_def_attrs: list[tuple[MoltValue, MoltValue]] = []
-            source_attrs = [("__qualname__", qualname_val), ("__module__", module_val)]
-            if source_keys:
+            source_attrs = (
+                []
+                if dynamic_namespace is not None
+                else [("__qualname__", qualname_val), ("__module__", module_val)]
+            )
+            if source_keys and dynamic_namespace is None:
                 lineno_val = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="CONST", args=[node.lineno], result=lineno_val))
                 source_attrs.append(("__firstlineno__", lineno_val))
@@ -1435,7 +1549,11 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 key = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=[attr_str], result=key))
                 class_def_attrs.append((key, attr_val))
-            static_attrs = self._collect_static_attributes(node) if source_keys else ()
+            static_attrs = (
+                self._collect_static_attributes(node)
+                if source_keys and dynamic_namespace is None
+                else ()
+            )
             if static_attrs:
                 sa_vals: list[MoltValue] = []
                 for sa_name in static_attrs:
@@ -1485,7 +1603,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                     )
                 )
                 class_def_attrs.append((fkey, offsets_dict))
-            for attr_name, val in class_attr_values.items():
+            for attr_name, val in (
+                class_attr_values.items() if dynamic_namespace is None else ()
+            ):
                 akey = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="CONST_STR", args=[attr_name], result=akey))
                 class_def_attrs.append((akey, val))
@@ -1496,14 +1616,44 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             layout_version = class_info.get("layout_version", 0)
             class_def_flags = 1 if base_vals else 0
             class_def_meta = f"{len(base_vals)},{len(class_def_attrs)},{class_info['size']},{layout_version},{class_def_flags}"
-            self.emit(
-                MoltOp(
-                    kind="CLASS_DEF",
-                    args=class_def_args,
-                    result=class_val,
-                    metadata={"s_value": class_def_meta},
+            if dynamic_namespace is None:
+                self.emit(
+                    MoltOp(
+                        kind="CLASS_DEF",
+                        args=class_def_args,
+                        result=class_val,
+                        metadata={"s_value": class_def_meta},
+                    )
                 )
-            )
+            else:
+                # Reflection requires a live mapping, not a metaclass call.
+                # Keep the same proved layout and canonical class constructor;
+                # it consumes the final mapping, including callback writes.
+                bases_tuple = MoltValue(self.next_var(), type_hint="tuple")
+                self.emit(
+                    MoltOp(kind="TUPLE_NEW", args=list(base_vals), result=bases_tuple)
+                )
+                layout_attrs = MoltValue(self.next_var(), type_hint="tuple")
+                self.emit(
+                    MoltOp(
+                        kind="TUPLE_NEW",
+                        args=[value for pair in class_def_attrs for value in pair],
+                        result=layout_attrs,
+                    )
+                )
+                self._emit_intrinsic_call(
+                    "molt_class_def_namespace",
+                    [
+                        name_val,
+                        bases_tuple,
+                        dynamic_namespace,
+                        layout_attrs,
+                        self._emit_const_value(class_info["size"]),
+                        self._emit_const_value(layout_version),
+                    ],
+                    type_hint="type",
+                    result=class_val,
+                )
             # The statement's identity, stamped on the class it just created
             # before any binding, decorator or dataclass transform sees it
             # (HF-220). Layout guards compare it; the metaclass path below

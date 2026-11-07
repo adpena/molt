@@ -109,10 +109,15 @@ over stale prose or precedent.
 
 ## Work with the live repository
 
-- Start with `uv run --no-project --python 3.12 python tools/venv_exec.py python
+- Start with `uv run --no-project python tools/venv_exec.py python
   tools/agent_coordination.py context` (plain `uv run` makes a checkout `.venv`: HF-522), `git status`,
   nested instructions and proof state; for Pact work read only relevant `docs/agent/ORCHESTRATION.md`.
-- Preserve user and parallel-agent work; never reset, clean, overwrite, revert or stage unrelated edits.
+- `.python-version` and `uv.lock` are the one environment authority (`docs/design/one_environment.md`);
+  never pass `--python` or call a bare `python3`, which override or bypass the pin.
+- Harvest and land signal; do not hoard it. A lane, worktree or WIP without a live worker and with
+  unlanded commits is merged with main, proven and landed (or folded into main and retired) the
+  same day; preserve before moving, but preservation is never the end state.
+- Preserve live user and parallel-agent work; never reset, clean, overwrite, revert or stage unrelated edits.
   Bind Git mutations to an explicit checkout (`git -C` or a bound Git object), assert its branch/HEAD
   and exact owned path set, and review the scoped diff before staging, committing or landing.
 - Generated files are projections; change the source or generator and regenerate in the same arc.
@@ -121,6 +126,10 @@ over stale prose or precedent.
 - Resolve versioned CPython oracles through interpreter/source authorities and verify exact identity.
   Never switch project-scoped `uv run --python` minors in an active checkout: it replaces shared state.
   Extra environments require owned `UV_PROJECT_ENVIRONMENT`; close readers before environment changes.
+- The development apparatus (runners, receipts, ledgers, scanners, dashboards, generated
+  projections) is frozen: add none unless a measured defect it would have caught justifies it,
+  and delete one with its last consumer. Capacity goes to compiler and runtime work
+  (`docs/design/presubmit_test_strategy.md`, exit condition).
 - Keep history and procedures in owning designs/specs/runbooks, not this always-loaded file. Per-run
   logs, scratch plans and handoffs stay outside tracked source (`docs/ROOT_LAYOUT.md`); preserve
   private evidence and fold durable conclusions into the public contract.

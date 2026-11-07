@@ -2384,7 +2384,12 @@ def test_label_threading_preserves_region_handler_identity(
 ) -> None:
     ops = [
         MoltOp("TRY_START", [10], MoltValue("none")),
-        MoltOp("CHECK_EXCEPTION", [10], MoltValue("none")),
+        MoltOp(
+            "CHECK_EXCEPTION",
+            [10],
+            MoltValue("none"),
+            exception_edge=ExceptionEdgeKind.UNWIND,
+        ),
         MoltOp("TRY_END", [10], MoltValue("none")),
         MoltOp("ret_void", [], MoltValue("none")),
         MoltOp("LABEL", [10], MoltValue("none")),
@@ -6433,6 +6438,7 @@ def test_definite_assignment_matches_paths_without_definition() -> None:
                         kind="CHECK_EXCEPTION",
                         args=[f"b{rng.randrange(8)}"],
                         result=MoltValue("none"),
+                        exception_edge=ExceptionEdgeKind.UNWIND,
                     ),
                     MoltOp(
                         kind="JUMP",
@@ -6474,7 +6480,14 @@ def test_definite_assignment_matches_paths_without_definition() -> None:
 
 def test_definite_assignment_rejects_after_check_and_resume_producers() -> None:
     for prefix in (
-        [MoltOp(kind="CHECK_EXCEPTION", args=["use"], result=MoltValue("none"))],
+        [
+            MoltOp(
+                kind="CHECK_EXCEPTION",
+                args=["use"],
+                result=MoltValue("none"),
+                exception_edge=ExceptionEdgeKind.UNWIND,
+            )
+        ],
         [
             MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")),
             MoltOp(kind="STATE_YIELD", args=[], result=MoltValue("none")),
@@ -6537,7 +6550,12 @@ def test_sccp_retains_linear_facts_across_shared_handler_fanin(count: int) -> No
         ops.extend(
             [
                 MoltOp("CONST", [index], MoltValue(f"v{index}")),
-                MoltOp("CHECK_EXCEPTION", ["handler"], MoltValue("none")),
+                MoltOp(
+                    "CHECK_EXCEPTION",
+                    ["handler"],
+                    MoltValue("none"),
+                    exception_edge=ExceptionEdgeKind.UNWIND,
+                ),
             ]
         )
     ops.extend(
@@ -7369,7 +7387,12 @@ def test_spilled_results_are_published_only_after_the_exception_check() -> None:
     gen.current_ops[:] = [
         MoltOp("STATE_SWITCH", [], MoltValue("none")),
         MoltOp("CALL", ["effect"], value),
-        MoltOp("CHECK_EXCEPTION", [900], MoltValue("none")),
+        MoltOp(
+            "CHECK_EXCEPTION",
+            [900],
+            MoltValue("none"),
+            exception_edge=ExceptionEdgeKind.ORIGIN,
+        ),
         MoltOp("STATE_YIELD", [], MoltValue("none")),
         MoltOp("STATE_LABEL", [901], MoltValue("none")),
         MoltOp("ret", [value], MoltValue("none")),

@@ -355,15 +355,15 @@ as generated programs; a pass on one host cannot establish the whole matrix.
 - **Warm cache**: `--warm-cache` or `MOLT_DIFF_WARM_CACHE=1` prebuilds all tests to seed `MOLT_CACHE`.
 - **Failure queue**: failed tests are written to `MOLT_DIFF_ROOT/failures.txt` (override with `--failures-output` or `MOLT_DIFF_FAILURES`).
 - **Summary sidecar**: `MOLT_DIFF_ROOT/summary.json` (or `MOLT_DIFF_SUMMARY=<path>`) includes run metadata and RSS aggregates when enabled.
-- **Memory report**: run `uv run --python 3.12 python tools/diff_memory_report.py --run-id <id>` to list top RSS offenders (uses `rss_metrics.jsonl`).
+- **Memory report**: run `uv run python tools/diff_memory_report.py --run-id <id>` to list top RSS offenders (uses `rss_metrics.jsonl`).
 - **Top offenders printout**: when `MOLT_DIFF_MEASURE_RSS=1`, the harness prints top 5 RSS offenders at the end (override with `MOLT_DIFF_RSS_TOP=<n>`).
 - **Summary top list**: `summary.json` includes `rss.top` with the top offenders (file + build/run RSS).
 
 ### 1.1 Methodology
 1.  **Input**: A Python source file `test_case.py`.
 2.  **Execution**:
-    - Run `uv run --python 3.12 python test_case.py` -> Capture `stdout`, `stderr`, `exit_code`.
-    - Run `uv run --python 3.12 python tests/molt_diff.py test_case.py` -> Build with Molt, run the binary, capture outputs.
+    - Run `uv run python test_case.py` -> Capture `stdout`, `stderr`, `exit_code`.
+    - Run `uv run python tests/molt_diff.py test_case.py` -> Build with Molt, run the binary, capture outputs.
 3.  **Comparison**: Assert that all captured outputs are identical.
 
 ### 1.2 State Snapshoting
@@ -378,9 +378,9 @@ Differential cases are organized by lane:
 
 Run lane sweeps via:
 ```
-uv run --python 3.12 python tests/molt_diff.py --build-profile dev tests/differential/basic
-uv run --python 3.12 python tests/molt_diff.py --build-profile dev tests/differential/pyperformance
-uv run --python 3.12 python tests/molt_diff.py --build-profile dev tests/differential/stdlib
+uv run python tests/molt_diff.py --build-profile dev tests/differential/basic
+uv run python tests/molt_diff.py --build-profile dev tests/differential/pyperformance
+uv run python tests/molt_diff.py --build-profile dev tests/differential/stdlib
 ```
 
 The verified-subset contract uses `tools/compat/test_policy.py` to project one
@@ -402,13 +402,13 @@ capabilities nor establish support for an otherwise unqualified platform.
 ### 1.4 Differential coverage reporting
 Generate metadata coverage summaries from `# MOLT_META` headers:
 ```
-uv run --python 3.12 python tools/diff_coverage.py
+uv run python tools/diff_coverage.py
 ```
 The report is written to `tests/differential/COVERAGE_REPORT.md` by default.
 
 Validate lane organization + coverage index integrity:
 ```
-uv run --python 3.12 python tools/check_differential_suite_layout.py
+uv run python tools/check_differential_suite_layout.py
 ```
 
 ### 1.5 Verified-Subset Scope Policy For Too-Dynamic Cases
@@ -494,8 +494,8 @@ plan `cargo test`, except the entries of
 
 ## 5. Continuous Integration Gates
 - **Rust**: `cargo test` (runtime + core unit tests).
-- **Python**: `uv run --python 3.12 pytest` (unit and integration tests under `tests/`).
-- **Differential**: run `uv run --python 3.12 python tests/molt_diff.py <case.py>` for curated parity cases (expand over time).
+- **Python**: `uv run pytest` (unit and integration tests under `tests/`).
+- **Differential**: run `uv run python tests/molt_diff.py <case.py>` for curated parity cases (expand over time).
 - **Benchmarks**: `tools/bench.py` for local validation; add CI regression gates as they stabilize.
 
 Hosted jobs export process-wide state that local runs lack: the hosted checkout

@@ -27,7 +27,7 @@ all 11 arrays declared by
 missing or extra output, and pass:
 
 ```powershell
-uv run --active --python 3.12 python collab/pact/parity/check_parity.py `
+uv run --active python collab/pact/parity/check_parity.py `
   candidate_outputs.npz `
   collab/pact/pact_witness_kernel/reference_outputs.npz `
   collab/pact/pact_witness_kernel/field_solve_gates.json

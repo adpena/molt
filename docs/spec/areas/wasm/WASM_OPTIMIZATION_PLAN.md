@@ -182,9 +182,13 @@ from canonical read/definition facts, independently of identifier spelling.
 Call-site retention keeps a local alive
 across a call only while its value occupies that local across the call.
 
-Resumable state machines and frames containing counted-loop index operations
-keep one local per name, because the shared CFG does not model dispatch
-re-entry or the index-continue target. The earlier linear coalescer admitted
+Counted loops reach the planner normalized: final TIR projection admission
+rejects `loop_index_start`/`loop_index_next`, so a counted-loop carrier arrives
+as a block-argument `store_var`/`load_var` pair around structured loop markers,
+and the shared CFG models its back edge and exit. Resumable state machines keep
+one local per name, because the shared CFG does not model dispatch re-entry.
+On the Falcon OCR driver (2026-11-07, Binaryen 133) no function needs more than
+470 locals before `wasm-opt` or 406 after `-O3`. The earlier linear coalescer admitted
 only `__tmp`/`__v` spellings. Current frontend and TIR back-conversion output
 does not use those spellings, so frames kept one local per value name.
 

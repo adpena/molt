@@ -58,7 +58,7 @@ intervals, p-values, or effect-size claims.
 
 ```bash
 # Run benchmarks and save as baseline
-uv run --python 3.12 python3 tools/bench.py --super --json-out bench/baselines/baseline_$(date +%Y%m%d).json
+uv run python3 tools/bench.py --super --json-out bench/baselines/baseline_$(date +%Y%m%d).json
 
 # Or promote current bench/baseline.json
 cp bench/baseline.json bench/baselines/baseline_$(date +%Y%m%d).json
@@ -68,17 +68,17 @@ cp bench/baseline.json bench/baselines/baseline_$(date +%Y%m%d).json
 
 ```bash
 # Compare current results against a baseline
-uv run --python 3.12 python3 tools/perf_regression.py \
+uv run python3 tools/perf_regression.py \
   --current bench/results/bench.json \
   --baseline bench/baselines/baseline_20260301.json
 
 # Compare against all historical baselines for trend analysis
-uv run --python 3.12 python3 tools/perf_regression.py \
+uv run python3 tools/perf_regression.py \
   --current bench/results/bench.json \
   --baseline-dir bench/baselines/
 
 # CI gate mode (exit code 1 on regression)
-uv run --python 3.12 python3 tools/perf_regression.py \
+uv run python3 tools/perf_regression.py \
   --current bench/results/bench.json \
   --baseline bench/baseline.json \
   --json-out /tmp/perf_report.json

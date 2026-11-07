@@ -114,7 +114,7 @@ wrangler deploy --config deploy/cloudflare/wrangler.toml
 ### Manual health check
 
 ```bash
-uv run --python 3.12 python tools/cloudflare_demo_endpoint_verify.py \
+uv run python tools/cloudflare_demo_endpoint_verify.py \
   --base-url https://falcon-ocr.adpena.workers.dev --case-set falcon-ocr
 ```
 
@@ -202,7 +202,7 @@ No image content or user identifiers are ever logged.
 
 5. Verify:
    ```bash
-   uv run --python 3.12 python tools/cloudflare_demo_endpoint_verify.py \
+   uv run python tools/cloudflare_demo_endpoint_verify.py \
      --base-url https://falcon-ocr.adpena.workers.dev --case-set falcon-ocr
    ```
 

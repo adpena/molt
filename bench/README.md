@@ -6,9 +6,9 @@ This directory contains benchmark artifacts, harness helpers, and friend-suite c
 
 ## Primary Commands
 
-- Native: `UV_NO_SYNC=1 uv run --python 3.12 python3 tools/bench.py`
-- WASM: `UV_NO_SYNC=1 uv run --python 3.12 python3 tools/bench_wasm.py --linked`
-- Combined report: `UV_NO_SYNC=1 uv run --python 3.12 python3 tools/bench_report.py`
+- Native: `UV_NO_SYNC=1 uv run python3 tools/bench.py`
+- WASM: `UV_NO_SYNC=1 uv run python3 tools/bench_wasm.py --linked`
+- Combined report: `UV_NO_SYNC=1 uv run python3 tools/bench_report.py`
 
 Use canonical roots:
 

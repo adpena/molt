@@ -204,8 +204,28 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
                     }
                     return MoltObject::none().bits();
                 }
-                let list_bits = list_from_iter_bits(_py, locals_bits)
-                    .unwrap_or_else(|| MoltObject::none().bits());
+                let list_bits = if type_of_bits(_py, locals_bits) == builtin_classes(_py).dict {
+                    list_from_iter_bits(_py, locals_bits)
+                } else {
+                    // PyMapping_Keys consults keys(), not __iter__. Prepared
+                    // class namespaces need not implement the iterator protocol.
+                    let name = crate::NameId::Keys.bits(_py);
+                    let method = molt_getattr_builtin(locals_bits, name, missing);
+                    if exception_pending(_py) {
+                        dec_ref_bits(_py, method);
+                        None
+                    } else {
+                        let output = call_callable0(_py, method);
+                        dec_ref_bits(_py, method);
+                        crate::object::mapping_merge::output_as_list(
+                            _py,
+                            locals_bits,
+                            crate::NameId::Keys.as_str().as_bytes(),
+                            output,
+                        )
+                    }
+                }
+                .unwrap_or_else(|| MoltObject::none().bits());
                 if !obj_from_bits(locals_bits).is_none() {
                     dec_ref_bits(_py, locals_bits);
                 }

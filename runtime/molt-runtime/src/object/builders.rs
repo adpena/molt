@@ -1669,8 +1669,8 @@ pub(crate) fn alloc_code_obj(
     // immutable callable-context provenance paired with slots 9..11. Slot 22
     // owns optional immutable GPU body metadata; 23..24 own declaration
     // qualname/doc once packed metadata publishes them. Slot 25 owns an optional
-    // immutable dataclass initializer body plan. Slot 26 fixes module execution
-    // identity independently of mutable replacement metadata. No function grows.
+    // immutable dataclass initializer body plan. Slot 26 fixes the typed code
+    // scope independently of mutable replacement metadata. No function grows.
     let empty_lexical_ptr = alloc_tuple(_py, &[]);
     if empty_lexical_ptr.is_null() {
         return std::ptr::null_mut();
@@ -1713,9 +1713,15 @@ pub(crate) fn alloc_code_obj(
         *(ptr.add(23 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(24 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(25 * std::mem::size_of::<u64>()) as *mut u64) = 0;
-        *ptr.cast::<u64>().add(26) = u64::from(
-            crate::object::ops::exact_string_bytes(_py, name_bits)
-                .is_some_and(|name| name == b"<module>"),
+        crate::object::layout::code_set_scope_kind(
+            ptr,
+            if crate::object::ops::exact_string_bytes(_py, name_bits)
+                .is_some_and(|name| name == b"<module>")
+            {
+                crate::object::layout::CodeScopeKind::Module
+            } else {
+                crate::object::layout::CodeScopeKind::Function
+            },
         );
         if filename_bits != 0 {
             inc_ref_bits(_py, filename_bits);
@@ -1800,7 +1806,10 @@ unsafe fn clone_code_obj(
         if clone.is_null() {
             return clone;
         }
-        *clone.cast::<u64>().add(26) = u64::from(crate::object::layout::code_is_module(source));
+        crate::object::layout::code_set_scope_kind(
+            clone,
+            crate::object::layout::code_scope_kind(source),
+        );
         if (crate::object::layout::code_declaration_is_published(source)
             || metadata.qualname != metadata.name)
             && crate::object::layout::code_publish_declaration_metadata(
@@ -2378,6 +2387,22 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
         super::layout::StringStorage::publish_ascii(ptr, ascii);
     }
     ptr
+}
+
+/// Allocate a string as CPython's non-interned constructors do
+/// (`PyUnicode_DecodeUTF8`, `PyUnicode_FromKindAndData`): a fresh object,
+/// except the statically interned singletons, the empty string and the
+/// one-character strings (Molt's table holds the ASCII ones). Unlike
+/// `alloc_string` it never auto-interns an identifier-like string, so a
+/// decoded value keeps CPython's interned state (marshal's non-interned tags).
+pub(crate) fn alloc_string_uninterned(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
+    if bytes.is_empty() {
+        return alloc_string(_py, bytes);
+    }
+    if let Some(ptr) = try_intern_ascii_char(_py, bytes) {
+        return ptr;
+    }
+    alloc_string_nointern(_py, bytes)
 }
 
 /// Allocate a string without any interning/caching lookups.

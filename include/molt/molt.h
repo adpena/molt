@@ -35,6 +35,9 @@ typedef int32_t (*MoltCHeapBufferReleaser)(uintptr_t ptr, MoltBufferView *view);
 
 uint32_t molt_c_api_version(void);
 
+/* Initialization and GIL admission return 0 on success, -1 on failure.
+ * Check both before accessing C objects; initialized lifecycle state alone
+ * does not grant C type access. Keep GIL admission through the last read. */
 int32_t molt_init(void);
 int32_t molt_shutdown(void);
 int32_t molt_gil_acquire(void);

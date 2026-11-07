@@ -278,6 +278,7 @@ class MidendPipelineMixin(GeneratorMixinBase):
                             exception_edge=op.exception_edge,
                             exception_source=op.exception_source,
                             source_end_line=op.source_end_line,
+                            class_frame=op.class_frame,
                             source_line=op.source_line,
                             args=new_args,
                             result=op.result,

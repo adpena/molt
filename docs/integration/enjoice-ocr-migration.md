@@ -119,7 +119,7 @@ The only change is that the backend factory should instantiate
 
 3. **Verify the Worker:**
    ```bash
-   uv run --python 3.12 python tools/cloudflare_demo_endpoint_verify.py \
+   uv run python tools/cloudflare_demo_endpoint_verify.py \
      --base-url https://falcon-ocr.adpena.workers.dev --case-set falcon-ocr
    ```
 

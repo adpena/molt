@@ -26,7 +26,7 @@ eval "$(python3 tools/run_context_env.py --format posix)"
 Example targeted run:
 
 ```bash
-UV_NO_SYNC=1 uv run --python 3.12 python3 -u tests/molt_diff.py \
+UV_NO_SYNC=1 uv run python3 -u tests/molt_diff.py \
   tests/differential/stdlib/re_parity.py \
   tests/differential/basic/dataclasses_parity.py \
   --python-version 3.12 \

@@ -423,7 +423,7 @@ def execute_commands(
                             "guard_metrics_schema": None,
                             "executor_error": f"{type(exc).__name__}: {exc}",
                             "failure_scope": "global",
-                            "failure_reason": "executor lost a classified command outcome",
+                            "failure_reason": "the executor raised before a verdict",
                         }
                         if getattr(exc, "guard_command", None) is not None:
                             custody_errors.append(exc)
@@ -575,6 +575,8 @@ def execute_commands(
             reason = record.get("failure_reason") or (
                 f"exit {record.get('returncode')}"
             )
+            if record.get("executor_error"):
+                reason = f"{reason}: {record['executor_error']}"
             print(f"proof-plan: failed {record['id']}: {reason}", file=sys.stderr)
         if not failures:
             for reason in execution["global_stop_reasons"]:

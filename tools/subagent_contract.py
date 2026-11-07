@@ -183,7 +183,9 @@ DESIGN_REVIEW = (
     "List those consumer files in a GoldfishContext section. Commit design.md, report, and stop: "
     "the integrator runs egm-review and egm-resolve on it and returns the settled findings as a "
     "dated Correction in this brief, and you implement against that. A one-line fix needs no "
-    "design.md. After implementation the integrator runs egm-drift-report against the design."
+    "design.md, and a brief that names a design whose Goldfish round is already recorded is "
+    "implemented against that design: write no new design.md and do not stop for review. "
+    "After implementation the integrator runs egm-drift-report against the design."
 )
 
 WHOLE_CRATE_TESTS = (

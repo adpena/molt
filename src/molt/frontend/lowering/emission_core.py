@@ -165,6 +165,9 @@ class EmissionCoreMixin(GeneratorMixinBase):
                         )
 
     def emit(self, op: MoltOp) -> None:
+        # Lexical lookup may temporarily leave the class namespace scope;
+        # execution and source-location ownership still belong to its frame.
+        op.class_frame = self.python_class_frame_owner
         if (
             self.try_suppress_depth is not None
             and len(self.try_end_labels) <= self.try_suppress_depth

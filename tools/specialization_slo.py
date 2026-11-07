@@ -22,11 +22,11 @@ Usage:
     report = slo.evaluate()
 
     # CLI:
-    uv run --python 3.12 python3 tools/specialization_slo.py \\
+    uv run python3 tools/specialization_slo.py \\
         --current bench/results/bench.json \\
         --baseline bench/baseline.json
 
-    uv run --python 3.12 python3 tools/specialization_slo.py --status
+    uv run python3 tools/specialization_slo.py --status
 """
 
 from __future__ import annotations

@@ -48,7 +48,7 @@ signed release manifest. They do not rebuild, rehash, or republish artifacts.
 After a release, download `release_manifest.json` and run:
 
 ```bash
-uv run --python 3.12 python -m tools.release.update_manifests release_manifest.json
+uv run python -m tools.release.update_manifests release_manifest.json
 ```
 
 Rendered files land in `packaging/out/` for copy/paste into external repos.

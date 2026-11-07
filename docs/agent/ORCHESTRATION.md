@@ -54,7 +54,7 @@ scratch, which never lands in a checkout. The structural audit rejects a new
 | checkout, git work, landings | `~/Molt/molt-src` (`~/Projects/molt` links to it) | `C:\Molt\molt-src` |
 | lane worktrees | `~/Molt/worktrees/<lane>` | `C:\Molt\worktrees\<lane>` |
 | build artifacts | `/Volumes/VertigoDataTier/Molt` (APFS SSD), set in `~/.zshenv` by `MOLT_EXTERNAL_ARTIFACT_ROOTS` and `MOLT_PREFER_EXTERNAL_ARTIFACTS=1`; the custody root while the SSD is absent or has under 20 GiB free | the custody root |
-| Python commands | `uv run --python 3.12 ...` from the checkout | same |
+| Python commands | `uv run ...` from the checkout | same |
 
 Route builds through RunContext (`tools/run_context_env.py --prefer-external-artifacts
 --dx`, `tools/dev.py`, or the proof queue). It resolves the artifact root, a
@@ -66,7 +66,7 @@ outside the family layout is its own custody root: artifacts stay in the clone
 root, never into the source tree.
 
 Provision the pinned WASI SDK once per custody root with
-`uv run --python 3.12 python tools/provision_wasi_sdk.py`; WebAssembly builds
+`uv run python tools/provision_wasi_sdk.py`; WebAssembly builds
 then take every C tool from it, locally and in CI.
 
 Forbidden on every host: a checkout, worktree, venv, or artifact root under
@@ -385,7 +385,7 @@ fallback, no fake symbols, upstream source only through package custody.
   is live. Conditional/evicted imports still route through `module_get_global`
   and `call_bind`, preserving CPython LOAD_GLOBAL semantics. Evidence:
   `tests/test_frontend_ir_alias_ops.py` passed 33/33 and pins both paths.
-- R0.4 Acceptance lane: `uv run --active --project . --python 3.12 python
+- R0.4 Acceptance lane: `uv run --active --project . python
   tools/proof_queue.py pact-witness-acceptance --target wasm --detach --timeout 7200`.
   Evidence: run ID, `candidate_outputs.npz` produced by Molt WASM,
   `check_parity.py` PASS. Depends: R0.1–R0.3.

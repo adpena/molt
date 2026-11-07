@@ -28,14 +28,14 @@ the full external-suite catalog is [doc 69A](../../docs/design/foundation/69A_be
 uv sync --group bench
 
 # 2. Run a friend suite's CPython reference lane (no molt build needed):
-uv run --python 3.12 python tools/bench_friends.py \
+uv run python tools/bench_friends.py \
   --manifest bench/friends/manifest.toml --suite pyperformance_benchmarks --dry-run
-uv run --python 3.12 python tools/bench_friends.py \
+uv run python tools/bench_friends.py \
   --manifest bench/friends/manifest.toml --suite pyperformance_benchmarks --checkout --fetch
 
 # Or drive an adapter directly:
-uv run --python 3.12 python tools/pyperformance_adapter.py run-group --group math --json
-uv run --python 3.12 python tools/regrtest_adapter.py run --runner cpython --python python --json
+uv run python tools/pyperformance_adapter.py run-group --group math --json
+uv run python tools/regrtest_adapter.py run --runner cpython --python python --json
 ```
 
 A host with only CPython can collect reference diagnostics. Engine-specific

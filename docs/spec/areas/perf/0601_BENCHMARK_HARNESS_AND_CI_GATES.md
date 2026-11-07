@@ -144,10 +144,10 @@ RUSTFLAGS="-Cprofile-generate=/tmp/molt-pgo-data" \
 
 # Stage 2: Profile — run representative workloads to collect profile data
 # Use the benchmark suite as the training set:
-PYTHONPATH=src uv run --python 3.12 python3 tools/bench.py --json-out /tmp/pgo-bench.json
+PYTHONPATH=src uv run python3 tools/bench.py --json-out /tmp/pgo-bench.json
 # Also run differential test suite for broader coverage:
 MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_TIMEOUT=60 \
-  uv run --python 3.12 python3 tests/molt_diff.py tests/differential/basic
+  uv run python3 tests/molt_diff.py tests/differential/basic
 
 # Stage 3: Merge profiles and rebuild
 llvm-profdata merge -o /tmp/molt-pgo-data/merged.profdata /tmp/molt-pgo-data/

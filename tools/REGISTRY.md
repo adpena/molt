@@ -98,7 +98,7 @@ self-commits or invents an external scheduling authority.
   evidence JSON and generated notebooks; use `--depends-on` for scheduled proof
   dependencies and `link` for post-submit lineage.
   Proof commands using `uv run` must use
-  `uv run --active --project . --python 3.12 ...`; the queue rejects non-active
+  `uv run --active --project . ...`; the queue rejects non-active
   `uv run` because throwaway env creation is false work. Queue sessions are
   contention-key-scoped, so serialized lanes reuse Cargo/uv caches while
   independent keys stay isolated.
