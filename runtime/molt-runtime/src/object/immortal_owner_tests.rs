@@ -486,3 +486,55 @@ fn atomic_owners_remain_exact_during_custody_publication() {
     assert!(!header.ref_count.has_runtime_custody());
     assert_eq!(header.ref_count_snapshot(), 7);
 }
+
+#[test]
+fn reused_host_buffers_never_return_a_stale_literal() {
+    // The WASM JS hosts hand one transient buffer to these constructors and
+    // reuse its address: equal pointer and length must not mean equal bytes.
+    let _transaction = RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        clear_const_data_literal_caches(py);
+        for kind in [ConstDataLiteralKind::String, ConstDataLiteralKind::Bytes] {
+            let mut buffer = *b"host buffer, first contents!";
+            let mut construct = |buffer: &[u8]| {
+                let mut bits = 0;
+                let status = unsafe {
+                    match kind {
+                        ConstDataLiteralKind::String => crate::molt_string_from_bytes(
+                            buffer.as_ptr(),
+                            buffer.len() as u64,
+                            &mut bits,
+                        ),
+                        _ => crate::molt_bytes_from_bytes(
+                            buffer.as_ptr(),
+                            buffer.len() as u64,
+                            &mut bits,
+                        ),
+                    }
+                };
+                assert_eq!(status, 0);
+                bits
+            };
+            let first = construct(&buffer);
+            buffer.copy_from_slice(b"host buffer, other contents!");
+            let second = construct(&buffer);
+            let ptr = crate::obj_from_bits(second).as_ptr().unwrap();
+            let payload = unsafe {
+                match kind {
+                    ConstDataLiteralKind::String => std::slice::from_raw_parts(
+                        crate::object::string_bytes(ptr),
+                        crate::object::string_len(ptr),
+                    ),
+                    _ => std::slice::from_raw_parts(
+                        crate::object::bytes_data(ptr),
+                        crate::object::bytes_len(ptr),
+                    ),
+                }
+            };
+            assert_eq!(payload, b"host buffer, other contents!");
+            crate::dec_ref_bits(py, first);
+            crate::dec_ref_bits(py, second);
+        }
+        clear_const_data_literal_caches(py);
+    })
+}
