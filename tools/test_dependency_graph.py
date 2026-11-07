@@ -2104,6 +2104,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--dependencies-of", metavar="TEST", help="list what selects one test file"
     )
+    parser.add_argument(
+        "--direct",
+        action="store_true",
+        help="list the first-hop importers and data readers separately: the "
+        "tests to read and run before committing a change",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     started = time.perf_counter()
@@ -2111,6 +2117,31 @@ def main(argv: list[str] | None = None) -> int:
     if args.dependencies_of:
         rows = sorted(graph.dependencies(args.dependencies_of))
         print("\n".join(rows))
+        return 0
+    if args.direct:
+        readers = graph.direct_readers(args.paths)
+        elapsed = round(time.perf_counter() - started, 3)
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "importers": readers.importers,
+                        "data_readers": readers.data_readers,
+                        "stats": {**graph.stats, "seconds": elapsed},
+                    },
+                    indent=1,
+                )
+            )
+        else:
+            for label, tests in (
+                ("importers", readers.importers),
+                ("data readers", readers.data_readers),
+            ):
+                print(f"# {label} ({len(tests)})")
+                print("\n".join(tests))
+            print(
+                f"test-dependency-graph: direct readers in {elapsed}s", file=sys.stderr
+            )
         return 0
     selected = graph.select(args.paths)
     elapsed = round(time.perf_counter() - started, 3)

@@ -690,15 +690,15 @@ def collect_pins(
             osv_version_advisories("npm", "@informalsystems/quint", fetchers),
         ),
     ]
-    reference_authority = Path("config/verified_subset.toml")
-    references = load_verified_subset_policy(root / reference_authority)
+    references = load_verified_subset_policy(root / "config/verified_subset.toml")
     for line, reference in zip(
         references.python_versions, references.reference_cpython, strict=True
     ):
         pins.append(
             Pin(
                 f"reference-python-{line}",
-                str(reference_authority),
+                # A reference patch is the pinned source's release.
+                "config/cpython_regrtest_sources.toml",
                 reference,
                 lambda line=line: [
                     release

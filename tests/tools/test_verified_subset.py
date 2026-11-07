@@ -344,13 +344,9 @@ def test_policy_file_does_not_redeclare_fixed_coordinate_authorities(
     config.mkdir(parents=True)
     suite.mkdir()
     policy_path = config / "verified_subset.toml"
-    reference_versions = ", ".join(
-        json.dumps(version) for version in default.reference_cpython
-    )
     document = (
-        'schema = "molt.verified-subset.v2"\n'
+        'schema = "molt.verified-subset.v3"\n'
         'build_profiles = ["dev", "release"]\n'
-        f"reference_cpython = [{reference_versions}]\n"
         'excluded_verification_scopes = ["capability_policy", '
         '"dynamic_execution_policy"]\n'
         "differential_suites = [\n"
@@ -366,6 +362,14 @@ def test_policy_file_does_not_redeclare_fixed_coordinate_authorities(
     assert loaded.backends == ("llvm", "native", "wasm")
 
     policy_path.write_text(document + 'fallback_policy = "error"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="schema or keys are not exact"):
+        authority.load_verified_subset_policy(policy_path)
+    # Reference patches derive from the pinned source releases; a restated
+    # copy is refused rather than compared.
+    restated = (
+        document + f"reference_cpython = {json.dumps(default.reference_cpython)}\n"
+    )
+    policy_path.write_text(restated, encoding="utf-8")
     with pytest.raises(ValueError, match="schema or keys are not exact"):
         authority.load_verified_subset_policy(policy_path)
 
@@ -783,9 +787,8 @@ def _small_policy(root: Path) -> authority.VerifiedSubsetPolicy:
     config.mkdir()
     path = config / "verified_subset.toml"
     path.write_text(
-        'schema = "molt.verified-subset.v2"\n'
+        'schema = "molt.verified-subset.v3"\n'
         'build_profiles = ["dev", "release"]\n'
-        f"reference_cpython = {json.dumps(default.reference_cpython)}\n"
         f"excluded_verification_scopes = {json.dumps(default.excluded_verification_scopes)}\n"
         'differential_suites = [{path="suite", recursive=false, cpython_equivalence_floor=1}]\n',
         encoding="utf-8",

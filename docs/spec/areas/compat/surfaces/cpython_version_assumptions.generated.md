@@ -7,8 +7,8 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 ## Counts
 
 - `authority-routed` files: 70
-- `operational-tooling` files: 77
-- `scattered-assumption` files: 359
+- `operational-tooling` files: 78
+- `scattered-assumption` files: 358
 
 ## Files
 
@@ -430,7 +430,6 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `config/release_targets.toml` | 5 | scattered-assumption | `3.15` |
 | `config/scientific_stack_versions.toml` | 2 | scattered-assumption | `3.12` |
 | `config/source_extension_package_sets.toml` | 2 | scattered-assumption | `3.12` |
-| `config/verified_subset.toml` | 3 | scattered-assumption | `3.12` |
 | `tools/agent_coordination.py` | 10 | operational-tooling | `3.12` |
 | `tools/artifact_poison_gate.py` | 2 | scattered-assumption | `3.11` |
 | `tools/bench.py` | 2 | scattered-assumption | `3.11` |
@@ -479,6 +478,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/memory_guard_core/process_custody.py` | 1 | scattered-assumption | `3.12` |
 | `tools/molt_dev.py` | 5 | authority-routed | `3.12` |
 | `tools/molt_dev_detached.py` | 1 | scattered-assumption | `3.9` |
+| `tools/molt_dev_precheck.py` | 1 | operational-tooling | `3.12` |
 | `tools/molt_regrtest_shim.py` | 1 | operational-tooling | `sys.version_info` |
 | `tools/mutation_test.py` | 1 | operational-tooling | `3.12` |
 | `tools/native_cext_driver.c` | 1 | scattered-assumption | `3.12` |
@@ -499,7 +499,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/perf_scoreboard_resolver.py` | 6 | scattered-assumption | `3.11` |
 | `tools/proof_command_argv.py` | 2 | operational-tooling | `3.12` |
 | `tools/proof_executor.py` | 2 | operational-tooling | `sys.version_info` |
-| `tools/proof_plan.toml` | 95 | authority-routed | `3.12` |
+| `tools/proof_plan.toml` | 93 | authority-routed | `3.12` |
 | `tools/public_contract_gate.py` | 2 | authority-routed | `3.12` |
 | `tools/pyperformance_adapter.py` | 1 | scattered-assumption | `3.12` |
 | `tools/quint_trace_to_tests.py` | 8 | operational-tooling | `3.12` |

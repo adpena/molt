@@ -3000,17 +3000,6 @@ def test_compatibility_source_refresh_is_atomic_and_deterministic(tmp_path):
         protocol.refresh_sources(changed, root=tmp_path)
     assert receipt.read_bytes() == before
 
-    policy = tmp_path / "config/verified_subset.toml"
-    policy.write_text(
-        policy.read_text(encoding="utf-8").replace(f'"{pins["3.12"]}"', '"3.12.0"'),
-        encoding="utf-8",
-    )
-    calls = 0
-    with pytest.raises(ValueError, match="reference and source pin disagree"):
-        protocol.refresh_sources(interrupted, root=tmp_path)
-    assert calls == 0
-    assert receipt.read_bytes() == before
-
 
 @pytest.mark.parametrize("changed", ["policy", "pins", "receipt"])
 def test_compatibility_source_refresh_rejects_authority_drift(tmp_path, changed):

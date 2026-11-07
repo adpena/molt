@@ -1512,3 +1512,19 @@ def test_pytest_shards_bound_files_per_gate_and_keep_a_files_nodes_together():
     node_file = files[PYTEST_SHARD_FILES - 1]
     assert sum(any(t.startswith(node_file) for t in shard) for shard in shards) == 1
     assert pytest_shards([]) == []
+
+
+def test_direct_cli_lists_importers_and_data_readers_separately(capsys) -> None:
+    # The review-before-running view: first-hop readers of a change, by kind.
+    from tools import test_dependency_graph as graph_tool
+
+    assert graph_tool.main(["--direct", "--json", "tools/pin_freshness.py"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "tests/tools/test_pin_freshness.py" in payload["importers"]
+    assert set(payload["importers"]).isdisjoint(payload["data_readers"])
+    assert payload["stats"]["tests"] > 0
+
+    assert graph_tool.main(["--direct", "tools/pin_freshness.py"]) == 0
+    shown = capsys.readouterr().out
+    assert shown.startswith("# importers (")
+    assert "# data readers (" in shown

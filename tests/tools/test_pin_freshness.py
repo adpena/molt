@@ -505,7 +505,8 @@ def test_every_pin_reads_its_authority_loader() -> None:
     }
     assert actual == expected
     assert all(
-        pins[name].authority == "config/verified_subset.toml" for name in expected
+        pins[name].authority == "config/cpython_regrtest_sources.toml"
+        for name in expected
     )
     assert pins["python"].current == pins["python-patch"].current
     assert (
@@ -2062,7 +2063,11 @@ def test_the_registry_must_name_the_pinned_tarball() -> None:
         pin_freshness.npm_registry_assets(provenance, lambda url: moved)
 
 
-def test_reference_pins_reread_policy_and_track_their_own_patch_line(tmp_path) -> None:
+def test_reference_pins_reread_policy_and_track_their_own_patch_line(
+    tmp_path, monkeypatch
+) -> None:
+    from molt import _python_release_generated as releases
+
     root = _pin_root(tmp_path)
     authority = root / "config/verified_subset.toml"
     policy = load_verified_subset_policy(authority)
@@ -2092,15 +2097,18 @@ def test_reference_pins_reread_policy_and_track_their_own_patch_line(tmp_path) -
             line
         }
 
+    # A reference moves with its pinned source release, never a policy copy.
     changed = [line + ".1" for line in policy.python_versions]
-    text = authority.read_text(encoding="utf-8")
-    authority.write_text(
-        re.sub(
-            r"(?m)^reference_cpython = .*?$",
-            "reference_cpython = [" + ", ".join(f'"{v}"' for v in changed) + "]",
-            text,
-        ),
-        encoding="utf-8",
+    monkeypatch.setattr(
+        releases,
+        "CPYTHON_RELEASES",
+        {
+            **releases.CPYTHON_RELEASES,
+            **{
+                line: (*map(int, line.split(".")), 1, "final", 0)
+                for line in policy.python_versions
+            },
+        },
     )
     reread = references()
     assert [
