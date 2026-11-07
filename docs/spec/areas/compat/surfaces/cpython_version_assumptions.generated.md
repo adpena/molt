@@ -345,7 +345,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime/src/gpu_runtime_tests.rs` | 30 | scattered-assumption | `3.0` |
 | `runtime/molt-runtime/src/intrinsics/public_objects.toml` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/itertools_class.rs` | 1 | scattered-assumption | `3.14` |
-| `runtime/molt-runtime/src/marshal/tests.rs` | 2 | authority-routed | `3.12` |
+| `runtime/molt-runtime/src/marshal/tests.rs` | 3 | authority-routed | `3.12` |
 | `runtime/molt-runtime/src/math_bridge.rs` | 1 | scattered-assumption | `3.0` |
 | `runtime/molt-runtime/src/object/code_layout/tests.rs` | 1 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/object/gc.rs` | 7 | authority-routed | `3.12` |

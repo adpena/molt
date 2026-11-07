@@ -362,7 +362,10 @@ impl<'a, 'py, 'input> Reader<'a, 'py, 'input> {
                     if interned {
                         crate::object::builders::alloc_interned_string(py, &decoded)
                     } else {
-                        alloc_string(py, &decoded)
+                        // CPython's non-interned tags build a fresh string; the
+                        // general allocator would intern identifier-like text,
+                        // change the re-dumped tag and make input immortal.
+                        crate::object::builders::alloc_string_uninterned(py, &decoded)
                     },
                 )?
             }

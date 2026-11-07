@@ -92,6 +92,33 @@ fn equal_wire_set_keys_follow_target_python_partial_order() {
 }
 
 #[test]
+fn decoded_strings_keep_cpython_interned_state_when_dumped_again() {
+    // CPython 3.12.16: marshal.dumps(marshal.loads(blob), 4) for each blob.
+    // Non-interned tags make a fresh string; the empty and one-character
+    // strings are statically interned singletons (adversarial review,
+    // 2026-11-07: the reader auto-interned identifier-like text).
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::concurrency::gil::with_gil(|py| {
+        let py = &py;
+        for (blob, expected) in [
+            (&b"z\x03abc"[..], &b"z\x03abc"[..]),
+            (&b"a\x03\0\0\0abc"[..], &b"z\x03abc"[..]),
+            (&b"u\x03\0\0\0abc"[..], &b"z\x03abc"[..]),
+            (&b"\xda\x03abc"[..], &b"\xda\x03abc"[..]),
+            (&b"z\x01a"[..], &b"\xda\x01a"[..]),
+            (&b"z\x00"[..], &b"\xda\x00"[..]),
+        ] {
+            let value = decoded(py, blob);
+            assert_eq!(
+                write::encode(py, value.bits(), 4).unwrap(),
+                expected,
+                "{blob:?}"
+            );
+        }
+    });
+}
+
+#[test]
 fn scalar_wire_matches_cpython_and_declared_identity_partition() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::concurrency::gil::with_gil(|py| {
