@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from pathlib import Path
 
 import pytest
@@ -114,3 +116,42 @@ def test_commit_tree_matches_what_a_pathspec_commit_records(repo):
     )
     recorded = _git(repo, "rev-parse", "HEAD^{tree}").strip()
     assert tree == recorded
+
+
+def test_a_failing_static_gate_blocks_the_receipt_before_any_test(repo, monkeypatch):
+    seen = _graph(monkeypatch, ("tests/test_lib.py",))
+    failing = 'python -c "import sys; sys.exit(3)"'
+    monkeypatch.setattr(consumer_gate, "static_gates", lambda root, tree: [failing])
+    (repo / "lib.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+    assert consumer_gate.run(repo, ["lib.py"], pytest_args=[]) == 1
+    assert seen == []  # no importer test ran
+    assert consumer_gate.check(repo, ["lib.py"]) == 1
+
+
+def test_a_passing_run_records_its_static_gates(repo, monkeypatch):
+    _graph(monkeypatch, ())
+    passing = 'python -c "pass"'
+    monkeypatch.setattr(consumer_gate, "static_gates", lambda root, tree: [passing])
+    (repo / "lib.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+    assert consumer_gate.run(repo, ["lib.py"], pytest_args=[]) == 0
+    tree = consumer_gate.commit_tree(repo, ["lib.py"])
+    receipt = json.loads(
+        consumer_gate.receipt_path(repo, tree).read_text(encoding="utf-8")
+    )
+    assert receipt["static_gates"] == [passing]
+
+
+def test_a_tool_change_selects_the_repository_policy_gates():
+    # The checks that cost landings 42-44 on 2026-11-07: the landing selects
+    # them for any tool change, and now the gate runs them before commit.
+    root = consumer_gate.ROOT
+    tree = consumer_gate.commit_tree(root, ["tools/consumer_gate.py"])
+    selected = consumer_gate.static_gates(root, tree)
+    for policy in (
+        "tools/check_test_ownership.py",
+        "tools/check_subprocess_guard_coverage.py",
+        "tools/encoding_gate.py",
+    ):
+        assert any(policy in command for command in selected), policy

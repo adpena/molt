@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Run a change's first-hop importer tests before the change is committed.
+"""Run a change's static gates and first-hop importer tests before commit.
 
-``run -- PATHS`` traces the change with ``tools/test_dependency_graph.py``
-(first-hop importers and data readers), prints both lists for review, runs the
-importer test files with this checkout's interpreter, and records a receipt
+``run -- PATHS`` first runs the static gates the landing selects for the
+change (the repository-wide policy checks that read every file as data, which
+no importer trace selects), then traces the change with
+``tools/test_dependency_graph.py`` (first-hop importers and data readers),
+prints both lists for review, runs the importer test files with this
+checkout's interpreter, and records a receipt
 for the exact tree the commit would produce: ``HEAD`` plus the working-tree
 bytes of ``PATHS``, which is what ``git commit --only -- PATHS`` commits.
 
@@ -89,11 +92,58 @@ def _needs_receipt(root: Path, changed: list[str]) -> bool:
     return bool(changed) and not set(changed) <= generator_outputs(root)
 
 
+def static_gates(root: Path, tree: str) -> list[str]:
+    """The landing's static gates for this commit tree, as their commands.
+
+    The selection is the landing's own (select_landing_gates over a dangling
+    probe commit of ``tree``; no ref moves), so the repository-wide policy
+    checks an importer trace cannot select (encoding pins, test ownership,
+    subprocess guard coverage, generator freshness) run before any test.
+    """
+    if not (root / "tools" / "proof_plan.toml").is_file():
+        return []
+    from tools import molt_dev as drv
+    from tools.molt_dev_gates import display
+    from tools.molt_dev_policy import select_landing_gates
+
+    head = _git(root, "rev-parse", "HEAD")
+    probe = _git(root, "commit-tree", tree, "-p", head, "-m", "consumer-gate probe")
+    _policy, _config, _touched, gates, _rules = select_landing_gates(
+        drv.Git(root), root, probe, head, extra=[]
+    )
+    return [display(gate.command) for gate in gates if gate.static]
+
+
+def run_static_gates(root: Path, commands: list[str]) -> list[str]:
+    """Run each static gate in the checkout; return the commands that failed."""
+    import shlex
+
+    failed = []
+    for command in commands:
+        argv = shlex.split(command)
+        if argv and argv[0] == "python":
+            argv[0] = sys.executable
+        print(f"consumer-gate: static gate: {command}", flush=True)
+        if _COMMANDS.run(argv, cwd=root).returncode != 0:
+            failed.append(command)
+    return failed
+
+
 def run(root: Path, paths: list[str], *, pytest_args: list[str]) -> int:
     from tools.test_dependency_graph import load_graph
 
     tree = commit_tree(root, paths)
     changed = changed_paths(root, tree)
+    statics = static_gates(root, tree)
+    print(f"consumer-gate: {len(statics)} static gate(s) the landing selects")
+    failed = run_static_gates(root, statics)
+    if failed:
+        print(
+            "consumer-gate: static gates failed; no receipt:\n"
+            + "\n".join(f"  {command}" for command in failed),
+            file=sys.stderr,
+        )
+        return 1
     readers = load_graph(root).direct_readers(changed)
     print(f"consumer-gate: {len(changed)} changed path(s), tree {tree[:12]}")
     for label, tests in (
@@ -119,6 +169,7 @@ def run(root: Path, paths: list[str], *, pytest_args: list[str]) -> int:
         "schema": SCHEMA,
         "tree": tree,
         "changed": changed,
+        "static_gates": statics,
         "importers": list(readers.importers),
         "data_readers": list(readers.data_readers),
     }
