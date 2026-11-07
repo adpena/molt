@@ -49,7 +49,8 @@ def test_yield_separates_candidate_failures_flakes_and_infrastructure(tmp_path):
     wasm_gate = gates["python -m pytest tests/test_wasm_x.py"]
     assert (wasm_gate.runs, wasm_gate.flake, wasm_gate.candidate) == (2, 1, 0)
     assert wasm_gate.seconds == 1100 and wasm_gate.peak_rss_bytes == 7 << 30
-    assert gates["python tools/check_changed_crate_tests.py"].infrastructure == 1
+    crate_gate = gates["python tools/check_changed_crate_tests.py"]
+    assert (crate_gate.cancelled, crate_gate.infrastructure) == (1, 0)
     lint_gate = gates["/bin/sh -c python tools/check_x.py"]
     assert (lint_gate.candidate, lint_gate.flake) == (1, 0)
     ordered = gate_yield.gate_yields(gate_yield.load_receipts(tmp_path))
