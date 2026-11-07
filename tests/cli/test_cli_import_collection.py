@@ -16030,6 +16030,9 @@ def test_backend_source_paths_are_feature_aware() -> None:
         # Cargo.lock is a separately admitted compiler dependency projection.
         "src/molt/backend_environment.json",
         "src/molt/backend_daemon_protocol_version.txt",
+        # molt-ir's build script publishes through the shared write-if-changed
+        # helper, a declared build input.
+        "runtime/build_support/out_file.rs",
         # Maintained [patch.crates-io] sources: molt-backend always links
         # `object`, and the lock closure is conservative over features.
         "vendor/rust/cranelift-object",
