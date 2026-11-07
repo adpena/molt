@@ -145,21 +145,24 @@ def test_an_ended_epoch_is_set_aside_and_attempted_again(
 ):
     """A run whose acknowledged worker died without an rc is evidence, not
     custody: the scheduler keeps it under a new name and launches again."""
-    import subprocess
+    from tests.process_guard_common import run_guarded_test_process
 
     root = tmp_path / "artifacts"
     state = root / "logs/disk_guard/automatic/gc-initial"
     state.mkdir(parents=True)
-    finished = subprocess.run([sys.executable, "-c", "pass"], check=True)
-    del finished
-    dead = subprocess.Popen([sys.executable, "-c", "pass"])
-    dead.wait()
+    # A reaped child's pid: the guarded run returns only after it exits.
+    child = run_guarded_test_process(
+        [sys.executable, "-c", "import os; print(os.getpid())"],
+        capture_output=True,
+        text=True,
+    )
+    dead_pid = int(child.stdout.strip())
     token = "a" * 32
     (state / "worker.json").write_text(
         json.dumps({"use_token": token}), encoding="utf-8"
     )
     (state / "state-use-ready.json").write_text(
-        json.dumps({"schema_version": 1, "pid": dead.pid, "use_token": token}),
+        json.dumps({"schema_version": 1, "pid": dead_pid, "use_token": token}),
         encoding="utf-8",
     )
     launched = []
