@@ -16,7 +16,7 @@ import contextlib
 import functools
 from collections.abc import Callable, Collection, MutableMapping
 from dataclasses import dataclass
-from enum import Enum, auto
+from enum import Enum, StrEnum, auto
 from pathlib import Path
 from threading import RLock
 from typing import Literal, Mapping, Sequence, cast, get_args
@@ -194,6 +194,18 @@ ArtifactRootSource = Literal[
 class ArtifactRootSelection:
     root: Path
     source: ArtifactRootSource
+
+
+class ArtifactRootUse(StrEnum):
+    """Why a caller binds the artifact root.
+
+    BUILD writes new artifacts and needs the capacity floor. RECLAIM exists to
+    restore that floor, so it needs the bound identity and write access only:
+    a reclaimer that refused a full root could never empty it.
+    """
+
+    BUILD = "build"
+    RECLAIM = "reclaim"
 
 
 class ArtifactBindingState(Enum):
@@ -434,7 +446,7 @@ def _external_artifact_required_bytes(env: Mapping[str, str]) -> int:
 
 
 def _validate_artifact_binding(
-    binding: _ArtifactRootBinding, env: Mapping[str, str]
+    binding: _ArtifactRootBinding, env: Mapping[str, str], *, use: ArtifactRootUse
 ) -> ArtifactBindingState:
     root = binding.root
     try:
@@ -451,6 +463,8 @@ def _validate_artifact_binding(
             raise ValueError("directory identity changed (replaced or unmounted)")
         if not os.access(root, os.W_OK):
             raise ValueError("directory is not writable")
+        if use is ArtifactRootUse.RECLAIM:
+            return state
         capacity = probe_capacity(
             root, required_bytes=_external_artifact_required_bytes(env)
         )
@@ -495,7 +509,9 @@ def set_artifact_root_binding(
             binding = _ArtifactRootBinding(
                 selected, file_identity(selected, expected=metadata)
             )
-            _validate_artifact_binding(binding, os.environ if env is None else env)
+            _validate_artifact_binding(
+                binding, os.environ if env is None else env, use=ArtifactRootUse.BUILD
+            )
         except (OSError, ValueError, RuntimeError) as exc:
             raise DxConfigError(f"cannot bind artifact root {root}: {exc}") from exc
     lock = _acquire_file_lock(
@@ -516,7 +532,9 @@ def set_artifact_root_binding(
             durable_remove_path(record)
             durable_remove_path(record.with_name("artifact-root.json"))
         else:
-            _validate_artifact_binding(binding, os.environ if env is None else env)
+            _validate_artifact_binding(
+                binding, os.environ if env is None else env, use=ArtifactRootUse.BUILD
+            )
             payload = {
                 "schema": _ARTIFACT_BINDING_SCHEMA,
                 "root": str(binding.root),
@@ -1561,7 +1579,25 @@ def configured_artifact_root(
     """
 
     view = os.environ if env is None else env
-    selection = _configured_artifact_selection(view, relative_to=relative_to)
+    selection = _configured_artifact_selection(
+        view, relative_to=relative_to, use=ArtifactRootUse.BUILD
+    )
+    return None if selection is None else selection.root
+
+
+def reclaimable_artifact_root(
+    env: Mapping[str, str] | None = None, *, relative_to: Path
+) -> Path | None:
+    """The explicit or bound root for a reclaimer, healthy or not on capacity.
+
+    Identity and write access are still required: a replaced or unmounted
+    directory is never reclaimed.
+    """
+
+    view = os.environ if env is None else env
+    selection = _configured_artifact_selection(
+        view, relative_to=relative_to, use=ArtifactRootUse.RECLAIM
+    )
     return None if selection is None else selection.root
 
 
@@ -1569,6 +1605,7 @@ def _configured_artifact_selection(
     env: Mapping[str, str],
     *,
     relative_to: Path,
+    use: ArtifactRootUse,
     common_dir: Path | None = None,
 ) -> ArtifactRootSelection | None:
     raw = env.get(ARTIFACT_ROOT_ENV, "").strip()
@@ -1589,7 +1626,7 @@ def _configured_artifact_selection(
         raise DxConfigError(binding)
     if binding is None:
         return None
-    _validate_artifact_binding(binding, env)
+    _validate_artifact_binding(binding, env, use=use)
     return ArtifactRootSelection(binding.root, "family-binding")
 
 
@@ -1601,7 +1638,9 @@ def _select_artifact_root(
     prefer_external: bool,
     create_dirs: bool,
 ) -> ArtifactRootSelection:
-    configured = _configured_artifact_selection(env, relative_to=source_root)
+    configured = _configured_artifact_selection(
+        env, relative_to=source_root, use=ArtifactRootUse.BUILD
+    )
     if configured is not None:
         return configured
     if custody is None:
@@ -1761,7 +1800,7 @@ def _storage_path_selection(
     if kind in ("scratch", "temporary"):
         return scratch_root(repo_root, view)
     bound = _configured_artifact_selection(
-        view, relative_to=repo_root, common_dir=common_dir
+        view, relative_to=repo_root, use=ArtifactRootUse.BUILD, common_dir=common_dir
     )
     selected = bound.root if bound is not None else artifact_root(repo_root, view)
     if kind in {"controllers", "pinned-assets"} and custody_layout.enclosing_checkouts(

@@ -226,12 +226,16 @@ class DurableIdentityMachine(RuleBasedStateMachine):
             if expected is dx.ArtifactBindingState.REFUSED:
                 with pytest.raises(dx.DxConfigError, match="artifact-root --bind"):
                     dx._validate_artifact_binding(
-                        self.binding, {"MOLT_EXTERNAL_MIN_FREE_GB": "0"}
+                        self.binding,
+                        {"MOLT_EXTERNAL_MIN_FREE_GB": "0"},
+                        use=dx.ArtifactRootUse.BUILD,
                     )
             else:
                 assert (
                     dx._validate_artifact_binding(
-                        self.binding, {"MOLT_EXTERNAL_MIN_FREE_GB": "0"}
+                        self.binding,
+                        {"MOLT_EXTERNAL_MIN_FREE_GB": "0"},
+                        use=dx.ArtifactRootUse.BUILD,
                     )
                     is expected
                 )
@@ -268,12 +272,16 @@ class DurableIdentityMachine(RuleBasedStateMachine):
             if expected is dx.ArtifactBindingState.REFUSED:
                 with pytest.raises(dx.DxConfigError, match="artifact-root --bind"):
                     dx._validate_artifact_binding(
-                        self.volatile_binding, {"MOLT_EXTERNAL_MIN_FREE_GB": "0"}
+                        self.volatile_binding,
+                        {"MOLT_EXTERNAL_MIN_FREE_GB": "0"},
+                        use=dx.ArtifactRootUse.BUILD,
                     )
             else:
                 assert (
                     dx._validate_artifact_binding(
-                        self.volatile_binding, {"MOLT_EXTERNAL_MIN_FREE_GB": "0"}
+                        self.volatile_binding,
+                        {"MOLT_EXTERNAL_MIN_FREE_GB": "0"},
+                        use=dx.ArtifactRootUse.BUILD,
                     )
                     is expected
                 )

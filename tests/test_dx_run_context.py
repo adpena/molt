@@ -3487,3 +3487,34 @@ def test_declared_proof_fixture_roots_are_explicit_storage_outputs(tmp_path):
     ):
         target = path.resolve(strict=False)
         assert dx._storage_write_admitted(check, target) is admitted, path
+
+
+def test_reclaimer_resolves_a_bound_root_below_the_capacity_floor(
+    bound_artifact_family, monkeypatch
+):
+    """tools/disk_guard.py --ensure-free refused to run on a full volume
+    (2026-11-07: 20.98 GB free against a 21.47 GB floor), because it resolved
+    the root through the build-time health check, capacity included. A
+    reclaimer exists to restore that floor; it still requires the bound
+    directory's identity, so a replaced or unmounted root is never reclaimed."""
+    from molt import disk_capacity
+    from tools import disk_guard
+
+    main, _lane, artifacts = bound_artifact_family
+    monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", lambda _: 1024**3)
+    monkeypatch.setattr(
+        disk_capacity, "_darwin_important_usage_bytes", lambda _: 1024**3
+    )
+    with pytest.raises(dx.DxConfigError, match="unavailable or unhealthy"):
+        dx.configured_artifact_root({}, relative_to=main)
+    assert dx.reclaimable_artifact_root({}, relative_to=main) == artifacts
+    monkeypatch.chdir(main)
+    assert disk_guard.resolve_root(None, env={}) == artifacts
+    # An explicit root needs no binding at all.
+    assert disk_guard.resolve_root(str(artifacts), env={}) == artifacts
+
+    replaced = artifacts.with_name("artifacts-old")
+    artifacts.rename(replaced)
+    artifacts.mkdir()
+    with pytest.raises(dx.DxConfigError, match="identity changed"):
+        dx.reclaimable_artifact_root({}, relative_to=main)

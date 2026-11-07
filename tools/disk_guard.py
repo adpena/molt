@@ -125,7 +125,7 @@ from molt.custody_layout import (  # noqa: E402
 from molt.dx import (  # noqa: E402
     # noqa: E402,
     checkout_component,
-    configured_artifact_root,
+    reclaimable_artifact_root,
     storage_path,
     session_artifact_component,
 )
@@ -468,7 +468,9 @@ def resolve_root(
     must identify a real, multi-component directory.
     """
     env = os.environ if env is None else env
-    configured = configured_artifact_root(env, relative_to=Path.cwd())
+    # An explicit root needs no binding. A reclaimer exists to restore the
+    # capacity floor, so the binding is checked for identity, not capacity.
+    configured = None if raw else reclaimable_artifact_root(env, relative_to=Path.cwd())
     if raw:
         root = Path(raw)
     elif configured is not None:
