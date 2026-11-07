@@ -27,6 +27,7 @@ bind_repository_imports(__file__)
 from tools.driver_errors import CandidateFailure, DriverError  # noqa: E402
 from tools.molt_dev_policy import GateConfig, SelectedGate  # noqa: E402
 from tools.proof_plan import CargoTargetAccess  # noqa: E402
+from tools.proof_receipts import SourceTreeState  # noqa: E402
 
 SCHEMA = "molt.remote-landing.v1"
 HOST_SETTING = "MOLT_LANDING_GATE_HOST"
@@ -62,7 +63,7 @@ def admit_result(receipt: dict, request: dict) -> None:
         "schema": SCHEMA,
         "source_commit": request["commit"],
         "source_tree": request["tree"],
-        "source_tree_state": "clean",
+        "source_tree_state": SourceTreeState.CLEAN,
         "request_sha256": request_digest(request),
     }
     if any(receipt.get(key) != value for key, value in expected.items()):
@@ -166,7 +167,7 @@ def execute(record: dict, output: Path) -> int:
         "schema": SCHEMA,
         "source_commit": request["commit"],
         "source_tree": request["tree"],
-        "source_tree_state": "unknown",
+        "source_tree_state": SourceTreeState.UNKNOWN,
         "request_sha256": request_digest(request),
         "status": TerminalStatus.INFRASTRUCTURE,
         "passed": [],
@@ -220,12 +221,14 @@ def execute(record: dict, output: Path) -> int:
         drv._assert_integration_source(git, request["commit"])
         result.update(
             status=TerminalStatus.SUCCESS,
-            source_tree_state="clean",
+            source_tree_state=SourceTreeState.CLEAN,
             passed=list(range(len(gates))),
         )
     except CandidateFailure as exc:
         result.update(
-            status=TerminalStatus.FAILURE, source_tree_state="clean", error=str(exc)
+            status=TerminalStatus.FAILURE,
+            source_tree_state=SourceTreeState.CLEAN,
+            error=str(exc),
         )
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"

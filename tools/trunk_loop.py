@@ -38,6 +38,8 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
+from tools.proof_receipts import SourceTreeState  # noqa: E402
+
 SCHEMA = "molt.trunk-run.v3"
 
 
@@ -1477,7 +1479,7 @@ def collect(record_path: Path, *, wait: bool = True) -> int:
             receipt = json.loads(archive.read(cell["id"] + "/receipt.json"))
             if (
                 receipt.get("source_commit") != record["commit"]
-                or receipt.get("source_tree_state") != "clean"
+                or receipt.get("source_tree_state") != SourceTreeState.CLEAN
             ):
                 raise ValueError(
                     "collected proof receipt has different or dirty source"
@@ -2022,7 +2024,7 @@ def worker(record_path: Path) -> int:
             )
             if (
                 receipt.get("source_commit") != record["commit"]
-                or receipt.get("source_tree_state") != "clean"
+                or receipt.get("source_tree_state") != SourceTreeState.CLEAN
                 or (
                     "landing" not in record
                     and cell not in {c.get("id") for c in receipt.get("commands", [])}

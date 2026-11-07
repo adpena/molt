@@ -238,5 +238,5 @@ The exemplar for the others: typed states and events and one transition map.
 | Run lifecycle: typed states, failure exit, immutable terminal states | SM-1A, SM-1B, SM-1C | lost verdicts; stuck records; wrong failure class | fixed (this audit) |
 | Landing request closes exactly once | SM-2 | a failed request retested or landed twice; rewritten history | fixed (this audit) |
 | Farm allocation retention and orphaned runs | SM-3 | farm disk exhaustion (blocked the LLVM bootstrap on 2026-11-06; filled bat00 C:) | fixed 2026-11-07; Windows proof roots open |
-| Untyped residual vocabularies | `source_tree_state` (`clean`, `dirty`, `unknown`) in proof and landing receipts; source extension candidate (`prepared`) and source package seal (`committed`) | a typo or new value passes unseen; no exhaustive match rejects a stale consumer | open, integrator |
+| Untyped residual vocabularies | source extension candidate (`prepared`) and source package seal (`committed`). Fixed: `source_tree_state` is `tools/proof_receipts.py` `SourceTreeState` (CLEAN, DIRTY, UNKNOWN) at every writer and reader; the executor's mid-run change is the boolean `source_changed` | a typo or new value passes unseen; no exhaustive match rejects a stale consumer | open (two residuals), integrator |
 | Inventory machines not yet audited | see Catalog | unknown | open |

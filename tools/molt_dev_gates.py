@@ -1185,7 +1185,7 @@ def _run_executor_block(
             continue
         # The executor observed the source after every completion; a gate
         # that changed it reports the canonical clean-source refusal.
-        if record.get("source_tree_state_after") == "changed":
+        if record.get("source_changed") is True:
             runtime.check_source()
         if status == "failure" and outcome.returncode != 0:
             if record.get("failure_scope") == "global":

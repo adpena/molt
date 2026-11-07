@@ -7170,7 +7170,7 @@ def test_executor_rejects_source_mutation_during_partition(
     assert proof_plan.execute_commands(PLAN, (command,), receipt_path) == 2
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert receipt["status"] == "failure"
-    assert receipt["commands"][0]["source_tree_state_after"] == "changed"
+    assert receipt["commands"][0]["source_changed"] is True
     reason = "source tree changed or is dirty: ?? tools/stray.py,  M README.md"
     assert receipt["commands"][0]["failure_reason"] == reason
     assert receipt["executed_partitions"] == []

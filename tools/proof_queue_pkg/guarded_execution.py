@@ -1015,7 +1015,11 @@ def execute_guarded_request(request_path: Path) -> int:
                 authority_sha256=proof_plan._authority_sha256(plan),
                 source_commit=pre_source.get("commit"),
                 source_tree=pre_source.get("tree"),
-                source_tree_state="clean" if pre_source.get("clean") else "dirty",
+                source_tree_state=(
+                    proof_receipts.SourceTreeState.CLEAN
+                    if pre_source.get("clean")
+                    else proof_receipts.SourceTreeState.DIRTY
+                ),
                 environment={
                     "os": proof_plan._normalized_os(),
                     "arch": proof_plan._normalized_arch(),

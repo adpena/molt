@@ -441,7 +441,7 @@ def execute_commands(
                     if changed is not None:
                         record["status"] = "failure"
                         record["returncode"] = 2
-                        record["source_tree_state_after"] = "changed"
+                        record["source_changed"] = True
                         record["failure_scope"] = "global"
                         record["failure_reason"] = changed
                     if record["status"] == "success":
