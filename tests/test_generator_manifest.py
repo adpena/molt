@@ -1439,7 +1439,9 @@ version_pattern = '^selected-generator-tool$'
     )
     rows = [generators.Generator("selected-generator", (), True, ("cat",))]
     admission = generators.admit_generators(rows, root=tmp_path)
-    assert observed_roots == [tmp_path]
+    # Admission discovers once to decide whether to provision and once to
+    # fingerprint the admitted installation; both read the explicit root.
+    assert observed_roots == [tmp_path, tmp_path]
     assert admission.fingerprints["cat"]["version"] == "selected-generator-tool"
     assert admission.fingerprints["cat"]["path"] == str(executable)
     assert admission.bindings == {}
