@@ -192,7 +192,7 @@ def publish_frame_locations(
             op.pop("source_end_line", None)
             kind = op["kind"]
             if (
-                owner is not None
+                site_owner is not None
                 and entered
                 and position is not None
                 and kind not in _PURE_WIRE
