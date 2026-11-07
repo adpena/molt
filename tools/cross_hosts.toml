@@ -29,7 +29,10 @@
 #   shell       (str, optional)   "bash" (default), "sh", or "powershell".
 #                                 Picks the remote command shape and
 #                                 path separators.
-#   remote_dir  (str)             Absolute staging parent (created if absent).
+#   remote_dir  (str)             Absolute staging parent (created if absent),
+#                                 inside the host's scratch storage class
+#                                 (<custody_root>/tmp): trunk runs then obey the
+#                                 molt.dx storage authority and scratch retention.
 #                                 Each run allocates a fresh child; only that
 #                                 child is removed, including on failed setup.
 #                                 --keep-remote retains the child for debugging.
@@ -94,7 +97,7 @@ name = "macmini"
 hostname = "alejandros-mac-mini"
 user = "adpena"
 target = "x86_64-apple-darwin"
-remote_dir = "/Users/adpena/Molt/scratch/trunk-loop"
+remote_dir = "/Users/adpena/Molt/tmp/trunk-loop"
 os = "macos"
 shell = "bash"
 custody_root = "/Users/adpena/Molt"
@@ -121,7 +124,7 @@ os = "windows"
 shell = "powershell"
 custody_root = 'C:\Molt'
 checkout = 'C:\Molt\molt-src'
-remote_dir = 'C:\Molt\scratch\trunk-loop'
+remote_dir = 'C:\Molt\tmp\trunk-loop'
 launcher = "windows-cim"
 proof_cells = ["portability.cargo-custody.windows", "portability.queue.windows"]
 # Same explicit fixture roles as ci.yml's Configure proof-queue test roots.
@@ -139,7 +142,7 @@ os = "linux"
 shell = "bash"
 custody_root = "/home/adpena/Molt"
 checkout = "/home/adpena/Molt/molt-src"
-remote_dir = "/home/adpena/Molt/scratch/trunk-loop"
+remote_dir = "/home/adpena/Molt/tmp/trunk-loop"
 # The worker's own wsl.exe client holds the distro instance for its lifetime.
 launcher = "wsl-session"
 proof_cells = ["portability.cargo-custody.linux", "portability.queue.linux"]
