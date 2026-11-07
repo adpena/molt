@@ -43,6 +43,7 @@ from typing import Any, TypeVar
 
 from molt.dx import TOOLCHAINS_DIRNAME, DxConfigError, canonical_toolchain_root
 from molt.file_deletion import delete_path
+from molt.file_hashing import _sha256_file
 from molt.file_locks import (
     _acquire_file_lock,
     _file_lock_owned_operation,
@@ -447,9 +448,22 @@ def tool_executable(prefix: Path, release: ToolRelease) -> Path:
     return Path(prefix) / "bin" / release.executable_filename
 
 
-def _sha256_file(path: Path) -> str:
-    with path.open("rb") as handle:
-        return hashlib.file_digest(handle, "sha256").hexdigest()
+def _file_sha256(path: Path, *, label: str) -> str:
+    """The SHA-256 of one regular file through the host digest cache.
+
+    On POSIX an unchanged stat token answers without reading the bytes, so a
+    warm discovery costs a stat per file instead of a full read (node: 147 MB,
+    56 ms per discovery before; 2026-11-07). The cache's racy-window and
+    Windows rules decide when a digest is reused; a symlink or other entry that
+    is not a regular file raises StableRegularFileError. A new generation is
+    recorded once; a warm lookup stages nothing, so the flush writes nothing.
+    """
+    from molt.toolchain_facts import host_file_digest_cache
+
+    digests = host_file_digest_cache()
+    sha256 = digests.identity(path, label=label).sha256
+    digests.flush()
+    return sha256
 
 
 def tree_sha256(root: Path) -> str:
@@ -459,7 +473,10 @@ def tree_sha256(root: Path) -> str:
     the digest, as it fails extraction. POSIX hosts bind the owner's
     executable bit; other mode bits, empty directories and hard-link identity
     are outside it, as they are outside what a package's code can read.
-    Verifying npm's 1,942 files costs about 0.11 s.
+    Verifying npm's 1,942 files costs about 0.12 s. The files are hashed
+    directly: through the host digest cache each small file cost more than its
+    read (warm 0.155 s; a cold store under landing load took 49 s, one SQLite
+    page query per miss; measured 2026-11-07).
     """
     digest = hashlib.sha256(b"molt.tool-tree.v1\0")
     for directory, dirnames, filenames in os.walk(root):
@@ -529,7 +546,14 @@ def discover_tool(release: ToolRelease, toolchain_root: Path) -> ToolDiscovery |
         asset = release.assets.get(str(attestation.get("asset") or ""))
         if asset is None:
             return None
-        executable_sha256 = _sha256_file(executable)
+        from molt.toolchain_identity import StableRegularFileError
+
+        try:
+            executable_sha256 = _file_sha256(
+                executable, label=f"{release.name} {release.version} executable"
+            )
+        except StableRegularFileError:  # replaced, changed or not a regular file
+            return None
         package_sha256 = None
         if release.entrypoint is not None:
             try:
@@ -1017,7 +1041,9 @@ def _provision_unlocked(
                 f"{release.name} {release.version}: {asset.filename} has no "
                 f"entrypoint {release.entrypoint}"
             )
-        executable_sha256 = _sha256_file(executable)
+        executable_sha256 = _file_sha256(
+            executable, label=f"{release.name} {release.version} executable"
+        )
         package_sha256 = tree_sha256(package)
     else:
         executable_sha256 = _extract_member(archive, asset, executable)
