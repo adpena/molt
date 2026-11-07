@@ -183,7 +183,6 @@ from tools.memory_guard_core.cargo_quarantine import (  # noqa: E402
     _cargo_recovery_next_action as _cargo_recovery_next_action,
     _cargo_incremental_quarantine_payload as _cargo_incremental_quarantine_payload,
     _cargo_quarantine_id as _cargo_quarantine_id,
-    _cargo_quarantine_parent as _cargo_quarantine_parent,
     _cargo_quarantine_payload_required as _cargo_quarantine_payload_required,
     _cargo_target_dir as _cargo_target_dir,
     _command_invokes_cargo_build_state as _command_invokes_cargo_build_state,

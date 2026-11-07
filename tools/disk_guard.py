@@ -130,6 +130,7 @@ from molt.dx import (  # noqa: E402
     session_artifact_component,
 )
 from molt.checkout_state import (  # noqa: E402
+    CHECKOUT_STATE_CONTAINERS,
     PROTECTION_WINDOW_S as CHECKOUT_STATE_WINDOW_S,
     RetentionLimits,
     PROTECTED_TARGET_NAMES,
@@ -1075,15 +1076,44 @@ def _checkout_state_dirs(root: Path) -> list[Path]:
     return found
 
 
-def _iter_quarantine_dirs(root: Path) -> list[Path]:
-    out: list[Path] = []
+def _cargo_target_roots(root: Path) -> list[Path]:
+    """Every Cargo target directory under the artifact root.
+
+    The shared target and its direct children (legacy lane targets), each
+    checkout target in its managed container (`molt.checkout_state` owns that
+    layout), and each pinned session target below either. Linked targets are
+    excluded: their bytes belong to another root.
+    """
     target = _target_root(root)
-    for state_parent in (target, *[p for p in _iter_dir(target) if p.is_dir()]):
-        qroot = state_parent / ".molt_state" / "quarantine" / "cargo_incremental"
+    checkouts = root.joinpath(*CHECKOUT_STATE_CONTAINERS["cargo-target"])
+    roots = [
+        target,
+        *(p for p in _iter_dir(target) if p.is_dir() and not p.is_symlink()),
+        *(
+            p
+            for p in _iter_dir(checkouts)
+            if not p.is_symlink() and checkout_state_kind_of(p, root) == "cargo-target"
+        ),
+        *session_target_dirs(root),
+    ]
+    return list(dict.fromkeys(roots))
+
+
+def _iter_quarantine_dirs(root: Path) -> list[Path]:
+    """Each quarantined incremental state of every Cargo target under ``root``.
+
+    A build quarantines beside the target it built, which since HF-313 is a
+    checkout target below ``target/checkouts``; scanning only ``target`` and
+    its children left those quarantines unreclaimed (129.7 GB on the
+    integrator host, 2026-11-07).
+    """
+    from tools.memory_guard_core.cargo_quarantine import cargo_quarantine_parent
+
+    out: list[Path] = []
+    for target in _cargo_target_roots(root):
+        qroot = cargo_quarantine_parent(target)
         if qroot.is_dir():
-            for child in _iter_dir(qroot):
-                if child.is_dir():
-                    out.append(child)
+            out.extend(child for child in _iter_dir(qroot) if child.is_dir())
     return out
 
 
@@ -2493,7 +2523,7 @@ def _retention_candidates(
                 if kind in _LEGACY_TARGET_KINDS and child.is_dir():
                     roots.append((child, kind))
     guards = _guard_protection(scope_roots) if guards is None else guards
-    return [
+    candidates = [
         Candidate(
             path=child,
             kind=kind,
@@ -2506,6 +2536,24 @@ def _retention_candidates(
         if checkout_state_decision(child, owner_root, now=now, limits=limits)
         is not None
     ]
+    if not build_control:
+        # An interrupted build's quarantined incremental state is never used
+        # again, and its receipt keeps the evidence: it retires once idle past
+        # the session limit, as a pinned session's transient target does.
+        for quarantine in _iter_quarantine_dirs(owner_root):
+            mtime = _newest_activity_mtime(quarantine)
+            if now - mtime >= limits.session_idle_s:
+                candidates.append(
+                    Candidate(
+                        path=quarantine,
+                        kind="quarantine",
+                        guard_active=guards.protects(quarantine, owner_root),
+                        mtime=mtime,
+                        lock_held=_root_lock_held(quarantine, scope_roots),
+                        owner_root=owner_root,
+                    )
+                )
+    return candidates
 
 
 def reclaim_checkout_state(
