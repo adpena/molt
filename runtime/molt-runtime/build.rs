@@ -2,6 +2,8 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[path = "../build_support/out_file.rs"]
+mod out_file;
 #[path = "../build_support/variadic_exports.rs"]
 mod variadic_exports;
 #[path = "../build_support/wasi_sysroot.rs"]
@@ -63,7 +65,7 @@ fn emit_cpython_abi_variadic_export_anchors(manifest_dir: &Path, out_dir: &Path)
     let manifest = manifest_dir.join("../molt-cpython-abi/shims/pyarg_variadic.exports");
     let symbols = variadic_exports::load_variadic_exports(&manifest);
     let output = out_dir.join("molt_cpython_abi_variadic_exports.rs");
-    fs::write(&output, variadic_exports::render_rust_anchors(&symbols))
+    out_file::write_if_changed(&output, variadic_exports::render_rust_anchors(&symbols))
         .unwrap_or_else(|error| panic!("failed to write {}: {error}", output.display()));
     println!("cargo:rerun-if-changed={}", manifest.display());
 }
@@ -138,7 +140,8 @@ fn emit_cpython_abi_requested_export_anchors(out_dir: &Path, target_arch: &str) 
     }
     source.push('\n');
     source.push_str("}\n");
-    fs::write(output, source).expect("failed to write CPython ABI WASM export anchors");
+    out_file::write_if_changed(output, source)
+        .expect("failed to write CPython ABI WASM export anchors");
 }
 
 fn parse_cpython_abi_export_symbol_list(raw: &str) -> Vec<String> {
@@ -207,7 +210,7 @@ fn emit_wasm_long_double_link_policy(target_arch: &str, out_dir: &Path) {
         let name = format!(":{filename}");
         // #[link] requires a literal, so project the admitted filename through
         // the same build output mechanism used by the other Rust declarations.
-        fs::write(
+        out_file::write_if_changed(
             out_dir.join("molt_wasi_test_startup.rs"),
             format!(
                 "#[link(name = {name:?}, kind = \"static\", modifiers = \"-bundle\")]\nunsafe extern \"C\" {{}}\n"
@@ -260,7 +263,7 @@ fn emit_c_api_version(manifest_dir: &Path, out_dir: &Path) {
         "C API version must be a numeric u32 literal"
     );
     let version = digits.parse::<u32>().expect("C API version exceeds u32");
-    fs::write(
+    out_file::write_if_changed(
         out_dir.join("molt_c_api_version.rs"),
         format!(
             "/// libmolt C-API surface version.\npub const MOLT_C_API_VERSION: u32 = {version};\n"

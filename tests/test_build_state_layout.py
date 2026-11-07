@@ -21,6 +21,7 @@ from molt.cli.runtime_paths import _build_state_root_cached
 from tools.build_control_path import build_control_output
 from tools.harness_memory_guard import canonical_harness_env
 from tests.process_guard_common import install_module_view, run_guarded_test_process
+from tests.cargo_output_fixture import write_cargo_output
 
 
 @pytest.mark.parametrize("pinned_session", [False, True])
@@ -255,9 +256,9 @@ def test_every_consumer_reads_one_project_cargo_target(
     assert backend_execution._backend_bin_path(project, "dev-fast").parent == (
         expected / "dev-fast"
     )
-    host = expected / "dev-fast" / molt_wasm_host_exe_name()
-    host.parent.mkdir(parents=True)
-    host.write_bytes(b"host")
+    host = write_cargo_output(
+        expected / "dev-fast" / molt_wasm_host_exe_name(), b"host"
+    )
     assert resolve_molt_wasm_host_binary(project, cargo_profile="dev-fast") == str(host)
     mlir = expected / "release" / mlir_backend._mlir_backend_executable_name()
     mlir.parent.mkdir(parents=True)

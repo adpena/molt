@@ -4,6 +4,11 @@
 from __future__ import annotations
 
 INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
+    "molt_marshal_version": ("molt_marshal_version", 0),
+    "molt_marshal_dumps": ("molt_marshal_dumps", 2),
+    "molt_marshal_loads": ("molt_marshal_loads", 1),
+    "molt_marshal_dump": ("molt_marshal_dump", 3),
+    "molt_marshal_load": ("molt_marshal_load", 1),
     "molt_native_callable_reduce": ("molt_native_callable_reduce", 1),
     "molt_compatibility_error": ("molt_compatibility_error", 1),
     "molt_capabilities_list": ("molt_capabilities_list", 0),
@@ -1128,6 +1133,7 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_exception_last": ("molt_exception_last", 0),
     "molt_exception_last_pending": ("molt_exception_last_pending", 0),
     "molt_exception_pending": ("molt_exception_pending", 0),
+    "molt_exception_frame_origin": ("molt_exception_frame_origin", 1),
     "molt_async_work_poll_and_exception_pending": ("molt_async_work_poll_and_exception_pending", 0),
     "molt_async_work_poll_and_exception_last_pending": ("molt_async_work_poll_and_exception_last_pending", 0),
     "molt_exception_clear": ("molt_exception_clear", 0),
@@ -1201,6 +1207,8 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_cell_gt": ("molt_cell_gt", 2),
     "molt_cell_ge": ("molt_cell_ge", 2),
     "molt_guard_builtin_bindings": ("molt_guard_builtin_bindings", 1),
+    "molt_build_class_builtin": ("molt_build_class_builtin", 2),
+    "molt_class_builder_check": ("molt_class_builder_check", 0),
     "molt_types_cell_contents_get": ("molt_types_cell_contents_get", 2),
     "molt_types_cell_contents_set": ("molt_types_cell_contents_set", 3),
     "molt_types_cell_contents_delete": ("molt_types_cell_contents_delete", 2),

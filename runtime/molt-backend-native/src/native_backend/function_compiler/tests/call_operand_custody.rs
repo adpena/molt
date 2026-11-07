@@ -240,9 +240,13 @@ fn home_store_fixture() -> FunctionIR {
             value: Some(51),
             ..OpIR::new(OpKind::TryEnd)
         },
+        // The handler's failure observer inspects the still-pending error,
+        // as frontend handler dispatch does: compiler transport, so it
+        // forwards the Unwind and owns no Origin event of its own.
         OpIR {
             s_value: Some("custody_home_failure".into()),
             args: Some(vec![]),
+            exception_source: Some(molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Unwind),
             ..OpIR::new(OpKind::Call)
         },
         OpIR {
@@ -828,6 +832,7 @@ const HOME_RAW: u64 = @HOME_RAW@;
 static mut HOME: [u64; 2] = [HOME_UNBOUND, 0];
 static HOME_SUCCESSES: AtomicU64 = AtomicU64::new(0);
 static HOME_FAILURES: AtomicU64 = AtomicU64::new(0);
+static HOME_ORIGINS: AtomicU64 = AtomicU64::new(0);
 fn home_pair() -> (u64, u64) {
     unsafe { (core::ptr::addr_of!(HOME[0]).read(), core::ptr::addr_of!(HOME[1]).read()) }
 }
@@ -839,6 +844,19 @@ pub extern "C" fn attached_molt_frame_homes(_context: u64, _arg0: u64) -> u64 {
 pub fn molt_frame_homes(slots: u64) -> u64 {
     assert_eq!(slots, 1);
     core::ptr::addr_of_mut!(HOME) as u64
+}
+#[export_name = "molt_exception_frame_origin@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_exception_frame_origin(_context: u64, _arg0: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_exception_frame_origin(_arg0)
+}
+/// The failed store's Origin edge captures the activation that lent HOME,
+/// exactly once, and only while its error is pending.
+pub fn molt_exception_frame_origin(homes: u64) -> u64 {
+    assert_eq!(homes, core::ptr::addr_of_mut!(HOME) as u64, "Origin names the lending activation");
+    assert_ne!(ERROR.load(SeqCst), 0, "only a taken Origin edge captures");
+    HOME_ORIGINS.fetch_add(1, SeqCst);
+    0
 }
 #[export_name = "molt_frame_home_load@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_frame_home_load(_context: u64, _arg0: u64) -> u64 {
@@ -882,6 +900,7 @@ pub extern "C" fn custody_home_reset(failure: u64) {
     custody_reset(3, failure, 0);
     HOME_SUCCESSES.store(0, SeqCst);
     HOME_FAILURES.store(0, SeqCst);
+    HOME_ORIGINS.store(0, SeqCst);
 }
 #[no_mangle]
 pub extern "C" fn custody_home_finish(failure: u64) {
@@ -889,6 +908,7 @@ pub extern "C" fn custody_home_finish(failure: u64) {
     assert_eq!(ERROR.load(SeqCst), if failure == 0 { 0 } else { 0xb001 });
     assert_eq!(HOME_SUCCESSES.load(SeqCst), u64::from(failure == 0));
     assert_eq!(HOME_FAILURES.load(SeqCst), u64::from(failure != 0));
+    assert_eq!(HOME_ORIGINS.load(SeqCst), u64::from(failure != 0), "one Origin per failed store");
     assert_eq!(home_pair(), (HOME_UNBOUND, 0));
     for count in [&FIRST, &SECOND, &EXISTING, &OTHER, &RESULT] {
         assert_eq!(count.load(SeqCst), 0, "every home owner released exactly once");
@@ -949,6 +969,7 @@ pub fn molt_not(value: u64) -> u64 {
 pub extern "C" fn custody_home_numeric_finish() {
     assert_eq!(ATTEMPTS.load(SeqCst), 0);
     assert_eq!(ERROR.load(SeqCst), 0);
+    assert_eq!(HOME_ORIGINS.load(SeqCst), 0, "no edge was taken");
     assert_eq!(HOME_SUCCESSES.load(SeqCst), 1);
     assert_eq!(HOME_FAILURES.load(SeqCst), 0);
     assert_eq!(home_pair(), (HOME_UNBOUND, 0));

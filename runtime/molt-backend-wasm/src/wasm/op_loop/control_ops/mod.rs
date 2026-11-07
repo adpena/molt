@@ -277,6 +277,7 @@ pub(super) fn emit_control_op(
         | molt_ir::OpKind::ForRange
         | molt_ir::OpKind::FormatString
         | molt_ir::OpKind::FrameContextSet
+        | molt_ir::OpKind::FrameSetLocation
         | molt_ir::OpKind::FrameHomeCell
         | molt_ir::OpKind::FrameHomeClear
         | molt_ir::OpKind::FrameHomeLoad

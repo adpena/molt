@@ -284,7 +284,7 @@ pub(crate) fn raise_throw_argument(py: &PyToken<'_>, carrier: u64) -> u64 {
     let Some(exception) = normalize_throw_argument(py, carrier) else {
         return MoltObject::none().bits();
     };
-    crate::molt_exception_trace_prepend_attached_body(py, exception);
+    // The receiving compiled continuation owns the Origin event.
     let result = crate::molt_raise_attached_body(py, exception);
     dec_ref_bits(py, exception);
     result

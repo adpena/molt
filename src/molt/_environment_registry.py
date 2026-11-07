@@ -4723,7 +4723,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_MIDEND_MAX_ROUNDS",
       "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Overrides the number of mid-end optimization rounds per function with an integer of at least 2 (smaller or non-integer values fall back to 2); unset uses the tier and profile table, and the WASM benchmark and test runners set 3 when it is unset.",
+      "summary": "Explicit diagnostic limit for outer mid-end fixed-point rounds, at least 2 (invalid values use 2). Unset drains required passes to convergence; tier/profile round counts calibrate only the optional CSE work budget.",
       "values": []
     },
     {
@@ -4733,7 +4733,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_MIDEND_MONOLITH_FUNCTION_THRESHOLD",
       "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Function count at which a module counts as a monolith for mid-end policy; values below 8 raise to 8, and empty or non-integer values fall back to 48.",
+      "summary": "Function count at which mid-end telemetry marks module pressure; this does not skip functions or truncate required passes; values below 8 raise to 8, and empty or non-integer values fall back to 48.",
       "values": []
     },
     {
@@ -4743,7 +4743,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_MIDEND_MONOLITH_TOTAL_OPS_THRESHOLD",
       "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Total op count at which a module counts as a monolith for mid-end policy; values below 256 raise to 256, and empty or non-integer values fall back to 4000.",
+      "summary": "Total op count at which mid-end telemetry marks module pressure; this does not skip functions or truncate required passes; values below 256 raise to 256, and empty or non-integer values fall back to 4000.",
       "values": []
     },
     {
@@ -4758,16 +4758,6 @@ _REGISTRY_JSON = r"""{
         "dev",
         "release"
       ]
-    },
-    {
-      "audience": "user",
-      "default": "800",
-      "kind": "int",
-      "name": "MOLT_MIDEND_SKIP_OP_THRESHOLD",
-      "output_neutral": false,
-      "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Op count above which the mid-end skips a function as oversized; values below 1 and empty or non-integer values fall back to 800.",
-      "values": []
     },
     {
       "audience": "user",
@@ -4860,7 +4850,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_MIDEND_WORK_BUDGET",
       "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Fixed deterministic work-unit budget for the mid-end degrade ladder that replaces the value computed from the tier's base budget, round count, and op count; negative values clamp to 0, a non-numeric value is ignored, and unset keeps the computed budget.",
+      "summary": "Fixed deterministic work-unit budget for optional cross-block CSE; required CFG, SCCP and DCE passes still complete. The override replaces the value computed from the tier's base budget, round count, and op count; negative values clamp to 0, a non-numeric value is ignored, and unset keeps the computed budget.",
       "values": []
     },
     {
@@ -5806,7 +5796,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_SCCP_MAX_ITERS",
       "output_neutral": false,
       "owner": "src/molt/frontend/lowering/midend_policy.py",
-      "summary": "Caps the SCCP iteration count per midend round when set; parsed as an integer with a floor of 1 (invalid or smaller values become 1); unset applies no override.",
+      "summary": "Diagnostic cap on SCCP block transfers per invocation; exhaustion reports degraded coverage and returns no facts with all edges executable; parsed as an integer with a floor of 1 (invalid or smaller values become 1); unset drains the worklists to a fixed point.",
       "values": []
     },
     {
@@ -7461,19 +7451,6 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "developer",
-      "default": "dev",
-      "kind": "enum",
-      "name": "MOLT_TV_BUILD_PROFILE",
-      "output_neutral": false,
-      "owner": "tools/translation_validate.py",
-      "summary": "Default Molt build profile for tools/translation_validate.py, dev or release; --build-profile overrides it; default dev.",
-      "values": [
-        "dev",
-        "release"
-      ]
-    },
-    {
       "audience": "user",
       "default": "",
       "kind": "path",
@@ -7491,36 +7468,6 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "src/molt/frontend/tv_hooks.py",
       "summary": "Set to exactly 1 to make the mid-end write before/after IR snapshots for every pass into the MOLT_TV_DIR dump directory; the value is read once per process; any other value or unset disables emission.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "4",
-      "kind": "int",
-      "name": "MOLT_TV_JOBS",
-      "output_neutral": false,
-      "owner": "tools/translation_validate.py",
-      "summary": "Default number of parallel validation jobs for tools/translation_validate.py; --jobs overrides it; a non-integer value raises ValueError at import; default 4.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "",
-      "kind": "string",
-      "name": "MOLT_TV_PYTHON",
-      "output_neutral": false,
-      "owner": "tools/translation_validate.py",
-      "summary": "Explicit CPython command that tools/translation_validate.py runs as the ground-truth interpreter; unset or blank resolves the target Python from the project configuration.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "60",
-      "kind": "int",
-      "name": "MOLT_TV_TIMEOUT",
-      "output_neutral": false,
-      "owner": "tools/translation_validate.py",
-      "summary": "Default per-file timeout in seconds for tools/translation_validate.py; --timeout overrides it; a non-integer value raises ValueError at import; default 60.",
       "values": []
     },
     {

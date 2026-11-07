@@ -17,36 +17,52 @@ from tools import cpython_regrtest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize("version", ["3.12", "3.13", "3.14"])
+def test_admitted_uv_oracle_does_not_require_a_system_python(
+    monkeypatch, tmp_path, version
+):
+    # Supported target capability is decided by the selected interpreter, not
+    # an old platform-wide exclusion or the presence of a system executable.
+    from tests.process_guard_common import install_module_view
+
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        cpython_regrtest.shutil,
+        cpython_regrtest,
+        which=lambda _name: None,
+    )
+    config = cpython_regrtest.parse_args(
+        [
+            "--uv",
+            "--uv-python",
+            version,
+            "--uv-project",
+            str(tmp_path),
+        ]
+    )
+    command = cpython_regrtest.host_python_cmd(config, version)
+    assert command[command.index("--python") + 1] == version
+    assert "--no-managed-python" not in command
+
+
 def test_cpython_source_authority_is_commit_pinned() -> None:
+    """Every supported line names one exact release tag at its peeled commit.
+
+    The values move with each patch release (tools/pin_freshness.py), so the
+    test checks the pin's shape, not a copy of today's coordinates.
+    """
+    import re
+
     module = cpython_regrtest
     sources = module.load_cpython_sources()
 
-    assert sources == {
-        "3.12": module.CPythonSource(
-            python="3.12",
-            revision="e848e4b09ca4bc67c0041c9ce7526dae471d4c36",
-            tag="v3.12.15",
-            git_url="https://github.com/python/cpython.git",
-        ),
-        "3.13": module.CPythonSource(
-            python="3.13",
-            revision="64e080d38154391ff2d2caa1161c298bb7cd8f30",
-            tag="v3.13.17",
-            git_url="https://github.com/python/cpython.git",
-        ),
-        "3.14": module.CPythonSource(
-            python="3.14",
-            revision="ead82c07db1f111d613926ed1b6667411d768125",
-            tag="v3.14.9",
-            git_url="https://github.com/python/cpython.git",
-        ),
-        "3.15": module.CPythonSource(
-            python="3.15",
-            revision="c37e74cb6bcdadcd5f46f289498f6b3298ddee61",
-            tag="v3.15.1",
-            git_url="https://github.com/python/cpython.git",
-        ),
-    }
+    assert set(sources) == {"3.12", "3.13", "3.14", "3.15"}
+    for line, source in sources.items():
+        assert source.python == line
+        assert re.fullmatch(r"[0-9a-f]{40}", source.revision)
+        assert re.fullmatch(rf"v{re.escape(line)}\.\d+", source.tag)
+        assert source.git_url == "https://github.com/python/cpython.git"
     # The regrtest default is the first row.
     assert next(iter(sources)) == "3.12"
 

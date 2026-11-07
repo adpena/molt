@@ -168,21 +168,17 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
-            molt_ir::OpKind::Line => {
+            molt_ir::OpKind::FrameSetLocation => {
                 let context = self.frame_context_expr();
-                let line = op.value.unwrap_or(0);
-                let col = op
-                    .col_offset
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "nil".to_string());
-                let end_col = op
-                    .end_col_offset
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "nil".to_string());
+                let location = op.value.expect("admitted location index");
+                let line = op.source_line.expect("authored location source line");
+                let col = op.col_offset.unwrap_or(-1);
+                let end_col = op.end_col_offset.unwrap_or(-1);
                 self.emit_line(&format!(
-                    "molt_frame_set_line({context}, {line}, {col}, {end_col})"
+                    "molt_frame_set_location({context}, {location}, {line}, {col}, {end_col})"
                 ));
             }
+            molt_ir::OpKind::Line => { /* optional diagnostics do not own locations */ }
             molt_ir::OpKind::InvokeFfi => {
                 let diagnostic =
                     "{__type=\"RuntimeError\", __msg=\"Luau target does not support FFI\"}";

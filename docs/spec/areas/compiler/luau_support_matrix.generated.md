@@ -11,10 +11,10 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 ## Summary
 
 - `compile-error`: `84`
-- `implemented-exact`: `191`
+- `implemented-exact`: `192`
 - `implemented-target-limited`: `19`
 - `not-admitted`: `237`
-- `total`: `531`
+- `total`: `532`
 
 ## Matrix
 
@@ -252,6 +252,7 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `frame_home_take` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `frame_locals` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `frame_locals_set` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
+| `frame_set_location` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `free` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `frozenset_add` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `frozenset_new` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |

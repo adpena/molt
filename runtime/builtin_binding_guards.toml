@@ -29,6 +29,7 @@
 
 schema_version = 1
 names = [
+    "__build_class__",
     "abs",
     "all",
     "any",

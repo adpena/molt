@@ -1,5 +1,6 @@
 use super::*;
 use molt_ir::OpKind;
+use molt_ir::tir::op_kinds_generated::ExceptionEdgeKind;
 
 mod cargo_test_artifacts {
     include!(concat!(
@@ -931,6 +932,7 @@ static HOME_REENTER: AtomicU64 = AtomicU64::new(0);
 static HOME_REENTRIES: AtomicU64 = AtomicU64::new(0);
 static HOME_SUCCESSES: AtomicU64 = AtomicU64::new(0);
 static HOME_FAILURE_HANDLERS: AtomicU64 = AtomicU64::new(0);
+static HOME_ORIGINS: AtomicU64 = AtomicU64::new(0);
 
 fn home_pair() -> (u64, u64) {
     unsafe { (core::ptr::addr_of!(HOME[0]).read(), core::ptr::addr_of!(HOME[1]).read()) }
@@ -938,6 +940,12 @@ fn home_pair() -> (u64, u64) {
 fn molt_frame_homes(slots: u64) -> u64 {
     assert_eq!(slots, 1);
     core::ptr::addr_of_mut!(HOME) as u64
+}
+fn molt_exception_frame_origin(homes: u64) -> u64 {
+    assert_eq!(homes, core::ptr::addr_of_mut!(HOME) as u64, "Origin names the lending activation");
+    assert!(pending(), "only a taken Origin edge captures");
+    HOME_ORIGINS.fetch_add(1, SeqCst);
+    0
 }
 fn molt_frame_home_load(home: u64) -> u64 {
     assert_eq!(home, core::ptr::addr_of_mut!(HOME) as u64);
@@ -978,6 +986,7 @@ pub extern "C" fn fam_home_reset(failure: u64, reenter: u64) {
     HOME_REENTRIES.store(0, SeqCst);
     HOME_SUCCESSES.store(0, SeqCst);
     HOME_FAILURE_HANDLERS.store(0, SeqCst);
+    HOME_ORIGINS.store(0, SeqCst);
     // A transferred old binding, or a cell handle, starts with one owner.
     if reenter != 0 { EXISTING_REFS.store(1, SeqCst); }
 }
@@ -1042,6 +1051,7 @@ fn fam_home_store_failed()  {
 pub extern "C" fn fam_home_route_check(failure: u64) {
     assert_eq!(HOME_SUCCESSES.load(SeqCst), u64::from(failure == 0));
     assert_eq!(HOME_FAILURE_HANDLERS.load(SeqCst), u64::from(failure != 0));
+    assert_eq!(HOME_ORIGINS.load(SeqCst), u64::from(failure != 0), "one Origin per failed store");
     assert_eq!(home_pair(), (HOME_UNBOUND, 0));
 }
 fn fam_home_cell_check(view: u64, taken: u64)  {
@@ -1500,6 +1510,12 @@ fn fixture_thread_record() -> u64 { core::ptr::addr_of!(FIXTURE_THREAD_RECORD) a
 pub extern "C" fn molt_frame_homes_attached(context: u64, slots: u64) -> u64 {
     assert_eq!(context, fixed_execution_context(), "molt_frame_homes forwards its attached context");
     molt_frame_homes(slots)
+}
+
+#[export_name = "molt_exception_frame_origin@EXECUTION_SUFFIX@"]
+pub extern "C" fn molt_exception_frame_origin_attached(context: u64, homes: u64) -> u64 {
+    assert_eq!(context, fixed_execution_context(), "molt_exception_frame_origin forwards its attached context");
+    molt_exception_frame_origin(homes)
 }
 
 #[export_name = "molt_frame_home_load@EXECUTION_SUFFIX@"]
@@ -2317,6 +2333,14 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
                     terminator: Terminator::Return { values: vec![] },
                 },
             );
+            let mut check = family_op(
+                OpCode::CheckException,
+                None,
+                vec![],
+                vec![],
+                &[("value", AttrValue::Int(51))],
+            );
+            check.set_exception_edge_kind(ExceptionEdgeKind::Origin);
             vec![
                 family_op(
                     OpCode::TryStart,
@@ -2327,13 +2351,7 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
                 ),
                 home_op(OpKind::FrameHomeStore, vec![params[0]], vec![]),
                 home_op(OpKind::FrameHomeStore, vec![first], vec![view]),
-                family_op(
-                    OpCode::CheckException,
-                    None,
-                    vec![],
-                    vec![],
-                    &[("value", AttrValue::Int(51))],
-                ),
+                check,
                 family_op(
                     OpCode::TryEnd,
                     None,

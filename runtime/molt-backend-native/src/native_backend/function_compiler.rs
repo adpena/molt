@@ -809,12 +809,6 @@ impl SimpleBackend {
         // immediately below; module frames retain their IR-positioned binding
         // prologue because their trace_enter_slot is not the leading op.
         let has_frame_slot = func_ir.execution_context == crate::ir::ExecutionContextPolicy::Local;
-        // Code that runs in an active frame keeps that frame's line and columns
-        // current for tracebacks. Only `Local` code owns the frame's entry and
-        // exit; an `Inherited` body, such as a module chunk, updates the frame
-        // of the code that called it.
-        let frame_location_active =
-            func_ir.execution_context != crate::ir::ExecutionContextPolicy::None;
         let owned_frame_entered = has_frame_slot.then(|| {
             let entered = builder.declare_var(types::I8);
             let inactive = builder.ins().iconst(types::I8, 0);
@@ -899,20 +893,35 @@ impl SimpleBackend {
             })
             .filter_map(|op| op.value)
             .max()
-            .map(|slot| slot + 1);
+            .map(|slot| slot + 1)
+            .or_else(|| {
+                // A publication or a check's cold `frame_location` store
+                // needs the location word, even with no binding homes.
+                func_ir
+                    .ops
+                    .iter()
+                    .any(|op| op.kind == OpKind::FrameSetLocation || op.frame_location.is_some())
+                    .then_some(0)
+            });
         let enters_later = leading_frame_code_owner.is_none()
             && func_ir
                 .ops
                 .iter()
                 .any(|op| op.kind == OpKind::TraceEnterSlot);
+        let cold_frame_homes = frame_home_slots.map(|_| {
+            builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3))
+        });
         let frame_homes = frame_home_slots.map(|slots| {
             let homes = builder.declare_var(types::I64);
+            let cold_homes = cold_frame_homes.expect("created with the homes");
             if enters_later {
                 let unlent = builder.ins().iconst(types::I64, 0);
                 builder.def_var(homes, unlent);
+                builder.ins().stack_store(types::I64, unlent, cold_homes, 0);
             } else {
                 let base = fc::funcobj::emit_frame_homes_lend(
                     homes,
+                    cold_homes,
                     slots,
                     &mut self.module,
                     &mut self.import_ids,
@@ -1112,29 +1121,6 @@ impl SimpleBackend {
             // line/column update calls below can try to append instructions to
             // a filled block and panic.
             sync_block_filled(&builder, &mut is_block_filled);
-            // Update frame stack column offsets for traceback carets when this
-            // function runs in an active frame. Skip inside active loops; line
-            // tracking follows the same hot-loop elision below.
-            if frame_location_active
-                && !is_block_filled
-                && loop_stack.is_empty()
-                && let (Some(col_offset), Some(end_col_offset)) = (op.col_offset, op.end_col_offset)
-            {
-                let col_val = builder.ins().iconst(types::I64, col_offset);
-                let end_col_val = builder.ins().iconst(types::I64, end_col_offset);
-                let frame_line_col_fn = import_func_ref(
-                    &mut self.module,
-                    &mut self.import_ids,
-                    &mut builder,
-                    &mut import_refs,
-                    "molt_frame_set_col",
-                    &[types::I64, types::I64],
-                    &[types::I64],
-                );
-                builder
-                    .ins()
-                    .call(frame_line_col_fn, &[col_val, end_col_val]);
-            }
             if is_block_filled {
                 if op.kind == OpKind::If
                     && let Some(&end_if_idx) = if_to_end_if.get(&op_idx)
@@ -1677,8 +1663,8 @@ impl SimpleBackend {
                             op_idx,
                             owned_frame_entered,
                             frame_homes,
+                            cold_frame_homes,
                             leading_frame_entry_op_idx,
-                            frame_location_active,
                             is_block_filled,
                             rc_authority,
                             !loop_stack.is_empty(),
@@ -1931,6 +1917,7 @@ impl SimpleBackend {
                             local_dec_ref_obj,
                             local_exc_pending_fast,
                             exc_flag_ptr_slot,
+                            cold_frame_homes,
                             pending_work_slots,
                             &maybe_debug_seal,
                             &nbc,

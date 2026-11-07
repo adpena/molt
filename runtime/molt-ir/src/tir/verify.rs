@@ -16,7 +16,7 @@ use super::op_kinds_generated::{
     opcode_canonical_kind_table, opcode_fixed_result_count_table,
     opcode_tir_verify_attr_rule_table,
 };
-use super::ops::AttrValue;
+use super::ops::{AttrValue, OpCode};
 use super::values::ValueId;
 
 // ---------------------------------------------------------------------------
@@ -244,6 +244,22 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                         op.opcode,
                         op.operands.len()
                     ),
+                ));
+            }
+            if op.opcode == OpCode::CheckException && op.exception_edge_kind().is_none() {
+                errors.push(VerifyError::op(
+                    *bid,
+                    op_idx,
+                    "exceptional check requires a typed Origin or Unwind source",
+                ));
+            }
+            if op.attrs.contains_key("exception_source")
+                && (op.exception_source_kind().is_none() || op.opcode == OpCode::CheckException)
+            {
+                errors.push(VerifyError::op(
+                    *bid,
+                    op_idx,
+                    "exception producer requires a typed source kind separate from check edge kind",
                 ));
             }
             // Check required attributes per opcode.
@@ -2257,6 +2273,10 @@ mod tests {
                 crate::FunctionReturnAbi::Void,
             );
             let mut attrs = AttrDict::new();
+            attrs.insert(
+                "exception_edge".into(),
+                AttrValue::Int(super::super::op_kinds_generated::ExceptionEdgeKind::Origin as i64),
+            );
             if let Some(value) = value {
                 attrs.insert("value".into(), value);
             }
@@ -2295,6 +2315,14 @@ mod tests {
                     func.label_id_map.extend(labels);
                     let mut attrs = AttrDict::new();
                     attrs.insert("value".into(), AttrValue::Int(77));
+                    if opcode == OpCode::CheckException {
+                        attrs.insert(
+                            "exception_edge".into(),
+                            AttrValue::Int(
+                                super::super::op_kinds_generated::ExceptionEdgeKind::Origin as i64,
+                            ),
+                        );
+                    }
                     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
                     entry.ops.push(TirOp {
                         origin: None,
@@ -2353,6 +2381,14 @@ mod tests {
             );
             let mut attrs = AttrDict::new();
             attrs.insert("value".into(), AttrValue::Int(77));
+            if opcode == OpCode::CheckException {
+                attrs.insert(
+                    "exception_edge".into(),
+                    AttrValue::Int(
+                        super::super::op_kinds_generated::ExceptionEdgeKind::Origin as i64,
+                    ),
+                );
+            }
             func.blocks
                 .get_mut(&func.entry_block)
                 .unwrap()
@@ -2577,6 +2613,9 @@ mod tests {
     fn capture_transfer(opcode: OpCode, label: i64, operands: Vec<ValueId>) -> TirOp {
         let mut op = capture_op(opcode, operands, vec![]);
         op.attrs.insert("value".into(), AttrValue::Int(label));
+        if opcode == OpCode::CheckException {
+            op.set_exception_edge_kind(super::super::op_kinds_generated::ExceptionEdgeKind::Origin);
+        }
         op
     }
 

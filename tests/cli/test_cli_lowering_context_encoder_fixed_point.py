@@ -42,6 +42,8 @@ import importlib
 import json
 import sys
 
+from molt.frontend.dataclass_init import DataclassInitField
+
 CK = importlib.import_module("molt.cli.cache_keys")
 MC = importlib.import_module("molt.cli.module_cache")
 _FRONTEND = importlib.import_module("molt.frontend")
@@ -87,6 +89,11 @@ _FIXED_POINT_CASES: dict[str, object] = {
     "frozenset": frozenset({"b", "a", "c"}),
     "mixed_set": {1, "1", b"1", (1, "x"), frozenset({2, "y"})},
     "molt_value": MoltValue(name="v", type_hint="int"),
+    "dataclass_init_fields": (
+        DataclassInitField("x", True, False, False, 0),
+        DataclassInitField("y", False, True, False, 2),
+        DataclassInitField("seed", True, False, True, 1),
+    ),
     "tuple_of_ast": (_NODE, "s"),
     "set_in_tuple": (frozenset({1, 2}), 3),
     "func_defaults_shape": {
@@ -99,6 +106,9 @@ _FIXED_POINT_CASES: dict[str, object] = {
             "mro": (_CLASS, BuiltinClass("object")),
             "field_hints": {"peer": DeclaredClass(_REDEFINED)},
             "methods": {"__init__": {"inline_init_assigns": [["attr", _NODE]]}},
+            "dataclass_init_projection": (
+                DataclassInitField("x", True, False, False, 0),
+            ),
         },
     },
     "class_id": _CLASS,
@@ -112,6 +122,14 @@ _FIXED_POINT_CASES: dict[str, object] = {
     ),
     "list_of_mixed": [(1, 2), {3, 4}, _NODE, b"z"],
 }
+
+
+def test_dataclass_projection_round_trip_preserves_every_field() -> None:
+    fields = _FIXED_POINT_CASES["dataclass_init_fields"]
+    restored = _round_trip(fields)
+    assert isinstance(restored, tuple)
+    assert restored == fields
+    assert all(type(field) is DataclassInitField for field in restored)
 
 
 def test_encoder_is_a_decode_fixed_point_for_every_type() -> None:
@@ -170,6 +188,14 @@ def test_encoder_is_injective_for_distinct_values() -> None:
     the encoding.
     """
     distinct_pairs = [
+        (
+            DataclassInitField("x", True, False, False, 0),
+            DataclassInitField("x", True, False, False, 1),
+        ),
+        (
+            DataclassInitField("x", True, False, False, 0),
+            DataclassInitField("x", False, False, False, 0),
+        ),
         ((1, 2), (1, 3)),
         (frozenset({1, 2}), frozenset({1, 2, 3})),
         (b"xy", b"xz"),

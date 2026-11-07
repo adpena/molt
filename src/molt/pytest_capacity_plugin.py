@@ -7,7 +7,8 @@ declares its unit with ``--molt-worker-memory-gb``, from the ``worker_peaks``
 its receipts record, so the same argv runs as many workers as each machine
 holds. Memory is a parent's slice when one was exported (the guard's tree
 cap, the proof executor's per-command share), which already holds the
-machine reserve. CPU is elastic until one jobserver shares it.
+machine reserve. Landing and proof executors resolve their own shared CPU
+budget to explicit -n counts before launch; this hook sizes standalone runs.
 
 Under xdist's load scheduling, a test marked ``long_pole`` starts before
 every unmarked test, and the controller sends at most two tests at a time.

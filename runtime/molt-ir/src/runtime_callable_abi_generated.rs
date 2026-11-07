@@ -1093,6 +1093,11 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
+        symbol: "molt_build_class_builtin",
+        arity: 2,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
         symbol: "molt_builtin_class_lookup",
         arity: 1,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -1340,6 +1345,11 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     RuntimeCallableAbi {
         symbol: "molt_class_apply_set_name",
         arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_class_builder_check",
+        arity: 0,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -3709,6 +3719,11 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_exception_enter_handler",
+        arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_exception_frame_origin",
         arity: 1,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
@@ -6485,6 +6500,31 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     RuntimeCallableAbi {
         symbol: "molt_map_builtin",
         arity: 2,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_marshal_dump",
+        arity: 3,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_marshal_dumps",
+        arity: 2,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_marshal_load",
+        arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_marshal_loads",
+        arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_marshal_version",
+        arity: 0,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -14670,6 +14710,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_buffered_new__molt_context_a8c6010e2cbb56a1",
         },
+        "molt_build_class_builtin" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_build_class_builtin__molt_context_a8c6010e2cbb56a1",
+        },
         "molt_builtin_class_lookup" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_builtin_class_lookup__molt_context_a8c6010e2cbb56a1",
@@ -15657,6 +15701,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_class_apply_set_name" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_class_apply_set_name__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_class_builder_check" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_class_builder_check__molt_context_a8c6010e2cbb56a1",
         },
         "molt_class_layout_version" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
@@ -17982,6 +18030,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_exception_enter_handler__molt_context_a8c6010e2cbb56a1",
         },
+        "molt_exception_frame_origin" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_exception_frame_origin__molt_context_a8c6010e2cbb56a1",
+        },
         "molt_exception_init" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_exception_init__molt_context_a8c6010e2cbb56a1",
@@ -18605,18 +18657,6 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_frame_locals_set" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_frame_locals_set__molt_context_a8c6010e2cbb56a1",
-        },
-        "molt_frame_set_col" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_frame_set_col__molt_context_a8c6010e2cbb56a1",
-        },
-        "molt_frame_set_line" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_frame_set_line__molt_context_a8c6010e2cbb56a1",
-        },
-        "molt_frame_set_line_col" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_frame_set_line_col__molt_context_a8c6010e2cbb56a1",
         },
         "molt_frozenset_add" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
@@ -21689,6 +21729,26 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_mapping_setitem" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_mapping_setitem__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_marshal_dump" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_marshal_dump__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_marshal_dumps" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_marshal_dumps__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_marshal_load" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_marshal_load__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_marshal_loads" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_marshal_loads__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_marshal_version" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_marshal_version__molt_context_a8c6010e2cbb56a1",
         },
         "molt_math_acos" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,

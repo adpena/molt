@@ -149,6 +149,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             emit_lir_truthy_cond_builtin(ctx, op);
         }
         OpCode::Call
+        | OpCode::FrameSetLocation
         | OpCode::CallMethod
         | OpCode::LoadMethod
         | OpCode::LoadSuperMethod

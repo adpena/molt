@@ -101,21 +101,13 @@ fn activation_code(
     let cellvars = tuple(py, cellvars);
     let freevars = tuple(py, freevars);
     let names = tuple(py, &[]);
+    let table = MoltObject::from_ptr(crate::alloc_bytes(py, b"\xe8\x00")).bits();
     let code = crate::object::builders::alloc_code_obj(
-        py,
-        filename,
-        name,
-        7,
-        MoltObject::none().bits(),
-        varnames,
-        names,
-        parameters,
-        0,
-        0,
+        py, filename, name, 7, table, varnames, names, parameters, 0, 0,
     );
     assert!(!code.is_null());
     assert!(unsafe { crate::code_publish_lexical_metadata(py, code, freevars, cellvars) });
-    for bits in [filename, name, varnames, cellvars, freevars, names] {
+    for bits in [filename, name, varnames, cellvars, freevars, names, table] {
         dec_ref_bits(py, bits);
     }
     (code, MoltObject::from_ptr(code).bits())
@@ -215,13 +207,15 @@ fn created_and_suspended_generator_locals_follow_the_registered_layout() {
                 ],
                 [code, globals, builtins, task]
             );
-            assert_eq!(top.line, unsafe { crate::code_firstlineno(code_ptr) });
+            assert_eq!(top.source_line(), unsafe {
+                crate::code_firstlineno(code_ptr)
+            });
             let live = snapshot_of(bindings::frame_bindings_observe(py, depth).unwrap());
             assert_eq!(lookup(py, live, x), Some(int(19)));
             assert_eq!(lookup(py, live, body), None);
             dec_ref_bits(py, live);
             assert_eq!(take_invocation_namespace(py, slot), Ok(None));
-            let payload = frame_stack_trace_payload_bits(py, None, false).unwrap();
+            let payload = frame_stack_trace_payload_bits(py).unwrap();
             drop(scope);
             payload
         };
@@ -510,7 +504,10 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                     unsafe {
                         locals_proxy::frame_object_visit(frame_ptr, |source| sources.push(source))
                     };
-                    assert_eq!(sources.len(), 1);
+                    // Location and binding ownership are separate edges to
+                    // the same optimized activation payload.
+                    assert_eq!(sources.len(), 2);
+                    assert_eq!(sources[0], sources[1]);
                     assert_ne!(sources[0], 0);
                     if let Some(source) = observed_source {
                         assert_eq!(
@@ -555,7 +552,7 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                 let terminal = unsafe { activation_locals_bits(py, ptr) }.unwrap();
                 assert_eq!(lookup(py, terminal, x), None);
                 dec_ref_bits(py, terminal);
-                let payload = frame_stack_trace_payload_bits(py, None, false).unwrap();
+                let payload = frame_stack_trace_payload_bits(py).unwrap();
                 let entry = unsafe {
                     traceback_payload_frame_entry(obj_from_bits(payload).as_ptr().unwrap())
                 };
@@ -597,8 +594,16 @@ fn traceback_prefix_preserves_observed_tail_identity_and_lazy_tail_contents() {
             inc_ref_bits(py, bits);
         }
         frame_stack_push_owned(py, code, globals, builtins, 0);
-        frame_stack_set_line(10);
-        let lazy = frame_stack_trace_payload_bits(py, None, false).unwrap();
+        assert!(frame_stack_enter_homes(py, FramePlan::default()));
+        FRAME_STACK.with(|stack| {
+            stack
+                .borrow()
+                .last()
+                .unwrap()
+                .bindings
+                .set_location(locations::LocationId::from_word(1))
+        });
+        let lazy = frame_stack_trace_payload_bits(py).unwrap();
         let prior = crate::builtins::exceptions::alloc_exception(
             py,
             BuiltinExc::LookupError,
@@ -647,8 +652,15 @@ fn traceback_prefix_preserves_observed_tail_identity_and_lazy_tail_contents() {
             );
             crate::clear_exception(py);
         }
-        frame_stack_set_line(20);
-        let prefix = frame_stack_trace_payload_prepend_bits(py, None, false, eager).unwrap();
+        FRAME_STACK.with(|stack| {
+            stack
+                .borrow()
+                .last()
+                .unwrap()
+                .bindings
+                .set_location(locations::LocationId::from_word(2))
+        });
+        let prefix = frame_stack_trace_payload_prepend_bits(py, eager).unwrap();
         let observed =
             traceback_payload_to_traceback_bits(py, prefix).expect("materialized traceback");
         let key = string(py, b"tb_next");
@@ -669,7 +681,7 @@ fn traceback_prefix_preserves_observed_tail_identity_and_lazy_tail_contents() {
             Some(eager),
             "materialization must retain the exact observed tail"
         );
-        let prefix_lazy = frame_stack_trace_payload_prepend_bits(py, None, false, lazy).unwrap();
+        let prefix_lazy = frame_stack_trace_payload_prepend_bits(py, lazy).unwrap();
         let entries =
             crate::object::ops_sys::traceback_payload_from_lazy_chain(py, prefix_lazy, None);
         assert_eq!(

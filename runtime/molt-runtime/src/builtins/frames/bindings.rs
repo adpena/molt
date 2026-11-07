@@ -60,6 +60,7 @@ use molt_codegen_abi::{
 };
 use molt_obj_model::MoltObject;
 
+use super::locations::LocationId;
 use crate::builtins::exceptions::raise_key_error_with_key;
 use crate::object::HEADER_FLAG_IMMORTAL;
 use crate::object::cells::{cell_detach_value, cell_ptr_from_bits, cell_value_bits};
@@ -88,7 +89,9 @@ const LOCALS_WORD: usize = 4;
 /// From 3.14, a heap `Vec<u64>` of the plain values proxy writes displaced,
 /// oldest first, each owned. Zero while empty.
 const HISTORY_WORD: usize = 5;
-const SLOT_BASE_WORD: usize = 6;
+const LOCATION_POINTER_WORD: usize = 6;
+const LOCATION_FROZEN_WORD: usize = 7;
+const SLOT_BASE_WORD: usize = 8;
 
 /// The bindings are the running frame's homes.
 const STATE_LIVE_HOMES: u64 = 1 << 0;
@@ -98,6 +101,8 @@ const STATE_LIVE_ACTIVATION: u64 = 1 << 1;
 const STATE_RETIRED: u64 = 1 << 2;
 /// Cycle collection, destruction or runtime teardown detached everything.
 const STATE_DETACHED: u64 = 1 << 3;
+/// This owner projects optimized bindings; module owners carry locations only.
+const STATE_OPTIMIZED: u64 = 1 << 4;
 const STATE_SOURCE_MASK: u64 =
     STATE_LIVE_HOMES | STATE_LIVE_ACTIVATION | STATE_RETIRED | STATE_DETACHED;
 const STATE_POLICY_SHIFT: u32 = 8;
@@ -410,6 +415,9 @@ impl FrameBindings {
     pub(crate) fn captured(payload_bits: u64) -> Self {
         Self {
             payload_bits,
+            optimized: obj_from_bits(payload_bits)
+                .as_ptr()
+                .is_some_and(|ptr| state_of(ptr) & STATE_OPTIMIZED != 0),
             ..Self::default()
         }
     }
@@ -423,17 +431,47 @@ impl FrameBindings {
             policy: plan.policy,
             ..Self::default()
         };
-        if plan.optimized && plan.homes != 0 {
-            let words = home_words(plan.homes as usize)?;
+        {
+            let words = home_words(plan.homes as usize)?.checked_add(1)?;
             let (homes, mark) = HOME_ARENA
                 .try_with(|arena| arena.borrow_mut().take(words))
                 .ok()
                 .flatten()?;
-            bindings.homes = homes as usize;
+            unsafe { *homes = LocationId::ABSENT.word() };
+            bindings.homes = unsafe { homes.add(1) } as usize;
             bindings.home_count = plan.homes;
             bindings.mark = mark;
         }
         Some(bindings)
+    }
+
+    pub(crate) fn homes_base(self) -> usize {
+        self.homes
+    }
+
+    pub(crate) fn has_python_bindings(self) -> bool {
+        self.optimized
+    }
+
+    pub(crate) fn location_address(self) -> usize {
+        self.homes
+            .saturating_sub(if self.homes == 0 { 0 } else { WORD })
+    }
+
+    pub(crate) fn location(self) -> LocationId {
+        if self.homes != 0 {
+            LocationId::from_word(unsafe { *(self.location_address() as *const u64) })
+        } else if let Some(ptr) = obj_from_bits(self.payload_bits).as_ptr() {
+            payload_location(ptr)
+        } else {
+            LocationId::ABSENT
+        }
+    }
+
+    pub(crate) fn set_location(self, location: LocationId) {
+        if self.homes != 0 {
+            unsafe { *(self.location_address() as *mut u64) = location.word() }
+        }
     }
 
     /// Return the homes of an entry whose bindings already left them
@@ -507,6 +545,8 @@ fn alloc_payload(
         *word(ptr, SOURCE_WORD) = source;
         *word(ptr, LOCALS_WORD) = 0;
         *word(ptr, HISTORY_WORD) = 0;
+        *word(ptr, LOCATION_POINTER_WORD) = 0;
+        *word(ptr, LOCATION_FROZEN_WORD) = LocationId::ABSENT.word();
         std::ptr::write_bytes(word(ptr, SLOT_BASE_WORD), 0, count * FRAME_HOME_WORDS);
         object_mark_has_ptrs(py, ptr);
     }
@@ -530,12 +570,26 @@ pub(crate) fn frame_bindings_observe(py: &PyToken<'_>, index: usize) -> Result<u
         return Ok(0);
     };
     if let Some(task) = obj_from_bits(activation_bits).as_ptr() {
-        return frame_bindings_attach_activation(py, task, true);
+        let payload = frame_bindings_attach_activation(py, task, true)?;
+        FRAME_STACK.with(|stack| {
+            let mut stack = stack.borrow_mut();
+            if let Some(entry) = stack.get_mut(index)
+                && entry.bindings.payload_bits == 0
+            {
+                inc_ref_bits(py, payload);
+                entry.bindings.payload_bits = payload;
+            }
+        });
+        return Ok(payload);
     }
-    if !bindings.optimized || code_bits == 0 || bindings.payload_bits != 0 {
+    if code_bits == 0 || bindings.payload_bits != 0 {
         return Ok(bindings.payload_bits);
     }
-    let count = code_slot_count(code_bits)?;
+    let count = if bindings.optimized {
+        code_slot_count(code_bits)?
+    } else {
+        0
+    };
     if count != bindings.home_count as usize {
         return Err(ObserveError::Layout(
             "frame binding homes do not match the code layout",
@@ -546,9 +600,20 @@ pub(crate) fn frame_bindings_observe(py: &PyToken<'_>, index: usize) -> Result<u
         code_bits,
         count,
         bindings.policy,
-        STATE_LIVE_HOMES,
+        STATE_LIVE_HOMES
+            | if bindings.optimized {
+                STATE_OPTIMIZED
+            } else {
+                0
+            },
         bindings.homes as u64,
     )?;
+    unsafe {
+        *word(
+            obj_from_bits(payload).as_ptr().unwrap(),
+            LOCATION_POINTER_WORD,
+        ) = bindings.location_address() as u64;
+    }
     let installed = FRAME_STACK.with(|stack| {
         let mut stack = stack.borrow_mut();
         match stack.get_mut(index) {
@@ -603,9 +668,23 @@ pub(crate) fn frame_bindings_attach_activation(
         code_bits,
         count,
         policy,
-        STATE_LIVE_ACTIVATION,
+        STATE_LIVE_ACTIVATION | STATE_OPTIMIZED,
         task as usize as u64,
     )?;
+    let ptr = obj_from_bits(payload).as_ptr().unwrap();
+    let live = FRAME_STACK.with(|stack| {
+        stack
+            .borrow()
+            .iter()
+            .rev()
+            .find(|entry| entry.activation_bits == MoltObject::from_ptr(task).bits())
+            .map(|entry| entry.bindings.location_address())
+            .unwrap_or(0)
+    });
+    unsafe {
+        *word(ptr, LOCATION_POINTER_WORD) = live as u64;
+        *word(ptr, LOCATION_FROZEN_WORD) = crate::object::aux_header::object_frame_location(task);
+    }
     // Allocation can run a finalizer that observed the same activation.
     let installed =
         unsafe { crate::object::aux_header::object_install_frame_bindings(task, payload) };
@@ -761,7 +840,13 @@ unsafe fn retire_homes(py: &PyToken<'_>, ptr: *mut u8, homes: *mut u64, count: u
 /// dict. Runs after the pop, so each finalizer sees the caller; the homes stay
 /// reserved until [`FrameBindings::exit`].
 pub(crate) fn frame_bindings_exit(py: &PyToken<'_>, bindings: &FrameBindings) {
+    if let Some(ptr) = obj_from_bits(bindings.payload_bits).as_ptr() {
+        freeze_location(ptr);
+    }
     if !bindings.optimized {
+        if let Some(ptr) = obj_from_bits(bindings.payload_bits).as_ptr() {
+            set_source_state(ptr, STATE_RETIRED);
+        }
         return;
     }
     // Null only when the code has no slots: nothing below reads it then.
@@ -1028,6 +1113,38 @@ pub(crate) fn frame_bindings_ptr(py: &PyToken<'_>, payload_bits: u64) -> Result<
 /// Whether the target observes this payload's frame through a PEP 667 proxy.
 pub(crate) fn frame_bindings_pep667(ptr: *mut u8) -> bool {
     frame_bindings_policy(ptr).pep667()
+}
+
+pub(crate) fn payload_location(ptr: *mut u8) -> LocationId {
+    unsafe {
+        let address = *word(ptr, LOCATION_POINTER_WORD);
+        if address != 0 {
+            LocationId::from_word(*(address as *const u64))
+        } else if state_of(ptr) & STATE_LIVE_ACTIVATION != 0 {
+            let task = *word(ptr, SOURCE_WORD) as *mut u8;
+            LocationId::from_word(crate::object::aux_header::object_frame_location(task))
+        } else {
+            LocationId::from_word(*word(ptr, LOCATION_FROZEN_WORD))
+        }
+    }
+}
+
+pub(crate) fn freeze_location(ptr: *mut u8) {
+    let location = payload_location(ptr);
+    unsafe {
+        *word(ptr, LOCATION_FROZEN_WORD) = location.word();
+        *word(ptr, LOCATION_POINTER_WORD) = 0;
+    }
+}
+
+pub(crate) fn lend_location(ptr: *mut u8, address: usize) {
+    unsafe {
+        *word(ptr, LOCATION_POINTER_WORD) = address as u64;
+    }
+}
+
+pub(crate) fn payload_code(ptr: *mut u8) -> u64 {
+    unsafe { *word(ptr, CODE_WORD) }
 }
 
 /// The slot pairs a payload reads: the running frame's homes while live over
@@ -1474,6 +1591,7 @@ pub(crate) fn frame_bindings_retire_activation(
     ptr: *mut u8,
     pairs: impl IntoIterator<Item = (usize, i64, u64)>,
 ) {
+    freeze_location(ptr);
     let count = frame_bindings_slot_count(ptr);
     for (slot, kind, bits) in pairs {
         if slot >= count || !valid_kind(kind) {
@@ -1499,6 +1617,7 @@ pub(crate) fn frame_bindings_retire_activation(
 /// task finishes or dies without an observer that shares the payload, or
 /// runtime teardown abandons it.
 pub(crate) fn frame_bindings_detach_activation(ptr: *mut u8) {
+    freeze_location(ptr);
     if state_of(ptr) & STATE_LIVE_ACTIVATION != 0 {
         set_source_state(ptr, STATE_RETIRED);
     }
@@ -1601,6 +1720,7 @@ pub(crate) unsafe fn frame_bindings_detach(
 ) {
     unsafe {
         let policy = frame_bindings_policy(ptr);
+        freeze_location(ptr);
         let retired = state_of(ptr) & STATE_RETIRED != 0;
         let count = frame_bindings_slot_count(ptr);
         set_source_state(ptr, STATE_DETACHED);

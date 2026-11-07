@@ -18,6 +18,12 @@ class PublicObjectIdentity:
 
 
 PUBLIC_OBJECTS: dict[str, PublicObjectIdentity] = {
+    "molt_build_class_builtin": PublicObjectIdentity(
+        PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD,
+        "__build_class__",
+        "__build_class__",
+        "builtins",
+    ),
     "molt_abc_get_cache_token": PublicObjectIdentity(
         PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD,
         "get_cache_token",
@@ -815,5 +821,35 @@ PUBLIC_OBJECTS: dict[str, PublicObjectIdentity] = {
     ),
     "molt_operator_index_of": PublicObjectIdentity(
         PublicObjectKind.BUILTIN_FUNCTION_OR_METHOD, "indexOf", "indexOf", "_operator"
+    ),
+}
+
+
+@dataclass(frozen=True)
+class PublicCallSignature:
+    posonly: tuple[str, ...]
+    positional: tuple[str, ...]
+    defaults: tuple[str, ...]
+    kwonly: tuple[str, ...]
+    kwdefaults: tuple[str, ...]
+    vararg: str | None
+    varkw: str | None
+
+
+PUBLIC_CALL_SIGNATURES: dict[str, PublicCallSignature] = {
+    "molt_build_class_builtin": PublicCallSignature(
+        (), (), (), (), (), "args", "kwargs"
+    ),
+    "molt_math_gcd": PublicCallSignature((), (), (), (), (), "integers", None),
+    "molt_math_lcm": PublicCallSignature((), (), (), (), (), "integers", None),
+    "molt_math_hypot": PublicCallSignature((), (), (), (), (), "coordinates", None),
+    "molt_math_prod": PublicCallSignature(
+        ("iterable",), (), (), ("start",), ("1",), None, None
+    ),
+    "molt_math_isclose": PublicCallSignature(
+        (), ("a", "b"), (), ("rel_tol", "abs_tol"), ("1e-9", "0.0"), None, None
+    ),
+    "molt_functools_reduce": PublicCallSignature(
+        ("function", "iterable"), ("initial",), ("Missing",), (), (), None, None
     ),
 }

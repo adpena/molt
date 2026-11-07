@@ -217,8 +217,10 @@ for (const test of config.cases) {
   // Values are scalars, so any retain or release must still carry one of them.
   const scalar = bits => assert.ok(scalars.has(bits), test.name + ': unexpected payload ' + bits);
   const providers = {
-  refcount_admission: () => 0n, // isolated image: no runtime execution custody
-
+    // These scalar fixtures own no Python activation: the Origin service
+    // must receive zero homes and leave the pending transfer unchanged.
+    exception_frame_origin: homes => { assert.equal(homes, 0n); return 0n; },
+    refcount_admission: () => 0n, // isolated image: no runtime execution custody
     exception_pending: () => (++checks === test.fail_at ? 1n : 0n),
     is_truthy: () => (truths++ < test.truthy_calls ? 1n : 0n),
     inc_ref_obj: scalar,

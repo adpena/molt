@@ -820,7 +820,7 @@ pub(crate) fn direct_exception_before_poll(py: &PyToken<'_>, ptr: *mut u8) -> Op
         }
         _ => unreachable!(),
     };
-    crate::molt_exception_trace_prepend_attached_body(py, exception);
+    // The receiving compiled continuation owns the Origin event.
     let result = crate::molt_raise_attached_body(py, exception);
     dec_ref_bits(py, exception);
     Some(result as i64)
@@ -919,7 +919,7 @@ fn iterator_resume(
     crate::exception_stack_push();
     let result = match request {
         ResumeRequest::Inject(exception) => {
-            crate::molt_exception_trace_prepend_attached_body(py, exception);
+            // The receiving compiled continuation owns the Origin event.
             crate::molt_raise_attached_body(py, exception)
         }
         ResumeRequest::Send(value) => unsafe {

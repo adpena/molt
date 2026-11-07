@@ -1312,7 +1312,6 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "integration",
         "basic",
         "native_extern_linkage",
-        "rust_transpiler_preview",
         "wasm_link_facts_cli",
         "host_diagnostics",
     }
@@ -1772,11 +1771,9 @@ def test_daemon_cache_runs_actual_native_and_wasm_binary_receivers() -> None:
     assert {server[i + 1] for i, arg in enumerate(server[:-1]) if arg == "--test"} == {
         "daemon_server",
         "native_batch_worker_spawn",
-        "rust_transpiler_preview",
     }
     assert {server[i + 1] for i, arg in enumerate(server[:-1]) if arg == "-p"} == {
         "molt-backend",
-        "molt-backend-rust",
     }
     assert "--no-fail-fast" in server
     assert server[server.index("--features") + 1] == argv[argv.index("--features") + 1]
@@ -2430,11 +2427,12 @@ def test_matrix_family_budget_binds_each_cell() -> None:
     errors = replace(PLAN, commands=commands).validate()
     # Harness holds one Python slot until 2401 s; custody, binding,
     # frontend, CLI and surface fill the other until 2700 s. Runtime artifacts
-    # then run on the first slot until 3001 s; the 120 s boundary ends at
-    # 2820 s on the second. The dedicated compiled cell has its own
-    # 1800 s dependency chain. Only ordinary Mac tooling exceeds its fixed cap.
+    # then run on the first slot until 3001 s and linked-WASM smoke (120 s)
+    # after them until 3121 s; the 120 s boundary ends at 2820 s on the
+    # second. The dedicated compiled cell has its own 1800 s dependency
+    # chain. Only ordinary Mac tooling exceeds its fixed cap.
     assert [error for error in errors if "timeout envelope" in error] == [
-        "python_unit: projected resource-aware timeout envelope 3001s in matrix "
+        "python_unit: projected resource-aware timeout envelope 3121s in matrix "
         "cell macos-arm64-py312-unit plus job reserve 60s exceeds GitHub job budget 2580s"
     ]
 
@@ -2870,6 +2868,21 @@ def test_wasm_host_export_applications_have_independent_cold_partitions() -> Non
         if row.id.startswith("wasm.integration.host-exports")
     }
     assert set(rows) == set(expected)
+    # The Falcon driver builds without --build-profile, which is release
+    # (wasm-release runtime), so its cell says so; the others build dev.
+    falcon_cell = next(
+        cell
+        for cell in PLAN.matrix_cells
+        if cell.id == rows["wasm.integration.host-exports.falcon-driver"].data["cell"]
+    )
+    falcon_source = (
+        Path(__file__).resolve().parent / "test_wasm_split_runtime.py"
+    ).read_text(encoding="utf-8")
+    falcon_test = falcon_source.split(
+        "def test_linked_falcon_ocr_wasm_driver_runs_stub_generation", 1
+    )[1].split("\ndef ", 1)[0]
+    assert '"--build-profile"' not in falcon_test
+    assert falcon_cell.data["profile"] == "wasm-release"
     for name, (test_name, runtime_dependencies) in expected.items():
         row = rows[name]
         assert row.argv[6] == f"tests/test_wasm_split_runtime.py::{test_name}"
@@ -3927,7 +3940,7 @@ def test_toolchain_content_probe_ignores_provisioner_stderr(
     [
         ("exit", "exit status 23"),
         ("missing-command", "FileNotFoundError"),
-        ("timeout", "timed out after 5s"),
+        ("timeout", f"timed out after {toolchain_probe.PROBE_TIMEOUT_S}s"),
         ("empty-path", "exactly one non-empty line"),
         ("multiple-paths", "exactly one non-empty line"),
         ("missing-path", "invalid resolved path (FileNotFoundError)"),
@@ -3965,12 +3978,18 @@ def test_toolchain_content_probe_failure_preserves_selection_cause(
     def run(argv, **kwargs):
         calls.append(list(argv))
         assert list(argv) == command, "failure must not launch a version fallback"
-        assert kwargs["cwd"] == tmp_path and kwargs["timeout"] == 5
+        assert (
+            kwargs["cwd"] == tmp_path
+            and kwargs["timeout"] == toolchain_probe.PROBE_TIMEOUT_S
+        )
         if failure == "timeout":
             # TimeoutExpired may carry bytes even when text=True. Preserve its
             # partial observations without sleeping through the real deadline.
             raise subprocess.TimeoutExpired(
-                argv, 5, output=b"partial-\xffpath\n", stderr=b"selector-lock\n"
+                argv,
+                toolchain_probe.PROBE_TIMEOUT_S,
+                output=b"partial-\xffpath\n",
+                stderr=b"selector-lock\n",
             )
         return original_run(argv, **kwargs)
 
@@ -4044,7 +4063,7 @@ def test_toolchain_content_probe_failure_bounds_both_output_excerpts(
     [
         ("exit", "exit status 23"),
         ("launch", "FileNotFoundError"),
-        ("timeout", "timed out after 5s"),
+        ("timeout", f"timed out after {toolchain_probe.PROBE_TIMEOUT_S}s"),
     ],
 )
 def test_toolchain_version_probe_failure_preserves_selection_cause(
@@ -4071,12 +4090,17 @@ def test_toolchain_version_probe_failure_preserves_selection_cause(
     def run(argv, **kwargs):
         calls.append(list(argv))
         assert list(argv) == command
-        assert kwargs["cwd"] == tmp_path and kwargs["timeout"] == 5
+        assert (
+            kwargs["cwd"] == tmp_path
+            and kwargs["timeout"] == toolchain_probe.PROBE_TIMEOUT_S
+        )
         assert kwargs["stderr"] == subprocess.STDOUT
         if failure == "launch":
             raise FileNotFoundError(2, "selected image disappeared", argv[0])
         if failure == "timeout":
-            raise subprocess.TimeoutExpired(argv, 5, output=b"partial-\xffversion\n")
+            raise subprocess.TimeoutExpired(
+                argv, toolchain_probe.PROBE_TIMEOUT_S, output=b"partial-\xffversion\n"
+            )
         return original_run(argv, **kwargs)
 
     install_module_view(monkeypatch, "subprocess", subprocess, toolchain_probe, run=run)
@@ -4168,7 +4192,10 @@ def test_toolchain_probe_sibling_stage_failures_are_aggregated(
     )
 
     def run(argv, **kwargs):
-        assert kwargs["timeout"] == 5 and kwargs["cwd"] == tmp_path
+        assert (
+            kwargs["timeout"] == toolchain_probe.PROBE_TIMEOUT_S
+            and kwargs["cwd"] == tmp_path
+        )
         barrier.wait(timeout=5)
         if list(argv) == [sys.executable, "--version"]:
             return subprocess.CompletedProcess(argv, 21, "selected 1.0\n", None)
@@ -4869,7 +4896,6 @@ def _receipt_for(
         "node": "v{}",
         "rustc": "rustc {}",
         "cargo": "cargo {}",
-        "lune": "lune {}",
         "clang": "clang version {}",
         "ld.lld": "LLD {} (compatible with GNU linkers)",
         "llvm-config": "{}",
@@ -5944,7 +5970,7 @@ def test_executor_preserves_admitted_path_provider_when_managed_projection_is_mi
         ),
     )
 
-    def run(_plan, current, _cancel, *, environment, memory_share):
+    def run(_plan, current, _cancel, *, environment, memory_share, allocation=None):
         assert environment["PATH"] == baseline_path
         with pytest.raises(TypeError):
             environment["PATH"] = "/mutated"
@@ -6000,6 +6026,8 @@ def test_executor_emits_measured_receipt(tmp_path: Path, monkeypatch) -> None:
     assert receipt["executed_partitions"] == [command.id]
     record = receipt["commands"][0]
     assert record["duration_seconds"] > 0
+    assert record["child_cpu_seconds"] >= 0
+    assert record["executed_argv"][0] == sys.executable
     assert record["peak_rss_bytes"] > 0
     assert record["cache_disposition"] == "not-applicable"
     assert record["timeout_env"] == ["MOLT_INNER_TIMEOUT"]
@@ -6038,7 +6066,7 @@ def test_provisioned_lean_fingerprint_admits_formal_build_receipt(
     monkeypatch.setattr(
         proof_plan,
         "_run_command",
-        lambda _plan, current, _cancel, *, environment, memory_share: (
+        lambda _plan, current, _cancel, *, environment, memory_share, allocation=None: (
             _successful_synthetic_record(current)
         ),
     )
@@ -6463,6 +6491,7 @@ def test_executor_schedules_dependencies_and_resources_with_deterministic_receip
         *,
         environment: Any,
         memory_share: int | None,
+        allocation=None,
     ) -> dict[str, object]:
         resource = str(command.data["resource_class"])
         with lock:
@@ -6526,7 +6555,7 @@ def test_executor_partition_failure_preserves_independent_work_and_blocks_depend
     )
     live_started = threading.Event()
 
-    def fake_run(_plan, command, cancel, *, environment, memory_share):
+    def fake_run(_plan, command, cancel, *, environment, memory_share, allocation=None):
         if command.id == "synthetic.fail":
             assert live_started.wait(timeout=1)
             return {
@@ -6577,7 +6606,7 @@ def _execute_synthetic_policy_commands(
         plan,
         commands,
         receipt_path,
-        _source_tree_changes=lambda: (),
+        _source_tree_changes=execution_options.pop("_source_tree_changes", lambda: ()),
         toolchain_fingerprints=_admit_synthetic_python,
         _authority_sha256=lambda _plan: "0" * 64,
         _source_identity=lambda: {"commit": "a" * 40, "tree": "b" * 40},
@@ -6615,7 +6644,7 @@ def test_executor_cancellation_policy_stops_active_and_queued_work_in_either_ord
     started = []
     lock = threading.Lock()
 
-    def run(_plan, command, cancel):
+    def run(_plan, command, cancel, allocation):
         with lock:
             started.append(command.id)
         if command.id == failure.id:
@@ -6696,7 +6725,7 @@ def test_executor_cancellation_policy_preserves_racing_failures_and_trigger_retu
         for name in ("synthetic.earlier", "synthetic.live", "synthetic.success")
     }
 
-    def run(_plan, command, cancel):
+    def run(_plan, command, cancel, allocation):
         if command.id == "synthetic.trigger":
             assert all(event.wait(5) for event in ready.values())
             return {
@@ -6769,7 +6798,7 @@ def test_executor_cancellation_policy_does_not_invent_a_failure_from_a_stopped_r
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1})
     started = []
 
-    def run(_plan, command, cancel):
+    def run(_plan, command, cancel, allocation):
         assert not cancel.is_set()
         started.append(command.id)
         if command.id == "synthetic.stopped":
@@ -6808,7 +6837,7 @@ def test_executor_default_policy_keeps_independent_partitions_collecting(tmp_pat
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1})
     started = []
 
-    def run(_plan, command, cancel):
+    def run(_plan, command, cancel, allocation):
         assert not cancel.is_set()
         started.append(command.id)
         if command.id == "synthetic.fail":
@@ -6947,6 +6976,7 @@ def test_executor_does_not_convert_control_plane_interrupts_into_records(
         *,
         environment: Any,
         memory_share: int | None,
+        allocation=None,
     ) -> dict[str, object]:
         raise KeyboardInterrupt
 
@@ -7128,7 +7158,7 @@ def test_executor_rejects_source_mutation_during_partition(
     monkeypatch.setattr(
         proof_plan,
         "_run_command",
-        lambda _plan, command, _cancel, *, environment, memory_share: {
+        lambda _plan, command, _cancel, *, environment, memory_share, allocation=None: {
             "id": command.id,
             "status": "success",
             "returncode": 0,
@@ -7141,7 +7171,7 @@ def test_executor_rejects_source_mutation_during_partition(
     assert proof_plan.execute_commands(PLAN, (command,), receipt_path) == 2
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert receipt["status"] == "failure"
-    assert receipt["commands"][0]["source_tree_state_after"] == "changed"
+    assert receipt["commands"][0]["source_changed"] is True
     reason = "source tree changed or is dirty: ?? tools/stray.py,  M README.md"
     assert receipt["commands"][0]["failure_reason"] == reason
     assert receipt["executed_partitions"] == []
@@ -7687,7 +7717,7 @@ def test_executor_stops_on_candidate_change_even_when_checkout_is_clean(
     )
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1})
 
-    def run(_plan, command, _cancel, *, environment, memory_share):
+    def run(_plan, command, _cancel, *, environment, memory_share, allocation=None):
         current[field] = "c" * 40
         return _successful_synthetic_record(command)
 
@@ -7722,7 +7752,7 @@ def test_executor_control_plane_interrupt_cancels_siblings_before_join(
     live_started = threading.Event()
     closed = threading.Event()
 
-    def run(_plan, command, cancel, *, environment, memory_share):
+    def run(_plan, command, cancel, *, environment, memory_share, allocation=None):
         if command.id == "interrupt":
             assert live_started.wait(1)
             raise KeyboardInterrupt
@@ -8534,7 +8564,11 @@ def test_executor_cancellation_requires_exact_terminal_closure(
         "launch_id": "a" * 32,
         "guard_pid": 410,
         "command": list(command.argv),
-        "child_process": {"pid": 411, "started_at": "fixture-birth"},
+        "child_process": {
+            "pid": 411,
+            "started_at": "fixture-birth",
+            "command": list(command.argv),
+        },
     }
     terminal = {
         **startup,
@@ -9204,58 +9238,91 @@ def test_native_import_collection_fixtures_declare_compilers_for_each_execution_
     "path",
     [
         "runtime/molt-backend-luau/src/luau/op_maps.rs",
-        "runtime/molt-backend-luau/src/luau/tests/core.rs",
         "runtime/molt-backend-luau/Cargo.toml",
-        "runtime/molt-ir/src/tir/op_kinds.toml",
-    ],
-)
-def test_luau_lowering_changes_select_owning_library_without_native_codegen(
-    path: str,
-) -> None:
-    from tools import molt_dev_policy
-
-    config = molt_dev_policy.GateConfig.load(PLAN.path)
-    rule = next(rule for rule in config.rules if rule.name == "backend-luau")
-    isolated = _rule_only(config, rule)
-    gates, matched = isolated.select([path])
-    assert [selected.name for selected in matched] == ["backend-luau"]
-    (gate,) = gates
-    argv = shlex.split(gate.command)
-    assert argv[:2] == ["cargo", "test"]
-    assert "--lib" in argv
-    assert [
-        argv[index + 1] for index, token in enumerate(argv[:-1]) if token == "-p"
-    ] == ["molt-backend-luau"]
-    assert {"rustc", "cargo", "lune"} <= set(PLAN.toolchain_closure(gate.toolchains))
-    assert isolated.select(["README.md"]) == ([], [])
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "runtime/molt-backend-rust/src/rust/prelude/system.rs",
-        "runtime/molt-backend-rust/src/rust/python_version_policy_generated.rs",
         "runtime/molt-backend-rust/tests/rust_transpiler_preview.rs",
-        "runtime/molt-backend-rust/Cargo.toml",
+        "runtime/molt-backend-mlir/src/tir_to_mlir.rs",
     ],
 )
-def test_rust_emitter_changes_execute_source_without_native_codegen(path: str) -> None:
+def test_experimental_backend_changes_select_no_experimental_gate(path: str) -> None:
+    # Owner decision 2026-11-05: Luau, the Rust emitter and MLIR run in no
+    # presubmit or postsubmit cell. A change to their sources may still select
+    # shared authority gates, but none of those gates runs an excluded backend.
     from tools import molt_dev_policy
 
     config = molt_dev_policy.GateConfig.load(PLAN.path)
-    rule = next(rule for rule in config.rules if rule.name == "backend-rust")
-    isolated = _rule_only(config, rule)
-    gates, matched = isolated.select([path])
-    assert [selected.name for selected in matched] == ["backend-rust"]
-    (gate,) = gates
-    argv = shlex.split(gate.command)
-    assert argv[:2] == ["cargo", "test"]
-    assert argv[argv.index("--test") + 1] == "rust_transpiler_preview"
-    assert argv[argv.index("--features") + 1] == "rust-backend"
-    assert [
-        argv[index + 1] for index, token in enumerate(argv[:-1]) if token == "-p"
-    ] == ["molt-backend-rust"]
-    assert isolated.select(["README.md"]) == ([], [])
+    gates, _matched = config.select([path])
+    excluded = proof_plan.excluded_backends()
+    assert excluded == frozenset({"luau", "mlir", "rust"})
+    for gate in gates:
+        argv = (
+            shlex.split(gate.command)
+            if isinstance(gate.command, str)
+            else list(gate.command)
+        )
+        selection = proof_plan.experimental_backend_selection(argv, None, excluded)
+        assert selection is None, (gate.command, selection)
+
+
+def test_experimental_backend_selection_names_each_selection_form() -> None:
+    excluded = frozenset({"luau", "mlir", "rust"})
+    select = proof_plan.experimental_backend_selection
+    assert (
+        select(
+            ["python3", "-m", "molt.cli", "build", "a.py", "--target", "luau"],
+            None,
+            excluded,
+        )
+        == "--target luau"
+    )
+    assert select(["cargo", "test", "-p", "molt-backend-rust"], None, excluded) == (
+        "-p molt-backend-rust"
+    )
+    assert (
+        select(
+            [
+                "cargo",
+                "test",
+                "--features",
+                "molt-backend/native-backend,molt-backend/luau-backend",
+            ],
+            None,
+            excluded,
+        )
+        == "--features molt-backend/native-backend,molt-backend/luau-backend"
+    )
+    assert select(
+        ["cargo", "test", "--all-targets"], "runtime/molt-backend-mlir", excluded
+    ) == ("cwd runtime/molt-backend-mlir")
+    # A Cargo target triple, a supported backend and a whole-workspace lint are
+    # not selections of an experimental backend.
+    assert (
+        select(
+            ["cargo", "build", "--target", "wasm32-wasip1", "-p", "molt-runtime"],
+            None,
+            excluded,
+        )
+        is None
+    )
+    assert (
+        select(
+            ["cargo", "test", "--features", "molt-backend/native-backend"],
+            None,
+            excluded,
+        )
+        is None
+    )
+    assert select(["cargo", "clippy", "--workspace"], None, excluded) is None
+
+
+def test_live_plan_runs_no_experimental_backend_before_the_schedule() -> None:
+    assert not [error for error in PLAN.validate() if "experimental backend" in error]
+    excluded = proof_plan.excluded_backends()
+    for command in PLAN.commands:
+        if proof_plan.experimental_backend_selection(
+            command.argv, command.data.get("cwd"), excluded
+        ):
+            # Only the schedule may run an experimental backend.
+            assert tuple(command.data["tiers"]) == ("scheduled",), command.id
 
 
 def test_native_fixture_compiler_capability_keeps_llvm_abi_pin_separate() -> None:
@@ -9518,7 +9585,6 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
                 "nightly.verification-t3.fuzz-compiler",
                 "nightly.verification-t3.fuzz-tests",
                 "nightly.verification-t3.reproducibility",
-                "nightly.verification-t3.translation",
                 "portability.rust.linux-aarch64.clippy-workspace",
                 "portability.rust.macos.clippy-workspace",
                 "portability.rust.macos.runtime-gate",
@@ -10598,6 +10664,49 @@ def test_selected_node_package_version_is_derived_from_lock(tmp_path):
     }
 
 
+def test_python_policy_derives_its_contract_from_the_version_file(tmp_path):
+    (tmp_path / ".python-version").write_text("3.12.99\n", encoding="utf-8")
+    row = {
+        "name": "python",
+        "executable": "{python}",
+        "version_args": ["--version"],
+        "version_file": ".python-version",
+        "setup_evidence": ["ci.yml::provision"],
+    }
+    (policy,) = proof_plan.load_toolchain_policies(
+        {"toolchain_policy": [row]}, root=tmp_path
+    )
+    assert policy.data["version_pattern"] == r"^Python 3\.12\.99$"
+    assert policy.data["setup_value"] == "3.12.99"
+    assert policy.data["setup_evidence"] == [
+        ".python-version::3.12.99",
+        "ci.yml::provision",
+    ]
+    assert "version_file" not in policy.data
+    assert re.fullmatch(policy.data["version_pattern"], "Python 3.12.99")
+    assert not re.fullmatch(policy.data["version_pattern"], "Python 3.12.9")
+
+    with pytest.raises(ValueError, match="version_file derives"):
+        proof_plan.load_toolchain_policies(
+            {"toolchain_policy": [{**row, "setup_value": "3.12.99"}]}, root=tmp_path
+        )
+    (tmp_path / ".python-version").write_text("3.12\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="one X.Y.Z version"):
+        proof_plan.load_toolchain_policies({"toolchain_policy": [row]}, root=tmp_path)
+
+
+def test_repository_python_policy_is_the_python_version_file():
+    pinned = (proof_plan.ROOT / ".python-version").read_text(encoding="utf-8").strip()
+    (policy,) = proof_plan.load_toolchain_policies(
+        tomllib.loads((proof_plan.ROOT / "tools/proof_plan.toml").read_text("utf-8")),
+        names=("python",),
+    )
+    assert policy.data["setup_value"] == pinned
+    raw = tomllib.loads((proof_plan.ROOT / "tools/proof_plan.toml").read_text("utf-8"))
+    (block,) = [row for row in raw["toolchain_policy"] if row["name"] == "python"]
+    assert {"version_pattern", "setup_value"}.isdisjoint(block)
+
+
 def test_locked_node_package_admission_reports_real_node_missing_and_version_mismatch(
     tmp_path,
 ):
@@ -11114,9 +11223,9 @@ def test_a_toolchain_claim_covers_the_policies_it_depends_on():
 def test_admission_provisions_a_selected_runtime_tool_and_refuses_offline_with_its_cause(
     tmp_path, monkeypatch
 ) -> None:
-    """Admission itself provisions npm (HF-456 A-N4) and, offline, refuses
-    with the provisioning failure, never a raw URLError, and never claims
-    that it does not download (A-N3)."""
+    """Admission itself provisions npm and its runtime node (HF-456 A-N4)
+    and, offline, refuses with each provisioning failure, never a raw
+    URLError, and never claims that it does not download (A-N3)."""
     import urllib
     import urllib.error
     import urllib.request
@@ -11151,9 +11260,15 @@ def test_admission_provisions_a_selected_runtime_tool_and_refuses_offline_with_i
             python_executable=Path(sys.executable),
         )
     message = str(refused.value)
-    npm = tool_releases.tool_release("npm", proof_plan.ROOT)
-    assert attempts == [tool_releases.host_asset(npm).url]
-    assert f"npm: cannot provision archive {attempts[0]}" in message, message
+    node, npm = (
+        tool_releases.tool_release(name, proof_plan.ROOT) for name in ("node", "npm")
+    )
+    assert attempts == [
+        tool_releases.host_asset(node).url,
+        tool_releases.host_asset(npm).url,
+    ]
+    assert f"node: cannot provision archive {attempts[0]}" in message, message
+    assert f"npm: cannot provision archive {attempts[1]}" in message, message
     assert "admission's provisioning failed" in message
     assert "never downloads" not in message
 
@@ -11201,7 +11316,7 @@ def test_a_failed_checkout_input_never_claims_admission_does_not_download(
     """A checkout input (the Acorn tree) provisions npm itself; when that
     fails, the refusal must not say the command never downloads (HF-456 v3
     review A3-1)."""
-    monkeypatch.setattr(proof_plan, "_provision_runtime_tools", lambda *a, **k: None)
+    monkeypatch.setattr(proof_plan, "_provision_tool_releases", lambda *a, **k: None)
     monkeypatch.setattr(
         proof_plan,
         "_provision_checkout_inputs",
@@ -11324,6 +11439,46 @@ def test_a_long_lived_runner_verifies_again_when_a_pin_or_an_installation_moves(
     assert len(verified) == before + 2
 
 
+def test_admission_provisions_an_absent_native_tool_release(tmp_path) -> None:
+    from molt import tool_releases
+    from tests.test_tool_releases import _runtime_root
+
+    # Landing 25 (2026-11-07): a moved wasm-tools pin reached the repository but
+    # no host had provisioned it, and admission only reported it missing.
+    # Offline fixture: real pin metadata and cached archives; provisioning,
+    # extraction, attestation and discovery all stay real.
+    root = _runtime_root(tmp_path)
+    environment = {"PATH": "", "MOLT_TARGET_ROOT": str(tmp_path / "target-root")}
+    node = replace(
+        {policy.name: policy for policy in PLAN.toolchain_policies}["node"], root=root
+    )
+    assert node.projection == "tool-release"
+    assert tool_releases.discover_pinned_tool("node", root, environ=environment) is None
+    unprovisioned = proof_plan.project_toolchains(
+        (node,), ("node",), environ=environment, root=root
+    )
+    assert unprovisioned.missing == (
+        "node: python3 -m molt.tool_releases provision node",
+    )
+
+    assert (
+        proof_plan._provision_tool_releases(
+            (node,), ("node",), root=root, environment=environment
+        )
+        is None
+    )
+    installed = tool_releases.discover_pinned_tool("node", root, environ=environment)
+    assert installed is not None
+    assert installed.executable.read_bytes() == b"node runtime"
+    projected = proof_plan.project_toolchains(
+        (node,), ("node",), environ=environment, root=root
+    )
+    assert projected.missing == ()
+    assert projected.delta["PATH"].split(os.pathsep)[0] == str(
+        installed.executable.parent
+    )
+
+
 @pytest.mark.parametrize("retired_installation", ["tool", "runtime"])
 def test_a_runtime_tool_is_admitted_by_its_attested_installation(
     tmp_path, monkeypatch, retired_installation
@@ -11368,7 +11523,7 @@ def test_a_runtime_tool_is_admitted_by_its_attested_installation(
 
     monkeypatch.setattr(proof_plan.toolchain_probe, "run_toolchain_probe", probe)
     assert (
-        proof_plan._provision_runtime_tools(
+        proof_plan._provision_tool_releases(
             (npm,), ("npm",), root=root, environment=environment
         )
         is None
@@ -11612,6 +11767,14 @@ def test_mac_compiled_coordinate_provisions_its_exact_wasm_tools_before_admissio
         command = rows[command_id]
         assert set(command.toolchains) == {"python", "uv", "node"}
         assert "tests/test_generate_worker.py" in command.argv
+        assert not command.dependencies
+    for command_id in ("python.unit.surface-wasm", "python.unit.surface-wasm.macos"):
+        command = rows[command_id]
+        # Linked-WASM programs validate with the pinned wasm-tools; admission
+        # provisions each declared pinned release on every cell, so no
+        # workflow step is cell-specific for it.
+        assert set(command.toolchains) == {"python", "uv", "node", "wasm-tools"}
+        assert command.data["pytest_worker_memory_gb"] >= 4.0
         assert not command.dependencies
 
 
@@ -12069,15 +12232,15 @@ def test_receipt_projects_admitted_cargo_target_effect():
 
     for effect in CargoTargetAccess:
         gate = SelectedGate(
-            ("python", "fixture.py"),
+            ("python", "-m", "pytest", "tests/test_fixture.py"),
             ("python", "cargo"),
             pytest=True,
             cargo_target_access=effect,
         )
-        command = _local_command(1, gate, "local-fixture")
+        command = _local_command(1, gate, "local-fixture", repo=proof_plan.ROOT)
         record = proof_receipts.command_record(command)
         assert record["cargo_target_access"] == effect.value
-        assert record["argv"] == ["python", "fixture.py"]
+        assert record["argv"] == ["python", "-m", "pytest", "tests/test_fixture.py"]
 
 
 def test_local_cargo_target_effect_splits_only_disjoint_requests(tmp_path):
@@ -12241,3 +12404,156 @@ def test_repair_is_validated_and_projected_as_always_is(field, value, reason):
     # An unbindable template or undeclared toolchain fails like `always`.
     errors = replace(PLAN, **{field: value}).validate()
     assert any(error.startswith(reason) for error in errors), errors
+
+
+@pytest.mark.parametrize("cpus", [1, 2, 6, 18])
+def test_executor_shares_one_cpu_budget_across_simultaneous_pytest_sessions(
+    tmp_path, monkeypatch, cpus
+):
+    from molt import host_capacity
+
+    monkeypatch.setattr(host_capacity, "execution_cpu_count", lambda: cpus)
+    commands = tuple(
+        replace(command, data={**command.data, "pytest": ["tests/synthetic.py"]})
+        for command in (
+            _synthetic_executor_command(f"synthetic.{index}") for index in range(8)
+        )
+    )
+    plan = _synthetic_executor_plan(commands, limits={"resource-a": 4}, max_workers=4)
+    barrier = threading.Barrier(min(cpus, 4))
+    lock = threading.Lock()
+    live = 0
+    peak = 0
+    allocations = {}
+
+    def run(_plan, command, cancel, allocation):
+        nonlocal live, peak
+        with lock:
+            assert allocation.pytest_cpus >= 1
+            live += allocation.pytest_cpus
+            peak = max(peak, live)
+            assert live <= cpus
+            allocations[command.id] = allocation.pytest_cpus
+        barrier.wait(timeout=30)
+        with lock:
+            live -= allocation.pytest_cpus
+        return _successful_synthetic_record(command)
+
+    receipt_path = tmp_path / "receipt.json"
+    assert _execute_synthetic_policy_commands(plan, commands, receipt_path, run) == 0
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert peak == cpus
+    assert receipt["execution"]["pytest_cpu_budget"] == cpus
+    assert {
+        row["id"]: row["pytest_cpu_share"] for row in receipt["commands"]
+    } == allocations
+    assert live == 0
+
+
+@pytest.mark.parametrize("second_status", ["success", "failure"])
+def test_executor_retries_only_proven_launch_infrastructure_once(
+    tmp_path, second_status
+):
+    import errno
+    from molt.process_spawn import ProcessLaunchError
+
+    command = _synthetic_executor_command("synthetic.retry")
+    plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
+    attempts = []
+
+    def run(_plan, command, cancel, allocation):
+        attempts.append(allocation.attempt)
+        if allocation.attempt == 1:
+            failure = ProcessLaunchError(
+                command.argv, OSError(errno.EAGAIN, "resource unavailable")
+            )
+            failure.cleanup_closed = (
+                True  # The spawn authority's no-child finalizer proof.
+            )
+            raise failure
+        return {
+            **_successful_synthetic_record(command),
+            "status": second_status,
+            "returncode": 0 if second_status == "success" else 6,
+        }
+
+    receipt_path = tmp_path / "receipt.json"
+    result = _execute_synthetic_policy_commands(plan, (command,), receipt_path, run)
+    assert result == (0 if second_status == "success" else 6)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert attempts == [1, 2]
+    record = receipt["commands"][0]
+    assert [row["status"] for row in record["attempts"]] == ["failure", second_status]
+    assert record["attempts"][0]["launch_failure"]["payload_started"] is False
+    assert record["infrastructure_retry"] == "launch_resource_unavailable"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        {"timed_out": True},
+        {"infrastructure_failure": {"phase": "temporary_artifact_custody"}},
+        {"child_returncode": 1},
+    ],
+)
+def test_executor_does_not_retry_timeout_product_or_unresolved_custody(
+    tmp_path, failure
+):
+    command = _synthetic_executor_command("synthetic.no-retry")
+    plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
+    attempts = []
+
+    def run(_plan, command, cancel, allocation):
+        attempts.append(allocation.attempt)
+        return {
+            **_successful_synthetic_record(command),
+            "status": "failure",
+            "returncode": 124,
+            "guard_outcome": failure,
+        }
+
+    assert (
+        _execute_synthetic_policy_commands(
+            plan, (command,), tmp_path / "receipt.json", run
+        )
+        == 124
+    )
+    assert attempts == [1]
+
+
+@pytest.mark.parametrize("stop", ["cancel", "source-change"])
+def test_infrastructure_retry_cannot_cross_cancellation_or_source_identity(
+    tmp_path, stop
+):
+    import errno
+    from molt.process_spawn import ProcessLaunchError
+
+    command = _synthetic_executor_command("synthetic.interrupted-retry")
+    plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
+    attempts = []
+    dirty = False
+
+    def run(_plan, command, cancel, allocation):
+        nonlocal dirty
+        attempts.append(allocation.attempt)
+        if stop == "cancel":
+            cancel.set()
+        else:
+            dirty = True
+        failure = ProcessLaunchError(
+            command.argv, OSError(errno.EAGAIN, "resource unavailable")
+        )
+        failure.cleanup_closed = True
+        raise failure
+
+    assert (
+        _execute_synthetic_policy_commands(
+            plan,
+            (command,),
+            tmp_path / "receipt.json",
+            run,
+            _source_tree_changes=lambda: ("changed.py",) if dirty else (),
+        )
+        == 2
+    )
+    assert attempts == [1]

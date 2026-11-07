@@ -607,6 +607,7 @@ macro_rules! attached_symbol {
     ("molt_buffer_release") => { "molt_buffer_release__molt_context_a8c6010e2cbb56a1" };
     ("molt_buffered_init") => { "molt_buffered_init__molt_context_a8c6010e2cbb56a1" };
     ("molt_buffered_new") => { "molt_buffered_new__molt_context_a8c6010e2cbb56a1" };
+    ("molt_build_class_builtin") => { "molt_build_class_builtin__molt_context_a8c6010e2cbb56a1" };
     ("molt_builtin_class_lookup") => { "molt_builtin_class_lookup__molt_context_a8c6010e2cbb56a1" };
     ("molt_builtin_type") => { "molt_builtin_type__molt_context_a8c6010e2cbb56a1" };
     ("molt_bytearray_append") => { "molt_bytearray_append__molt_context_a8c6010e2cbb56a1" };
@@ -838,6 +839,7 @@ macro_rules! attached_symbol {
     ("molt_chan_try_send") => { "molt_chan_try_send__molt_context_a8c6010e2cbb56a1" };
     ("molt_chr") => { "molt_chr__molt_context_a8c6010e2cbb56a1" };
     ("molt_class_apply_set_name") => { "molt_class_apply_set_name__molt_context_a8c6010e2cbb56a1" };
+    ("molt_class_builder_check") => { "molt_class_builder_check__molt_context_a8c6010e2cbb56a1" };
     ("molt_class_layout_version") => { "molt_class_layout_version__molt_context_a8c6010e2cbb56a1" };
     ("molt_class_new") => { "molt_class_new__molt_context_a8c6010e2cbb56a1" };
     ("molt_class_set_base") => { "molt_class_set_base__molt_context_a8c6010e2cbb56a1" };
@@ -1401,6 +1403,7 @@ macro_rules! attached_symbol {
     ("molt_exception_context_set") => { "molt_exception_context_set__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_current") => { "molt_exception_current__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_enter_handler") => { "molt_exception_enter_handler__molt_context_a8c6010e2cbb56a1" };
+    ("molt_exception_frame_origin") => { "molt_exception_frame_origin__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_init") => { "molt_exception_init__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_init_owned") => { "molt_exception_init_owned__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_kind") => { "molt_exception_kind__molt_context_a8c6010e2cbb56a1" };
@@ -1554,9 +1557,6 @@ macro_rules! attached_symbol {
     ("molt_frame_locals_proxy_update") => { "molt_frame_locals_proxy_update__molt_context_a8c6010e2cbb56a1" };
     ("molt_frame_locals_proxy_values") => { "molt_frame_locals_proxy_values__molt_context_a8c6010e2cbb56a1" };
     ("molt_frame_locals_set") => { "molt_frame_locals_set__molt_context_a8c6010e2cbb56a1" };
-    ("molt_frame_set_col") => { "molt_frame_set_col__molt_context_a8c6010e2cbb56a1" };
-    ("molt_frame_set_line") => { "molt_frame_set_line__molt_context_a8c6010e2cbb56a1" };
-    ("molt_frame_set_line_col") => { "molt_frame_set_line_col__molt_context_a8c6010e2cbb56a1" };
     ("molt_frozenset_add") => { "molt_frozenset_add__molt_context_a8c6010e2cbb56a1" };
     ("molt_frozenset_builtin") => { "molt_frozenset_builtin__molt_context_a8c6010e2cbb56a1" };
     ("molt_frozenset_copy_method") => { "molt_frozenset_copy_method__molt_context_a8c6010e2cbb56a1" };
@@ -2291,6 +2291,11 @@ macro_rules! attached_symbol {
     ("molt_mapping_keys") => { "molt_mapping_keys__molt_context_a8c6010e2cbb56a1" };
     ("molt_mapping_length") => { "molt_mapping_length__molt_context_a8c6010e2cbb56a1" };
     ("molt_mapping_setitem") => { "molt_mapping_setitem__molt_context_a8c6010e2cbb56a1" };
+    ("molt_marshal_dump") => { "molt_marshal_dump__molt_context_a8c6010e2cbb56a1" };
+    ("molt_marshal_dumps") => { "molt_marshal_dumps__molt_context_a8c6010e2cbb56a1" };
+    ("molt_marshal_load") => { "molt_marshal_load__molt_context_a8c6010e2cbb56a1" };
+    ("molt_marshal_loads") => { "molt_marshal_loads__molt_context_a8c6010e2cbb56a1" };
+    ("molt_marshal_version") => { "molt_marshal_version__molt_context_a8c6010e2cbb56a1" };
     ("molt_math_acos") => { "molt_math_acos__molt_context_a8c6010e2cbb56a1" };
     ("molt_math_acosh") => { "molt_math_acosh__molt_context_a8c6010e2cbb56a1" };
     ("molt_math_asin") => { "molt_math_asin__molt_context_a8c6010e2cbb56a1" };

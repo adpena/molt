@@ -371,6 +371,8 @@
       "PyMapping_SetItemString": "molt_cpython_abi_link_import",
       "PyMapping_Size": "molt_cpython_abi_link_import",
       "PyMapping_Values": "molt_cpython_abi_link_import",
+      "PyMarshal_ReadObjectFromString": "molt_cpython_abi_link_import",
+      "PyMarshal_WriteObjectToString": "molt_cpython_abi_link_import",
       "PyMem_Calloc": "molt_cpython_abi_link_import",
       "PyMem_Free": "molt_cpython_abi_link_import",
       "PyMem_Malloc": "molt_cpython_abi_link_import",
@@ -1238,6 +1240,8 @@
       "PyMapping_SetItemString": "function",
       "PyMapping_Size": "function",
       "PyMapping_Values": "function",
+      "PyMarshal_ReadObjectFromString": "function",
+      "PyMarshal_WriteObjectToString": "function",
       "PyMem_Calloc": "function",
       "PyMem_Free": "function",
       "PyMem_Malloc": "function",
@@ -4212,6 +4216,10 @@
       "context": "Attached",
       "physical_symbol": "molt_buffered_new__molt_context_a8c6010e2cbb56a1"
     },
+    "molt_build_class_builtin": {
+      "context": "Attached",
+      "physical_symbol": "molt_build_class_builtin__molt_context_a8c6010e2cbb56a1"
+    },
     "molt_builtin_class_lookup": {
       "context": "Attached",
       "physical_symbol": "molt_builtin_class_lookup__molt_context_a8c6010e2cbb56a1"
@@ -5199,6 +5207,10 @@
     "molt_class_apply_set_name": {
       "context": "Attached",
       "physical_symbol": "molt_class_apply_set_name__molt_context_a8c6010e2cbb56a1"
+    },
+    "molt_class_builder_check": {
+      "context": "Attached",
+      "physical_symbol": "molt_class_builder_check__molt_context_a8c6010e2cbb56a1"
     },
     "molt_class_layout_version": {
       "context": "Attached",
@@ -7524,6 +7536,10 @@
       "context": "Attached",
       "physical_symbol": "molt_exception_enter_handler__molt_context_a8c6010e2cbb56a1"
     },
+    "molt_exception_frame_origin": {
+      "context": "Attached",
+      "physical_symbol": "molt_exception_frame_origin__molt_context_a8c6010e2cbb56a1"
+    },
     "molt_exception_init": {
       "context": "Attached",
       "physical_symbol": "molt_exception_init__molt_context_a8c6010e2cbb56a1"
@@ -8147,18 +8163,6 @@
     "molt_frame_locals_set": {
       "context": "Attached",
       "physical_symbol": "molt_frame_locals_set__molt_context_a8c6010e2cbb56a1"
-    },
-    "molt_frame_set_col": {
-      "context": "Attached",
-      "physical_symbol": "molt_frame_set_col__molt_context_a8c6010e2cbb56a1"
-    },
-    "molt_frame_set_line": {
-      "context": "Attached",
-      "physical_symbol": "molt_frame_set_line__molt_context_a8c6010e2cbb56a1"
-    },
-    "molt_frame_set_line_col": {
-      "context": "Attached",
-      "physical_symbol": "molt_frame_set_line_col__molt_context_a8c6010e2cbb56a1"
     },
     "molt_frozenset_add": {
       "context": "Attached",
@@ -11231,6 +11235,26 @@
     "molt_mapping_setitem": {
       "context": "Attached",
       "physical_symbol": "molt_mapping_setitem__molt_context_a8c6010e2cbb56a1"
+    },
+    "molt_marshal_dump": {
+      "context": "Attached",
+      "physical_symbol": "molt_marshal_dump__molt_context_a8c6010e2cbb56a1"
+    },
+    "molt_marshal_dumps": {
+      "context": "Attached",
+      "physical_symbol": "molt_marshal_dumps__molt_context_a8c6010e2cbb56a1"
+    },
+    "molt_marshal_load": {
+      "context": "Attached",
+      "physical_symbol": "molt_marshal_load__molt_context_a8c6010e2cbb56a1"
+    },
+    "molt_marshal_loads": {
+      "context": "Attached",
+      "physical_symbol": "molt_marshal_loads__molt_context_a8c6010e2cbb56a1"
+    },
+    "molt_marshal_version": {
+      "context": "Attached",
+      "physical_symbol": "molt_marshal_version__molt_context_a8c6010e2cbb56a1"
     },
     "molt_math_acos": {
       "context": "Attached",
@@ -17632,6 +17656,8 @@
     "PyMapping_SetItemString": "molt_PyMapping_SetItemString",
     "PyMapping_Size": "molt_PyMapping_Size",
     "PyMapping_Values": "molt_PyMapping_Values",
+    "PyMarshal_ReadObjectFromString": "molt_PyMarshal_ReadObjectFromString",
+    "PyMarshal_WriteObjectToString": "molt_PyMarshal_WriteObjectToString",
     "PyMem_Calloc": "molt_PyMem_Calloc",
     "PyMem_Free": "molt_PyMem_Free",
     "PyMem_Malloc": "molt_PyMem_Malloc",
@@ -18646,6 +18672,7 @@
     "buffer2d_set": "molt_buffer2d_set__molt_context_a8c6010e2cbb56a1",
     "buffered_init": "molt_buffered_init__molt_context_a8c6010e2cbb56a1",
     "buffered_new": "molt_buffered_new__molt_context_a8c6010e2cbb56a1",
+    "build_class_builtin": "molt_build_class_builtin__molt_context_a8c6010e2cbb56a1",
     "builtin_class_lookup": "molt_builtin_class_lookup__molt_context_a8c6010e2cbb56a1",
     "builtin_type": "molt_builtin_type__molt_context_a8c6010e2cbb56a1",
     "bytearray_count": "molt_bytearray_count__molt_context_a8c6010e2cbb56a1",
@@ -18747,6 +18774,7 @@
     "chan_try_send": "molt_chan_try_send__molt_context_a8c6010e2cbb56a1",
     "chr": "molt_chr__molt_context_a8c6010e2cbb56a1",
     "class_apply_set_name": "molt_class_apply_set_name__molt_context_a8c6010e2cbb56a1",
+    "class_builder_check": "molt_class_builder_check__molt_context_a8c6010e2cbb56a1",
     "class_layout_version": "molt_class_layout_version__molt_context_a8c6010e2cbb56a1",
     "class_new": "molt_class_new__molt_context_a8c6010e2cbb56a1",
     "class_set_base": "molt_class_set_base__molt_context_a8c6010e2cbb56a1",
@@ -19274,6 +19302,7 @@
     "exception_context_set": "molt_exception_context_set__molt_context_a8c6010e2cbb56a1",
     "exception_current": "molt_exception_current__molt_context_a8c6010e2cbb56a1",
     "exception_enter_handler": "molt_exception_enter_handler__molt_context_a8c6010e2cbb56a1",
+    "exception_frame_origin": "molt_exception_frame_origin__molt_context_a8c6010e2cbb56a1",
     "exception_init": "molt_exception_init__molt_context_a8c6010e2cbb56a1",
     "exception_kind": "molt_exception_kind__molt_context_a8c6010e2cbb56a1",
     "exception_last": "molt_exception_last__molt_context_a8c6010e2cbb56a1",
@@ -19953,6 +19982,11 @@
     "lzma_preset_default": "molt_lzma_preset_default__molt_context_a8c6010e2cbb56a1",
     "lzma_preset_extreme": "molt_lzma_preset_extreme__molt_context_a8c6010e2cbb56a1",
     "map_builtin": "molt_map_builtin__molt_context_a8c6010e2cbb56a1",
+    "marshal_dump": "molt_marshal_dump__molt_context_a8c6010e2cbb56a1",
+    "marshal_dumps": "molt_marshal_dumps__molt_context_a8c6010e2cbb56a1",
+    "marshal_load": "molt_marshal_load__molt_context_a8c6010e2cbb56a1",
+    "marshal_loads": "molt_marshal_loads__molt_context_a8c6010e2cbb56a1",
+    "marshal_version": "molt_marshal_version__molt_context_a8c6010e2cbb56a1",
     "math_acos": "molt_math_acos__molt_context_a8c6010e2cbb56a1",
     "math_acosh": "molt_math_acosh__molt_context_a8c6010e2cbb56a1",
     "math_asin": "molt_math_asin__molt_context_a8c6010e2cbb56a1",
@@ -20394,6 +20428,8 @@
     "molt_PyMapping_SetItemString": "molt_PyMapping_SetItemString",
     "molt_PyMapping_Size": "molt_PyMapping_Size",
     "molt_PyMapping_Values": "molt_PyMapping_Values",
+    "molt_PyMarshal_ReadObjectFromString": "molt_PyMarshal_ReadObjectFromString",
+    "molt_PyMarshal_WriteObjectToString": "molt_PyMarshal_WriteObjectToString",
     "molt_PyMem_Calloc": "molt_PyMem_Calloc",
     "molt_PyMem_Free": "molt_PyMem_Free",
     "molt_PyMem_Malloc": "molt_PyMem_Malloc",
@@ -21125,6 +21161,7 @@
     "molt_buffer_release__molt_context_a8c6010e2cbb56a1": "molt_buffer_release__molt_context_a8c6010e2cbb56a1",
     "molt_buffered_init__molt_context_a8c6010e2cbb56a1": "molt_buffered_init__molt_context_a8c6010e2cbb56a1",
     "molt_buffered_new__molt_context_a8c6010e2cbb56a1": "molt_buffered_new__molt_context_a8c6010e2cbb56a1",
+    "molt_build_class_builtin__molt_context_a8c6010e2cbb56a1": "molt_build_class_builtin__molt_context_a8c6010e2cbb56a1",
     "molt_builtin_class_lookup": "molt_builtin_class_lookup",
     "molt_builtin_class_lookup__molt_context_a8c6010e2cbb56a1": "molt_builtin_class_lookup__molt_context_a8c6010e2cbb56a1",
     "molt_builtin_type__molt_context_a8c6010e2cbb56a1": "molt_builtin_type__molt_context_a8c6010e2cbb56a1",
@@ -21392,6 +21429,7 @@
     "molt_chan_try_send__molt_context_a8c6010e2cbb56a1": "molt_chan_try_send__molt_context_a8c6010e2cbb56a1",
     "molt_chr__molt_context_a8c6010e2cbb56a1": "molt_chr__molt_context_a8c6010e2cbb56a1",
     "molt_class_apply_set_name__molt_context_a8c6010e2cbb56a1": "molt_class_apply_set_name__molt_context_a8c6010e2cbb56a1",
+    "molt_class_builder_check__molt_context_a8c6010e2cbb56a1": "molt_class_builder_check__molt_context_a8c6010e2cbb56a1",
     "molt_class_layout_version__molt_context_a8c6010e2cbb56a1": "molt_class_layout_version__molt_context_a8c6010e2cbb56a1",
     "molt_class_new__molt_context_a8c6010e2cbb56a1": "molt_class_new__molt_context_a8c6010e2cbb56a1",
     "molt_class_set_base__molt_context_a8c6010e2cbb56a1": "molt_class_set_base__molt_context_a8c6010e2cbb56a1",
@@ -21988,6 +22026,7 @@
     "molt_exception_context_set__molt_context_a8c6010e2cbb56a1": "molt_exception_context_set__molt_context_a8c6010e2cbb56a1",
     "molt_exception_current__molt_context_a8c6010e2cbb56a1": "molt_exception_current__molt_context_a8c6010e2cbb56a1",
     "molt_exception_enter_handler__molt_context_a8c6010e2cbb56a1": "molt_exception_enter_handler__molt_context_a8c6010e2cbb56a1",
+    "molt_exception_frame_origin__molt_context_a8c6010e2cbb56a1": "molt_exception_frame_origin__molt_context_a8c6010e2cbb56a1",
     "molt_exception_init__molt_context_a8c6010e2cbb56a1": "molt_exception_init__molt_context_a8c6010e2cbb56a1",
     "molt_exception_init_owned__molt_context_a8c6010e2cbb56a1": "molt_exception_init_owned__molt_context_a8c6010e2cbb56a1",
     "molt_exception_kind": "molt_exception_kind__molt_context_a8c6010e2cbb56a1",
@@ -22149,9 +22188,6 @@
     "molt_frame_locals_proxy_update__molt_context_a8c6010e2cbb56a1": "molt_frame_locals_proxy_update__molt_context_a8c6010e2cbb56a1",
     "molt_frame_locals_proxy_values__molt_context_a8c6010e2cbb56a1": "molt_frame_locals_proxy_values__molt_context_a8c6010e2cbb56a1",
     "molt_frame_locals_set__molt_context_a8c6010e2cbb56a1": "molt_frame_locals_set__molt_context_a8c6010e2cbb56a1",
-    "molt_frame_set_col__molt_context_a8c6010e2cbb56a1": "molt_frame_set_col__molt_context_a8c6010e2cbb56a1",
-    "molt_frame_set_line__molt_context_a8c6010e2cbb56a1": "molt_frame_set_line__molt_context_a8c6010e2cbb56a1",
-    "molt_frame_set_line_col__molt_context_a8c6010e2cbb56a1": "molt_frame_set_line_col__molt_context_a8c6010e2cbb56a1",
     "molt_frozenset_add__molt_context_a8c6010e2cbb56a1": "molt_frozenset_add__molt_context_a8c6010e2cbb56a1",
     "molt_frozenset_builtin__molt_context_a8c6010e2cbb56a1": "molt_frozenset_builtin__molt_context_a8c6010e2cbb56a1",
     "molt_frozenset_copy_method__molt_context_a8c6010e2cbb56a1": "molt_frozenset_copy_method__molt_context_a8c6010e2cbb56a1",
@@ -22954,6 +22990,11 @@
     "molt_mapping_length__molt_context_a8c6010e2cbb56a1": "molt_mapping_length__molt_context_a8c6010e2cbb56a1",
     "molt_mapping_setitem": "molt_mapping_setitem",
     "molt_mapping_setitem__molt_context_a8c6010e2cbb56a1": "molt_mapping_setitem__molt_context_a8c6010e2cbb56a1",
+    "molt_marshal_dump__molt_context_a8c6010e2cbb56a1": "molt_marshal_dump__molt_context_a8c6010e2cbb56a1",
+    "molt_marshal_dumps__molt_context_a8c6010e2cbb56a1": "molt_marshal_dumps__molt_context_a8c6010e2cbb56a1",
+    "molt_marshal_load__molt_context_a8c6010e2cbb56a1": "molt_marshal_load__molt_context_a8c6010e2cbb56a1",
+    "molt_marshal_loads__molt_context_a8c6010e2cbb56a1": "molt_marshal_loads__molt_context_a8c6010e2cbb56a1",
+    "molt_marshal_version__molt_context_a8c6010e2cbb56a1": "molt_marshal_version__molt_context_a8c6010e2cbb56a1",
     "molt_math_acos__molt_context_a8c6010e2cbb56a1": "molt_math_acos__molt_context_a8c6010e2cbb56a1",
     "molt_math_acosh__molt_context_a8c6010e2cbb56a1": "molt_math_acosh__molt_context_a8c6010e2cbb56a1",
     "molt_math_asin__molt_context_a8c6010e2cbb56a1": "molt_math_asin__molt_context_a8c6010e2cbb56a1",

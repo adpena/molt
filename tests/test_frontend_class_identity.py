@@ -64,6 +64,27 @@ def _ops(generator: SimpleTIRGenerator) -> list[MoltOp]:
     return [op for function in generator.funcs_map.values() for op in function["ops"]]
 
 
+@pytest.mark.parametrize("base", ["ValueError", "list", "object"])
+def test_builtin_base_identity_requires_the_binding_proof(base: str) -> None:
+    source = (
+        "import builtins\n"
+        "class Replacement: pass\n"
+        f"builtins.{base} = Replacement\n"
+        f"class Child({base}): pass\n"
+    )
+    generator = _lower(source)
+    info = generator.classes[ClassId("mod", "Child")]
+    assert BuiltinClass(base) not in info["mro"]
+    assert not generator._class_is_exception_subclass(ClassId("mod", "Child"))
+
+
+def test_implicit_object_base_is_not_a_source_builtin_read() -> None:
+    generator = _lower("import builtins\nbuiltins.object = int\nclass Child: pass\n")
+    assert generator.classes[ClassId("mod", "Child")]["bases"] == (
+        BuiltinClass("object"),
+    )
+
+
 @pytest.mark.parametrize("method", ["__init__", "value"])
 def test_method_code_mutation_rejects_class_body_folding(method):
     source = (

@@ -23,7 +23,9 @@ def resolve_molt_wasm_host_binary(
     ``MOLT_WASM_HOST_BIN`` is the explicit deployment authority.  Otherwise
     select the caller's target directory (relative to ``root``), else the
     project's Cargo target (`molt.dx.project_cargo_target_dir`). A missing
-    selected binary never falls through to another build.
+    selected binary never falls through to another build, and a selected
+    binary older than its sources is not returned: on 2026-11-07 a host built
+    on 11-01 failed a landing with an error its 11-06 fix had removed.
     """
     requested = os.environ.get("MOLT_WASM_HOST_BIN", "").strip()
     if requested:
@@ -37,4 +39,10 @@ def resolve_molt_wasm_host_binary(
     if not target_dir.is_absolute():
         target_dir = root / target_dir
     candidate = target_dir / cargo_profile / molt_wasm_host_exe_name()
-    return os.fspath(candidate.absolute()) if candidate.is_file() else None
+    if not candidate.is_file():
+        return None
+    from molt.cli.cargo_build_reads import cargo_output_is_current
+
+    if not cargo_output_is_current(candidate, dep_info_base=root):
+        return None
+    return os.fspath(candidate.absolute())

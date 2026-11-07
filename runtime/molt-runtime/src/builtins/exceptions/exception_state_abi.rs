@@ -340,7 +340,9 @@ pub(crate) fn molt_exception_clear_attached_body(_py: &crate::PyToken<'_>) -> u6
                 dec_ref_bits(_py, file_bits);
                 eprintln!(
                     "molt exc clear frame name={} file={} line={}",
-                    name, file, frame.line
+                    name,
+                    file,
+                    frame.source_line()
                 );
             }
             if kind == "GeneratorExit" {

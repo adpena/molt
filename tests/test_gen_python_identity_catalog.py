@@ -534,3 +534,104 @@ def test_synthetic_intrinsic_from_catalog_rejects_unclosed_producer(
     source.write_text(text.replace(before, after), encoding="utf-8")
     with pytest.raises(gen.SchemaError):
         gen.load_schema(source)
+
+
+def test_every_guarded_builtin_needs_a_catalog_identity(tmp_path: Path) -> None:
+    """A guard's fast arm proves a name; named lowering keys on its identity."""
+    guards = tmp_path / "builtin_binding_guards.toml"
+    guards.write_text(
+        gen.BINDING_GUARDS.read_text(encoding="utf-8").replace(
+            '    "zip",\n', '    "zip",\n    "input",\n', 1
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(gen.SchemaError, match=r"\['input'\]"):
+        gen.load_schema(binding_guards=guards)
+
+
+def test_catalog_covers_every_builtin_the_frontend_lowers_by_name() -> None:
+    """HF-776: a builtin without a row can never be proved, so it loses speed.
+
+    The rows cover both builtin tables, less the names with no named lowering,
+    and exactly the exception spellings bound on every supported target. Each
+    catalogued name is bound in the running interpreter's builtins.
+    """
+    import builtins
+
+    from molt.builtin_callables import BUILTIN_FUNC_SPECS
+    from molt.frontend._types import BUILTIN_TYPE_TAGS
+    from molt.frontend.exception_kinds_generated import BUILTIN_EXCEPTION_NAMES
+
+    catalogued = set(catalog.BUILTIN_IDENTITIES)
+    assert set(BUILTIN_FUNC_SPECS) - {"pow", "round"} <= catalogued
+    assert set(BUILTIN_TYPE_TAGS) - {"memoryview"} <= catalogued
+    target_gated = {"PythonFinalizationError", "WindowsError"}
+    exceptions = set(BUILTIN_EXCEPTION_NAMES) - target_gated
+    assert exceptions <= catalogued and not target_gated & catalogued
+    assert {"NotImplemented", "Ellipsis"} <= catalogued
+    assert all(hasattr(builtins, name) for name in catalogued)
+
+
+def test_builtin_roles_match_cpython_semantics() -> None:
+    """The exception role is derived from runtime/exception_kinds.toml; the
+    running interpreter is the independent oracle: exactly the catalogued
+    names bound to a BaseException subclass. Caller-frame readers follow
+    CPython's bltinmodule.c and super_init_without_args."""
+    import builtins
+
+    def names(mask: int) -> set[str]:
+        return {
+            name
+            for name, (identity, _member) in catalog.BUILTIN_IDENTITIES.items()
+            if int(identity) & mask
+        }
+
+    exceptions = {
+        name
+        for name in catalog.BUILTIN_IDENTITIES
+        if isinstance(value := getattr(builtins, name), type)
+        and issubclass(value, BaseException)
+    }
+    assert names(catalog.BUILTIN_EXCEPTION_CLASS_IDENTITIES) == exceptions
+    assert names(catalog.BUILTIN_CALLER_FRAME_IDENTITIES) == {
+        "locals",
+        "vars",
+        "eval",
+        "exec",
+        "super",
+    }
+    assert not (
+        catalog.BUILTIN_EXCEPTION_CLASS_IDENTITIES
+        & catalog.BUILTIN_CALLER_FRAME_IDENTITIES
+    )
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "expected"),
+    [
+        (
+            'name = "locals"\nidentity = "BUILTIN_LOCALS"\nguard = "BUILTINS_LOCALS"\nshape = false\nrole = "caller_frame"\n',
+            'name = "locals"\nidentity = "BUILTIN_LOCALS"\nguard = "BUILTINS_LOCALS"\nshape = false\nrole = "frame"\n',
+            "unknown role",
+        ),
+        (
+            'name = "AttributeError"\nidentity = "BUILTIN_ATTRIBUTEERROR"\nguard = "BUILTINS_ATTRIBUTEERROR"\nshape = false\n',
+            'name = "AttributeError"\nidentity = "BUILTIN_ATTRIBUTEERROR"\nguard = "BUILTINS_ATTRIBUTEERROR"\nshape = false\nrole = "caller_frame"\n',
+            "comes from exception_kinds.toml",
+        ),
+        (
+            'name = "len"\nidentity = "BUILTIN_LEN"\nguard = "BUILTINS_LEN"\nshape = true\n',
+            'name = "len"\nidentity = "BUILTIN_LEN"\nguard = "BUILTINS_LEN"\nshape = true\nrole = "exception_class"\n',
+            "comes from exception_kinds.toml",
+        ),
+    ],
+)
+def test_catalog_rejects_undeclarable_builtin_roles(
+    tmp_path: Path, before, after, expected
+) -> None:
+    source = gen.SOURCE.read_text(encoding="utf-8")
+    assert before in source
+    path = tmp_path / "invalid.toml"
+    path.write_text(source.replace(before, after, 1), encoding="utf-8")
+    with pytest.raises(gen.SchemaError, match=expected):
+        gen.load_schema(path)

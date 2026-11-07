@@ -9,6 +9,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 
@@ -41,6 +42,8 @@ from molt.llvm_toolchain import (
     verify_available_llvm_toolchain,
 )
 from molt.process_guard import run_completed_command as _run_completed_command
+from molt.process_guard import FRESH_EXECUTABLE_TIMEOUT_S
+from molt.process_environment import ProcessEnvironment
 
 
 @dataclass(frozen=True)
@@ -1064,6 +1067,73 @@ def setup(
     return 0
 
 
+def _macos_execution_check(root: Path) -> dict[str, Any] | None:
+    """Measure the brief's fresh-script exec path; never infer TCC permission."""
+    if platform.system() != "Darwin":
+        return None
+    instructions = "docs/OPERATIONS.md#macos-first-execution-delays"
+    observation: dict[str, Any] = {
+        "name": "macos_first_execution",
+        "ok": True,
+        "level": "warning",
+        "developer_tools_state": "unknown (inspect the invoking app's permission in System Settings)",
+        "instructions": instructions,
+        "advice": [
+            f"See {instructions}; System Settings > Privacy & Security > Developer Tools"
+        ],
+        "probe_kind": "fresh directly executed shebang script, then the same inode",
+    }
+    try:
+        with tempfile.TemporaryDirectory(prefix="molt-doctor-exec-") as directory:
+            script = Path(directory) / "probe"
+            script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            script.chmod(0o700)
+            durations = []
+            for _attempt in range(2):
+                result = _run_completed_command(
+                    [str(script)],
+                    cwd=root,
+                    env=ProcessEnvironment(os.environ),
+                    capture_output=True,
+                    text=True,
+                    timeout=FRESH_EXECUTABLE_TIMEOUT_S,
+                )
+                if result.returncode != 0:
+                    raise RuntimeError(
+                        f"exec returned {result.returncode}: {result.stderr}"
+                    )
+                duration = getattr(result, "child_elapsed_s", None)
+                if duration is None:
+                    raise RuntimeError("child launch-to-exit clock unavailable")
+                durations.append(duration)
+            first, warm = durations
+            observation.update(first_seconds=first, warm_seconds=warm)
+            observation["detail"] = (
+                f"fresh script {first:.6f}s, warm {warm:.6f}s; "
+                "first-exec overhead is consistent with scanning but does not prove its cause; "
+                f"Developer Tools: {observation['developer_tools_state']}"
+            )
+        policy = _run_completed_command(
+            ["/usr/sbin/DevToolsSecurity", "-status"],
+            cwd=root,
+            env=ProcessEnvironment(os.environ),
+            capture_output=True,
+            text=True,
+            timeout=FRESH_EXECUTABLE_TIMEOUT_S,
+        )
+        observation["developer_authorization_policy"] = {
+            "returncode": policy.returncode,
+            "output": (policy.stdout or policy.stderr or "").strip(),
+            "scope": "global debugger authorization; not the invoking app's Developer Tools permission",
+        }
+    except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+        observation["ok"] = False
+        observation["detail"] = (
+            f"first-exec probe unavailable: {exc}; Developer Tools state unknown"
+        )
+    return observation
+
+
 def doctor(
     json_output: bool = False,
     verbose: bool = False,
@@ -1075,6 +1145,10 @@ def doctor(
     if root_error is not None:
         return root_error
     report = _build_toolchain_report(root)
+    if observation := _macos_execution_check(root):
+        report.checks.append(observation)
+        if not observation["ok"]:
+            report.warnings.append(f"{observation['name']}: {observation['detail']}")
     if json_output:
         _emit_json(_toolchain_report_json_payload("doctor", report), json_output=True)
     else:

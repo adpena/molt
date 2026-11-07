@@ -17,17 +17,17 @@ diagnostic-only cells do not count as passes. The packaging workflow below does
 not currently establish that complete acceptance matrix by itself.
 
 The semantic evidence authority is `tools/release_exit_gate.py`, which verifies
-the source-addressed E1-E4 bundle. Every release, including `v0.0.1`, must pass
-that gate. The gate also joins
+the source-addressed E1-E4 bundle. Every release must pass that gate. The gate also joins
 [the findings ledger](../docs/agent/V1_HANDOFF_FINDINGS.md) at the bundle source
 commit. It reads the ledger blob and the `pyproject.toml` project version
 through Git, and records both and every open finding in the bundle and its
-report. Every public release, the first one (`v0.0.1`) included, is held to
-the v1.0 quality contract: its bundle is PASS only when every typed receipt
-passes and no finding is open. The version number never relaxes the gate. An invalid ledger, such as a resurrected row or a fixed row without
+report. Today the gate holds every version to the 1.x rule: its bundle is PASS
+only when every typed receipt passes and no finding is open. The decided 0.x rule
+(the first release is v0.1) and its pending implementation are stated in the
+[public contract](../docs/spec/PUBLIC_CONTRACT_V1.md#versioning-and-release-gating). An invalid ledger, such as a resurrected row or a fixed row without
 evidence, or an unreadable version stops assembly. The original canonical ZIP is admitted before builds, pinned by its
-digest, reverified in the signing checkout, and published unchanged. Every
-release, `v0.0.1` included, also requires a green H0 phase exit, projected
+digest, reverified in the signing checkout, and published unchanged. Today
+every release also requires a green H0 phase exit, projected
 from those same receipts and cryptographically authenticated in the signing job.
 The current verified-subset
 coordinates and scientific witness also do not establish complete public/C-API

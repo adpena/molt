@@ -347,7 +347,7 @@ def test_sccache_client_under_cargo_gets_the_durable_server_temp_dir(
         memory_guard_prefix=None,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=process_guard.FRESH_EXECUTABLE_TIMEOUT_S,
     )
 
     assert result.returncode == 0, result.stderr

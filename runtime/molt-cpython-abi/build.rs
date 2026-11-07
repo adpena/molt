@@ -1,9 +1,10 @@
 use std::env;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 #[path = "../build_support/c_codegen.rs"]
 mod c_codegen;
+#[path = "../build_support/out_file.rs"]
+mod out_file;
 #[path = "../build_support/variadic_exports.rs"]
 mod variadic_exports;
 #[path = "../build_support/wasi_sysroot.rs"]
@@ -23,7 +24,7 @@ fn c_macro_int(preprocessor_output: &str, name: &str) -> i32 {
 
 fn emit_freestanding_errno_authority(build: &mut cc::Build, out_dir: &Path) {
     let probe = out_dir.join("molt_freestanding_errno_probe.c");
-    fs::write(&probe, "#include <errno.h>\n").expect("write errno macro probe");
+    out_file::write_if_changed(&probe, "#include <errno.h>\n").expect("write errno macro probe");
     let output = build
         .get_compiler()
         .to_command()
@@ -40,7 +41,7 @@ fn emit_freestanding_errno_authority(build: &mut cc::Build, out_dir: &Path) {
     let macros = String::from_utf8(output.stdout).expect("target errno macros are UTF-8");
     let edom = c_macro_int(&macros, "EDOM");
     let erange = c_macro_int(&macros, "ERANGE");
-    fs::write(
+    out_file::write_if_changed(
         out_dir.join("freestanding_errno.rs"),
         format!(
             "// @generated from the target C <errno.h>; do not edit.\n\
@@ -54,7 +55,7 @@ fn emit_freestanding_errno_authority(build: &mut cc::Build, out_dir: &Path) {
     // host-only probe or parser regression from silently publishing constants
     // that disagree with the C shim's target headers.
     let assertion = out_dir.join("molt_freestanding_errno_assert.c");
-    fs::write(
+    out_file::write_if_changed(
         &assertion,
         format!(
             "#include <errno.h>\n\

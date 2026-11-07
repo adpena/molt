@@ -155,85 +155,75 @@ pub(crate) fn molt_code_positions_attached_body(_py: &crate::PyToken<'_>, code_b
             }
         }
 
-        let mut owned_table = false;
-        let mut table_bits = unsafe { code_linetable_bits(code_ptr) };
-        let needs_fallback = if let Some(table_ptr) = obj_from_bits(table_bits).as_ptr() {
-            unsafe {
-                object_type_id(table_ptr) != TYPE_ID_TUPLE
-                    || crate::object::seq_access::len(table_ptr) == 0
-            }
-        } else {
-            true
-        };
-
-        if needs_fallback {
-            let unicode = crate::object::ops::unicode_data(_py);
-            let mut line = unsafe { code_firstlineno(code_ptr) };
-            let mut start_col = 0i64;
-            let mut end_col = 0i64;
-            if let Some(filename) =
-                string_obj_to_owned(obj_from_bits(unsafe { code_filename_bits(code_ptr) }))
-                && let Ok(contents) = std::fs::read_to_string(&filename)
+        let positions = unsafe {
+            let table = obj_from_bits(code_linetable_bits(code_ptr));
+            if table.is_none() {
+                Vec::new()
+            } else if let Some(ptr) = table
+                .as_ptr()
+                .filter(|&ptr| object_type_id(ptr) == TYPE_ID_BYTES)
             {
-                let lines: Vec<&str> = contents.lines().collect();
-                let mut line_index = if line > 0 {
-                    (line as usize).saturating_sub(1)
-                } else {
-                    0
-                };
-                if let Some(raw_line) = lines.get(line_index).copied() {
-                    let mut trimmed = raw_line.trim_end_matches(['\r', '\n']);
-                    let starts_def = {
-                        let lead =
-                            trimmed.trim_start_matches(|ch: char| unicode.is_space(ch as u32));
-                        lead.starts_with("def ") || lead.starts_with("async def ")
-                    };
-                    if starts_def {
-                        let next_index = line_index.saturating_add(1);
-                        if let Some(next_line) = lines.get(next_index).copied() {
-                            line_index = next_index;
-                            line = (line_index + 1) as i64;
-                            trimmed = next_line.trim_end_matches(['\r', '\n']);
-                        }
-                    }
-                    end_col = trimmed.chars().count() as i64;
-                    if let Some(pos) = trimmed.find("return ") {
-                        start_col = (pos + "return ".len()) as i64;
-                    } else if let Some(pos) =
-                        trimmed.chars().position(|ch| !unicode.is_space(ch as u32))
-                    {
-                        start_col = pos as i64;
-                    }
-                    if line <= 0 {
-                        line = (line_index + 1) as i64;
+                let bytes = std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr));
+                match crate::builtins::frames::locations::LocationRows::new(
+                    bytes,
+                    code_firstlineno(code_ptr),
+                )
+                .collect::<Result<Vec<_>, _>>()
+                {
+                    Ok(rows) => rows,
+                    Err(()) => {
+                        return raise_exception::<_>(
+                            _py,
+                            BuiltinExc::ValueError,
+                            "invalid code location table",
+                        );
                     }
                 }
+            } else {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::SystemError,
+                    "code location table is not bytes",
+                );
             }
-            let line_bits = MoltObject::from_int(line).bits();
-            let start_col_bits = MoltObject::from_int(start_col).bits();
-            let end_col_bits = MoltObject::from_int(end_col).bits();
-            let pos_ptr = alloc_tuple(_py, &[line_bits, line_bits, start_col_bits, end_col_bits]);
-            if pos_ptr.is_null() {
+        };
+        let mut rows = Vec::with_capacity(positions.len());
+        for position in positions {
+            let bits = |value| {
+                if value < 0 {
+                    MoltObject::none().bits()
+                } else {
+                    MoltObject::from_int(value).bits()
+                }
+            };
+            let ptr = alloc_tuple(
+                _py,
+                &[
+                    bits(position.line),
+                    bits(position.end_line),
+                    bits(position.column),
+                    bits(position.end_column),
+                ],
+            );
+            if ptr.is_null() {
+                for row in rows {
+                    dec_ref_bits(_py, row);
+                }
                 return MoltObject::none().bits();
             }
-            let pos_bits = MoltObject::from_ptr(pos_ptr).bits();
-            let table_ptr = alloc_tuple(_py, &[pos_bits]);
-            dec_ref_bits(_py, pos_bits);
-            if table_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            table_bits = MoltObject::from_ptr(table_ptr).bits();
-            owned_table = true;
+            rows.push(MoltObject::from_ptr(ptr).bits());
         }
-
-        let iter_bits = molt_iter_attached_body(_py, table_bits);
-        if owned_table {
-            dec_ref_bits(_py, table_bits);
+        let table = alloc_tuple(_py, &rows);
+        for row in rows {
+            dec_ref_bits(_py, row);
         }
-        if exception_pending(_py) {
+        if table.is_null() {
             return MoltObject::none().bits();
         }
-        iter_bits
+        let bits = MoltObject::from_ptr(table).bits();
+        let result = molt_iter_attached_body(_py, bits);
+        dec_ref_bits(_py, bits);
+        result
     })
 }
 
@@ -509,8 +499,7 @@ unsafe fn attr_lookup_ptr_default_inner(
                     if generator_closed(obj_ptr) {
                         return Ok(Some(MoltObject::none().bits()));
                     }
-                    let lasti = if generator_started(obj_ptr) { 0 } else { -1 };
-                    let value = suspended_frame_bits(_py, obj_ptr, lasti);
+                    let value = suspended_frame_bits(_py, obj_ptr);
                     return if obj_from_bits(value).is_none() {
                         Err(())
                     } else {
@@ -594,8 +583,7 @@ unsafe fn attr_lookup_ptr_default_inner(
                     if generator_closed(gen_ptr) {
                         return Ok(Some(MoltObject::none().bits()));
                     }
-                    let lasti = if generator_started(gen_ptr) { 0 } else { -1 };
-                    let value = suspended_frame_bits(_py, gen_ptr, lasti);
+                    let value = suspended_frame_bits(_py, gen_ptr);
                     return if obj_from_bits(value).is_none() {
                         Err(())
                     } else {

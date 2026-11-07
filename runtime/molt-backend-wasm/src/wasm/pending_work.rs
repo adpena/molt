@@ -60,12 +60,15 @@ pub(in crate::wasm) fn thread_record_local(locals: &WasmFrameLocals) -> Option<u
     locals.optional_synthetic(WasmFrameSyntheticLocal::ThreadRecord)
 }
 
+/// `cold_prelude` runs at the start of the service path, before any pending
+/// call or signal handler: a check's `frame_location` store goes there.
 pub(in crate::wasm) fn emit_poll(
     func: &mut Function,
     locals: &WasmFrameLocals,
     imports: &TrackedImportIds,
     reloc: bool,
     payload: bool,
+    cold_prelude: impl FnOnce(&mut Function),
 ) {
     func.instruction(&Instruction::LocalGet(
         locals.synthetic(WasmFrameSyntheticLocal::PendingWorkPtr),
@@ -76,6 +79,7 @@ pub(in crate::wasm) fn emit_poll(
         memory_index: 0,
     }));
     func.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+    cold_prelude(func);
     emit_call(
         func,
         reloc,

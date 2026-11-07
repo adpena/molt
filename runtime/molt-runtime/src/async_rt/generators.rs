@@ -761,7 +761,6 @@ pub(crate) unsafe fn generator_throw_step(
             Err(EntryRefusal::Terminal) => {
                 // A finished activation owns no frame; the exception simply
                 // propagates from the caller.
-                crate::molt_exception_trace_prepend_attached_body(py, pending);
                 molt_raise_attached_body(py, pending);
                 dec_ref_bits(py, pending);
                 return Err(());

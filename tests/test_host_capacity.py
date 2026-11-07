@@ -355,3 +355,19 @@ def test_a_slice_already_holds_the_machine_reserve(monkeypatch) -> None:
         64 * gib
     )
     assert host_capacity.headroom_bytes(delegated) == 0
+
+
+@pytest.mark.parametrize(
+    "performance,allowed,expected", [(6, 18, 6), (6, 2, 2), (None, 8, 8), (0, 8, 8)]
+)
+def test_executor_cpu_budget_prefers_performance_cores_within_affinity(
+    monkeypatch, performance, allowed, expected
+):
+    install_module_view(monkeypatch, "sys", sys, host_capacity, platform="darwin")
+    monkeypatch.setattr(host_capacity, "cpu_count", lambda: allowed)
+    monkeypatch.setattr(
+        host_capacity,
+        "_darwin_sysctl_integer",
+        lambda name: performance if name == "hw.perflevel0.physicalcpu" else None,
+    )
+    assert host_capacity.execution_cpu_count() == expected

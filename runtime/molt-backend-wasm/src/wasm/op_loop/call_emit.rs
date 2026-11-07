@@ -66,6 +66,7 @@ pub(super) fn emit_op_loop_runtime_call(
             context.import_ids,
             context.reloc_enabled,
             true,
+            |_| {},
         );
     } else {
         emit_call(func, context.reloc_enabled, context.import_ids[call.import]);

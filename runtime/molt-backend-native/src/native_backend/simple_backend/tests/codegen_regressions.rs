@@ -542,8 +542,12 @@ fn nested_exception_raise_if_does_not_synthesize_zero_predecessors() {
                     out: Some("none".to_string()),
                     ..OpIR::new(OpKind::Raise)
                 },
+                // Raise captures its own Origin; its transport check forwards.
                 OpIR {
                     value: Some(1),
+                    exception_edge: Some(
+                        molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Unwind,
+                    ),
                     ..OpIR::new(OpKind::CheckException)
                 },
                 OpIR {

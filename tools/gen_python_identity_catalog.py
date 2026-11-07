@@ -8,7 +8,8 @@ from pathlib import Path
 import re
 import sys
 import tomllib
-from typing import cast
+from enum import StrEnum
+from typing import NamedTuple, cast
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -24,6 +25,8 @@ from tools.intrinsic_manifest import parse_intrinsic_manifest  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src/molt/compiler_analysis/python_identity_catalog.toml"
 INTRINSIC_MANIFEST = ROOT / "runtime/molt-runtime/src/intrinsics/manifest.pyi"
+BINDING_GUARDS = ROOT / "runtime/builtin_binding_guards.toml"
+EXCEPTION_KINDS = ROOT / "runtime/exception_kinds.toml"
 OUT_PYTHON = ROOT / "src/molt/compiler_analysis/python_identity_catalog_generated.py"
 OUT_INIT_SPEC = (
     ROOT
@@ -34,6 +37,30 @@ OUTPUTS = (OUT_PYTHON, OUT_INIT_SPEC)
 
 class SchemaError(ValueError):
     """The identity authority contains an ambiguous or invalid declaration."""
+
+
+class BuiltinRole(StrEnum):
+    """What the binding analysis may assume about a builtin's call.
+
+    ``exception_class`` constructs an exception without running Python or
+    reading its arguments as names; it is derived from the exception identity
+    authority (``runtime/exception_kinds.toml``), never declared. ``caller_frame``
+    is declared: the builtin reads the calling frame's local bindings
+    (CPython ``bltinmodule.c``: ``locals``, ``vars`` and ``eval``/``exec``
+    without explicit mappings; ``super_init_without_args`` in
+    ``typeobject.c``).
+    """
+
+    EXCEPTION_CLASS = "exception_class"
+    CALLER_FRAME = "caller_frame"
+
+
+class BuiltinRow(NamedTuple):
+    name: str
+    identity: str
+    guard: str
+    shape: bool
+    role: BuiltinRole | None
 
 
 @dataclass(frozen=True)
@@ -65,7 +92,7 @@ class ImportCallable:
 class Schema:
     identity_bits: tuple[tuple[str, int], ...]
     member_bits: tuple[tuple[str, int], ...]
-    builtins: tuple[tuple[str, str, str, bool], ...]
+    builtins: tuple[BuiltinRow, ...]
     modules: tuple[tuple[str, str], ...]
     acquisitions: tuple[tuple[str, str, str, str], ...]
     writes: tuple[tuple[str, str, tuple[str, ...]], ...]
@@ -152,8 +179,17 @@ def _import_argument_roles(
 
 
 def load_schema(
-    path: Path = SOURCE, *, intrinsic_manifest: Path = INTRINSIC_MANIFEST
+    path: Path = SOURCE,
+    *,
+    intrinsic_manifest: Path = INTRINSIC_MANIFEST,
+    binding_guards: Path = BINDING_GUARDS,
+    exception_kinds: Path = EXCEPTION_KINDS,
 ) -> Schema:
+    from tools import gen_exception_kinds
+
+    exception_names = gen_exception_kinds.builtin_bound_names(
+        gen_exception_kinds.load_table(exception_kinds)
+    )
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as exc:
@@ -201,7 +237,7 @@ def load_schema(
     identity_names, member_names = set(dict(identities)), set(dict(members))
     if not {"OTHER", "UNBOUND"} <= identity_names:
         raise SchemaError("identity sentinels OTHER and UNBOUND are required")
-    builtins: list[tuple[str, str, str, bool]] = []
+    builtins: list[BuiltinRow] = []
     builtin_return_captures = []
     builtin_names: set[str] = set()
     shape_identities: set[str] = set()
@@ -209,7 +245,7 @@ def load_schema(
         data["builtin"],
         "builtin",
         {"name", "identity", "guard", "shape"},
-        frozenset({"return_capture"}),
+        frozenset({"return_capture", "role"}),
     ):
         name = _name(row["name"], "builtin name")
         if name in builtin_names:
@@ -258,14 +294,33 @@ def load_schema(
                     _name(capture["producer"], "builtin capture producer"),
                 )
             )
+        role = BuiltinRole.EXCEPTION_CLASS if name in exception_names else None
+        if "role" in row:
+            try:
+                declared = BuiltinRole(row["role"])
+            except (TypeError, ValueError) as error:
+                raise SchemaError(f"builtin {name!r} has an unknown role") from error
+            if declared is BuiltinRole.EXCEPTION_CLASS or role is not None:
+                raise SchemaError(
+                    f"builtin {name!r}: exception_class comes from exception_kinds.toml"
+                )
+            role = declared
         builtins.append(
-            (
+            BuiltinRow(
                 name,
                 identity,
                 _reference(row["guard"], member_names, "builtin guard"),
                 shape,
+                role,
             )
         )
+    # A guard's fast arm proves a builtin by name; every named lowering keys on
+    # the proved identity (HF-776), so each guarded name needs a catalog row.
+    guarded = tomllib.loads(binding_guards.read_text(encoding="utf-8")).get("names")
+    if not isinstance(guarded, list):
+        raise SchemaError("builtin binding guard table has no names array")
+    if missing := sorted(set(guarded) - builtin_names):
+        raise SchemaError(f"guarded builtins without a catalog identity: {missing}")
     modules: list[tuple[str, str]] = []
     module_names: set[str] = set()
     for row in _rows(data["module"], "module", {"name", "identity"}):
@@ -316,7 +371,7 @@ def load_schema(
         if len(set(checked)) != len(checked):
             raise SchemaError("duplicate write guard")
         writes.append((owner, name, checked))
-    used_guards = {guard for _, _, guard, _ in builtins}
+    used_guards = {row.guard for row in builtins}
     used_guards.update(guard for _, _, _, guard in acquisitions)
     used_guards.update(guard for _, _, guards in writes for guard in guards)
     if used_guards != member_names:
@@ -341,7 +396,7 @@ def load_schema(
     behavior_names = set(dict(import_behaviors))
     role_names = set(dict(import_roles))
     owner_modules = {identity: name for name, identity in modules}
-    public_targets = {name: identity for name, identity, _guard, _shape in builtins}
+    public_targets = {row.name: row.identity for row in builtins}
     public_targets.update(
         (owner_modules[owner] + "." + name, identity)
         for owner, name, identity, _guard in acquisitions
@@ -406,7 +461,7 @@ def load_schema(
     intrinsic_names: set[str] = set()
     intrinsic_identities: set[str] = set()
     used_properties: set[str] = set()
-    other_callable_identities = {identity for _, identity, _, _ in builtins}
+    other_callable_identities = {row.identity for row in builtins}
     other_callable_identities.update(identity for _, identity in modules)
     other_callable_identities.update(identity for _, _, identity, _ in acquisitions)
     other_callable_identities.update(
@@ -581,7 +636,8 @@ def load_schema(
 def render_python(schema: Schema) -> str:
     lines = [
         "# @generated by tools/gen_python_identity_catalog.py from\n",
-        "# src/molt/compiler_analysis/python_identity_catalog.toml and\n",
+        "# src/molt/compiler_analysis/python_identity_catalog.toml,\n",
+        "# runtime/exception_kinds.toml and\n",
         "# runtime/molt-runtime/src/intrinsics/manifest.pyi. DO NOT EDIT.\n",
         '"""Closed compiler-only identities, acquisitions and mutation guards."""\n\n',
         "from __future__ import annotations\n\n",
@@ -800,6 +856,13 @@ def render_python(schema: Schema) -> str:
                 if row.acquisition == "optional"
             ),
         ),
+        *(
+            (
+                f"BUILTIN_{role.name}_IDENTITIES",
+                tuple(row for row in schema.builtins if row.role is role),
+            )
+            for role in BuiltinRole
+        ),
     ):
         lines.append(f"{name}: Final[IdentityMask] = (\n")
         lines.extend(f"    int(PythonIdentity.{row.identity}) |\n" for row in rows)
@@ -809,8 +872,11 @@ def render_python(schema: Schema) -> str:
         "str",
         "tuple[PythonIdentity, PythonMember]",
         [
-            (repr(name), f"(PythonIdentity.{identity}, PythonMember.{guard})")
-            for name, identity, guard, _shape in schema.builtins
+            (
+                repr(row.name),
+                f"(PythonIdentity.{row.identity}, PythonMember.{row.guard})",
+            )
+            for row in schema.builtins
         ],
     )
     mapping(
@@ -818,28 +884,25 @@ def render_python(schema: Schema) -> str:
         "IdentityMask",
         "str",
         [
-            (f"int(PythonIdentity.{identity})", repr(name))
-            for name, identity, _guard, _shape in schema.builtins
+            (f"int(PythonIdentity.{row.identity})", repr(row.name))
+            for row in schema.builtins
         ],
     )
-    shape = [row for row in schema.builtins if row[3]]
+    shape = [row for row in schema.builtins if row.shape]
     lines.append(
-        f"BUILTIN_SHAPE_NAMES: Final[frozenset[str]] = frozenset({tuple(row[0] for row in shape)!r})\n\n"
+        f"BUILTIN_SHAPE_NAMES: Final[frozenset[str]] = frozenset({tuple(row.name for row in shape)!r})\n\n"
     )
     mapping(
         "BUILTIN_SHAPE_IDENTITIES",
         "str",
         "PythonIdentity",
-        [(repr(name), f"PythonIdentity.{identity}") for name, identity, _, _ in shape],
+        [(repr(row.name), f"PythonIdentity.{row.identity}") for row in shape],
     )
     mapping(
         "BUILTIN_SHAPE_NAMES_BY_IDENTITY",
         "IdentityMask",
         "str",
-        [
-            (f"int(PythonIdentity.{identity})", repr(name))
-            for name, identity, _, _ in shape
-        ],
+        [(f"int(PythonIdentity.{row.identity})", repr(row.name)) for row in shape],
     )
     mapping(
         "CANONICAL_IMPORT_IDENTITIES",
@@ -854,8 +917,8 @@ def render_python(schema: Schema) -> str:
     acquisitions = [
         *schema.acquisitions,
         *(
-            (builtin_owner, name, identity, guard)
-            for name, identity, guard, _ in schema.builtins
+            (builtin_owner, row.name, row.identity, row.guard)
+            for row in schema.builtins
         ),
     ]
     mapping(

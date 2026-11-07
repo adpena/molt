@@ -1929,7 +1929,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         (record, word)
     }
 
-    pub(super) fn emit_async_work_poll(&mut self, payload: bool) -> BasicValueEnum<'ctx> {
+    pub(super) fn emit_async_work_poll(
+        &mut self,
+        payload: bool,
+        cold_location: Option<i64>,
+    ) -> BasicValueEnum<'ctx> {
         let (record, word_ptr) = self.async_poll_context();
         let context = self.backend.context;
         let builder = &self.backend.builder;
@@ -1961,6 +1965,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .build_conditional_branch(has_work, cold, fast)
             .unwrap();
         self.backend.builder.position_at_end(cold);
+        if let Some(location) = cold_location {
+            // Serviced work is Python code that can read this frame.
+            self.store_frame_location(location);
+        }
         let cold_fn = self.ensure_runtime_i64_fn(
             if payload {
                 "molt_async_work_poll_and_exception_last_pending"

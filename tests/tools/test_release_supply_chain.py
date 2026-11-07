@@ -1917,8 +1917,29 @@ def _consumer_transport_receipt(
     guest_argv = ["--guest-flag", "two words"]
     guest_stdout = "MOLT_RELEASE_CONSUMER_OK|--guest-flag|two words\n"
     suffix = ".exe" if windows else ""
+    # Each target minor's pinned source tag, read independently of the
+    # release derivation that the policy uses.
+    from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+
+    pins = tomllib.loads(
+        (ROOT / "config/cpython_regrtest_sources.toml").read_text(encoding="utf-8")
+    )["source"]
+    tags = {row["python"]: row["tag"].removeprefix("v") for row in pins}
+    references = [tags[minor] for minor in SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS]
     policy_bytes = (ROOT / "config/verified_subset.toml").read_bytes()
-    references = tomllib.loads(policy_bytes.decode("utf-8"))["reference_cpython"]
+    python_policy_sha256 = hashlib.sha256(
+        json.dumps(
+            {
+                "coordinates": [
+                    [minor, tags[minor]]
+                    for minor in SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+                ],
+                "policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
     if python_minor is not None:
         references = [
@@ -2166,7 +2187,7 @@ def _consumer_transport_receipt(
             dict(zip(LANE_FIELDS, values, strict=True)) for values in lane_values
         ],
         "expected_stdout": guest_stdout,
-        "python_policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
+        "python_policy_sha256": python_policy_sha256,
         "python_proofs": python_proofs,
         "standalone": _transport_replay_reference(candidate),
     }

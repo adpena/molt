@@ -2786,6 +2786,9 @@ dependencies = [
 [[package]]
 name = "molt-runtime-constants"
 version = "0.1.0"
+dependencies = [
+ "molt-codegen-abi",
+]
 
 [[package]]
 name = "molt-runtime-core"

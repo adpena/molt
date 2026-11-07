@@ -3,9 +3,9 @@
 
 This module provides *structural* invariant checks that can be run after
 each compiler pass to detect obviously-broken transformations cheaply
-(O(n) in the number of IR ops).  It is NOT a semantic equivalence checker --
-full semantic correctness is delegated to differential testing
-(``translation_validate.py``) and Lean4 formal proofs.
+(O(n) in the number of IR ops).  It is NOT a semantic equivalence checker.
+Differential execution (``tests/molt_diff.py``) checks the observable behavior
+of the programs it runs; no checker here proves a pass correct.
 
 The entry point is ``TranslationValidator``, which exposes:
 

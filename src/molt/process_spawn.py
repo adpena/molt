@@ -20,7 +20,33 @@ if TYPE_CHECKING:
     from .file_locks import _FileLockHandle
 
 
-PROCESS_STATE_HANDOFF_TIMEOUT_S = 30.0
+# HF-780, 2026-11-05: a fresh suite guardian hit 30 s while Gatekeeper
+# serialized 18/41/97 s scans beside worker builds. This bounds handoff,
+# not guardian work; one 10x deadline, no retry ladder.
+PROCESS_STATE_HANDOFF_TIMEOUT_S = 300.0
+
+
+class ProcessLaunchError(OSError):
+    """Popen refused before payload execution; the guard proves cleanup.
+
+    A forked child may have failed exec and been reaped by Popen. No payload
+    ran, but its pre-exec CPU usage is unavailable, not zero.
+    https://docs.python.org/3/library/subprocess.html#exceptions
+    """
+
+    def __init__(self, command: Sequence[str], error: OSError) -> None:
+        super().__init__(error.errno, error.strerror, error.filename)
+        self.command = tuple(command)
+        self.cleanup_closed = False
+
+    def json_payload(self) -> dict[str, object]:
+        return {
+            "schema": "molt.process-launch-failure.v1",
+            "errno": self.errno,
+            "command": list(self.command),
+            "payload_started": False,
+            "cleanup_closed": self.cleanup_closed,
+        }
 
 
 @dataclass(slots=True, weakref_slot=True)

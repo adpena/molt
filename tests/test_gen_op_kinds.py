@@ -341,6 +341,7 @@ def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> Non
         "guard_type": 2,
         "warn_stderr": 1,
         "frame_context_set": 3,
+        "frame_set_location": 0,
         "frame_home_store": 1,
         "frame_home_cell": 1,
         "frame_home_private_cell": 1,
@@ -1038,6 +1039,7 @@ def test_call_sites_share_effect_authority() -> None:
     ):
         assert not rows[name]["may_call_python"], name
     assert data["callback_free_copy_kinds"] == [
+        "binding_alias",
         "call_async",
         "guard_bool",
         "guard_float",
@@ -5699,6 +5701,7 @@ def test_execution_frame_and_introspection_requirements_are_distinct() -> None:
 
     execution_frames = {
         "frame_context_set",
+        "frame_set_location",
         "frame_home_cell",
         "frame_home_clear",
         "frame_home_load",

@@ -8,6 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
+#[path = "../build_support/out_file.rs"]
+mod out_file;
+
 fn variant(name: &str) -> String {
     name.split('_')
         .map(|part| {
@@ -182,6 +185,6 @@ fn main() {
     }
     out.push_str("_ => None, } } }\n");
     let output = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo output directory"));
-    std::fs::write(output.join("backend_environment_keys.rs"), out)
+    out_file::write_if_changed(output.join("backend_environment_keys.rs"), out)
         .expect("write environment keys");
 }

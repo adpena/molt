@@ -3,6 +3,7 @@ use super::*;
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionModuleExt;
+use molt_ir::tir::op_kinds_generated::ExceptionEdgeKind;
 
 #[test]
 fn none_annotation_cannot_replace_a_borrowed_boxed_word() {
@@ -589,7 +590,7 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
             source_span: None,
         });
         // The enclosing operation, not a private return, owns exception routing.
-        entry.ops.push(TirOp {
+        let mut check = TirOp {
             origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
@@ -597,7 +598,9 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
             results: vec![],
             attrs: AttrDict::from([("value".into(), AttrValue::Int(17))]),
             source_span: None,
-        });
+        };
+        check.set_exception_edge_kind(ExceptionEdgeKind::Origin);
+        entry.ops.push(check);
         entry.terminator = Terminator::Return {
             values: vec![if has_result { result_id } else { first }],
         };
@@ -677,21 +680,36 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
             )),
             "{ir}"
         );
-        assert!(
-            merge.contains_execution("@molt_exception_pending()"),
-            "{ir}"
-        );
-        assert!(
-            merge.contains_execution("icmp ne i64 %check_exc, 0"),
-            "{ir}"
-        );
+        assert!(merge.contains_execution("@molt_exception_pending()"), "{ir}");
+        assert!(merge.contains_execution("icmp ne i64 %check_exc, 0"), "{ir}");
+        let origin = llvm_fn
+            .get_basic_blocks()
+            .into_iter()
+            .find(|block| block_text(*block).contains_execution("@molt_exception_frame_origin("))
+            .expect("the operation's taken Origin edge captures before the handler");
+        let origin_name = origin.get_name().to_str().unwrap();
+        let origin_text = block_text(origin);
         assert!(
             merge.contains_execution(&format!(
-                "br i1 %check_exc_pending, label %bb{}, label %check_exc_cont",
-                handler_id.0
+                "br i1 %check_exc_pending, label %{origin_name}, label %check_exc_cont",
             )),
             "{ir}"
         );
+        assert_eq!(
+            ir.matches_execution("@molt_exception_frame_origin(").count(),
+            1,
+            "{ir}"
+        );
+        assert!(
+            origin_text.contains_execution(&format!("br label %bb{}", handler_id.0)),
+            "{ir}"
+        );
+        for normal_path in [&source, &success, &merge] {
+            assert!(
+                !normal_path.contains_execution("@molt_exception_frame_origin("),
+                "{ir}"
+            );
+        }
         assert!(!merge.contains_execution("ret "), "{ir}");
         for block_name in [format!("bb{}", handler_id.0), "check_exc_cont".into()] {
             let destination = block_text(
@@ -713,6 +731,10 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
             );
             assert!(
                 !destination.contains_execution("@__molt_inline_release("),
+                "{ir}"
+            );
+            assert!(
+                !destination.contains_execution("@molt_exception_frame_origin("),
                 "{ir}"
             );
         }

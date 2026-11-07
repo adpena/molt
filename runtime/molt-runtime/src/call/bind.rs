@@ -360,7 +360,9 @@ pub(crate) unsafe fn call_bind_with_arguments(
                         .unwrap_or_else(|| "<file>".to_string());
                     eprintln!(
                         "molt call_bind frame name={} file={} line={}",
-                        name, file, frame.line
+                        name,
+                        file,
+                        frame.source_line()
                     );
                 }
                 let none_flag = call_obj.is_none();

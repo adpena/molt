@@ -213,33 +213,33 @@ fn pending_cleanup_preserves_lazy_runtime_traceback_without_projection() {
         let filename = MoltObject::from_ptr(alloc_string(py, b"<pending-cleanup>")).bits();
         let name = MoltObject::from_ptr(alloc_string(py, b"pending_cleanup")).bits();
         let empty = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
-        let code = alloc_code_obj(
-            py,
-            filename,
-            name,
-            7,
-            MoltObject::none().bits(),
-            empty,
-            empty,
-            0,
-            0,
-            0,
-        );
+        let locations = MoltObject::from_ptr(crate::alloc_bytes(py, b"\xe8\x00")).bits();
+        let code = alloc_code_obj(py, filename, name, 7, locations, empty, empty, 0, 0, 0);
         assert!(!code.is_null());
-        for bits in [filename, name, empty] {
+        for bits in [filename, name, empty, locations] {
             dec_ref_bits(py, bits);
         }
-        crate::builtins::frames::frame_stack_push_owned(
+        // A runtime-native Python body owns its escaping Origin event. Raw
+        // raised-state publication and frame-stack pop are not error events.
+        let frame = crate::builtins::frames::PythonFunctionFrame::adopt(
             py,
-            MoltObject::from_ptr(code).bits(),
-            0,
-            0,
-            0,
-        );
+            [0, 0, MoltObject::from_ptr(code).bits()],
+            crate::builtins::frames::FramePlan {
+                optimized: true,
+                ..Default::default()
+            },
+            &[],
+            &[],
+        )
+        .expect("runtime-native frame entry");
+        dec_ref_bits(py, MoltObject::from_ptr(code).bits());
         let exception = exception_bits(py, crate::BuiltinExc::ValueError);
         let exception_ptr = crate::obj_from_bits(exception).as_ptr().unwrap();
         crate::record_exception(py, exception_ptr);
-        crate::builtins::frames::frame_stack_pop(py);
+        assert!(
+            crate::obj_from_bits(unsafe { crate::exception_trace_bits(exception_ptr) }).is_none()
+        );
+        drop(frame);
         let lazy_trace = unsafe { crate::exception_trace_bits(exception_ptr) };
         let trace_ptr = crate::obj_from_bits(lazy_trace)
             .as_ptr()
@@ -247,6 +247,17 @@ fn pending_cleanup_preserves_lazy_runtime_traceback_without_projection() {
         assert_eq!(
             unsafe { object_type_id(trace_ptr) },
             crate::TYPE_ID_TRACEBACK_PAYLOAD
+        );
+        assert!(
+            crate::obj_from_bits(unsafe {
+                crate::builtins::frames::traceback_payload_next_bits(trace_ptr)
+            })
+            .is_none(),
+            "one escaping Origin produces exactly one entry"
+        );
+        assert_eq!(
+            unsafe { crate::builtins::frames::traceback_payload_line(trace_ptr) },
+            7
         );
         assert_eq!(
             unsafe { (*header_from_obj_ptr(exception_ptr)).load_synchronized_flags() }

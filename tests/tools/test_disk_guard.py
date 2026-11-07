@@ -1582,6 +1582,48 @@ def test_foreign_and_symlinked_entries_are_never_checkout_state(tmp_path):
     assert all(path.is_dir() for path in foreign)
 
 
+def test_quarantined_incremental_state_of_every_cargo_target_retires(tmp_path):
+    """A build quarantines interrupted incremental state beside the target it
+    built. Checkout targets live below target/checkouts, and the guard looked
+    only in target/ and its children: on 2026-11-07 the integrator host held
+    129.7 GB of quarantines that no collection could see."""
+    import time
+
+    from molt import checkout_state
+    from tools.memory_guard_core.cargo_quarantine import cargo_quarantine_parent
+
+    ext, projects, env = _checkout_family(tmp_path)
+    checkout = projects / "alpha"
+    checkout.mkdir()
+    target = _checkout_state(ext, checkout)["cargo-target"]
+    checkout_state.stamp_checkout_state(checkout, env)
+    session = target / "sessions" / "proof-rust"
+    session.mkdir(parents=True)
+    now = time.time()
+    old = 3 * DAY
+    owners = (ext / "target", target, session)
+    stale = [
+        cargo_quarantine_parent(owner) / "20261104-234329-pid77144-signal_exit-ad6b"
+        for owner in owners
+    ]
+    for quarantine in stale:
+        _make_dir(quarantine, size_bytes=_GB, age_s=old, now=now)
+    fresh = cargo_quarantine_parent(target) / "20261107-010101-pid1-signal_exit-fresh"
+    _make_dir(fresh, size_bytes=_GB, age_s=30 * 60, now=now)
+    live = target / "debug" / "deps"
+    _make_dir(live, size_bytes=_GB, age_s=60, now=now)
+
+    assert {p.resolve() for p in dg._iter_quarantine_dirs(ext.resolve())} == {
+        p.resolve() for p in (*stale, fresh)
+    }
+    reclaimed = _reclaimed(_gc(ext, env, now))
+    assert _resolved(stale) <= reclaimed
+    assert not any(quarantine.exists() for quarantine in stale)
+    # Idle less than the session limit, and the checkout's own live payload.
+    assert (fresh / "artifact.bin").is_file()
+    assert (live / "artifact.bin").is_file()
+
+
 def test_live_use_keeps_checkout_state_from_every_reclaim(tmp_path):
     import time
 

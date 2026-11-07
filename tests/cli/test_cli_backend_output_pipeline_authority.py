@@ -200,6 +200,7 @@ def terminal_build(
     )
     preamble = SimpleNamespace(
         diagnostics_enabled=True,
+        midend_policy_outcomes_by_function={},
         phase_starts=phases,
         resolved_diagnostics_verbosity="summary",
         warnings=[],
@@ -690,7 +691,7 @@ def test_disabled_terminal_diagnostics_do_not_read_artifacts_or_probe_identity(
         == expected
     )
     captured = capsys.readouterr()
-    assert captured.err == ""
+    assert captured.err.startswith("molt midend coverage: functions=0 input_ops=0 ")
     message = json.loads(captured.out)
     assert message["status"] == ("error" if failure else "ok")
     assert "compile_diagnostics" not in message["data"]

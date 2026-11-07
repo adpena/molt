@@ -93,8 +93,8 @@ For the canonical vision and scope, read [spec/areas/core/0000-vision.md](spec/a
   explicitly guarded and documented in the specs.
 
 ## Version Policy
-- The repository development host is the exact CPython patch in `.python-version`
-  (currently 3.12.15). Host selection verifies an explicit patch through discovery,
+- The repository development host is the exact CPython patch in `.python-version`.
+  Host selection verifies an explicit patch through discovery,
   captured runtime/marker agreement and image reuse; it does not grant compiled
   guest support.
 - `src/molt/target_python_policy.py` admits guest semantics for 3.12, 3.13 and
@@ -933,9 +933,12 @@ cargo nextest run -p molt-runtime --all-targets
 ```
 
 ### Build caching (Rust)
-Molt never downloads a tool on its own. Provision the pinned `sccache` once;
+A build never downloads a tool on its own. Provision the pinned `sccache` once;
 Molt then sets `RUSTC_WRAPPER` for its Cargo builds, and warns with this command
 while the release is missing. Set `MOLT_USE_SCCACHE=0` to build without it.
+Proof admission is the one explicit provisioning point: it provisions each
+pinned release (`config/tool_releases.toml`) that its selected commands declare,
+digest-verified, before it fingerprints them.
 ```bash
 python -m molt.tool_releases provision sccache
 ```

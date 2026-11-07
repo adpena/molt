@@ -21,6 +21,7 @@ docs/agent/V1_HANDOFF_FINDINGS.md merge=molt-ledger
 "/.claude/settings.json" merge=binary
 "/.gitattributes" merge=binary
 "/.github/proof-plan.generated.json" merge=binary
+"/.python-version" merge=binary
 "/docs/agent/PROOF_PLAN.generated.md" merge=binary
 "/docs/environment-variables.generated.md" merge=binary
 "/docs/spec/STATUS.md" merge=binary

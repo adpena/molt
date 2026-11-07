@@ -679,12 +679,7 @@ unsafe fn coroutine_member_value(
                 {
                     return Some(MoltObject::none().bits());
                 }
-                let lasti = if crate::object::object_state(object) == 0 {
-                    -1
-                } else {
-                    0
-                };
-                Some(suspended_frame_bits(py, object, lasti))
+                Some(suspended_frame_bits(py, object))
             }
             MemberOperation::CoroutineCode => {
                 let code_bits = crate::object::aux_header::object_frame_code_bits(object);

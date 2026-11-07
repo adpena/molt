@@ -76,6 +76,23 @@ def test_compute_offload_parity(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resp_base.json() == resp_offload.json()
 
 
+@pytest.mark.slow
+def test_demo_health_offload_answers_readiness_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # bench/scripts/run_stack.sh waits for GET /health/ with no query string.
+    # The health entry must not borrow the list_items payload builder, which
+    # requires user_id and answered 400 (HF-789).
+    _setup_django(monkeypatch)
+    _setup_worker_env(monkeypatch)
+    from django.test import Client
+
+    resp = Client().get("/health/")
+
+    assert resp.status_code == 200, resp.content
+    assert resp.json() == {"ok": True}
+
+
 def test_demo_baseline_sqlite_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -370,11 +370,6 @@ def _base_env() -> dict[str, str]:
     env.setdefault("PYTHONHASHSEED", "0")
     env.setdefault("PYTHONUNBUFFERED", "1")
     env.setdefault("MOLT_MACOSX_DEPLOYMENT_TARGET", "26.2")
-    # Keep wasm benchmark compiles deterministic and bounded when mid-end
-    # optimization passes regress on specific stress benchmarks.
-    env.setdefault("MOLT_SCCP_MAX_ITERS", "8")
-    env.setdefault("MOLT_CSE_MAX_ITERS", "8")
-    env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "3")
     env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "60")
     env.setdefault("MOLT_FRONTEND_PHASE_TIMEOUT", "60")
     external_root = _external_root()

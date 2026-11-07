@@ -1,9 +1,12 @@
 use serde::Deserialize;
 use std::{
     collections::HashSet,
-    env, fs,
+    env,
     path::{Path, PathBuf},
 };
+
+#[path = "../build_support/out_file.rs"]
+mod out_file;
 
 const PLAN_ENV: &str = "MOLT_LLVM_LINK_PLAN";
 
@@ -69,7 +72,7 @@ fn selected_file(path: &Path) {
 fn main() {
     let output = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("native_links.rs");
     if env::var_os("CARGO_FEATURE_NATIVE_LINK").is_none() {
-        fs::write(output, "").expect("cannot publish inactive native metadata");
+        out_file::write_if_changed(output, "").expect("cannot publish inactive native metadata");
         return;
     }
     println!("cargo:rerun-if-env-changed={PLAN_ENV}");
@@ -178,5 +181,6 @@ fn main() {
         ));
     }
     assert!(sdk_count > 0, "LLVM link plan has no static SDK archives");
-    fs::write(output, generated).expect("cannot publish native LLVM link metadata");
+    out_file::write_if_changed(output, generated)
+        .expect("cannot publish native LLVM link metadata");
 }

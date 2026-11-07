@@ -264,6 +264,14 @@ function instantiate(path) {
     async_work_poll_and_exception_pending() {
       return hooks.exception_pending();
     },
+    exception_frame_origin(homes) {
+      ensure(state.pending, 'Origin capture requires a pending error');
+      if (homes !== 0n) {
+        ensure(state.homeCase && homes === BigInt(state.homeBase), 'Origin must select the lent homes');
+        ensure(state.depth === state.initialDepth + 1, 'Origin must precede frame exit');
+      }
+      return boxedNone;
+    },
     inc_ref_obj(value) {
       if (state.mixedCase && state.homeOwners.has(value)) {
         ensure(state.homeOwners.get(value)>0, 'retaining dead joined integer');

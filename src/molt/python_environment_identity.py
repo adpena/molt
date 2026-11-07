@@ -384,6 +384,9 @@ def python_identity_verifier_arguments(verifier_bytecode_prefix: Path) -> list[s
 # measures disk contention, not work: on 2026-11-01 one capture took 444.6 s
 # wall for 3,470 ms of user CPU (HF-638), and a 120 s bound failed healthy
 # landings. This bound only catches a hung probe; HF-638 owns the capture cost.
+# HF-623, 2026-11-05: five copied-CPython venv setup launches also exhausted
+# their explicit 120 s bounds in a loaded precheck, before a Python stack was
+# available. Managed-image setup/identity readers share this one wall bound.
 PYTHON_IDENTITY_PROBE_TIMEOUT_S = 900.0
 
 
@@ -497,6 +500,7 @@ def python_capture_authority_paths(
         "guard_scope",
         "guard_stems_generated",
         "toolchain_identity",
+        "sqlite_failure",
         "toolchain_facts",
         "input_report",
         "llvm_linker_roles",

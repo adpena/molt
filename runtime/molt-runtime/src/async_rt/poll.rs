@@ -863,32 +863,18 @@ mod tests {
             let name =
                 MoltObject::from_ptr(crate::alloc_string(py, b"<suspended-namespace>")).bits();
             let empty = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
+            // The task starts at LocationId 0; its code must publish that row.
+            // CPython's no-column location form, first-line delta zero.
+            let locations = MoltObject::from_ptr(crate::alloc_bytes(py, b"\xe8\x00")).bits();
             let code = crate::object::builders::alloc_code_obj(
-                py,
-                name,
-                name,
-                1,
-                MoltObject::none().bits(),
-                empty,
-                empty,
-                0,
-                0,
-                0,
+                py, name, name, 1, locations, empty, empty, 0, 0, 0,
             );
             let code_bits = MoltObject::from_ptr(code).bits();
             let replacement_code = crate::object::builders::alloc_code_obj(
-                py,
-                name,
-                name,
-                1,
-                MoltObject::none().bits(),
-                empty,
-                empty,
-                0,
-                0,
-                0,
+                py, name, name, 1, locations, empty, empty, 0, 0, 0,
             );
             let replacement_code_bits = MoltObject::from_ptr(replacement_code).bits();
+            dec_ref_bits(py, locations);
             dec_ref_bits(py, name);
             dec_ref_bits(py, empty);
             crate::molt_code_slot_set_attached_body(py, 0, code_bits, lexical);
@@ -1044,13 +1030,14 @@ mod tests {
                         "every suspended view must use the canonical Python frame class"
                     );
                     for (name, expected) in [
-                        (b"f_globals".as_slice(), rebound),
-                        (b"f_builtins".as_slice(), builtins),
-                        (b"f_code".as_slice(), code_bits),
-                        (b"f_back".as_slice(), MoltObject::none().bits()),
-                        (b"f_lineno".as_slice(), MoltObject::from_int(1).bits()),
+                        (crate::NameId::FGlobals, rebound),
+                        (crate::NameId::FBuiltins, builtins),
+                        (crate::NameId::FCode, code_bits),
+                        (crate::NameId::FBack, MoltObject::none().bits()),
+                        (crate::NameId::FLineno, MoltObject::from_int(1).bits()),
+                        (crate::NameId::FLasti, MoltObject::from_int(0).bits()),
                     ] {
-                        let name = crate::dynamic_attr_name_bits(py, name).unwrap();
+                        let name = name.owned_bits(py).unwrap();
                         let value = unsafe {
                             crate::builtins::attributes::attr_lookup_ptr(
                                 py,

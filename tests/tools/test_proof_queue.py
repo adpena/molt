@@ -1729,14 +1729,15 @@ def test_every_proof_plan_command_uses_its_exact_nonempty_toolchain_authority() 
         assert envelope["toolchains"], command.id
 
 
-def test_luau_runtime_command_owns_required_runner_without_ambient_discovery() -> None:
+def test_compiler_authorities_command_needs_no_luau_runner() -> None:
     plan = proof_plan.ProofPlan.load()
     command = next(
         item for item in plan.commands if item.id == "rust.test.compiler-authorities"
     )
     envelope = command_admission.envelope_for_command(command.argv)
     assert envelope["kind"] == "proof-plan"
-    assert "lune" in envelope["process_closure"]["toolchains"]
+    # Luau left every proof cell (HF-620), so no runner is admitted.
+    assert "lune" not in envelope["process_closure"]["toolchains"]
     assert "--include-ignored" in command.argv
     assert "--no-fail-fast" in command.argv
     config_index = command.argv.index("--config")
@@ -1744,7 +1745,7 @@ def test_luau_runtime_command_owns_required_runner_without_ambient_discovery() -
         "profile.dev-fast.package.cranelift-codegen.opt-level=0"
     )
     assert config_index < command.argv.index("--")
-    assert {"cargo", "lune", "node", "wasm-ld"} <= set(envelope["toolchains"])
+    assert {"cargo", "node", "wasm-ld"} <= set(envelope["toolchains"])
     compiler_only = [arg for arg in command.argv if arg != "--include-ignored"]
     compiler_envelope = command_admission.envelope_for_command(compiler_only)
     assert "lune" not in compiler_envelope["toolchains"]
@@ -19894,16 +19895,32 @@ class _LockingCommitConnection:
     ``commit`` (throttled here), which is exactly the surface under test.
     """
 
-    def __init__(self, conn: sqlite3.Connection, fail_times: int) -> None:
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        fail_times: int,
+        *,
+        message: str = "database is locked",
+        result_code: int = sqlite3.SQLITE_BUSY,
+        rolls_back: bool = False,
+    ) -> None:
         self._conn = conn
         self._remaining = fail_times
+        self._message = message
+        self._result_code = result_code
+        self._rolls_back = rolls_back
         self.commit_calls = 0
 
     def commit(self) -> None:
         self.commit_calls += 1
         if self._remaining > 0:
             self._remaining -= 1
-            raise sqlite3.OperationalError("database is locked")
+            if self._rolls_back:
+                self._conn.rollback()
+            # SQLite-raised errors carry their result code (CPython 3.11+).
+            error = sqlite3.OperationalError(self._message)
+            error.sqlite_errorcode = self._result_code
+            raise error
         self._conn.commit()
 
     @property
@@ -22790,3 +22807,75 @@ def test_custody_directory_materialization_refuses_non_directory_preimages(
         assert boundary.read_bytes() == b"preserve this preimage"
     else:
         assert boundary.is_symlink()
+
+
+def _lock_run(tmp_path: Path) -> tuple[Path, sqlite3.Connection]:
+    db = tmp_path / "proof_queue.sqlite3"
+    conn = state._connect(db)
+    scheduling._insert_run(
+        conn,
+        run_id="lock-run",
+        logical_id="active",
+        reason="lock regression",
+        command=[sys.executable, "-c", "print('active')"],
+        cwd=state.ROOT,
+        resource_family="python",
+        contention_key="python:lock",
+        scopes=["tools/proof_queue.py"],
+        log_path=tmp_path / "lock.log",
+        summary_json=tmp_path / "lock.memory_guard.json",
+    )
+    state._update_run(conn, "lock-run", status="running", started_at=state._utc_now())
+    return db, conn
+
+
+def test_update_run_retries_a_locking_protocol_commit_with_its_transaction_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SQLITE_PROTOCOL is WAL contention; while SQLite keeps the transaction
+    open, the retried commit writes it."""
+    monkeypatch.setattr(state, "PROOF_QUEUE_LOCKED_WRITE_RETRY_SLEEP_SECONDS", 0.0)
+    db, conn = _lock_run(tmp_path)
+    flaky = _LockingCommitConnection(
+        conn,
+        fail_times=2,
+        message="locking protocol",
+        result_code=sqlite3.SQLITE_PROTOCOL,
+    )
+    state._update_run(
+        flaky,  # type: ignore[arg-type]
+        "lock-run",
+        status="passed",
+        returncode=0,
+        finished_at=state._utc_now(),
+        elapsed_s=1.0,
+    )
+    assert flaky.commit_calls == 3
+    assert _rows(db)[0]["status"] == "passed"
+
+
+def test_update_run_never_retries_a_commit_whose_transaction_rolled_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After SQLite rolls the transaction back, commit() is a no-op that reports
+    success; retrying would silently lose the terminal status."""
+    monkeypatch.setattr(state, "PROOF_QUEUE_LOCKED_WRITE_RETRY_SLEEP_SECONDS", 0.0)
+    db, conn = _lock_run(tmp_path)
+    flaky = _LockingCommitConnection(
+        conn,
+        fail_times=1,
+        message="locking protocol",
+        result_code=sqlite3.SQLITE_PROTOCOL,
+        rolls_back=True,
+    )
+    with pytest.raises(sqlite3.OperationalError, match="locking protocol"):
+        state._update_run(
+            flaky,  # type: ignore[arg-type]
+            "lock-run",
+            status="passed",
+            returncode=0,
+            finished_at=state._utc_now(),
+            elapsed_s=1.0,
+        )
+    assert flaky.commit_calls == 1
+    assert _rows(db)[0]["status"] == "running"

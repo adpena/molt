@@ -25,7 +25,10 @@ import dataclasses
 import importlib
 import json
 
+import pytest
+
 from molt.frontend import BuiltinClass, ClassId, MoltValue, SimpleTIRGenerator
+from molt.frontend.dataclass_init import DataclassInitField
 
 CK = importlib.import_module("molt.cli.cache_keys")
 MC = importlib.import_module("molt.cli.module_cache")
@@ -146,3 +149,94 @@ def test_lowering_a_dependent_module_leaves_known_class_info_frozen() -> None:
     assert consumer._exception_subclass_memo
     assert _snapshot(known) == before, "a dependent module mutated a shared ClassInfo"
     assert _digest(known) == digest_before
+
+
+_DATACLASS_SOURCE = (
+    "from dataclasses import InitVar, dataclass, field\n"
+    "@dataclass\n"
+    "class Record:\n"
+    "    name: str\n"
+    "    count: int = 0\n"
+    "    tags: list = field(default_factory=list)\n"
+    "    scale: InitVar[int] = 1\n"
+    "    ident: int = field(default=0, kw_only=True)\n"
+    "    def __post_init__(self, scale):\n"
+    "        self.count *= scale\n"
+)
+
+
+def test_dataclass_initializer_projection_round_trips_through_the_cache_codec() -> None:
+    """HF-668 exports each dataclass's initializer projection as a class fact. The
+    lowering cache must encode and decode it exactly: an unencodable fact switches the
+    context digest off and crashes the persisted module-lowering write."""
+    _generator, classes = _lowered_classes("pkg.records", _DATACLASS_SOURCE)
+    record_id = ClassId("pkg.records", "Record")
+    projection = classes[record_id]["dataclass_init_projection"]
+    assert projection, "the dataclass transform recorded no initializer projection"
+    fresh = _digest(classes)
+    assert fresh is not None, "an unencodable projection would switch the cache off"
+    hydrated = _round_trip(classes)
+    assert hydrated[record_id]["dataclass_init_projection"] == projection
+    assert _digest(hydrated) == fresh
+
+
+def test_a_malformed_dataclass_projection_payload_is_refused() -> None:
+    """A bad record must not decode into a plain dict; the lowering read path turns
+    the ValueError into a cache miss."""
+    import pytest
+
+    for schema in (
+        ["name", True, False, False, 3],
+        ["name", True, False, False],
+        [1, True, False, False, 0],
+        "name",
+    ):
+        with pytest.raises(ValueError, match="malformed dataclass initializer field"):
+            MC._decode_cached_json_value({"__dataclass_init_field__": schema})
+
+
+def test_dataclass_initializer_projection_survives_class_cache_round_trip() -> None:
+    _generator, classes = _lowered_classes(
+        "pkg.records",
+        "from dataclasses import dataclass, field\n"
+        "@dataclass\n"
+        "class Record:\n"
+        "    x: int\n"
+        "    y: int = field(default_factory=int, kw_only=True)\n"
+        "    seed: int = 0\n",
+    )
+    record = ClassId("pkg.records", "Record")
+    fields = classes[record]["dataclass_init_projection"]
+    assert fields is not None
+    assert [field.schema() for field in fields] == [
+        ("x", True, False, False, 0),
+        ("y", True, True, False, 2),
+        ("seed", True, False, False, 1),
+    ]
+    hydrated = _round_trip(classes)
+    assert isinstance(hydrated, dict)
+    restored = hydrated[record]["dataclass_init_projection"]
+    assert restored == fields
+    assert all(type(field) is DataclassInitField for field in restored)
+    assert _digest(hydrated) == _digest(classes)
+
+
+def test_dataclass_projection_cache_tag_does_not_capture_name_maps() -> None:
+    names = {"__dataclass_init_field__": ["x", True, False, False, 0]}
+    assert _round_trip(names) == names
+
+
+def test_dataclass_projection_cache_rejects_malformed_fields() -> None:
+    malformed = [
+        None,
+        ["x", True, False, False],
+        [1, True, False, False, 0],
+        ["x", 1, False, False, 0],
+        ["x", True, 0, False, 0],
+        ["x", True, False, 0, 0],
+        ["x", True, False, False, True],
+        ["x", True, False, False, 3],
+    ]
+    for payload in malformed:
+        with pytest.raises(ValueError, match="dataclass initializer field"):
+            MC._decode_cached_json_value({"__dataclass_init_field__": payload})

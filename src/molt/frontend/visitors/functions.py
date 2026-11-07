@@ -267,7 +267,7 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                             break
                 finally:
                     self._pop_qualname()
-                self._emit_generator_falloff()
+                self._emit_generator_falloff(node.body[-1])
                 self._spill_async_temporaries()
                 closure_size = self._task_closure_size(
                     frame_plan.payload_slots,
@@ -469,14 +469,14 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                 if not self._ends_with_return_jump():
                     res = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                    self._emit_return_value(res)
+                    self._emit_return_value(res, node.body[-1])
                 self._emit_return_label()
             elif not (
                 self.current_ops and self.current_ops[-1].kind == FrontendKinds.ret
             ):
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                self._emit_return_value(res)
+                self._emit_return_value(res, node.body[-1])
         if is_gpu_kernel:
             descriptor_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(
@@ -649,7 +649,7 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                     self.visit(return_node)
                 finally:
                     self._pop_qualname()
-                self._emit_generator_falloff()
+                self._emit_generator_falloff(node.body)
                 self._spill_async_temporaries()
                 closure_size = self._task_closure_size(
                     frame_plan.payload_slots,
@@ -834,5 +834,5 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                 self._emit_raise_if_pending()
                 self._emit_restore_exception_stack_depth(exit_baseline=False)
                 self._emit_raise_if_pending()
-            self._emit_return_value(val)
+            self._emit_return_value(val, node.body)
         return func_val

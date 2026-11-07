@@ -5,6 +5,7 @@ use crate::{
 };
 
 pub(crate) enum CompatibilityError<'a> {
+    MarshalCodeObject,
     DataclassReplaceInitFalse {
         field: &'a str,
     },
@@ -61,6 +62,9 @@ impl CompatibilityError<'_> {
             return Err("unsupported compatibility-error target");
         }
         let message = match self {
+            Self::MarshalCodeObject => {
+                "cannot unmarshal code objects across Molt's AOT boundary".to_owned()
+            }
             Self::DataclassReplaceInitFalse { field } => {
                 format!(
                     "field {field} is declared with init=False, it cannot be specified with replace()"
@@ -128,6 +132,7 @@ impl CompatibilityError<'_> {
 
     fn exception_kind(&self, py: &PyToken<'_>) -> BuiltinExc {
         match self {
+            Self::MarshalCodeObject => BuiltinExc::ValueError,
             Self::DataclassReplaceInitFalse { .. }
             | Self::DataclassReplaceMissingInitVar { .. } => {
                 let target = crate::object::ops_sys::runtime_target_python_info(runtime_state(py));

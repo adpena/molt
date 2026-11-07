@@ -61,6 +61,11 @@ pub(super) fn emit_code_metadata_call_op(
         // Authored lifecycle marker; activation cleanup owns the actual exit,
         // including return edges introduced by this backend (yield/failure).
         molt_ir::OpKind::TraceExit => {}
+        molt_ir::OpKind::FrameSetLocation => {
+            call_ctx
+                .frame
+                .emit_frame_location(func, op.value.expect("admitted location index"));
+        }
         // A home store hands operand 0's reference to the frame's home; its
         // result is a view of the operand that owns nothing.
         molt_ir::OpKind::FrameHomeStore

@@ -5,6 +5,7 @@ import argparse
 import atexit
 from collections.abc import Callable, Mapping, Sequence
 import contextlib
+import errno
 from dataclasses import replace
 from functools import partial
 import os
@@ -31,6 +32,7 @@ from molt.process_environment import (  # noqa: E402
     ProcessEnvironment,
     ProcessEnvironmentBuilder,
 )
+from molt.process_spawn import ProcessLaunchError  # noqa: E402
 
 DEFAULT_POLL_INTERVAL_SEC = 0.10
 DEFAULT_FAST_START_POLL_INTERVAL_SEC = 0.02
@@ -181,7 +183,6 @@ from tools.memory_guard_core.cargo_quarantine import (  # noqa: E402
     _cargo_recovery_next_action as _cargo_recovery_next_action,
     _cargo_incremental_quarantine_payload as _cargo_incremental_quarantine_payload,
     _cargo_quarantine_id as _cargo_quarantine_id,
-    _cargo_quarantine_parent as _cargo_quarantine_parent,
     _cargo_quarantine_payload_required as _cargo_quarantine_payload_required,
     _cargo_target_dir as _cargo_target_dir,
     _command_invokes_cargo_build_state as _command_invokes_cargo_build_state,
@@ -996,6 +997,14 @@ def run_guarded(
     if not text and isinstance(input, str):
         raise TypeError("str input requires text=True")
     child_env = ProcessEnvironmentBuilder(os.environ if env is None else env)
+    from tools.proof_command_argv import is_python_command
+
+    dump_python_timeout = (
+        os.name == "posix"
+        and (timeout is not None or no_output_timeout is not None)
+        and bool(command)
+        and is_python_command(str(command[0]))
+    )
     child_env[ACTIVE_ENV] = "1"
     child_env[ACTIVE_GUARD_PID_ENV] = str(os.getpid())
     guard_token, guard_marker = _write_active_guard_marker(
@@ -1208,10 +1217,26 @@ def run_guarded(
             child_env["PYTEST_DEBUG_TEMPROOT"] = str(scratch_lease.target)
         child_env[_temporary_artifacts.SCRATCH_ENV] = str(scratch_lease.target)
         launch = _guarded_launch(
-            command,
+            [str(command[0]), "-X", "faulthandler", *command[1:]]
+            if dump_python_timeout
+            else command,
             ProcessEnvironment(child_env),
             child_rlimit_kb=child_rlimit_kb,
         )
+        if dump_python_timeout:
+            import resource
+
+            # Preserve the no-preexec spawn path when the parent already
+            # forbids cores. Only a different inherited policy needs changing.
+            if resource.getrlimit(resource.RLIMIT_CORE)[0] != 0:
+                prior_limits = launch.preexec_fn
+
+                def timeout_child_limits() -> None:
+                    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+                    if prior_limits is not None:
+                        prior_limits()
+
+                launch = replace(launch, preexec_fn=timeout_child_limits)
         _update_active_guard_marker(
             guard_marker,
             guard_token,
@@ -1339,6 +1364,8 @@ def run_guarded(
                 stdout_capture.close()
             if stderr_capture is not None:
                 stderr_capture.close()
+            if isinstance(exc, OSError) and exc.errno in {errno.EAGAIN, errno.ENOMEM}:
+                raise ProcessLaunchError(launch.command, exc) from exc
             raise
         _close_fds(launch.close_fds)
         # Freeze the owned launch identity from the launch contract, never a
@@ -1385,17 +1412,21 @@ def run_guarded(
         # Enforcement that observes nothing starts before any observation: a
         # stalled sample, marker write or host-wide repro read below can no
         # longer delay the deadline or a cancellation (HF-417).
-        enforcer = OwnedTreeEnforcer(
-            owned_root_group_signal(
-                proc,
-                child_clock,
-                child_process,
-                terminate_job=(
-                    None
-                    if guard_job is None
-                    else partial(_win_job.terminate_job, guard_job)
-                ),
+        root_signal = owned_root_group_signal(
+            proc,
+            child_clock,
+            child_process,
+            terminate_job=(
+                None
+                if guard_job is None
+                else partial(_win_job.terminate_job, guard_job)
             ),
+            python_timeout_dump=dump_python_timeout,
+        )
+        direct_root_reports: list[GuardTerminationReport] = []
+
+        enforcer = OwnedTreeEnforcer(
+            root_signal,
             slack=ENFORCEMENT_SLACK_SEC,
             deadline=None if timeout is None else start + timeout,
             deadline_grace=0.25,
@@ -1665,6 +1696,19 @@ def run_guarded(
                 # loop observes what remains.
                 with contextlib.suppress(subprocess.TimeoutExpired):
                     proc.wait(timeout=termination_wait_s)
+                return
+            if (
+                dump_python_timeout
+                and root_signal is not None
+                and reason in {"timeout", "output_stalled"}
+            ):
+                _signalled, report = root_signal(reason, grace)
+                if report is not None:
+                    direct_root_reports.append(report)
+                if enforcer is not None:
+                    enforcer.delivered(reason)
+                # Post-exit cleanup still observes and closes every tracked
+                # descendant; no stale sampled root signal follows its reap.
                 return
             termination_reports.append(
                 _validated_termination_report(
@@ -2629,6 +2673,13 @@ def run_guarded(
             )
         else:
             child_elapsed_s = None
+        if child_exit_usage is None:
+            child_exit_usage = _take_child_exit_usage(proc)
+        child_cpu_seconds = (
+            None if child_exit_usage is None else child_exit_usage.cpu_seconds
+        )
+        if windows_job_cleanup is not None:
+            child_cpu_seconds = windows_job_cleanup.after.total_cpu_seconds
         # Preserve captured guest bytes before adding any guard diagnostics.
         child_stderr = stderr if capture_output else None
         returncode = proc.returncode
@@ -2697,7 +2748,7 @@ def run_guarded(
                 "the summary JSON.\n",
                 text=text,
             )
-        for enforcement in enforcer_reports:
+        for enforcement in (*enforcer_reports, *direct_root_reports):
             termination_reports.append(
                 completed_enforcement_report(
                     enforcement,
@@ -2925,6 +2976,7 @@ def run_guarded(
             infrastructure_failure=infrastructure_failure,
             worker_peaks=None if worker_peaks is None else worker_peaks.summary(),
             output_stall_s=no_output_timeout if output_stalled else None,
+            child_cpu_seconds=child_cpu_seconds,
         )
         state_closed = result.descendants_closed
         _update_active_guard_marker(
@@ -3108,6 +3160,12 @@ def run_guarded(
             # authorize releasing a use whose descendants remain unknown.
             atexit.unregister(state_use.close)
             state_use.close()
+        if isinstance(caught_exception, ProcessLaunchError):
+            caught_exception.cleanup_closed = (
+                proc is None and scratch_cleanup_error is None
+            )
+            if caught_exception.cleanup_closed:
+                _retire_guard_custody(guard_marker, guard_token)
 
 
 _REPRO_ENV_KEYS = _repro_context.REPRO_ENV_KEYS

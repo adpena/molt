@@ -2823,10 +2823,23 @@ def test_metadata_normal_success_expired_budget_refuses_before_workload(
         prefixes.append(prefix)
         assert prefix.is_dir()
         clock.now = 2.0
+        # The selected interpreter reports the pinned 3.13 release.
+        import json
+
+        from tools import cpython_regrtest
+
+        pinned = cpython_regrtest.load_cpython_sources()["3.13"].tag.removeprefix("v")
         return guard_result_for_test(
             command,
             0,
-            '{"implementation":"CPython","version":"3.13.17","executable":"selected-python"}',
+            json.dumps(
+                {
+                    "implementation": "CPython",
+                    "version": pinned,
+                    "executable": "selected-python",
+                },
+                separators=(",", ":"),
+            ),
             "",
             descendants_closed=True,
         )

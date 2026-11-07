@@ -174,9 +174,35 @@ fn native_batch_failure_artifact_retains_closed_context_for_replay() {
         serde_json::to_value(molt_backend::NativeBackendModuleContext::default()).unwrap()
     );
     assert!(!artifact_dir.join("module_context.json").exists());
-    assert!(
-        artifact_dir.join("manifest.json").exists(),
-        "artifact manifest must describe replay command"
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(artifact_dir.join("manifest.json")).expect("read replay manifest"),
+    )
+    .expect("decode replay manifest");
+    let argv = manifest["replay"]["argv"]
+        .as_array()
+        .expect("replay argv")
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .expect("argv entries are strings")
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    // The replay names the executable that spawned the worker; it exists.
+    assert_eq!(
+        std::path::Path::new(&argv[0]),
+        std::env::current_exe().expect("test executable").as_path()
+    );
+    assert!(std::path::Path::new(&argv[0]).is_file());
+    assert_eq!(
+        &argv[1..],
+        &[
+            "--native-batch-job-file".to_string(),
+            copied_job_path.display().to_string(),
+            "--output".to_string(),
+            artifact_dir.join("replay.o").display().to_string(),
+        ]
     );
 
     let _ = std::fs::remove_dir_all(root);

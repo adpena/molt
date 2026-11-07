@@ -1175,7 +1175,6 @@ pub(crate) const HEADER_FLAG_TASK_QUEUED: u32 = 1 << 7;
 pub(crate) const HEADER_FLAG_TASK_RUNNING: u32 = 1 << 8;
 pub(crate) const HEADER_FLAG_TASK_WAKE_PENDING: u32 = 1 << 9;
 pub(crate) const HEADER_FLAG_TASK_DONE: u32 = 1 << 10;
-pub(crate) const HEADER_FLAG_TRACEBACK_SUPPRESSED: u32 = 1 << 11;
 pub(crate) const HEADER_FLAG_COROUTINE: u32 = 1 << 12;
 /// Runtime-owned storage whose identity must never escape through public heap
 /// introspection. Set while unpublished and retained for the object's lifetime;
@@ -1261,7 +1260,7 @@ pub(crate) const HEADER_FLAG_IS_WEAKREF: u32 = 1 << 31;
 // Keep every persistent and transient lifetime bit in this single registry and
 // fail compilation on any future collision. Cold type policy intentionally
 // lives in the type payload rather than consuming hot RC/GC header capacity.
-const HEADER_FLAG_REGISTRY: [u32; 32] = [
+const HEADER_FLAG_REGISTRY: [u32; 31] = [
     HEADER_FLAG_HAS_PTRS,
     HEADER_FLAG_REVIVAL_WINDOW,
     HEADER_FLAG_CORO_RUNNING,
@@ -1273,7 +1272,6 @@ const HEADER_FLAG_REGISTRY: [u32; 32] = [
     HEADER_FLAG_TASK_RUNNING,
     HEADER_FLAG_TASK_WAKE_PENDING,
     HEADER_FLAG_TASK_DONE,
-    HEADER_FLAG_TRACEBACK_SUPPRESSED,
     HEADER_FLAG_COROUTINE,
     HEADER_FLAG_INTERNAL_OWNER,
     HEADER_FLAG_GC_ACCOUNTED,

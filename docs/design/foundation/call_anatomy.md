@@ -554,6 +554,349 @@ Check: the existing traceback, `sys._getframe`, warnings `stacklevel`, logging `
 generator and `super()` differential tests on native, LLVM and WASM, plus a new property test that
 raises at random depths and compares the full traceback (file, line, column carets) with CPython.
 
+#### Executing source locations (HF-764)
+
+The location migration can precede the full native-stack record migration. Reuse the existing
+stable-address, chunked frame-home arena and lazy binding owners; do not introduce another frame
+registry or a location cache. This design is reviewed but does not establish implementation or
+backend qualification.
+
+The frontend must preserve each executable expression's start/end line and columns, including
+multiline expressions. At serialization, one deterministic location table belongs to each Python
+code slot, including its inherited module chunks. Emit the table at code creation, using the
+documented [CPython location encoding](https://github.com/python/cpython/blob/v3.12.0/Objects/locations.md).
+The emitted program never reparses source files to recover a location. A typed `LocationId`
+selects a row; `f_lasti` is twice that index, so `co_positions()[f_lasti // 2]` describes the
+executing site. It does not emulate CPython's version-specific bytecode offsets. Differential
+oracles compare the selected source coordinates rather than the representation-specific integer.
+An arbitrary positive offset is insufficient evidence.
+
+An explicit `frame_set_location(LocationId)` publishes before operations that may raise or observe
+Python state, and before every source return, yield, suspension and exceptional exit. The
+frontend emits it conservatively; the cost addendum below ("Location publication cost") removes
+every publication that no reader can observe, and an Origin edge materializes its own site.
+Only an existing proven pure, non-throwing, non-callback effect fact permits omission; missing
+facts are conservative. The opcode has no SSA operands/results, a nonnegative immediate, no Python callback
+or exception, and an impure side effect. Use the current conservative memory-effect representation
+if it cannot distinguish frame-observation memory. Optimizers may coalesce adjacent redundant
+publications only when every incoming path already carries the required location; they cannot
+move a publication across an observation, failure or terminator. An exceptional check preserves
+the known location on its normal fallthrough, so an identical fallthrough store is redundant.
+Its exceptional target resets location knowledge; the first observing operation publishes
+its source site. Other control-flow boundaries reset that knowledge conservatively.
+Backend-generated exits retain their originating source terminator's location.
+
+Region labels, jumps, try markers and non-callback exception-state transport do not
+publish a new source site. Their structural adjacency is part of the region model.
+The frontend derives non-observing controls from the generated control, callback
+and automatic-check facts; throwing guards remain observers. Compiler-owned home
+restoration forwards the incoming location to any release callback instead of
+publishing synthetic scope coordinates. Ordinary binding writes retain their
+publication obligation. Await resumption retains and clears its hidden result
+carrier before taking an error edge. A fresh post-resume owner keeps the awaited
+task alive while its hidden slot is cleared. The receiving Origin transfers
+directly to the lexical handler; the owner's normal release or canonical
+exception-edge release follows capture, before authored cleanup proceeds.
+
+Reserve a raw location word beside each executing frame's binding homes, even for module bodies
+and frames with no local slots. The existing home-base lend supplies its address once per
+invocation, only after successful entry; inherited chunks borrow that same frame's storage.
+Native, LLVM and WASM lower publication to a plain store at one canonical ABI offset. The borrowed
+pointer escapes to the runtime owner: LLVM cannot treat it as private/noalias, and runtime calls
+that observe it cannot be marked `readnone` or `inaccessiblememonly`. Retire the replaced line and
+column update calls together with their consumers. Optional line-debug diagnostics do not own
+frame locations. Measure both the stores and deleted calls before claiming a cost improvement.
+
+Frame objects read the current location through one shared lazy activation owner, as their locals
+views already share binding storage. Materializing a view must not copy a permanently stale
+`f_lineno` into its dictionary. Before stack storage retires, freeze the last location in the
+shared owner and detach its borrowed address, before releases can reenter Python. Retained frame
+views then remain valid after return, recursion and arena reuse. Unobserved ordinary execution
+adds no per-call heap allocation. Include every owned edge in GC traversal, destruction and
+runtime teardown; never retain a pointer into a movable frame-stack vector.
+
+Stateful activations preserve their location in the existing task auxiliary frame context:
+
+- **Created:** the task owns its explicit entry location and optional lazy view. CPython 3.12's
+  unstarted generator reports offset zero and the defining line; it is not an ordinary frame with
+  an absent location (`-1`).
+- **Running:** successful entry copies the saved location to arena storage and reattaches any
+  existing view. The active entry keeps the task alive, and observations share the same owner.
+- **Suspended:** save the latest location in the task context and redirect the view to that saved
+  word before unlinking and returning arena storage. Save it even when no view exists.
+- **Completed:** freeze retained views before task storage retires; new `gi_frame`/`cr_frame`
+  observations return `None`. Close, throw, failed resume, GC and destruction follow the same owner.
+
+Traceback membership is an independent obligation of exception propagation. Each selected entry
+must retain its particular activation's shared frame owner and freeze its location before
+`finally` or cleanup changes the live site. Code identity cannot identify an activation under
+recursion. `tb_lineno`/`tb_lasti` decode the frozen site while `tb_frame` can continue moving.
+Do not reconstruct offsets by matching only a line or selecting its widest span.
+
+The native location prototype exposed a membership defect: propagation through `finally` retains
+the raising frame but omits the module's receiving call site. The settled correction follows
+[CPython 3.12's event model](https://github.com/python/cpython/blob/v3.12.0/Python/ceval.c): `error`
+calls `PyTraceBack_Here`, while `exception_unwind` skips it. Every exceptional check carries a
+static, typed kind generated from the opcode authority:
+
+- **Origin:** an operation fails, a call/await/yield-from receives an error, explicit raise,
+  bare raise without an active exception, or throw/close injection. Prepend exactly this activation
+  at its frozen location to the exception's current traceback, on the taken error edge only.
+- **Unwind:** valid bare raise, finally/with/except cleanup reraising, unmatched handler dispatch,
+  synthetic follow-on checks, exceptional loop breaks, finally pending polling and pending-error
+  function exit. Forward the exception without adding an entry.
+
+No deduplication or runtime propagation-episode state exists: repeated Origin events through one
+activation produce repeated entries. Capturing the current traceback honors editing and
+`with_traceback`; valid bare raise preserves those edits while the receiving caller's Origin adds
+its call site. A runtime helper suppressing a callback error takes no caller error edge.
+Delete eager nearest-handler range capture; it cannot remain a fallback. Split any check that
+joins pending sources of different kinds, and reject unclassified/mixed checks in the verifier.
+All five backend consumers match both kinds. Origin capture is cold; the normal path adds no call.
+Compiler transport carries a typed producer-source Unwind fact through serialization and TIR,
+preserving pending source provenance across frame-context restoration and module-failure
+bookkeeping. Conservative runtime failure effects do not by themselves manufacture Python
+Origin events. Authored guarded bodies keep their own handler, source loops check their failing
+operations, and await captures its received Origin before forwarding cleanup. The verifier uses
+these producer facts at joins; runtime custody and effect analysis retain their conservative rules.
+
+Two independent, serial read-only design reviews required explicit terminal publication, stateful
+view reattachment, exception capture timing and membership, and optimizer memory effects. The
+location contracts above incorporate those findings; the parent's event model settles the
+second-round propagation findings. Required independent adversaries cover retained views
+ending with a pure return, multiline and same-line expressions, callbacks inside optimized loops,
+recursive activations, internally caught and propagating exceptions, bare/explicit reraising,
+cleanup that raises a new exception, and retained views during resumed callbacks after arena reuse.
+Include repeated traversal of one caller by the same exception, and bare reraising after clearing
+or editing its traceback; compare chain multiplicity as well as order and coordinates.
+Compare exact positions and traceback membership/identity with CPython, on native, LLVM and WASM.
+
+Qualification also requires the owning loop/per-op and recursion/per-op instruction A/B, with
+identical source/toolchain/profile/workload identities and the primitive authority's minimum five
+paired samples and axis noise bound. An increase beyond that bound blocks acceptance; an increase
+inside it is inconclusive, not a win. Repeat only an affected unresolved cell. Do not change the
+performance ratchet or methodology to admit a candidate. Record runtime calls, whole-program time,
+memory and binary size alongside counters. Generated synchronization, touched-reader checks and
+the landing precheck remain separate required evidence.
+
+#### Separate normal completion from exception dispatch (HF-764, 2026-11-06)
+
+General `try` and `try*` lowering with handlers must preserve separate normal and
+exceptional entries. Successful completion closes its region and jumps directly to the
+continuation containing `else` and normal-finally work. The exceptional landing closes
+its region and enters handler dispatch directly. Only that landing reads the raised slot
+for dispatch; successful completion executes no pending-slot observer, comparison,
+negation or branch for dispatch. Existing normal-finally observers remain unchanged.
+Preserve the existing handler bodies, async exception-slot
+stores, finally context and cleanup ownership. Handler-less `try/finally` retains its
+marked pending observer. The specialized synchronous split remains the normal form for
+its existing subset.
+
+This establishes the existing invariant at the producer: valid general try lowering
+verifies, every executable Origin is captured exactly once, and a real mixed-source check
+is rejected. The shared verifier and its physical custody traversal need no predicate
+projection. Previously the general lowering joined normal and exceptional completion,
+then branched on a pending-slot None test. The verifier conservatively explored both arms,
+allowing an exceptional Unwind into the normal `else` arm and deriving Mixed at its first
+potential failure. The producer split removes that infeasible path from the CFG itself.
+It also makes normal `try*` completion enter `else` and normal-finally work before cleanup.
+
+All backends consume the same producer split. Qualification must cover synchronous,
+async, module and exception-group forms, failure in `else`, matched and unmatched handlers,
+nonlocal exits, and finally precedence against CPython. Existing exception and traceback
+oracles, including the three frame differentials, own observable membership, multiplicity
+and frozen coordinates. Keep physical region/MatchRef ownership and the async captured
+exception slot intact across suspension. Measure a try-heavy program's instructions,
+compile time and artifact size before and after; removal of dispatch work is not itself
+a measured performance result.
+
+Equal normal and exceptional destinations do not make a check transparent: an Origin
+captures a traceback entry. Frontend check/jump threading may remove only an Unwind check
+with no payload or asynchronous-work marker and no lexical-handler or landing destination.
+Plain jump threading remains eligible. A failing operation in `else` must still create its
+own Origin; matching destinations are not an oracle for event redundancy.
+
+The verifier-side SSA predicate proposal is rejected: it would add freshness/presence
+machinery, require preservation across optimization and drop pipelines, and weaken the
+existing producer-split contract. Marked-finally-observer transition gaps and detection of
+an Origin dropped before return are separate findings; this correction does not change
+their verifier rules or runtime semantics.
+
+#### Location publication cost (HF-764 correction, 2026-11-04)
+
+The owner's acceptance: the loop primitive costs no more instructions per iteration than base,
+recursion keeps its gain, and every semantic proof stays green.
+
+**Measured anatomy.** Loop primitive, N=1,000,000, `otool -tV` of `_loop__run`. Retired
+instructions rose from ~367.9 to ~401.7 per iteration (+33.8). The executing loop is the
+guarded counted range loop (`molt_guard_builtin_bindings` admits it), not the generic
+`molt_iter_next_unboxed` loop beside it. Its hot path is 128 instructions in base (22 loads,
+12 stores, 9 calls) and 163 in head (41 loads, 20 stores, 9 calls): +35, which matches the
+counter. The generic loop also grew (104 to 128) but does not execute. Head adds 36 instructions
+and drops 1 register move:
+
+1. Six publications per iteration (`frame_set_location` 6, 6, 7, 9, 8, 6): 16 instructions. They
+   precede the header `lt`, the store of `i`, two binding reads, `inplace_add` and the latch
+   `add`. None of these can run Python code: the operands are exact ints, and the stores
+   release only ints.
+2. Six reloads of the frame-home base from a spill slot. Cranelift hoists the loop-invariant
+   location constants 7, 8 and 9 into callee-saved registers; the home base loses its register.
+3. Three pending-exception reads that base does not execute, 4 instructions each, and one spill
+   of the `lt` result for the first: 13 instructions. See M3.
+4. One reload of the loop bound from a spill slot (register pressure).
+
+**M1. An Origin edge materializes its own site.** An Origin check observes the failure of one
+operation, so its location is a constant when one publication reaches it on every path. The
+placement pass (M2) computes it with a forward reaching-publication analysis over the
+conservative stream and records it on the check as the TIR attr `frame_location`; SimpleIR
+carries it as `OpIR.frame_location`. The schema rejects it on any operation that is not an
+Origin check. On the taken Origin edge, native, LLVM and WASM store the constant into the
+frame's location word, then call `molt_exception_frame_origin`. On a check marked
+`async_work_poll`, they also store it at the start of the cold service path, because a pending
+call or signal handler is Python code that can read the frame. A check that no single
+publication reaches gets no attr and stays a reader. The normal path has no store. WASM needs
+no return address: the store is explicit.
+
+**M2. One placement pass deletes unobservable publications.** `frame_location_placement` is the
+last pass of the terminal drop pipeline, so it sees final types and inserted releases. It is a
+backward liveness of the location word over the CFG, exception edges included.
+
+- *Writes:* `frame_set_location`; the taken edge of an Origin check, and the service path of a
+  poll, that carry `frame_location`; function entry. The runtime writes ABSENT at a fresh frame
+  entry (`FrameBindings::enter`) and restores the saved word at a resume, so the word never holds
+  another code object's LocationId.
+- *Reads* (fail-closed: an operation is a read unless the facts below clear it): (a) an
+  operation whose typed effects (`op_effects_with_types` over the exact scalar map) may call
+  Python, except the release callbacks in M2.1. Native frame introspection (`getframe`,
+  `frame_locals`), warnings and attribute access are calls or carriers outside
+  `callback_free_copy_kinds`, so they are reads; (b) a state-machine opcode
+  (`opcode_is_state_machine_table`: suspension saves the word, resume restores it); (c) a
+  `Return` terminator. Every frame-retiring path ends in one and first runs `trace_exit`, also a
+  read: normal return, the pending-error exit, generator completion and backend-generated exits
+  alike. So a `finally` body's last publication before an exceptional exit stays live; (d) an
+  Origin check or a poll without `frame_location`.
+- An Unwind edge forwards the handler's liveness unchanged. A `TryStart` edge needs no term:
+  only `Raise` transfers through it (WASM native EH), and `Raise` is a read (an operation, not a
+  check; its transport check is Unwind).
+
+The pass deletes each publication that no read can observe. Liveness preserves the word's value
+at every read, so every remaining reader sees what the conservative stream showed it. The pass
+only adds attrs and deletes publications, so it is idempotent. Inlining cannot mix two code
+tables in one word: the TIR inliner refuses any callee with an execution context
+(`inliner/eligibility.rs`). A typed target lowering feature, `cold_origin_frame_location` in
+`SimpleIrLoweringFeatures`, gates the pass. It commits a backend to both cold stores and is true
+for native, LLVM and WASM. Luau and Rust keep every publication: Luau publishes line and
+columns with each location and has no code table to recover them from a LocationId, and the
+Rust backend captures no Origin.
+
+**M2.1. Which release callbacks read the location.** A release can start a finalizer
+(`__del__`, a weakref callback) that reads the frame. Two releases are not reads:
+
+1. `DecRef` of a temporary. Drop insertion places it at the value's last use, which is not a
+   CPython release point, so the statement in which such a finalizer runs is not a CPython
+   contract today. Its finalizer sees the frame's last surviving publication.
+2. A frame-home store or clear (`frame_home_store`, `frame_home_clear`) whose previous binding is
+   proven finalizer-free: unbound or an exact builtin scalar. A forward slot-content analysis in
+   the pass proves it. The activation's own entry (`trace_enter_slot`) starts a fresh
+   synchronous frame with every home unbound (the arena zeroes them); a stateful or inherited
+   frame starts unknown. A store records whether its value is an exact scalar; a clear or take
+   leaves the home unbound; `frame_locals_set` makes every home unknown. Only those operations
+   write this activation's homes.
+
+   The second boundary: a callback that rebinds a local through a PEP 667 proxy does not clear
+   these facts. A finalizer of a value injected that way, released by a later compiled rebinding,
+   sees the last surviving publication. Clearing the facts at every callback is not affordable:
+   `range(n)` converts its bound with `operator.index`, which may call Python, so every counted
+   loop would keep a store before its first rebinding of the loop variable, in every iteration.
+
+Every other release keeps its read: rebinding or `del` of a value not proven finalizer-free
+(`ResourceWarning` lines depend on it), `DeleteVar` and `DelBoundary`. The classification is
+typed: `op_kinds.toml` lists `temporary_release_opcodes` (`DecRef`) and
+`binding_release_copy_kinds` (`frame_home_store`, `frame_home_clear`, whose only Python
+callback is releasing the previous binding of home `value`), rendered as exhaustive
+predicates; the generator rejects a member whose callback capability is false. Out-of-band
+observers, such as `sys._current_frames` or faulthandler from another thread, see the last
+surviving publication. That is a second explicit boundary; CPython's own answer there depends on
+where the eval loop yields.
+
+**M3. Restore base's check set in the counted range loop.** The lane removed the range loop's
+check suppression, so the frontend now emits an Origin check after the header `lt`, after the
+loop-variable store, and after the latch `add`; TIR keeps three of them, because Copy carriers
+(`frame_home_store`, `line`) are conservatively may-raise and the `stop` bound (an
+`operator_index` result) has no exact type. That index machinery cannot raise: `range()` bounds
+come from `_emit_range_bound` (an exact int, or `operator.index`, whose result has exact type
+`int` since CPython 3.10); the index starts at an exact int and adds an exact-int step, and an
+overflow promotes to a big int instead of raising; a simple-name binding stores memory, and a
+finalizer error during its release is unraisable. Resource exhaustion is outside the semantic
+exception lattice (`op_kinds.toml`). So the frontend restores base's suppression scopes around
+the header (`loop_start`, `loop_index_start`, `lt`, `loop_break_if_false`, simple-name binding)
+and the latch (`add`, `loop_index_next`, `loop_continue`), byte for byte. The scope marks those
+operations `exception_source = unwind`, which the event verifier accepts: they produce no Origin
+event. Non-simple targets stay outside the scope, as in base. A frontend test pins the absence
+of checks in that machinery.
+
+**M4. Two typed facts the placement pass needs in that loop** (found when M2 first ran: it kept
+two publications per iteration).
+
+1. The header `lt` compares the index with the `operator_index` result. TIR had no exact type for
+   that result, so `lt` could call Python and stayed a read. `operator.index` returns an exact
+   `int` (CPython 3.10+, `PyNumber_Index`). `op_kinds.toml` now lists
+   `exact_int_result_copy_kinds = ["operator_index"]`; the exact scalar solver gives the result
+   `BigInt`, an exact int of any magnitude with a boxed carrier, as it does for `ConstBigInt`.
+   The representation plan floors integer names to `MaybeBigInt`, so no consumer unboxes it
+   without a range proof.
+2. `binding_alias` only retains its operand (+1). It joins `callback_free_copy_kinds`.
+
+**Invariants.**
+
+1. At every read, the word holds the value the conservative stream held there (M2 liveness),
+   except a finalizer of a release that M2.1 exempts or of a value injected through a PEP 667
+   proxy, which sees the last surviving publication.
+2. An Origin capture records the failing site's own LocationId on native, LLVM and WASM when one
+   publication reaches its check, and otherwise reads the preserved word (M1).
+3. Measured gate, per backend: the normal path of a loop whose operations cannot call Python,
+   except through M2.1 releases, contains no location store. The absence of home-base reloads
+   is a register-allocation outcome; the `otool` count gates it on native. On LLVM and WASM the
+   cold constant is an immediate at its use.
+4. A target without `cold_origin_frame_location` runs no placement pass.
+
+**Consumers.** SimpleIR schema and transport (`ir.rs`, `ir_schema.rs`, SSA lift,
+`lower_to_simple`, `addressed_program.rs`); `op_kinds.toml` and the generators (three new lists, one `callback_free_copy_kinds` entry);
+`target_info.rs` (feature); the exact scalar solver (`exact_int_result_copy_kinds`); the pass
+and its pipeline slot; native `exception_control.rs`,
+`scalar_carriers.rs` and the frame-home lend predicate; LLVM `op_dispatch.rs`,
+`value_materialization.rs` and the lend predicate; WASM `emission.rs`, `pending_work.rs`, both
+check emitters and the lend predicate; frontend `loop_lowering.py` (M3). A function whose last
+publication the pass deletes still lends its homes when a check carries `frame_location`.
+
+**Tests.** Pass unit tests: a counted loop of exact-int operations keeps no publication; a call
+keeps its publication; a release-only store of a finalizer-free binding does not, and one after
+a call does; `Return`, a state-machine opcode, an Origin check reached by two different
+publications, and an Unwind edge into an observing handler each keep the reaching publication;
+an Origin check reached by one publication gets that `frame_location`. A frontend test: the
+counted range loop's header and latch emit no exceptional check. A differential case with
+`range()` bounds beyond 64 bits guards M4.1. The nine core cells (frame
+fields, lifecycle, event adversaries on native, LLVM and WASM), the whole
+`tests/test_python_execution_frame.py` and the frontend location witnesses stay green. Cost:
+loop and recursion instructions-retired A/B against `origin/main`, N=1,000,000, five pairs, and
+the static hot-path count from `otool`.
+
+**Prior art.** HotSpot and V8 record a bytecode index at each call site and recover it at
+observation (PcDesc, safepoint tables); Go recovers lines from return PCs (`pclntab`). They pay
+nothing on the hot path but need a readable return address. WASM cannot read one, so Molt keeps
+explicit stores and moves them to the reads, as LLVM's dead-store elimination does for any
+memory location whose loads it can see.
+
+**Review record.** One fresh-context Goldfish design review (egm-design, 2026-11-04) raised two
+blockers and six majors. Adopted: every frame-retiring path is a read (c); entry is a write and
+the runtime initializes the word; fail-closed reads; the inliner fact; `frame_location` computed
+in the pass, not copied from the frontend; M2.1 narrowed from all releases to temporaries and
+proven finalizer-free bindings, with the PEP 667 boundary stated; M3 made concrete; Invariant 3
+made a measured gate. Not adopted:
+passing the LocationId to `molt_exception_frame_origin` as an argument. It is the same constant
+in a register, so it neither removes the hoisting risk nor the poll-path store, and it changes
+the runtime ABI of five backends.
+
 ### 4.4 Exceptions
 
 Molt keeps the error-return protocol: a failing operation sets `ctx.pending_exception` and returns

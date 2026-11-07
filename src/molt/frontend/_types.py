@@ -12,6 +12,7 @@ from molt.compiler_analysis.python_identity_catalog_generated import PythonIdent
 from molt.compiler_analysis.python_source_keys import PythonSourceKey
 
 from molt.frontend.lowering.op_kinds_generated import (
+    ExceptionEdgeKind,
     FrontendOpKind,
     WireOpKind,
 )
@@ -67,6 +68,8 @@ if TYPE_CHECKING:
 
 
 class SimpleIROp(TypedDict):
+    exception_edge: NotRequired[ExceptionEdgeKind]
+    exception_source: NotRequired[ExceptionEdgeKind]
     """Serialized operation: closed identity, existing operation-specific payload."""
 
     kind: WireOpKind
@@ -92,6 +95,7 @@ class SimpleIROp(TypedDict):
     runtime_symbol: NotRequired[Any]
     s_value: NotRequired[Any]
     source_line: NotRequired[Any]
+    source_end_line: NotRequired[Any]
     source_module_publication_boundary: NotRequired[Any]
     stack_eligible: NotRequired[Any]
     arena_eligible: NotRequired[Any]
@@ -312,6 +316,14 @@ class AsyncFrameSlot:
 
 
 @dataclass(frozen=True)
+class CompilerLocalHome:
+    """Promotable compiler transport, separate from Python binding storage."""
+
+    name: str
+    type_hint: TypeHint
+
+
+@dataclass(frozen=True)
 class ScratchCell:
     """Opaque compiler-temporary storage, never a Python frame binding."""
 
@@ -364,6 +376,9 @@ class MoltOp:
     col_offset: int | None = None
     end_col_offset: int | None = None
     source_line: int | None = None
+    source_end_line: int | None = None
+    exception_edge: ExceptionEdgeKind | None = None
+    exception_source: ExceptionEdgeKind | None = None
 
 
 def loaded_method_self_name(op: MoltOp) -> str:
@@ -471,12 +486,31 @@ _SCCP_UNKNOWN = object()
 _SCCP_MISSING = object()  # Sentinel for MISSING values — must never propagate or fold
 MidendProfile = Literal["dev", "release"]
 MidendTier = Literal["A", "B", "C"]
+
+
+class MidendCoverage(TypedDict):
+    """Coverage of one serialized body, measured before optimization."""
+
+    status: Literal["full", "degraded", "skipped", "fallback"]
+    input_ops: int | None
+    output_ops: int
+    reasons: list[str]
+
+
 _MIDEND_ENV_KEYS = (
-    "MOLT_MIDEND_SKIP_OP_THRESHOLD",
+    "MOLT_MIDEND_PROFILE",
+    "MOLT_MIDEND_TIER_FORCE",
+    "MOLT_MIDEND_TIER_A_FUNCTIONS",
+    "MOLT_MIDEND_TIER_B_FUNCTIONS",
+    "MOLT_MIDEND_TIER_C_FUNCTIONS",
+    "MOLT_MIDEND_TIER_A_MODULE_PREFIXES",
+    "MOLT_MIDEND_TIER_B_MODULE_PREFIXES",
+    "MOLT_MIDEND_TIER_C_MODULE_PREFIXES",
     "MOLT_MIDEND_MONOLITH_FUNCTION_THRESHOLD",
     "MOLT_MIDEND_MONOLITH_TOTAL_OPS_THRESHOLD",
     "MOLT_MIDEND_HOT_TIER_PROMOTION",
     "MOLT_MIDEND_WORK_BUDGET",
+    "MOLT_MIDEND_BUDGET_MS",
     "MOLT_MIDEND_BUDGET_ALPHA",
     "MOLT_MIDEND_BUDGET_BETA",
     "MOLT_MIDEND_BUDGET_SCALE",
@@ -530,8 +564,8 @@ class MidendFunctionPolicy:
     promoted: bool
     promotion_source: str
     promotion_signal: str
-    max_rounds: int
-    sccp_iter_cap: int
+    budget_rounds: int
+    sccp_iter_cap: int | None
     cse_iter_cap: int
     enable_deep_edge_thread: bool
     enable_cse: bool
@@ -553,7 +587,6 @@ class MidendFunctionPolicy:
 
 @dataclass(frozen=True)
 class MidendEnvConfig:
-    skip_op_threshold: int
     monolith_function_threshold: int
     monolith_total_ops_threshold: int
     hot_tier_promotion_enabled: bool
@@ -901,6 +934,7 @@ class FuncInfo(TypedDict):
     frame_entry_failure_label: NotRequired[int]
     stateful_frame_plan: NotRequired[StatefulFunctionFramePlan]
     stateful_locals_layout: NotRequired[StatefulLocalsLayout]
+    resume_value_homes: NotRequired[dict[str, CompilerLocalHome]]
     source_module_publication: NotRequired[SourceModulePublication]
     gpu_body_origin: NotRequired[dict[str, Any]]
 
@@ -984,12 +1018,7 @@ class CanonicalizationState(TypedDict):
     const_int_values: dict[str, int]
     value_type_tags: dict[str, int]
     available_values: dict[tuple[Any, ...], MoltValue]
-    alias_epochs: dict[str, int]
-    object_epochs: dict[str, int]
-    memory_epoch: int
 
-
-_CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY = "__signature_cache"
 
 __all__ = [
     "MoltValue",
@@ -1034,7 +1063,6 @@ __all__ = [
     "FuncInfo",
     "_TrackedOpsList",
     "CanonicalizationState",
-    "_CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY",
     "CompatibilityError",
     "CompatibilityReporter",
     "CFGGraph",

@@ -202,6 +202,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             //   - 0 operands, 1+ results: produce NaN-boxed None per result
             //   - 1+ operands, 0 results: no-op (side-effect only)
             //   - 1+ operands, 1+ results: pass-through first operand
+            OpCode::FrameSetLocation => {
+                assert!(self.lower_preserved_simpleir_op(op, OpKind::FrameSetLocation));
+            }
             OpCode::Copy => {
                 let original_kind = op.origin;
                 if let Some(kind) = original_kind
@@ -526,7 +529,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     return;
                 };
                 let result = if op.is_async_work_poll() {
-                    self.emit_async_work_poll(false)
+                    self.emit_async_work_poll(false, op.frame_location())
                 } else {
                     self.emit_exception_pending_word("check_exc").into()
                 };
@@ -575,18 +578,67 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .builder
                     .get_insert_block()
                     .expect("must be inside a block");
-                self.record_branch_args(
-                    source_block,
-                    branch_from_bb,
-                    target_block_id,
-                    "check-exception-edge",
-                    &op.operands,
-                );
-                self.record_llvm_edge(branch_from_bb, target_bb);
+                let edge = op
+                    .exception_edge_kind()
+                    .expect("verified exceptional edge kind");
+                let exception_bb = match edge {
+                    molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Origin => {
+                        let origin = self.backend.context.append_basic_block(
+                            self.llvm_fn,
+                            &format!("check_exc_origin{}", self.synthetic_block_counter),
+                        );
+                        self.synthetic_block_counter += 1;
+                        self.all_llvm_blocks.push(origin);
+                        self.backend.builder.position_at_end(origin);
+                        if let Some(location) = op.frame_location() {
+                            // The site's own LocationId; the normal path stores nothing.
+                            self.store_frame_location(location);
+                        }
+                        let homes = if let Some(slot) = self.frame_homes {
+                            self.backend
+                                .builder
+                                .build_load(self.backend.context.i64_type(), slot, "origin_homes")
+                                .unwrap()
+                                .into_int_value()
+                        } else {
+                            self.backend.context.i64_type().const_zero()
+                        };
+                        let service = self.ensure_runtime_i64_fn("molt_exception_frame_origin", 1);
+                        self.backend
+                            .builder
+                            .build_call(service, &[homes.into()], "origin_capture")
+                            .unwrap();
+                        self.record_branch_args(
+                            source_block,
+                            origin,
+                            target_block_id,
+                            "check-exception-origin-edge",
+                            &op.operands,
+                        );
+                        self.record_llvm_edge(origin, target_bb);
+                        self.backend
+                            .builder
+                            .build_unconditional_branch(target_bb)
+                            .unwrap();
+                        origin
+                    }
+                    molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Unwind => {
+                        self.record_branch_args(
+                            source_block,
+                            branch_from_bb,
+                            target_block_id,
+                            "check-exception-unwind-edge",
+                            &op.operands,
+                        );
+                        target_bb
+                    }
+                };
+                self.backend.builder.position_at_end(branch_from_bb);
+                self.record_llvm_edge(branch_from_bb, exception_bb);
                 self.record_llvm_edge(branch_from_bb, continue_bb);
                 self.backend
                     .builder
-                    .build_conditional_branch(has_exception, target_bb, continue_bb)
+                    .build_conditional_branch(has_exception, exception_bb, continue_bb)
                     .unwrap();
                 self.backend.builder.position_at_end(continue_bb);
             }

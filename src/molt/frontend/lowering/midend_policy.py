@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from molt.frontend._types import (
+    MidendCoverage,
     MidendEnvConfig,
     MidendFunctionPolicy,
     MidendProfile,
@@ -20,6 +21,10 @@ from molt.frontend._types import (
     _TrackedOpsList,
 )
 from molt.frontend._mixin_base import GeneratorMixinBase
+from molt.frontend.lowering.midend_telemetry import (
+    MidendMemoryProfiler,
+    PassMemorySample,
+)
 
 if TYPE_CHECKING:
     from molt.frontend import SimpleTIRGenerator
@@ -45,13 +50,12 @@ class MidendPolicyMixin(GeneratorMixinBase):
             "expanded_attempts": 0,
             "expanded_accepted": 0,
             "expanded_fallbacks": 0,
-            "midend_module_skips": 0,
-            "midend_oversized_function_skips": 0,
             "invalid_unbound_rollback": 0,
             "invalid_unbound_uses": 0,
             "fixed_point_fail_fast": 0,
             "cfg_structural_failures": 0,
             "cfg_structural_canonicalizations": 0,
+            "midend_module_skips": 0,
             "sccp_iteration_cap_hits": 0,
             "cse_dce_fp_cap_hits": 0,
             "sccp_branch_prunes": 0,
@@ -73,6 +77,7 @@ class MidendPolicyMixin(GeneratorMixinBase):
         self.midend_policy_outcomes_by_function: dict[str, dict[str, Any]] = {}
         self._active_midend_function_name = "<direct>"
         self._midend_stats_reported = False
+        self._midend_memory_profiler: MidendMemoryProfiler | None = None
 
     def _midend_function_stats(self) -> dict[str, int]:
         name = self._active_midend_function_name
@@ -120,6 +125,11 @@ class MidendPolicyMixin(GeneratorMixinBase):
                 "ms_total": 0.0,
                 "ms_max": 0.0,
                 "samples_ms": [],
+                "call_count": 0,
+                "peak_rss_bytes": None,
+                "peak_rss_growth_bytes": None,
+                "memory_samples": 0,
+                "memory_missing_samples": 0,
             }
             per_func[pass_name] = stats
         return stats
@@ -165,9 +175,6 @@ class MidendPolicyMixin(GeneratorMixinBase):
         sccp_iter_cap_override = os.getenv("MOLT_SCCP_MAX_ITERS", "").strip()
         cse_iter_cap_override = os.getenv("MOLT_CSE_MAX_ITERS", "").strip()
         return MidendEnvConfig(
-            skip_op_threshold=self._midend_positive_int_env(
-                "MOLT_MIDEND_SKIP_OP_THRESHOLD", 800, minimum=1
-            ),
             monolith_function_threshold=max(
                 8,
                 self._midend_positive_int_env(
@@ -444,79 +451,56 @@ class MidendPolicyMixin(GeneratorMixinBase):
                     promotion_signal = hot_signal
         defaults: dict[tuple[MidendProfile, MidendTier], dict[str, Any]] = {
             ("dev", "A"): {
-                # Converged functions exit the fixed-point loop early, so
-                # extra headroom only costs work for functions that need
-                # it. numpy.lib._iotools.NameValidator.validate needs 3
-                # rounds; 2 hard-failed the whole build (fail-closed
-                # non-convergence).
-                "max_rounds": 4,
-                "sccp_iter_cap": 48,
+                # Nominal rounds calibrate optional CSE work, not convergence.
+                "budget_rounds": 4,
+                "sccp_iter_cap": None,
                 "cse_iter_cap": 16,
                 "enable_deep_edge_thread": True,
                 "enable_cse": True,
                 "budget_base_ms": 60.0,
             },
             ("dev", "B"): {
-                "max_rounds": 1,
-                "sccp_iter_cap": 24,
+                "budget_rounds": 1,
+                "sccp_iter_cap": None,
                 "cse_iter_cap": 8,
                 "enable_deep_edge_thread": True,
                 "enable_cse": True,
                 "budget_base_ms": 35.0,
             },
             ("dev", "C"): {
-                "max_rounds": 1,
-                "sccp_iter_cap": 12,
+                "budget_rounds": 1,
+                "sccp_iter_cap": None,
                 "cse_iter_cap": 4,
-                "enable_deep_edge_thread": False,
-                "enable_cse": False,
+                "enable_deep_edge_thread": True,
+                "enable_cse": True,
                 "budget_base_ms": 20.0,
             },
             ("release", "A"): {
-                "max_rounds": 4,
-                "sccp_iter_cap": 128,
+                "budget_rounds": 4,
+                "sccp_iter_cap": None,
                 "cse_iter_cap": 48,
                 "enable_deep_edge_thread": True,
                 "enable_cse": True,
                 "budget_base_ms": 180.0,
             },
             ("release", "B"): {
-                "max_rounds": 3,
-                "sccp_iter_cap": 96,
+                "budget_rounds": 3,
+                "sccp_iter_cap": None,
                 "cse_iter_cap": 32,
                 "enable_deep_edge_thread": True,
                 "enable_cse": True,
                 "budget_base_ms": 110.0,
             },
             ("release", "C"): {
-                "max_rounds": 2,
-                "sccp_iter_cap": 48,
+                "budget_rounds": 2,
+                "sccp_iter_cap": None,
                 "cse_iter_cap": 16,
-                "enable_deep_edge_thread": False,
+                "enable_deep_edge_thread": True,
                 "enable_cse": True,
                 "budget_base_ms": 70.0,
             },
         }
         selected = dict(defaults[(profile, tier)])
-        monolith_pressure_exempt = (
-            resolved_function == "molt_main" or promoted or tier == "A"
-        )
-        if not monolith_pressure_exempt and monolith_pressure_level >= 1:
-            # Round count is a fixed-point soundness floor for functions admitted
-            # to the midend. Under monolith pressure, trim pass intensity and
-            # budgets; the separate oversized-function gate decides when to skip
-            # the midend entirely.
-            selected["sccp_iter_cap"] = max(
-                8, int(int(selected["sccp_iter_cap"]) * 0.75)
-            )
-            selected["cse_iter_cap"] = max(4, int(int(selected["cse_iter_cap"]) * 0.75))
-            selected["budget_base_ms"] = float(selected["budget_base_ms"]) * 0.85
-        if not monolith_pressure_exempt and monolith_pressure_level >= 2:
-            selected["sccp_iter_cap"] = max(
-                8, int(int(selected["sccp_iter_cap"]) * 0.75)
-            )
-            selected["cse_iter_cap"] = max(4, int(int(selected["cse_iter_cap"]) * 0.75))
-            selected["budget_base_ms"] = float(selected["budget_base_ms"]) * 0.8
         alpha = self.midend_env.budget_alpha
         beta = self.midend_env.budget_beta
         scale = max(0.0, self.midend_env.budget_scale)
@@ -540,7 +524,7 @@ class MidendPolicyMixin(GeneratorMixinBase):
         # function of the input, independent of wall-clock timing.
         #
         # Calibration: a non-pathological function executes the full
-        # `max_rounds` round loop, hitting ~`_MIDEND_DEGRADE_CHECKPOINTS`
+        # nominal budget-round loop, hitting ~`_MIDEND_DEGRADE_CHECKPOINTS`
         # work-charges per round, each ≈ the live op count.  The ceiling below
         # admits that nominal cost (plus generous per-round growth headroom and
         # the per-tier base) so normal functions never degrade, while a pass
@@ -552,7 +536,7 @@ class MidendPolicyMixin(GeneratorMixinBase):
             work_budget = work_budget_override
         else:
             base_ops = max(1, len(ops))
-            rounds = max(1, int(selected["max_rounds"]))
+            rounds = max(1, int(selected["budget_rounds"]))
             nominal_round_work = _MIDEND_DEGRADE_CHECKPOINTS * base_ops
             work_budget = (
                 float(selected["budget_base_ms"]) * _MIDEND_WORK_BASE_UNITS_PER_MS
@@ -567,8 +551,8 @@ class MidendPolicyMixin(GeneratorMixinBase):
             promoted=promoted,
             promotion_source=promotion_source,
             promotion_signal=promotion_signal,
-            max_rounds=max(2, int(selected["max_rounds"])),
-            sccp_iter_cap=int(selected["sccp_iter_cap"]),
+            budget_rounds=max(2, int(selected["budget_rounds"])),
+            sccp_iter_cap=selected["sccp_iter_cap"],
             cse_iter_cap=int(selected["cse_iter_cap"]),
             enable_deep_edge_thread=bool(selected["enable_deep_edge_thread"]),
             enable_cse=bool(selected["enable_cse"]),
@@ -582,20 +566,49 @@ class MidendPolicyMixin(GeneratorMixinBase):
             monolith_pressure_level=monolith_pressure_level,
         )
 
+    def _start_midend_pass_memory(self) -> PassMemorySample | None:
+        profiler = self._midend_memory_profiler
+        return profiler.begin() if profiler is not None else None
+
     def _record_midend_pass_sample(
         self,
         pass_name: str,
         *,
         elapsed_ms: float,
-        accepted: bool,
+        accepted: bool | None,
         degraded: bool = False,
+        executed: bool = True,
+        memory: PassMemorySample | None = None,
     ) -> None:
+        if memory is not None:
+            profiler = self._midend_memory_profiler
+            if profiler is None:
+                raise RuntimeError("midend memory sample has no live owner")
+            profiler.finish(memory)
         stats = self._midend_pass_stats(pass_name)
-        stats["attempted"] = int(stats.get("attempted", 0)) + 1
-        if accepted:
+        stats["call_count"] = int(stats.get("call_count", 0)) + int(executed)
+        if accepted is not None:
+            stats["attempted"] = int(stats.get("attempted", 0)) + 1
+        if accepted is True:
             stats["accepted"] = int(stats.get("accepted", 0)) + 1
-        else:
+        elif accepted is False:
             stats["rejected"] = int(stats.get("rejected", 0)) + 1
+        if memory is not None:
+            stats["memory_samples"] = (
+                int(stats.get("memory_samples", 0)) + memory.samples
+            )
+            stats["memory_missing_samples"] = (
+                int(stats.get("memory_missing_samples", 0)) + memory.missing_samples
+            )
+            if memory.peak_rss_bytes is not None:
+                stats["peak_rss_bytes"] = max(
+                    stats["peak_rss_bytes"] or 0, memory.peak_rss_bytes
+                )
+                stats["peak_rss_growth_bytes"] = max(
+                    stats["peak_rss_growth_bytes"] or 0,
+                    memory.peak_rss_bytes
+                    - (memory.start_rss_bytes or memory.peak_rss_bytes),
+                )
         if degraded:
             stats["degraded"] = int(stats.get("degraded", 0)) + 1
         stats["ms_total"] = float(stats.get("ms_total", 0.0)) + max(0.0, elapsed_ms)
@@ -648,31 +661,50 @@ class MidendPolicyMixin(GeneratorMixinBase):
             "round_snapshots": list(round_snapshots) if round_snapshots else [],
         }
 
-    def _log_degrade_levels(
+    def _record_midend_coverage(
         self,
-        degrade_level: int,
-        reasons: list[str],
-        budget_ms: float,
+        *,
+        input_ops: int,
+        output_ops: int,
+        counter_baseline: dict[str, int],
     ) -> None:
-        """Log which functions hit which degrade level and why (MOL-27)."""
-        func_name = self._active_midend_function_name
-        outcome = self.midend_policy_outcomes_by_function.get(func_name)
-        if outcome is not None:
-            outcome["degrade_level"] = degrade_level
-            outcome["degrade_level_reasons"] = list(reasons)
-            outcome["per_func_budget_ms"] = round(budget_ms, 3)
-        if os.getenv("MOLT_MIDEND_STATS") is not None:
-            level_desc = {
-                1: "skip guard hoist",
-                2: "skip SCCP multi-pass",
-                3: "skip all optimisation",
-            }.get(degrade_level, f"unknown({degrade_level})")
-            print(
-                f"molt midend degrade: {func_name} level={degrade_level}"
-                f" ({level_desc}) budget_ms={budget_ms:.1f}"
-                f" reasons={reasons}",
-                file=sys.stderr,
-            )
+        outcome = self.midend_policy_outcomes_by_function.setdefault(
+            self._active_midend_function_name, {}
+        )
+        reasons = {event["reason"] for event in outcome.get("degrade_events", [])}
+        # Rejections mean a candidate failed verification, not that a sound
+        # optimization found no applicable rewrite. Count only the former.
+        for counter in (
+            "sccp_iteration_cap_hits",
+            "cse_iteration_cap_hits",
+            "cse_dce_fp_cap_hits",
+            "invalid_unbound_rollback",
+            "midend_verifier_rejections",
+            "expanded_fallbacks",
+        ):
+            if self.midend_stats.get(counter, 0) > counter_baseline.get(counter, 0):
+                reasons.add(counter)
+        status: Literal["full", "degraded", "skipped", "fallback"] = "full"
+        if "expanded_fallbacks" in reasons:
+            status = "fallback"
+        elif reasons or outcome.get("degraded"):
+            status = "degraded"
+        if self.midend_stats["midend_module_skips"] > counter_baseline.get(
+            "midend_module_skips", 0
+        ):
+            status = "skipped"
+            reasons.add("stdlib_cost_policy")
+        elif not outcome.get("round_snapshots") and input_ops:
+            status = "skipped"
+            reasons.add("missing_outcome")
+        coverage: MidendCoverage = {
+            "status": status,
+            "input_ops": input_ops,
+            "output_ops": output_ops,
+            "reasons": sorted(reasons),
+        }
+        outcome["coverage"] = coverage
+        outcome["degraded"] = status != "full"
 
     def _maybe_report_midend_stats(self) -> None:
         if self._midend_stats_reported:
@@ -680,35 +712,8 @@ class MidendPolicyMixin(GeneratorMixinBase):
         if os.getenv("MOLT_MIDEND_STATS") is None:
             return
         self._midend_stats_reported = True
-        ordered_keys = [
-            "expanded_attempts",
-            "expanded_accepted",
-            "expanded_fallbacks",
-            "midend_module_skips",
-            "midend_oversized_function_skips",
-            "invalid_unbound_rollback",
-            "invalid_unbound_uses",
-            "fixed_point_fail_fast",
-            "cfg_structural_failures",
-            "cfg_structural_canonicalizations",
-            "sccp_iteration_cap_hits",
-            "cse_dce_fp_cap_hits",
-            "sccp_branch_prunes",
-            "loop_edge_thread_prunes",
-            "try_edge_thread_prunes",
-            "unreachable_blocks_removed",
-            "cfg_region_prunes",
-            "label_prunes",
-            "jump_noop_elisions",
-            "guard_hoist_attempts",
-            "guard_hoist_accepted",
-            "guard_hoist_rejected",
-            "phi_edge_trims",
-            "gvn_hits",
-            "dce_removed_total",
-        ]
         rendered = " ".join(
-            f"{key}={self.midend_stats.get(key, 0)}" for key in ordered_keys
+            f"{key}={value}" for key, value in self.midend_stats.items()
         )
         print(
             f"molt midend stats: {rendered}",
@@ -827,10 +832,14 @@ class MidendPolicyMixin(GeneratorMixinBase):
                 accepted,
                 degraded,
             ) in pass_hotspots[:10]:
+                measurement = self.midend_pass_stats_by_function[func_name][pass_name]
                 top_passes.append(
                     f"{func_name}:{pass_name} total_ms={total_ms:.3f} "
                     f"p95_ms={p95:.3f} attempted={attempted} "
-                    f"accepted={accepted} degraded={degraded}"
+                    f"accepted={accepted} degraded={degraded} "
+                    f"calls={measurement.get('call_count', 0)} "
+                    f"peak_rss_bytes={measurement.get('peak_rss_bytes')} "
+                    f"memory_samples={measurement.get('memory_samples', 0)}"
                 )
             print(
                 "molt midend pass hotspots: " + " | ".join(top_passes),

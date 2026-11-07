@@ -8,6 +8,7 @@ passing or expected-panic noise around it.
 from __future__ import annotations
 
 import hashlib
+import errno
 import io
 import json
 from pathlib import Path
@@ -600,3 +601,36 @@ def test_junit_mode_refuses_run_selection_and_exits_on_failures(
     assert sum(len(cause["tests"]) for cause in payload["causes"]) == 6
     assert ci_triage.main(["--junit", str(passing)]) == 0
     assert capsys.readouterr().out.startswith(f"{passing}: 0 failing of 1 tests")
+
+
+@pytest.mark.parametrize(
+    "number,closed,expected",
+    [
+        (errno.EAGAIN, True, True),
+        (errno.ENOMEM, True, True),
+        (errno.EAGAIN, False, False),
+        (errno.ENOENT, True, False),
+    ],
+)
+def test_infrastructure_retry_requires_no_child_and_closed_resource_failure(
+    number, closed, expected
+):
+    from molt.process_spawn import ProcessLaunchError
+
+    failure = ProcessLaunchError(["python", "-c", "pass"], OSError(number, "refused"))
+    failure.cleanup_closed = closed
+    record = {"status": "failure", "launch_failure": failure.json_payload()}
+    classification = ci_triage.classify_infrastructure_failure(record)
+    assert (
+        classification is ci_triage.InfrastructureClassification.LAUNCH_RESOURCE
+    ) is expected
+    for mixed in (
+        {"guard_outcome": {"child_returncode": 1}},
+        {"child_returncode": 1},
+        {"timed_out": True},
+        {"cancelled_by_global_stop": True},
+    ):
+        assert (
+            ci_triage.classify_infrastructure_failure({**record, **mixed})
+            is ci_triage.InfrastructureClassification.NOT_RETRYABLE
+        )

@@ -19,6 +19,7 @@ from molt.cli.runtime_wasm_cache_diagnostics import (
 )
 from molt.cli.runtime_wasm_build_timings import _runtime_wasm_build_timings_snapshot
 from molt.metric_ratios import budget_utilization
+from molt.frontend.lowering.midend_telemetry import RSS_SAMPLE_INTERVAL_S
 
 
 def _build_reason_summary(
@@ -443,6 +444,9 @@ def _emit_build_diagnostics(
                 file=sys.stderr,
             )
     if isinstance(midend, dict):
+        coverage = midend.get("coverage")
+        if isinstance(coverage, dict):
+            _emit_midend_coverage(coverage)
         requested_profile = midend.get("requested_profile")
         if isinstance(requested_profile, str) and requested_profile:
             print(f"- midend.profile: {requested_profile}", file=sys.stderr)
@@ -713,7 +717,8 @@ def _emit_build_diagnostics(
                 ms_total = float(item.get("ms_total", 0.0))
                 print(
                     "- midend.pass_wall_top."
-                    f"{idx}: {pass_name} ms_total={ms_total:.3f}",
+                    f"{idx}: {pass_name} ms_total={ms_total:.3f} "
+                    f"calls={item.get('call_count')} peak_rss_bytes={item.get('peak_rss_bytes')}",
                     file=sys.stderr,
                 )
         promo_candidates = midend.get("promotion_candidates")
@@ -802,6 +807,76 @@ def _normalize_midend_pass_stat(raw: dict[str, Any]) -> dict[str, Any]:
         "ms_p95": round(_midend_sample_percentile(samples, 0.95), 6),
         "ms_p99": round(_midend_sample_percentile(samples, 0.99), 6),
         "sample_count": len(samples),
+        "call_count": raw.get("call_count"),
+        "peak_rss_bytes": raw.get("peak_rss_bytes"),
+        "peak_rss_growth_bytes": raw.get("peak_rss_growth_bytes"),
+        "memory_samples": int(raw.get("memory_samples", 0)),
+        "memory_missing_samples": int(raw.get("memory_missing_samples", 0)),
+    }
+
+
+def _emit_midend_coverage(coverage: Mapping[str, Any]) -> None:
+    categories = coverage["categories"]
+    counts = " ".join(
+        f"{status}={row['functions']}functions/{row['input_ops']}ops"
+        for status, row in categories.items()
+    )
+    print(
+        f"molt midend coverage: functions={coverage['functions']} "
+        f"input_ops={coverage['input_ops']} {counts} "
+        f"unknown_input_ops={coverage['functions_with_unknown_input_ops']} "
+        f"reasons={json.dumps(coverage['reasons'], sort_keys=True)}",
+        file=sys.stderr,
+    )
+
+
+def _build_midend_coverage_payload(
+    outcomes: Mapping[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Project existing per-body outcomes; never infer original ops from output."""
+    categories = {
+        status: {"functions": 0, "input_ops": 0}
+        for status in ("full", "degraded", "skipped", "fallback")
+    }
+    reasons: dict[str, dict[str, int]] = {}
+    unknown_ops = 0
+    for outcome in outcomes.values():
+        coverage = outcome.get("coverage", {})
+        status = coverage.get("status", "skipped")
+        if status not in categories:
+            raise ValueError(f"Invalid midend coverage status: {status!r}")
+        row = categories[status]
+        row["functions"] += 1
+        ops = coverage.get("input_ops")
+        if ops is None:
+            unknown_ops += 1
+        elif type(ops) is not int or ops < 0:
+            raise ValueError(f"Invalid midend input op count: {ops!r}")
+        else:
+            row["input_ops"] += ops
+        for reason in set(coverage.get("reasons", ["missing_outcome"])):
+            tally = reasons.setdefault(reason, {"functions": 0, "input_ops": 0})
+            tally["functions"] += 1
+            tally["input_ops"] += ops if ops is not None else 0
+    functions = sum(row["functions"] for row in categories.values())
+    input_ops = sum(row["input_ops"] for row in categories.values())
+    return {
+        "denominator": "serialized_lowered_functions_before_backend_reachability",
+        "functions": functions,
+        "input_ops": input_ops,
+        "functions_with_unknown_input_ops": unknown_ops,
+        "complete": unknown_ops == 0,
+        "categories": {
+            status: {
+                **row,
+                "function_share": row["functions"] / functions if functions else None,
+                "op_share": row["input_ops"] / input_ops
+                if input_ops and not unknown_ops
+                else None,
+            }
+            for status, row in categories.items()
+        },
+        "reasons": {reason: reasons[reason] for reason in sorted(reasons)},
     }
 
 
@@ -931,6 +1006,7 @@ def _build_midend_diagnostics_payload(
             "work_units_spent": work_units_spent,
             "degraded": degraded,
             "degrade_events": degrade_events,
+            "coverage": raw_outcome.get("coverage"),
         }
 
     normalized_pass_stats: dict[str, dict[str, dict[str, Any]]] = {}
@@ -952,6 +1028,9 @@ def _build_midend_diagnostics_payload(
                     "attempted": normalized["attempted"],
                     "accepted": normalized["accepted"],
                     "degraded": normalized["degraded"],
+                    "call_count": normalized["call_count"],
+                    "peak_rss_bytes": normalized["peak_rss_bytes"],
+                    "peak_rss_growth_bytes": normalized["peak_rss_growth_bytes"],
                 }
             )
         normalized_pass_stats[function_key] = normalized_per_pass
@@ -1079,6 +1158,10 @@ def _build_midend_diagnostics_payload(
         )
 
     pass_aggregate_wall_ms: dict[str, float] = {}
+    pass_aggregate_calls: dict[str, int | None] = {}
+    pass_aggregate_peak_rss: dict[str, int | None] = {}
+    pass_aggregate_peak_growth: dict[str, int | None] = {}
+    pass_aggregate_memory_samples: dict[str, int] = {}
     for function_key in pass_stats_by_function:
         per_pass = pass_stats_by_function[function_key]
         for pass_name, raw_stat in per_pass.items():
@@ -1086,10 +1169,32 @@ def _build_midend_diagnostics_payload(
             pass_aggregate_wall_ms[pass_name] = pass_aggregate_wall_ms.get(
                 pass_name, 0.0
             ) + max(0.0, ms_total)
+            calls = raw_stat.get("call_count")
+            if isinstance(calls, int):
+                prior_calls = pass_aggregate_calls.get(pass_name, 0)
+                pass_aggregate_calls[pass_name] = (
+                    prior_calls + calls if prior_calls is not None else None
+                )
+            else:
+                pass_aggregate_calls[pass_name] = None
+            pass_aggregate_memory_samples[pass_name] = (
+                pass_aggregate_memory_samples.get(pass_name, 0)
+                + int(raw_stat.get("memory_samples", 0))
+            )
+            for field, aggregate in (
+                ("peak_rss_bytes", pass_aggregate_peak_rss),
+                ("peak_rss_growth_bytes", pass_aggregate_peak_growth),
+            ):
+                value = raw_stat.get(field)
+                prior = aggregate.get(pass_name)
+                aggregate[pass_name] = (
+                    max(prior or 0, value) if isinstance(value, int) else prior
+                )
     pass_wall_ranked = sorted(pass_aggregate_wall_ms.items(), key=lambda kv: -kv[1])
 
     return {
         "requested_profile": requested_profile,
+        "coverage": _build_midend_coverage_payload(policy_outcomes_by_function),
         "effective_profiles": sorted(effective_profiles),
         "policy_config": _midend_policy_config_snapshot(),
         "function_count": max(
@@ -1121,8 +1226,22 @@ def _build_midend_diagnostics_payload(
         "functions_under_50pct_work_budget": functions_under_50pct_work_budget,
         "promotion_candidates": promotion_candidates[:20],
         "pass_wall_time_ranked": [
-            {"pass": name, "ms_total": round(ms, 6)} for name, ms in pass_wall_ranked
+            {
+                "pass": name,
+                "ms_total": round(ms, 6),
+                "call_count": pass_aggregate_calls[name],
+                "peak_rss_bytes": pass_aggregate_peak_rss.get(name),
+                "peak_rss_growth_bytes": pass_aggregate_peak_growth.get(name),
+                "memory_samples": pass_aggregate_memory_samples[name],
+            }
+            for name, ms in pass_wall_ranked
         ],
+        "pass_memory_metric": {
+            "kind": "sampled_compiler_process_rss",
+            "sample_interval_ms": RSS_SAMPLE_INTERVAL_S * 1000,
+            "scope": "inclusive_nested_passes",
+            "unavailable": None,
+        },
         "policy_outcomes_by_function": normalized_policy,
         "pass_stats_by_function": normalized_pass_stats,
         "function_hotspots_top": function_hotspots[:10],

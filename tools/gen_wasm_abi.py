@@ -1397,9 +1397,12 @@ def render_runtime_boxed_abi_rs(data: dict) -> str:
             "#[repr(u16)]\npub enum RuntimeFn {\n",
         ]
     )
-    for index, spec in enumerate(specs):
+    # Implicit discriminants follow declaration order, which is the table's
+    # symbol order: adding one intrinsic adds lines instead of renumbering
+    # every later variant (2,632 ids; 2026-11-07).
+    for spec in specs:
         lines.append(
-            f"    {_wire_kind_variant(spec['runtime_name'].removeprefix('molt_'))} = {index},\n"
+            f"    {_wire_kind_variant(spec['runtime_name'].removeprefix('molt_'))},\n"
         )
     lines.extend(
         [
@@ -1437,7 +1440,7 @@ def render_runtime_boxed_abi_rs(data: dict) -> str:
         ]
     )
     shared = runtime_boxed_op_specs(data)
-    index_by_symbol = {spec["runtime_name"]: index for index, spec in enumerate(specs)}
+    symbols = {spec["runtime_name"] for spec in specs}
     lines.append(
         "\n/// Explicitly admitted positional op calls; every target consumes this mapping.\n"
     )
@@ -1452,9 +1455,11 @@ def render_runtime_boxed_abi_rs(data: dict) -> str:
         ]
     )
     for entry in shared:
-        index = index_by_symbol[entry["runtime_name"]]
+        if entry["runtime_name"] not in symbols:
+            raise ValueError(f"{entry['runtime_name']} has no boxed runtime ABI")
+        variant = _wire_kind_variant(entry["runtime_name"].removeprefix("molt_"))
         lines.append(
-            f"        {_rust_op_kind(entry['kind'])} => Some(&RUNTIME_BOXED_ABIS[{index}]),\n"
+            f"        {_rust_op_kind(entry['kind'])} => Some(RuntimeFn::{variant}.boxed_abi()),\n"
         )
     lines.extend(["        _ => None,\n", "    }\n", "}\n"])
     return "".join(lines).replace("molt_ir::OpKind", "crate::OpKind")
@@ -1818,6 +1823,7 @@ def _python_builtin_global_callables(data: dict) -> list[dict]:
         if spec.bind_kind == BuiltinBindingPolicy.POSITIONAL_RANGE and (
             spec.pos_or_kw_params
             or spec.vararg
+            or spec.varkw
             or spec.kwonly_params
             or spec.kw_defaults
             or len(spec.defaults) > len(spec.params)
@@ -1828,6 +1834,7 @@ def _python_builtin_global_callables(data: dict) -> list[dict]:
         if spec.bind_kind == BuiltinBindingPolicy.CLINIC_NAMED and (
             spec.params
             or spec.vararg
+            or spec.varkw
             or spec.kwonly_params
             or spec.kw_defaults
             or len(spec.defaults) > len(spec.pos_or_kw_params)
@@ -1836,7 +1843,8 @@ def _python_builtin_global_callables(data: dict) -> list[dict]:
                 f"builtin {python_name!r} has invalid fixed named Clinic metadata"
             )
         if (
-            python_name.startswith("_") and python_name != "__import__"
+            python_name.startswith("_")
+            and python_name not in {"__import__", "__build_class__"}
         ) or python_name.startswith("molt_"):
             raise ValueError(
                 f"private runtime spelling {python_name!r} is not a Python builtin; "
@@ -1876,7 +1884,7 @@ def _python_builtin_global_callables(data: dict) -> list[dict]:
                 "pos_or_kw_params": list(spec.pos_or_kw_params),
                 "kwonly_params": list(spec.kwonly_params),
                 "vararg": spec.vararg,
-                "varkw": None,
+                "varkw": spec.varkw,
                 "defaults": list(spec.defaults),
                 "kw_defaults": [
                     (name, expr)

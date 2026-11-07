@@ -221,7 +221,7 @@ impl DbWorker {
         if let Some(reader) = &mut self.reader {
             result = preserve_application_and_cleanup_result(
                 result,
-                reader.close(deadline).context("close database reader"),
+                reader.close().context("close database reader"),
             );
         }
         let (_, responses) = std::sync::mpsc::channel();
@@ -771,7 +771,7 @@ mod frame_tests {
         let (mut task, _unpolled_responses) =
             spawn_db_reader(HostPipeReader::new(pipe).unwrap()).unwrap();
         finish_reader_input(&task);
-        let error = task.close(Instant::now()).unwrap_err();
+        let error = task.close().unwrap_err();
         assert!(error.downcast_ref::<serde_json::Error>().is_some());
     }
 
@@ -783,7 +783,7 @@ mod frame_tests {
         let (mut task, _unpolled_responses) =
             spawn_db_reader(HostPipeReader::new(pipe).unwrap()).unwrap();
         finish_reader_input(&task);
-        let error = task.close(Instant::now()).unwrap_err();
+        let error = task.close().unwrap_err();
         assert_eq!(
             error.downcast_ref::<std::io::Error>().unwrap().kind(),
             std::io::ErrorKind::UnexpectedEof
@@ -802,7 +802,7 @@ mod frame_tests {
         drop(writer);
         let (mut task, responses) = spawn_db_reader(HostPipeReader::new(pipe).unwrap()).unwrap();
         finish_reader_input(&task);
-        task.close(Instant::now()).unwrap();
+        task.close().unwrap();
         for expected in [1, 2] {
             let WorkerMessage::Response(response) = responses.try_recv().unwrap() else {
                 panic!("completed frame replaced by failure");
@@ -819,7 +819,7 @@ mod frame_tests {
     fn database_reader_owner_cancellation_is_not_a_terminal_failure() {
         let (pipe, _writer) = os_pipe::pipe().unwrap();
         let (mut task, responses) = spawn_db_reader(HostPipeReader::new(pipe).unwrap()).unwrap();
-        task.close(Instant::now() + Duration::from_secs(1)).unwrap();
+        task.close().unwrap();
         assert!(matches!(
             responses.try_recv(),
             Err(std::sync::mpsc::TryRecvError::Disconnected)

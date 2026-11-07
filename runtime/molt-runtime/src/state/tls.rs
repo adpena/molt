@@ -164,5 +164,4 @@ thread_local! {
     pub(crate) static REPR_STACK: std::mem::ManuallyDrop<RefCell<Vec<PtrSlot>>> = const { std::mem::ManuallyDrop::new(RefCell::new(Vec::new())) };
     pub(crate) static REPR_SET: std::mem::ManuallyDrop<RefCell<HashSet<PtrSlot>>> = std::mem::ManuallyDrop::new(RefCell::new(HashSet::new()));
     pub(crate) static REPR_DEPTH: Cell<usize> = const { Cell::new(0) };
-    pub(crate) static TRACEBACK_SUPPRESS: Cell<usize> = const { Cell::new(0) };
 }

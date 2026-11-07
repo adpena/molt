@@ -75,6 +75,23 @@ pub(in crate::native_backend::function_compiler) fn emit_exception_pending_condi
     builder.ins().icmp_imm_s(IntCC::NotEqual, pending, 0)
 }
 
+/// Store `location` into the frame's location word, at the canonical ABI
+/// offset before the lent home base. The one native publication primitive.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) fn emit_frame_location_store(
+    builder: &mut FunctionBuilder<'_>,
+    address: Value,
+    location: i64,
+) {
+    let location = builder.ins().iconst(types::I64, location);
+    builder.ins().store(
+        MemFlagsData::trusted(),
+        location,
+        address,
+        molt_codegen_abi::FRAME_LOCATION_OFFSET,
+    );
+}
+
 /// Service async work only when its runtime word is set. The fast result is
 /// still an exception observation: poll placement marks existing checks after
 /// raising operations; it does not make their exception predicate redundant.
@@ -86,6 +103,7 @@ pub(in crate::native_backend::function_compiler) fn emit_async_work_poll(
     record_slot: cranelift_codegen::ir::StackSlot,
     cold_observer: FuncRef,
     fast_observer: Option<FuncRef>,
+    cold_location: Option<(cranelift_codegen::ir::StackSlot, i64)>,
 ) -> Value {
     let ptr = builder
         .ins()
@@ -104,6 +122,13 @@ pub(in crate::native_backend::function_compiler) fn emit_async_work_poll(
     builder.ins().brif(pending, cold, &[], fast, &[]);
     switch_to_block_materialized(builder, cold);
     seal_block_once(builder, sealed_blocks, cold);
+    if let Some((cold_homes, location)) = cold_location {
+        // Serviced work is Python code that can read this frame.
+        let homes = builder
+            .ins()
+            .stack_load(types::I64, types::I64, cold_homes, 0);
+        emit_frame_location_store(builder, homes, location);
+    }
     let call = builder.ins().call(cold_observer, &[]);
     let result = builder.inst_results(call)[0];
     jump_block(builder, done, &[result]);

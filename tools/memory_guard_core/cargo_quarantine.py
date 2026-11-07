@@ -600,7 +600,9 @@ def _cargo_incremental_dirs(target_dir: Path) -> tuple[Path, ...]:
     return ()
 
 
-def _cargo_quarantine_parent(target_dir: Path) -> Path:
+def cargo_quarantine_parent(target_dir: Path) -> Path:
+    """Where a build's interrupted incremental state is quarantined: beside
+    the Cargo target it built. `tools/disk_guard.py` reclaims from here."""
     return target_dir / ".molt_state" / "quarantine" / "cargo_incremental"
 
 
@@ -860,7 +862,7 @@ def _quarantine_cargo_incremental_state(
                     raise ValueError(
                         "Cargo lock path identity changed; recovery deferred"
                     )
-            parent = _cargo_quarantine_parent(target_dir)
+            parent = cargo_quarantine_parent(target_dir)
             if not parent.resolve().is_relative_to(target_dir.resolve()):
                 raise ValueError("quarantine destination escapes target authority")
             quarantine_dir = parent / (

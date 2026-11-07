@@ -85,6 +85,113 @@ INTRINSIC_DATACLASSES_INIT_GLOBALS = 78
 INTRINSIC_DATACLASSES_INIT = 79
 BUILTIN_ISINSTANCE = 80
 BUILTIN_ISSUBCLASS = 81
+BUILTIN_ABS = 82
+BUILTIN_AITER = 83
+BUILTIN_ALL = 84
+BUILTIN_ANEXT = 85
+BUILTIN_ANY = 86
+BUILTIN_ASCII = 87
+BUILTIN_BIN = 88
+BUILTIN_CALLABLE = 89
+BUILTIN_CHR = 90
+BUILTIN_COMPILE = 91
+BUILTIN_DIR = 92
+BUILTIN_DIVMOD = 93
+BUILTIN_ENUMERATE = 94
+BUILTIN_FILTER = 95
+BUILTIN_FORMAT = 96
+BUILTIN_HASH = 97
+BUILTIN_HEX = 98
+BUILTIN_ID = 99
+BUILTIN_ITER = 100
+BUILTIN_MAP = 101
+BUILTIN_MAX = 102
+BUILTIN_MIN = 103
+BUILTIN_NEXT = 104
+BUILTIN_OBJECT = 105
+BUILTIN_OCT = 106
+BUILTIN_ORD = 107
+BUILTIN_PRINT = 108
+BUILTIN_REPR = 109
+BUILTIN_REVERSED = 110
+BUILTIN_SLICE = 111
+BUILTIN_SORTED = 112
+BUILTIN_SUM = 113
+BUILTIN_SUPER = 114
+BUILTIN_TYPE = 115
+BUILTIN_ZIP = 116
+BUILTIN_ELLIPSIS = 117
+BUILTIN_NOTIMPLEMENTED = 118
+BUILTIN_ARITHMETICERROR = 119
+BUILTIN_ASSERTIONERROR = 120
+BUILTIN_ATTRIBUTEERROR = 121
+BUILTIN_BASEEXCEPTION = 122
+BUILTIN_BASEEXCEPTIONGROUP = 123
+BUILTIN_BLOCKINGIOERROR = 124
+BUILTIN_BROKENPIPEERROR = 125
+BUILTIN_BUFFERERROR = 126
+BUILTIN_BYTESWARNING = 127
+BUILTIN_CHILDPROCESSERROR = 128
+BUILTIN_CONNECTIONABORTEDERROR = 129
+BUILTIN_CONNECTIONERROR = 130
+BUILTIN_CONNECTIONREFUSEDERROR = 131
+BUILTIN_CONNECTIONRESETERROR = 132
+BUILTIN_DEPRECATIONWARNING = 133
+BUILTIN_EOFERROR = 134
+BUILTIN_ENCODINGWARNING = 135
+BUILTIN_ENVIRONMENTERROR = 136
+BUILTIN_EXCEPTION = 137
+BUILTIN_EXCEPTIONGROUP = 138
+BUILTIN_FILEEXISTSERROR = 139
+BUILTIN_FILENOTFOUNDERROR = 140
+BUILTIN_FLOATINGPOINTERROR = 141
+BUILTIN_FUTUREWARNING = 142
+BUILTIN_GENERATOREXIT = 143
+BUILTIN_IOERROR = 144
+BUILTIN_IMPORTERROR = 145
+BUILTIN_IMPORTWARNING = 146
+BUILTIN_INDENTATIONERROR = 147
+BUILTIN_INDEXERROR = 148
+BUILTIN_INTERRUPTEDERROR = 149
+BUILTIN_ISADIRECTORYERROR = 150
+BUILTIN_KEYERROR = 151
+BUILTIN_KEYBOARDINTERRUPT = 152
+BUILTIN_LOOKUPERROR = 153
+BUILTIN_MEMORYERROR = 154
+BUILTIN_MODULENOTFOUNDERROR = 155
+BUILTIN_NAMEERROR = 156
+BUILTIN_NOTADIRECTORYERROR = 157
+BUILTIN_NOTIMPLEMENTEDERROR = 158
+BUILTIN_OSERROR = 159
+BUILTIN_OVERFLOWERROR = 160
+BUILTIN_PENDINGDEPRECATIONWARNING = 161
+BUILTIN_PERMISSIONERROR = 162
+BUILTIN_PROCESSLOOKUPERROR = 163
+BUILTIN_RECURSIONERROR = 164
+BUILTIN_REFERENCEERROR = 165
+BUILTIN_RESOURCEWARNING = 166
+BUILTIN_RUNTIMEERROR = 167
+BUILTIN_RUNTIMEWARNING = 168
+BUILTIN_STOPASYNCITERATION = 169
+BUILTIN_STOPITERATION = 170
+BUILTIN_SYNTAXERROR = 171
+BUILTIN_SYNTAXWARNING = 172
+BUILTIN_SYSTEMERROR = 173
+BUILTIN_SYSTEMEXIT = 174
+BUILTIN_TABERROR = 175
+BUILTIN_TIMEOUTERROR = 176
+BUILTIN_TYPEERROR = 177
+BUILTIN_UNBOUNDLOCALERROR = 178
+BUILTIN_UNICODEDECODEERROR = 179
+BUILTIN_UNICODEENCODEERROR = 180
+BUILTIN_UNICODEERROR = 181
+BUILTIN_UNICODETRANSLATEERROR = 182
+BUILTIN_UNICODEWARNING = 183
+BUILTIN_USERWARNING = 184
+BUILTIN_VALUEERROR = 185
+BUILTIN_WARNING = 186
+BUILTIN_ZERODIVISIONERROR = 187
+BUILTIN_BUILD_CLASS = 188
 
 [native_initializer]
 DATACLASS = ["PARAMETERS", "POSITIONAL", "DEFAULTS", "KWDEFAULTS", "CAPTURE_NAMES", "CAPTURES", "STORES", "POST_INIT_INPUTS", "FACTORY_MARKER", "FROZEN_OBJECT", "ANNOTATIONS", "GLOBALS", "MODULE", "BUILTINS"]
@@ -261,7 +368,124 @@ BUILTINS_HASATTR = 47
 BUILTINS_DELATTR = 48
 BUILTINS_ISINSTANCE = 49
 BUILTINS_ISSUBCLASS = 50
+BUILTINS_ABS = 51
+BUILTINS_AITER = 52
+BUILTINS_ALL = 53
+BUILTINS_ANEXT = 54
+BUILTINS_ANY = 55
+BUILTINS_ASCII = 56
+BUILTINS_BIN = 57
+BUILTINS_CALLABLE = 58
+BUILTINS_CHR = 59
+BUILTINS_COMPILE = 60
+BUILTINS_DIR = 61
+BUILTINS_DIVMOD = 62
+BUILTINS_ENUMERATE = 63
+BUILTINS_FILTER = 64
+BUILTINS_FORMAT = 65
+BUILTINS_HASH = 66
+BUILTINS_HEX = 67
+BUILTINS_ID = 68
+BUILTINS_ITER = 69
+BUILTINS_MAP = 70
+BUILTINS_MAX = 71
+BUILTINS_MIN = 72
+BUILTINS_NEXT = 73
+BUILTINS_OBJECT = 74
+BUILTINS_OCT = 75
+BUILTINS_ORD = 76
+BUILTINS_PRINT = 77
+BUILTINS_REPR = 78
+BUILTINS_REVERSED = 79
+BUILTINS_SLICE = 80
+BUILTINS_SORTED = 81
+BUILTINS_SUM = 82
+BUILTINS_SUPER = 83
+BUILTINS_TYPE = 84
+BUILTINS_ZIP = 85
+BUILTINS_ELLIPSIS = 86
+BUILTINS_NOTIMPLEMENTED = 87
+BUILTINS_ARITHMETICERROR = 88
+BUILTINS_ASSERTIONERROR = 89
+BUILTINS_ATTRIBUTEERROR = 90
+BUILTINS_BASEEXCEPTION = 91
+BUILTINS_BASEEXCEPTIONGROUP = 92
+BUILTINS_BLOCKINGIOERROR = 93
+BUILTINS_BROKENPIPEERROR = 94
+BUILTINS_BUFFERERROR = 95
+BUILTINS_BYTESWARNING = 96
+BUILTINS_CHILDPROCESSERROR = 97
+BUILTINS_CONNECTIONABORTEDERROR = 98
+BUILTINS_CONNECTIONERROR = 99
+BUILTINS_CONNECTIONREFUSEDERROR = 100
+BUILTINS_CONNECTIONRESETERROR = 101
+BUILTINS_DEPRECATIONWARNING = 102
+BUILTINS_EOFERROR = 103
+BUILTINS_ENCODINGWARNING = 104
+BUILTINS_ENVIRONMENTERROR = 105
+BUILTINS_EXCEPTION = 106
+BUILTINS_EXCEPTIONGROUP = 107
+BUILTINS_FILEEXISTSERROR = 108
+BUILTINS_FILENOTFOUNDERROR = 109
+BUILTINS_FLOATINGPOINTERROR = 110
+BUILTINS_FUTUREWARNING = 111
+BUILTINS_GENERATOREXIT = 112
+BUILTINS_IOERROR = 113
+BUILTINS_IMPORTERROR = 114
+BUILTINS_IMPORTWARNING = 115
+BUILTINS_INDENTATIONERROR = 116
+BUILTINS_INDEXERROR = 117
+BUILTINS_INTERRUPTEDERROR = 118
+BUILTINS_ISADIRECTORYERROR = 119
+BUILTINS_KEYERROR = 120
+BUILTINS_KEYBOARDINTERRUPT = 121
+BUILTINS_LOOKUPERROR = 122
+BUILTINS_MEMORYERROR = 123
+BUILTINS_MODULENOTFOUNDERROR = 124
+BUILTINS_NAMEERROR = 125
+BUILTINS_NOTADIRECTORYERROR = 126
+BUILTINS_NOTIMPLEMENTEDERROR = 127
+BUILTINS_OSERROR = 128
+BUILTINS_OVERFLOWERROR = 129
+BUILTINS_PENDINGDEPRECATIONWARNING = 130
+BUILTINS_PERMISSIONERROR = 131
+BUILTINS_PROCESSLOOKUPERROR = 132
+BUILTINS_RECURSIONERROR = 133
+BUILTINS_REFERENCEERROR = 134
+BUILTINS_RESOURCEWARNING = 135
+BUILTINS_RUNTIMEERROR = 136
+BUILTINS_RUNTIMEWARNING = 137
+BUILTINS_STOPASYNCITERATION = 138
+BUILTINS_STOPITERATION = 139
+BUILTINS_SYNTAXERROR = 140
+BUILTINS_SYNTAXWARNING = 141
+BUILTINS_SYSTEMERROR = 142
+BUILTINS_SYSTEMEXIT = 143
+BUILTINS_TABERROR = 144
+BUILTINS_TIMEOUTERROR = 145
+BUILTINS_TYPEERROR = 146
+BUILTINS_UNBOUNDLOCALERROR = 147
+BUILTINS_UNICODEDECODEERROR = 148
+BUILTINS_UNICODEENCODEERROR = 149
+BUILTINS_UNICODEERROR = 150
+BUILTINS_UNICODETRANSLATEERROR = 151
+BUILTINS_UNICODEWARNING = 152
+BUILTINS_USERWARNING = 153
+BUILTINS_VALUEERROR = 154
+BUILTINS_WARNING = 155
+BUILTINS_ZERODIVISIONERROR = 156
+BUILTINS_BUILD_CLASS = 157
 
+[[builtin]]
+name = "__build_class__"
+identity = "BUILTIN_BUILD_CLASS"
+guard = "BUILTINS_BUILD_CLASS"
+shape = false
+
+# [[builtin]] rows: name, identity, guard, shape; optional return_capture and
+# role. role = "caller_frame" marks a builtin that reads the calling frame's
+# local bindings. The exception_class role is derived from
+# runtime/exception_kinds.toml and is never declared here.
 [[builtin]]
 name = "__import__"
 identity = "BUILTINS_IMPORT"
@@ -279,12 +503,14 @@ name = "locals"
 identity = "BUILTIN_LOCALS"
 guard = "BUILTINS_LOCALS"
 shape = false
+role = "caller_frame"
 
 [[builtin]]
 name = "vars"
 identity = "BUILTIN_VARS"
 guard = "BUILTINS_VARS"
 shape = false
+role = "caller_frame"
 
 [[builtin]]
 name = "setattr"
@@ -315,12 +541,14 @@ name = "eval"
 identity = "BUILTIN_EVAL"
 guard = "BUILTINS_EVAL"
 shape = false
+role = "caller_frame"
 
 [[builtin]]
 name = "exec"
 identity = "BUILTIN_EXEC"
 guard = "BUILTINS_EXEC"
 shape = false
+role = "caller_frame"
 
 [[builtin]]
 name = "bool"
@@ -660,3 +888,640 @@ owner = "DATACLASSES_MODULE"
 name = "field"
 identity = "DATACLASSES_FIELD"
 guard = "DATACLASSES_FIELD"
+
+[[builtin]]
+name = "abs"
+identity = "BUILTIN_ABS"
+guard = "BUILTINS_ABS"
+shape = false
+
+[[builtin]]
+name = "aiter"
+identity = "BUILTIN_AITER"
+guard = "BUILTINS_AITER"
+shape = false
+
+[[builtin]]
+name = "all"
+identity = "BUILTIN_ALL"
+guard = "BUILTINS_ALL"
+shape = false
+
+[[builtin]]
+name = "anext"
+identity = "BUILTIN_ANEXT"
+guard = "BUILTINS_ANEXT"
+shape = false
+
+[[builtin]]
+name = "any"
+identity = "BUILTIN_ANY"
+guard = "BUILTINS_ANY"
+shape = false
+
+[[builtin]]
+name = "ascii"
+identity = "BUILTIN_ASCII"
+guard = "BUILTINS_ASCII"
+shape = false
+
+[[builtin]]
+name = "bin"
+identity = "BUILTIN_BIN"
+guard = "BUILTINS_BIN"
+shape = false
+
+[[builtin]]
+name = "callable"
+identity = "BUILTIN_CALLABLE"
+guard = "BUILTINS_CALLABLE"
+shape = false
+
+[[builtin]]
+name = "chr"
+identity = "BUILTIN_CHR"
+guard = "BUILTINS_CHR"
+shape = false
+
+[[builtin]]
+name = "compile"
+identity = "BUILTIN_COMPILE"
+guard = "BUILTINS_COMPILE"
+shape = false
+
+[[builtin]]
+name = "dir"
+identity = "BUILTIN_DIR"
+guard = "BUILTINS_DIR"
+shape = false
+
+[[builtin]]
+name = "divmod"
+identity = "BUILTIN_DIVMOD"
+guard = "BUILTINS_DIVMOD"
+shape = false
+
+[[builtin]]
+name = "enumerate"
+identity = "BUILTIN_ENUMERATE"
+guard = "BUILTINS_ENUMERATE"
+shape = false
+
+[[builtin]]
+name = "filter"
+identity = "BUILTIN_FILTER"
+guard = "BUILTINS_FILTER"
+shape = false
+
+[[builtin]]
+name = "format"
+identity = "BUILTIN_FORMAT"
+guard = "BUILTINS_FORMAT"
+shape = false
+
+[[builtin]]
+name = "hash"
+identity = "BUILTIN_HASH"
+guard = "BUILTINS_HASH"
+shape = false
+
+[[builtin]]
+name = "hex"
+identity = "BUILTIN_HEX"
+guard = "BUILTINS_HEX"
+shape = false
+
+[[builtin]]
+name = "id"
+identity = "BUILTIN_ID"
+guard = "BUILTINS_ID"
+shape = false
+
+[[builtin]]
+name = "iter"
+identity = "BUILTIN_ITER"
+guard = "BUILTINS_ITER"
+shape = false
+
+[[builtin]]
+name = "map"
+identity = "BUILTIN_MAP"
+guard = "BUILTINS_MAP"
+shape = false
+
+[[builtin]]
+name = "max"
+identity = "BUILTIN_MAX"
+guard = "BUILTINS_MAX"
+shape = false
+
+[[builtin]]
+name = "min"
+identity = "BUILTIN_MIN"
+guard = "BUILTINS_MIN"
+shape = false
+
+[[builtin]]
+name = "next"
+identity = "BUILTIN_NEXT"
+guard = "BUILTINS_NEXT"
+shape = false
+
+[[builtin]]
+name = "object"
+identity = "BUILTIN_OBJECT"
+guard = "BUILTINS_OBJECT"
+shape = false
+
+[[builtin]]
+name = "oct"
+identity = "BUILTIN_OCT"
+guard = "BUILTINS_OCT"
+shape = false
+
+[[builtin]]
+name = "ord"
+identity = "BUILTIN_ORD"
+guard = "BUILTINS_ORD"
+shape = false
+
+[[builtin]]
+name = "print"
+identity = "BUILTIN_PRINT"
+guard = "BUILTINS_PRINT"
+shape = false
+
+[[builtin]]
+name = "repr"
+identity = "BUILTIN_REPR"
+guard = "BUILTINS_REPR"
+shape = false
+
+[[builtin]]
+name = "reversed"
+identity = "BUILTIN_REVERSED"
+guard = "BUILTINS_REVERSED"
+shape = false
+
+[[builtin]]
+name = "slice"
+identity = "BUILTIN_SLICE"
+guard = "BUILTINS_SLICE"
+shape = false
+
+[[builtin]]
+name = "sorted"
+identity = "BUILTIN_SORTED"
+guard = "BUILTINS_SORTED"
+shape = false
+
+[[builtin]]
+name = "sum"
+identity = "BUILTIN_SUM"
+guard = "BUILTINS_SUM"
+shape = false
+
+[[builtin]]
+name = "super"
+identity = "BUILTIN_SUPER"
+guard = "BUILTINS_SUPER"
+shape = false
+role = "caller_frame"
+
+[[builtin]]
+name = "type"
+identity = "BUILTIN_TYPE"
+guard = "BUILTINS_TYPE"
+shape = false
+
+[[builtin]]
+name = "zip"
+identity = "BUILTIN_ZIP"
+guard = "BUILTINS_ZIP"
+shape = false
+
+[[builtin]]
+name = "Ellipsis"
+identity = "BUILTIN_ELLIPSIS"
+guard = "BUILTINS_ELLIPSIS"
+shape = false
+
+[[builtin]]
+name = "NotImplemented"
+identity = "BUILTIN_NOTIMPLEMENTED"
+guard = "BUILTINS_NOTIMPLEMENTED"
+shape = false
+
+[[builtin]]
+name = "ArithmeticError"
+identity = "BUILTIN_ARITHMETICERROR"
+guard = "BUILTINS_ARITHMETICERROR"
+shape = false
+
+[[builtin]]
+name = "AssertionError"
+identity = "BUILTIN_ASSERTIONERROR"
+guard = "BUILTINS_ASSERTIONERROR"
+shape = false
+
+[[builtin]]
+name = "AttributeError"
+identity = "BUILTIN_ATTRIBUTEERROR"
+guard = "BUILTINS_ATTRIBUTEERROR"
+shape = false
+
+[[builtin]]
+name = "BaseException"
+identity = "BUILTIN_BASEEXCEPTION"
+guard = "BUILTINS_BASEEXCEPTION"
+shape = false
+
+[[builtin]]
+name = "BaseExceptionGroup"
+identity = "BUILTIN_BASEEXCEPTIONGROUP"
+guard = "BUILTINS_BASEEXCEPTIONGROUP"
+shape = false
+
+[[builtin]]
+name = "BlockingIOError"
+identity = "BUILTIN_BLOCKINGIOERROR"
+guard = "BUILTINS_BLOCKINGIOERROR"
+shape = false
+
+[[builtin]]
+name = "BrokenPipeError"
+identity = "BUILTIN_BROKENPIPEERROR"
+guard = "BUILTINS_BROKENPIPEERROR"
+shape = false
+
+[[builtin]]
+name = "BufferError"
+identity = "BUILTIN_BUFFERERROR"
+guard = "BUILTINS_BUFFERERROR"
+shape = false
+
+[[builtin]]
+name = "BytesWarning"
+identity = "BUILTIN_BYTESWARNING"
+guard = "BUILTINS_BYTESWARNING"
+shape = false
+
+[[builtin]]
+name = "ChildProcessError"
+identity = "BUILTIN_CHILDPROCESSERROR"
+guard = "BUILTINS_CHILDPROCESSERROR"
+shape = false
+
+[[builtin]]
+name = "ConnectionAbortedError"
+identity = "BUILTIN_CONNECTIONABORTEDERROR"
+guard = "BUILTINS_CONNECTIONABORTEDERROR"
+shape = false
+
+[[builtin]]
+name = "ConnectionError"
+identity = "BUILTIN_CONNECTIONERROR"
+guard = "BUILTINS_CONNECTIONERROR"
+shape = false
+
+[[builtin]]
+name = "ConnectionRefusedError"
+identity = "BUILTIN_CONNECTIONREFUSEDERROR"
+guard = "BUILTINS_CONNECTIONREFUSEDERROR"
+shape = false
+
+[[builtin]]
+name = "ConnectionResetError"
+identity = "BUILTIN_CONNECTIONRESETERROR"
+guard = "BUILTINS_CONNECTIONRESETERROR"
+shape = false
+
+[[builtin]]
+name = "DeprecationWarning"
+identity = "BUILTIN_DEPRECATIONWARNING"
+guard = "BUILTINS_DEPRECATIONWARNING"
+shape = false
+
+[[builtin]]
+name = "EOFError"
+identity = "BUILTIN_EOFERROR"
+guard = "BUILTINS_EOFERROR"
+shape = false
+
+[[builtin]]
+name = "EncodingWarning"
+identity = "BUILTIN_ENCODINGWARNING"
+guard = "BUILTINS_ENCODINGWARNING"
+shape = false
+
+[[builtin]]
+name = "EnvironmentError"
+identity = "BUILTIN_ENVIRONMENTERROR"
+guard = "BUILTINS_ENVIRONMENTERROR"
+shape = false
+
+[[builtin]]
+name = "Exception"
+identity = "BUILTIN_EXCEPTION"
+guard = "BUILTINS_EXCEPTION"
+shape = false
+
+[[builtin]]
+name = "ExceptionGroup"
+identity = "BUILTIN_EXCEPTIONGROUP"
+guard = "BUILTINS_EXCEPTIONGROUP"
+shape = false
+
+[[builtin]]
+name = "FileExistsError"
+identity = "BUILTIN_FILEEXISTSERROR"
+guard = "BUILTINS_FILEEXISTSERROR"
+shape = false
+
+[[builtin]]
+name = "FileNotFoundError"
+identity = "BUILTIN_FILENOTFOUNDERROR"
+guard = "BUILTINS_FILENOTFOUNDERROR"
+shape = false
+
+[[builtin]]
+name = "FloatingPointError"
+identity = "BUILTIN_FLOATINGPOINTERROR"
+guard = "BUILTINS_FLOATINGPOINTERROR"
+shape = false
+
+[[builtin]]
+name = "FutureWarning"
+identity = "BUILTIN_FUTUREWARNING"
+guard = "BUILTINS_FUTUREWARNING"
+shape = false
+
+[[builtin]]
+name = "GeneratorExit"
+identity = "BUILTIN_GENERATOREXIT"
+guard = "BUILTINS_GENERATOREXIT"
+shape = false
+
+[[builtin]]
+name = "IOError"
+identity = "BUILTIN_IOERROR"
+guard = "BUILTINS_IOERROR"
+shape = false
+
+[[builtin]]
+name = "ImportError"
+identity = "BUILTIN_IMPORTERROR"
+guard = "BUILTINS_IMPORTERROR"
+shape = false
+
+[[builtin]]
+name = "ImportWarning"
+identity = "BUILTIN_IMPORTWARNING"
+guard = "BUILTINS_IMPORTWARNING"
+shape = false
+
+[[builtin]]
+name = "IndentationError"
+identity = "BUILTIN_INDENTATIONERROR"
+guard = "BUILTINS_INDENTATIONERROR"
+shape = false
+
+[[builtin]]
+name = "IndexError"
+identity = "BUILTIN_INDEXERROR"
+guard = "BUILTINS_INDEXERROR"
+shape = false
+
+[[builtin]]
+name = "InterruptedError"
+identity = "BUILTIN_INTERRUPTEDERROR"
+guard = "BUILTINS_INTERRUPTEDERROR"
+shape = false
+
+[[builtin]]
+name = "IsADirectoryError"
+identity = "BUILTIN_ISADIRECTORYERROR"
+guard = "BUILTINS_ISADIRECTORYERROR"
+shape = false
+
+[[builtin]]
+name = "KeyError"
+identity = "BUILTIN_KEYERROR"
+guard = "BUILTINS_KEYERROR"
+shape = false
+
+[[builtin]]
+name = "KeyboardInterrupt"
+identity = "BUILTIN_KEYBOARDINTERRUPT"
+guard = "BUILTINS_KEYBOARDINTERRUPT"
+shape = false
+
+[[builtin]]
+name = "LookupError"
+identity = "BUILTIN_LOOKUPERROR"
+guard = "BUILTINS_LOOKUPERROR"
+shape = false
+
+[[builtin]]
+name = "MemoryError"
+identity = "BUILTIN_MEMORYERROR"
+guard = "BUILTINS_MEMORYERROR"
+shape = false
+
+[[builtin]]
+name = "ModuleNotFoundError"
+identity = "BUILTIN_MODULENOTFOUNDERROR"
+guard = "BUILTINS_MODULENOTFOUNDERROR"
+shape = false
+
+[[builtin]]
+name = "NameError"
+identity = "BUILTIN_NAMEERROR"
+guard = "BUILTINS_NAMEERROR"
+shape = false
+
+[[builtin]]
+name = "NotADirectoryError"
+identity = "BUILTIN_NOTADIRECTORYERROR"
+guard = "BUILTINS_NOTADIRECTORYERROR"
+shape = false
+
+[[builtin]]
+name = "NotImplementedError"
+identity = "BUILTIN_NOTIMPLEMENTEDERROR"
+guard = "BUILTINS_NOTIMPLEMENTEDERROR"
+shape = false
+
+[[builtin]]
+name = "OSError"
+identity = "BUILTIN_OSERROR"
+guard = "BUILTINS_OSERROR"
+shape = false
+
+[[builtin]]
+name = "OverflowError"
+identity = "BUILTIN_OVERFLOWERROR"
+guard = "BUILTINS_OVERFLOWERROR"
+shape = false
+
+[[builtin]]
+name = "PendingDeprecationWarning"
+identity = "BUILTIN_PENDINGDEPRECATIONWARNING"
+guard = "BUILTINS_PENDINGDEPRECATIONWARNING"
+shape = false
+
+[[builtin]]
+name = "PermissionError"
+identity = "BUILTIN_PERMISSIONERROR"
+guard = "BUILTINS_PERMISSIONERROR"
+shape = false
+
+[[builtin]]
+name = "ProcessLookupError"
+identity = "BUILTIN_PROCESSLOOKUPERROR"
+guard = "BUILTINS_PROCESSLOOKUPERROR"
+shape = false
+
+[[builtin]]
+name = "RecursionError"
+identity = "BUILTIN_RECURSIONERROR"
+guard = "BUILTINS_RECURSIONERROR"
+shape = false
+
+[[builtin]]
+name = "ReferenceError"
+identity = "BUILTIN_REFERENCEERROR"
+guard = "BUILTINS_REFERENCEERROR"
+shape = false
+
+[[builtin]]
+name = "ResourceWarning"
+identity = "BUILTIN_RESOURCEWARNING"
+guard = "BUILTINS_RESOURCEWARNING"
+shape = false
+
+[[builtin]]
+name = "RuntimeError"
+identity = "BUILTIN_RUNTIMEERROR"
+guard = "BUILTINS_RUNTIMEERROR"
+shape = false
+
+[[builtin]]
+name = "RuntimeWarning"
+identity = "BUILTIN_RUNTIMEWARNING"
+guard = "BUILTINS_RUNTIMEWARNING"
+shape = false
+
+[[builtin]]
+name = "StopAsyncIteration"
+identity = "BUILTIN_STOPASYNCITERATION"
+guard = "BUILTINS_STOPASYNCITERATION"
+shape = false
+
+[[builtin]]
+name = "StopIteration"
+identity = "BUILTIN_STOPITERATION"
+guard = "BUILTINS_STOPITERATION"
+shape = false
+
+[[builtin]]
+name = "SyntaxError"
+identity = "BUILTIN_SYNTAXERROR"
+guard = "BUILTINS_SYNTAXERROR"
+shape = false
+
+[[builtin]]
+name = "SyntaxWarning"
+identity = "BUILTIN_SYNTAXWARNING"
+guard = "BUILTINS_SYNTAXWARNING"
+shape = false
+
+[[builtin]]
+name = "SystemError"
+identity = "BUILTIN_SYSTEMERROR"
+guard = "BUILTINS_SYSTEMERROR"
+shape = false
+
+[[builtin]]
+name = "SystemExit"
+identity = "BUILTIN_SYSTEMEXIT"
+guard = "BUILTINS_SYSTEMEXIT"
+shape = false
+
+[[builtin]]
+name = "TabError"
+identity = "BUILTIN_TABERROR"
+guard = "BUILTINS_TABERROR"
+shape = false
+
+[[builtin]]
+name = "TimeoutError"
+identity = "BUILTIN_TIMEOUTERROR"
+guard = "BUILTINS_TIMEOUTERROR"
+shape = false
+
+[[builtin]]
+name = "TypeError"
+identity = "BUILTIN_TYPEERROR"
+guard = "BUILTINS_TYPEERROR"
+shape = false
+
+[[builtin]]
+name = "UnboundLocalError"
+identity = "BUILTIN_UNBOUNDLOCALERROR"
+guard = "BUILTINS_UNBOUNDLOCALERROR"
+shape = false
+
+[[builtin]]
+name = "UnicodeDecodeError"
+identity = "BUILTIN_UNICODEDECODEERROR"
+guard = "BUILTINS_UNICODEDECODEERROR"
+shape = false
+
+[[builtin]]
+name = "UnicodeEncodeError"
+identity = "BUILTIN_UNICODEENCODEERROR"
+guard = "BUILTINS_UNICODEENCODEERROR"
+shape = false
+
+[[builtin]]
+name = "UnicodeError"
+identity = "BUILTIN_UNICODEERROR"
+guard = "BUILTINS_UNICODEERROR"
+shape = false
+
+[[builtin]]
+name = "UnicodeTranslateError"
+identity = "BUILTIN_UNICODETRANSLATEERROR"
+guard = "BUILTINS_UNICODETRANSLATEERROR"
+shape = false
+
+[[builtin]]
+name = "UnicodeWarning"
+identity = "BUILTIN_UNICODEWARNING"
+guard = "BUILTINS_UNICODEWARNING"
+shape = false
+
+[[builtin]]
+name = "UserWarning"
+identity = "BUILTIN_USERWARNING"
+guard = "BUILTINS_USERWARNING"
+shape = false
+
+[[builtin]]
+name = "ValueError"
+identity = "BUILTIN_VALUEERROR"
+guard = "BUILTINS_VALUEERROR"
+shape = false
+
+[[builtin]]
+name = "Warning"
+identity = "BUILTIN_WARNING"
+guard = "BUILTINS_WARNING"
+shape = false
+
+[[builtin]]
+name = "ZeroDivisionError"
+identity = "BUILTIN_ZERODIVISIONERROR"
+guard = "BUILTINS_ZERODIVISIONERROR"
+shape = false

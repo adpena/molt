@@ -129,6 +129,8 @@ define_types_runtime_state! {
     getset_descriptor_class,
     frame_f_locals_descriptor,
     frame_f_locals_get_fn,
+    frame_f_lineno_get_fn,
+    frame_f_lasti_get_fn,
     frame_locals_proxy_class,
     cell_contents_get_fn,
     cell_contents_set_fn,

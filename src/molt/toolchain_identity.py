@@ -14,14 +14,16 @@ import shlex
 import sqlite3
 import stat
 import subprocess
+import sys
 import time
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 from molt.durable_file_identity import (
     StatToken,
 )
 from molt.default_paths import executable_environment_value, expand_user_path
 from molt.process_environment import ProcessEnvironment
+from molt.sqlite_failure import SqliteFailure, classify_sqlite_failure
 
 from molt.file_hashing import (
     DIGEST_RACY_WINDOW_NS,
@@ -845,6 +847,29 @@ class FileDigestCache:
         self._started_ns = time.time_ns()
         self._recorded: dict[str, tuple[StatToken, str, int] | None] = {}
         self._pending: dict[str, tuple[StatToken, str]] = {}
+        # Set when the shared store reports contention (SqliteFailure.CONTENTION:
+        # SQLITE_BUSY past the timeout, SQLITE_PROTOCOL from WAL-index races) or
+        # a stale snapshot when a flush begins its write.
+        # The store only saves rehashing: every miss is hashed, so identities do
+        # not change, and this process stops adding load to a contended store.
+        # Every other SQLite failure, a statement defect included, stays loud.
+        self._unavailable = False
+
+    def _contended(self, error: sqlite3.OperationalError) -> None:
+        # A stale snapshot is cured by a new transaction, and this cache never
+        # retries one, so it is a miss here exactly as contention is.
+        if classify_sqlite_failure(error) not in (
+            SqliteFailure.CONTENTION,
+            SqliteFailure.STALE_SNAPSHOT,
+        ):
+            raise error
+        self._unavailable = True
+        print(
+            f"[molt digest-cache] {self.store} is contended ({error}); "
+            "this process hashes every file it needs",
+            file=sys.stderr,
+            flush=True,
+        )
 
     def _connect(self) -> sqlite3.Connection:
         self.store.parent.mkdir(parents=True, exist_ok=True)
@@ -879,13 +904,18 @@ class FileDigestCache:
         # paths together, amortizing connection/WAL teardown without loading the
         # whole host store or keeping native SQLite handles between calls.
         if key not in self._recorded:
-            with closing(self._connect()) as connection:
-                rows = connection.execute(
-                    "SELECT path, inode, mode, size, mtime_ns, ctime_ns,"
-                    " sha256, recorded_ns FROM digests WHERE path >= ?"
-                    " ORDER BY path LIMIT 64",
-                    (key,),
-                ).fetchall()
+            rows: list[Any] = []
+            if not self._unavailable:
+                try:
+                    with closing(self._connect()) as connection:
+                        rows = connection.execute(
+                            "SELECT path, inode, mode, size, mtime_ns, ctime_ns,"
+                            " sha256, recorded_ns FROM digests WHERE path >= ?"
+                            " ORDER BY path LIMIT 64",
+                            (key,),
+                        ).fetchall()
+                except sqlite3.OperationalError as error:
+                    self._contended(error)
             for row in rows:
                 self._recorded.setdefault(
                     row[0],
@@ -965,15 +995,19 @@ class FileDigestCache:
             (path, str(token.inode), *token.payload()[1:], sha256, self._started_ns)
             for path, (token, sha256) in self._pending.items()
         ]
-        with closing(self._connect()) as connection, connection:
-            connection.executemany(
-                "INSERT OR REPLACE INTO digests VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                rows,
-            )
-            connection.execute(
-                "DELETE FROM digests WHERE recorded_ns < ?",
-                (self._started_ns - self._max_age_ns,),
-            )
+        if not self._unavailable:
+            try:
+                with closing(self._connect()) as connection, connection:
+                    connection.executemany(
+                        "INSERT OR REPLACE INTO digests VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        rows,
+                    )
+                    connection.execute(
+                        "DELETE FROM digests WHERE recorded_ns < ?",
+                        (self._started_ns - self._max_age_ns,),
+                    )
+            except sqlite3.OperationalError as error:
+                self._contended(error)
         for path, (token, sha256) in self._pending.items():
             self._recorded[path] = (token, sha256, self._started_ns)
         self._pending.clear()

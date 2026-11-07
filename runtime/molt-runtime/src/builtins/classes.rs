@@ -400,7 +400,7 @@ fn init_frame_layout(_py: &PyToken<'_>, frame_bits: u64) -> Option<()> {
             _py,
             dict_ptr,
             layout_name_bits,
-            MoltObject::from_int(16).bits(),
+            MoltObject::from_int(24).bits(),
         ) {
             return None;
         }

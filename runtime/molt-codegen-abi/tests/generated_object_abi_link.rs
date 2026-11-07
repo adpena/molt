@@ -185,6 +185,26 @@ fn incompatible_pointer_record_refcount_and_context_revisions_cannot_link() {
             GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
         ),
         (
+            "gil_refcount_v7",
+            "molt_generated_object_abi_69bab6cda2adac1b_gil_v7",
+            GENERATED_OBJECT_ABI_GIL_SYMBOL,
+        ),
+        (
+            "free_refcount_v7",
+            "molt_generated_object_abi_69bab6cda2adac1b_free_threaded_v7",
+            GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
+        ),
+        (
+            "gil_frame_location_v7",
+            "molt_generated_object_abi_16b12518d4094b67_gil_v7",
+            GENERATED_OBJECT_ABI_GIL_SYMBOL,
+        ),
+        (
+            "free_frame_location_v7",
+            "molt_generated_object_abi_16b12518d4094b67_free_threaded_v7",
+            GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
+        ),
+        (
             "gil_refcount_v6",
             "molt_generated_object_abi_edf88c8f320447e7_gil_v6",
             GENERATED_OBJECT_ABI_GIL_SYMBOL,

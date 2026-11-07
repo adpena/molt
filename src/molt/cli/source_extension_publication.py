@@ -6,6 +6,7 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 import threading
 import warnings
@@ -49,12 +50,47 @@ _PUBLICATION_RECORD_KEYS = {
     "incumbent_identity_sha256",
     "candidate_identity_sha256",
 }
-_PUBLICATION_STATES = {
-    "prepared",
-    "retired",
-    "published",
-    "committed",
-    "aborted-restored",
+
+
+class PublicationState(StrEnum):
+    """A seal compare-and-swap journal's state (docs/design/state_machines.md)."""
+
+    PREPARED = "prepared"  # journal and candidate copy written; incumbent in place
+    RETIRED = "retired"  # incumbent moved to retired custody
+    PUBLISHED = "published"  # candidate moved onto the destination
+    COMMITTED = "committed"  # destination verified as the candidate; retired kept
+    ABORTED_RESTORED = "aborted-restored"  # candidate quarantined, incumbent restored
+
+
+class PublicationEvent(StrEnum):
+    RETIRE = "retire"
+    PUBLISH = "publish"
+    COMMIT = "commit"
+    ABORT = "abort"
+
+
+_UNFINISHED_PUBLICATION = (
+    PublicationState.PREPARED,
+    PublicationState.RETIRED,
+    PublicationState.PUBLISHED,
+)
+# Resume may skip a journal write a crash lost: PREPARED with the incumbent
+# already retired publishes, and any unfinished state whose destination
+# already verifies as the candidate commits.
+PUBLICATION_TRANSITIONS: Mapping[
+    tuple[PublicationState, PublicationEvent], PublicationState
+] = {
+    (PublicationState.PREPARED, PublicationEvent.RETIRE): PublicationState.RETIRED,
+    (PublicationState.PREPARED, PublicationEvent.PUBLISH): PublicationState.PUBLISHED,
+    (PublicationState.RETIRED, PublicationEvent.PUBLISH): PublicationState.PUBLISHED,
+    **{
+        (state, PublicationEvent.COMMIT): PublicationState.COMMITTED
+        for state in _UNFINISHED_PUBLICATION
+    },
+    **{
+        (state, PublicationEvent.ABORT): PublicationState.ABORTED_RESTORED
+        for state in _UNFINISHED_PUBLICATION
+    },
 }
 _SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
@@ -154,7 +190,15 @@ def _record_path(transaction_root: Path) -> Path:
     return transaction_root / "identity-publication.json"
 
 
-def _write_record(path: Path, record: Mapping[str, Any], state: str) -> dict[str, Any]:
+def _advance(
+    path: Path, record: Mapping[str, Any], event: PublicationEvent
+) -> dict[str, Any]:
+    try:
+        state = PUBLICATION_TRANSITIONS[(record["state"], event)]
+    except KeyError:
+        raise SourcePackageSealVerificationError(
+            f"identity publication cannot {event} from {record['state']}: {path}"
+        ) from None
     updated = dict(record)
     updated["state"] = state
     write_exact(path, updated)
@@ -182,7 +226,7 @@ def _load_record(path: Path) -> dict[str, Any]:
         or payload.get("schema_version") != 2
         or payload.get("kind") != "source-extension-seal-compare-and-swap"
         or not isinstance(payload.get("state"), str)
-        or payload["state"] not in _PUBLICATION_STATES
+        or payload["state"] not in set(PublicationState)
         or not all(
             isinstance(payload.get(field), str)
             and _SHA256_RE.fullmatch(payload[field]) is not None
@@ -197,6 +241,7 @@ def _load_record(path: Path) -> dict[str, Any]:
         raise SourcePackageSealVerificationError(
             f"extension identity publication record is invalid: {path}"
         )
+    payload["state"] = PublicationState(payload["state"])
     destination = payload.get("destination")
     candidate = payload.get("candidate")
     retired = payload.get("retired")
@@ -283,7 +328,7 @@ def _abort_and_restore_source_extension_publication(
         raise SourcePackageSealVerificationError(
             "publication abort retained a candidate outside quarantine custody"
         )
-    return _write_record(record_path, record, "aborted-restored")
+    return _advance(record_path, record, PublicationEvent.ABORT)
 
 
 def _resume_source_extension_publication(
@@ -317,11 +362,11 @@ def _resume_source_extension_publication(
     incumbent_identity_sha256 = str(record["incumbent_identity_sha256"])
     candidate_identity_sha256 = str(record["candidate_identity_sha256"])
 
-    if record["state"] == "aborted-restored":
+    if record["state"] is PublicationState.ABORTED_RESTORED:
         # This receipt records a past restoration, not perpetual ownership of
         # the destination. Later successful publications may supersede it.
         return record
-    if record["state"] == "committed":
+    if record["state"] is PublicationState.COMMITTED:
         verifier.verified_at(
             destination, candidate_seal_sha256, candidate_identity_sha256
         )
@@ -359,7 +404,7 @@ def _resume_source_extension_publication(
             verifier.verified_at(
                 retired, incumbent_seal_sha256, incumbent_identity_sha256
             )
-            return _write_record(record_path, record, "committed")
+            return _advance(record_path, record, PublicationEvent.COMMIT)
 
         if retired.exists():
             verifier.verified_at(
@@ -376,7 +421,7 @@ def _resume_source_extension_publication(
             verifier.verified_at(
                 retired, incumbent_seal_sha256, incumbent_identity_sha256
             )
-            record = _write_record(record_path, record, "retired")
+            record = _advance(record_path, record, PublicationEvent.RETIRE)
         else:
             raise SourcePackageSealVerificationError(
                 "identity publication lost both incumbent and retired custody"
@@ -394,12 +439,12 @@ def _resume_source_extension_publication(
                 "identity publication destination changed during compare-and-swap"
             )
         durable_publish_directory_exclusive(candidate, destination)
-        record = _write_record(record_path, record, "published")
+        record = _advance(record_path, record, PublicationEvent.PUBLISH)
         verifier.verified_at(
             destination, candidate_seal_sha256, candidate_identity_sha256
         )
         verifier.verified_at(retired, incumbent_seal_sha256, incumbent_identity_sha256)
-        return _write_record(record_path, record, "committed")
+        return _advance(record_path, record, PublicationEvent.COMMIT)
     except BaseException as failure:
         if retirement_started or retired.exists():
             try:
@@ -464,7 +509,7 @@ def publish_source_extension_candidate(
         and incumbent.seal_sha256 == verified_candidate.seal_sha256
     ):
         return {
-            "state": "committed",
+            "state": PublicationState.COMMITTED,
             "no_op": True,
             "upgraded": False,
             "incumbent_seal_sha256": incumbent.seal_sha256,
@@ -483,7 +528,7 @@ def publish_source_extension_candidate(
     record = {
         "schema_version": 2,
         "kind": "source-extension-seal-compare-and-swap",
-        "state": "prepared",
+        "state": PublicationState.PREPARED,
         "destination": str(destination),
         "candidate": str(candidate),
         "retired": str(retired),
@@ -566,7 +611,8 @@ def recover_and_prune_source_extension_transactions(
             )
             if (
                 recovered_publication is not None
-                and recovered_publication.get("state") == "aborted-restored"
+                and recovered_publication.get("state")
+                == PublicationState.ABORTED_RESTORED
             ):
                 warnings.warn(
                     f"retained aborted publication receipt; preserved evidence: {prior}",
@@ -576,7 +622,7 @@ def recover_and_prune_source_extension_transactions(
                 continue
             if (
                 recovered_publication is not None
-                and recovered_publication.get("state") != "committed"
+                and recovered_publication.get("state") != PublicationState.COMMITTED
             ):
                 raise SourcePackageSealVerificationError(
                     f"identity publication recovery did not commit: {prior}"

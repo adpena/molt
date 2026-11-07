@@ -1680,7 +1680,7 @@ mod tests {
             py,
             filename.bits(),
             name.bits(),
-            1,
+            line,
             MoltObject::none().bits(),
             empty.bits(),
             empty.bits(),
@@ -1701,7 +1701,6 @@ mod tests {
             0,
             0,
         );
-        crate::builtins::frames::frame_stack_set_line(line);
         globals
     }
 

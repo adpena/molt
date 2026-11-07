@@ -1879,13 +1879,16 @@ assert(module_globals.__builtins__ == module_builtins)
 molt_frame_exit(module_context, module_depth, module_identity, module_owner)
 
 local outer_context, outer_depth, outer_identity, outer_owner = molt_frame_enter(outer_slot)
-molt_frame_set_line(outer_context, 11, 2, 9)
+molt_frame_set_location(outer_context, 1, 11, 2, 9)
 local inner_context, inner_depth, inner_identity, _inner_owner = molt_frame_enter(inner_slot)
 assert(inner_context == outer_context and inner_depth == 2)
 assert(inner_context.globals[outer_depth] == outer_globals)
 assert(inner_context.globals[inner_depth] == inner_globals)
-molt_frame_set_line(inner_context, 23, 4, 17)
-local exception = molt_exception_attach_traceback(inner_context, {__type="ValueError", __msg="boom"})
+molt_frame_set_location(inner_context, 1, 23, 4, 17)
+local exception = molt_exception_prepend_origin(inner_context, {__type="ValueError", __msg="boom"})
+assert(#exception.__molt_traceback_locations == 1)
+molt_frame_restore_depth(inner_context, outer_depth)
+exception = molt_exception_prepend_origin(outer_context, exception)
 assert(exception.__traceback__ == nil)
 assert(#exception.__molt_traceback_locations == 2)
 assert(exception.__molt_traceback_locations[1].name == "outer")
@@ -1909,7 +1912,7 @@ assert(not empty_ok and empty_error.__type == "RuntimeError")
 local contexts = {}
 local function coroutine_body(code, line)
 	local context, depth, identity, owner = molt_frame_enter(code)
-	molt_frame_set_line(context, line, 0, 1)
+	molt_frame_set_location(context, 1, line, 0, 1)
 	coroutine.yield(context)
 	assert(context.depth == 1 and context.lines[1] == line)
 	molt_frame_exit(context, depth, identity, owner)
@@ -1931,9 +1934,9 @@ local failing = molt_coroutine_execution_wrap(function(code)
 	local context, _depth, _identity, owner = molt_frame_enter(code)
 	failing_context = context
 	failing_owner = owner
-	molt_frame_set_line(context, 57, 6, 14)
+	molt_frame_set_location(context, 1, 57, 6, 14)
 	coroutine.yield("suspended")
-	error({__type="ValueError", __msg="inside coroutine"}, 0)
+	error(molt_exception_prepend_origin(context, {__type="ValueError", __msg="inside coroutine"}), 0)
 end)
 assert(failing(inner_slot) == "suspended")
 assert(failing_context.depth == 1)
@@ -1950,12 +1953,12 @@ local attachment_failure = molt_coroutine_execution_wrap(function(code)
 	local context = molt_frame_enter(code)
 	attachment_failure_context = context
 	context.codes[context.depth] = nil
-	error({__type="ValueError", __msg="traceback attachment failure"}, 0)
+	error(molt_exception_prepend_origin(context, {__type="ValueError", __msg="traceback attachment failure"}), 0)
 end)
 local attachment_ok, attachment_error = pcall(attachment_failure, inner_slot)
-assert(not attachment_ok and attachment_error.__type == "RuntimeError")
-assert(attachment_error.__cause__.__type == "ValueError")
-assert(attachment_error.__molt_traceback_attachment_error ~= nil)
+assert(not attachment_ok and attachment_error.__type == "ValueError")
+assert(attachment_error.__msg == "traceback attachment failure")
+assert(attachment_error.__molt_traceback_locations == nil)
 assert(attachment_failure_context.depth == 0)
 
 local hostile_context: any = nil
@@ -1965,7 +1968,7 @@ local hostile = molt_coroutine_execution_wrap(function(code)
 	local exception = setmetatable({__type="ValueError", __msg="hostile"}, {
 		__newindex=function() error("hostile newindex", 0) end,
 	})
-	error(exception, 0)
+	error(molt_exception_prepend_origin(context, exception), 0)
 end)
 local hostile_ok, hostile_error = pcall(hostile, inner_slot)
 assert(not hostile_ok and hostile_error.__type == "ValueError")
@@ -1977,12 +1980,12 @@ local frozen = molt_coroutine_execution_wrap(function(code)
 	local context = molt_frame_enter(code)
 	frozen_context = context
 	local exception = table.freeze({__type="ValueError", __msg="frozen"})
-	error(exception, 0)
+	error(molt_exception_prepend_origin(context, exception), 0)
 end)
 local frozen_ok, frozen_error = pcall(frozen, inner_slot)
-assert(not frozen_ok and frozen_error.__type == "RuntimeError")
-assert(frozen_error.__cause__.__type == "ValueError")
-assert(frozen_error.__molt_traceback_attachment_error ~= nil)
+assert(not frozen_ok and frozen_error.__type == "ValueError")
+assert(frozen_error.__msg == "frozen")
+assert(frozen_error.__molt_traceback_locations == nil)
 assert(frozen_context.depth == 0)
 
 local restoration_failure_context: any = nil
@@ -2143,7 +2146,7 @@ local heap_before = gcinfo()
 local started = os.clock()
 for index = 1, 100000 do
 	local context, depth, identity, owner = molt_frame_enter(outer_slot)
-	molt_frame_set_line(context, 12, 1, 3)
+	molt_frame_set_location(context, 1, 12, 1, 3)
 	molt_frame_exit(context, depth, identity, owner)
 end
 local elapsed = os.clock() - started
@@ -5647,8 +5650,9 @@ fn execution_frame_siblings_have_real_luau_lowering() {
                 execution_context: ExecutionContextPolicy::Inherited,
                 ops: vec![
                     OpIR {
-                        value: Some(8),
-                        ..OpIR::new(molt_ir::OpKind::Line)
+                        value: Some(1),
+                        source_line: Some(8),
+                        ..OpIR::new(molt_ir::OpKind::FrameSetLocation)
                     },
                     OpIR {
                         args: Some(vec!["locals".to_string()]),
@@ -5675,9 +5679,9 @@ fn execution_frame_siblings_have_real_luau_lowering() {
     assert!(source.contains("molt_frame_enter_slot(molt_code_slots[0])"));
     assert!(source.contains("molt_frame_exit(__molt_frame_context"));
     assert!(source.contains("inherited_frame(locals, __molt_frame_context)"));
-    assert!(source.contains("molt_frame_set_line(__molt_frame_context, 8"));
+    assert!(source.contains("molt_frame_set_location(__molt_frame_context, 1, 8"));
     assert!(source.contains("molt_frame_locals_set(__molt_frame_context, locals)"));
-    assert!(!source.contains("molt_frame_set_line(molt_frame_context()"));
+    assert!(!source.contains("molt_frame_set_location(molt_frame_context()"));
     assert!(!source.contains("molt_frame_locals_set(molt_frame_context()"));
 }
 
@@ -6247,7 +6251,7 @@ fn test_iter_next_unboxed_preserves_discarded_result_positions() {
 #[test]
 fn test_luau_tir_roundtrip_raise_catch_fails_closed_before_source() {
     let func: FunctionIR = serde_json::from_str(
-            r#"{"return_abi": "value", "name":"__main____raise_catch","ops":[{"kind":"trace_enter_slot","s_value":"__main____raise_catch"},{"kind":"exception_stack_enter","out":"v107"},{"kind":"exception_stack_depth","out":"v108"},{"kind":"missing","out":"v109"},{"args":["v109"],"kind":"store_var","var":"caught"},{"kind":"check_exception","value":3},{"kind":"missing","out":"v110"},{"args":["v110"],"kind":"store_var","var":"i"},{"kind":"check_exception","value":3},{"args":["n"],"col_offset":4,"end_col_offset":14,"kind":"store_var","var":"n"},{"col_offset":4,"end_col_offset":14,"kind":"line","value":36},{"kind":"check_exception","value":3},{"kind":"const","out":"v111","value":0},{"args":["v111"],"col_offset":4,"end_col_offset":23,"kind":"store_var","var":"caught"},{"col_offset":4,"end_col_offset":23,"kind":"line","value":37},{"kind":"check_exception","value":3},{"kind":"const","out":"v112","value":0},{"kind":"const","out":"v113","value":1},{"args":["v112","n","v113"],"kind":"range_new","out":"v114"},{"kind":"check_exception","value":3},{"kind":"const","out":"v115","value":0},{"kind":"const","out":"v116","value":1},{"args":["v114"],"kind":"len","out":"v117"},{"kind":"check_exception","value":3},{"kind":"loop_start"},{"args":["v115"],"kind":"loop_index_start","out":"v118"},{"args":["v118","v117"],"kind":"lt","out":"v119"},{"kind":"check_exception","value":3},{"args":["v119"],"kind":"loop_break_if_false","type_hint":"bool"},{"args":["v114","v118"],"kind":"index","out":"v120"},{"kind":"check_exception","value":3},{"args":["v120"],"col_offset":8,"end_col_offset":23,"kind":"store_var","var":"i"},{"col_offset":8,"end_col_offset":23,"kind":"line","value":38},{"kind":"check_exception","value":3},{"kind":"exception_push","out":"none"},{"col_offset":12,"end_col_offset":31,"kind":"try_start","value":4},{"col_offset":12,"end_col_offset":31,"kind":"line","value":39},{"kind":"load_var","out":"v121","var":"i"},{"kind":"check_exception","value":4},{"args":["v121"],"kind":"exception_new_builtin_one","out":"v122","s_value":"ValueError","value":5},{"args":["v122"],"kind":"raise","out":"none"},{"kind":"jump","value":4},{"kind":"try_end","value":4},{"kind":"jump","value":6},{"kind":"label","value":4},{"kind":"exception_last_pending","out":"v123"},{"kind":"exception_clear","out":"none"},{"args":["v123"],"kind":"exception_match_builtin","out":"v124","s_value":"ValueError","value":5},{"args":["v124"],"kind":"if","type_hint":"bool"},{"kind":"exception_clear","out":"none"},{"args":["v123"],"col_offset":12,"end_col_offset":23,"kind":"exception_context_set","out":"none"},{"col_offset":12,"end_col_offset":23,"kind":"line","value":41},{"kind":"load_var","out":"v125","var":"caught"},{"kind":"const","out":"v126","value":1},{"args":["v125","v126"],"kind":"inplace_add","out":"v127"},{"args":["v127"],"kind":"store_var","var":"caught"},{"kind":"const_none","out":"v128"},{"args":["v128"],"kind":"exception_context_set","out":"none"},{"kind":"else"},{"args":["v123"],"kind":"raise","out":"none"},{"kind":"end_if"},{"kind":"jump","value":7},{"kind":"label","value":6},{"kind":"exception_pop","out":"none"},{"kind":"jump","value":8},{"kind":"label","value":7},{"kind":"exception_pop","out":"none"},{"kind":"check_exception","value":3},{"kind":"label","value":8},{"kind":"check_exception","value":3},{"args":["v118","v116"],"kind":"add","out":"v129"},{"kind":"check_exception","value":3},{"args":["v129"],"kind":"loop_index_next","out":"v118"},{"kind":"loop_continue"},{"col_offset":4,"end_col_offset":17,"kind":"loop_end"},{"col_offset":4,"end_col_offset":17,"kind":"line","value":42},{"kind":"load_var","out":"v130","var":"caught"},{"kind":"check_exception","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none"},{"kind":"check_exception","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none"},{"args":["v107"],"kind":"exception_stack_exit","out":"none"},{"kind":"trace_exit"},{"kind":"trace_exit"},{"args":["v130"],"kind":"ret"},{"kind":"label","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none"},{"args":["v107"],"kind":"exception_stack_exit","out":"none"},{"kind":"trace_exit"},{"kind":"trace_exit"},{"kind":"ret_void"}],"param_types":["i64"],"params":["n"]}"#,
+            r#"{"return_abi":"value","name":"__main____raise_catch","ops":[{"kind":"trace_enter_slot","s_value":"__main____raise_catch"},{"kind":"exception_stack_enter","out":"v107"},{"kind":"exception_stack_depth","out":"v108"},{"kind":"missing","out":"v109"},{"args":["v109"],"kind":"store_var","var":"caught"},{"kind":"check_exception","exception_edge":"origin","value":3},{"kind":"missing","out":"v110"},{"args":["v110"],"kind":"store_var","var":"i"},{"kind":"check_exception","exception_edge":"origin","value":3},{"args":["n"],"col_offset":4,"end_col_offset":14,"kind":"store_var","var":"n"},{"col_offset":4,"end_col_offset":14,"kind":"line","value":36},{"kind":"check_exception","exception_edge":"origin","value":3},{"kind":"const","out":"v111","value":0},{"args":["v111"],"col_offset":4,"end_col_offset":23,"kind":"store_var","var":"caught"},{"col_offset":4,"end_col_offset":23,"kind":"line","value":37},{"kind":"check_exception","exception_edge":"origin","value":3},{"kind":"const","out":"v112","value":0},{"kind":"const","out":"v113","value":1},{"args":["v112","n","v113"],"kind":"range_new","out":"v114"},{"kind":"check_exception","exception_edge":"origin","value":3},{"kind":"const","out":"v115","value":0},{"kind":"const","out":"v116","value":1},{"args":["v114"],"kind":"len","out":"v117"},{"kind":"check_exception","exception_edge":"origin","value":3},{"kind":"loop_start"},{"args":["v115"],"kind":"loop_index_start","out":"v118"},{"args":["v118","v117"],"kind":"lt","out":"v119"},{"kind":"check_exception","exception_edge":"origin","value":3},{"args":["v119"],"kind":"loop_break_if_false","type_hint":"bool"},{"args":["v114","v118"],"kind":"index","out":"v120"},{"kind":"check_exception","exception_edge":"origin","value":3},{"args":["v120"],"col_offset":8,"end_col_offset":23,"kind":"store_var","var":"i"},{"col_offset":8,"end_col_offset":23,"kind":"line","value":38},{"kind":"check_exception","exception_edge":"origin","value":3},{"kind":"exception_push","out":"none"},{"col_offset":12,"end_col_offset":31,"kind":"try_start","value":4},{"col_offset":12,"end_col_offset":31,"kind":"line","value":39},{"kind":"load_var","out":"v121","var":"i"},{"kind":"check_exception","exception_edge":"origin","value":4},{"args":["v121"],"kind":"exception_new_builtin_one","out":"v122","s_value":"ValueError","value":5},{"args":["v122"],"kind":"raise","out":"none"},{"kind":"jump","value":4},{"kind":"try_end","value":4},{"kind":"jump","value":6},{"kind":"label","value":4},{"kind":"exception_last_pending","out":"v123"},{"kind":"exception_clear","out":"none"},{"args":["v123"],"kind":"exception_match_builtin","out":"v124","s_value":"ValueError","value":5},{"args":["v124"],"kind":"if","type_hint":"bool"},{"kind":"exception_clear","out":"none"},{"args":["v123"],"col_offset":12,"end_col_offset":23,"kind":"exception_context_set","out":"none","exception_source":"unwind"},{"col_offset":12,"end_col_offset":23,"kind":"line","value":41},{"kind":"load_var","out":"v125","var":"caught"},{"kind":"const","out":"v126","value":1},{"args":["v125","v126"],"kind":"inplace_add","out":"v127"},{"kind":"check_exception","exception_edge":"origin","value":3},{"args":["v127"],"kind":"store_var","var":"caught"},{"kind":"const_none","out":"v128"},{"args":["v128"],"kind":"exception_context_set","out":"none","exception_source":"unwind"},{"kind":"else"},{"args":["v123"],"kind":"raise","out":"none"},{"kind":"end_if"},{"kind":"jump","value":7},{"kind":"label","value":6},{"kind":"exception_pop","out":"none","exception_source":"unwind"},{"kind":"jump","value":8},{"kind":"label","value":7},{"kind":"exception_pop","out":"none","exception_source":"unwind"},{"kind":"check_exception","exception_edge":"unwind","value":3},{"kind":"label","value":8},{"kind":"check_exception","exception_edge":"unwind","value":3},{"args":["v118","v116"],"kind":"add","out":"v129"},{"kind":"check_exception","exception_edge":"origin","value":3},{"args":["v129"],"kind":"loop_index_next","out":"v118"},{"kind":"loop_continue"},{"col_offset":4,"end_col_offset":17,"kind":"loop_end"},{"col_offset":4,"end_col_offset":17,"kind":"line","value":42},{"kind":"load_var","out":"v130","var":"caught"},{"kind":"check_exception","exception_edge":"origin","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none","exception_source":"unwind"},{"kind":"check_exception","exception_edge":"unwind","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none","exception_source":"unwind"},{"args":["v107"],"kind":"exception_stack_exit","out":"none","exception_source":"unwind"},{"kind":"trace_exit"},{"kind":"trace_exit"},{"args":["v130"],"kind":"ret"},{"kind":"label","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none","exception_source":"unwind"},{"args":["v107"],"kind":"exception_stack_exit","out":"none","exception_source":"unwind"},{"kind":"trace_exit"},{"kind":"trace_exit"},{"kind":"ret_void"}],"param_types":["i64"],"params":["n"]}"#,
         )
         .expect("raise_catch frontend fixture should deserialize");
     let func = luau_tir_roundtrip_function(func);

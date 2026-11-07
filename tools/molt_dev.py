@@ -140,7 +140,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -224,6 +224,7 @@ from tools.molt_dev_policy import (  # noqa: E402
     GateEnvironment,
     LandingMode,
     SelectedGate,
+    left_to_postsubmit,
     select_landing_gates,
 )
 from tools.dirty_tree_policy import (  # noqa: E402
@@ -1022,10 +1023,12 @@ def _write_queue_receipt(
     commit: str,
     gates: list[SelectedGate],
     seconds: list[tuple[float, str]],
-    logs: Path | None,
+    logs: Mapping[str, Path],
     controller: str | None,
+    postsubmit_only: Sequence[str] = (),
 ) -> None:
-    """The landing receipt of an integrate run: every selected gate passed."""
+    """The landing receipt of an integrate run: every selected gate passed.
+    ``logs`` maps each shown command to the log of the run that passed."""
     from tools import landing_receipt
     from tools.molt_dev_gates import display
 
@@ -1038,9 +1041,9 @@ def _write_queue_receipt(
             phase="static" if gate.static else "batch",
             command=display(gate.command),
             seconds=elapsed.get(display(gate.command)),
-            log=None if logs is None else logs / f"gate-{ordinal:03d}.stdout.log",
+            log=logs.get(display(gate.command)),
         )
-        for ordinal, gate in enumerate(gates, start=1)
+        for gate in gates
     ]
     receipt = landing_receipt.build_receipt(
         mode="queue",
@@ -1050,6 +1053,7 @@ def _write_queue_receipt(
         controller=controller,
         started_at=datetime.now(UTC).isoformat(timespec="seconds"),
         gates=records,
+        postsubmit_only=postsubmit_only,
     )
     _ok(f"landing receipt {landing_receipt.write_receipt(common_dir, receipt)}")
 
@@ -1419,6 +1423,12 @@ def _integrate_exclusive(
             )
             for test, cells in sorted(graph_selection.deferred.items()):
                 _say(f"      {test}  ({', '.join(cells) or 'no proof cell owns it'})")
+        left = left_to_postsubmit(graph_selection, gate_cmds)
+        if left:
+            _say(
+                f"    data readers left to postsubmit ({len(left)}): "
+                "presubmit runs importers"
+            )
     env = gate_environment(repo, session_id=args.session_id, create_dirs=False)
     progress.environments = {(): GateEnvironment(ProcessEnvironment(env), None, False)}
     cargo_outputs: dict[tuple[str, ...], tuple[Path, ...]] = {}
@@ -1456,7 +1466,7 @@ def _integrate_exclusive(
             )
         _assert_integration_source(git, selected_commit)
     gate_seconds: list[tuple[float, str]] = []
-    gate_logs: Path | None = None
+    gate_logs: Mapping[str, Path] = {}
     if dry:
         for gate in gate_cmds:
             _assert_integration_source(git, selected_commit)
@@ -1464,9 +1474,10 @@ def _integrate_exclusive(
     elif farm_host:
         from tools.trunk_landing import run_remote
 
-        gate_seconds.extend(
-            run_remote(repo, selected_commit, gate_cmds, host=farm_host)
+        remote_seconds, _remote_logs = run_remote(
+            repo, selected_commit, gate_cmds, host=farm_host
         )
+        gate_seconds.extend(remote_seconds)
     else:
         runtime = _gate_runtime(
             git,
@@ -1481,7 +1492,7 @@ def _integrate_exclusive(
             toolchains=toolchains,
             deferred=prepared.deferred,
         )
-        gate_logs = runtime.output_dir
+        gate_logs = runtime.passed_logs
         run_selected_gates(
             gate_cmds,
             runtime,
@@ -1503,6 +1514,7 @@ def _integrate_exclusive(
             seconds=gate_seconds,
             logs=gate_logs,
             controller=progress.controller,
+            postsubmit_only=left_to_postsubmit(graph_selection, gate_cmds),
         )
 
     # --- step 6: push (only after every gate is green) ----------------------
@@ -1855,9 +1867,9 @@ def _difftest_streams_match(expected: bytes, actual: bytes) -> bool:
     """Compare captured program output with host-stdio newline parity.
 
     CPython on Windows translates ``print(..., "\\n")`` to CRLF when stdout is a
-    pipe; Molt's native runtime writes LF. The main differential harness compares
-    text after newline normalization, so ``difftest`` must not report a Windows
-    false negative once exit codes and logical output match.
+    pipe; Molt's native runtime writes LF. ``difftest`` keeps this Windows rule of
+    its own. The canonical runner, ``tests/molt_diff.py``, compares raw bytes
+    decoded losslessly through ``compat_comparison``; HF-801 consolidates the two.
     """
     if os.name == "nt":
         expected = expected.replace(b"\r\n", b"\n")

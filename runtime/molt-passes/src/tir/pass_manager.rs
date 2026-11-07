@@ -638,6 +638,18 @@ pub fn build_drop_pipeline(target_info: TargetInfo) -> PassManager {
             stats.name = "block_arg_prune_post_drop";
             stats
         }),
+        // Last: it sees final types and inserted releases. `OpsOnly`: it
+        // deletes publications and adds check attrs, never edges.
+        pass("frame_location_placement", OpsOnly, |f, _am, tti| {
+            if tti.lowering.cold_origin_frame_location {
+                passes::frame_location_placement::run(f)
+            } else {
+                PassStats {
+                    name: "frame_location_placement",
+                    ..Default::default()
+                }
+            }
+        }),
     ];
     PassManager::new(passes, target_info)
 }
@@ -957,9 +969,10 @@ mod tests {
     }
 
     /// The RC drop-insertion pipeline (round-7) is the two design-20 passes plus
-    /// the post-drop block-argument cleanup, in
-    /// order. It is a SEPARATE terminal phase run after the module transforms;
-    /// the default pipeline above must NOT contain either pass.
+    /// the post-drop block-argument cleanup, in order, then frame-location
+    /// placement, which must see final types and inserted releases. It is a
+    /// SEPARATE terminal phase run after the module transforms; the default
+    /// pipeline above must NOT contain either RC pass.
     #[test]
     fn drop_pipeline_is_rc_then_block_arg_cleanup() {
         let pm = build_drop_pipeline(TargetInfo::native_release_fast());
@@ -968,7 +981,8 @@ mod tests {
             vec![
                 "drop_insertion",
                 "refcount_elim_post",
-                "block_arg_prune_post_drop"
+                "block_arg_prune_post_drop",
+                "frame_location_placement"
             ]
         );
 
@@ -1078,7 +1092,16 @@ mod tests {
                     opcode: OpCode::CheckException,
                     operands: vec![],
                     results: vec![],
-                    attrs: AttrDict::from([("value".into(), AttrValue::Int(90))]),
+                    // The latch observation is the loop's poll site: Origin.
+                    attrs: AttrDict::from([
+                        ("value".into(), AttrValue::Int(90)),
+                        (
+                            "exception_edge".into(),
+                            AttrValue::Int(
+                                crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin as i64,
+                            ),
+                        ),
+                    ]),
                     source_span: None,
                 }],
                 terminator: Terminator::Branch {
@@ -1115,12 +1138,12 @@ mod tests {
             "the unknown input must retain the loop branch through optimization"
         );
 
-        // The drop pipeline runs its two passes under the same verify guard.
+        // The drop pipeline runs its passes under the same verify guard.
         // (This trivial loop carries no heap-allocated values, so drop_insertion
-        // inserts nothing; both passes still RUN and report stats.)
+        // inserts nothing; every pass still RUNS and reports stats.)
         let dp = build_drop_pipeline(TargetInfo::native_release_fast());
         let dstats = dp.run_inner(&mut func, true);
-        assert_eq!(dstats.len(), 3);
+        assert_eq!(dstats.len(), 4);
     }
 
     fn exception_match_ref_without_reachable_pop_function() -> TirFunction {

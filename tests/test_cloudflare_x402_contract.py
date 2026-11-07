@@ -22,6 +22,10 @@ WALLET = "0x00000000000000000000000000000000000000A1"
 VERIFIER = "https://verifier.example/verify"
 
 _HARNESS = f"""
+// Time is a fixture input in this isolated Node child. A loaded host must
+// not turn a future +301s proof into an accepted +300s proof between awaits.
+const now = 1700000000;
+Date.now = () => now * 1000;
 const {{ verifyX402 }} = await import('./deploy/cloudflare/x402.js');
 const verified = [];
 globalThis.fetch = async (url, init) => {{
@@ -30,7 +34,6 @@ globalThis.fetch = async (url, init) => {{
   const valid = proof.signature === '0xgood';
   return new Response(JSON.stringify(valid ? {{ valid, receipt: 'receipt-1' }} : {{ valid }}));
 }};
-const now = Math.floor(Date.now() / 1000);
 const proof = (overrides = {{}}, payload = {{}}) => btoa(JSON.stringify({{
   version: '1',
   network: 'base',
@@ -151,8 +154,12 @@ def test_the_clock_window_is_300_seconds_on_both_sides() -> None:
         """
         results.past = await decide(proof({}, { timestamp: now - 299 }));
         results.future = await decide(proof({}, { timestamp: now + 299 }));
+        results.pastBoundary = await decide(proof({}, { timestamp: now - 300 }));
+        results.futureBoundary = await decide(proof({}, { timestamp: now + 300 }));
         """
     )
 
     assert results["past"]["authorized"] is True
     assert results["future"]["authorized"] is True
+    assert results["pastBoundary"]["authorized"] is True
+    assert results["futureBoundary"]["authorized"] is True

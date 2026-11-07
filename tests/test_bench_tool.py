@@ -1341,9 +1341,14 @@ def test_failed_sealed_reference_prevents_compilation_and_guest_timing(
             == bench_tool.memory_guard.TIMEOUT_RETURN_CODE
         )
         assert result["molt_failure_timed_out"] is True
-        # The killed child wrote nothing; guard diagnostics are not guest output.
+        # The killed child wrote no output of its own. The guard ends a timed
+        # Python child with SIGABRT under -X faulthandler (HF-779), so its
+        # stderr tail is the child's own stack dump; guard diagnostics are not
+        # guest output.
         assert payload["stdout_tail"] is None
-        assert payload["stderr_tail"] is None
+        assert payload["stderr_tail"].startswith("Fatal Python error: Aborted")
+        assert "most recent call first" in payload["stderr_tail"]
+        assert "memory_guard" not in payload["stderr_tail"]
     assert result["cpython_time_s"] is None
     assert result["cpython_samples_s"] == []
     assert result["cpython_warmup_samples_s"] == []

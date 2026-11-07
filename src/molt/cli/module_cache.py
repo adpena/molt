@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from molt.frontend import MoltValue, SimpleTIRGenerator
+from molt.frontend.dataclass_init import DataclassInitField
 from molt.frontend import BoundMethodHint, ClassId, ClassInfo, DeclaredClass
 from molt.frontend.module_publication import (
     parse_function_metadata,
@@ -773,10 +774,12 @@ def _frontend_lowering_cache_disabled() -> bool:
     }
 
 
-_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 13
+# The typed dataclass projection reserves a new JSON tag. Old name maps did not
+# escape it, so do not decode those records under the extended codec.
+_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 14
 
 
-_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 10
+_MODULE_LOWERING_CACHE_SCHEMA_VERSION = 11
 
 
 _MODULE_ANALYSIS_FUNC_KINDS = frozenset({"sync", "async", "gen", "asyncgen"})
@@ -1056,6 +1059,10 @@ def _decode_cached_json_value_inner(value: Any) -> Any:
         class_identity = _decode_class_identity(value)
         if class_identity is not None:
             return class_identity
+        if "__dataclass_init_field__" in value:
+            if len(value) != 1:
+                raise ValueError("invalid cached dataclass initializer field")
+            return DataclassInitField.from_schema(value["__dataclass_init_field__"])
         if "__molt_value__" in value and isinstance(value["__molt_value__"], dict):
             payload = value["__molt_value__"]
             name = payload.get("name")
@@ -1408,6 +1415,9 @@ def _module_lowering_context_payload(
         "module_chunking": module_chunking,
         "module_chunk_max_ops": module_chunk_max_ops,
         "optimization_profile": optimization_profile,
+        # The product already contains optimized IR and its coverage. A policy
+        # change must not restore a differently optimized standard library.
+        "midend_policy": SimpleTIRGenerator._capture_midend_env_snapshot(),
         "pgo_hot_functions": pgo_hot_function_names_sorted,
     }
 

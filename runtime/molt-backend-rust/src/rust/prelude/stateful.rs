@@ -7,6 +7,7 @@ impl RustBackend {
             || used("molt_code_slot_set(")
             || used("molt_code_slots_init(")
             || used("molt_trace_enter_slot(")
+            || used("molt_frame_set_location(")
         {
             self.output.push_str(concat!(
                 "#[derive(Clone)]\n",
@@ -76,14 +77,18 @@ impl RustBackend {
         if used("molt_trace_enter_slot(")
             || used("molt_trace_exit(")
             || used("molt_frame_locals_set(")
+            || used("molt_frame_set_location(")
         {
             self.output.push_str(concat!(
+                "#[derive(Clone)]\n",
+                "struct MoltLocationId(u64);\n\n",
                 "#[derive(Clone)]\n",
                 "struct MoltFrame {\n",
                 "    code_id: i64,\n",
                 "    code: MoltValue,\n",
                 "    globals: MoltValue,\n",
                 "    locals: Option<MoltValue>,\n",
+                "    location: Option<MoltLocationId>,\n",
                 "}\n\n",
                 "thread_local! {\n",
                 "    static MOLT_FRAME_STACK: std::cell::RefCell<Vec<MoltFrame>> = const { std::cell::RefCell::new(Vec::new()) };\n",
@@ -91,12 +96,17 @@ impl RustBackend {
                 "fn molt_trace_enter_slot(code_id: i64) -> MoltValue {\n",
                 "    let Some(idx) = usize::try_from(code_id).ok() else { panic!(\"IndexError: code slot out of range\") };\n",
                 "    let slot = MOLT_CODE_SLOTS.with(|slots| slots.borrow().get(idx).cloned().flatten()).unwrap_or_else(|| panic!(\"RuntimeError: trace_enter_slot references an unbound code slot\"));\n",
-                "    MOLT_FRAME_STACK.with(|stack| stack.borrow_mut().push(MoltFrame { code_id, code: slot.code, globals: slot.globals, locals: None }));\n",
+                "    MOLT_FRAME_STACK.with(|stack| stack.borrow_mut().push(MoltFrame { code_id, code: slot.code, globals: slot.globals, locals: None, location: None }));\n",
                 "    MoltValue::None\n",
                 "}\n\n",
                 "fn molt_trace_exit() -> MoltValue {\n",
                 "    MOLT_FRAME_STACK.with(|stack| { stack.borrow_mut().pop(); });\n",
                 "    MoltValue::None\n",
+                "}\n\n",
+                "fn molt_frame_set_location(location: u64) {\n",
+                "    MOLT_FRAME_STACK.with(|stack| {\n",
+                "        stack.borrow_mut().last_mut().expect(\"location requires an active frame\").location = Some(MoltLocationId(location));\n",
+                "    });\n",
                 "}\n\n",
                 "fn molt_frame_locals_set(locals: &MoltValue) -> MoltValue {\n",
                 "    MOLT_FRAME_STACK.with(|stack| {\n",

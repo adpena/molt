@@ -554,6 +554,8 @@ fn assert_installed_runtime_hooks(requested: RuntimeHooks) {
             type_runtime_slots,
         }
         optional {
+            marshal_write,
+            marshal_read,
             alloc_str,
             numeric_identity_new,
             alloc_tuple,

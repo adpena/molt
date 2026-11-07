@@ -21,7 +21,7 @@ from typing import (
 
 from molt import compiler_process
 from molt import input_report as _input_report
-from molt.frontend import ClassId, ClassInfo
+from molt.frontend import ClassId, ClassInfo, SimpleTIRGenerator
 from molt.type_facts import TypeFacts
 
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
@@ -692,12 +692,25 @@ def _consume_frontend_module_result(
     )
     if integration_error is not None:
         return fail(integration_error, json_output, command="build")
+    outcomes = dict(result.get("midend_policy_outcomes_by_function", {}))
+    # The integrated function inventory is independent of optimizer outcomes.
+    # Old cached modules must not disappear from the coverage denominator.
+    module_init = SimpleTIRGenerator.module_init_symbol(module_name)
+    for function in result["functions"]:
+        symbol = function["name"]
+        name = "molt_main" if symbol == module_init else symbol
+        outcome = dict(outcomes.get(name, {}))
+        if "coverage" not in outcome:
+            outcome["coverage"] = {
+                "status": "skipped",
+                "input_ops": None,
+                "output_ops": len(function["ops"]),
+                "reasons": ["missing_outcome"],
+            }
+        outcomes[name] = outcome
     accumulate_midend_diagnostics(
         module_name,
-        policy_outcomes_by_func=cast(
-            dict[str, dict[str, Any]],
-            result.get("midend_policy_outcomes_by_function", {}),
-        ),
+        policy_outcomes_by_func=outcomes,
         pass_stats_by_func=cast(
             dict[str, dict[str, dict[str, Any]]],
             result.get("midend_pass_stats_by_function", {}),

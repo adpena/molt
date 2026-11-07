@@ -683,6 +683,16 @@ impl Drop for ForeignExecutionGuard {
     }
 }
 
+/// The C ingress borrows managed values; a foreign crossing can additionally
+/// own a temporary runtime wrapper. Marshal excludes only that transport pin
+/// from its observable reference-count decision.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MarshalInputOwnership {
+    Borrowed,
+    TemporaryWrapper,
+}
+
 /// Vtable of runtime-provided object-allocation and inspection hooks.
 /// All function pointers are `extern "C"` for ABI stability across crate boundaries.
 #[derive(Clone, Copy)]
@@ -1570,6 +1580,11 @@ pub struct RuntimeHooks {
     /// Python containment protocol on borrowed operands: 1/0, or -1 with an
     /// exception. The runtime owns special lookup and builtin membership.
     pub object_contains: unsafe extern "C" fn(container: u64, needle: u64) -> std::os::raw::c_int,
+    /// Marshal's sole runtime codec. ABI-only hosts without a runtime refuse
+    /// this capability; they cannot substitute another serialization format.
+    pub marshal_write:
+        Option<unsafe extern "C" fn(u64, i32, MarshalInputOwnership) -> OwnedHandleResult>,
+    pub marshal_read: Option<unsafe extern "C" fn(*const u8, usize) -> OwnedHandleResult>,
     /// Context objects and bindings have one runtime owner. Optional values use
     /// an explicit presence flag; float +0.0 is a valid successful value.
     /// Admit a known public Context static shell through its lazy class owner.
@@ -1607,8 +1622,10 @@ pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
 // Version 74 joins interpreter dictionary/cache-only import hooks with Version 73's
 // struct-sequence factories and full-version target predicate.
 // Version 75 joins explicit C type invalidation to runtime type epochs.
-// Version 76 binds exact-origin, two-domain native thread-exit destruction.
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 77;
+// Version 76 routes both public marshal C APIs through the shared runtime codec.
+// Version 77 (lane HF-198) binds exact-origin, two-domain native thread-exit destruction.
+// Version 78 joins Version 76's marshal codec with Version 77's thread-exit custody.
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 78;
 
 #[inline]
 fn runtime_hooks_layout_matches(abi_magic: u64, abi_version: u32, struct_size: u32) -> bool {
@@ -3074,6 +3091,8 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     slice_new: stub_slice_new,
     slice_item: stub_tuple_item,
     object_contains: stub_object_contains,
+    marshal_write: None,
+    marshal_read: None,
     context_type_admit: stub_context_type_admit,
     context_new: stub_context_new,
     context_copy_current: stub_context_new,

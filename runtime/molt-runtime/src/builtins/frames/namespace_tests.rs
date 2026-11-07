@@ -711,7 +711,7 @@ fn lazy_traceback_keeps_namespaces_and_locals_after_live_frame_retirement() {
         }
         frame_stack_push_owned(py, code, globals, builtins, 0);
         frame_stack_set_locals_dict(py, locals);
-        let payload = frame_stack_trace_payload_bits(py, None, false).unwrap();
+        let payload = frame_stack_trace_payload_bits(py).unwrap();
         frame_stack_pop(py);
         let entry =
             unsafe { traceback_payload_frame_entry(obj_from_bits(payload).as_ptr().unwrap()) };
@@ -719,8 +719,7 @@ fn lazy_traceback_keeps_namespaces_and_locals_after_live_frame_retirement() {
             [entry.globals_bits, entry.locals_bits, entry.builtins_bits],
             [globals, locals, builtins]
         );
-        let frame =
-            unsafe { alloc_frame_obj(py, entry, 1, MoltObject::none().bits(), -1).unwrap() };
+        let frame = unsafe { alloc_frame_obj(py, entry, MoltObject::none().bits()).unwrap() };
         assert_eq!(
             unsafe { crate::object_class_bits(obj_from_bits(frame).as_ptr().unwrap()) },
             builtin_classes(py).frame
@@ -762,7 +761,7 @@ fn runtime_native_tasks_never_fabricate_python_frames() {
                 crate::molt_task_new_attached_body(py, 0, crate::GEN_CONTROL_SIZE as u64, kind);
             let ptr = obj_from_bits(task).as_ptr().unwrap();
             assert_eq!(
-                unsafe { suspended_frame_bits(py, ptr, -1) },
+                unsafe { suspended_frame_bits(py, ptr) },
                 MoltObject::none().bits()
             );
             assert!(!crate::exception_pending(py));
@@ -791,19 +790,16 @@ fn frame_materialization_denial_never_looks_like_an_absent_frame() {
         let owned = [code, globals, locals, builtins];
         let _owners =
             owned.map(|bits| crate::builtins::exceptions::ExceptionValue::adopt(py, bits));
-        let entry = FrameEntry {
-            code_bits: code,
-            globals_bits: globals,
-            builtins_bits: builtins,
-            locals_bits: locals,
-            line: 1,
-            col_offset: -1,
-            end_col_offset: -1,
-            activation_bits: 0,
-            bindings: bindings::FrameBindings::default(),
-            python_context: PythonFrameContext::default(),
-        };
-        let construct = || unsafe { alloc_frame_obj(py, entry, 1, MoltObject::none().bits(), -1) };
+        for bits in [code, globals, builtins] {
+            inc_ref_bits(py, bits);
+        }
+        frame_stack_push_owned(py, code, globals, builtins, 0);
+        assert!(frame_stack_enter_homes(py, FramePlan::default()));
+        frame_stack_set_locals_dict(py, locals);
+        let snapshot = FrameStackSnapshot::capture(py, |len| len - 1..len).unwrap();
+        frame_stack_pop(py);
+        let entry = snapshot.entries[0];
+        let construct = || unsafe { alloc_frame_obj(py, entry, MoltObject::none().bits()) };
         // Warm interned field names and sealed class metadata before denial.
         dec_ref_bits(py, construct().unwrap());
         let baseline = owned.map(refs);
