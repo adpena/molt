@@ -1400,7 +1400,7 @@ def test_consumed_cargo_templates_are_admitted_complete_crate_shards(template, c
 
 
 def test_queue_help_prints_the_uv_contract_the_queue_admits(capsys) -> None:
-    # The quickstart taught `uv run --active --project . --python 3.12 pytest`,
+    # The quickstart taught `uv run --active --project . pytest`,
     # which queue policy refuses for lacking --no-sync and --no-config. The
     # oracle is that policy: it admits every `uv run` launch the help prints.
     for show in (

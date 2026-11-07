@@ -13,7 +13,7 @@ copy stderr from `MOLT_MIDEND_STATS` as evidence.
 Default core-corpus profile:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\frontend_hot_pass_profile.py --manifest tests\differential\basic\CORE_TESTS.txt --optimization-profile release --top 12 --fail-on-error
+uv run --active --project . python tools\frontend_hot_pass_profile.py --manifest tests\differential\basic\CORE_TESTS.txt --optimization-profile release --top 12 --fail-on-error
 ```
 
 The tool fails closed for missing manifests, missing source entries, empty
@@ -112,7 +112,7 @@ These costs belong to compilation and development checks, not emitted guests.
 Command:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\frontend_hot_pass_profile.py --manifest tests\differential\basic\CORE_TESTS.txt --optimization-profile release --top 12 --fail-on-error
+uv run --active --project . python tools\frontend_hot_pass_profile.py --manifest tests\differential\basic\CORE_TESTS.txt --optimization-profile release --top 12 --fail-on-error
 ```
 
 Artifact:

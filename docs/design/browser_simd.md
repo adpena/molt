@@ -10,7 +10,7 @@ The separate Cloudflare WAT module has its own consumer and remains separate.
 
 ## Build and publication
 
-Run `uv run --python 3.12 python tools/build_browser_simd.py` from the repository.
+Run `uv run python tools/build_browser_simd.py` from the repository.
 The builder invokes the standalone crate from its directory, with the pinned Rust
 compiler and installed `wasm32-unknown-unknown` target. Its `.cargo/config.toml`
 enables SIMD and exports `__heap_base`. There are no Cargo dependencies or Molt

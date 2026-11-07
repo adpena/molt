@@ -16,13 +16,13 @@ Supported models (under ``formal/quint/``):
 
 Usage::
 
-    uv run --python 3.12 python3 tools/quint_trace_to_tests.py \\
+    uv run python3 tools/quint_trace_to_tests.py \\
         --model formal/quint/molt_build_determinism.qnt \\
         --max-steps 10 --count 5 \\
         --output-dir tests/differential/generated
 
     # JSON report
-    uv run --python 3.12 python3 tools/quint_trace_to_tests.py \\
+    uv run python3 tools/quint_trace_to_tests.py \\
         --model formal/quint/molt_build_determinism.qnt --json
 """
 

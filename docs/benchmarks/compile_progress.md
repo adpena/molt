@@ -59,7 +59,7 @@ tools/throughput_env.sh --apply
 ### 2. Compile progress suite
 
 ```bash
-uv run --python 3.12 python3 tools/compile_progress.py --clean-state
+uv run python3 tools/compile_progress.py --clean-state
 ```
 
 This writes:
@@ -71,7 +71,7 @@ This writes:
 Recommended contention-safe flags on busy multi-agent hosts:
 
 ```bash
-uv run --python 3.12 python3 tools/compile_progress.py \
+uv run python3 tools/compile_progress.py \
   --clean-state \
   --max-retries 2 \
   --retry-backoff-sec 2 \
@@ -94,14 +94,14 @@ artifact root or pass `--output-root` explicitly.
 ### 3. Optional focused rerun
 
 ```bash
-uv run --python 3.12 python3 tools/compile_progress.py \
+uv run python3 tools/compile_progress.py \
   --cases dev_nocache_daemon_on dev_nocache_daemon_off
 ```
 
 Release iteration lane (`release-fast`) focused probe:
 
 ```bash
-uv run --python 3.12 python3 tools/compile_progress.py \
+uv run python3 tools/compile_progress.py \
   --cases release_fast_cold release_fast_warm release_fast_nocache_warm \
   --max-retries 2 \
   --retry-backoff-sec 2 \
@@ -111,7 +111,7 @@ uv run --python 3.12 python3 tools/compile_progress.py \
 ### 4. Optional IR size probe
 
 ```bash
-uv run --python 3.12 python3 -m molt.cli build \
+uv run python3 -m molt.cli build \
   --profile dev \
   --no-cache \
   --emit-ir /tmp/hello_ir.json \
@@ -121,7 +121,7 @@ uv run --python 3.12 python3 -m molt.cli build \
 ### 5. Optional build diagnostics probe (phase timing + module reasons)
 
 ```bash
-uv run --python 3.12 python3 -m molt.cli build \
+uv run python3 -m molt.cli build \
   --profile dev \
   --no-cache \
   --diagnostics \
@@ -132,7 +132,7 @@ uv run --python 3.12 python3 -m molt.cli build \
 ### 6. Optional backend daemon warm-queue lane
 
 ```bash
-uv run --python 3.12 python3 tools/compile_progress.py \
+uv run python3 tools/compile_progress.py \
   --cases dev_queue_daemon_on dev_queue_daemon_off \
   --max-retries 2 \
   --retry-backoff-sec 2 \

@@ -27,7 +27,7 @@ Usage (library):
     new_deltas = tracker.since(last_seen_seq=1)
 
 Usage (CLI, for debugging):
-    uv run --python 3.12 python3 tools/dashboard_delta.py --demo
+    uv run python3 tools/dashboard_delta.py --demo
 """
 
 from __future__ import annotations

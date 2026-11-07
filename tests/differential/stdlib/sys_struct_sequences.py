@@ -2,6 +2,14 @@
 
 import sys
 
+
+class _DescriptorWitness:
+    __slots__ = ("field",)
+
+
+member_descriptor_type = type(_DescriptorWitness.field)
+print("member-descriptor", member_descriptor_type.__module__, member_descriptor_type.__name__)
+
 for name in (
     "flags",
     "version_info",
@@ -49,6 +57,27 @@ print("hooks-fields", hooks.firstiter is None, hooks.finalizer is None)
 sys.set_asyncgen_hooks(*hooks)
 print("hooks-restore", list(sys.get_asyncgen_hooks()))
 print("no-leak", hasattr(sys, "asyncgen_hooks"))
+
+# The real interpreter supplies field order and descriptor docs independently
+# of Molt's native declaration table, including every fixed metadata type.
+for record in (
+    sys.version_info,
+    sys.float_info,
+    sys.int_info,
+    sys.hash_info,
+    sys.thread_info,
+    hooks,
+):
+    cls = type(record)
+    print(
+        "field-docs",
+        cls.__name__,
+        [
+            (name, descriptor.__doc__)
+            for name, descriptor in vars(cls).items()
+            if isinstance(descriptor, member_descriptor_type)
+        ],
+    )
 
 try:
     sys.version_info.nonexistent

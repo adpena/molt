@@ -72,8 +72,8 @@ not choose guest semantics.
 - **Windows toolchain conflicts**: avoid mixing MSVC and clang in the same build; keep one toolchain active.
 - **Windows path lengths**: keep repo/build paths short; avoid deeply nested output folders.
 - **Dirty-tree hand merge coverage**: before pushing a replay from a dirty source checkout through a clean side worktree, run `python tools/dirty_tree_landing_audit.py --source-root <dirty-checkout> --landed-root <side-worktree> --base-ref <old-main-sha> --head-ref HEAD`. The audit fails if an owned dirty source path is missing from the landed range, while still allowing conflict-resolved content to differ from the dirty checkout. Use repeated `--owned <path-or-glob>` filters when preserving unrelated WIP, and `--json-output <path>` to leave a capsule artifact.
-- **Windows Codex stall timing**: when Codex appears stalled around a long Molt proof lane, run `uv run --python 3.12 python tools/agent_coordination.py codex-stall -- <proof-command>`. The diagnostic mirrors child stdout/stderr live but writes only timing metadata to `logs/agents/codex_stall/*.json`: first-output gaps, per-stream idle spans, byte/chunk counts, elapsed time, and return code. It does not read, delete, repair, or rewrite Codex state, and it launches the proof command through `tools/memory_guard.py` by default; pass `--no-memory-guard` only when the direct child is already intentionally guarded or the command is a non-proof probe.
-- **Windows Codex crash capsule**: when Desktop reports a crash dialog, write a bounded recovery capsule instead of editing Codex state from the repo lane: `uv run --python 3.12 python tools/agent_coordination.py codex-crash --crash-text "<dialog text>"`. The capsule lands under `logs/agents/codex_crash/*.json`, stores the crash-text hash plus parsed code/signal/warning fields, classifies known signatures such as `3221225786` (`STATUS_CONTROL_C_EXIT`), `codex_core::responses_retry` stream disconnects, plugin `interface.defaultPrompt` warnings, and rollout-state repair symptoms, and counts plugin-manifest pressure without storing raw plugin JSON. It does not read, delete, repair, or rewrite Codex SQLite, plugin caches, rollout summaries, or repo state.
+- **Windows Codex stall timing**: when Codex appears stalled around a long Molt proof lane, run `uv run python tools/agent_coordination.py codex-stall -- <proof-command>`. The diagnostic mirrors child stdout/stderr live but writes only timing metadata to `logs/agents/codex_stall/*.json`: first-output gaps, per-stream idle spans, byte/chunk counts, elapsed time, and return code. It does not read, delete, repair, or rewrite Codex state, and it launches the proof command through `tools/memory_guard.py` by default; pass `--no-memory-guard` only when the direct child is already intentionally guarded or the command is a non-proof probe.
+- **Windows Codex crash capsule**: when Desktop reports a crash dialog, write a bounded recovery capsule instead of editing Codex state from the repo lane: `uv run python tools/agent_coordination.py codex-crash --crash-text "<dialog text>"`. The capsule lands under `logs/agents/codex_crash/*.json`, stores the crash-text hash plus parsed code/signal/warning fields, classifies known signatures such as `3221225786` (`STATUS_CONTROL_C_EXIT`), `codex_core::responses_retry` stream disconnects, plugin `interface.defaultPrompt` warnings, and rollout-state repair symptoms, and counts plugin-manifest pressure without storing raw plugin JSON. It does not read, delete, repair, or rewrite Codex SQLite, plugin caches, rollout summaries, or repo state.
 - **Windows process-table sampling budget**: process-sentinel cleanup uses a parent-enforced Windows snapshot helper with `MOLT_WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_SEC` defaulting to 5 seconds. If sampling exceeds the budget, the helper is terminated and the snapshot fails closed to an empty process table so repo-scoped kill decisions are not made from partial host-control-plane evidence. Hot memory-guard RSS polling keeps the in-process sampler plus the same fail-closed deadline to avoid spawning a Python helper every poll. Set the variable to a positive float to tune the budget; set `0`/`off` only for an intentional local investigation where an unbounded process-table read is acceptable.
 - **Windows Job sampler authority**: once a guarded child is assigned to its kill-on-close Job, steady-state RSS enforcement queries only kernel-owned Job members. Per-member handle-backed RSS and creation identity preserve distinct per-process and aggregate-tree limits; image names are refreshed only when membership changes. Full host snapshots are reserved for explicit lineage/repro diagnostics or the fail-closed no-Job fallback. Summary telemetry records sampler source, wall/CPU cost, row counts, maxima, and total observer duty so guard overhead remains measurable.
 - **Process census detail cost**: host-wide identity snapshots retain parent, group, birth and status for escape detection and protected ancestry. Darwin and Windows bind separately queried resident size only when accounting or reporting visits a process, through the same read-once mechanism as native argv. Each sample freezes its first RSS value; an exited or replaced instance binds zero. Darwin costs one host-table sysctl plus task-info and birth-validation reads for sized processes; Windows removes memory queries from its snapshot helper and opens one birth-checked handle per sized process. Linux keeps RSS from the existing `/proc/<pid>/stat` identity read; the other POSIX `ps` sampler keeps the RSS column already returned in each row. Neither adds a detail read for RSS.
@@ -363,7 +363,7 @@ wasm-tools validate "$RUNTIME"
 
 # Confirm the canonical profile contract before investigating compiler/toolchain
 # drift. `wasm-release` is the only shipping WASM codegen authority.
-uv run --python 3.12 pytest -q \
+uv run pytest -q \
   tests/cli/test_backend_manifest_contract.py::test_shipping_profiles_use_measured_target_codegen_policy \
   tests/cli/test_backend_manifest_contract.py::test_runtime_wasm_shipping_has_no_fallback_compiler_authority \
   tests/cli/test_cli_wasm_artifact_validation.py::test_ensure_runtime_wasm_fails_closed_on_invalid_cargo_artifact \
@@ -379,7 +379,7 @@ python3 tools/check_stdlib_intrinsics.py
 
 `stdlib intrinsics lint failed: top-level module/package duplicate mapping`
 ```bash
-uv run --python 3.12 python - <<'PY'
+uv run python - <<'PY'
 from pathlib import Path
 root = Path("src/molt/stdlib")
 mods = {}
@@ -397,7 +397,7 @@ PY
 
 `stdlib intrinsics lint failed: stdlib package kind gate violated`
 ```bash
-uv run --python 3.12 python - <<'PY'
+uv run python - <<'PY'
 from pathlib import Path
 import runpy
 base = runpy.run_path("tools/stdlib_module_union.py")
@@ -419,7 +419,7 @@ python3 tools/check_stdlib_intrinsics.py
 
 `stdlib intrinsics lint failed: submodule/package duplicate mapping`
 ```bash
-uv run --python 3.12 python - <<'PY'
+uv run python - <<'PY'
 from pathlib import Path
 root = Path("src/molt/stdlib")
 mods = {}
@@ -439,7 +439,7 @@ PY
 
 `stdlib intrinsics lint failed: stdlib subpackage kind gate violated`
 ```bash
-uv run --python 3.12 python - <<'PY'
+uv run python - <<'PY'
 from pathlib import Path
 import runpy
 base = runpy.run_path("tools/stdlib_module_union.py")
@@ -576,7 +576,7 @@ python3 tools/check_stdlib_intrinsics.py
 `stdlib intrinsics lint failed:` (file-level scan errors block)
 ```bash
 python3 tools/check_stdlib_intrinsics.py
-uv run --python 3.12 ruff format src/molt/stdlib tools/check_stdlib_intrinsics.py
+uv run ruff format src/molt/stdlib tools/check_stdlib_intrinsics.py
 ```
 
 ### Differential Expected-Failure Policy (Too Dynamic)
@@ -590,7 +590,7 @@ that is documented by vision/break-policy constraints.
 #
 # 2) Run the differential lane as normal. The shared typed policy converts a
 #    Molt failure to XFAIL only when CPython passes and the source marker applies.
-uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_locals_scope.py
+uv run python -u tests/molt_diff.py tests/differential/basic/exec_locals_scope.py
 
 # 3) XPASS is a failure; remove the source-local expected-failure pair when Molt
 #    gains support. Dynamic-policy guards discover the physical suites from the
@@ -931,9 +931,9 @@ claims; exhaustive typing rejects classes without placement/retention policy.
   plain clone, which builds in its own `target/`, only `sessions/pytest-*`).
 - **One-shot backend capture**: one-shot native backend compiles must capture stdout/stderr through temp-file-backed handles instead of pipe-backed `capture_output=True`. Child/grandchild toolchain processes may inherit stdio; temp-file capture avoids silent stalls where the parent waits forever on a still-open pipe after codegen has already finished.
 - **Native runtime overlap**: native builds start runtime verification/build overlap after cache/setup and join it only at the true native link boundary. `emit=obj` skips that async runtime work because there is no native link step to hide it behind.
-- **Bootstrap command**: `uv run --python 3.12 python -m molt.cli dx env`
+- **Bootstrap command**: `uv run python -m molt.cli dx env`
   reports the same canonical DX facts on Windows, macOS, and Linux, and
-  `uv run --python 3.12 python -m molt.cli dx run -- <command>` runs a command
+  `uv run python -m molt.cli dx run -- <command>` runs a command
   under those facts without shell activation. This is the maintainer/agent
   development and proof-lane bootstrap, not a public compile requirement; real
   users may compile in place, use default Molt/Cargo locations, or pass explicit
@@ -994,7 +994,7 @@ claims; exhaustive typing rejects classes without placement/retention policy.
   `MOLT_CACHE_MAX_AGE_DAYS`, or disable via `MOLT_CACHE_PRUNE=0`.
 - **Diff run coordination lock**: `tests/molt_diff.py` acquires `diff_run.lock` under the resolved build-state root, so agents sharing a Cargo target queue instead of running overlapping diff sweeps. Tune with `MOLT_DIFF_RUN_LOCK_WAIT_SEC` (default 900) and `MOLT_DIFF_RUN_LOCK_POLL_SEC`.
 - **Matrix harness**: use `tools/throughput_matrix.py` for reproducible single-vs-concurrent build throughput checks (profiles + wrapper modes), with optional differential mini-matrix.
-  - Example: `uv run --python 3.12 python tools/throughput_matrix.py --concurrency 2 --timeout-sec 75 --shared-target-dir "$MOLT_EXT_ROOT/cargo-target" --run-diff --diff-jobs 2 --diff-timeout-sec 180`
+  - Example: `uv run python tools/throughput_matrix.py --concurrency 2 --timeout-sec 75 --shared-target-dir "$MOLT_EXT_ROOT/cargo-target" --run-diff --diff-jobs 2 --diff-timeout-sec 180`
   - Output: `matrix_results.json` under the output root (`$MOLT_EXT_ROOT/...` by default).
   - `matrix_results.json` now includes `gate_status` (thresholds, observed counts, violation details, pass/fail).
   - Use `--fail-on-gate` to return exit code `2` on gate failure.
@@ -1007,7 +1007,7 @@ claims; exhaustive typing rejects classes without placement/retention policy.
     instead of adding a one-off shell export.
 - **Compile-progress suite**: use `tools/compile_progress.py` for standardized
   cold/warm + cache-hit/no-cache + daemon-on/off compile tracking.
-  - Example: `uv run --python 3.12 python tools/compile_progress.py --clean-state`
+  - Example: `uv run python tools/compile_progress.py --clean-state`
   - Include `--diagnostics` to capture per-case phase timing + module-reason
     payloads from compiler builds.
   - Queue lane (daemon warm queue): add
@@ -1034,7 +1034,7 @@ claims; exhaustive typing rejects classes without placement/retention policy.
   - Optional output file: `--diagnostics-file <path>` (relative paths are
     resolved under the build artifacts directory).
   - Example:
-    `uv run --python 3.12 python -m molt.cli build --profile dev --no-cache --diagnostics --diagnostics-file build_diag.json examples/hello.py`
+    `uv run python -m molt.cli build --profile dev --no-cache --diagnostics --diagnostics-file build_diag.json examples/hello.py`
   - Midend diagnostics now carry tier-promotion telemetry (`tier_base_summary`,
     `promoted_functions`, `promotion_source_summary`,
     `promotion_hotspots_top`) to verify PGO-guided promotion decisions.
@@ -1059,8 +1059,8 @@ Rules:
 
 ### Fast Dev Playbook (Recommended)
 1. `tools/throughput_env.sh --apply`
-2. `uv run --python 3.12 python -m molt.cli build --profile dev examples/hello.py --cache-report`
-3. `UV_NO_SYNC=1 uv run --python 3.12 python -u tests/molt_diff.py --build-profile dev --jobs 2 tests/differential/basic`
+2. `uv run python -m molt.cli build --profile dev examples/hello.py --cache-report`
+3. `UV_NO_SYNC=1 uv run python -u tests/molt_diff.py --build-profile dev --jobs 2 tests/differential/basic`
 
 Expected behavior in this lane:
 - Environment activation prepares artifact directories without stopping or restarting the shared sccache daemon. Wrapper selection does not probe readiness; first actual compiler work starts or contacts the daemon.
@@ -1469,8 +1469,8 @@ Generate differential coverage summaries and check canonical gap ownership.
 The type/stdlib matrices own complete records; the root roadmap must link to
 both, and any roadmap duplicate must exactly match its canonical record:
 ```bash
-uv run --python 3.12 python tools/diff_coverage.py
-uv run --python 3.12 python tools/check_type_coverage_todos.py
+uv run python tools/diff_coverage.py
+uv run python tools/check_type_coverage_todos.py
 ```
 
 ## Multi-Agent Workflow
@@ -1503,9 +1503,9 @@ lanes must follow that protocol first.
 - Use `tools/new-agent-task.sh <task-name>` or update an existing
   `logs/agents/<task>/` record before long proof work, including owned files,
   proof lane, artifacts, and next command.
-- Use `uv run --python 3.12 python tools/agent_coordination.py env` to capture
+- Use `uv run python tools/agent_coordination.py env` to capture
   OS/Python/shell facts before choosing platform-specific commands. Then use
-  `uv run --python 3.12 python tools/agent_coordination.py scan` to inspect
+  `uv run python tools/agent_coordination.py scan` to inspect
   active task claims, and `... check` to fail fast on duplicate broad-sweep
   coordinator claims for the same lane and shared target root.
 

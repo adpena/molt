@@ -2127,7 +2127,12 @@ def pytest_addoption(parser):
 def pytest_configure(config):
     global _output
     value=config.getoption("--trunk-durations")
-    if value and (hasattr(config,"workerinput") or not getattr(config.option,"numprocesses",0)):
+    runs_tests=hasattr(config,"workerinput") or not getattr(config.option,"numprocesses",0)
+    if runs_tests:
+        # Configure only this run: a test that launches pytest must not inherit
+        # -p trunk_timings without its path, or this run's --junitxml.
+        os.environ.pop("PYTEST_ADDOPTS",None)
+    if value and runs_tests:
         _output=pathlib.Path(value)/("durations-"+str(os.getpid())+".jsonl")
 def pytest_runtest_logreport(report):
     if _output is not None:

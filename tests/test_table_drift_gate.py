@@ -15,7 +15,7 @@ be-red and this suite fails. The tables checked:
   #4 target-python      cli authority <-> stdlib-union baseline <-> generator
 
 Run:
-    uv run --python 3.12 pytest tests/test_table_drift_gate.py -q
+    uv run pytest tests/test_table_drift_gate.py -q
 """
 
 from __future__ import annotations

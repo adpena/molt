@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import time
+
 import argparse
 import json
 import os
@@ -76,10 +78,20 @@ def _schedule(
     prefix = "gc" if operation == "checkout" else "prune"
     state = root / "logs" / directory / "automatic" / f"{prefix}-{epoch}"
     if state.exists():
-        raise RuntimeError(
-            f"maintenance epoch already has custody at {state}; "
-            "inspect run.log/rc with detached-verify before recovery"
-        )
+        # A run that is over (terminal rc, or its worker proven dead) is
+        # evidence, not custody: set it aside and attempt the epoch again. The
+        # epoch advances only when a run completes, so treating a dead run as
+        # custody stalled retention for every later build (six days, 11-07).
+        # A running worker or an unresolved state still refuses.
+        from tools.detached_execution import require_finished_run
+
+        try:
+            require_finished_run(state)
+        except DriverError as exc:
+            raise RuntimeError(
+                f"maintenance epoch already has custody at {state}: {exc}"
+            ) from exc
+        state.rename(state.with_name(f"{state.name}.ended-{time.time_ns()}"))
     captured = dict(environment)
     if operation == "checkout":
         captured["MOLT_EXT_ROOT"] = str(root)

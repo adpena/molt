@@ -745,6 +745,13 @@ pub(crate) unsafe fn ready_type(
         return unsafe { reject_type_readiness(c"recursive PyType_Ready on an initializing type") };
     }
 
+    // Context shells have a typed lazy semantic producer. Admit that producer
+    // before recording the binding identity which readiness must preserve;
+    // declaration projection must never manufacture a second foreign owner.
+    if bridge.admit_lazy_static_type(tp.cast()).is_err() {
+        return -1;
+    }
+
     if unsafe { (*tp).tp_flags } & Py_TPFLAGS_READY == 0
         && !bridge.managed_type_population_complete(tp)
     {

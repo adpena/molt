@@ -194,10 +194,10 @@ extraction instead of reinterpreting strings and integers at each consumer.
 ## Commands and CI
 
 ```text
-uv run --python 3.12 python tools/verified_subset.py check
+uv run python tools/verified_subset.py check
 uv run --python <exact-reference-version> python tools/verified_subset.py run \
   --coordinate <coordinate-id> --receipt <path> --source-sha <git-object-id>
-uv run --python 3.12 python tools/verified_subset.py verify-receipts \
+uv run python tools/verified_subset.py verify-receipts \
   --source-sha <git-object-id> --receipt-root <directory>
 ```
 

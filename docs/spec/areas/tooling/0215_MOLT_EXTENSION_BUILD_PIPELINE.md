@@ -666,6 +666,13 @@ applied to lazy dependencies. ELF places the complete stream with the runtime
 inside its rescan group, so references introduced by dependencies can resolve
 against the runtime.
 
+Default explicit Mach-O framework/library providers retain their load contract,
+including initializer-only dependencies: the final projection uses
+`-needed_framework`/`-needed-l`. Application/runtime-image dependency stripping
+may remove unused runtime system libraries, but cannot erase an extension's
+declared default dependency merely because no symbol references it. Static
+archive extraction and eager primary membership remain separate policies.
+
 Support files are runtime data, not implicit link inputs selected by suffix.
 An archive or object must be declared as a checksummed typed input to be linked.
 WASM serializes the complete local projection as `--native-link-plan`, including

@@ -377,7 +377,9 @@ def _render_atom(
     if isinstance(item, SourceExtensionLinkInput):
         base = item.path
     elif item.provider_kind is SourceExtensionLinkProviderKind.FRAMEWORK:
-        base = f"-Wl,-framework,{item.name}"
+        # Explicit extension dependencies retain their default load contract,
+        # including initializer-only frameworks, under dylib dead stripping.
+        base = f"-Wl,-needed_framework,{item.name}"
     elif item.provider_kind is SourceExtensionLinkProviderKind.THREAD_RUNTIME:
         base = "-pthread"
     elif item.provider_kind is SourceExtensionLinkProviderKind.LIBRARY:
@@ -385,7 +387,11 @@ def _render_atom(
             item.name
             if dialect is SourceExtensionLinkDialect.COFF_MSVC
             or item.name.lower().endswith(".lib")
-            else f"-l{item.name}"
+            else (
+                f"-Wl,-needed-l{item.name}"
+                if dialect is SourceExtensionLinkDialect.MACHO
+                else f"-l{item.name}"
+            )
         )
     else:
         base = item.name

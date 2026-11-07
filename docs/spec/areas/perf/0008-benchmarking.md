@@ -52,6 +52,6 @@
 - `tools/bench_report.py` combines native and WASM benchmark JSON into the detailed report at `docs/benchmarks/bench_summary.md` and can also refresh the concise generated benchmark summary block in `docs/spec/STATUS.md`.
 - Install optional benchmark deps with `uv sync --group bench --python 3.12`.
 - Capture CPython version baselines by running the harness under each interpreter:
-  `uv run --python 3.12 python3 tools/bench.py --json-out bench/results/bench_py312.json`,
+  `uv run python3 tools/bench.py --json-out bench/results/bench_py312.json`,
   `uv run --python 3.13 python3 tools/bench.py --json-out bench/results/bench_py313.json`,
   `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench_py314.json`.

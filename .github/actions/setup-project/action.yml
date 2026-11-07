@@ -298,6 +298,15 @@ runs:
           done
         fi
         uv "${args[@]}"
+        # Later steps run project tools with the synced environment's
+        # interpreter: the proof executor parses pytest arguments with
+        # pytest's own parser in-process, so the bare provisioned python3
+        # (no site packages) loses every pytest command's outcome.
+        if [[ "$RUNNER_OS" == "Windows" ]]; then
+          cygpath -w "$UV_PROJECT_ENVIRONMENT/Scripts" >> "$GITHUB_PATH"
+        else
+          echo "$UV_PROJECT_ENVIRONMENT/bin" >> "$GITHUB_PATH"
+        fi
 
     # Molt never downloads a tool on its own, so setup provisions the pinned
     # sccache that Molt's Cargo builds then discover. Windows builds run

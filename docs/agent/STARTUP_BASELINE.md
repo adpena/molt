@@ -102,7 +102,7 @@ an absolute instantiate-and-execute ceiling only after a valid baseline.
 Run:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools/startup_bench.py --samples 5 --output bench/results/startup_baseline.json
+uv run --active --project . python tools/startup_bench.py --samples 5 --output bench/results/startup_baseline.json
 ```
 
 The command exits nonzero and writes a refused attestation whenever a release

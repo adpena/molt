@@ -6,7 +6,7 @@ Python test files under tests/differential/basic/generated_from_proofs/ that
 exercise the same properties the theorems prove.
 
 Usage:
-    uv run --python 3.12 python3 tools/theorem_to_test.py [--dry-run]
+    uv run python3 tools/theorem_to_test.py [--dry-run]
 """
 
 from __future__ import annotations

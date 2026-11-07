@@ -30,11 +30,11 @@ Authority: the Rust runtime owns #1; the CLI
 those authorities.
 
 Usage:
-    uv run --python 3.12 python3 tools/check_table_drift.py
-    uv run --python 3.12 python3 tools/check_table_drift.py --check
-    uv run --python 3.12 python3 tools/check_table_drift.py --json
-    uv run --python 3.12 python3 tools/check_table_drift.py --category type-tags
-    uv run --python 3.12 python3 tools/check_table_drift.py --verbose
+    uv run python3 tools/check_table_drift.py
+    uv run python3 tools/check_table_drift.py --check
+    uv run python3 tools/check_table_drift.py --json
+    uv run python3 tools/check_table_drift.py --category type-tags
+    uv run python3 tools/check_table_drift.py --verbose
 """
 
 from __future__ import annotations

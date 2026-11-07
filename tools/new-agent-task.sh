@@ -9,7 +9,7 @@ fi
 if [ -n "${PYTHON:-}" ]; then
   PYTHON_CMD=("$PYTHON")
 elif command -v uv >/dev/null 2>&1; then
-  exec uv run --python 3.12 python tools/agent_coordination.py init "$@"
+  exec uv run python tools/agent_coordination.py init "$@"
 elif command -v python >/dev/null 2>&1; then
   PYTHON_CMD=(python)
 elif command -v py >/dev/null 2>&1; then
