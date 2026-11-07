@@ -20,8 +20,8 @@ use cleanup_roots::*;
 mod shared;
 use shared::*;
 mod block_control;
-use block_control::*;
 pub(super) use block_control::NativeSsaValues;
+use block_control::*;
 mod preanalysis;
 use preanalysis::*;
 
@@ -1109,11 +1109,7 @@ impl SimpleBackend {
                         .current_block()
                         .is_some_and(|block| !block_has_terminator(&builder, block))
                 {
-                    builder.capture_operation(
-                        op_idx,
-                        &ops[op_idx],
-                        &cfg_liveness.names,
-                    );
+                    builder.capture_operation(op_idx, &ops[op_idx], &cfg_liveness.names);
                 }
                 continue;
             }
@@ -2489,7 +2485,13 @@ impl SimpleBackend {
         });
         builder.seal_all_blocks();
         if debug_seal {
-            eprintln!("SEAL_SUMMARY {} values={} blocks={} drop_inserted={}", func_ir.name, builder.func.dfg.num_values(), builder.func.dfg.num_blocks(), drop_inserted);
+            eprintln!(
+                "SEAL_SUMMARY {} values={} blocks={} drop_inserted={}",
+                func_ir.name,
+                builder.func.dfg.num_values(),
+                builder.func.dfg.num_blocks(),
+                drop_inserted
+            );
         }
         builder.finalize(frontend_config);
 
