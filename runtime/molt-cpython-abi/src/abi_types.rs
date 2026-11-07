@@ -2785,9 +2785,10 @@ macro_rules! exc_singletons {
             // before publishing the exception hierarchy's descriptors/MROs.
             for object in type_static_ptrs() {
                 let ty = object.cast::<PyTypeObject>();
-                if unsafe { (*ty).tp_flags } & Py_TPFLAGS_READY == 0
-                    && unsafe { crate::api::typeobj::PyType_Ready(ty) } < 0
-                {
+                // The process bootstrap's READY marker initializes physical
+                // slots only. The canonical readiness transaction also checks
+                // dictionaries/bases/MRO; a flag alone cannot prove exposure.
+                if unsafe { crate::api::typeobj::PyType_Ready(ty) } < 0 {
                     return -1;
                 }
             }

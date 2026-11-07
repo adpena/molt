@@ -1109,6 +1109,10 @@ mod tests {
         for minor in [12, 14, 12, 14] {
             crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
                 assert_eq!(crate::state::runtime_state::molt_runtime_init(), 1);
+                // This test acts as a C extension: it reads raw exported type
+                // dictionaries below, so enter the same readiness boundary as
+                // foreign code before inspecting those fields.
+                assert!(crate::cpython_abi_hooks::expose_cpython_types());
                 crate::with_gil_entry_nopanic!(py, {
                     unsafe {
                         let classes = builtin_classes(py);

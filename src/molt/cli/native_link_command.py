@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 import platform
 import sys
@@ -519,7 +520,7 @@ def _build_native_runtime_image_link_plan(
 ) -> NativeLinkPlan:
     """Link the whole AOT runtime archive into one shared image (JIT tier).
 
-    Every archive member stays in the image and nothing is dead-stripped, so
+    Every archive member stays in the image and its code is not dead-stripped, so
     the image defines exactly the symbols an AOT link resolves generated code
     against. The archive's own Cargo native link plan and the AOT driver,
     SDK and framework selection apply unchanged.
@@ -540,6 +541,16 @@ def _build_native_runtime_image_link_plan(
         target=target,
         linker_hint=selected_linker_name,
     )
+    policy = replace(
+        native_link_policy(
+            target=target,
+            capabilities=capabilities,
+            profile=profile,
+            keep_symbols=True,
+            bolt_requested=False,
+        ),
+        dead_strip=False,
+    )
     runtime_lib_str = str(runtime_lib)
     if target.object_format is NativeObjectFormat.MACHO:
         link_cmd.extend(
@@ -554,6 +565,11 @@ def _build_native_runtime_image_link_plan(
                 ),
                 "-lc++",
             ]
+        )
+        link_cmd.extend(
+            native_link_policy_flags(
+                target=target, capabilities=capabilities, dead_strip=policy.dead_strip
+            )
         )
         _append_darwin_runtime_frameworks(link_cmd, target=target)
     else:
@@ -582,13 +598,7 @@ def _build_native_runtime_image_link_plan(
     return NativeLinkPlan(
         target=target,
         capabilities=capabilities,
-        policy=native_link_policy(
-            target=target,
-            capabilities=capabilities,
-            profile=profile,
-            keep_symbols=True,
-            bolt_requested=False,
-        ),
+        policy=policy,
         command=tuple(link_cmd),
         linker_hint=selected_linker_name,
         normalized_target=normalized_target,

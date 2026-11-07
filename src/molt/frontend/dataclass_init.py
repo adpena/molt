@@ -32,6 +32,7 @@ class DataclassInitField:
             not isinstance(schema, (list, tuple))
             or len(schema) != 5
             or not isinstance(schema[0], str)
+            or not schema[0].isidentifier()
             or not all(type(flag) is bool for flag in schema[1:4])
             or type(schema[4]) is not int
             or schema[4] not in (0, 1, 2)

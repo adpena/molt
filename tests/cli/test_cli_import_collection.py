@@ -13595,7 +13595,8 @@ def test_darwin_link_force_loads_each_source_extension_archive_without_runtime_e
         NATIVE_LINK_COMMAND, "llvm_named_tool_candidates", lambda *_names, **_kwargs: ()
     )
 
-    external_link_arguments = ("-Wl,-framework,Accelerate",)
+    # Explicit extension frameworks stay loaded under dylib dead stripping.
+    external_link_arguments = ("-Wl,-needed_framework,Accelerate",)
     external_link_requirements = (
         SourceExtensionLinkRequirements(
             "aarch64-apple-darwin",
