@@ -1395,6 +1395,28 @@ def worker_vanished(
     )
 
 
+# A cell's results may nest: the proof executor writes guard profiles under
+# `<receipt>.d/` and a landing writes per-gate logs. Every run kind shares one
+# bound; a member must stay inside a selected cell's directory.
+MAX_RESULT_MEMBER_DEPTH = 16
+MAX_RESULT_MEMBER_BYTES = 512 * 1024 * 1024
+
+
+def admitted_result_member(item: zipfile.ZipInfo, cells) -> PurePosixPath:
+    """The archive member's path inside its cell, or ValueError."""
+    path = PurePosixPath(item.filename)
+    if (
+        "\\" in item.filename
+        or path.is_absolute()
+        or ".." in path.parts
+        or not (2 <= len(path.parts) <= MAX_RESULT_MEMBER_DEPTH)
+        or path.parts[0] not in cells
+        or item.file_size > MAX_RESULT_MEMBER_BYTES
+    ):
+        raise ValueError(f"unexpected result archive member {item.filename}")
+    return path
+
+
 def collect(record_path: Path, *, wait: bool = True) -> int:
     record = json.loads(record_path.read_text(encoding="utf-8"))
     match RunState(record["state"]):
@@ -1485,15 +1507,7 @@ def collect(record_path: Path, *, wait: bool = True) -> int:
                     "collected proof receipt has different or dirty source"
                 )
         for item in archive.infolist():
-            path = PurePosixPath(item.filename)
-            if (
-                path.is_absolute()
-                or ".." in path.parts
-                or not (2 <= len(path.parts) <= (16 if "landing" in record else 2))
-                or path.parts[0] not in record["cells"]
-                or item.file_size > 512 * 1024 * 1024
-            ):
-                raise ValueError(f"unexpected result archive member {item.filename}")
+            path = admitted_result_member(item, record["cells"])
             target = root / path.parts[0] / record["run_id"] / Path(*path.parts[1:])
             target.parent.mkdir(parents=True, exist_ok=True)
             content = archive.read(item)
