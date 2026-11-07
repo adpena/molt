@@ -108,7 +108,7 @@ struct NativeTransportBinding {
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend) struct NativeSsaValues {
     definitions: Vec<Option<crate::tir::simple_def_use::SimpleDefinitionSite>>,
-    dominance: Option<crate::tir::dominators::SimpleExecutionDominance>,
+    dominance: crate::tir::dominators::SimpleExecutionDominance,
     emitted: Vec<Option<Value>>,
     bindings: Vec<Option<NativeTransportBinding>>,
     names_by_variable: Vec<Option<u32>>,
@@ -120,7 +120,7 @@ impl NativeSsaValues {
         parameters: &[String],
         ops: &[OpIR],
         names: &crate::tir::cfg_liveness::SimpleNameTable,
-        dominance: Option<crate::tir::dominators::SimpleExecutionDominance>,
+        dominance: crate::tir::dominators::SimpleExecutionDominance,
     ) -> Self {
         let facts = crate::tir::simple_def_use::SimpleDefinitionFacts::compute(parameters, ops);
         Self {
@@ -144,7 +144,7 @@ impl NativeSsaValues {
             parameters,
             ops,
             names,
-            Some(crate::tir::cfg::CFG::build(ops).execution_points(ops)),
+            crate::tir::cfg::CFG::build(ops).execution_points(ops),
         )
     }
 
@@ -158,7 +158,7 @@ impl NativeSsaValues {
             &func.params,
             &func.ops,
             names,
-            Some(cfg.execution_points(&func.ops)),
+            cfg.execution_points(&func.ops),
         );
         // These carriers have native writes outside their SimpleIR definition.
         // Their neighbouring immutable temporaries still use dominance facts.
@@ -269,9 +269,7 @@ impl NativeSsaValues {
         {
             return false;
         }
-        self.dominance
-            .as_ref()
-            .is_some_and(|d| d.definition_available(definition, point))
+        self.dominance.definition_available(definition, point)
     }
 
     pub(in crate::native_backend::function_compiler) fn capture_parameters(
@@ -280,9 +278,6 @@ impl NativeSsaValues {
         parameters: &[String],
         names: &crate::tir::cfg_liveness::SimpleNameTable,
     ) {
-        if self.dominance.is_none() {
-            return;
-        }
         for name in parameters {
             let Some(id) = names.id(name) else {
                 continue;
@@ -303,9 +298,6 @@ impl NativeSsaValues {
         op: &OpIR,
         names: &crate::tir::cfg_liveness::SimpleNameTable,
     ) {
-        if self.dominance.is_none() {
-            return;
-        }
         crate::tir::simple_def_use::visit_simple_ir_defined_names(op, |name| {
             let id = names.id(name).expect("canonical definition name");
             if self.definitions[id as usize]
