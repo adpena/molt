@@ -712,8 +712,9 @@ def test_collect_waits_only_while_the_worker_identity_holds(tmp_path, monkeypatc
     assert json.loads(record_path.read_text(encoding="utf-8"))["state"] == "launched"
 
 
-def test_trunk_timing_stream_records_one_observer_per_xdist_test(tmp_path):
+def test_trunk_timing_stream_records_one_observer_per_xdist_test(tmp_path, monkeypatch):
     import json
+    import os
     from types import SimpleNamespace
 
     plugin = {}
@@ -728,10 +729,16 @@ def test_trunk_timing_stream_records_one_observer_per_xdist_test(tmp_path):
         return c
 
     report = SimpleNamespace(nodeid="file.py::test_contract", when="call", duration=2.5)
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-p trunk_timings")
     plugin["pytest_configure"](config())
     plugin["pytest_runtest_logreport"](report)
     assert not list(tmp_path.iterdir())
+    # The controller keeps the options for its xdist workers ...
+    assert os.environ["PYTEST_ADDOPTS"] == "-p trunk_timings"
     plugin["pytest_configure"](config(worker=True))
+    # ... and the process that runs tests drops them, so a test that launches
+    # pytest does not inherit this run's plugin and report options.
+    assert "PYTEST_ADDOPTS" not in os.environ
     plugin["pytest_runtest_logreport"](report)
     paths = list(tmp_path.iterdir())
     assert len(paths) == 1
