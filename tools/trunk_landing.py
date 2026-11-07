@@ -62,6 +62,23 @@ def landing_request(commit: str, tree: str, gates) -> dict:
     }
 
 
+def host_os(repo: Path, host: str) -> str:
+    """The farm host's OS (its execution platform) from tools/cross_hosts.toml."""
+    from tools import cross_run
+
+    record = next(
+        (
+            item
+            for item in cross_run.parse_inventory(repo / "tools/cross_hosts.toml")
+            if item.name == host
+        ),
+        None,
+    )
+    if record is None or record.os is None:
+        raise DriverError(f"{host}: tools/cross_hosts.toml declares no host os")
+    return str(record.os)
+
+
 def request_digest(request: dict) -> str:
     return hashlib.sha256(
         json.dumps(request, sort_keys=True, separators=(",", ":")).encode()

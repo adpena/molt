@@ -505,17 +505,25 @@ class GateConfig:
             ),
         )
 
-    def foreign_cells(self) -> frozenset[str]:
+    def foreign_cells(self, host_os: str | None = None) -> frozenset[str]:
         """Portability cells of another OS: they verify that OS's hosted shells
-        and compilers, which this host does not provide."""
+        and compilers, which the executing host does not provide. ``host_os``
+        names the executing host; it defaults to this one."""
         from molt.native_target import resolve_native_target_spec
 
-        host_os = resolve_native_target_spec(None).os
+        if host_os is None:
+            host_os = resolve_native_target_spec(None).os
         return frozenset(
             str(cell["id"])
             for cell in self.matrix_cells
             if cell.get("profile") == "portability" and cell.get("os") != host_os
         )
+
+    @staticmethod
+    def runs_on(gate: SelectedGate, foreign: frozenset[str]) -> bool:
+        """Whether a host whose foreign cells are ``foreign`` can run ``gate``:
+        a gate bound only to foreign cells runs on another OS's host."""
+        return not gate.cells or not set(gate.cells) <= foreign
 
     def prepare(
         self,
@@ -541,11 +549,7 @@ class GateConfig:
 
         try:
             foreign = self.foreign_cells()
-            local = [
-                gate
-                for gate in gates
-                if not gate.cells or not set(gate.cells) <= foreign
-            ]
+            local = [gate for gate in gates if self.runs_on(gate, foreign)]
             absent_assets = provision_pinned_assets(
                 self.pinned_assets,
                 tuple(
@@ -615,7 +619,7 @@ class GateConfig:
                         Prerequisite(PrerequisiteKind.EXECUTION_CELL, cell)
                         for cell in gate.cells
                     )
-                    if gate.cells and set(gate.cells) <= foreign
+                    if not self.runs_on(gate, foreign)
                     else (
                         *(
                             Prerequisite(

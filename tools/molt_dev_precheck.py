@@ -452,25 +452,39 @@ def precheck_landing(
 
     farm_host = os.environ.get(HOST_SETTING, "").strip()
     if farm_host:
-        # The farm host runs the try run on the exact commit and returns its
-        # gate logs in the same layout; merge, receipt and push stay here
-        # (docs/design/trunk_loop.md, "Opt-in remote landing gates").
-        from tools.trunk_landing import run_remote
+        # The farm host runs every try-run gate its OS can admit on the exact
+        # commit and returns its gate logs in the same layout. A gate bound only
+        # to this host's portability cells (a Mac cell) runs here after it, as
+        # an execution platform routes each action (Bazel). Merge, receipt and
+        # push stay here (docs/design/trunk_loop.md, "Opt-in remote landing
+        # gates").
+        from tools.trunk_landing import host_os, run_remote
 
-        drv._assert_integration_source(git, head)
-        remote_seconds, remote_logs = run_remote(repo, head, trial, host=farm_host)
-        gate_seconds.extend(remote_seconds)
-        runs.append(GateRun("try-run", remote_logs, tuple(trial)))
-        _say(gate_time_summary(gate_seconds))
-        return PrecheckResult(
-            (*passed, *trial),
-            None,
-            budget,
-            tuple(runs),
-            seconds(),
-            waived=waived,
-            postsubmit_only=postsubmit_only,
-        )
+        farm_foreign = config.foreign_cells(host_os(repo, farm_host))
+        remote = [gate for gate in trial if config.runs_on(gate, farm_foreign)]
+        trial = [gate for gate in trial if gate not in remote]
+        if remote:
+            drv._assert_integration_source(git, head)
+            remote_seconds, remote_logs = run_remote(repo, head, remote, host=farm_host)
+            gate_seconds.extend(remote_seconds)
+            runs.append(GateRun("try-run", remote_logs, tuple(remote)))
+            passed = (*passed, *remote)
+        if trial:
+            _say(
+                f"    {len(trial)} gate(s) bound to this host's cells run here: "
+                + ", ".join(display(gate.command) for gate in trial)
+            )
+        else:
+            _say(gate_time_summary(gate_seconds))
+            return PrecheckResult(
+                passed,
+                None,
+                budget,
+                tuple(runs),
+                seconds(),
+                waived=waived,
+                postsubmit_only=postsubmit_only,
+            )
     from molt.disk_capacity import DiskCapacityError
 
     # Only the capacity verdict is a refusal; any other fault stays a fault.

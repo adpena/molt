@@ -7047,6 +7047,7 @@ def test_land_fast_runs_its_try_run_on_the_farm_host_when_set(
         return [(2.5, display(gate.command)) for gate in gates], logs
 
     monkeypatch.setattr(trunk_landing, "run_remote", remote)
+    monkeypatch.setattr(trunk_landing, "host_os", lambda repo, host: "linux")
     base = _git(work, "rev-parse", "HEAD").stdout.strip()
     assert _land_fast(drv, lane, "--subject", "Land the farm lane") == EXIT_OK
 
@@ -7061,6 +7062,101 @@ def test_land_fast_runs_its_try_run_on_the_farm_host_when_set(
     )
     assert receipt is not None
     assert [gate["phase"] for gate in receipt["gates"]] == ["static", "try-run"]
+
+
+def test_land_fast_runs_gates_bound_to_this_hosts_cells_here_not_on_the_farm(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    """A gate the farm's OS cannot admit (a Mac portability cell) runs on the
+    Mac after the farm's share; one refused gate no longer refuses the whole
+    remote run (2026-11-07, landing 43)."""
+    from tools import landing_receipt, trunk_landing
+    from tools.molt_dev_policy import GateConfig
+
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    try_gate = f"echo try >> {shlex.quote(str(counter))}"
+    _publish_policy(work, _try_run_policy(counter, try_gate=try_gate))
+    lane = work.parent / "lane-farm-split"
+    _lane(work, "farm-split", {"a.py": "a = 1\n"})
+    monkeypatch.setenv(trunk_landing.HOST_SETTING, "molt-gate")
+    sent: list[object] = []
+
+    def remote(repo, commit, gates, *, host):
+        sent.extend(gates)
+        raise AssertionError("no gate here is admissible on the farm")
+
+    monkeypatch.setattr(trunk_landing, "run_remote", remote)
+    # The farm's OS finds every try gate foreign (as for a Mac-cell gate); this
+    # host's own admission keeps the real rule.
+    farm_foreign = frozenset({"farm-foreign"})
+    real_foreign, real_runs_on = GateConfig.foreign_cells, GateConfig.runs_on
+    monkeypatch.setattr(trunk_landing, "host_os", lambda repo, host: "farm-os")
+    monkeypatch.setattr(
+        GateConfig,
+        "foreign_cells",
+        lambda self, host_os=None: (
+            farm_foreign if host_os == "farm-os" else real_foreign(self, host_os)
+        ),
+    )
+    monkeypatch.setattr(
+        GateConfig,
+        "runs_on",
+        staticmethod(
+            lambda gate, foreign: (
+                False if foreign == farm_foreign else real_runs_on(gate, foreign)
+            )
+        ),
+    )
+    base = _git(work, "rev-parse", "HEAD").stdout.strip()
+    assert _land_fast(drv, lane, "--subject", "Land the split lane") == EXIT_OK
+
+    assert sent == []
+    assert counter.read_text(encoding="utf-8").split() == ["static", "try"]
+    landed = _remote_main(work)
+    receipt = landing_receipt.read_receipt(
+        drv._git_common_directory(lane),
+        tree=_git(lane, "rev-parse", f"{landed}^{{tree}}").stdout.strip(),
+        base=base,
+    )
+    assert receipt is not None
+    assert [gate["phase"] for gate in receipt["gates"]] == ["static", "try-run"]
+
+
+def test_gate_routing_follows_the_executing_hosts_os(tmp_path):
+    """A portability cell of another OS is foreign to the executing host; a gate
+    bound only to foreign cells runs on another host, an unbound gate anywhere."""
+    from tools.molt_dev_policy import SelectedGate
+
+    config = GateConfig.parse(
+        """
+always = ["true"]
+[[matrix_cell]]
+id = "mac-queue"
+os = "macos"
+profile = "portability"
+[[matrix_cell]]
+id = "linux-queue"
+os = "linux"
+profile = "portability"
+[[matrix_cell]]
+id = "any-host"
+""",
+        "routing cells",
+        root=tmp_path,
+    )
+    assert config.foreign_cells("linux") == frozenset({"mac-queue"})
+    assert config.foreign_cells("macos") == frozenset({"linux-queue"})
+    farm = config.foreign_cells("linux")
+    mac_gate = SelectedGate("pytest tests/q.py", ("python",), cells=("mac-queue",))
+    both = SelectedGate(
+        "pytest tests/b.py", ("python",), cells=("mac-queue", "any-host")
+    )
+    unbound = SelectedGate("pytest tests/u.py", ("python",))
+    assert not config.runs_on(mac_gate, farm)
+    assert config.runs_on(both, farm)
+    assert config.runs_on(unbound, farm)
+    assert config.runs_on(mac_gate, config.foreign_cells("macos"))
 
 
 def test_land_fast_receipt_reads_counts_and_the_crate_gate_summary(tmp_path):
