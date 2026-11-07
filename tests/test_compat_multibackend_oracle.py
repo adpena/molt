@@ -2514,16 +2514,22 @@ def test_item_deadline_reaches_actual_sleeping_child(monkeypatch, tmp_path):
     monkeypatch.setenv("MOLT_DIFF_ROOT", str(tmp_path / "diff"))
     monkeypatch.setenv("MOLT_DIFF_TMPDIR", str(tmp_path / "scratch"))
     env = dict(os.environ)
+    # The deadline must land after the child prints, so the child skips site
+    # and the image's .pth imports (-I -S): under landing load a full startup
+    # outlived a 0.5 s deadline. The 30 s sleep makes "late" impossible unless
+    # the deadline fails to reach the child.
     budget = compat_backends.ItemBudget(
         compat_backends.TimeoutPolicy.from_environment({}),
-        compat_backends.time.monotonic() + 0.5,
+        compat_backends.time.monotonic() + 3.0,
     )
     result = compat_backends._guarded_run(
         [
             sys.executable,
+            "-I",
+            "-S",
             "-u",
             "-c",
-            "import time; print('started'); time.sleep(2); print('late')",
+            "import time; print('started'); time.sleep(30); print('late')",
         ],
         prefix="MOLT_COMPAT_WASM_RUN",
         env=env,
