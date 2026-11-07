@@ -302,3 +302,37 @@ def test_commit_message_is_projected_from_the_receipt_alone() -> None:
     )
     with pytest.raises(ValueError):
         lr.commit_message("two\nlines", receipt)
+
+
+def test_postsubmit_only_is_recorded_digested_and_counted_not_listed() -> None:
+    # Owner 2026-11-06: presubmit runs importers; data readers are left to
+    # postsubmit. The receipt names them, they change the selection digest,
+    # and the commit message counts them without passing them.
+    def receipt(left):
+        return lr.build_receipt(
+            mode="fast",
+            base="b" * 40,
+            tree="a" * 40,
+            tested_commit="c" * 40,
+            controller="candidate",
+            started_at="t",
+            gates=[
+                {
+                    "phase": "static",
+                    "command": "python -m ruff check .",
+                    "seconds": 1.0,
+                    "counts": None,
+                    "log": None,
+                }
+            ],
+            postsubmit_only=left,
+        )
+
+    none, some = receipt(()), receipt(("tests/test_a.py", "tests/test_b.py::test_c"))
+    assert none["postsubmit_only"] == []
+    assert some["postsubmit_only"] == ["tests/test_a.py", "tests/test_b.py::test_c"]
+    assert none["selection_sha256"] != some["selection_sha256"]
+    message = lr.commit_message("Land a change", some)
+    assert "Left to postsubmit: 2 data-reader test file(s)" in message
+    assert "tests/test_a.py" not in message
+    assert "Left to postsubmit" not in lr.commit_message("Land a change", none)

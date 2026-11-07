@@ -6,6 +6,7 @@ from molt.frontend.lowering.op_kinds_generated import FrontendOpKind
 
 import ast
 
+from molt.compiler_analysis.python_builtin_shapes import builtin_call_shape
 from molt.compiler_analysis.python_identity_catalog_generated import (
     BUILTIN_SHAPE_IDENTITIES,
     BUILTIN_SHAPE_NAMES,
@@ -173,9 +174,18 @@ class CallNamedBuiltinDispatchMixin(
                 return self._emit_const_value(False)
             opcode = "BOOL"
         elif name == "str":
-            return (
-                self._emit_str_from_obj(args[0]) if args else self._emit_const_value("")
+            if not args:
+                return self._emit_const_value("")
+            converted = self._emit_str_from_obj(args[0])
+            # Binding proof selects str; the existing expression-result
+            # authority separately proves whether this invocation is exact.
+            index = self.python_binding_index
+            assert index is not None
+            shape = builtin_call_shape(
+                name, node, tuple(index.expression_result(arg) for arg in node.args)
             )
+            converted.type_hint = "str" if shape.result.kind == "str" else "Any"
+            return converted
         elif name == "float":
             if not args:
                 return self._emit_const_value(0.0)

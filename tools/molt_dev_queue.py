@@ -521,15 +521,36 @@ def enqueue(
 
 
 def pending(paths: QueuePaths) -> list[LandingRequest]:
-    """Requests in queue order; the id starts with its UTC enqueue time."""
+    """Requests in queue order; the id starts with its UTC enqueue time.
+
+    A request with a result is closed even while its request file remains:
+    ``record_result`` publishes the result before it removes the request, so
+    a runner stopped between the two leaves both (``finish_interrupted_closes``).
+    """
 
     if not paths.requests.is_dir():
         return []
     return [
         LandingRequest.load(path)
         for path in sorted(paths.requests.glob("*.json"))
-        if not path.name.startswith(".")
+        if not path.name.startswith(".") and not (paths.results / path.name).is_file()
     ]
+
+
+def finish_interrupted_closes(paths: QueuePaths) -> list[str]:
+    """Remove the request file of every request that already has a result.
+
+    The caller holds the runner lock. Returns the request ids it closed.
+    """
+
+    if not paths.requests.is_dir():
+        return []
+    closed = []
+    for path in sorted(paths.requests.glob("*.json")):
+        if not path.name.startswith(".") and (paths.results / path.name).is_file():
+            path.unlink(missing_ok=True)
+            closed.append(path.stem)
+    return closed
 
 
 def record_result(
@@ -540,19 +561,44 @@ def record_result(
     detail: str,
     landed: str | None = None,
 ) -> None:
-    """Close one request: its result first, then its removal from the queue."""
+    """Close one request: its result first, then its removal from the queue.
 
-    _write_json(
-        paths.results / f"{request.id}.json",
-        {
-            "schema": RESULT_SCHEMA,
-            "request": asdict(request),
-            "status": status,
-            "landed": landed,
-            "detail": detail,
-            "recorded_at": _now(),
-        },
-    )
+    A request closes exactly once: the result is published without replacing
+    an existing one, so a second close fails instead of rewriting history.
+    """
+
+    from molt.file_publication import durable_publish_exclusive
+
+    result = paths.results / f"{request.id}.json"
+    result.parent.mkdir(parents=True, exist_ok=True)
+    handle, staging = tempfile.mkstemp(prefix=f".{result.name}.", dir=result.parent)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump(
+                {
+                    "schema": RESULT_SCHEMA,
+                    "request": asdict(request),
+                    "status": status,
+                    "landed": landed,
+                    "detail": detail,
+                    "recorded_at": _now(),
+                },
+                stream,
+                indent=2,
+                sort_keys=True,
+            )
+            stream.write("\n")
+        try:
+            durable_publish_exclusive(Path(staging), result)
+        except FileExistsError as exc:
+            existing = read_result(paths, request.id) or {}
+            raise DriverError(
+                f"landing request {request.id} is already closed "
+                f"({existing.get('status', 'unreadable')}); "
+                f"refusing to record {status} over it"
+            ) from exc
+    finally:
+        Path(staging).unlink(missing_ok=True)
     (paths.requests / f"{request.id}.json").unlink(missing_ok=True)
 
 
@@ -1465,6 +1511,8 @@ def cmd_queue_run(args: argparse.Namespace) -> int:
         if handle is None:
             _ok("another landing runner is active")
             return EXIT_OK
+        for request_id in finish_interrupted_closes(paths):
+            _ok(f"{request_id}: finished an interrupted close (its result exists)")
         needs_repin = False
         main_changed = False
         health = PostsubmitStatus.GREEN
@@ -1573,6 +1621,7 @@ def cmd_queue_withdraw(args: argparse.Namespace) -> int:
         )
         return EXIT_FAIL
     try:
+        finish_interrupted_closes(paths)
         request_ids = list(dict.fromkeys(args.request_ids))
         queued = {request.id for request in pending(paths)}
         unknown = [item for item in request_ids if item not in queued]

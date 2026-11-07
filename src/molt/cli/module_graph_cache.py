@@ -824,7 +824,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 42
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 43
 
 
 def _import_scan_cache_key(
@@ -1225,10 +1225,21 @@ def _read_persisted_import_scan_record(
                         for name, arg in _source_cache_rows(keywords, 2)
                     ),
                     _decode_optional_source_key(kwarg),
+                    tuple(
+                        None
+                        if literal_class is None
+                        else frozenset(_source_cache_sorted_strings(literal_class))
+                        for literal_class in _source_cache_list(literal_classes)
+                    ),
                 )
-                for owner, positional, vararg, keywords, kwarg in _source_cache_rows(
-                    raw_values["parameters"], 5
-                )
+                for (
+                    owner,
+                    positional,
+                    vararg,
+                    keywords,
+                    kwarg,
+                    literal_classes,
+                ) in _source_cache_rows(raw_values["parameters"], 6)
             ),
             tuple(
                 PythonFunctionResult(
@@ -1376,7 +1387,15 @@ def _read_persisted_import_scan_record(
             or kwarg is not None
             and kwarg[-1] != "arg"
             or len({name for name, _ in keywords}) != len(keywords)
-            for owner, positional, vararg, keywords, kwarg in values.parameters
+            or len(literal_classes) != len(positional)
+            for (
+                owner,
+                positional,
+                vararg,
+                keywords,
+                kwarg,
+                literal_classes,
+            ) in values.parameters
         ) or len({item.owner for item in values.parameters}) != len(values.parameters):
             return None
         if (
@@ -1581,7 +1600,20 @@ def _write_persisted_import_scan(
                 )
                 for transfer in scan.source_values.call_imports
             ],
-            "parameters": scan.source_values.parameters,
+            "parameters": [
+                (
+                    item.owner,
+                    item.positional,
+                    item.vararg,
+                    item.keywords,
+                    item.kwarg,
+                    [
+                        None if literal_class is None else sorted(literal_class)
+                        for literal_class in item.literal_classes
+                    ],
+                )
+                for item in scan.source_values.parameters
+            ],
             "functions": [
                 (
                     item.owner,

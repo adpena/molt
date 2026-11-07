@@ -363,3 +363,39 @@ def test_real_recovery_resumes_after_retirement_deleted_the_transaction_journal(
             )
     finally:
         _release_file_lock(handle)
+
+
+def test_candidate_transaction_transitions_are_exactly_the_documented_lifecycle(
+    tmp_path,
+):
+    from molt.cli import source_extension_candidate_transaction as transaction
+
+    State = transaction.CandidateTransactionState
+    Event = transaction.CandidateTransactionEvent
+    # Independent statement of the lifecycle (docs/design/state_machines.md):
+    # begin -> BUILDING -prepare-> PREPARED -commit-> COMMITTED; a producer's
+    # failure ends BUILDING (or repeats on a failed one); recovery marks an
+    # unowned BUILDING journal INTERRUPTED; a failure after PREPARED keeps it.
+    expected = {
+        (State.BUILDING, Event.PREPARE): State.PREPARED,
+        (State.PREPARED, Event.COMMIT): State.COMMITTED,
+        (State.BUILDING, Event.FAIL): State.FAILED,
+        (State.FAILED, Event.FAIL): State.FAILED,
+        (State.INTERRUPTED, Event.FAIL): State.FAILED,
+        (State.PREPARED, Event.FAIL): State.PREPARED,
+        (State.COMMITTED, Event.FAIL): State.COMMITTED,
+        (State.BUILDING, Event.INTERRUPT): State.INTERRUPTED,
+    }
+    for state in State:
+        for event in Event:
+            if (state, event) in expected:
+                assert (
+                    transaction._transition(state, event, tmp_path)
+                    is expected[(state, event)]
+                )
+            else:
+                with pytest.raises(
+                    transaction.SourceExtensionCandidateTransactionError,
+                    match=f"cannot {event} from {state}",
+                ):
+                    transaction._transition(state, event, tmp_path)

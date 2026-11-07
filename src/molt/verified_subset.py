@@ -24,12 +24,11 @@ from molt.toolchain_identity import (
     capture_stable_regular_file,
 )
 
-SCHEMA = "molt.verified-subset.v2"
+SCHEMA = "molt.verified-subset.v3"
 _POLICY_KEYS = frozenset(
     {
         "schema",
         "build_profiles",
-        "reference_cpython",
         "differential_suites",
         "excluded_verification_scopes",
     }
@@ -206,23 +205,18 @@ def capture_verified_subset_policy(
             raise ValueError(
                 f"verified-subset suite is not a source directory: {suite.path}"
             )
-    reference_cpython = _exact_string_list(
-        document.get("reference_cpython"), field="reference_cpython"
-    )
-    reference_by_minor: dict[str, str] = {}
-    for version in reference_cpython:
-        parts = version.split(".")
-        if len(parts) != 3 or not all(part.isdigit() for part in parts):
-            raise ValueError(
-                "verified-subset reference_cpython must contain final micro versions"
-            )
-        minor = ".".join(parts[:2])
-        if minor in reference_by_minor:
-            raise ValueError("verified-subset reference_cpython minors must be unique")
-        reference_by_minor[minor] = version
-    if set(reference_by_minor) != set(SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS):
+    # The reference patch of each target minor is the receipted patchlevel.h
+    # release at its pinned source (docs/design/python_version_authority.md).
+    from molt._python_release_generated import CPYTHON_RELEASES
+
+    unpinned = [
+        minor
+        for minor in SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+        if minor not in CPYTHON_RELEASES or CPYTHON_RELEASES[minor][3] != "final"
+    ]
+    if unpinned:
         raise ValueError(
-            "verified-subset reference_cpython must cover every target Python minor"
+            f"verified-subset target minors {unpinned} have no final pinned CPython release"
         )
     excluded_verification_scopes = _exact_string_list(
         document.get("excluded_verification_scopes"),
@@ -239,7 +233,7 @@ def capture_verified_subset_policy(
     policy = VerifiedSubsetPolicy(
         python_versions=SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS,
         reference_cpython=tuple(
-            reference_by_minor[minor]
+            ".".join(str(part) for part in CPYTHON_RELEASES[minor][:3])
             for minor in SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
         ),
         excluded_verification_scopes=excluded_verification_scopes,

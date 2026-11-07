@@ -62,6 +62,10 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
     UNBOUND_IDENTITY,
 )
 from molt.compiler_analysis.python_call_arguments import call_argument_schedule
+from molt.compiler_analysis.python_parameter_classes import (
+    CallEvidence,
+    parameter_literal_classes,
+)
 from molt.compiler_analysis.python_namespace_writes import (
     _resolved_python_namespace_summary,
 )
@@ -2630,7 +2634,9 @@ class _Analyzer:
         self.source_classes: dict[PythonSourceKey, PythonSourceClass] = {}
         self.source_callables: dict[PythonSourceKey, IdentityMask] = {}
         self.source_completions: dict[PythonSourceKey, frozenset[PythonSourceKey]] = {}
-        self.source_parameters: dict[PythonSourceKey, PythonSourceParameters] = {}
+        self.source_parameter_owners: dict[
+            PythonSourceKey, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
+        ] = {}
         self.source_function_results: dict[PythonSourceKey, PythonFunctionResult] = {}
         self.source_namespaces: dict[
             PythonSourceKey, dict[str, frozenset[PythonSourceKey]]
@@ -8279,13 +8285,19 @@ class _Analyzer:
             )
         return flow
 
-    def _analyze_function_job(self, job: _FunctionJob, outer_state: int) -> None:
-        node = job.node
+    def _source_parameters(
+        self,
+        owner: PythonSourceKey,
+        node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+    ) -> PythonSourceParameters:
+        """Project a function's parameter facts after the fixpoint.
+
+        Literal classes read final call facts (callee identities and source
+        reach), so a premise that changes them republishes the classes.
+        """
         arguments = node.args
-        parameters = function_parameter_names(arguments)
-        parameter_nodes = function_parameter_nodes(arguments)
-        self.source_parameters[python_node_source_key(node)] = PythonSourceParameters(
-            python_node_source_key(node),
+        return PythonSourceParameters(
+            owner,
             tuple(
                 python_node_source_key(arg)
                 for arg in (*arguments.posonlyargs, *arguments.args)
@@ -8300,7 +8312,24 @@ class _Analyzer:
             python_node_source_key(arguments.kwarg)
             if arguments.kwarg is not None
             else None,
+            parameter_literal_classes(node, call_evidence=self._call_evidence),
         )
+
+    def _call_evidence(self, call: ast.Call) -> CallEvidence | None:
+        fact = self.calls.get(PythonNodeKey.from_node(call))
+        if fact is None:
+            return None
+        return CallEvidence(
+            fact.callee_identities,
+            python_node_source_key(call) in self.source_calls,
+        )
+
+    def _analyze_function_job(self, job: _FunctionJob, outer_state: int) -> None:
+        node = job.node
+        arguments = node.args
+        parameters = function_parameter_names(arguments)
+        parameter_nodes = function_parameter_nodes(arguments)
+        self.source_parameter_owners[python_node_source_key(node)] = node
         body = (
             node.body
             if isinstance(node.body, list)
@@ -8790,7 +8819,8 @@ class _Analyzer:
             ),
             source_callables=tuple(sorted(self.source_callables.items())),
             source_parameters=tuple(
-                value for _, value in sorted(self.source_parameters.items())
+                self._source_parameters(owner, node)
+                for owner, node in sorted(self.source_parameter_owners.items())
             ),
             source_function_results=tuple(
                 value for _owner, value in sorted(self.source_function_results.items())

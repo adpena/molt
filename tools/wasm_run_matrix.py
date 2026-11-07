@@ -362,7 +362,7 @@ def _run_molt_wasm_host(
             case.name,
             "skipped",
             detail=(
-                "molt-wasm-host binary not found; build with "
+                "molt-wasm-host binary is missing or older than its sources; build with "
                 "`cargo build --profile dev-fast -p molt-wasm-host` "
                 "or set MOLT_WASM_HOST_BIN"
             ),

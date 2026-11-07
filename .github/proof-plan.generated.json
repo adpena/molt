@@ -12,6 +12,7 @@
     "src/molt/compiler_analysis/native_support_slice.py",
     "src/molt/compiler_analysis/python_binding_facts.py",
     "src/molt/compiler_analysis/python_binding_flow.py",
+    "src/molt/compiler_analysis/python_parameter_classes.py",
     "src/molt/compiler_analysis/python_builtin_shapes.py",
     "src/molt/compiler_analysis/python_call_arguments.py",
     "src/molt/compiler_analysis/python_effects.py",
@@ -598,6 +599,7 @@
         "tests/tools/test_cpython_regrtest_sharding.py/**",
         "tests/tools/test_cross_run_memory_guard.py/**",
         "tests/tools/test_trunk_provision.py/**",
+        "tests/tools/test_trunk_loop.py/**",
         "tests/tools/test_determinism_perf_gate.py/**",
         "tests/tools/test_deterministic_runtime_truth.py/**",
         "tests/tools/test_dev_py.py/**",
@@ -719,6 +721,8 @@
         "tests/test_artifact_poison_gate.py/**",
         "tests/tools/test_signed_ratio.py/**",
         "tests/tools/test_test_dependency_graph.py/**",
+        "tests/tools/test_consumer_gate.py/**",
+        "tests/tools/test_gate_yield.py/**",
         "tests/test_agent_coordination.py/**",
         "tests/tools/test_release_outcomes.py/**",
         "tests/tools/test_apparatus_agent_safety.py/**",
@@ -3718,6 +3722,7 @@
         "tests/tools/test_cpython_regrtest_sharding.py",
         "tests/tools/test_cross_run_memory_guard.py",
         "tests/tools/test_trunk_provision.py",
+        "tests/tools/test_trunk_loop.py",
         "tests/tools/test_determinism_perf_gate.py",
         "tests/tools/test_deterministic_runtime_truth.py",
         "tests/tools/test_dev_py.py",
@@ -3841,7 +3846,9 @@
         "tests/tools/test_proof_queue_disk_capacity.py",
         "tests/test_artifact_poison_gate.py",
         "tests/tools/test_signed_ratio.py",
-        "tests/tools/test_test_dependency_graph.py"
+        "tests/tools/test_test_dependency_graph.py",
+        "tests/tools/test_consumer_gate.py",
+        "tests/tools/test_gate_yield.py"
       ],
       "pytest_worker_memory_gb": 0.75,
       "resource_class": "repository-policy",
@@ -6154,7 +6161,6 @@
         "tests/test_disk_capacity.py",
         "tests/test_driver_layout.py",
         "tests/test_dx_sccache_wrapper.py",
-        "tests/test_exception_constructors.py",
         "tests/test_executable_test_support.py",
         "tests/test_file_locks.py",
         "tests/test_functools_private_module_surface.py",
@@ -6333,42 +6339,16 @@
         "tests/test_uuid_private_module_surface.py",
         "tests/test_warnings_private_module_surface.py",
         "tests/test_warnings_top_level_private_module_surface.py",
-        "tests/test_wasm_async_protocol.py",
         "tests/test_wasm_browser_socket_host.py",
         "tests/test_wasm_socket_sendmsg_recvmsg.py",
         "tests/test_wasm_browser_socket_udp_server.py",
-        "tests/test_wasm_bytes_ops.py",
-        "tests/test_wasm_call_arity_trampoline.py",
-        "tests/test_wasm_channel_async.py",
-        "tests/test_wasm_channel_basic.py",
-        "tests/test_wasm_class_smoke.py",
-        "tests/test_wasm_codec_parity.py",
-        "tests/test_wasm_db_client_shim.py",
-        "tests/test_wasm_db_host_poll.py",
-        "tests/test_wasm_entry_main_name.py",
-        "tests/test_wasm_function_object_smoke.py",
-        "tests/test_wasm_generator_protocol.py",
-        "tests/test_wasm_importlib_machinery.py",
-        "tests/test_wasm_importlib_smoke.py",
         "tests/test_wasm_linking_symbols.py",
-        "tests/test_wasm_list_dict_ops.py",
-        "tests/test_wasm_memoryview_ops.py",
         "tests/test_wasm_optimization_policy.py",
-        "tests/test_wasm_pickle_class_dataclass_roundtrip.py",
-        "tests/test_wasm_pickle_hooks_surface_buffers.py",
-        "tests/test_wasm_pickle_protocol01.py",
-        "tests/test_wasm_print_keywords.py",
         "tests/test_wasm_reserved_callable_arity.py",
         "tests/test_wasm_runtime_export_no_mangle.py",
-        "tests/test_wasm_set_ops.py",
         "tests/test_wasm_size_tracking.py",
         "tests/test_wasm_snapshot.py",
         "tests/test_wasm_split_runtime_got_data_bridge.py",
-        "tests/test_wasm_string_ops.py",
-        "tests/test_wasm_thread_exception_path.py",
-        "tests/test_wasm_time_basic.py",
-        "tests/test_wasm_tinygrad_import_shim.py",
-        "tests/test_wasm_tuple_return_fnptr.py",
         "tests/test_wasm_vfs_e2e.py",
         "tests/test_weakref_private_module_surface.py",
         "tests/test_zstd_private_module_surface.py",
@@ -6523,7 +6503,6 @@
         "tests/test_disk_capacity.py",
         "tests/test_driver_layout.py",
         "tests/test_dx_sccache_wrapper.py",
-        "tests/test_exception_constructors.py",
         "tests/test_executable_test_support.py",
         "tests/test_file_locks.py",
         "tests/test_functools_private_module_surface.py",
@@ -6702,42 +6681,16 @@
         "tests/test_uuid_private_module_surface.py",
         "tests/test_warnings_private_module_surface.py",
         "tests/test_warnings_top_level_private_module_surface.py",
-        "tests/test_wasm_async_protocol.py",
         "tests/test_wasm_browser_socket_host.py",
         "tests/test_wasm_socket_sendmsg_recvmsg.py",
         "tests/test_wasm_browser_socket_udp_server.py",
-        "tests/test_wasm_bytes_ops.py",
-        "tests/test_wasm_call_arity_trampoline.py",
-        "tests/test_wasm_channel_async.py",
-        "tests/test_wasm_channel_basic.py",
-        "tests/test_wasm_class_smoke.py",
-        "tests/test_wasm_codec_parity.py",
-        "tests/test_wasm_db_client_shim.py",
-        "tests/test_wasm_db_host_poll.py",
-        "tests/test_wasm_entry_main_name.py",
-        "tests/test_wasm_function_object_smoke.py",
-        "tests/test_wasm_generator_protocol.py",
-        "tests/test_wasm_importlib_machinery.py",
-        "tests/test_wasm_importlib_smoke.py",
         "tests/test_wasm_linking_symbols.py",
-        "tests/test_wasm_list_dict_ops.py",
-        "tests/test_wasm_memoryview_ops.py",
         "tests/test_wasm_optimization_policy.py",
-        "tests/test_wasm_pickle_class_dataclass_roundtrip.py",
-        "tests/test_wasm_pickle_hooks_surface_buffers.py",
-        "tests/test_wasm_pickle_protocol01.py",
-        "tests/test_wasm_print_keywords.py",
         "tests/test_wasm_reserved_callable_arity.py",
         "tests/test_wasm_runtime_export_no_mangle.py",
-        "tests/test_wasm_set_ops.py",
         "tests/test_wasm_size_tracking.py",
         "tests/test_wasm_snapshot.py",
         "tests/test_wasm_split_runtime_got_data_bridge.py",
-        "tests/test_wasm_string_ops.py",
-        "tests/test_wasm_thread_exception_path.py",
-        "tests/test_wasm_time_basic.py",
-        "tests/test_wasm_tinygrad_import_shim.py",
-        "tests/test_wasm_tuple_return_fnptr.py",
         "tests/test_wasm_vfs_e2e.py",
         "tests/test_weakref_private_module_surface.py",
         "tests/test_zstd_private_module_surface.py",
@@ -6802,6 +6755,134 @@
         "python",
         "uv",
         "node"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "auto",
+        "-m",
+        "not slow"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-unit",
+      "dependencies": [],
+      "family": "python_unit",
+      "id": "python.unit.surface-wasm",
+      "pytest": [
+        "tests/test_exception_constructors.py",
+        "tests/test_wasm_async_protocol.py",
+        "tests/test_wasm_bytes_ops.py",
+        "tests/test_wasm_call_arity_trampoline.py",
+        "tests/test_wasm_channel_async.py",
+        "tests/test_wasm_channel_basic.py",
+        "tests/test_wasm_class_smoke.py",
+        "tests/test_wasm_codec_parity.py",
+        "tests/test_wasm_db_client_shim.py",
+        "tests/test_wasm_db_host_poll.py",
+        "tests/test_wasm_entry_main_name.py",
+        "tests/test_wasm_function_object_smoke.py",
+        "tests/test_wasm_generator_protocol.py",
+        "tests/test_wasm_importlib_machinery.py",
+        "tests/test_wasm_importlib_smoke.py",
+        "tests/test_wasm_list_dict_ops.py",
+        "tests/test_wasm_memoryview_ops.py",
+        "tests/test_wasm_pickle_class_dataclass_roundtrip.py",
+        "tests/test_wasm_pickle_hooks_surface_buffers.py",
+        "tests/test_wasm_pickle_protocol01.py",
+        "tests/test_wasm_print_keywords.py",
+        "tests/test_wasm_set_ops.py",
+        "tests/test_wasm_string_ops.py",
+        "tests/test_wasm_thread_exception_path.py",
+        "tests/test_wasm_time_basic.py",
+        "tests/test_wasm_tinygrad_import_shim.py",
+        "tests/test_wasm_tuple_return_fnptr.py"
+      ],
+      "pytest_worker_memory_gb": 4.0,
+      "resource_class": "python-tests",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv",
+        "node",
+        "wasm-tools"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "auto",
+        "-m",
+        "not slow"
+      ],
+      "cache_domain": "pytest",
+      "cell": "macos-arm64-py312-unit",
+      "dependencies": [],
+      "family": "python_unit",
+      "id": "python.unit.surface-wasm.macos",
+      "pytest": [
+        "tests/test_exception_constructors.py",
+        "tests/test_wasm_async_protocol.py",
+        "tests/test_wasm_bytes_ops.py",
+        "tests/test_wasm_call_arity_trampoline.py",
+        "tests/test_wasm_channel_async.py",
+        "tests/test_wasm_channel_basic.py",
+        "tests/test_wasm_class_smoke.py",
+        "tests/test_wasm_codec_parity.py",
+        "tests/test_wasm_db_client_shim.py",
+        "tests/test_wasm_db_host_poll.py",
+        "tests/test_wasm_entry_main_name.py",
+        "tests/test_wasm_function_object_smoke.py",
+        "tests/test_wasm_generator_protocol.py",
+        "tests/test_wasm_importlib_machinery.py",
+        "tests/test_wasm_importlib_smoke.py",
+        "tests/test_wasm_list_dict_ops.py",
+        "tests/test_wasm_memoryview_ops.py",
+        "tests/test_wasm_pickle_class_dataclass_roundtrip.py",
+        "tests/test_wasm_pickle_hooks_surface_buffers.py",
+        "tests/test_wasm_pickle_protocol01.py",
+        "tests/test_wasm_print_keywords.py",
+        "tests/test_wasm_set_ops.py",
+        "tests/test_wasm_string_ops.py",
+        "tests/test_wasm_thread_exception_path.py",
+        "tests/test_wasm_time_basic.py",
+        "tests/test_wasm_tinygrad_import_shim.py",
+        "tests/test_wasm_tuple_return_fnptr.py"
+      ],
+      "pytest_worker_memory_gb": 4.0,
+      "resource_class": "python-tests",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv",
+        "node",
+        "wasm-tools"
       ]
     },
     {
@@ -9302,7 +9383,7 @@
           "projected_makespan_seconds": 2400,
           "required_job_seconds": 2460,
           "resource_capacity_floor_seconds": {
-            "python-tests": 2160
+            "python-tests": 2220
           }
         },
         "macos-arm64-py312-compiled": {
@@ -9324,7 +9405,7 @@
           "projected_makespan_seconds": 2400,
           "required_job_seconds": 2460,
           "resource_capacity_floor_seconds": {
-            "python-tests": 2160
+            "python-tests": 2220
           }
         }
       },
@@ -9980,6 +10061,7 @@
           "src/molt/compiler_analysis/python_namespace_writes.py",
           "src/molt/compiler_analysis/python_import_scan.py",
           "src/molt/compiler_analysis/python_binding_flow.py",
+          "src/molt/compiler_analysis/python_parameter_classes.py",
           "src/molt/compiler_analysis/python_binding_facts.py",
           "src/molt/compiler_analysis/python_source_keys.py",
           "src/molt/cli/python_import_resolution.py",
@@ -12646,6 +12728,8 @@
           "src/molt/compiler_analysis/python_value_identity.py",
           "src/molt/compiler_analysis/python_binding_facts.py",
           "src/molt/compiler_analysis/python_binding_flow.py",
+          "runtime/exception_kinds.toml",
+          "tools/gen_exception_kinds.py",
           "tools/gen_python_identity_catalog.py",
           "tests/test_gen_python_identity_catalog.py"
         ],
@@ -14238,14 +14322,14 @@
       "name": "python",
       "python_identity_role": "environment",
       "setup_evidence": [
-        ".python-version::3.12.15",
+        ".python-version::3.12.16",
         ".github/actions/setup-project/action.yml::bash .github/actions/setup-project/provision-python.sh"
       ],
-      "setup_value": "3.12.15",
+      "setup_value": "3.12.16",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^Python 3\\.12\\.15$"
+      "version_pattern": "^Python 3\\.12\\.16$"
     },
     {
       "executable": "bash",
@@ -14386,15 +14470,15 @@
       "projection": "tool-release",
       "setup_command": "python -m molt.tool_releases provision node",
       "setup_evidence": [
-        "config/tool_releases.toml::version = \"26.12.1\"",
+        "config/tool_releases.toml::version = \"26.13.0\"",
         ".github/actions/setup-project/action.yml::uses: actions/setup-node@",
         ".github/workflows/formal.yml::node-version: pinned"
       ],
-      "setup_value": "26.12.1",
+      "setup_value": "26.13.0",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^v26\\.12\\.1$"
+      "version_pattern": "^v26\\.13\\.0$"
     },
     {
       "content_path_command": [
@@ -14868,13 +14952,13 @@
       "name": "quint",
       "node_package": "@informalsystems/quint",
       "setup_evidence": [
-        ".github/workflows/formal.yml::@informalsystems/quint@0.33.0"
+        ".github/workflows/formal.yml::@informalsystems/quint@0.33.1"
       ],
-      "setup_value": "0.33.0",
+      "setup_value": "0.33.1",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^(?:Quint\\s+)?0\\.33\\.0$"
+      "version_pattern": "^(?:Quint\\s+)?0\\.33\\.1$"
     },
     {
       "executable": "cargo-deny",
@@ -14986,14 +15070,14 @@
       "name": "wasm-tools",
       "projection": "tool-release",
       "setup_evidence": [
-        "config/tool_releases.toml::version = \"1.262.0\"",
+        "config/tool_releases.toml::version = \"1.263.0\"",
         ".github/workflows/molt-wasm-ci.yml::python3 -m molt.tool_releases provision wasm-tools"
       ],
-      "setup_value": "1.262.0",
+      "setup_value": "1.263.0",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^wasm-tools 1\\.262\\.0(?: \\([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\\))?$"
+      "version_pattern": "^wasm-tools 1\\.263\\.0(?: \\([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\\))?$"
     }
   ]
 }

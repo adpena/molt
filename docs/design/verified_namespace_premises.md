@@ -223,7 +223,14 @@ receiver behavior.
    real function/class values escape, are recreated or have visible attribute mutations
    retain conservative activation. Exact callees transfer arguments through their
    existing formal-parameter worklist; merely passing an argument does not expose
-   its whole namespace. Literal `getattr`/`hasattr`/`delattr` select real member
+   its whole namespace. A body is scanned once per argument class, not once per
+   argument: a positional parameter that the body observes only through
+   string-literal tests, branches those tests narrow, and the message of a raise
+   that reaches no source callee shares one scan for every argument outside its
+   literals (`python_parameter_classes`, the `literal_classes` field of
+   `PythonSourceParameters`). The classes read typed call facts (callee identity
+   masks, source reach) after the base fixpoint; the solver keeps each original
+   argument tuple and re-maps it when a rescan changes a class. Literal `getattr`/`hasattr`/`delattr` select real member
    sources; unknown selectors retain protocol and escape effects. Class allocation
    and method folding additionally require unexposed definition/method identities.
    A declined constructor proof calls the actual class protocol.

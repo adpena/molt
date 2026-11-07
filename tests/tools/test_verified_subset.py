@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from molt import verified_subset as authority
-from tools import verified_subset
+from tools import cpython_regrtest, verified_subset
 from tools.compat import comparison, test_policy
 from tests.process_guard_common import current_thread_only, install_module_view
 from tests.python_environment_test_support import create_test_venv
@@ -286,7 +286,21 @@ def test_policy_generates_exact_version_host_backend_closure() -> None:
     coordinates = authority.verified_subset_coordinates(policy)
 
     assert policy.python_versions == ("3.12", "3.13", "3.14")
-    assert policy.reference_cpython == ("3.12.15", "3.13.17", "3.14.9")
+    # Each reference is an exact patch release on its own line, and it is the
+    # release whose source the regrtest/source authority pins for that line.
+    sources = {
+        source.python: source.tag.removeprefix("v")
+        for source in cpython_regrtest.load_cpython_sources().values()
+    }
+    assert policy.reference_cpython == tuple(
+        sources[line] for line in policy.python_versions
+    )
+    assert all(
+        reference.rpartition(".")[0] == line and reference.rpartition(".")[2].isdigit()
+        for reference, line in zip(
+            policy.reference_cpython, policy.python_versions, strict=True
+        )
+    )
     assert policy.backends == ("llvm", "native", "wasm")
     assert policy.abi == "cpython-language"
     assert policy.concurrency == "gil"
@@ -330,13 +344,9 @@ def test_policy_file_does_not_redeclare_fixed_coordinate_authorities(
     config.mkdir(parents=True)
     suite.mkdir()
     policy_path = config / "verified_subset.toml"
-    reference_versions = ", ".join(
-        json.dumps(version) for version in default.reference_cpython
-    )
     document = (
-        'schema = "molt.verified-subset.v2"\n'
+        'schema = "molt.verified-subset.v3"\n'
         'build_profiles = ["dev", "release"]\n'
-        f"reference_cpython = [{reference_versions}]\n"
         'excluded_verification_scopes = ["capability_policy", '
         '"dynamic_execution_policy"]\n'
         "differential_suites = [\n"
@@ -352,6 +362,14 @@ def test_policy_file_does_not_redeclare_fixed_coordinate_authorities(
     assert loaded.backends == ("llvm", "native", "wasm")
 
     policy_path.write_text(document + 'fallback_policy = "error"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="schema or keys are not exact"):
+        authority.load_verified_subset_policy(policy_path)
+    # Reference patches derive from the pinned source releases; a restated
+    # copy is refused rather than compared.
+    restated = (
+        document + f"reference_cpython = {json.dumps(default.reference_cpython)}\n"
+    )
+    policy_path.write_text(restated, encoding="utf-8")
     with pytest.raises(ValueError, match="schema or keys are not exact"):
         authority.load_verified_subset_policy(policy_path)
 
@@ -769,9 +787,8 @@ def _small_policy(root: Path) -> authority.VerifiedSubsetPolicy:
     config.mkdir()
     path = config / "verified_subset.toml"
     path.write_text(
-        'schema = "molt.verified-subset.v2"\n'
+        'schema = "molt.verified-subset.v3"\n'
         'build_profiles = ["dev", "release"]\n'
-        f"reference_cpython = {json.dumps(default.reference_cpython)}\n"
         f"excluded_verification_scopes = {json.dumps(default.excluded_verification_scopes)}\n"
         'differential_suites = [{path="suite", recursive=false, cpython_equivalence_floor=1}]\n',
         encoding="utf-8",

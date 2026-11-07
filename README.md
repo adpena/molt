@@ -116,7 +116,7 @@ For the full setup and troubleshooting path, use
 [docs/getting-started.md](docs/getting-started.md).
 
 ```bash
-uv sync --group dev --python 3.12.15
+uv sync --group dev
 uv run --python 3.12 molt doctor --json
 uv run --python 3.12 molt run examples/hello.py
 ```

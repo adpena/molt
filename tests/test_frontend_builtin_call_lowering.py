@@ -1377,12 +1377,15 @@ def test_sync_try_except_uses_split_label_valued_handler_entry() -> None:
     )
 
     raise_idx = next(i for i, op in enumerate(func_ops) if op.get("kind") == "raise")
+    from molt.frontend.lowering.op_kinds_generated import ExceptionEdgeKind
+
     # An authored raise publishes its exceptional edge before the terminal
-    # jump. Both transfers must enter this handler, preserving the raise site.
+    # jump, never contracted to a plain jump (HF-764, join_normalize). Both
+    # transfers enter this handler, preserving the raise site.
     transfers = [op for op in func_ops[raise_idx + 1 :] if op.get("kind") != "line"][:2]
     assert [op["kind"] for op in transfers] == ["check_exception", "jump"]
     assert [op["value"] for op in transfers] == [handler_label, handler_label]
-    assert transfers[0]["exception_edge"] == "unwind"
+    assert transfers[0]["exception_edge"] is ExceptionEdgeKind.UNWIND
 
     handler_idx = next(
         i

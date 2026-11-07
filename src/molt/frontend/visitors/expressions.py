@@ -467,9 +467,11 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
                             "Formatted value conversion not supported",
                         )
                 if item.format_spec is None:
-                    if item.conversion != -1:
+                    if item.conversion != -1 and value.type_hint == "str":
                         parts.append(value)
                     else:
+                        # FORMAT_VALUE still calls a subclass's __format__
+                        # after !s/!r; only an exact str can skip that call.
                         parts.append(self._emit_string_format(value, ""))
                     continue
                 spec_val = self._emit_format_spec_value(item.format_spec)

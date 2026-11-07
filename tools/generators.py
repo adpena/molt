@@ -179,6 +179,31 @@ def changed_generators(
     )
 
 
+def _write_in_fresh_interpreter(tool: str) -> None:
+    """Render ``tool`` where every module it imports is read from disk now."""
+    result = harness_memory_guard.guarded_completed_process(
+        [
+            sys.executable,
+            "-B",
+            str(ROOT / "tools/generators.py"),
+            "write",
+            "--only",
+            tool,
+        ],
+        prefix="MOLT_GENERATOR",
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=600.0,
+        errors="strict",
+    )
+    sys.stdout.write(result.stdout or "")
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"{tool} failed in a fresh interpreter:\n{(result.stderr or '').strip()}"
+        )
+
+
 def load_generator(tool: str) -> ModuleType:
     name = tool_module_name(ROOT / tool)
     if name is None:
@@ -404,8 +429,24 @@ def main(argv: list[str] | None = None, *, scan_records: bool = False) -> int:
             limits=harness_memory_guard.limits_from_env("MOLT_GENERATOR", os.environ),
             drain_on_exit=False,
         ):
+            # Tools that published a Python module in this run. A consumer that
+            # declares one of them upstream may hold the old module imported in
+            # this interpreter, so it renders in a fresh child instead.
+            republished: set[str] = set()
             for generator in selected:
                 tick = time.perf_counter()
+                if args.action != "check" and republished.intersection(
+                    generator.upstream
+                ):
+                    _write_in_fresh_interpreter(generator.tool)
+                    if any(output.endswith(".py") for output in generator.outputs):
+                        republished.add(generator.tool)
+                    if args.action == "merge":
+                        merge_outputs.extend(generator.outputs)
+                    print(
+                        f"  {time.perf_counter() - tick:6.2f}s {generator.tool} (fresh)"
+                    )
+                    continue
                 module = load_generator(generator.tool)
                 bindings = runtime_bindings[generator.tool]
                 arguments: dict[str, Any] = {}
@@ -426,6 +467,8 @@ def main(argv: list[str] | None = None, *, scan_records: bool = False) -> int:
                 else:
                     for path in write_outputs(outputs):
                         print(f"wrote {display_path(path)} ({generator.tool})")
+                        if path.suffix == ".py":
+                            republished.add(generator.tool)
                     if args.action == "merge":
                         # Exactly the --check comparison, against the same render:
                         # publication is checked without executing a producer twice.

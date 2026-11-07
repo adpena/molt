@@ -148,6 +148,7 @@ def _receipt_for(
         waived=[display(gate.command) for gate in precheck.waived],
         unverified=unverified,
         narrowed=narrowed,
+        postsubmit_only=precheck.postsubmit_only,
     )
 
 
@@ -406,7 +407,7 @@ def _dry_run(git, repo: Path, *, head: str, base: str) -> int:
     lane's own change once main is merged in."""
     from tools.git_identity import merge_base
     from tools.molt_dev_gates import display
-    from tools.molt_dev_policy import select_landing_gates
+    from tools.molt_dev_policy import left_to_postsubmit, select_landing_gates
 
     merge = (
         "none"
@@ -432,6 +433,8 @@ def _dry_run(git, repo: Path, *, head: str, base: str) -> int:
             _say(
                 f"    deferred  {test}  ({', '.join(cells) or 'no proof cell owns it'})"
             )
+        for test in left_to_postsubmit(graph, gates):
+            _say(f"    postsubmit  {test}  (data reader; presubmit runs importers)")
     for gate in gates:
         role = "static" if gate.static else "try-run" if gate.try_run else "waived"
         _say(f"    {role:8} {display(gate.command)}")

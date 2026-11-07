@@ -13,12 +13,27 @@ from pathlib import Path
 import re
 import shutil
 from collections.abc import Callable, Iterable, Mapping
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Protocol
 
 from molt.file_publication import is_link_like, resolve_owned_path
 from molt.exact_json import encode_exact, read_exact, write_exact
 from molt.portable_paths import portable_relative_path
 from tools.git_identity import require_git_object_id
+
+
+class SourceTreeState(StrEnum):
+    """What a receipt proves about the tree it ran on.
+
+    CLEAN is commit-backed (only CLEAN receipts are admitted); DIRTY carried
+    uncommitted changes; UNKNOWN never observed the tree (an infrastructure
+    failure before execution).
+    """
+
+    CLEAN = "clean"
+    DIRTY = "dirty"
+    UNKNOWN = "unknown"
+
 
 if TYPE_CHECKING:
     from tools.command_execution import GuardedCommand
@@ -190,7 +205,7 @@ def selection_record(
         "schema": SELECTION_SCHEMA,
         "source_commit": source_identity["commit"],
         "source_tree": source_identity["tree"],
-        "source_tree_state": "clean",
+        "source_tree_state": SourceTreeState.CLEAN,
         "authority_sha256": authority_sha256,
         "tier": tier,
         "github_context": context,
@@ -238,7 +253,7 @@ def validate_selection(
         "schema": SELECTION_SCHEMA,
         "source_commit": source_identity["commit"],
         "source_tree": source_identity["tree"],
-        "source_tree_state": "clean",
+        "source_tree_state": SourceTreeState.CLEAN,
         "authority_sha256": authority_sha256,
         "tier": tier,
         "github_context": context,
@@ -334,7 +349,7 @@ def receipt_context(
     authority_sha256: str,
     source_commit: object,
     source_tree: object,
-    source_tree_state: str,
+    source_tree_state: SourceTreeState,
     environment: Mapping[str, Any],
     toolchains: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -415,7 +430,7 @@ def new_receipt(
             authority_sha256=authority_sha256,
             source_commit=source_identity["commit"],
             source_tree=source_identity["tree"],
-            source_tree_state="clean",
+            source_tree_state=SourceTreeState.CLEAN,
             environment=environment,
             toolchains=toolchains,
         ),
@@ -700,7 +715,7 @@ def verify_receipts(
                 f"{path}: receipt source tree identity does not match checkout"
             )
             continue
-        if payload.get("source_tree_state") != "clean":
+        if payload.get("source_tree_state") != SourceTreeState.CLEAN:
             errors.append(f"{path}: receipt source tree is not clean and commit-backed")
             continue
         environment = payload.get("environment")

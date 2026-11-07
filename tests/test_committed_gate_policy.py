@@ -72,6 +72,35 @@ def _selected_pytest_targets(
     }
 
 
+def _postsubmit_only(cfg, paths):
+    """What the landing receipt names as left to postsubmit (owner 2026-11-06):
+    the data readers no selected gate runs."""
+    from tools.molt_dev_policy import left_to_postsubmit
+
+    gates, _ = cfg.select(list(paths))
+    return set(left_to_postsubmit(cfg.graph_selection(list(paths)), gates))
+
+
+def _landing_coverage(cfg, paths, changes=CI_COMMAND_EDIT):
+    """Every consumer the landing pipeline runs: presubmit runs the importers,
+    postsubmit the data readers. A consumer is never in neither."""
+    return _selected_pytest_targets(cfg, paths, changes) | _postsubmit_only(cfg, paths)
+
+
+def _assert_covered(cfg, paths, expected):
+    """No consumer is lost, and nothing outside ``expected``'s files is added.
+    A node is covered when presubmit runs it or its whole file runs."""
+    covered = _landing_coverage(cfg, paths)
+    lost = {
+        item
+        for item in expected
+        if item not in covered and item.partition("::")[0] not in covered
+    }
+    assert not lost
+    files = {item.partition("::")[0] for item in expected}
+    assert {item.partition("::")[0] for item in covered} <= files
+
+
 @pytest.mark.parametrize(
     "path",
     ["tools/check_changed_clippy.py", "tests/tools/test_check_changed_clippy.py"],
@@ -191,30 +220,34 @@ def test_scanner_gate_edits_select_direct_owners_without_ci_siblings():
         "tests/test_generator_manifest.py",
         "tests/test_structural_audit.py",
     ]
-    assert _selected_pytest_targets(cfg, paths) == {
-        "tests/tools/test_import_file.py",
-        "tests/test_generator_manifest.py",
-        "tests/test_structural_audit.py",
-        "tests/tools/test_structural_audit_records.py",
-        # tools/structural_audit.py is a parser producer for these consumers.
-        "tests/test_rust_source_scan.py",
-        "tests/tools/test_gen_luau_support_matrix.py",
-        # Tests that import the audits or read the design document.
-        POLICY_ORACLE,
-        "tests/test_dx_run_context.py",
-        "tests/test_agent_coordination.py",
-        "tests/test_check_docs_architecture.py",
-        "tests/test_executable_test_support.py",
-        "tests/test_memory_guard_wiring.py",
-        "tests/test_proof_plan.py",
-        "tests/tools/test_check_memory_guard_wiring.py",
-        "tests/tools/test_dev_py.py",
-        "tests/tools/test_phase_exit_manifest.py",
-        "tests/tools/test_release_criterion_receipt.py",
-        "tests/tools/test_release_exit_gate.py",
-        "tests/tools/test_subprocess_guard_coverage.py",
-        "tests/tools/test_verified_subset.py",
-    }
+    _assert_covered(
+        cfg,
+        paths,
+        {
+            "tests/tools/test_import_file.py",
+            "tests/test_generator_manifest.py",
+            "tests/test_structural_audit.py",
+            "tests/tools/test_structural_audit_records.py",
+            # tools/structural_audit.py is a parser producer for these consumers.
+            "tests/test_rust_source_scan.py",
+            "tests/tools/test_gen_luau_support_matrix.py",
+            # Tests that import the audits or read the design document.
+            POLICY_ORACLE,
+            "tests/test_dx_run_context.py",
+            "tests/test_agent_coordination.py",
+            "tests/test_check_docs_architecture.py",
+            "tests/test_executable_test_support.py",
+            "tests/test_memory_guard_wiring.py",
+            "tests/test_proof_plan.py",
+            "tests/tools/test_check_memory_guard_wiring.py",
+            "tests/tools/test_dev_py.py",
+            "tests/tools/test_phase_exit_manifest.py",
+            "tests/tools/test_release_criterion_receipt.py",
+            "tests/tools/test_release_exit_gate.py",
+            "tests/tools/test_subprocess_guard_coverage.py",
+            "tests/tools/test_verified_subset.py",
+        },
+    )
     gates, _ = cfg.select(paths)
     # Narrowing the consumer run must retain every independent always gate.
     assert {gate.command for gate in gates} >= set(cfg.always)
@@ -256,9 +289,15 @@ def test_portability_cells_of_another_os_defer_to_their_own_cell(
     assert "windows-x86_64-py312-queue-portability" in foreign
     # Host-agnostic cells are never foreign, whatever OS they name.
     assert "linux-x86_64-py312-unit-collection" not in foreign
-    selected = _selected_pytest_targets(cfg, ["tools/check_memory_guard_wiring.py"])
-    assert COMPLETION_NODE in selected
-    gates, _ = cfg.select(["tools/check_memory_guard_wiring.py"])
+    # The completion node's file reads the audit as data: postsubmit runs the
+    # whole file; presubmit runs it only as a recent postsubmit failure, which
+    # keeps this foreign-cell deferral in presubmit.
+    assert COMPLETION_NODE.partition("::")[0] in _postsubmit_only(
+        cfg, ["tools/check_memory_guard_wiring.py"]
+    )
+    gates, _ = cfg.select(
+        ["tools/check_memory_guard_wiring.py"], recent_failures=[COMPLETION_NODE]
+    )
     completion = next(gate for gate in gates if COMPLETION_NODE in gate.command)
     assert completion.cells == ("linux-x86_64-py312-queue-portability",)
     if not local:
@@ -335,14 +374,18 @@ def test_portability_cells_of_another_os_defer_to_their_own_cell(
 )
 def test_scanner_leaf_source_and_test_select_their_owner(source, owner, readers):
     cfg = GateConfig.load(COMMITTED_GATES)
-    # A source edit selects its owner and every test that reads it; a test
+    # A source edit covers its owner and every test that reads it; a test
     # edit selects only itself (and the host-entrypoint import check).
-    assert _selected_pytest_targets(cfg, [source]) == {
-        "tests/tools/test_import_file.py",
-        owner,
-        POLICY_ORACLE,
-        *readers,
-    }
+    _assert_covered(
+        cfg,
+        [source],
+        {
+            "tests/tools/test_import_file.py",
+            owner,
+            POLICY_ORACLE,
+            *readers,
+        },
+    )
     assert _selected_pytest_targets(cfg, [owner]) == {
         "tests/tools/test_import_file.py",
         owner,
@@ -365,13 +408,12 @@ def test_guard_wiring_audit_changes_select_their_direct_consumers():
         "tests/tools/test_check_memory_guard_wiring.py",
         "tests/test_memory_guard_wiring.py::test_minimal_guard_environment_audit_has_teeth",
     }
-    assert (
-        _selected_pytest_targets(cfg, ["tests/tools/test_check_memory_guard_wiring.py"])
-        == direct
-    )
+    _assert_covered(cfg, ["tests/tools/test_check_memory_guard_wiring.py"], direct)
     # The audit's importers read it as well.
-    assert _selected_pytest_targets(cfg, ["tools/check_memory_guard_wiring.py"]) == (
-        direct | _GUARD_AUDIT_READERS | {POLICY_ORACLE}
+    _assert_covered(
+        cfg,
+        ["tools/check_memory_guard_wiring.py"],
+        direct | _GUARD_AUDIT_READERS | {POLICY_ORACLE},
     )
 
 
@@ -888,6 +930,14 @@ def test_committed_facts_policy_excludes_compiler_codegen(path):
 
 def test_committed_source_checks_precede_complete_native_build_selection():
     cfg = GateConfig.load(COMMITTED_GATES)
+    # Presubmit orders admitted backend owners. The public release authority
+    # excludes experimental Luau; its scheduled coverage is a separate cell.
+    matrix = tomllib.loads(
+        (REPO_ROOT / "config" / "release_acceptance_matrix.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "luau" in {row["backend"] for row in matrix["excluded_backend"]}
     gates, matched = cfg.select(
         [
             "runtime/molt-backend-native/src/native_backend/simple_backend/config.rs",
@@ -910,10 +960,11 @@ def test_committed_source_checks_precede_complete_native_build_selection():
         "committed-gate-policy",
         "ci-wiring",
     }
+    # Experimental backends (Luau) run in no presubmit or postsubmit cell
+    # (owner 2026-11-05; config/release_acceptance_matrix.toml).
     build_names = [
         "backend-native",
         "native-object-emission",
-        "backend-luau",
         "tir-midend",
         "pending-call-source-authority",
     ]
@@ -962,7 +1013,6 @@ def test_committed_gate_manifest_selects_molt_ir_op_kind_registry():
         "op-kind-registry",
         "rust-clippy-changed",
         "rust-test-changed",
-        "backend-luau",
         "tir-midend",
         "pending-call-source-authority",
     ]
@@ -1016,13 +1066,14 @@ def test_codec_table_inputs_select_their_generator_oracle(path):
     assert ("rust-clippy-changed" in {r.name for r in matched}) == path.endswith(".rs")
     assert gates.count("python tools/generators.py check") == 1
     assert "python tools/gen_codecs.py --check" not in gates
-    assert (
-        sum(
-            isinstance(gate, tuple) and "tests/test_gen_codecs.py" in gate
-            for gate in gates
-        )
-        == 1
+    # Selected exactly once: in presubmit when it imports the change (the
+    # generator), in postsubmit when it reads the change as data (owner
+    # 2026-11-06, importers only).
+    ran = sum(
+        isinstance(gate, tuple) and "tests/test_gen_codecs.py" in gate for gate in gates
     )
+    left = "tests/test_gen_codecs.py" in _postsubmit_only(cfg, [path])
+    assert (ran, left) == ((1, False) if path == "tools/gen_codecs.py" else (0, True))
 
 
 def test_committed_gate_manifest_selects_wasm_host_ratchet():

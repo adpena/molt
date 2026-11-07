@@ -650,9 +650,8 @@ def _reference_coordinates(
     )
     if pins is None:
         pins = load_cpython_sources(root / CPYTHON_SOURCES.relative_to(_REPO_ROOT))
-    for version in TARGETS:
-        if pins[version].tag != "v" + references[version]:
-            raise ValueError(f"CPython {version} reference and source pin disagree")
+    # References derive from each pin's patchlevel.h, and the release
+    # generator refuses a tag that disagrees with it: no copy to compare here.
     coordinates: dict[tuple[str, str], str | None] = {
         (
             references[version] if path == "Objects/memoryobject.c" else version + ".0",

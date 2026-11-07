@@ -181,11 +181,16 @@ execution until the owner has qualified ten green farm landings; no automatic
 promotion or second landing counter is introduced. Queue records, locking,
 candidate construction, merge, push and lane retirement stay with the Mac.
 
-The Mac serializes the selected `SelectedGate` values and their toolchain union.
-The trunk runner transfers the exact commit, then the Linux worker prepares
-those gates through the normal `GateConfig` and `run_selected_gates` authorities.
-A missing remote prerequisite refuses the run; it cannot silently drop a gate
-or retry it locally. The worker has no publication operation. The collected
+The Mac routes each selected try-run gate by its proof cells, as an execution
+platform routes an action (Bazel execution platforms): a gate bound only to
+portability cells of another OS than the farm host's (`GateConfig.foreign_cells`
+for the host's `os` in `tools/cross_hosts.toml`, the rule the host's own
+admission applies) runs on the Mac after the farm's share; every other gate goes
+to the farm. The Mac serializes the farm's `SelectedGate` values and their
+toolchain union. The trunk runner transfers the exact commit, then the Linux
+worker prepares those gates through the normal `GateConfig` and
+`run_selected_gates` authorities. A missing remote prerequisite of a routed gate
+still refuses the run; it cannot silently drop a gate or retry it locally. The worker has no publication operation. The collected
 receipt binds the commit, tree, clean state, exact request digest, admitted
 toolchains and all selected outcomes. The Mac verifies that binding and checks
 its own source again before its existing push boundary. Candidate failures stay

@@ -489,6 +489,25 @@ class ToolchainPolicy:
         return str(self.data.get("executable") or self.name)
 
 
+_EXACT_VERSION = re.compile(r"\d+\.\d+\.\d+")
+
+
+def pinned_version_file(root: Path, name: str, relative: str) -> str:
+    """The exact X.Y.Z a policy's ``version_file`` pins (`.python-version`)."""
+    path = root / relative
+    try:
+        version = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ValueError(
+            f"{name}: version_file {relative} is unreadable: {exc}"
+        ) from exc
+    if not _EXACT_VERSION.fullmatch(version):
+        raise ValueError(
+            f"{name}: version_file {relative} must hold one X.Y.Z version, not {version!r}"
+        )
+    return version
+
+
 def _selected_target_python_versions(root: Path) -> tuple[str, ...]:
     """Query the selected source authority without rebinding driver imports."""
     source = root / "src/molt/target_python_policy.py"
@@ -576,6 +595,24 @@ def load_toolchain_policies(
         name = str(row.get("name", ""))
         if row.get("executable") == "{python}":
             row["python_identity_role"] = "environment"
+        if "version_file" in row:
+            # One authority: the policy derives its contract from the pin file
+            # and never restates it (docs/design/python_version_authority.md).
+            restated = {"version_pattern", "setup_value"} & row.keys()
+            if restated:
+                raise ValueError(
+                    f"{name}: version_file derives {sorted(restated)}; remove them"
+                )
+            relative = str(row.pop("version_file"))
+            version = pinned_version_file(root, name, relative)
+            row.update(
+                version_pattern=rf"^Python {re.escape(version)}$",
+                setup_value=version,
+                setup_evidence=[
+                    f"{relative}::{version}",
+                    *row.get("setup_evidence", []),
+                ],
+            )
         if row.get("python_versions") == "supported-targets":
             row["members"] = []
             for version in _selected_target_python_versions(root):
@@ -4379,35 +4416,44 @@ def _runtime_command(
     return command
 
 
-def _provision_runtime_tools(
+def _provision_tool_releases(
     policies: Iterable[ToolchainPolicy],
     names: tuple[str, ...],
     *,
     root: Path,
     environment: Mapping[str, str],
 ) -> str | None:
-    """Provision each selected runtime tool release (npm) before admission.
+    """Provision each selected pinned tool release before admission.
 
-    It runs on its pinned runtime through ``molt.tool_releases``, which
-    provisions it on use, so admission provisions it too, as it provisions
-    a checkout input from its lock, instead of refusing until a person does.
+    Admission is an explicit provisioning point, as it provisions a checkout
+    input from its lock: a moved pin in config/tool_releases.toml reaches every
+    host that runs a gate selecting the tool, instead of refusing until a
+    person provisions it (landing 25, 2026-11-07: wasm-tools 1.263.0).
     """
-    from molt.tool_releases import ToolReleaseError
+    from molt.tool_releases import (
+        ToolReleaseError,
+        discover_pinned_tool,
+        pinned_command,
+    )
 
     selected = set(names)
     errors = []
     for policy in policies:
-        if policy.name in selected and policy.projection == "runtime-tool-release":
-            try:
-                _runtime_command(
-                    str(policy.data["executable"]),
-                    root,
-                    environment,
-                    root,
-                    provision=True,
-                )
-            except ToolReleaseError as exc:
-                errors.append(f"{policy.name}: {exc}")
+        if policy.name not in selected or policy.projection not in RELEASE_PROJECTIONS:
+            continue
+        tool = str(policy.data["executable"])
+        try:
+            if policy.projection == "runtime-tool-release":
+                # Cached: projection reuses the provisioned command.
+                _runtime_command(tool, root, environment, root, provision=True)
+            elif (
+                discover_pinned_tool(tool, root, environ=environment, cwd=None) is None
+            ):
+                # The warm path is the discovery projection repeats; only an
+                # absent release reads the manifest and provisions.
+                pinned_command(tool, root, environ=environment, provision=True)
+        except ToolReleaseError as exc:
+            errors.append(f"{policy.name}: {exc}")
     return "; ".join(errors) or None
 
 
@@ -4836,11 +4882,11 @@ def admit_toolchains(
     is not installed; a refusal names what to install. A selected tool that a
     checkout input supplies (``checkout_input``) is provisioned from its lock
     first, as ``uv run`` syncs before it runs (`molt.checkout_provisioning`),
-    and a selected runtime tool release (npm) is provisioned the same way.
+    and a selected pinned tool release (node, npm) is provisioned the same way.
     """
     policies = tuple(policies)
     names = toolchain_closure(policies, names)
-    runtime_error = _provision_runtime_tools(
+    release_error = _provision_tool_releases(
         policies, names, root=root, environment=environ
     )
     projection = project_toolchains(policies, names, environ=environ, root=root)
@@ -4848,9 +4894,9 @@ def admit_toolchains(
     provisioning_error = _provision_checkout_inputs(
         policies, names, root=root, environment=environment
     )
-    if runtime_error is not None:
+    if release_error is not None:
         provisioning_error = "; ".join(
-            error for error in (runtime_error, provisioning_error) if error
+            error for error in (release_error, provisioning_error) if error
         )
     absent: tuple[str, ...] = ()
     try:

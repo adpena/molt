@@ -28,6 +28,8 @@ cohorts stay with the batch.
 
 from __future__ import annotations
 
+import json
+import os
 import time
 from dataclasses import dataclass
 from enum import StrEnum
@@ -259,6 +261,10 @@ class TryRunRefusal:
     reason: RefusalReason
     gates: tuple[SelectedGate, ...]
     detail: str
+    # The refused gates as a landing executor record (tools/trunk_landing.py
+    # --record): a rerun prepares each gate's interpreter and toolchains
+    # exactly as the landing does, so no caller names an interpreter.
+    record: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -287,6 +293,8 @@ class PrecheckResult:
     seconds: tuple[tuple[str, float], ...] = ()
     # Selected gates the precheck does not run: the queue batch's.
     waived: tuple[SelectedGate, ...] = ()
+    # Data readers of the change that presubmit leaves to postsubmit.
+    postsubmit_only: tuple[str, ...] = ()
 
     @property
     def complete(self) -> bool:
@@ -300,7 +308,28 @@ class PrecheckResult:
             f"{len(self.refusal.gates)} gate(s) that were still running or not yet "
             "started, and the queue's batch runs them:\n"
             + "\n".join(f"      {display(gate.command)}" for gate in self.refusal.gates)
+            + (
+                ""
+                if self.refusal.record is None
+                else "\n    rerun them on this commit with the landing executor:\n"
+                f"      uv run --python 3.12 python tools/trunk_landing.py --record "
+                f"{self.refusal.record} --output {self.refusal.record.parent / 'rerun'}"
+            )
         )
+
+
+def _write_refused_record(
+    git, repo: Path, head: str, refused: tuple[SelectedGate, ...], output: Path
+) -> Path:
+    """Write ``refused`` as a landing executor record beside the try run's logs."""
+    from tools.trunk_landing import landing_request
+
+    record = output / "refused-gates.json"
+    request = landing_request(head, git.rev_parse(f"{head}^{{tree}}"), refused)
+    payload = {"landing": request, "checkout": str(repo)}
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return record
 
 
 def precheck_landing(
@@ -332,13 +361,18 @@ def precheck_landing(
 
     budget = budget or molt_dev_policy.PRECHECK_BUDGET
     base = merge_base(head, upstream, run_git=lambda args: git._run(args).stdout)
-    policy, config, _touched, gates, _matched = select_landing_gates(
+    recent = recent_postsubmit_failures(queue_paths(repo))
+    policy, config, touched, gates, _matched = select_landing_gates(
         git,
         repo,
         head,
         base,
         extra=[],
-        recent_failures=recent_postsubmit_failures(queue_paths(repo)),
+        recent_failures=recent,
+    )
+    # The same selection object that chose the gates (GateConfig memoizes it).
+    postsubmit_only = molt_dev_policy.left_to_postsubmit(
+        config.graph_selection(touched, recent_failures=recent), gates
     )
     selected = [
         gate for gate in gates if gate.precheck and (gate.static or not static_only)
@@ -354,7 +388,9 @@ def precheck_landing(
         "the queue's batch runs every gate)"
     )
     if not selected:
-        return PrecheckResult((), None, budget, waived=waived)
+        return PrecheckResult(
+            (), None, budget, waived=waived, postsubmit_only=postsubmit_only
+        )
     drv._assert_integration_source(git, head)
     prepared = config.prepare(
         selected,
@@ -404,8 +440,51 @@ def precheck_landing(
     if not trial:
         _say(gate_time_summary(gate_seconds))
         return PrecheckResult(
-            passed, None, budget, tuple(runs), seconds(), waived=waived
+            passed,
+            None,
+            budget,
+            tuple(runs),
+            seconds(),
+            waived=waived,
+            postsubmit_only=postsubmit_only,
         )
+    from tools.trunk_landing import HOST_SETTING
+
+    farm_host = os.environ.get(HOST_SETTING, "").strip()
+    if farm_host:
+        # The farm host runs every try-run gate its OS can admit on the exact
+        # commit and returns its gate logs in the same layout. A gate bound only
+        # to this host's portability cells (a Mac cell) runs here after it, as
+        # an execution platform routes each action (Bazel). Merge, receipt and
+        # push stay here (docs/design/trunk_loop.md, "Opt-in remote landing
+        # gates").
+        from tools.trunk_landing import host_os, run_remote
+
+        farm_foreign = config.foreign_cells(host_os(repo, farm_host))
+        remote = [gate for gate in trial if config.runs_on(gate, farm_foreign)]
+        trial = [gate for gate in trial if gate not in remote]
+        if remote:
+            drv._assert_integration_source(git, head)
+            remote_seconds, remote_logs = run_remote(repo, head, remote, host=farm_host)
+            gate_seconds.extend(remote_seconds)
+            runs.append(GateRun("try-run", remote_logs, tuple(remote)))
+            passed = (*passed, *remote)
+        if trial:
+            _say(
+                f"    {len(trial)} gate(s) bound to this host's cells run here: "
+                + ", ".join(display(gate.command) for gate in trial)
+            )
+        else:
+            _say(gate_time_summary(gate_seconds))
+            return PrecheckResult(
+                passed,
+                None,
+                budget,
+                tuple(runs),
+                seconds(),
+                waived=waived,
+                postsubmit_only=postsubmit_only,
+            )
     from molt.disk_capacity import DiskCapacityError
 
     # Only the capacity verdict is a refusal; any other fault stays a fault.
@@ -420,6 +499,7 @@ def precheck_landing(
             tuple(runs),
             seconds(),
             waived=waived,
+            postsubmit_only=postsubmit_only,
         )
         _warn(result.report())
         return result
@@ -455,6 +535,9 @@ def precheck_landing(
                     f"; guard closure unresolved for {item}"
                     for item in cancellation.unresolved
                 ),
+                record=_write_refused_record(
+                    git, repo, head, refused, tried_runtime.output_dir
+                ),
             )
     _say(gate_time_summary(gate_seconds))
     runs.append(GateRun("try-run", tried_runtime.output_dir, tuple(trial)))
@@ -465,6 +548,7 @@ def precheck_landing(
         tuple(runs),
         seconds(),
         waived=waived,
+        postsubmit_only=postsubmit_only,
     )
     if refusal is not None:
         _warn(result.report())

@@ -881,8 +881,11 @@ def test_native_globals_key_protocol_matches_actual_cpython_imports(
     assert (leaf in imports) is bool(observed)
 
 
-def closed_source_imports(paths, *, protocol_modules=None):
-    """Run the real source worklist with a premise derived from fixture sources."""
+def closed_source_imports(paths, *, protocol_modules=None, scanned=None):
+    """Run the real source worklist with a premise derived from fixture sources.
+
+    ``scanned`` collects every body job (module, owner, arguments) it ran.
+    """
     from molt.compiler_analysis.python_imports import _ImportScanRequests
     from molt.compiler_analysis.python_namespace_graph import (
         graph_python_namespace_writes,
@@ -937,7 +940,10 @@ def closed_source_imports(paths, *, protocol_modules=None):
         engine.drain()
         if not bodies:
             return imports
-        scan(*bodies.pop())
+        job = bodies.pop()
+        if scanned is not None:
+            scanned.append(job)
+        scan(*job)
 
 
 @pytest.mark.parametrize(
@@ -3160,4 +3166,204 @@ def test_retained_descriptor_source_element_survives_cold_and_warm_scan(
     )
     warm = load(source, namespace_premise=premise)
     assert warm.cache_hit
+    assert warm.scan.source_values == cold.scan.source_values
+
+
+_CLASSED_HOOK = (
+    "import importlib\n"
+    "def __getattr__(name):\n"
+    "    if name == 'tasks':\n        import tasks_leaf as mod\n"
+    "    elif name in ('futures', 'events'):\n"
+    "        mod = importlib.import_module(name + '_leaf')\n"
+    "    else:\n"
+    "        raise AttributeError(f'module has no attribute {name!r}')\n"
+    "    globals()[name] = mod\n"
+    "    return importlib.import_module(name)\n"
+)
+_UNCLASSED_HOOK = (
+    "import importlib\n"
+    "def __getattr__(name):\n"
+    "    name += '_impl'\n"
+    "    if name == 'log_impl':\n        return importlib.import_module(name)\n"
+    "    raise AttributeError(f'{name}')\n"
+)
+
+# A positive test without a terminal else hides nothing: every argument reaches
+# the import below it, so no class may collapse them.
+_UNTERMINATED_HOOK = (
+    "import importlib\n"
+    "def __getattr__(name):\n"
+    "    if name == 'x':\n        pass\n"
+    "    return importlib.import_module(name)\n"
+)
+
+
+@pytest.mark.parametrize(
+    "text, literal_class, outside, inside",
+    [
+        (
+            _CLASSED_HOOK,
+            frozenset({"tasks", "futures", "events"}),
+            ("alpha", "beta", "tasks_"),
+            ("tasks", "events"),
+        ),
+        (_UNCLASSED_HOOK, None, ("alpha",), ("log",)),
+        (_UNTERMINATED_HOOK, None, ("alpha",), ("log",)),
+    ],
+    ids=["classed", "augmented", "unterminated"],
+)
+def test_argument_class_representative_scans_like_every_member(
+    tmp_path, text, literal_class, outside, inside
+):
+    """Oracle for python_parameter_classes: the whole body scan of the class
+    representative equals the exact scan of every argument outside the
+    literal set. A refused parameter shows why: its exact scans differ."""
+    from molt.compiler_analysis.python_parameter_classes import UNMATCHED_ARGUMENT
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    source = write(tmp_path / "hooked.py", text)
+    hook = python_node_source_key(ast.parse(text).body[-1])
+    (parameters,) = [
+        item
+        for item in load(
+            source, import_scan_mode="module_init"
+        ).scan.source_values.parameters
+        if item.owner == hook
+    ]
+    assert parameters.literal_classes == (literal_class,)
+
+    def record(argument: str):
+        return load(
+            source,
+            import_scan_mode="module_init",
+            source_owner=hook,
+            source_arguments=(argument,),
+        )
+
+    def scan(argument: str):
+        return record(argument).scan
+
+    representative = scan(UNMATCHED_ARGUMENT)
+    # The sentinel is not an identifier; persisted records keep it exactly.
+    warm = record(UNMATCHED_ARGUMENT)
+    assert warm.cache_hit and warm.scan == representative
+    exact = {argument: scan(argument) for argument in (*outside, *inside)}
+    if literal_class is None:
+        assert exact["log"] != representative
+        return
+    assert all(exact[argument] == representative for argument in outside)
+    for argument in inside:
+        assert exact[argument] != representative
+        assert any(argument in name for name in exact[argument].imports)
+
+
+def test_member_reads_share_one_hook_scan_per_argument_class(tmp_path):
+    """Four named reads of a PEP 562 module cost two body scans: one for the
+    literal read and one for every other name (exact arguments cost four).
+    The argument-free scan is the hook's unknown-name activation, present
+    either way. The closure keeps the literal branch's import only."""
+    from molt.compiler_analysis.python_parameter_classes import UNMATCHED_ARGUMENT
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    paths = {
+        "hooked": write(tmp_path / "hooked.py", _CLASSED_HOOK),
+        "entry": write(
+            tmp_path / "entry.py",
+            "import hooked\nprint(hooked.alpha, hooked.beta, hooked.gamma, hooked.tasks)\n",
+        ),
+        "tasks_leaf": write(tmp_path / "tasks_leaf.py"),
+        "futures_leaf": write(tmp_path / "futures_leaf.py"),
+    }
+    hook = python_node_source_key(ast.parse(_CLASSED_HOOK).body[-1])
+    scanned = []
+    imports = closed_source_imports(paths, scanned=scanned)
+    hook_jobs = sorted(
+        arguments for module, owner, arguments in scanned if owner == hook
+    )
+    assert hook_jobs == [(), (UNMATCHED_ARGUMENT,), ("tasks",)]
+    assert "tasks_leaf" in imports
+    assert "futures_leaf" not in imports
+
+
+def test_changed_literal_class_remaps_collapsed_activations(tmp_path):
+    """A rescan under a new premise can shrink a literal class (a raised
+    builtin loses its proof). Activations collapsed under the old class must
+    then scan exactly; the solver keeps each original argument tuple."""
+    from molt.compiler_analysis.python_imports import _ImportScanRequests
+    from molt.compiler_analysis.python_namespace_graph import (
+        graph_python_namespace_writes,
+    )
+    from molt.compiler_analysis.python_parameter_classes import UNMATCHED_ARGUMENT
+    from molt.compiler_analysis.python_source_demands import PythonSourceDemands
+    from molt.compiler_analysis.python_source_keys import (
+        _PythonAstDigestAdmission,
+        python_node_source_key,
+    )
+
+    text = "def hook(name):\n    if name == 'a':\n        return 1\n    raise AttributeError(f'{name}')\n"
+    path = write(tmp_path / "hooked.py", text)
+    tree = ast.parse(text)
+    hook = python_node_source_key(tree.body[0])
+    writes = graph_python_namespace_writes((), {"hooked": path}.get)
+    projection = _source_import_scan._collect_imports_for_graph(
+        tree,
+        "hooked",
+        import_scan_mode="module_init",
+        namespace_premise=writes.premise(path, frozenset()),
+        ast_digest_admission=_PythonAstDigestAdmission.for_tree(tree),
+    )
+    scan = _ImportScanRequests((), ())._replace(**projection._asdict())
+    (parameters,) = scan.source_values.parameters
+    assert parameters.literal_classes == (frozenset({"a"}),)
+    bodies = []
+    engine = PythonSourceDemands(
+        require_runtime_import_protocol=lambda _module: None,
+        admit_imports=lambda *_: None,
+        queue_body=lambda *job: bodies.append(job),
+    )
+    engine.accept("hooked", scan)
+    for argument in ("x", "y", "a"):
+        engine.demand(("hooked", hook), "call", (argument,))
+    engine.drain()
+    assert sorted(bodies) == [
+        ("hooked", hook, (UNMATCHED_ARGUMENT,)),
+        ("hooked", hook, ("a",)),
+    ]
+    shrunk = scan._replace(
+        source_values=scan.source_values._replace(
+            parameters=(parameters._replace(literal_classes=(None,)),)
+        )
+    )
+    engine.accept("hooked", shrunk)
+    engine.drain()
+    assert sorted(arguments for _, _, arguments in bodies) == [
+        (UNMATCHED_ARGUMENT,),
+        ("a",),
+        ("x",),
+        ("y",),
+    ]
+
+
+@pytest.mark.parametrize("corruption", [None, "length", "unsorted", "type"])
+def test_persisted_literal_classes_round_trip_or_regenerate(tmp_path, corruption):
+    source = write(tmp_path / "hooked.py", _CLASSED_HOOK)
+    cold = load(source)
+    classes = [item.literal_classes for item in cold.scan.source_values.parameters]
+    assert (frozenset({"tasks", "futures", "events"}),) in classes
+    if corruption is not None:
+        key = records._import_scan_cache_key(
+            source, module_name="entry", is_package=False, import_scan_mode="full"
+        )
+        payload = source_records("import-scan")[key]
+        row = next(
+            row for row in payload["source_values"]["parameters"] if row[5] != [None]
+        )
+        row[5] = {
+            "length": row[5] + [None],
+            "unsorted": [sorted(row[5][0], reverse=True)],
+            "type": [[1]],
+        }[corruption]
+        replace_source_record("import-scan", key, payload)
+    warm = load(source)
+    assert warm.cache_hit is (corruption is None)
     assert warm.scan.source_values == cold.scan.source_values

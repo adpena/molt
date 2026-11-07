@@ -252,13 +252,21 @@ def consumer_command_roles(
 def consumer_python_policy(
     path: Path | None = None,
 ) -> tuple[tuple[tuple[str, str], ...], str]:
-    """Project installed Python coordinates from the source-bound E3 authority."""
+    """Project installed Python coordinates from the source-bound E3 authority.
+
+    The fingerprint binds the policy file and the coordinates themselves: the
+    reference patches derive from the pinned source releases, not from the
+    policy file, so a patch move must change it too.
+    """
     policy, identity = capture_verified_subset_policy(
         ROOT / "config/verified_subset.toml" if path is None else path
     )
-    return tuple(
+    coordinates = tuple(
         zip(policy.python_versions, policy.reference_cpython, strict=True)
-    ), identity.sha256
+    )
+    return coordinates, canonical_json_sha256(
+        {"policy_sha256": identity.sha256, "coordinates": coordinates}
+    )
 
 
 def _git(*args: str) -> str:

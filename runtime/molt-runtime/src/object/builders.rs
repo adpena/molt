@@ -2389,6 +2389,22 @@ pub(crate) fn alloc_string(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
     ptr
 }
 
+/// Allocate a string as CPython's non-interned constructors do
+/// (`PyUnicode_DecodeUTF8`, `PyUnicode_FromKindAndData`): a fresh object,
+/// except the statically interned singletons, the empty string and the
+/// one-character strings (Molt's table holds the ASCII ones). Unlike
+/// `alloc_string` it never auto-interns an identifier-like string, so a
+/// decoded value keeps CPython's interned state (marshal's non-interned tags).
+pub(crate) fn alloc_string_uninterned(_py: &PyToken<'_>, bytes: &[u8]) -> *mut u8 {
+    if bytes.is_empty() {
+        return alloc_string(_py, bytes);
+    }
+    if let Some(ptr) = try_intern_ascii_char(_py, bytes) {
+        return ptr;
+    }
+    alloc_string_nointern(_py, bytes)
+}
+
 /// Allocate a string without any interning/caching lookups.
 ///
 /// This is the fast path for string method results (upper, lower, strip, etc.)

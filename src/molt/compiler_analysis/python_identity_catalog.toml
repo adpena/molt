@@ -482,6 +482,10 @@ identity = "BUILTIN_BUILD_CLASS"
 guard = "BUILTINS_BUILD_CLASS"
 shape = false
 
+# [[builtin]] rows: name, identity, guard, shape; optional return_capture and
+# role. role = "caller_frame" marks a builtin that reads the calling frame's
+# local bindings. The exception_class role is derived from
+# runtime/exception_kinds.toml and is never declared here.
 [[builtin]]
 name = "__import__"
 identity = "BUILTINS_IMPORT"
@@ -499,12 +503,14 @@ name = "locals"
 identity = "BUILTIN_LOCALS"
 guard = "BUILTINS_LOCALS"
 shape = false
+role = "caller_frame"
 
 [[builtin]]
 name = "vars"
 identity = "BUILTIN_VARS"
 guard = "BUILTINS_VARS"
 shape = false
+role = "caller_frame"
 
 [[builtin]]
 name = "setattr"
@@ -535,12 +541,14 @@ name = "eval"
 identity = "BUILTIN_EVAL"
 guard = "BUILTINS_EVAL"
 shape = false
+role = "caller_frame"
 
 [[builtin]]
 name = "exec"
 identity = "BUILTIN_EXEC"
 guard = "BUILTINS_EXEC"
 shape = false
+role = "caller_frame"
 
 [[builtin]]
 name = "bool"
@@ -1078,6 +1086,7 @@ name = "super"
 identity = "BUILTIN_SUPER"
 guard = "BUILTINS_SUPER"
 shape = false
+role = "caller_frame"
 
 [[builtin]]
 name = "type"

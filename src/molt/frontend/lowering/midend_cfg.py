@@ -109,7 +109,6 @@ class MidendCFGMixin(GeneratorMixinBase):
                 if label is not None and op.kind in {
                     FrontendKinds.TRY_END,
                     FrontendKinds.EXCEPTION_POP,
-                    FrontendKinds.EXCEPTION_REGION_DROPS_INSERTED,
                 }:
                     protected.add(label)
         finish_label()

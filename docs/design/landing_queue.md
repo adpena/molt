@@ -1125,12 +1125,23 @@ the change. A marshal change selects 90 files and runs one whole; the
 image-publishing provisioning cases now skip there and still run when
 `src/molt/checkout_provisioning.py` changes.
 
-**Limit.** Harness- and data-only readers still run their fast cases in
-presubmit, so a broad change can select hundreds of files. Deferring those
-files entirely would bring the p90 from 101 to 22 files, but it also drops
-presubmit tests of data authorities (for example the readers of
-`tools/proof_plan.toml`), so that step is an owner decision, not part of this
-change.
+**Importers only (owner decision, 2026-11-06).** Presubmit runs the changed
+tests and the tests that import or run a changed non-stdlib source
+(`DirectReaders.importers`). A test that reads a changed path as data, through
+a directory or by compiling a changed stdlib source is a data reader: presubmit
+leaves it to postsubmit, which selects it through the whole graph. Over 36 main
+commits this moves the p90 from 101 to 22 files (89 at most). Two exceptions
+keep a data reader in presubmit: a recent postsubmit failure, and a reader that
+a curated rule runs anyway. A data reader with no landing envelope (a build
+cell, or no cell) keeps its `deferred` entry, because postsubmit cannot run it
+either. The landing receipt names the readers left to postsubmit
+(`postsubmit_only`, part of `selection_sha256`); the commit message counts them.
+The trade-off is accepted: presubmit no longer runs data-authority readers (for
+example the readers of `tools/proof_plan.toml`); `tools/generators.py check`
+still runs as a static gate. Landing attempt 16 (a combined candidate) had
+selected about 1,000 files and stopped twice on host memory pressure. Postsubmit
+must still prove that every left reader ran before last-green moves (next
+step).
 
 ## Costs
 

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 import threading
 import time
@@ -28,9 +30,59 @@ CANDIDATE_SEAL_DIRECTORY = "candidate-seal"
 CANDIDATE_BUNDLE_DIRECTORY = "bundle"
 _TRANSACTION_RECORD_NAME = "candidate-transaction.json"
 _TRANSACTION_KIND = "molt-source-extension-candidate-transaction"
-_TRANSACTION_STATES = frozenset(
-    {"building", "prepared", "committed", "failed", "interrupted"}
-)
+
+
+class CandidateTransactionState(StrEnum):
+    """A candidate transaction journal's state (docs/design/state_machines.md)."""
+
+    BUILDING = "building"  # the producer holds the exclusive candidate lock
+    PREPARED = "prepared"  # bundle verified, digests recorded, not yet published
+    COMMITTED = "committed"  # published at the candidate output
+    FAILED = "failed"  # the producer reported a diagnostic
+    INTERRUPTED = "interrupted"  # found BUILDING after its producer lost the lock
+
+
+class CandidateTransactionEvent(StrEnum):
+    PREPARE = "prepare"
+    COMMIT = "commit"
+    FAIL = "fail"
+    INTERRUPT = "interrupt"
+
+
+# A failure reported after PREPARED keeps the state: the verified bundle still
+# commits on recovery, and the diagnostic is recorded beside it.
+CANDIDATE_TRANSITIONS: Mapping[
+    tuple[CandidateTransactionState, CandidateTransactionEvent],
+    CandidateTransactionState,
+] = {
+    (
+        CandidateTransactionState.BUILDING,
+        CandidateTransactionEvent.PREPARE,
+    ): CandidateTransactionState.PREPARED,
+    (
+        CandidateTransactionState.PREPARED,
+        CandidateTransactionEvent.COMMIT,
+    ): CandidateTransactionState.COMMITTED,
+    **{
+        (state, CandidateTransactionEvent.FAIL): CandidateTransactionState.FAILED
+        for state in (
+            CandidateTransactionState.BUILDING,
+            CandidateTransactionState.FAILED,
+            CandidateTransactionState.INTERRUPTED,
+        )
+    },
+    **{
+        (state, CandidateTransactionEvent.FAIL): state
+        for state in (
+            CandidateTransactionState.PREPARED,
+            CandidateTransactionState.COMMITTED,
+        )
+    },
+    (
+        CandidateTransactionState.BUILDING,
+        CandidateTransactionEvent.INTERRUPT,
+    ): CandidateTransactionState.INTERRUPTED,
+}
 _TRANSACTION_KEYS = frozenset(
     {
         "schema_version",
@@ -56,6 +108,17 @@ _SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
 class SourceExtensionCandidateTransactionError(ValueError):
     """Candidate transaction evidence is malformed or lacks lock custody."""
+
+
+def _transition(
+    state: CandidateTransactionState, event: CandidateTransactionEvent, where: Path
+) -> CandidateTransactionState:
+    try:
+        return CANDIDATE_TRANSITIONS[(state, event)]
+    except KeyError:
+        raise SourceExtensionCandidateTransactionError(
+            f"candidate transaction cannot {event} from {state}: {where}"
+        ) from None
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,7 +240,7 @@ def begin_source_extension_candidate_transaction(
         {
             "schema_version": 2,
             "kind": _TRANSACTION_KIND,
-            "state": "building",
+            "state": CandidateTransactionState.BUILDING,
             "candidate_output": str(custody.candidate_output),
             "package": package,
             "package_version": package_version,
@@ -221,7 +284,7 @@ def _load_record(
         or value.get("schema_version") != 2
         or value.get("kind") != _TRANSACTION_KIND
         or not isinstance(value.get("state"), str)
-        or value.get("state") not in _TRANSACTION_STATES
+        or value.get("state") not in set(CandidateTransactionState)
         or value.get("candidate_output") != str(custody.candidate_output)
         or type(value.get("created_at_ns")) is not int
         or type(value.get("updated_at_ns")) is not int
@@ -246,7 +309,11 @@ def _load_record(
         raise SourceExtensionCandidateTransactionError(
             f"candidate transaction journal has invalid values: {record_path}"
         )
-    prepared = value["state"] in {"prepared", "committed"}
+    value["state"] = CandidateTransactionState(value["state"])
+    prepared = value["state"] in {
+        CandidateTransactionState.PREPARED,
+        CandidateTransactionState.COMMITTED,
+    }
     for field in ("seal_sha256", "report_sha256"):
         digest = value[field]
         if (
@@ -271,8 +338,9 @@ def fail_source_extension_candidate_transaction(
         raise SourceExtensionCandidateTransactionError(
             "candidate failure requires a diagnostic"
         )
-    if record["state"] not in {"prepared", "committed"}:
-        record["state"] = "failed"
+    record["state"] = _transition(
+        record["state"], CandidateTransactionEvent.FAIL, transaction_root
+    )
     record["updated_at_ns"] = max(_timestamp(now_ns), record["updated_at_ns"])
     record["error"] = error
     _write_record(transaction_root, record)
@@ -316,7 +384,9 @@ def _commit_prepared(
         durable_publish_directory_exclusive(bundle, custody.candidate_output)
     else:
         _verify_bundle(custody.candidate_output, record)
-    record["state"] = "committed"
+    record["state"] = _transition(
+        record["state"], CandidateTransactionEvent.COMMIT, root
+    )
     record["updated_at_ns"] = max(time.time_ns(), record["updated_at_ns"])
     _write_record(root, record)
 
@@ -330,10 +400,7 @@ def commit_source_extension_candidate_transaction(
 ) -> None:
     root = _transaction_root(transaction_root, custody)
     record = _load_record(root, custody=custody)
-    if record["state"] != "building":
-        raise SourceExtensionCandidateTransactionError(
-            f"candidate transaction cannot prepare from {record['state']}: {root}"
-        )
+    prepared = _transition(record["state"], CandidateTransactionEvent.PREPARE, root)
     if any(
         not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None
         for value in (seal_sha256, report_sha256)
@@ -342,7 +409,7 @@ def commit_source_extension_candidate_transaction(
             "candidate commit requires exact seal and report digests"
         )
     record.update(
-        state="prepared",
+        state=prepared,
         seal_sha256=seal_sha256,
         report_sha256=report_sha256,
         updated_at_ns=max(time.time_ns(), record["updated_at_ns"]),
@@ -359,7 +426,7 @@ def complete_source_extension_candidate_transaction(
 ) -> None:
     root = _transaction_root(transaction_root, custody)
     record = _load_record(root, custody=custody)
-    if record["state"] != "committed":
+    if record["state"] is not CandidateTransactionState.COMMITTED:
         raise SourceExtensionCandidateTransactionError(
             f"candidate transaction is not committed: {root}"
         )
@@ -393,16 +460,18 @@ def recover_and_prune_source_extension_candidate_transactions(
         if not transaction_root.name.startswith(prefix):
             continue
         record = _load_record(transaction_root, custody=custody)
-        if record["state"] == "prepared":
+        if record["state"] is CandidateTransactionState.PREPARED:
             _commit_prepared(transaction_root, record, custody)
-        if record["state"] == "committed":
+        if record["state"] is CandidateTransactionState.COMMITTED:
             complete_source_extension_candidate_transaction(
                 transaction_root, custody=custody
             )
             pruned.append(transaction_root)
             continue
-        if record["state"] == "building":
-            record["state"] = "interrupted"
+        if record["state"] is CandidateTransactionState.BUILDING:
+            record["state"] = _transition(
+                record["state"], CandidateTransactionEvent.INTERRUPT, transaction_root
+            )
             record["updated_at_ns"] = max(timestamp, record["updated_at_ns"])
             record["error"] = (
                 "prior producer no longer owns the exclusive candidate lock"

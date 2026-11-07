@@ -3374,6 +3374,81 @@ def test_gate_block_blames_the_candidate_only_for_a_gate_exit(drv, tmp_path, cau
     assert ran == [("gate", "1")]
 
 
+@pytest.mark.parametrize("second_rc", [0, 3])
+def test_heavy_gates_rerun_once_one_at_a_time_after_a_failure(drv, tmp_path, second_rc):
+    # A heavy gate that fails beside others and passes alone failed on load or
+    # a flake, not on the candidate; a gate that fails twice is the candidate's.
+    attempts: dict[str, int] = {}
+    said: list[str] = []
+
+    def run_captured_gate(command, repo, environment, cancelled, streams=None):
+        key = next(part for part in command if str(part).startswith("tests/"))
+        attempts[key] = attempts.get(key, 0) + 1
+        # The real boundary: memory_guard.run_guarded creates each stream
+        # exclusively, so a rerun that reuses a path fails (FileExistsError).
+        assert streams is not None
+        for path in streams:
+            path.open("x").close()
+        if key == "tests/test_gate_1.py":
+            return _gate_outcome(3 if attempts[key] == 1 else second_rc, "", "", None)
+        return _gate_outcome(0, "", "", None)
+
+    class Progress:
+        def emit(self, event, **details):
+            pass
+
+    environment = ProcessEnvironment(os.environ)
+    runtime = molt_dev_gates.GateRuntime(
+        repo=tmp_path,
+        environments={("python",): GateEnvironment(environment, None, False)},
+        cargo_outputs={},
+        capacity_requirements={},
+        progress=Progress(),
+        check_source=lambda: None,
+        source_changes=lambda: (),
+        source_identity=lambda: {"commit": "0" * 40, "tree": "1" * 40},
+        policy_text="",
+        executor_max_workers=None,
+        resource_limits={},
+        toolchains={},
+        receipt_path=tmp_path / "receipt.json",
+        output_dir=tmp_path / "receipt.d" / "run",
+        run_captured_gate=run_captured_gate,
+        observe_capacity=lambda *args, **kwargs: (),
+        say=said.append,
+        ok=lambda message: None,
+    )
+    gates = [
+        SelectedGate(
+            command=("python", "-m", "pytest", "-q", f"tests/test_gate_{index}.py"),
+            toolchains=("python",),
+            pytest=True,
+        )
+        for index in (1, 2)
+    ]
+    if second_rc == 0:
+        molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 1)
+        assert any(line.startswith("    retry passed:") for line in said)
+        assert {gate.command[-1] for gate in runtime.passed} == {
+            "tests/test_gate_1.py",
+            "tests/test_gate_2.py",
+        }
+        # The receipt reads the passing run's log, not the failed attempt's.
+        retried = runtime.passed_logs[molt_dev_gates.display(gates[0].command)]
+        assert retried.parent == runtime.output_dir / "heavy-retry"
+        assert runtime.passed_logs[molt_dev_gates.display(gates[1].command)].parent in {
+            runtime.output_dir,
+            runtime.output_dir / "heavy-rest",
+        }
+    else:
+        with pytest.raises(GateFailure) as exc:
+            molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 1)
+        assert "gate failed (exit 3)" in str(exc.value)
+        assert any("first attempt" in note for note in exc.value.__notes__)
+    # The failing gate ran exactly twice; never a third time.
+    assert attempts["tests/test_gate_1.py"] == 2
+
+
 def test_gate_block_keeps_every_stream_and_shows_a_failure_briefly(
     drv, tmp_path, capsys
 ):
@@ -3760,10 +3835,16 @@ def _run_block_beside_cancelled_sibling(
     )
     outcomes = {("pytest", "first"): first, ("pytest", "sibling"): sibling}
 
+    concurrent_run: set[tuple[str, ...]] = set()
+
     def run(command, repo, environment, cancelled, streams=None):
         assert command[-2] == "-n" and int(command[-1]) > 0
         command = command[:-2]
-        entered.wait(timeout=30)
+        # The two gates meet only in the first, concurrent block; a retry runs
+        # each alone.
+        if command not in concurrent_run:
+            concurrent_run.add(command)
+            entered.wait(timeout=30)
         if command == ("pytest", "sibling"):
             assert events[command].wait(timeout=30), "executor did not cancel"
             assert cancelled()
@@ -6939,6 +7020,145 @@ def test_land_fast_merges_main_tests_the_merge_and_pushes_its_receipted_commit(
     )
 
 
+def test_land_fast_runs_its_try_run_on_the_farm_host_when_set(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    """MOLT_LANDING_GATE_HOST sends the try run to the farm; the static gates,
+    the merge, the receipt and the push stay on the Mac."""
+    from tools import landing_receipt, trunk_landing
+    from tools.molt_dev_gates import display
+
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    try_gate = f"echo try >> {shlex.quote(str(counter))}"
+    _publish_policy(work, _try_run_policy(counter, try_gate=try_gate))
+    lane = work.parent / "lane-farm"
+    _lane(work, "farm", {"a.py": "a = 1\n"})
+    monkeypatch.setenv(trunk_landing.HOST_SETTING, "molt-gate")
+    logs = tmp_path / "farm-logs"
+    logs.mkdir()
+    sent: list[tuple[str, ...]] = []
+
+    def remote(repo, commit, gates, *, host):
+        assert host == "molt-gate"
+        assert commit == _git(lane, "rev-parse", "HEAD").stdout.strip()
+        sent.extend(display(gate.command) for gate in gates)
+        (logs / "gate-001.stdout.log").write_text("ok\n", encoding="utf-8")
+        return [(2.5, display(gate.command)) for gate in gates], logs
+
+    monkeypatch.setattr(trunk_landing, "run_remote", remote)
+    monkeypatch.setattr(trunk_landing, "host_os", lambda repo, host: "linux")
+    base = _git(work, "rev-parse", "HEAD").stdout.strip()
+    assert _land_fast(drv, lane, "--subject", "Land the farm lane") == EXIT_OK
+
+    # Only the static gate ran here; the farm ran the try run.
+    assert counter.read_text(encoding="utf-8").split() == ["static"]
+    assert sent == [try_gate]
+    landed = _remote_main(work)
+    receipt = landing_receipt.read_receipt(
+        drv._git_common_directory(lane),
+        tree=_git(lane, "rev-parse", f"{landed}^{{tree}}").stdout.strip(),
+        base=base,
+    )
+    assert receipt is not None
+    assert [gate["phase"] for gate in receipt["gates"]] == ["static", "try-run"]
+
+
+def test_land_fast_runs_gates_bound_to_this_hosts_cells_here_not_on_the_farm(
+    drv, origin_and_clone, tmp_path, monkeypatch
+):
+    """A gate the farm's OS cannot admit (a Mac portability cell) runs on the
+    Mac after the farm's share; one refused gate no longer refuses the whole
+    remote run (2026-11-07, landing 43)."""
+    from tools import landing_receipt, trunk_landing
+    from tools.molt_dev_policy import GateConfig
+
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    try_gate = f"echo try >> {shlex.quote(str(counter))}"
+    _publish_policy(work, _try_run_policy(counter, try_gate=try_gate))
+    lane = work.parent / "lane-farm-split"
+    _lane(work, "farm-split", {"a.py": "a = 1\n"})
+    monkeypatch.setenv(trunk_landing.HOST_SETTING, "molt-gate")
+    sent: list[object] = []
+
+    def remote(repo, commit, gates, *, host):
+        sent.extend(gates)
+        raise AssertionError("no gate here is admissible on the farm")
+
+    monkeypatch.setattr(trunk_landing, "run_remote", remote)
+    # The farm's OS finds every try gate foreign (as for a Mac-cell gate); this
+    # host's own admission keeps the real rule.
+    farm_foreign = frozenset({"farm-foreign"})
+    real_foreign, real_runs_on = GateConfig.foreign_cells, GateConfig.runs_on
+    monkeypatch.setattr(trunk_landing, "host_os", lambda repo, host: "farm-os")
+    monkeypatch.setattr(
+        GateConfig,
+        "foreign_cells",
+        lambda self, host_os=None: (
+            farm_foreign if host_os == "farm-os" else real_foreign(self, host_os)
+        ),
+    )
+    monkeypatch.setattr(
+        GateConfig,
+        "runs_on",
+        staticmethod(
+            lambda gate, foreign: (
+                False if foreign == farm_foreign else real_runs_on(gate, foreign)
+            )
+        ),
+    )
+    base = _git(work, "rev-parse", "HEAD").stdout.strip()
+    assert _land_fast(drv, lane, "--subject", "Land the split lane") == EXIT_OK
+
+    assert sent == []
+    assert counter.read_text(encoding="utf-8").split() == ["static", "try"]
+    landed = _remote_main(work)
+    receipt = landing_receipt.read_receipt(
+        drv._git_common_directory(lane),
+        tree=_git(lane, "rev-parse", f"{landed}^{{tree}}").stdout.strip(),
+        base=base,
+    )
+    assert receipt is not None
+    assert [gate["phase"] for gate in receipt["gates"]] == ["static", "try-run"]
+
+
+def test_gate_routing_follows_the_executing_hosts_os(tmp_path):
+    """A portability cell of another OS is foreign to the executing host; a gate
+    bound only to foreign cells runs on another host, an unbound gate anywhere."""
+    from tools.molt_dev_policy import SelectedGate
+
+    config = GateConfig.parse(
+        """
+always = ["true"]
+[[matrix_cell]]
+id = "mac-queue"
+os = "macos"
+profile = "portability"
+[[matrix_cell]]
+id = "linux-queue"
+os = "linux"
+profile = "portability"
+[[matrix_cell]]
+id = "any-host"
+""",
+        "routing cells",
+        root=tmp_path,
+    )
+    assert config.foreign_cells("linux") == frozenset({"mac-queue"})
+    assert config.foreign_cells("macos") == frozenset({"linux-queue"})
+    farm = config.foreign_cells("linux")
+    mac_gate = SelectedGate("pytest tests/q.py", ("python",), cells=("mac-queue",))
+    both = SelectedGate(
+        "pytest tests/b.py", ("python",), cells=("mac-queue", "any-host")
+    )
+    unbound = SelectedGate("pytest tests/u.py", ("python",))
+    assert not config.runs_on(mac_gate, farm)
+    assert config.runs_on(both, farm)
+    assert config.runs_on(unbound, farm)
+    assert config.runs_on(mac_gate, config.foreign_cells("macos"))
+
+
 def test_land_fast_receipt_reads_counts_and_the_crate_gate_summary(tmp_path):
     """Counts come from each gate's log; unverified and narrowed cells from the
     crate-test gate's typed summary line, never from its human text."""
@@ -7146,6 +7366,47 @@ def test_land_budget_refuses_unfinished_gates_by_name_and_still_queues(
     assert _land_without_runner(drv, monkeypatch, lane) == EXIT_OK
     assert [item.head for item in queue.pending(queue.queue_paths(lane))] == [head]
     assert counter.read_text(encoding="utf-8").split().count("static") == 2
+
+
+def test_land_budget_refusal_writes_a_record_the_landing_executor_reruns(
+    drv, origin_and_clone, tmp_path, monkeypatch, capsys
+):
+    from tools import molt_dev_policy, trunk_landing
+
+    _, work = origin_and_clone
+    counter = tmp_path / "gate-runs.txt"
+    try_gate = f"sleep 3 && echo try >> {shlex.quote(str(counter))}"
+    _publish_policy(work, _try_run_policy(counter, try_gate=try_gate))
+    lane = work.parent / "lane-refused"
+    head = _lane(work, "refused", {"a.py": "a = 1\n"})
+    monkeypatch.setattr(
+        molt_dev_policy, "PRECHECK_BUDGET", molt_dev_policy.PrecheckBudget(1.0)
+    )
+
+    assert _land_without_runner(drv, monkeypatch, lane, "--precheck-only") == (
+        EXIT_FAIL
+    )
+    shown = "".join(capsys.readouterr())
+    assert "rerun them on this commit with the landing executor:" in shown
+    record = Path(shown.split("--record ", 1)[1].split()[0])
+    payload = json.loads(record.read_text(encoding="utf-8"))
+    assert payload["checkout"] == str(lane)
+    assert payload["landing"]["commit"] == head
+    (refused,) = trunk_landing.decode_gates(payload["landing"]["gates"])
+    assert refused.command == try_gate
+    assert "try" not in counter.read_text(encoding="utf-8").split()
+
+    # The record reruns the refused gate through the landing executor, which
+    # prepares its toolchains as the landing does; no interpreter is named.
+    output = tmp_path / "rerun"
+    monkeypatch.setattr(
+        sys, "argv", ["trunk_landing", "--record", str(record), "--output", str(output)]
+    )
+    assert trunk_landing.main() == 0
+    receipt = json.loads((output / "receipt.json").read_text(encoding="utf-8"))
+    assert receipt["status"] == "success"
+    assert receipt["source_commit"] == head
+    assert counter.read_text(encoding="utf-8").split().count("try") == 1
 
 
 def test_land_static_gates_run_outside_the_try_run_budget(
@@ -9200,7 +9461,7 @@ def test_integrate_remote_gate_opt_in_keeps_mac_publication_boundary(
         seen.append(host)
         if farm_failure:
             raise DriverError("farm unavailable")
-        return [(1.0, "echo selected-on-mac")]
+        return [(1.0, "echo selected-on-mac")], work
 
     monkeypatch.setattr(trunk_landing, "run_remote", remote)
     monkeypatch.setattr(
@@ -10068,7 +10329,9 @@ def test_integrate_capacity_observes_interval_without_campaign_guarantee(
             drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True))
     else:
         assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True)) == 0
-    assert ran == ["echo non-cargo-prefix", "echo opaque-cargo-wrapper"]
+    # A failing heavy gate reruns alone exactly once (the retry classifier).
+    runs = 2 if gate_rc else 1
+    assert ran == ["echo non-cargo-prefix", *["echo opaque-cargo-wrapper"] * runs]
     output = capsys.readouterr().err
     readiness = json.loads(
         next(
@@ -10085,7 +10348,7 @@ def test_integrate_capacity_observes_interval_without_campaign_guarantee(
         for line in output.splitlines()
         if "gate capacity: " in line
     ]
-    assert [row["phase"] for row in observations] == ["before", "after"]
+    assert [row["phase"] for row in observations] == ["before", "after"] * runs
     assert observations[1]["free_bytes_delta"] == {str(target): -1_420_288_000}
     assert observations[0]["probes"][0]["free_bytes"] == 27_270_266_880
     assert observations[1]["probes"][0]["free_bytes"] == 25_849_978_880
@@ -10216,8 +10479,9 @@ version_pattern = '^selected-checkout-tool$'
         drv.cmd_integrate(_integrate_ns(drv, repo=str(work), no_push=True)) == EXIT_OK
     )
     # The gate itself proved the projection: it ran the selected checkout's
-    # `cat`. The integrating process keeps its own PATH.
-    assert observed_roots == [work, work]
+    # `cat`. Admission discovers the release once before projecting it (and
+    # provisions only an absent one). The integrating process keeps its PATH.
+    assert observed_roots == [work, work, work]
     assert os.environ["PATH"] == path_before
 
 
@@ -11555,12 +11819,17 @@ def test_selected_pytest_nodes_collect_before_build_and_still_execute(
         ) in output
     else:
         assert observed[:2] == [cohort.collection_command, "mock-rust-build"]
-        # The cohort runs as selected, with the executor's explicit worker count.
-        (launched,) = observed[2:]
-        assert launched[:-2] == tuple(cohort.command)
-        assert launched[-2] == "-n" and int(launched[-1]) > 0
+        # The cohort runs as selected, with the executor's explicit worker
+        # count. A failing heavy gate reruns alone exactly once (the retry
+        # classifier); a passing one runs once.
+        launches = observed[2:]
+        assert len(launches) == (2 if case == "body_failure" else 1)
+        for launched in launches:
+            assert launched[:-2] == tuple(cohort.command)
+            assert launched[-2] == "-n" and int(launched[-1]) > 0
         assert executed.read_text(encoding="utf-8") == "executed"
-        assert len(timings) == len(gates)
+        # Each run reports its own time, the rerun included.
+        assert len(timings) == len(gates) + len(launches) - 1
         assert any(event == "collection_finished" for event, _ in progress)
         assert any(event == "gate_finished" for event, _ in progress)
     # A passing collection cannot conceal the later real assertion failure.
@@ -11949,9 +12218,15 @@ def test_cargo_effects_overlap_private_work_and_preserve_writer_exclusion(
         SelectedGate(("writer", "last"), ("python", "cargo")),
     ]
 
+    private_runs: list[int] = []
+
     def run(command, repo, environment, cancelled, streams=None):
         if command[:2] == ("pytest", "private"):
             assert command[-2] == "-n" and int(command[-1]) > 0
+            private_runs.append(1)
+            if len(private_runs) > 1:
+                # The landing's retry runs the failed gate alone.
+                return _gate_outcome(6 if cancel else 0, "", "", None)
             assert writer_started.wait(5)
             assert lease.exists(), "isolated work waited for shared-target release"
             private_started.set()
@@ -13183,3 +13458,52 @@ def test_shell_pytest_gate_cannot_bypass_executor_worker_budget():
     )
     with pytest.raises(DriverError, match="simple argv"):
         molt_dev_gates._local_command(1, gate, "local", repo=REPO_ROOT)
+
+
+def test_queue_request_closes_exactly_once_across_an_interrupted_close(
+    tmp_path, monkeypatch
+):
+    """docs/design/state_machines.md, landing request: PENDING -> CLOSED once.
+
+    record_result publishes the result, then removes the request. A runner
+    stopped between the two left a request that was pending and closed at
+    once; the next batch tested it again and replaced its result.
+    """
+    from tools import molt_dev_queue as queue
+
+    paths = queue.QueuePaths(tmp_path / "queue", tmp_path / "sandbox", tmp_path / "ev")
+    first = queue.enqueue(paths, head="a" * 40, worktree=tmp_path, branch="lane/a")
+    second = queue.enqueue(paths, head="b" * 40, worktree=tmp_path, branch="lane/b")
+
+    real_unlink = Path.unlink
+
+    def stopped(self, *args, **kwargs):
+        if self.parent == paths.requests and self.stem == first.id:
+            raise KeyboardInterrupt("runner stopped between result and removal")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", stopped)
+    with pytest.raises(KeyboardInterrupt):
+        queue.record_result(
+            paths, first, status=queue.LandingStatus.FAILED, detail="gate failed"
+        )
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    assert (paths.requests / f"{first.id}.json").is_file()
+
+    # Closed wins: the next batch never sees the request again.
+    assert [request.id for request in queue.pending(paths)] == [second.id]
+    # A second close cannot replace the recorded result.
+    with pytest.raises(DriverError, match="already closed"):
+        queue.record_result(
+            paths, first, status=queue.LandingStatus.LANDED, detail="retested"
+        )
+    recorded = queue.read_result(paths, first.id)
+    assert queue.LandingStatus(recorded["status"]) is queue.LandingStatus.FAILED
+    # The runner, holding its lock, finishes the interrupted close.
+    assert queue.finish_interrupted_closes(paths) == [first.id]
+    assert not (paths.requests / f"{first.id}.json").exists()
+    assert queue.finish_interrupted_closes(paths) == []
+    queue.record_result(
+        paths, second, status=queue.LandingStatus.LANDED, detail="ok", landed="c" * 40
+    )
+    assert queue.pending(paths) == []

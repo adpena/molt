@@ -6517,7 +6517,7 @@ def test_phi_operands_keep_their_branch_edges_across_exception_checks() -> None:
             "CHECK_EXCEPTION",
             [572],
             MoltValue("none"),
-            exception_edge=ExceptionEdgeKind.UNWIND,
+            exception_edge=ExceptionEdgeKind.ORIGIN,
         ),
         MoltOp("PHI", [MoltValue("left"), MoltValue("right")], MoltValue("selected")),
         MoltOp("ret", [MoltValue("selected")], MoltValue("none")),

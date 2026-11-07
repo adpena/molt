@@ -16,7 +16,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
-| Hashed executable authority inputs | 1 | 458 |
+| Hashed executable authority inputs | 1 | 459 |
 | Local path rules | 35 | 84 |
 | Unique local commands | 73 | 84 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -45,7 +45,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 
 | Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|
-| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2880 s | 120 s | 600 s | `repository-policy` | none | `docs-gates` needs none | 244 |
+| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2880 s | 120 s | 600 s | `repository-policy` | none | `docs-gates` needs none | 247 |
 | `wasm` | pre-push, pr, main | yes | `github-job` | 333 min | 19200 s | 180 s | 600 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 56 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 43 min | 2400 s per cell | 60 s | 120 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
@@ -115,7 +115,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 
 | Toolchain | Identity kind | Provider | Required version | Probe cwd | Setup value | Setup evidence |
 |---|---|---|---|---|---|---:|
-| `python` | `executable` | — | `^Python 3\.12\.15$` | `.` | `3.12.15` | 2 |
+| `python` | `executable` | — | `^Python 3\.12\.16$` | `.` | `3.12.16` | 2 |
 | `bash` | `executable` | — | `^GNU bash, version [0-9]+\.[0-9]+\.` | `.` | `Ubuntu hosted shell package` | 1 |
 | `fish` | `executable` | — | `^fish, version [0-9]+\.[0-9]+\.` | `.` | `Ubuntu hosted shell package` | 1 |
 | `zsh` | `executable` | — | `^zsh [0-9]+\.[0-9]+` | `.` | `Ubuntu hosted shell package` | 1 |
@@ -126,7 +126,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `posix-uname` | `executable` | — | `^.+$` | `.` | `host POSIX utility` | 1 |
 | `posix-file` | `executable` | — | `^file-[0-9]+\.` | `.` | `host file utility` | 1 |
 | `uv` | `executable` | — | `^uv 0\.13\.6\b` | `.` | `0.13.6` | 2 |
-| `node` | `executable` | — | `^v26\.12\.1$` | `.` | `26.12.1` | 3 |
+| `node` | `executable` | — | `^v26\.13\.0$` | `.` | `26.13.0` | 3 |
 | `target-pythons.3.12` | `executable` | — | `^Python 3\.12\.[0-9]+$` | `.` | `3.12` | 1 |
 | `target-pythons.3.13` | `executable` | — | `^Python 3\.13\.[0-9]+$` | `.` | `3.13` | 1 |
 | `target-pythons.3.14` | `executable` | — | `^Python 3\.14\.[0-9]+$` | `.` | `3.14` | 1 |
@@ -152,7 +152,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `ld64.lld` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `lld-link` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `lean` | `executable` | — | `version 4\.35\.0\b` | `formal/lean` | `4.35.0` | 3 |
-| `quint` | `executable` | — | `^(?:Quint\s+)?0\.33\.0$` | `.` | `0.33.0` | 1 |
+| `quint` | `executable` | — | `^(?:Quint\s+)?0\.33\.1$` | `.` | `0.33.1` | 1 |
 | `cargo-deny` | `executable` | — | `^cargo-deny 0\.20\.2\b` | `.` | `0.20.2` | 1 |
 | `cargo-audit` | `executable` | — | `^cargo-audit 0\.22\.2\b` | `.` | `0.22.2` | 1 |
 | `llvm-ar` | `executable` | — | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
@@ -161,7 +161,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `llvm-strip` | `executable` | `compiler:native-strip` | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `wasm-opt` | `executable` | `compiler:wasm-opt` | `^wasm-opt version 133(?: \(version_133\))?$` | `.` | `133` | 1 |
 | `wasm-ld` | `executable` | — | `\bLLD 23\.1\.0\b` | `.` | `23.1.0` | 2 |
-| `wasm-tools` | `executable` | — | `^wasm-tools 1\.262\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$` | `.` | `1.262.0` | 2 |
+| `wasm-tools` | `executable` | — | `^wasm-tools 1\.263\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$` | `.` | `1.263.0` | 2 |
 
 ## Cargo execution contracts
 
@@ -294,6 +294,8 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `python.unit.cli.import-collection` | `python_unit_collection` | `linux-x86_64-py312-unit-collection` | `explicit` | 1320 s | `python-tests` | 0 |
 | `python.unit.surface-contracts` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.surface-contracts.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
+| `python.unit.surface-wasm` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 120 s | `python-tests` | 0 |
+| `python.unit.surface-wasm.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 120 s | `python-tests` | 0 |
 | `python.unit.compiled-contracts.prepare.macos` | `python_unit` | `macos-arm64-py312-compiled` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `python.unit.compiled-contracts.macos` | `python_unit` | `macos-arm64-py312-compiled` | `integration` | 600 s | `compiler-build-resource` | 1 |
 | `python.unit.runtime-artifacts` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
@@ -359,7 +361,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `browser-loader-deployment` | 12 | 0 |
 | `frontend-python` | 1 | 3 |
 | `finding-ids-static` | 1 | 1 |
-| `python-source-dependencies` | 15 | 0 |
+| `python-source-dependencies` | 16 | 0 |
 | `frontend-ir-assembly` | 63 | 1 |
 | `build-output-identity` | 6 | 0 |
 | `backend-environment-contract` | 22 | 0 |
@@ -428,7 +430,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `runtime-vfs` | 4 | 2 |
 | `runtime-lib` | 5 | 1 |
 | `python-effect-capability-authority` | 6 | 1 |
-| `python-identity-catalog-authority` | 7 | 0 |
+| `python-identity-catalog-authority` | 9 | 0 |
 | `builtin-binding-guard-authority` | 9 | 1 |
 | `wasm-optimizer-policy` | 6 | 1 |
 | `native-callable-abi` | 20 | 1 |

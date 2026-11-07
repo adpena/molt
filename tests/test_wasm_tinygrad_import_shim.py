@@ -22,6 +22,12 @@ def _flatten_numeric(values):
     return out
 
 
+# `from tinygrad import ...` here resolves to the Molt-owned src/tinygrad facade,
+# a substitute HF-615 retires (upstream tinygrad is experimental in the plan and
+# Molt does not reimplement it); these tests leave with the facade. Each links
+# and runs a program that peaks near 8-9 GB in molt-wasm-host for about 3 min
+# (2026-11-07: 7.99 GB / 128 s and 8.89 GB / 193 s), so presubmit skips them.
+@pytest.mark.slow
 def test_wasm_linked_tinygrad_random_surface_matches_upstream_samples(
     tmp_path: Path,
 ) -> None:
@@ -96,6 +102,7 @@ def test_wasm_linked_tinygrad_random_surface_matches_upstream_samples(
     )
 
 
+@pytest.mark.slow
 def test_wasm_linked_tinygrad_conv2d_matches_upstream_sample(tmp_path: Path) -> None:
     require_wasm_toolchain()
     root = Path(__file__).resolve().parents[1]

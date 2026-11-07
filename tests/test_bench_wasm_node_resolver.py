@@ -13,6 +13,7 @@ import pytest
 import tools.bench_wasm as bench_wasm
 from molt.node_runtime import NodeRuntime
 from molt.cli.wasm_host import molt_wasm_host_exe_name
+from tests.cargo_output_fixture import write_cargo_output
 
 
 @pytest.mark.parametrize(
@@ -35,14 +36,12 @@ def test_wasmtime_runner_uses_one_selected_host_build(
     selected = "selected target" if relative else str(target)
     host = target / "release" / molt_wasm_host_exe_name()
     decoy = root / "target" / "release" / molt_wasm_host_exe_name()
-    decoy.parent.mkdir(parents=True)
-    decoy.write_bytes(b"unselected host")
+    write_cargo_output(decoy, b"unselected host")
     monkeypatch.setattr(bench_wasm, "REPO_ROOT", root)
     monkeypatch.setenv("CARGO_TARGET_DIR", selected)
     monkeypatch.delenv("MOLT_WASM_HOST_BIN", raising=False)
     if outcome in {"prebuilt", "explicit"}:
-        host.parent.mkdir(parents=True)
-        host.write_bytes(b"selected host")
+        write_cargo_output(host, b"selected host")
     if outcome in {"explicit", "missing-explicit"}:
         monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(host))
     calls = []
@@ -50,8 +49,7 @@ def test_wasmtime_runner_uses_one_selected_host_build(
     def build(command, **kwargs):
         calls.append((command, kwargs["env"]["CARGO_TARGET_DIR"], kwargs["cwd"]))
         if outcome == "built":
-            host.parent.mkdir(parents=True)
-            host.write_bytes(b"newly built host")
+            write_cargo_output(host, b"newly built host")
         return bench_wasm._RunResult(
             returncode=1 if outcome == "build-failed" else 0,
             stderr="deliberate build failure",

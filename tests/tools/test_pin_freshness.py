@@ -31,6 +31,7 @@ PIN_AUTHORITIES = (
     "formal/lean/lean-toolchain",
     "rust-toolchain.toml",
     "tools/proof_plan.toml",
+    ".python-version",
     "config/verified_subset.toml",
 )
 NOW = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
@@ -504,7 +505,8 @@ def test_every_pin_reads_its_authority_loader() -> None:
     }
     assert actual == expected
     assert all(
-        pins[name].authority == "config/verified_subset.toml" for name in expected
+        pins[name].authority == "config/cpython_regrtest_sources.toml"
+        for name in expected
     )
     assert pins["python"].current == pins["python-patch"].current
     assert (
@@ -2061,7 +2063,11 @@ def test_the_registry_must_name_the_pinned_tarball() -> None:
         pin_freshness.npm_registry_assets(provenance, lambda url: moved)
 
 
-def test_reference_pins_reread_policy_and_track_their_own_patch_line(tmp_path) -> None:
+def test_reference_pins_reread_policy_and_track_their_own_patch_line(
+    tmp_path, monkeypatch
+) -> None:
+    from molt import _python_release_generated as releases
+
     root = _pin_root(tmp_path)
     authority = root / "config/verified_subset.toml"
     policy = load_verified_subset_policy(authority)
@@ -2091,15 +2097,18 @@ def test_reference_pins_reread_policy_and_track_their_own_patch_line(tmp_path) -
             line
         }
 
+    # A reference moves with its pinned source release, never a policy copy.
     changed = [line + ".1" for line in policy.python_versions]
-    text = authority.read_text(encoding="utf-8")
-    authority.write_text(
-        re.sub(
-            r"(?m)^reference_cpython = .*?$",
-            "reference_cpython = [" + ", ".join(f'"{v}"' for v in changed) + "]",
-            text,
-        ),
-        encoding="utf-8",
+    monkeypatch.setattr(
+        releases,
+        "CPYTHON_RELEASES",
+        {
+            **releases.CPYTHON_RELEASES,
+            **{
+                line: (*map(int, line.split(".")), 1, "final", 0)
+                for line in policy.python_versions
+            },
+        },
     )
     reread = references()
     assert [
@@ -2229,3 +2238,26 @@ def test_package_manager_drift_is_a_check_failure(tmp_path) -> None:
     assert (
         "deploy/cloudflare/package.json packageManager is 'npm@0.0.1'" in out.getvalue()
     )
+
+
+def test_tool_update_without_a_toolchain_policy_moves_only_its_release(tmp_path):
+    """sccache is a provisioning-only release: no proof command names it, so
+    tools/proof_plan.toml has no policy for it. `--update sccache` failed with
+    "tools/proof_plan.toml has 0 'sccache' policies" while `--check` reported
+    it stale; the move must not require a policy that does not exist."""
+    root = _pin_root(tmp_path)
+    assert "sccache" not in pin_freshness._toolchain_policies(root)
+    release = tool_releases.load_tool_releases(root)["sccache"]
+    upstream = _tool_upstream(release, "9.9.9")
+    plan_before = (root / "tools/proof_plan.toml").read_bytes()
+
+    message = pin_freshness.update(root, "sccache", upstream.fetchers(), now=NOW)
+
+    assert message.startswith(f"sccache: {release.version} -> 9.9.9")
+    moved = tool_releases.load_tool_releases(root)["sccache"]
+    assert moved.version == "9.9.9"
+    for key, asset in moved.assets.items():
+        assert asset.sha256 == hashlib.sha256(upstream.blobs[asset.url]).hexdigest(), (
+            key
+        )
+    assert (root / "tools/proof_plan.toml").read_bytes() == plan_before
