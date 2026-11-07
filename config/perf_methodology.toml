@@ -28,7 +28,7 @@ schema = "molt-perf-methodology-v1"
 # guarded identity. Admitted workloads and instruction counts can change;
 # earlier reports retain their recorded comparison class.
 version = 33
-content_sha256 = "1ccd027a7a30d6d02cf570980335834f9300948a801d98559cb5355048c46cf7"
+content_sha256 = "734d4a78decd9a36bb5cc00409bcf4f088424e6e5c86fd6f75c3d839c5964dfe"
 
 [[methodology]]
 path = "tools/safe_run.py"
