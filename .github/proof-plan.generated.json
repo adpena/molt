@@ -720,6 +720,7 @@
         "tests/test_artifact_poison_gate.py/**",
         "tests/tools/test_signed_ratio.py/**",
         "tests/tools/test_test_dependency_graph.py/**",
+        "tests/tools/test_consumer_gate.py/**",
         "tests/test_agent_coordination.py/**",
         "tests/tools/test_release_outcomes.py/**",
         "tests/tools/test_apparatus_agent_safety.py/**",
@@ -3842,7 +3843,8 @@
         "tests/tools/test_proof_queue_disk_capacity.py",
         "tests/test_artifact_poison_gate.py",
         "tests/tools/test_signed_ratio.py",
-        "tests/tools/test_test_dependency_graph.py"
+        "tests/tools/test_test_dependency_graph.py",
+        "tests/tools/test_consumer_gate.py"
       ],
       "pytest_worker_memory_gb": 0.75,
       "resource_class": "repository-policy",
