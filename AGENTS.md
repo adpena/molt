@@ -112,9 +112,8 @@ over stale prose or precedent.
 - Start with `uv run --no-project python tools/venv_exec.py python
   tools/agent_coordination.py context` (plain `uv run` makes a checkout `.venv`: HF-522), `git status`,
   nested instructions and proof state; for Pact work read only relevant `docs/agent/ORCHESTRATION.md`.
-- `.python-version` is the one interpreter authority. Run verdict-producing tools (gates, tests,
-  landing) in the checkout's development image through `tools/venv_exec.py`, the image landings
-  use; never pass `--python` or call a bare `python3`, which override or bypass the pin.
+- `.python-version` and `uv.lock` are the one environment authority (`docs/design/one_environment.md`);
+  never pass `--python` or call a bare `python3`, which override or bypass the pin.
 - Harvest and land signal; do not hoard it. A lane, worktree or WIP without a live worker and with
   unlanded commits is merged with main, proven and landed (or folded into main and retired) the
   same day; preserve before moving, but preservation is never the end state.

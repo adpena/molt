@@ -119,3 +119,23 @@ wall time and gate-hours before and after from the yield table.
 7. Yield (was E). Key records per test and per phase (try run vs batch), attribute failures
    per test (not per `--maxfail=1` cohort), and exempt gates that also run before commit.
 8. Postsubmit owner of the full corpus: the nightly family plus bisection.
+
+## Exit condition and apparatus freeze (owner directive 2026-11-07)
+
+The apparatus work ends when all four hold; the integrator owns it until then.
+
+1. The common path works on the supported host (macOS arm64): edit, `uv run python
+   tools/consumer_gate.py run -- PATHS`, commit with pathspecs, `tools/molt_dev.py land --fast`
+   lands a small compiler or runtime change on the first try. Shown 2026-11-07 by the marshal fix
+   (b00696d2fd: 30 gates, 624 s, first try).
+2. CI returns real verdicts: the proof executor runs in the synced environment (3be76b90fb), and
+   `main` CI failures are product failures, not provisioning.
+3. One environment per checkout (`docs/design/one_environment.md`, stages 1-3).
+4. The fixed small landing suite (`one_environment.md` stage 4): WASM end-to-end in postsubmit
+   except one linked cell, a calibrated CPython differential smoke in presubmit, first-hop
+   importers selected by changed function, and `tools/gate_yield.py` showing presubmit p90 at or
+   under 10 minutes for compiler lanes.
+
+After that the apparatus is frozen: no new runner, receipt, ledger, scanner, dashboard or
+generated projection; a change to the apparatus deletes something or fixes a demonstrated
+defect. Capacity goes to the compiler.
