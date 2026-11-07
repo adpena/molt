@@ -117,5 +117,6 @@ def test_commit_tree_matches_what_a_pathspec_commit_records(repo):
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     ).stdout.strip()
     assert tree == recorded

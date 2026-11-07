@@ -43,6 +43,7 @@ def _git(root: Path, *args: str, env: dict[str, str] | None = None) -> str:
         capture_output=True,
         text=True,
         env=env,
+        encoding="utf-8",
     ).stdout.strip()
 
 
