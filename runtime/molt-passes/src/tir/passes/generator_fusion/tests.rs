@@ -680,6 +680,40 @@ fn callback_free_poll_is_fused_by_module_driver() {
 }
 
 #[test]
+fn fusion_drops_the_generators_location_stores() {
+    // A FrameSetLocation index addresses the generator's location table. The
+    // splice must not publish it into the consumer's frame (adversarial review,
+    // 2026-11-07: a raise inside a fused generator reported a wrong line or an
+    // out-of-range index that dropped the consumer from the traceback).
+    const GENERATOR_LOCATION: i64 = 4_242;
+    let mut poll = counter_poll();
+    yield_block(&mut poll).ops.insert(
+        0,
+        op_v(OpCode::FrameSetLocation, vec![], vec![], GENERATOR_LOCATION),
+    );
+    let mut caller = consumer();
+    let stores = |func: &TirFunction| -> Vec<i64> {
+        func.blocks
+            .values()
+            .flat_map(|block| block.ops.iter())
+            .filter(|op| op.opcode == OpCode::FrameSetLocation)
+            .filter_map(|op| match op.attrs.get("value") {
+                Some(AttrValue::Int(location)) => Some(*location),
+                _ => None,
+            })
+            .collect()
+    };
+    let before = stores(&caller);
+    let candidate = only_candidate(&poll, &caller);
+    let mut stats = FusionStats::default();
+    assert!(apply_fusion(&mut caller, &poll, &candidate, &mut stats));
+    assert_eq!(stats.frames_elided, 1);
+    assert!(!stores(&caller).contains(&GENERATOR_LOCATION));
+    assert_eq!(stores(&caller), before, "the consumer keeps its own stores");
+    crate::tir::verify::verify_function(&caller).expect("fused consumer must verify");
+}
+
+#[test]
 fn single_yield_in_loop_recognized_and_spliced() {
     // The structural splice preserves the latch and ownership. Module-level
     // eligibility separately refuses this callback-bearing poll above.
