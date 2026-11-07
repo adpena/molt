@@ -36,9 +36,39 @@ owner named; nobody has audited their reachable invalid states yet.
 | Artifact binding | typed (`ArtifactBindingState`) | `src/molt/dx.py` | build reuse | inventory |
 | Checkout input | typed `Literal` (`InputState`) | `src/molt/checkout_provisioning.py` | image provisioning | inventory |
 | Backend daemon suite custody | typed (`SuiteCustodyState`, `ScratchOutcome`, `SealFailure`) since 2026-11-07 | `src/molt/backend_daemon_suite_custody.py` | daemon clients, drain retries | deep |
-| Source extension candidate | untyped (`"prepared"`) | `src/molt/cli/source_extension_candidate_transaction.py` | build transaction | inventory |
-| Source package seal | untyped (`"committed"`) | `src/molt/cli/source_package_seal.py` | build transaction | inventory |
+| Source extension candidate transaction | typed (`CandidateTransactionState`, `CANDIDATE_TRANSITIONS`) since 2026-11-07 | `src/molt/cli/source_extension_candidate_transaction.py` | exclusive candidate lock; recovery | deep |
+| Source extension seal compare-and-swap | typed (`PublicationState`, `PUBLICATION_TRANSITIONS`) since 2026-11-07 | `src/molt/cli/source_extension_publication.py` | crash resume; abort and restore | deep |
+| Source package seal commit | typed (`SealCommitState`) since 2026-11-07 | `src/molt/cli/source_package_seal.py` | idempotent commit across crashes | inventory |
 | Runtime lifecycles: generator and coroutine frames, async tasks, import locks, runtime initialization | runtime types | `docs/design/foundation/26_real-async-generators.md`, `28_asyncio-frontier-runtime.md`, `docs/spec/areas/runtime/0024_RUNTIME_STATE_LIFECYCLE.md` | free-threaded design | inventory |
+
+## Source extension candidate transaction (`source_extension_candidate_transaction.py`)
+
+A producer holds the exclusive candidate lock while it builds a candidate bundle
+and publishes it at the candidate output. Every journal write goes through
+`CANDIDATE_TRANSITIONS`; any other (state, event) pair raises.
+
+| From | Event | To |
+| --- | --- | --- |
+| `BUILDING` | prepare (bundle verified, digests recorded) | `PREPARED` |
+| `PREPARED` | commit (published at the candidate output) | `COMMITTED` |
+| `BUILDING`, `FAILED`, `INTERRUPTED` | fail | `FAILED` |
+| `PREPARED`, `COMMITTED` | fail | unchanged (the verified bundle still commits; the diagnostic is recorded) |
+| `BUILDING` | interrupt (recovery finds it without its producer) | `INTERRUPTED` |
+
+Recovery commits `PREPARED`, completes and removes `COMMITTED`, interrupts
+`BUILDING`, and prunes failed and interrupted journals after their retention.
+
+## Source extension seal compare-and-swap (`source_extension_publication.py`)
+
+| From | Event | To |
+| --- | --- | --- |
+| `PREPARED` | retire (incumbent moved to retired custody) | `RETIRED` |
+| `PREPARED` | publish (incumbent already retired before a crash lost its journal) | `PUBLISHED` |
+| `RETIRED` | publish (candidate moved onto the destination) | `PUBLISHED` |
+| `PREPARED`, `RETIRED`, `PUBLISHED` | commit (destination verifies as the candidate) | `COMMITTED` |
+| `PREPARED`, `RETIRED`, `PUBLISHED` | abort (candidate quarantined, incumbent restored) | `ABORTED_RESTORED` |
+
+`COMMITTED` and `ABORTED_RESTORED` are terminal; resume returns them unchanged.
 
 ## Farm run (`tools/trunk_loop.py`)
 
