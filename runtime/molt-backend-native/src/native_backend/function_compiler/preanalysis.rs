@@ -3,6 +3,7 @@ use molt_ir::OpKind;
 
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) struct FunctionPreanalysis {
+    pub(in crate::native_backend::function_compiler) cfg: crate::tir::cfg::CFG,
     pub(in crate::native_backend::function_compiler) returns_value: bool,
     pub(in crate::native_backend::function_compiler) stateful: bool,
     /// Only proven DirectNonHeap stores omit the field-store profiling path.
@@ -127,7 +128,7 @@ pub(in crate::native_backend::function_compiler) fn emit_guarded_object_field_ge
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder,
     import_refs: &mut NativeFunctionImports,
-    sealed_blocks: &mut BTreeSet<Block>,
+
     obj_bits: Value,
     offset_bytes: i64,
     nbc: &crate::NanBoxConsts,
@@ -150,7 +151,7 @@ pub(in crate::native_backend::function_compiler) fn emit_guarded_object_field_ge
     builder.ins().brif(is_ptr, load_block, &[], none_block, &[]);
 
     switch_to_block_materialized(builder, load_block);
-    seal_block_once(builder, sealed_blocks, load_block);
+    seal_block_once(builder, load_block);
     let obj_ptr = unbox_ptr_value(builder, obj_bits);
     let offset = builder.ins().iconst(types::I64, offset_bytes);
     let callee = import_func_ref(
@@ -167,11 +168,11 @@ pub(in crate::native_backend::function_compiler) fn emit_guarded_object_field_ge
     jump_block(builder, merge_block, &[result]);
 
     switch_to_block_materialized(builder, none_block);
-    seal_block_once(builder, sealed_blocks, none_block);
+    seal_block_once(builder, none_block);
     jump_block(builder, merge_block, &[none_bits]);
 
     switch_to_block_materialized(builder, merge_block);
-    seal_block_once(builder, sealed_blocks, merge_block);
+    seal_block_once(builder, merge_block);
     builder.block_params(merge_block)[0]
 }
 
@@ -677,6 +678,7 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
     let ssa_values = NativeSsaValues::for_function(func_ir, &cfg, stateful, &cfg_liveness.names);
 
     FunctionPreanalysis {
+        cfg,
         returns_value,
         stateful,
         needs_field_store_profile,

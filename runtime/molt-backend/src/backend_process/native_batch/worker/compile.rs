@@ -72,7 +72,7 @@ fn compile_native_batch_object_job(
     backend.module_registry = job.module_registry;
     backend.code_slots = job.code_slots;
     backend.set_module_context(job.module_context);
-    let output = backend.compile(job.ir);
+    let output = backend.compile_checked(job.ir).map_err(io::Error::other)?;
     write_output_path(output_path, &output.bytes)?;
     Ok(ContentIdentity::of_bytes(&output.bytes))
 }

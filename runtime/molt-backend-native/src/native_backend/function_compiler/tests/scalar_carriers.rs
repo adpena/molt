@@ -908,13 +908,11 @@ fn native_int_boxing_constants_materialized_at_site() {
 
         let raw_zero = builder.ins().iconst(types::I64, 0);
         let mut import_refs = detached_imports(&mut builder);
-        let mut sealed_blocks = BTreeSet::from([entry]);
         let boxed = box_raw_i64_value_overflow_safe(
             &mut backend.module,
             &mut backend.import_ids,
             &mut builder,
             &mut import_refs,
-            &mut sealed_blocks,
             raw_zero,
         );
         builder.ins().return_(&[boxed]);

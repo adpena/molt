@@ -155,7 +155,7 @@ pub(in crate::native_backend::function_compiler) fn var_get_boxed_overflow_safe_
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-    sealed_blocks: &mut BTreeSet<Block>,
+
     vars: &BTreeMap<String, Variable>,
     name: &str,
     representation_plan: &ScalarRepresentationPlan,
@@ -170,7 +170,6 @@ pub(in crate::native_backend::function_compiler) fn var_get_boxed_overflow_safe_
         import_ids,
         builder,
         import_refs,
-        sealed_blocks,
         vars,
         name,
         representation_plan,

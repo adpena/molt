@@ -42,7 +42,7 @@ pub(in crate::native_backend::function_compiler) fn def_unboxed_lane_from(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-    sealed_blocks: &mut BTreeSet<Block>,
+
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
@@ -55,14 +55,12 @@ pub(in crate::native_backend::function_compiler) fn def_unboxed_lane_from(
         (cranelift_module::FuncId, ImportSignatureShape),
     >,
                         builder: &mut FunctionBuilder<'_>,
-                        import_refs: &mut NativeFunctionImports,
-                        sealed_blocks: &mut BTreeSet<Block>| {
+                        import_refs: &mut NativeFunctionImports| {
         *var_get_boxed_overflow_safe_fn(
             module,
             import_ids,
             builder,
             import_refs,
-            sealed_blocks,
             vars,
             src_name,
             representation_plan,
@@ -73,7 +71,7 @@ pub(in crate::native_backend::function_compiler) fn def_unboxed_lane_from(
     if representation_plan.is_float_unboxed(out_name) {
         let raw_f64 = float_value_for(&mut *builder, vars, representation_plan, src_name)
             .unwrap_or_else(|| {
-                let boxed = boxed_source(module, import_ids, builder, import_refs, sealed_blocks);
+                let boxed = boxed_source(module, import_ids, builder, import_refs);
                 float_value_from_boxed_extended(module, import_ids, builder, import_refs, boxed)
             });
         def_var_named(&mut *builder, vars, out_name, raw_f64);
@@ -82,7 +80,7 @@ pub(in crate::native_backend::function_compiler) fn def_unboxed_lane_from(
         let raw_i64 = int_raw_value(&mut *builder, vars, representation_plan, src_name)
             .or_else(|| bool_raw_value(&mut *builder, vars, representation_plan, src_name))
             .unwrap_or_else(|| {
-                let boxed = boxed_source(module, import_ids, builder, import_refs, sealed_blocks);
+                let boxed = boxed_source(module, import_ids, builder, import_refs);
                 unbox_int_or_bool(&mut *builder, boxed, nbc)
             });
         def_var_named(&mut *builder, vars, out_name, raw_i64);
@@ -91,7 +89,7 @@ pub(in crate::native_backend::function_compiler) fn def_unboxed_lane_from(
         let raw_bool = bool_raw_value(&mut *builder, vars, representation_plan, src_name)
             .or_else(|| int_raw_value(&mut *builder, vars, representation_plan, src_name))
             .unwrap_or_else(|| {
-                let boxed = boxed_source(module, import_ids, builder, import_refs, sealed_blocks);
+                let boxed = boxed_source(module, import_ids, builder, import_refs);
                 unbox_int_or_bool(&mut *builder, boxed, nbc)
             });
         def_var_named(&mut *builder, vars, out_name, raw_bool);
@@ -115,7 +113,7 @@ pub(in crate::native_backend::function_compiler) fn define_alias_result(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-    sealed_blocks: &mut BTreeSet<Block>,
+
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     alias_roots: &BTreeMap<String, String>,
@@ -128,7 +126,6 @@ pub(in crate::native_backend::function_compiler) fn define_alias_result(
         import_ids,
         builder,
         import_refs,
-        sealed_blocks,
         vars,
         representation_plan,
         nbc,
@@ -143,7 +140,6 @@ pub(in crate::native_backend::function_compiler) fn define_alias_result(
             import_ids,
             builder,
             import_refs,
-            sealed_blocks,
             vars,
             src_name,
             representation_plan,
@@ -181,7 +177,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-    sealed_blocks: &mut BTreeSet<Block>,
+
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     alias_roots: &BTreeMap<String, String>,
@@ -199,7 +195,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
     >,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
-                                       sealed_blocks: &mut BTreeSet<Block>,
+
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        representation_plan: &ScalarRepresentationPlan|
@@ -209,7 +205,6 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
             import_ids,
             builder,
             import_refs,
-            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -231,7 +226,6 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                             import_ids,
                             builder,
                             import_refs,
-                            sealed_blocks,
                             vars,
                             representation_plan,
                             nbc,
@@ -244,7 +238,6 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                             import_ids,
                             builder,
                             import_refs,
-                            sealed_blocks,
                             vars,
                             src_name,
                             representation_plan,
@@ -259,7 +252,6 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
-                    &mut *sealed_blocks,
                     vars,
                     src_name,
                     representation_plan,
@@ -282,7 +274,6 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
-                    &mut *sealed_blocks,
                     vars,
                     src_name,
                     representation_plan,
@@ -311,7 +302,6 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
-                    &mut *sealed_blocks,
                     vars,
                     src_name,
                     representation_plan,
@@ -364,7 +354,6 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                     import_ids,
                     builder,
                     import_refs,
-                    sealed_blocks,
                     vars,
                     representation_plan,
                     alias_roots,
@@ -389,7 +378,6 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                     import_ids,
                     builder,
                     import_refs,
-                    sealed_blocks,
                     nbc,
                     MergeRebindStorageKind::BoxedI64,
                 );

@@ -17,7 +17,10 @@ use cranelift_codegen::ir::{
 use cranelift_codegen::isa;
 use cranelift_codegen::settings;
 use cranelift_codegen::settings::Configurable;
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variable};
+use cranelift_frontend::{FunctionBuilderContext, Switch, Variable};
+mod block_sealing;
+use block_sealing::FunctionBuilder;
+pub use block_sealing::{NativeBlockError, NativeBlockIssue, NativeCompileError};
 use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule, ObjectProduct};
 use std::collections::BTreeMap;

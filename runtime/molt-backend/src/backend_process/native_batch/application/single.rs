@@ -22,7 +22,7 @@ pub(crate) fn compile_single_native_application_artifact_to_path(
     if let Some(module_context) = options.module_context.take() {
         backend.set_module_context(module_context);
     }
-    let obj_output = backend.compile(ir);
+    let obj_output = backend.compile_checked(ir).map_err(io::Error::other)?;
     let output = match options.native_output_kind {
         crate::backend_process::NativeArtifactKind::Object => {
             write_output_path(output_path, &obj_output.bytes)?;

@@ -41,7 +41,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-    sealed_blocks: &mut BTreeSet<Block>,
+
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     pending_work_slots: Option<(
@@ -60,7 +60,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
     >,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
-                                       sealed_blocks: &mut BTreeSet<Block>,
+
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        representation_plan: &ScalarRepresentationPlan|
@@ -70,7 +70,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
             import_ids,
             builder,
             import_refs,
-            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -85,7 +84,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -149,15 +147,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 let fast = module.declare_func_in_func(fast, builder.func);
                 let (word, record) =
                     pending_work_slots.expect("async observer requires an execution record");
-                emit_async_work_poll(
-                    builder,
-                    sealed_blocks,
-                    word,
-                    record,
-                    local_callee,
-                    Some(fast),
-                    None,
-                )
+                emit_async_work_poll(builder, word, record, local_callee, Some(fast), None)
             } else {
                 let call = builder.ins().call(local_callee, &[]);
                 builder.inst_results(call)[0]
@@ -203,7 +193,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -214,7 +203,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -243,7 +231,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -293,7 +280,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -320,7 +306,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -331,7 +316,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -358,7 +342,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -369,7 +352,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -396,7 +378,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -438,7 +419,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -465,7 +445,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -492,7 +471,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,

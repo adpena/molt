@@ -36,7 +36,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-    sealed_blocks: &mut BTreeSet<Block>,
+
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
@@ -65,7 +65,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
     >,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
-                                       sealed_blocks: &mut BTreeSet<Block>,
+
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        representation_plan: &ScalarRepresentationPlan|
@@ -75,7 +75,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
             import_ids,
             builder,
             import_refs,
-            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -97,7 +96,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -249,15 +247,8 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                         cold_frame_homes.expect("a check's frame_location requires lent homes");
                     (homes, location)
                 });
-                let result = emit_async_work_poll(
-                    builder,
-                    sealed_blocks,
-                    word,
-                    record,
-                    callee,
-                    None,
-                    cold_location,
-                );
+                let result =
+                    emit_async_work_poll(builder, word, record, callee, None, cold_location);
                 builder.ins().icmp_imm_s(IntCC::NotEqual, result, 0)
             } else {
                 emit_exception_pending_condition(
@@ -277,7 +268,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                     reachable_blocks.insert(origin);
                     brif_block(builder, cond, origin, &[], fallthrough, &[]);
                     crate::switch_to_block_tracking(builder, origin, is_block_filled);
-                    seal_block_once(builder, sealed_blocks, origin);
+                    seal_block_once(builder, origin);
                     let homes = cold_frame_homes
                         .map(|slot| builder.ins().stack_load(types::I64, types::I64, slot, 0))
                         .unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
@@ -312,7 +303,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
             // functions; exception labels are separate target blocks.
             crate::switch_to_block_tracking(&mut *builder, fallthrough, &mut *is_block_filled);
             maybe_debug_seal("check_exception_fallthrough", op_idx, fallthrough);
-            seal_block_once(&mut *builder, &mut *sealed_blocks, fallthrough);
+            seal_block_once(&mut *builder, fallthrough);
             // check_exception's fallthrough is always a fresh empty
             // block — force-clear is_block_filled so subsequent ops
             // (add, loop_index_next) are never incorrectly skipped by

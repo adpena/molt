@@ -140,7 +140,7 @@ fn emit_frame_home_release(
     old_kind: Value,
     old_bits: Value,
     builder: &mut FunctionBuilder<'_>,
-    sealed_blocks: &mut BTreeSet<Block>,
+
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     local_dec_ref_obj: NativeRefcountSite,
@@ -153,11 +153,11 @@ fn emit_frame_home_release(
     let done = builder.create_block();
     builder.ins().brif(holds, release, &[], done, &[]);
     switch_to_block_materialized(builder, release);
-    seal_block_once(builder, sealed_blocks, release);
+    seal_block_once(builder, release);
     emit_refcount(builder, old_bits, local_dec_ref_obj);
     jump_block(builder, done, &[]);
     switch_to_block_materialized(builder, done);
-    seal_block_once(builder, sealed_blocks, done);
+    seal_block_once(builder, done);
     carry_internal_cfg_tracking(origin, done, block_tracked_obj, block_tracked_ptr);
 }
 
@@ -173,7 +173,7 @@ fn box_frame_home_raw_int(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    sealed_blocks: &mut BTreeSet<Block>,
+
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     homes: Value,
@@ -189,7 +189,7 @@ fn box_frame_home_raw_int(
     builder.set_cold_block(slow);
     builder.ins().brif(fits, inline, &[], slow, &[]);
     switch_to_block_materialized(builder, inline);
-    seal_block_once(builder, sealed_blocks, inline);
+    seal_block_once(builder, inline);
     let nbc = crate::NanBoxConsts::new();
     let int_mask = builder.ins().iconst(types::I64, nbc.int_mask);
     let masked = builder.ins().band(raw, int_mask);
@@ -212,7 +212,7 @@ fn box_frame_home_raw_int(
     );
     jump_block(builder, done, &[boxed]);
     switch_to_block_materialized(builder, slow);
-    seal_block_once(builder, sealed_blocks, slow);
+    seal_block_once(builder, slow);
     let home = builder.ins().iadd_imm_s(homes, i64::from(offset));
     let callee = SimpleBackend::import_func_id_split(
         module,
@@ -226,7 +226,7 @@ fn box_frame_home_raw_int(
     let loaded = builder.inst_results(call)[0];
     jump_block(builder, done, &[loaded]);
     switch_to_block_materialized(builder, done);
-    seal_block_once(builder, sealed_blocks, done);
+    seal_block_once(builder, done);
     carry_internal_cfg_tracking(origin, done, block_tracked_obj, block_tracked_ptr);
     builder.block_params(done)[0]
 }
@@ -251,7 +251,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-    sealed_blocks: &mut BTreeSet<Block>,
+
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     task_kinds: &BTreeMap<String, TrampolineKind>,
@@ -278,7 +278,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
     >,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
-                                       sealed_blocks: &mut BTreeSet<Block>,
+
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        representation_plan: &ScalarRepresentationPlan|
@@ -288,7 +288,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             import_ids,
             builder,
             import_refs,
-            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -354,7 +353,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
-                    &mut *sealed_blocks,
                     vars,
                     name_var,
                     representation_plan,
@@ -502,7 +500,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 closure_name,
                 representation_plan,
@@ -598,7 +595,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -609,7 +605,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -620,7 +615,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[2],
                 representation_plan,
@@ -631,7 +625,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[3],
                 representation_plan,
@@ -642,7 +635,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[4],
                 representation_plan,
@@ -653,7 +645,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[5],
                 representation_plan,
@@ -664,7 +655,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[6],
                 representation_plan,
@@ -675,7 +665,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[7],
                 representation_plan,
@@ -686,7 +675,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[8],
                 representation_plan,
@@ -752,7 +740,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -763,7 +750,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -795,7 +781,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -806,7 +791,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -936,7 +920,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                             &mut *module,
                             &mut *import_ids,
                             &mut *builder,
-                            &mut *sealed_blocks,
                             &mut *block_tracked_obj,
                             &mut *block_tracked_ptr,
                             homes,
@@ -956,7 +939,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
-                        &mut *sealed_blocks,
                         vars,
                         src_name,
                         representation_plan,
@@ -976,7 +958,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 old_kind,
                 old_bits,
                 &mut *builder,
-                &mut *sealed_blocks,
                 &mut *block_tracked_obj,
                 &mut *block_tracked_ptr,
                 local_dec_ref_obj,
@@ -989,7 +970,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
-                    &mut *sealed_blocks,
                     vars,
                     representation_plan,
                     nbc,
@@ -1028,7 +1008,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             builder.set_cold_block(slow);
             builder.ins().brif(plain, inline, &[], slow, &[]);
             switch_to_block_materialized(&mut *builder, inline);
-            seal_block_once(&mut *builder, &mut *sealed_blocks, inline);
+            seal_block_once(&mut *builder, inline);
             let bits = builder.ins().load(
                 types::I64,
                 MemFlagsData::trusted(),
@@ -1037,7 +1017,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             );
             jump_block(&mut *builder, done, &[bits]);
             switch_to_block_materialized(&mut *builder, slow);
-            seal_block_once(&mut *builder, &mut *sealed_blocks, slow);
+            seal_block_once(&mut *builder, slow);
             let home = builder.ins().iadd_imm_s(homes, i64::from(offset));
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,
@@ -1051,7 +1031,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let loaded = builder.inst_results(call)[0];
             jump_block(&mut *builder, done, &[loaded]);
             switch_to_block_materialized(&mut *builder, done);
-            seal_block_once(&mut *builder, &mut *sealed_blocks, done);
+            seal_block_once(&mut *builder, done);
             carry_internal_cfg_tracking(origin, done, block_tracked_obj, block_tracked_ptr);
             let value = builder.block_params(done)[0];
             if let Some(out_name) = op.out.as_deref() {
@@ -1113,7 +1093,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 old_kind,
                 old_bits,
                 &mut *builder,
-                &mut *sealed_blocks,
                 &mut *block_tracked_obj,
                 &mut *block_tracked_ptr,
                 local_dec_ref_obj,
@@ -1147,7 +1126,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
-                        &mut *sealed_blocks,
                         vars,
                         name,
                         representation_plan,
@@ -1177,7 +1155,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
-                        &mut *sealed_blocks,
                         vars,
                         name,
                         representation_plan,
@@ -1258,7 +1235,6 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,

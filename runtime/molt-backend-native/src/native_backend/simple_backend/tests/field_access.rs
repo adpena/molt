@@ -338,8 +338,9 @@ fn native_guarded_object_helpers_receive_the_tagged_receiver() {
 
 #[test]
 fn pointer_decode_preserves_unsigned_bit_47_in_emitted_arithmetic() {
+    use crate::native_backend::block_sealing::FunctionBuilder;
     use cranelift_codegen::ir::InstBuilder;
-    use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+    use cranelift_frontend::FunctionBuilderContext;
 
     let mut function = Function::new();
     function

@@ -58,19 +58,21 @@ fn compile_exact_target_reference(kind: OpKind, target: &str, arity: usize, retu
         execution_context: Default::default(),
     };
     let defined = BTreeSet::from(["caller".to_string()]);
-    backend.compile_func(
-        final_function_for_test(caller),
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-        &defined,
-        &BTreeSet::new(),
-        &BTreeSet::new(),
-        &BTreeMap::from([("caller".to_string(), 0), (target.to_string(), arity)]),
-        &BTreeMap::from([
-            ("caller".to_string(), false),
-            (target.to_string(), returns_value),
-        ]),
-    );
+    backend
+        .compile_func(
+            final_function_for_test(caller),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &defined,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            &BTreeMap::from([("caller".to_string(), 0), (target.to_string(), arity)]),
+            &BTreeMap::from([
+                ("caller".to_string(), false),
+                (target.to_string(), returns_value),
+            ]),
+        )
+        .expect("native function codegen");
 }
 
 #[test]
@@ -127,16 +129,18 @@ fn compile_caller_with_incompatible_predeclared_helper(caller: FunctionIR) {
     ]);
     let function_has_ret =
         BTreeMap::from([("caller".to_string(), true), ("helper".to_string(), true)]);
-    backend.compile_func(
-        final_function_for_test(caller),
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-        &defined_functions,
-        &BTreeSet::new(),
-        &BTreeSet::new(),
-        &function_arities,
-        &function_has_ret,
-    );
+    backend
+        .compile_func(
+            final_function_for_test(caller),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &defined_functions,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            &function_arities,
+            &function_has_ret,
+        )
+        .expect("native function codegen");
 }
 
 #[test]

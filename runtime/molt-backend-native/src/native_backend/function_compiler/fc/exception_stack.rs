@@ -31,7 +31,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_stack_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-    sealed_blocks: &mut BTreeSet<Block>,
+
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
@@ -46,7 +46,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_stack_op(
     >,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
-                                       sealed_blocks: &mut BTreeSet<Block>,
+
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        representation_plan: &ScalarRepresentationPlan|
@@ -56,7 +56,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_stack_op(
             import_ids,
             builder,
             import_refs,
-            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -146,7 +145,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_stack_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -175,7 +173,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_stack_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,

@@ -29,10 +29,7 @@ impl SimpleBackend {
             .unwrap_or_else(|error| panic!("native SimpleIR admission failed: {error}"))
     }
 
-    pub fn compile_checked(
-        self,
-        ir: SimpleIR,
-    ) -> Result<CompileOutput, molt_ir::ir_schema::FunctionOpShapeDiagnostic> {
+    pub fn compile_checked(self, ir: SimpleIR) -> Result<CompileOutput, NativeCompileError> {
         // Backend selection: MOLT_BACKEND=llvm is an explicit contract. A
         // missing LLVM feature must fail closed instead of substituting a
         // different backend and producing misleading validation evidence.
@@ -51,10 +48,7 @@ impl SimpleBackend {
     }
 
     #[cfg(feature = "llvm")]
-    pub fn compile_llvm_checked(
-        self,
-        ir: SimpleIR,
-    ) -> Result<CompileOutput, molt_ir::ir_schema::FunctionOpShapeDiagnostic> {
+    pub fn compile_llvm_checked(self, ir: SimpleIR) -> Result<CompileOutput, NativeCompileError> {
         self.compile_selected_checked(ir, NativeCodegenBackend::Llvm)
     }
 
@@ -62,9 +56,9 @@ impl SimpleBackend {
         self,
         ir: SimpleIR,
         backend: NativeCodegenBackend,
-    ) -> Result<CompileOutput, molt_ir::ir_schema::FunctionOpShapeDiagnostic> {
+    ) -> Result<CompileOutput, NativeCompileError> {
         self.admit_program(&ir)?;
-        Ok(self.compile_selected(ir, backend))
+        self.compile_selected(ir, backend)
     }
 
     /// Admit a program's op shapes and program-slot custody before any pass
@@ -86,7 +80,11 @@ impl SimpleBackend {
         Ok(())
     }
 
-    fn compile_selected(mut self, ir: SimpleIR, backend: NativeCodegenBackend) -> CompileOutput {
+    fn compile_selected(
+        mut self,
+        ir: SimpleIR,
+        backend: NativeCodegenBackend,
+    ) -> Result<CompileOutput, NativeCompileError> {
         let use_llvm = backend.uses_llvm();
         let timing = backend_timing_enabled();
         let compile_start = std::time::Instant::now();
@@ -379,9 +377,9 @@ impl SimpleBackend {
                 );
             }
 
-            return CompileOutput { bytes };
+            return Ok(CompileOutput { bytes });
         }
-        let (func_count, total_ops) = self.emit_cranelift_program(program, timing);
+        let (func_count, total_ops) = self.emit_cranelift_program(program, timing)?;
 
         let emit_start = std::time::Instant::now();
         let SimpleBackend { module, .. } = self;
@@ -397,7 +395,7 @@ impl SimpleBackend {
                 bytes.len()
             );
         }
-        CompileOutput { bytes }
+        Ok(CompileOutput { bytes })
     }
 
     /// Run the shared program preparation for one native compilation and
@@ -454,7 +452,7 @@ impl SimpleBackend {
         &mut self,
         program: NativeCodegenProgram,
         timing: bool,
-    ) -> (usize, usize) {
+    ) -> Result<(usize, usize), NativeBlockError> {
         let NativeCodegenProgram {
             emit_resolver_here,
             app_callable_manifest,
@@ -572,7 +570,7 @@ impl SimpleBackend {
                 &ir_analysis.leaf_functions,
                 &effective_function_arities,
                 &effective_function_has_ret,
-            );
+            )?;
             let func_elapsed = func_start.elapsed();
             if timing && func_elapsed.as_millis() > 500 {
                 eprintln!("MOLT_BACKEND_TIMING: function `{func_name}` took {func_elapsed:.2?}");
@@ -711,7 +709,7 @@ impl SimpleBackend {
         }
 
         emit_generated_object_abi_anchor(&mut self.module);
-        (func_count, total_ops)
+        Ok((func_count, total_ops))
     }
 }
 

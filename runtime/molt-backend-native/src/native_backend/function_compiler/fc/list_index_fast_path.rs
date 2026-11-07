@@ -549,7 +549,7 @@ pub(in crate::native_backend::function_compiler) fn emit_loop_list_storage_hoist
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-    sealed_blocks: &mut BTreeSet<Block>,
+
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     fast_paths: &mut ListIndexFastPathState,
@@ -590,7 +590,6 @@ pub(in crate::native_backend::function_compiler) fn emit_loop_list_storage_hoist
                 import_ids,
                 builder,
                 import_refs,
-                sealed_blocks,
                 vars,
                 &name,
                 representation_plan,

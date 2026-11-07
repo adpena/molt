@@ -29,7 +29,7 @@ pub(in crate::native_backend::function_compiler) fn handle_vec_reduction(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-    sealed_blocks: &mut BTreeSet<Block>,
+
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
@@ -58,7 +58,6 @@ pub(in crate::native_backend::function_compiler) fn handle_vec_reduction(
         import_ids,
         builder,
         import_refs,
-        sealed_blocks,
         vars,
         representation_plan,
         nbc,

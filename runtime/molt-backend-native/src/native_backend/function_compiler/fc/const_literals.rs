@@ -186,18 +186,13 @@ pub(in crate::native_backend::function_compiler) struct LiteralFailureExit {
 
 #[cfg(feature = "native-backend")]
 impl LiteralFailureExit {
-    fn branch_if_failed(
-        self,
-        builder: &mut FunctionBuilder<'_>,
-        sealed_blocks: &mut BTreeSet<Block>,
-        failed: Value,
-    ) {
+    fn branch_if_failed(self, builder: &mut FunctionBuilder<'_>, failed: Value) {
         let success = builder.create_block();
         let none = builder.ins().iconst(types::I64, box_none());
         let args = if self.returns_value { &[none][..] } else { &[] };
         brif_block(builder, failed, self.block, args, success, &[]);
         switch_to_block_materialized(builder, success);
-        seal_block_once(builder, sealed_blocks, success);
+        seal_block_once(builder, success);
     }
 }
 
@@ -208,7 +203,7 @@ fn hoist_outparam_literal(
     data_pool: &mut BTreeMap<Vec<u8>, cranelift_module::DataId>,
     next_data_id: &mut u64,
     builder: &mut FunctionBuilder<'_>,
-    sealed_blocks: &mut BTreeSet<Block>,
+
     vars: &BTreeMap<String, Variable>,
     ref_name: &str,
     bytes: &[u8],
@@ -232,7 +227,7 @@ fn hoist_outparam_literal(
     let call = builder.ins().call(local_callee, &[ptr, len, tmp_ptr]);
     let status = builder.inst_results(call)[0];
     let failed = builder.ins().icmp_imm_s(IntCC::NotEqual, status, 0);
-    failure_exit.branch_if_failed(builder, sealed_blocks, failed);
+    failure_exit.branch_if_failed(builder, failed);
 }
 
 #[cfg(feature = "native-backend")]
@@ -242,7 +237,7 @@ fn hoist_bigint_literal(
     data_pool: &mut BTreeMap<Vec<u8>, cranelift_module::DataId>,
     next_data_id: &mut u64,
     builder: &mut FunctionBuilder<'_>,
-    sealed_blocks: &mut BTreeSet<Block>,
+
     vars: &BTreeMap<String, Variable>,
     ref_name: &str,
     bytes: &[u8],
@@ -268,7 +263,7 @@ fn hoist_bigint_literal(
         .ins()
         .stack_store(module.target_config().pointer_type(), val, hoisted_slot, 0);
     let failed = builder.ins().icmp_imm_s(IntCC::Equal, val, box_none());
-    failure_exit.branch_if_failed(builder, sealed_blocks, failed);
+    failure_exit.branch_if_failed(builder, failed);
 }
 
 #[cfg(feature = "native-backend")]
@@ -392,7 +387,7 @@ impl HeapLiteralMaterialization {
         data_pool: &mut BTreeMap<Vec<u8>, cranelift_module::DataId>,
         next_data_id: &mut u64,
         builder: &mut FunctionBuilder<'_>,
-        sealed_blocks: &mut BTreeSet<Block>,
+
         vars: &BTreeMap<String, Variable>,
         failure_exit: LiteralFailureExit,
     ) {
@@ -403,7 +398,6 @@ impl HeapLiteralMaterialization {
                 data_pool,
                 next_data_id,
                 builder,
-                sealed_blocks,
                 vars,
                 ref_name,
                 bytes,
@@ -420,7 +414,6 @@ impl HeapLiteralMaterialization {
                 data_pool,
                 next_data_id,
                 builder,
-                sealed_blocks,
                 vars,
                 ref_name,
                 bytes,
@@ -437,7 +430,6 @@ impl HeapLiteralMaterialization {
                 data_pool,
                 next_data_id,
                 builder,
-                sealed_blocks,
                 vars,
                 ref_name,
                 bytes,

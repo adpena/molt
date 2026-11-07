@@ -15,7 +15,7 @@ pub(in crate::native_backend::function_compiler) fn emit_boxed_truthiness(
     module: &mut dyn Module,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    sealed_blocks: &mut BTreeSet<Block>,
+
     vars: &BTreeMap<String, Variable>,
     first_defined_at: &BTreeMap<String, usize>,
     last_use: &BTreeMap<String, usize>,
@@ -42,13 +42,7 @@ pub(in crate::native_backend::function_compiler) fn emit_boxed_truthiness(
     append_live_through_params(builder, merge, &live_through);
 
     let bool_shadow = list_index_fast_paths.bool_shadow(cond_name, builder);
-    emit_conditional_list_bool_truthiness(
-        builder,
-        sealed_blocks,
-        bool_shadow,
-        merge,
-        &live_through,
-    );
+    emit_conditional_list_bool_truthiness(builder, bool_shadow, merge, &live_through);
 
     let mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
     let masked = builder.ins().band(cond, mask);
@@ -61,14 +55,14 @@ pub(in crate::native_backend::function_compiler) fn emit_boxed_truthiness(
         .brif(is_bool, bool_block, &[], not_bool_block, &[]);
 
     switch_to_block_materialized(builder, bool_block);
-    seal_block_once(builder, sealed_blocks, bool_block);
+    seal_block_once(builder, bool_block);
     let bit0 = builder.ins().band_imm_u(cond, 1);
     let bool_truthy = builder.ins().icmp_imm_s(IntCC::NotEqual, bit0, 0);
     let merge_args = merge_args_with_live_through(bool_truthy, &live_through);
     jump_block(builder, merge, &merge_args);
 
     switch_to_block_materialized(builder, not_bool_block);
-    seal_block_once(builder, sealed_blocks, not_bool_block);
+    seal_block_once(builder, not_bool_block);
     let int_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_int);
     let is_int = builder.ins().icmp(IntCC::Equal, masked, int_tag);
     let int_block = builder.create_block();
@@ -77,14 +71,14 @@ pub(in crate::native_backend::function_compiler) fn emit_boxed_truthiness(
     builder.ins().brif(is_int, int_block, &[], call_block, &[]);
 
     switch_to_block_materialized(builder, int_block);
-    seal_block_once(builder, sealed_blocks, int_block);
+    seal_block_once(builder, int_block);
     let raw = unbox_int(builder, cond, nbc);
     let int_truthy = builder.ins().icmp_imm_s(IntCC::NotEqual, raw, 0);
     let merge_args = merge_args_with_live_through(int_truthy, &live_through);
     jump_block(builder, merge, &merge_args);
 
     switch_to_block_materialized(builder, call_block);
-    seal_block_once(builder, sealed_blocks, call_block);
+    seal_block_once(builder, call_block);
     let truthy_fn = SimpleBackend::import_func_id_split(
         module,
         import_ids,
@@ -100,7 +94,7 @@ pub(in crate::native_backend::function_compiler) fn emit_boxed_truthiness(
     jump_block(builder, merge, &merge_args);
 
     switch_to_block_materialized(builder, merge);
-    seal_block_once(builder, sealed_blocks, merge);
+    seal_block_once(builder, merge);
     let params = builder.block_params(merge).to_vec();
     rebind_live_through_values(builder, vars, &live_through, &params[1..]);
 

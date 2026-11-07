@@ -12,8 +12,7 @@ fn native_completion_retires_dead_builder_components_without_traps() {
     let dead_header;
     let dead_body;
     {
-        let mut builder =
-            cranelift_frontend::FunctionBuilder::new(&mut context.func, &mut builder_context);
+        let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
         entry = builder.create_block();
         builder.switch_to_block(entry);
         builder.ins().return_(&[]);
@@ -54,8 +53,7 @@ fn native_completion_rejects_reachable_empty_builder_blocks() {
     context.func.signature.call_conv = backend.module.isa().default_call_conv();
     let mut builder_context = cranelift_frontend::FunctionBuilderContext::new();
     {
-        let mut builder =
-            cranelift_frontend::FunctionBuilder::new(&mut context.func, &mut builder_context);
+        let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
         let entry = builder.create_block();
         let empty_target = builder.create_block();
         builder.switch_to_block(entry);

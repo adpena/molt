@@ -37,7 +37,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-    sealed_blocks: &mut BTreeSet<Block>,
+
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     first_defined_at: &BTreeMap<String, usize>,
@@ -72,7 +72,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
     >,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
-                                       sealed_blocks: &mut BTreeSet<Block>,
+
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        representation_plan: &ScalarRepresentationPlan|
@@ -82,7 +82,6 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             import_ids,
             builder,
             import_refs,
-            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -107,7 +106,6 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     import_ids,
                     builder,
                     import_refs,
-                    sealed_blocks,
                     vars,
                     nbc,
                     representation_plan,
@@ -201,7 +199,6 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
-                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -229,7 +226,6 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
-                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -246,7 +242,6 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
-                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -256,7 +251,6 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     &mut *module,
                     &mut *import_ids,
                     &mut *builder,
-                    &mut *sealed_blocks,
                     vars,
                     first_defined_at,
                     last_use,
@@ -333,7 +327,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 &mut *is_block_filled,
             );
             maybe_debug_seal("br_if_fallthrough", op_idx, fallthrough_block);
-            seal_block_once(&mut *builder, &mut *sealed_blocks, fallthrough_block);
+            seal_block_once(&mut *builder, fallthrough_block);
         }
         OpKind::Label | OpKind::StateLabel => {
             let label_id = op.value.unwrap_or(0);
@@ -443,7 +437,6 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 import_ids,
                 builder,
                 import_refs,
-                sealed_blocks,
                 representation_plan,
                 nbc,
                 name,
@@ -456,7 +449,6 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                     import_ids,
                     builder,
                     import_refs,
-                    sealed_blocks,
                     representation_plan,
                     nbc,
                     result,
@@ -577,7 +569,6 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 missing_name,
                 representation_plan,
@@ -588,7 +579,6 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 old_name,
                 representation_plan,
@@ -643,7 +633,6 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 import_ids,
                 builder,
                 import_refs,
-                sealed_blocks,
                 representation_plan,
                 nbc,
                 out,

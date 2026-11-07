@@ -3,6 +3,66 @@ use super::*;
 use molt_ir::OpKind;
 
 #[test]
+fn native_completion_returns_a_named_error_for_a_seeded_missing_seal() {
+    use crate::native_backend::NativeBlockIssue;
+    let mut function = Function::new();
+    let mut context = FunctionBuilderContext::new();
+    let mut builder = FunctionBuilder::new(&mut function, &mut context);
+    let entry = builder.create_block();
+    builder.switch_to_block(entry);
+    builder.ins().return_(&[]);
+    let error = builder.check_sealed("seeded_missing_seal").unwrap_err();
+    assert_eq!(error.function, "seeded_missing_seal");
+    assert_eq!(error.block, entry);
+    assert_eq!(error.issue, NativeBlockIssue::Unsealed);
+    assert!(error.to_string().contains(&entry.to_string()));
+    builder.seal_block(entry);
+    builder.check_sealed("seeded_missing_seal").unwrap();
+    builder.finalize(crate::test_support::host_frontend_config());
+}
+
+#[test]
+fn final_label_predecessor_seals_before_the_first_variable_read() {
+    let ops = vec![
+        OpIR {
+            value: Some(7),
+            ..OpIR::new(OpKind::Jump)
+        },
+        OpIR {
+            value: Some(7),
+            ..OpIR::new(OpKind::Label)
+        },
+        OpIR::new(OpKind::RetVoid),
+    ];
+    let cfg = crate::tir::cfg::CFG::build(&ops);
+    let mut function = Function::new();
+    let mut context = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut function, &mut context);
+        let entry = builder.create_block();
+        let target = builder.create_block();
+        let home = builder.declare_var(types::I64);
+        switch_to_block_materialized(&mut builder, entry);
+        builder.seal_block(entry);
+        let value = builder.ins().iconst(types::I64, 37);
+        builder.def_var(home, value);
+        builder.plan_labels(&ops, &cfg, &BTreeMap::from([(7, target)]));
+        builder.begin_op(0, &ops[0]);
+        jump_block(&mut builder, target, &[]);
+        builder.begin_op(1, &ops[1]);
+        switch_to_block_materialized(&mut builder, target);
+        assert!(builder.is_sealed(target));
+        assert_eq!(builder.use_var(home), value);
+        assert!(builder.block_params(target).is_empty());
+        builder.ins().return_(&[]);
+        builder.close_sources(ops.len() + 1);
+        builder.check_sealed("forward_label").unwrap();
+        builder.finalize(crate::test_support::host_frontend_config());
+    }
+    verify_function(&function, &settings::Flags::new(settings::builder())).unwrap();
+}
+
+#[test]
 fn block_transport_plan_emits_typed_args_and_rebinds_values() {
     let sig = Signature::new(CallConv::SystemV);
     let mut func = Function::with_name_signature(UserFuncName::default(), sig);
@@ -157,10 +217,10 @@ fn internal_single_predecessor_chain_resolves_only_demanded_values() {
     let mut context = FunctionBuilderContext::new();
     {
         let mut builder = FunctionBuilder::new(&mut function, &mut context);
-        let mut sealed = BTreeSet::new();
+
         let entry = builder.create_block();
         switch_to_block_materialized(&mut builder, entry);
-        seal_block_once(&mut builder, &mut sealed, entry);
+        seal_block_once(&mut builder, entry);
         let mut homes = Vec::new();
         for value in 0..128 {
             let home = builder.declare_var(types::I64);
@@ -172,7 +232,7 @@ fn internal_single_predecessor_chain_resolves_only_demanded_values() {
             let next = builder.create_block();
             builder.ins().jump(next, &[]);
             switch_to_block_materialized(&mut builder, next);
-            seal_block_once(&mut builder, &mut sealed, next);
+            seal_block_once(&mut builder, next);
         }
         let (home, expected) = homes[37];
         assert_eq!(builder.use_var(home), expected);
@@ -195,7 +255,7 @@ fn internal_diamond_preserves_redefinitions_before_and_after_sealing() {
         let mut context = FunctionBuilderContext::new();
         let (left_edge, right_edge, join) = {
             let mut builder = FunctionBuilder::new(&mut function, &mut context);
-            let mut sealed = BTreeSet::new();
+
             let home = builder.declare_var(types::I64);
             let entry = builder.create_block();
             let left = builder.create_block();
@@ -203,29 +263,29 @@ fn internal_diamond_preserves_redefinitions_before_and_after_sealing() {
             let join = builder.create_block();
             builder.append_block_params_for_function_params(entry);
             switch_to_block_materialized(&mut builder, entry);
-            seal_block_once(&mut builder, &mut sealed, entry);
+            seal_block_once(&mut builder, entry);
             let condition = builder.block_params(entry)[0];
             let initial = builder.ins().iconst(types::I64, 11);
             builder.def_var(home, initial);
             builder.ins().brif(condition, left, &[], right, &[]);
             switch_to_block_materialized(&mut builder, left);
-            seal_block_once(&mut builder, &mut sealed, left);
+            seal_block_once(&mut builder, left);
             let replaced = builder.ins().iconst(types::I64, 23);
             builder.def_var(home, replaced);
             let final_left = builder.ins().iconst(types::I64, 47);
             builder.def_var(home, final_left);
             let left_edge = builder.ins().jump(join, &[]);
             switch_to_block_materialized(&mut builder, right);
-            seal_block_once(&mut builder, &mut sealed, right);
+            seal_block_once(&mut builder, right);
             assert_eq!(builder.use_var(home), initial);
             let right_edge = builder.ins().jump(join, &[]);
             switch_to_block_materialized(&mut builder, join);
             if seal_before_use {
-                seal_block_once(&mut builder, &mut sealed, join);
+                seal_block_once(&mut builder, join);
             }
             let result = builder.use_var(home);
             if !seal_before_use {
-                seal_block_once(&mut builder, &mut sealed, join);
+                seal_block_once(&mut builder, join);
             }
             assert_eq!(builder.block_params(join), &[result]);
             builder.ins().return_(&[result]);
@@ -270,19 +330,19 @@ fn seal_block_once_rejects_unmaterialized_block_without_recording_success() {
     let mut context = FunctionBuilderContext::new();
     {
         let mut builder = FunctionBuilder::new(&mut function, &mut context);
-        let mut sealed = BTreeSet::new();
+
         let home = builder.declare_var(types::I64);
         let entry = builder.create_block();
         let next = builder.create_block();
         switch_to_block_materialized(&mut builder, entry);
-        seal_block_once(&mut builder, &mut sealed, entry);
+        seal_block_once(&mut builder, entry);
         let initial = builder.ins().iconst(types::I64, 11);
         builder.def_var(home, initial);
         builder.ins().jump(next, &[]);
 
-        let before = sealed.clone();
+        assert!(!builder.is_sealed(next));
         let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            seal_block_once(&mut builder, &mut sealed, next);
+            seal_block_once(&mut builder, next);
         }))
         .expect_err("sealing before materialization must fail at Molt's boundary");
         let message = failure
@@ -291,15 +351,18 @@ fn seal_block_once_rejects_unmaterialized_block_without_recording_success() {
             .or_else(|| failure.downcast_ref::<&str>().copied())
             .expect("sealing diagnostic must be text");
         assert!(message.contains("cannot seal unmaterialized block"));
-        assert_eq!(sealed, before, "failed sealing must preserve the record");
+        assert!(
+            !builder.is_sealed(next),
+            "failed sealing must preserve the record"
+        );
         assert!(!builder.func.layout.is_block_inserted(next));
 
         // Materializing and retrying must perform the real seal. A false record
         // from the rejected attempt would leave use_var creating a parameter.
         switch_to_block_materialized(&mut builder, next);
-        seal_block_once(&mut builder, &mut sealed, next);
-        seal_block_once(&mut builder, &mut sealed, next);
-        assert!(sealed.contains(&next));
+        seal_block_once(&mut builder, next);
+        seal_block_once(&mut builder, next);
+        assert!(builder.is_sealed(next));
         assert_eq!(builder.use_var(home), initial);
         assert!(builder.block_params(next).is_empty());
         builder.ins().return_(&[initial]);

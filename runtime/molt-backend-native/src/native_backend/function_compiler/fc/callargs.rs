@@ -25,7 +25,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-    sealed_blocks: &mut BTreeSet<Block>,
+
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
@@ -45,7 +45,6 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
             import_ids,
             builder,
             import_refs,
-            sealed_blocks,
             vars,
             representation_plan,
             nbc,
@@ -92,7 +91,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
             let join = builder.create_block();
             builder.ins().brif(present, push, &[], join, &[]);
             switch_to_block_materialized(builder, push);
-            seal_block_once(builder, sealed_blocks, push);
+            seal_block_once(builder, push);
             let push_fn = import_func_ref(
                 module,
                 import_ids,
@@ -124,7 +123,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
             );
             jump_block(builder, join, &[]);
             switch_to_block_materialized(builder, join);
-            seal_block_once(builder, sealed_blocks, join);
+            seal_block_once(builder, join);
         }
         OpKind::CallargsPushPos => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -212,7 +211,6 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
         import_ids,
         builder,
         import_refs,
-        sealed_blocks,
         vars,
         representation_plan,
         nbc,

@@ -31,7 +31,7 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-    sealed_blocks: &mut BTreeSet<Block>,
+
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     scalar_fast_paths_enabled: bool,
@@ -46,7 +46,7 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
     >,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
-                                       sealed_blocks: &mut BTreeSet<Block>,
+
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        representation_plan: &ScalarRepresentationPlan|
@@ -56,7 +56,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
             import_ids,
             builder,
             import_refs,
-            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -91,7 +90,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
-                        &mut *sealed_blocks,
                         vars,
                         &args[0],
                         representation_plan,
@@ -102,7 +100,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
-                        &mut *sealed_blocks,
                         vars,
                         &args[1],
                         representation_plan,
@@ -113,7 +110,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
-                        &mut *sealed_blocks,
                         *lhs,
                         *rhs,
                         "molt_bit_or",
@@ -127,7 +123,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
-                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -138,7 +133,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
-                    &mut *sealed_blocks,
                     vars,
                     &args[1],
                     representation_plan,
@@ -165,7 +159,7 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                     .brif(both_int, fast_block, &[], slow_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, fast_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
+                seal_block_once(&mut *builder, fast_block);
                 let raw = builder.ins().bor(lhs_val, rhs_val);
                 let fast_res = box_int_value(&mut *builder, raw, nbc);
                 let fits_inline = int_value_fits_inline(&mut *builder, raw);
@@ -179,13 +173,13 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 );
 
                 switch_to_block_materialized(&mut *builder, slow_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
+                seal_block_once(&mut *builder, slow_block);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                 let slow_res = builder.inst_results(call)[0];
                 jump_block(&mut *builder, merge_block, &[slow_res]);
 
                 switch_to_block_materialized(&mut *builder, merge_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
+                seal_block_once(&mut *builder, merge_block);
                 builder.block_params(merge_block)[0]
             };
             if let Some(out__) = op.out.as_ref() {
@@ -199,7 +193,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -210,7 +203,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -222,7 +214,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
-                    &mut *sealed_blocks,
                     *lhs,
                     *rhs,
                     "molt_inplace_bit_or",
@@ -251,7 +242,7 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                     .brif(both_int, fast_block, &[], slow_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, fast_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
+                seal_block_once(&mut *builder, fast_block);
                 let raw = builder.ins().bor(lhs_val, rhs_val);
                 let fast_res = box_int_value(&mut *builder, raw, nbc);
                 let fits_inline = int_value_fits_inline(&mut *builder, raw);
@@ -265,13 +256,13 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 );
 
                 switch_to_block_materialized(&mut *builder, slow_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
+                seal_block_once(&mut *builder, slow_block);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                 let slow_res = builder.inst_results(call)[0];
                 jump_block(&mut *builder, merge_block, &[slow_res]);
 
                 switch_to_block_materialized(&mut *builder, merge_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
+                seal_block_once(&mut *builder, merge_block);
                 builder.block_params(merge_block)[0]
             };
             if let Some(out__) = op.out.as_ref() {
@@ -303,7 +294,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
-                        &mut *sealed_blocks,
                         vars,
                         &args[0],
                         representation_plan,
@@ -314,7 +304,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
-                        &mut *sealed_blocks,
                         vars,
                         &args[1],
                         representation_plan,
@@ -325,7 +314,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
-                        &mut *sealed_blocks,
                         *lhs,
                         *rhs,
                         "molt_bit_and",
@@ -339,7 +327,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
-                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -350,7 +337,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
-                    &mut *sealed_blocks,
                     vars,
                     &args[1],
                     representation_plan,
@@ -377,7 +363,7 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                     .brif(both_int, fast_block, &[], slow_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, fast_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
+                seal_block_once(&mut *builder, fast_block);
                 let raw = builder.ins().band(lhs_val, rhs_val);
                 let fast_res = box_int_value(&mut *builder, raw, nbc);
                 let fits_inline = int_value_fits_inline(&mut *builder, raw);
@@ -391,13 +377,13 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 );
 
                 switch_to_block_materialized(&mut *builder, slow_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
+                seal_block_once(&mut *builder, slow_block);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                 let slow_res = builder.inst_results(call)[0];
                 jump_block(&mut *builder, merge_block, &[slow_res]);
 
                 switch_to_block_materialized(&mut *builder, merge_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
+                seal_block_once(&mut *builder, merge_block);
                 builder.block_params(merge_block)[0]
             };
             if let Some(out__) = op.out.as_ref() {
@@ -411,7 +397,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -422,7 +407,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -434,7 +418,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
-                    &mut *sealed_blocks,
                     *lhs,
                     *rhs,
                     "molt_inplace_bit_and",
@@ -463,7 +446,7 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                     .brif(both_int, fast_block, &[], slow_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, fast_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
+                seal_block_once(&mut *builder, fast_block);
                 let raw = builder.ins().band(lhs_val, rhs_val);
                 let fast_res = box_int_value(&mut *builder, raw, nbc);
                 let fits_inline = int_value_fits_inline(&mut *builder, raw);
@@ -477,13 +460,13 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 );
 
                 switch_to_block_materialized(&mut *builder, slow_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
+                seal_block_once(&mut *builder, slow_block);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                 let slow_res = builder.inst_results(call)[0];
                 jump_block(&mut *builder, merge_block, &[slow_res]);
 
                 switch_to_block_materialized(&mut *builder, merge_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
+                seal_block_once(&mut *builder, merge_block);
                 builder.block_params(merge_block)[0]
             };
             if let Some(out__) = op.out.as_ref() {
@@ -515,7 +498,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
-                        &mut *sealed_blocks,
                         vars,
                         &args[0],
                         representation_plan,
@@ -526,7 +508,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
-                        &mut *sealed_blocks,
                         vars,
                         &args[1],
                         representation_plan,
@@ -537,7 +518,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                         &mut *import_ids,
                         &mut *builder,
                         &mut *import_refs,
-                        &mut *sealed_blocks,
                         *lhs,
                         *rhs,
                         "molt_bit_xor",
@@ -551,7 +531,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
-                    &mut *sealed_blocks,
                     vars,
                     &args[0],
                     representation_plan,
@@ -562,7 +541,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
-                    &mut *sealed_blocks,
                     vars,
                     &args[1],
                     representation_plan,
@@ -589,7 +567,7 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                     .brif(both_int, fast_block, &[], slow_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, fast_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
+                seal_block_once(&mut *builder, fast_block);
                 let raw = builder.ins().bxor(lhs_val, rhs_val);
                 let fast_res = box_int_value(&mut *builder, raw, nbc);
                 let fits_inline = int_value_fits_inline(&mut *builder, raw);
@@ -603,13 +581,13 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 );
 
                 switch_to_block_materialized(&mut *builder, slow_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
+                seal_block_once(&mut *builder, slow_block);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                 let slow_res = builder.inst_results(call)[0];
                 jump_block(&mut *builder, merge_block, &[slow_res]);
 
                 switch_to_block_materialized(&mut *builder, merge_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
+                seal_block_once(&mut *builder, merge_block);
                 builder.block_params(merge_block)[0]
             };
             if let Some(out__) = op.out.as_ref() {
@@ -623,7 +601,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -634,7 +611,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -646,7 +622,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                     &mut *import_ids,
                     &mut *builder,
                     &mut *import_refs,
-                    &mut *sealed_blocks,
                     *lhs,
                     *rhs,
                     "molt_inplace_bit_xor",
@@ -675,7 +650,7 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                     .brif(both_int, fast_block, &[], slow_block, &[]);
 
                 switch_to_block_materialized(&mut *builder, fast_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
+                seal_block_once(&mut *builder, fast_block);
                 let raw = builder.ins().bxor(lhs_val, rhs_val);
                 let fast_res = box_int_value(&mut *builder, raw, nbc);
                 let fits_inline = int_value_fits_inline(&mut *builder, raw);
@@ -689,13 +664,13 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 );
 
                 switch_to_block_materialized(&mut *builder, slow_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
+                seal_block_once(&mut *builder, slow_block);
                 let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
                 let slow_res = builder.inst_results(call)[0];
                 jump_block(&mut *builder, merge_block, &[slow_res]);
 
                 switch_to_block_materialized(&mut *builder, merge_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
+                seal_block_once(&mut *builder, merge_block);
                 builder.block_params(merge_block)[0]
             };
             if let Some(out__) = op.out.as_ref() {
@@ -718,7 +693,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -729,7 +703,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,
@@ -763,7 +736,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -774,7 +746,6 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
-                &mut *sealed_blocks,
                 vars,
                 &args[1],
                 representation_plan,

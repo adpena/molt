@@ -82,11 +82,10 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
-    sealed_blocks: &mut BTreeSet<Block>,
+
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     last_use: &BTreeMap<String, usize>,
-    exception_label_ids: &BTreeSet<i64>,
     loop_body_init_vars: &BTreeMap<usize, Vec<String>>,
     list_index_fast_paths: &mut ListIndexFastPathState,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
@@ -119,7 +118,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
     >,
                                        builder: &mut FunctionBuilder<'_>,
                                        import_refs: &mut NativeFunctionImports,
-                                       sealed_blocks: &mut BTreeSet<Block>,
+
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        representation_plan: &ScalarRepresentationPlan|
@@ -129,7 +128,6 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
             import_ids,
             builder,
             import_refs,
-            sealed_blocks,
             vars,
             name,
             representation_plan,
@@ -174,7 +172,6 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     import_ids,
                     builder,
                     import_refs,
-                    sealed_blocks,
                     vars,
                     representation_plan,
                     list_index_fast_paths,
@@ -287,7 +284,6 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                     &mut *import_ids,
                                     &mut *builder,
                                     import_refs,
-                                    sealed_blocks,
                                     vars,
                                     out,
                                     representation_plan,
@@ -375,7 +371,6 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         &mut *import_ids,
                         &mut *builder,
                         import_refs,
-                        sealed_blocks,
                         vars,
                         &args[0],
                         representation_plan,
@@ -417,7 +412,6 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     import_ids,
                     builder,
                     import_refs,
-                    sealed_blocks,
                     vars,
                     representation_plan,
                     list_index_fast_paths,
@@ -465,7 +459,6 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                     &mut *import_ids,
                                     &mut *builder,
                                     import_refs,
-                                    sealed_blocks,
                                     vars,
                                     &reduction.acc_operand_name,
                                     representation_plan,
@@ -523,7 +516,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         // Unroll body: load 4 elements, add them to accumulator
                         ensure_block_in_layout(&mut *builder, unroll_body);
                         switch_to_block_materialized(&mut *builder, unroll_body);
-                        seal_block_once(&mut *builder, sealed_blocks, unroll_body);
+                        seal_block_once(&mut *builder, unroll_body);
                         let cur_idx = builder.use_var(idx_loop_var);
                         let cur_acc = builder.use_var(acc_loop_var);
 
@@ -558,11 +551,10 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         builder.def_var(idx_loop_var, next_idx_u);
                         builder.def_var(acc_loop_var, acc4);
                         jump_block(&mut *builder, unroll_header, &[]);
+                        seal_block_once(builder, unroll_header);
 
                         // ── Scalar epilogue (0-3 remaining elements) ──
-                        // epilogue_header is a loop header (back-edge from
-                        // epilogue_body) — do NOT seal it here; seal_all_blocks
-                        // handles it after all predecessors are wired.
+                        // Keep the epilogue header open until its body backedge.
                         ensure_block_in_layout(&mut *builder, epilogue_header);
                         switch_to_block_materialized(&mut *builder, epilogue_header);
                         let idx_e = builder.use_var(idx_loop_var);
@@ -574,7 +566,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         // Epilogue body: load 1 element, add, advance by 1
                         ensure_block_in_layout(&mut *builder, epilogue_body);
                         switch_to_block_materialized(&mut *builder, epilogue_body);
-                        seal_block_once(&mut *builder, sealed_blocks, epilogue_body);
+                        seal_block_once(&mut *builder, epilogue_body);
                         let idx_eb = builder.use_var(idx_loop_var);
                         let acc_eb = builder.use_var(acc_loop_var);
                         let off_e = builder.ins().ishl_imm_u(idx_eb, 3);
@@ -588,11 +580,12 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         builder.def_var(idx_loop_var, next_idx_e);
                         builder.def_var(acc_loop_var, acc_e_next);
                         jump_block(&mut *builder, epilogue_header, &[]);
+                        seal_block_once(builder, epilogue_header);
 
                         // ── After block: write final accumulator to variables ──
                         ensure_block_in_layout(&mut *builder, after_all);
                         switch_to_block_materialized(&mut *builder, after_all);
-                        seal_block_once(&mut *builder, sealed_blocks, after_all);
+                        seal_block_once(&mut *builder, after_all);
                         let final_acc = builder.use_var(acc_loop_var);
 
                         // Update the accumulator variables as raw i64:
@@ -734,10 +727,8 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     .ins()
                     .brif(cond_bool, cleanup_block, &[], frame.body_block, &[]);
                 crate::switch_to_block_tracking(&mut *builder, cleanup_block, is_block_filled);
-                if exception_label_ids.is_empty() {
-                    maybe_debug_seal("loop_break_exception_cleanup", op_idx, cleanup_block);
-                    seal_block_once(&mut *builder, sealed_blocks, cleanup_block);
-                }
+                maybe_debug_seal("loop_break_exception_cleanup", op_idx, cleanup_block);
+                seal_block_once(&mut *builder, cleanup_block);
                 for name in tracked_obj_snapshot {
                     cleanup_roots.release(builder, local_dec_ref_obj, &name);
                 }
@@ -749,10 +740,8 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 jump_block(&mut *builder, frame.after_block, &[]);
                 crate::switch_to_block_tracking(&mut *builder, frame.body_block, is_block_filled);
                 // Seal body_block now — its only predecessor is the brif above.
-                if exception_label_ids.is_empty() {
-                    maybe_debug_seal("loop_break_exception_body", op_idx, frame.body_block);
-                    seal_block_once(&mut *builder, sealed_blocks, frame.body_block);
-                }
+                maybe_debug_seal("loop_break_exception_body", op_idx, frame.body_block);
+                seal_block_once(&mut *builder, frame.body_block);
                 propagate_tracked_to_branches(
                     block_tracked_obj,
                     &[frame.body_block, frame.after_block],
@@ -807,7 +796,6 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         &mut *import_ids,
                         &mut *builder,
                         import_refs,
-                        sealed_blocks,
                         vars,
                         &args[0],
                         representation_plan,
@@ -834,7 +822,6 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         &mut *import_ids,
                         &mut *builder,
                         import_refs,
-                        sealed_blocks,
                         vars,
                         &args[0],
                         representation_plan,
@@ -851,7 +838,6 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         &mut *import_ids,
                         &mut *builder,
                         import_refs,
-                        sealed_blocks,
                         vars,
                         &args[0],
                         representation_plan,
@@ -885,10 +871,8 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     .ins()
                     .brif(cond_bool, cleanup_block, &[], frame.body_block, &[]);
                 crate::switch_to_block_tracking(&mut *builder, cleanup_block, is_block_filled);
-                if exception_label_ids.is_empty() {
-                    maybe_debug_seal("loop_break_true_cleanup", op_idx, cleanup_block);
-                    seal_block_once(&mut *builder, sealed_blocks, cleanup_block);
-                }
+                maybe_debug_seal("loop_break_true_cleanup", op_idx, cleanup_block);
+                seal_block_once(&mut *builder, cleanup_block);
                 for name in tracked_obj_snapshot {
                     cleanup_roots.release(builder, local_dec_ref_obj, &name);
                 }
@@ -900,10 +884,8 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 jump_block(&mut *builder, frame.after_block, &[]);
                 crate::switch_to_block_tracking(&mut *builder, frame.body_block, is_block_filled);
                 // Seal body_block now — its only predecessor is the brif above.
-                if exception_label_ids.is_empty() {
-                    maybe_debug_seal("loop_break_true_body", op_idx, frame.body_block);
-                    seal_block_once(&mut *builder, sealed_blocks, frame.body_block);
-                }
+                maybe_debug_seal("loop_break_true_body", op_idx, frame.body_block);
+                seal_block_once(&mut *builder, frame.body_block);
                 propagate_tracked_to_branches(
                     block_tracked_obj,
                     &[frame.body_block, frame.after_block],
@@ -970,7 +952,6 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         &mut *import_ids,
                         &mut *builder,
                         import_refs,
-                        sealed_blocks,
                         vars,
                         &args[0],
                         representation_plan,
@@ -997,7 +978,6 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         &mut *import_ids,
                         &mut *builder,
                         import_refs,
-                        sealed_blocks,
                         vars,
                         &args[0],
                         representation_plan,
@@ -1014,7 +994,6 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         &mut *import_ids,
                         &mut *builder,
                         import_refs,
-                        sealed_blocks,
                         vars,
                         &args[0],
                         representation_plan,
@@ -1048,10 +1027,8 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     .ins()
                     .brif(cond_bool, frame.body_block, &[], cleanup_block, &[]);
                 crate::switch_to_block_tracking(&mut *builder, cleanup_block, is_block_filled);
-                if exception_label_ids.is_empty() {
-                    maybe_debug_seal("loop_break_false_cleanup", op_idx, cleanup_block);
-                    seal_block_once(&mut *builder, sealed_blocks, cleanup_block);
-                }
+                maybe_debug_seal("loop_break_false_cleanup", op_idx, cleanup_block);
+                seal_block_once(&mut *builder, cleanup_block);
                 for name in tracked_obj_snapshot {
                     cleanup_roots.release(builder, local_dec_ref_obj, &name);
                 }
@@ -1065,10 +1042,8 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 // Seal body_block now — its only predecessor is the brif
                 // above.  Early sealing helps Cranelift resolve SSA variables
                 // (especially the loop induction variable) immediately.
-                if exception_label_ids.is_empty() {
-                    maybe_debug_seal("loop_break_false_body", op_idx, frame.body_block);
-                    seal_block_once(&mut *builder, sealed_blocks, frame.body_block);
-                }
+                maybe_debug_seal("loop_break_false_body", op_idx, frame.body_block);
+                seal_block_once(&mut *builder, frame.body_block);
                 propagate_tracked_to_branches(
                     block_tracked_obj,
                     &[frame.body_block, frame.after_block],
@@ -1119,7 +1094,6 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 &mut *import_ids,
                 &mut *builder,
                 import_refs,
-                sealed_blocks,
                 vars,
                 &args[0],
                 representation_plan,
@@ -1193,7 +1167,6 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                         &mut *import_ids,
                                         &mut *builder,
                                         import_refs,
-                                        sealed_blocks,
                                         vars,
                                         src_name,
                                         representation_plan,
@@ -1238,7 +1211,6 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         &mut *import_ids,
                         &mut *builder,
                         import_refs,
-                        sealed_blocks,
                         vars,
                         name,
                         representation_plan,
@@ -1288,7 +1260,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     jump_block(&mut *builder, frame.loop_block, &[]);
                 }
                 if builder.func.layout.is_block_inserted(frame.loop_block) {
-                    seal_block_once(&mut *builder, sealed_blocks, frame.loop_block);
+                    seal_block_once(&mut *builder, frame.loop_block);
                 }
                 if reachable_blocks.contains(&frame.after_block) {
                     ensure_block_in_layout(&mut *builder, frame.after_block);
@@ -1303,10 +1275,8 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                         frame.after_block,
                         is_block_filled,
                     );
-                    if exception_label_ids.is_empty() {
-                        maybe_debug_seal("loop_end_after", op_idx, frame.after_block);
-                        seal_block_once(&mut *builder, sealed_blocks, frame.after_block);
-                    }
+                    maybe_debug_seal("loop_end_after", op_idx, frame.after_block);
+                    seal_block_once(&mut *builder, frame.after_block);
                 } else {
                     *is_block_filled = true;
                 }

@@ -1,6 +1,6 @@
 # Native backend early sealing
 
-Status: proposed, pending design review. This describes the native backend's intended sealing
+Status: accepted design; implementation qualification pending. This describes the native backend's intended sealing
 invariant and its validation, not implemented or qualified behavior. HF-807 in the
 [V1 ledger](../agent/V1_HANDOFF_FINDINGS.md) owns current implementation and qualification status.
 
@@ -121,31 +121,24 @@ avoids such remnants. No cleanup loop may seal unknown blocks to make the assert
 Cranelift's own finalize assertion is debug-only; the Molt missing-seal check must also run in the
 shipping compiler profile. Keep the existing verifier and unreachable-CFG retirement boundary.
 
-### Debug statistic and measurement boundary
+### Measurement and settled helper boundary
 
-Count parameters **created**, including placeholders later replaced by aliases; a final CLIF
-parameter count alone cannot measure the reported allocation growth. Attribute at the actual
-`SSABuilder::find_var` allocation using typed `Block` and `Variable` IDs. Classes are closed enums:
-`Label`, `IfMerge`, `LoopAfter`, `Handler`, `Return`, `LoopHeader`, `Internal`; and `SimpleIr`,
-`CleanupRoot`, `Internal`. Handler labels have handler priority over ordinary-label classification.
-Keep a fixed class-by-class counter array plus dense ID-to-class projections, not a record per
-created Value. Explicit transport and callable-ABI parameters are reported separately from
-SSA-created parameters. Report the function's actual `drop_inserted` preanalysis fact.
+The integrator's 2026-11-07 correction drops the patched-Cranelift attribution experiment.
+Use uninstrumented builds and report peak RSS, compile seconds and `func.dfg.num_values()` after
+codegen, selected by the existing `MOLT_DEBUG_SEAL` setting. No dependency fork, diagnostic
+accessor, per-class counter or new environment key is introduced.
 
-The pinned public `FunctionBuilder` API does not expose the allocating variable while sealing, or
-its private sealed-state query. Taking DFG deltas around `seal_block` cannot attribute the variable
-class faithfully. For the attribution experiment, use a scratch copy of the exact pinned
-Cranelift frontend with debug-only allocation counters and a narrow diagnostic accessor, and a
-matching scratch native build that supplies the enum classifications. Keep the patch and its
-source identity in private evidence, without changing workspace Cargo dependencies, the shared
-registry, or a public flag registry. Reuse the existing `MOLT_DEBUG_SEAL` exact-function selector.
-Performance A/B uses uninstrumented builds; counter runs are separate and labeled.
+The completion check covers native-owned blocks in every compiler profile and returns a codegen
+error naming the function and block. A successful `Switch::emit` call records helper completion;
+its private blocks remain helper-owned and are covered by Cranelift's own debug finalize assertion.
+The native check does not query private Cranelift state.
 
-Review must settle two boundary details before implementation: the smallest diagnostic-only hook
-that gives exact creation attribution without shipping a dependency fork, and how the native
-all-sealed assertion incorporates opaque helper seals without claiming to query an inaccessible
-Cranelift field. A native record may trust a documented successful helper seal, but cannot invent
-success for unknown IDs. The seeded-miss tests must challenge both native and helper ownership.
+The implementation keeps the lifecycle on the native builder so direct refcount seals participate
+without another threaded seal registry. A CFG source can lower to multiple physical predecessors;
+its incoming obligation is consumed once on emission. An unconsumed source closes after lowering
+has passed its complete operation range, including textual fallthrough materialization. This
+handles eliminated terminal arms without a final unqualified sealing sweep. Synthetic private
+merges and loops close at their structural final edge. The actual CFG remains the authority.
 
 ## Alternatives and risks
 
@@ -156,7 +149,7 @@ success for unknown IDs. The seeded-miss tests must challenge both native and he
 | Put all temps in stack slots | Avoids some SSA repair but adds generated loads/stores and loses register opportunities. Rejected as an unmeasured regression and outside the assigned first step. |
 | Extend SSA-local direct binding first | Potentially useful; existing analysis already exists. Deferred until early-sealing A/B establishes residual need. |
 | Build another native CFG or instrument every instruction | Duplicates semantic authority or adds repeated work. Use the existing CFG and explicit incoming obligations instead. |
-| Count only retained block parameters | Misses aliased placeholders and cannot explain peak DFG storage. Rejected for the allocation statistic. |
+| Count retained block parameters | Misses aliased placeholders; use the DFG allocation total for the settled before/after experiment. |
 
 The main correctness risk is sealing too soon after confusing semantic and physical edges. Typed
 obligation identities, branch-instruction deduplication, exception/resume regressions, and the CLIF
@@ -169,8 +162,7 @@ external service, credential handling, or new security boundary changes.
 
 ## Implementation and proof plan
 
-1. After design review settles the diagnostic and helper boundaries, build the typed statistic and measure the
-   original chunk before changing sealing. Use the existing batch replay boundary and exact
+1. Measure the original chunk before changing sealing, using the settled RSS, DFG-value and compile-time observations. Use the existing batch replay boundary and exact
    manifest environment; a manifest `null` means unset. Preserve the original replay input.
 2. Update `function_compiler/preanalysis.rs`, `block_control.rs`, `function_compiler.rs`,
    `simple_backend/variables.rs`, `simple_backend/refcount.rs`, `function_compiler/shared.rs`, and
