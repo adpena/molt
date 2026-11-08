@@ -14,6 +14,126 @@ from molt.cli.source_extension_toolchain import (
     _source_extension_python_header_for_abi_tier,
 )
 from tests.cli.process_guard import run_cli_test_process
+from tests.llvm_sdk_test_support import verified_llvm_tools
+
+
+@pytest.mark.parametrize(
+    "entry,failure,initializes",
+    [
+        (entry, failure, True)
+        for entry in ("Py_Initialize()", "Py_InitializeEx(0)")
+        for failure in (None, "initialize", "gil_acquire")
+    ]
+    + [
+        (entry, failure, False)
+        for entry in (
+            "(void)PyGILState_Ensure()",
+            "PyEval_AcquireLock()",
+            "PyEval_AcquireThread(NULL)",
+            "PyEval_RestoreThread(NULL)",
+        )
+        for failure in (None, "gil_acquire")
+    ],
+)
+@pytest.mark.parametrize("host_transport", [False, True])
+def test_c_entry_helpers_publish_access_only_after_success(
+    tmp_path: Path,
+    entry: str,
+    failure: str | None,
+    initializes: bool,
+    host_transport: bool,
+) -> None:
+    tools = verified_llvm_tools()
+    root = Path(__file__).resolve().parents[2]
+    source = tmp_path / "initialize.c"
+    # Py_FatalError aborts, as CPython's does. Exit from SIGABRT instead of
+    # dumping core so the OS crash reporter (ReportCrash on macOS) never holds
+    # the expected failure past the guard timeout under host load.
+    source.write_text(
+        "#include <molt/Python.h>\n"
+        "#include <signal.h>\n"
+        "#include <stdlib.h>\n"
+        "extern int initialization_calls(void);\n"
+        "static void exit_on_abort(int sig) { _Exit(128 + sig); }\n"
+        "int main(void) {\n"
+        "    signal(SIGABRT, exit_on_abort);\n"
+        f"    if (Py_IsInitialized() != {0 if initializes else 1}) return 2;\n"
+        f"    {entry};\n"
+        f"    if (initialization_calls() != {1 if initializes else 0} || Py_IsInitialized() != 1 ||\n"
+        "            molt_gil_is_held() != 1) return 3;\n"
+        '    puts("initialized");\n'
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    owner = tmp_path / "owner.c"
+    owner.write_text(
+        "#include <stdint.h>\n"
+        "#ifdef _WIN32\n"
+        "#define OWNER_EXPORT __declspec(dllexport)\n"
+        "#else\n"
+        '#define OWNER_EXPORT __attribute__((visibility("default")))\n'
+        "#endif\n"
+        f"static int initialized = {0 if initializes else 1};\n"
+        "static int held = 0;\n"
+        "static int calls = 0;\n"
+        "OWNER_EXPORT int initialization_calls(void) { return calls; }\n"
+        "OWNER_EXPORT int Py_IsInitialized(void) { return initialized; }\n"
+        "OWNER_EXPORT int32_t molt_init(void) {\n"
+        "    calls++;\n"
+        + (
+            "    return -1;\n"
+            if failure == "initialize"
+            else "    initialized = 1; return 0;\n"
+        )
+        + "}\n"
+        "OWNER_EXPORT int32_t molt_gil_is_held(void) { return held; }\n"
+        "OWNER_EXPORT int32_t molt_gil_acquire(void) {\n"
+        + (
+            "    return -1;\n"
+            if failure == "gil_acquire"
+            else "    held = 1; return 0;\n"
+        )
+        + "}\n",
+        encoding="utf-8",
+    )
+    executable = tmp_path / (
+        "initialize.exe" if sys.platform == "win32" else "initialize"
+    )
+    command = [tools.clang, "-std=c11", f"-I{root / 'include'}"]
+    if host_transport:
+        command.append("-DMOLT_EXTENSION_HOST_ABI")
+        if sys.platform == "darwin":
+            command.append("-Wl,-export_dynamic")
+        elif sys.platform != "win32":
+            command.extend(["-Wl,--export-dynamic", "-ldl"])
+    compiled = run_cli_test_process(
+        [*command, str(source), str(owner), "-o", str(executable)],
+        env=dict(tools.environment),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert compiled.returncode == 0, compiled.stderr
+    result = run_cli_test_process(
+        [str(executable)],
+        env=dict(tools.environment),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if failure is not None:
+        assert result.returncode != 0
+        message = (
+            "Molt C-API initialization failed"
+            if initializes
+            else "Molt GIL acquisition failed"
+        )
+        assert f"Fatal Python error: {message}" in result.stderr
+        assert result.stdout == ""
+    else:
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "initialized\n"
 
 
 @pytest.mark.parametrize("transport", ["source-linked", "source-host", "abi-linked"])

@@ -235,7 +235,7 @@ fn admitted_target_facts_select_slice_version_and_aot_errors() {
         for minor in 12..=14 {
             transaction.with_target_python_minor(py, minor, || {
                 assert_eq!(
-                    obj_from_bits(molt_marshal_version()).as_int(),
+                    obj_from_bits(molt_marshal_version_attached_body(py)).as_int(),
                     Some(if minor >= 14 { 5 } else { 4 })
                 );
                 if minor >= 14 {

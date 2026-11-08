@@ -1802,7 +1802,7 @@ fn initialize_runtime_state(
             state.identity(),
         );
     assert!(
-        crate::cpython_abi_hooks::register_cpython_hooks(),
+        crate::cpython_abi_hooks::prepare_cpython_hooks(),
         "primary runtime C-API bootstrap was rejected"
     );
     assert!(

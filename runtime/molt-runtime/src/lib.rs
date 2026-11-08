@@ -655,9 +655,11 @@ pub(crate) use crate::builtins::exceptions::{raise_os_error, raise_os_error_errn
 pub use crate::builtins::fcntl::*;
 pub(crate) use crate::builtins::frames::{
     exception_materialize_traceback_bits, frame_stack_active_globals_bits, frame_stack_pop,
-    frame_stack_push_owned, molt_getframe, molt_globals_builtin, molt_locals_builtin,
-    molt_locals_builtin_attached_body, traceback_payload_code_bits, traceback_payload_col,
-    traceback_payload_end_col, traceback_payload_line, traceback_payload_next_bits,
+    frame_stack_push_owned, molt_class_body_builtins, molt_class_frame_set_location,
+    molt_code_set_class_body, molt_frame_class_locals_set, molt_getframe, molt_globals_builtin,
+    molt_locals_builtin, molt_locals_builtin_attached_body, traceback_payload_code_bits,
+    traceback_payload_col, traceback_payload_end_col, traceback_payload_line,
+    traceback_payload_next_bits,
 };
 pub use crate::builtins::functions::*;
 pub use crate::builtins::functions_fnmatch::*;

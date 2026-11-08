@@ -1217,6 +1217,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                 exception_source=op.exception_source,
                 source_line=op.source_line,
                 source_end_line=op.source_end_line,
+                class_frame=op.class_frame,
                 col_offset=op.col_offset,
                 end_col_offset=op.end_col_offset,
             )
@@ -1321,6 +1322,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                                 result=canonical_op.result,
                                 source_line=canonical_op.source_line,
                                 source_end_line=canonical_op.source_end_line,
+                                class_frame=canonical_op.class_frame,
                                 col_offset=canonical_op.col_offset,
                                 end_col_offset=canonical_op.end_col_offset,
                             )
@@ -1332,6 +1334,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                                 result=canonical_op.result,
                                 source_line=canonical_op.source_line,
                                 source_end_line=canonical_op.source_end_line,
+                                class_frame=canonical_op.class_frame,
                                 col_offset=canonical_op.col_offset,
                                 end_col_offset=canonical_op.end_col_offset,
                             )
@@ -1381,6 +1384,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                                         result=canonical_op.result,
                                         source_line=canonical_op.source_line,
                                         source_end_line=canonical_op.source_end_line,
+                                        class_frame=canonical_op.class_frame,
                                         col_offset=canonical_op.col_offset,
                                         end_col_offset=canonical_op.end_col_offset,
                                     )

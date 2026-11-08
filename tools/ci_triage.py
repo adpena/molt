@@ -19,7 +19,7 @@ temporary names and numbers removed. Each cause names its owning open rows,
 the rows that name its test files, and how many of those files no proof-plan
 command runs (`tools/check_test_ownership.py`).
 
-Usage (`uv run --python 3.12 python` as the interpreter):
+Usage (`uv run python` as the interpreter):
     tools/ci_triage.py RUN_ID
     tools/ci_triage.py --branch verify/train-32
     tools/ci_triage.py RUN_ID --compare none --json

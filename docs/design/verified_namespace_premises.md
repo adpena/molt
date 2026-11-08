@@ -1060,10 +1060,19 @@ source before it lands.
   that proved MRO. The implicit language `object` base is not a source read.
   `class_replaced_exception_base.py` checks replaced exception/type bases with
   a metaclass: the old classification skipped its `__prepare__` calls.
-- `locals()`, `vars()` and zero-argument `dir()` in a class body return the
-  module namespace or the enclosing frame, proved or not (see above). Correct
-  class-body calls, and a replaced `builtins.locals` in a class body, need a
-  runtime class-body frame or mapping handle. Not in this lane.
+- Class bodies (HF-804) execute in their own namespace frames. `locals()`,
+  `vars()` and zero-argument `dir()`, including aliases, observe that frame's
+  live prepared mapping. Builtins are captured before base/keyword evaluation;
+  normal and exceptional body exits pop only that class frame. Namespace
+  storage may be elided only when the body proves no Python callbacks and no
+  namespace reflection; reflection of such a traceback frame is excluded by
+  spec 0216. The two `class_body_*namespace_builtins.py` differentials cover
+  mapping identity, write-through, nested/decorated/local classes and capture.
+  A materialized namespace does not by itself require dynamic metaclass
+  construction: proved bases/metaclass use the existing guarded constructor
+  with the final mapping, keeping compiler layout attributes out of aliases
+  of `locals()`. Class location ownership is independent of lexical lookup
+  scope; callback and exception paths retain the class code's source sites.
 - A parameter whose default reads a builtin without a catalog identity
   (`memoryview`, `pow`, `round`) inherits the default's `OTHER | UNBOUND`
   identity, so each read of it reloads the frame home and checks for an

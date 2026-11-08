@@ -195,8 +195,7 @@ pub(crate) fn molt_dir_builtin_attached_body(_py: &crate::PyToken<'_>, obj_bits:
         if obj_bits == missing {
             // CPython: dir() (no args) lists the caller's local scope.
             unsafe {
-                // Note: `molt_locals_builtin` is safe to call here; `with_gil_entry` is
-                // re-entrant and many runtime helpers rely on nested calls.
+                // Observe the caller's namespace under the current attachment.
                 let locals_bits = crate::molt_locals_builtin_attached_body(_py);
                 if exception_pending(_py) {
                     if !obj_from_bits(locals_bits).is_none() {
@@ -204,8 +203,29 @@ pub(crate) fn molt_dir_builtin_attached_body(_py: &crate::PyToken<'_>, obj_bits:
                     }
                     return MoltObject::none().bits();
                 }
-                let list_bits = list_from_iter_bits(_py, locals_bits)
-                    .unwrap_or_else(|| MoltObject::none().bits());
+                let list_bits = if type_of_bits(_py, locals_bits) == builtin_classes(_py).dict {
+                    list_from_iter_bits(_py, locals_bits)
+                } else {
+                    // PyMapping_Keys consults keys(), not __iter__. Prepared
+                    // class namespaces need not implement the iterator protocol.
+                    let name = crate::NameId::Keys.bits(_py);
+                    let method =
+                        molt_getattr_builtin_attached_body(_py, locals_bits, name, missing);
+                    if exception_pending(_py) {
+                        dec_ref_bits(_py, method);
+                        None
+                    } else {
+                        let output = call_callable0(_py, method);
+                        dec_ref_bits(_py, method);
+                        crate::object::mapping_merge::output_as_list(
+                            _py,
+                            locals_bits,
+                            crate::NameId::Keys.as_str().as_bytes(),
+                            output,
+                        )
+                    }
+                }
+                .unwrap_or_else(|| MoltObject::none().bits());
                 if !obj_from_bits(locals_bits).is_none() {
                     dec_ref_bits(_py, locals_bits);
                 }

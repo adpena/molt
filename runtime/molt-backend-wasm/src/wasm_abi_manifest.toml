@@ -1188,6 +1188,48 @@ runtime_name = "molt_class_builder_check"
 callable_arity = 0
 
 [[import]]
+name = "class_body_builtins"
+type = 2
+runtime_name = "molt_class_body_builtins"
+callable_arity = 1
+
+[[import]]
+name = "code_set_class_body"
+type = 2
+runtime_name = "molt_code_set_class_body"
+callable_arity = 1
+
+[[import]]
+name = "class_frame_enter"
+type = 4
+runtime_name = "molt_class_frame_enter"
+callable_arity = 3
+
+[[import]]
+name = "class_frame_exit"
+type = 0
+runtime_name = "molt_class_frame_exit"
+callable_arity = 0
+
+[[import]]
+name = "frame_class_locals_set"
+type = 2
+runtime_name = "molt_frame_class_locals_set"
+callable_arity = 1
+
+[[import]]
+name = "class_frame_set_location"
+type = 2
+runtime_name = "molt_class_frame_set_location"
+callable_arity = 1
+
+[[import]]
+name = "class_def_namespace"
+type = 8
+runtime_name = "molt_class_def_namespace"
+callable_arity = 6
+
+[[import]]
 name = "types_cell_contents_get"
 type = 3
 runtime_name = "molt_types_cell_contents_get"

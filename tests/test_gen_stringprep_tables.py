@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tools import gen_stringprep_tables
+import pytest
+
+from tools import gen_stringprep_tables, generators
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,3 +55,18 @@ def test_stringprep_tables_replay_keyed_by_their_oracle(
     changed = _records(tmp_path / "cache")
     assert gen.generated_outputs(scan_records=changed)[OUT] == computed
     assert changed.misses == 1
+
+
+def test_runner_opens_records_only_for_declaring_generators(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path))
+    with generators._generator_records(gen_stringprep_tables, enabled=True) as records:
+        assert records is not None
+        assert records.scanner == "generator_gen_stringprep_tables"
+    with generators._generator_records(gen_stringprep_tables, enabled=False) as records:
+        assert records is None
+    undeclared = type(gen_stringprep_tables)("undeclared_generator")
+    undeclared.generated_outputs = lambda: {}
+    with generators._generator_records(undeclared, enabled=True) as records:
+        assert records is None

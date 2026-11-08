@@ -5723,6 +5723,10 @@ def test_execution_frame_and_introspection_requirements_are_distinct() -> None:
     assert "pub const FRAME_INTROSPECTION: Self" in rendered
     frame_symbols = {
         "molt_getframe",
+        "molt_class_frame_enter",
+        "molt_class_frame_exit",
+        "molt_frame_class_locals_set",
+        "molt_class_frame_set_location",
         "molt_inspect_currentframe",
         "molt_sys_settrace",
         "molt_sys_gettrace",

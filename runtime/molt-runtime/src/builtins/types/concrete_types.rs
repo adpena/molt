@@ -269,7 +269,11 @@ pub(crate) fn frame_class_ready(_py: &PyToken<'_>) -> bool {
             dec_ref_bits(_py, descriptor);
             return 0;
         }
-        let getters: [(crate::NameId, &AtomicU64, extern "C" fn(u64, u64) -> u64); 2] = [
+        let getters: [(
+            crate::NameId,
+            &AtomicU64,
+            unsafe extern "C" fn(u64, u64, u64) -> u64,
+        ); 2] = [
             (
                 crate::NameId::FLineno,
                 &state.frame_f_lineno_get_fn,

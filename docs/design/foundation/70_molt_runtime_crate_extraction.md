@@ -125,7 +125,7 @@ Rebased proof on `origin/main` `f7c33ecf8`:
 - `20260707T201403-c1-vfs-load-split-native-e2e-20260707a-afb8fe60d17d493a`
   passed a real native `molt build examples/hello.py --target native --profile
   dev --out-dir <clean-dir> --json`.
-- `uv run --active --project . --python 3.12 pytest -q tests/test_browser_vfs.py`
+- `uv run --active --project . pytest -q tests/test_browser_vfs.py`
   passed locally (`3 passed`).
 
 The next native bundled-VFS proof exposed a reusable runtime authority gap, not
@@ -226,7 +226,7 @@ Validation ladder for this split and the next C1 cuts:
   assertions; current proof row
   `20260708T021519-c1-vfs-split-wasm-adapter-rerun-20260708d-ec6826e94527497d`
   is the citable C1 VFS split-runtime acceptance for this cut.
-- Benchmark triage: `uv run --active --project . --python 3.12 python
+- Benchmark triage: `uv run --active --project . python
   tools/bench_individual.py --bench bench_etl_orders.py --bench
   bench_json_roundtrip.py --samples 3 --warmup 1 --json-out
   bench/results/c1_vfs_load_<stamp>.json`.
@@ -536,7 +536,7 @@ extractions on `origin/main`, current-tree fan-in row
 passed `cargo check -p molt-runtime` in 69.8s. The board-required real compiler
 E2E row
 `20260708T052557-c1-temp-arena-molt-build-e2e-post-importlib-20260708a-e92f4930ab084d66`
-passed `uv run --active --project . --python 3.12 python -m molt.cli build
+passed `uv run --active --project . python -m molt.cli build
 --profile dev --output tmp\c1_temp_arena_hello_post_importlib.exe
 tests\harness\corpus\basic\hello.py` in 234.5s, producing the native hello
 binary.

@@ -5583,6 +5583,10 @@ fn test_compile_checked_rejects_python_frame_introspection_target_fact() {
 fn compile_checked_rejects_every_python_frame_and_trace_intrinsic() {
     for symbol in [
         "molt_getframe",
+        "molt_class_frame_enter",
+        "molt_class_frame_exit",
+        "molt_frame_class_locals_set",
+        "molt_class_frame_set_location",
         "molt_inspect_currentframe",
         "molt_sys_settrace",
         "molt_sys_gettrace",

@@ -396,6 +396,9 @@ pub(in crate::builtins::platform) fn importlib_exec_extension_impl(
             ) {
                 Ok(()) => return Ok(()),
                 Err(msg) => {
+                    if exception_pending(_py) {
+                        return Err(MoltObject::none().bits());
+                    }
                     return Err(raise_exception::<_>(
                         _py,
                         BuiltinExc::ImportError,

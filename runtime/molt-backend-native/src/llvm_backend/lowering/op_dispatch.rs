@@ -606,7 +606,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         let service = self.ensure_runtime_i64_fn("molt_exception_frame_origin", 1);
                         self.backend
                             .builder
-                            .build_call(service, &[homes.into()], "origin_capture")
+                            .build_execution_call(service, &[homes.into()], "origin_capture")
                             .unwrap();
                         self.record_branch_args(
                             source_block,

@@ -95,21 +95,21 @@ your current shell's PATH. `uv run` selects that environment. Build and run in
 one step:
 
 ```bash
-uv run --python 3.12 molt run examples/hello.py
+uv run molt run examples/hello.py
 ```
 
 The first build may compile the compiler backend and runtime. To produce an
 optimized binary at an explicit path and run it directly on macOS/Linux:
 
 ```bash
-uv run --python 3.12 molt build examples/hello.py --release --output hello
+uv run molt build examples/hello.py --release --output hello
 ./hello
 ```
 
 On Windows (PowerShell):
 
 ```powershell
-uv run --python 3.12 molt build examples/hello.py --release --output hello.exe
+uv run molt build examples/hello.py --release --output hello.exe
 .\hello.exe
 ```
 
@@ -135,8 +135,8 @@ acceptance or certification.
   you can always override with one additive flag:
 
 ```bash
-uv run --python 3.12 molt run examples/hello.py --release
-uv run --python 3.12 molt build examples/hello.py --profile dev
+uv run molt run examples/hello.py --release
+uv run molt build examples/hello.py --profile dev
 ```
 
 `--release` is shorthand for `--profile release`.
@@ -162,7 +162,7 @@ own memory with the same code generator and runs it against the same runtime
 bytes as an AOT build:
 
 ```bash
-uv run --python 3.12 molt run examples/hello.py --tier jit
+uv run molt run examples/hello.py --tier jit
 ```
 
 The first run builds the runner and links the runtime image once. Each run
@@ -181,7 +181,7 @@ names it. Linux is unverified and Windows is unsupported; see
 ## Compare Against CPython
 
 ```bash
-uv run --python 3.12 molt compare examples/hello.py
+uv run molt compare examples/hello.py
 ```
 
 This compares one program, not the whole verified subset. The compiler frontend
@@ -222,7 +222,7 @@ Compiled programs require no host or fallback Python. See
 ## Benchmark A Script
 
 ```bash
-uv run --python 3.12 molt bench --script examples/hello.py
+uv run molt bench --script examples/hello.py
 ```
 
 ## Alternate Entry Point
@@ -230,7 +230,7 @@ uv run --python 3.12 molt bench --script examples/hello.py
 The module entry point is equivalent to the installed `molt` command:
 
 ```bash
-uv run --python 3.12 python -m molt.cli run examples/hello.py
+uv run python -m molt.cli run examples/hello.py
 ```
 
 ## Common Pitfalls

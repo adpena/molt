@@ -2392,6 +2392,104 @@ pub(crate) unsafe fn molt_guarded_class_def_attached_body(
     class_bits
 }
 
+/// The boxed namespace form of the same proved-layout class constructor.
+/// The body dict stays authoritative; compiler layout attributes never leak
+/// into an alias of locals(). Custom prepared mappings use their metaclass.
+pub(crate) fn molt_class_def_namespace_attached_body(
+    _py: &crate::PyToken<'_>,
+    name: u64,
+    bases: u64,
+    namespace: u64,
+    layout_attrs: u64,
+    size: u64,
+    version: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        let tuple = |bits| {
+            obj_from_bits(bits)
+                .as_ptr()
+                .filter(|ptr| unsafe { object_type_id(*ptr) == TYPE_ID_TUPLE })
+        };
+        let Some((bases, namespace, extra, size, version)) = tuple(bases).and_then(|bases| {
+            let namespace = obj_from_bits(namespace)
+                .as_ptr()
+                .filter(|ptr| unsafe { object_type_id(*ptr) == TYPE_ID_DICT })?;
+            let extra = tuple(layout_attrs)?;
+            Some((
+                bases,
+                namespace,
+                extra,
+                to_i64(obj_from_bits(size))?,
+                to_i64(obj_from_bits(version))?,
+            ))
+        }) else {
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::SystemError,
+                "invalid proved class namespace transport",
+            );
+        };
+        let bases = unsafe { crate::object::seq_access::pin_tuple(py, bases) }
+            .expect("validated class base tuple");
+        let extra = unsafe { crate::object::seq_access::pin_tuple(py, extra) }
+            .expect("validated class layout tuple");
+        if !extra.len().is_multiple_of(2) || size < 0 || version < 0 {
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::SystemError,
+                "invalid proved class layout transport",
+            );
+        }
+        let Some(capacity) = unsafe { dict_len(namespace) }
+            .checked_mul(2)
+            .and_then(|count| count.checked_add(extra.len()))
+        else {
+            crate::record_memory_error_without_allocation(py);
+            return MoltObject::none().bits();
+        };
+        let mut attrs = Vec::new();
+        if attrs.try_reserve_exact(capacity).is_err() {
+            crate::record_memory_error_without_allocation(py);
+            return MoltObject::none().bits();
+        }
+        // Pin the final namespace before any class allocation or hook can
+        // mutate it. No backing borrow survives a Python callback.
+        for row in unsafe { dict_entries(namespace) }
+            .iter()
+            .filter(|row| row.hash.is_some())
+        {
+            for bits in [row.key, row.value] {
+                inc_ref_bits(py, bits);
+                attrs.push(bits);
+            }
+        }
+        for &bits in extra.iter() {
+            inc_ref_bits(py, bits);
+            attrs.push(bits);
+        }
+        let result = unsafe {
+            molt_guarded_class_def_attached_body(
+                py,
+                name,
+                crate::provenance::abi::expose_address(bases.as_ptr()),
+                bases.len() as u64,
+                crate::provenance::abi::expose_address(attrs.as_ptr()),
+                (attrs.len() / 2) as u64,
+                size,
+                version,
+                u64::from(!bases.is_empty()),
+            )
+        };
+        crate::builtins::exceptions::with_saved_raised_exception(py, || {
+            for bits in attrs {
+                dec_ref_bits(py, bits);
+            }
+            true
+        });
+        result
+    })
+}
+
 /// Build an f-string from interleaved literal and value parts in a single call.
 ///
 /// The parts array contains `(is_literal, value)` pairs as consecutive u64s:

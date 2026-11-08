@@ -1872,7 +1872,30 @@ pub(crate) const CODE_REPLACE_FIELDS: [CodeReplaceFieldSpec; 18] = {
 /// Module execution is fixed at allocation. A co_name metadata replacement
 /// cannot change flags or the compiled module's constant projection.
 pub(crate) unsafe fn code_is_module(ptr: *mut u8) -> bool {
-    unsafe { *ptr.cast::<u64>().add(26) != 0 }
+    unsafe { code_scope_kind(ptr) == CodeScopeKind::Module }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u64)]
+pub(crate) enum CodeScopeKind {
+    Function = 0,
+    Module = 1,
+    ClassBody = 2,
+}
+
+pub(crate) unsafe fn code_scope_kind(ptr: *mut u8) -> CodeScopeKind {
+    match unsafe { *ptr.cast::<u64>().add(26) } {
+        0 => CodeScopeKind::Function,
+        1 => CodeScopeKind::Module,
+        2 => CodeScopeKind::ClassBody,
+        _ => unreachable!("invalid code scope kind"),
+    }
+}
+
+pub(crate) unsafe fn code_set_scope_kind(ptr: *mut u8, kind: CodeScopeKind) {
+    unsafe {
+        *ptr.cast::<u64>().add(26) = kind as u64;
+    }
 }
 
 /// Owned Python-visible value, shared by introspection and replace validation.
@@ -2307,8 +2330,7 @@ pub(crate) unsafe fn code_publish_policy(
 /// immutable code policy; signature slots add the standard vararg flags.
 pub(crate) unsafe fn code_flags(ptr: *mut u8) -> u64 {
     unsafe {
-        let is_module = code_is_module(ptr);
-        let mut flags = if is_module {
+        let mut flags = if code_scope_kind(ptr) != CodeScopeKind::Function {
             0
         } else {
             CO_OPTIMIZED | CO_NEWLOCALS

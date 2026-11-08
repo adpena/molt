@@ -353,7 +353,7 @@ that clears below the CPython floor. Every CPython scoreboard emission path must
 before writing, including checkpoint partials, rebuild-summary rewrites, merge outputs, and
 final run artifacts.
 
-**Gates:** `uv run --python 3.12 python tools/perf_scoreboard.py --self-test` passes
+**Gates:** `uv run python tools/perf_scoreboard.py --self-test` passes
 unchanged (proves the extraction is behavior-preserving); a new
 `tests/tools/test_perf_schema.py` round-trips every cell in the committed
 `bench/scoreboard/quiet_native.json` through `validate_cell()` (proves the contract

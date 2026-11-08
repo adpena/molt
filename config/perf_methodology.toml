@@ -1,7 +1,7 @@
 # The perf methodology: the code and data that decide a scoreboard cell's
 # numbers and verdicts. Boards are comparable only within one `version`
 # (tools/perf_history.py identity_class). `content_sha256` locks the listed
-# files; when they change, run `python3 tools/perf_methodology.py --bump` if the
+# files; when they change, run `uv run python tools/perf_methodology.py --bump` if the
 # change can move a number or a verdict, else `--relock`.
 schema = "molt-perf-methodology-v1"
 # Binding-flow analysis admits only reachable modules and resolves callables by
@@ -27,8 +27,14 @@ schema = "molt-perf-methodology-v1"
 # v32: HF-803 adds the implicit class-builder read, its callback effects and
 # guarded identity. Admitted workloads and instruction counts can change;
 # earlier reports retain their recorded comparison class.
-version = 33
-content_sha256 = "f696a57b5817d6187ef05c814be23b0ada42296433f01fe500db3f99575a0d5d"
+# v34: HF-561 adds caught user and runtime raise primitives to the instruction
+# scoreboard, and class ancestry is borrowed on the raise path, so raise and
+# isinstance counts can move; earlier reports retain their recorded class.
+# v35: HF-198 carries the attached execution context through WASM host calls
+# and admits schema-qualified exports, so invocation costs can move; earlier
+# reports retain their recorded comparison class.
+version = 35
+content_sha256 = "0f446f4fa364d4c4b0e323098a75063d1ddc81f619273d731e5a8151f7360078"
 
 [[methodology]]
 path = "tools/safe_run.py"

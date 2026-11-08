@@ -327,10 +327,10 @@ unsafe fn native_type_view(
     }
 }
 
-/// Keep the existing managed MRO lane: sealed classes use their pinned tuple,
-/// with no C projection or error-preservation transaction on the ordinary
-/// managed exception/descriptor path.
+/// Structural membership borrows the class-owned immutable MRO under the GIL.
+/// No callback, owner release or borrowed result can escape this scalar query.
 unsafe fn managed_subtype_relation(py: &PyToken<'_>, subtype: u64, base: u64) -> Option<bool> {
+    crate::gil_assert();
     unsafe {
         let (Some(class), Some(base_ptr)) = (
             obj_from_bits(subtype).as_ptr(),
@@ -338,8 +338,20 @@ unsafe fn managed_subtype_relation(py: &PyToken<'_>, subtype: u64, base: u64) ->
         ) else {
             return Some(false);
         };
-        (object_type_id(class) == TYPE_ID_TYPE && object_type_id(base_ptr) == TYPE_ID_TYPE)
-            .then(|| subtype == base || class_mro_view(py, class).contains(&base))
+        if object_type_id(class) != TYPE_ID_TYPE || object_type_id(base_ptr) != TYPE_ID_TYPE {
+            return None;
+        }
+        if subtype == base {
+            return Some(true);
+        }
+        if let Some(mro) = obj_from_bits(class_mro_bits(class)).as_ptr()
+            && let Some(matches) =
+                super::seq_access::with_immutable_tuple_slice(mro, |items| items.contains(&base))
+        {
+            return Some(matches);
+        }
+        // Unpublished/bootstrap classes retain the canonical ancestry walk.
+        Some(class_mro_view(py, class).contains(&base))
     }
 }
 
@@ -1214,6 +1226,10 @@ pub(crate) unsafe fn scalar_value_offset(
         field.map(|field| field.offset)
     }
 }
+
+#[cfg(test)]
+#[path = "class_layout_subtype_tests.rs"]
+mod subtype_tests;
 
 #[cfg(test)]
 mod tests {

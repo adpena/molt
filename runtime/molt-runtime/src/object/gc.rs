@@ -709,8 +709,13 @@ impl std::hash::Hasher for RegistryAddressHasher {
 
 #[inline(always)]
 fn registry_address_hash(address: usize) -> u64 {
+    address_word_hash(address as u64)
+}
+
+#[inline(always)]
+fn address_word_hash(word: u64) -> u64 {
     const MULTIPLIER: u64 = 0x9e37_79b9_7f4a_7c15;
-    let product = u128::from(address as u64) * u128::from(MULTIPLIER);
+    let product = u128::from(word) * u128::from(MULTIPLIER);
     (product as u64) ^ ((product >> 64) as u64)
 }
 
@@ -2219,7 +2224,7 @@ unsafe fn clear_node(
 #[derive(Default)]
 struct GcScratch {
     candidates: Vec<GcCandidate>,
-    index: HashMap<GcNode, usize>,
+    index: HashMap<GcNode, usize, ScratchAddressHash>,
     refs: Vec<i64>,
     marks: Vec<u8>,
     queue: Vec<usize>,
@@ -2228,8 +2233,47 @@ struct GcScratch {
     final_unreachable: Vec<usize>,
     api_values: Vec<u64>,
     api_targets: Vec<u64>,
-    api_value_membership: HashSet<u64>,
-    api_target_membership: HashSet<GcApiTarget>,
+    api_value_membership: HashSet<u64, ScratchAddressHash>,
+    api_target_membership: HashSet<GcApiTarget, ScratchAddressHash>,
+}
+
+/// Scratch keys are object addresses, typed tags and NaN-boxed words.
+/// They are only inserted, queried and cleared, never iterated, so the hash
+/// function cannot change collection order. One multiply per word replaces
+/// SipHash-1-3 (`RandomState`).
+#[derive(Default)]
+struct ScratchAddressHasher(u64);
+
+type ScratchAddressHash = std::hash::BuildHasherDefault<ScratchAddressHasher>;
+
+#[cfg(test)]
+#[path = "gc/scratch_hash_tests.rs"]
+mod scratch_hash_tests;
+
+impl std::hash::Hasher for ScratchAddressHasher {
+    #[inline(always)]
+    fn write_u64(&mut self, word: u64) {
+        // Boxed API targets retain all 64 bits on wasm32 as well as native.
+        self.0 = address_word_hash(self.0.rotate_left(26) ^ word);
+    }
+
+    #[inline(always)]
+    fn write_usize(&mut self, word: usize) {
+        self.write_u64(word as u64);
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = [0u8; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.write_u64(u64::from_le_bytes(word));
+        }
+    }
+
+    #[inline(always)]
+    fn finish(&self) -> u64 {
+        self.0
+    }
 }
 
 impl GcScratch {
@@ -2856,7 +2900,7 @@ fn scratch_push(storage: &mut Vec<usize>, value: usize) {
 
 struct GcDeductionWorkspace<'a> {
     candidates: &'a [GcCandidate],
-    index: &'a HashMap<GcNode, usize>,
+    index: &'a HashMap<GcNode, usize, ScratchAddressHash>,
     refs: &'a mut [i64],
     marks: &'a mut [u8],
     queue: &'a mut Vec<usize>,

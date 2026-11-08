@@ -14,7 +14,7 @@ costs a CI round trip. This tool prints the same state for a local checkout,
 so such failures reproduce in seconds::
 
     eval "$(python3 tools/hosted_ci_env.py --runner-temp /tmp/molt-runner)"
-    uv run --python 3.12 python -m pytest -q tests/cli
+    uv run python -m pytest -q tests/cli
 
 The job's pinned toolchains are a separate projection, made first, because
 this state moves the toolchain root: ``eval "$(python3 tools/toolchain_env.py

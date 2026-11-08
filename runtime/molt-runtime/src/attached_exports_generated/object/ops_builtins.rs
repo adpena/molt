@@ -25,6 +25,25 @@ pub unsafe extern "C" fn molt_trace_enter_slot(__context: u64, code_id: u64) -> 
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_trace_enter_slot_attached_body(_py, code_id)
 }
+#[unsafe(export_name = "molt_class_frame_enter__molt_context_a8c6010e2cbb56a1")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_class_frame_enter(
+    __context: u64,
+    code_bits: u64,
+    globals_bits: u64,
+    builtins_bits: u64,
+) -> u64 {
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_class_frame_enter_attached_body(_py, code_bits, globals_bits, builtins_bits)
+}
+#[unsafe(export_name = "molt_class_frame_exit__molt_context_a8c6010e2cbb56a1")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_class_frame_exit(__context: u64) -> u64 {
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_class_frame_exit_attached_body(_py)
+}
 #[unsafe(export_name = "molt_trace_exit__molt_context_a8c6010e2cbb56a1")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_trace_exit(__context: u64) -> u64 {

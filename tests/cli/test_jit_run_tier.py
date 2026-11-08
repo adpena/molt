@@ -245,7 +245,15 @@ def test_macho_runtime_image_keeps_every_archive_member(
     assert command[command.index("-o") + 1] == str(output)
     # An AOT link dead-strips unreferenced runtime functions; the image must
     # keep them, because generated code resolves imports in it by name.
-    assert not any("dead_strip" in argument for argument in command)
+    linker_tokens = [
+        token
+        for argument in command
+        for token in (
+            argument[4:].split(",") if argument.startswith("-Wl,") else [argument]
+        )
+    ]
+    assert "-dead_strip" not in linker_tokens
+    assert "-dead_strip_dylibs" in linker_tokens
     assert "-Wl,-exported_symbols_list" not in " ".join(command)
 
 

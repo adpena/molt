@@ -60,6 +60,10 @@ unsafe fn run_extension_init(
     spec_bits: u64,
     create_only: bool,
 ) -> u64 {
+    let _execution = RuntimeExecutionGuard::enter();
+    if !expose_cpython_types() {
+        return MoltObject::none().bits();
+    }
     let Some(name) = crate::string_obj_to_owned(MoltObject::from_bits(name_bits)) else {
         return crate::raise_exception::<u64>(
             py,
@@ -809,7 +813,11 @@ pub(crate) fn execute_prepared_extension(
     name_bits: u64,
     publish_cache: bool,
 ) -> u64 {
+    let _execution = RuntimeExecutionGuard::enter();
     with_gil(|py| unsafe {
+        if !expose_cpython_types() {
+            return MoltObject::none().bits();
+        }
         if crate::c_api::module_exec_started(module_bits) {
             return MoltObject::none().bits();
         }

@@ -17,7 +17,7 @@ selects, and when a passing result is reused, follow
 a hosted run:
 
 ```bash
-uv run --python 3.12 python tools/ci_triage.py RUN_ID
+uv run python tools/ci_triage.py RUN_ID
 ```
 
 The report includes the source, CI lifecycle, failures, comparison with main,
@@ -29,7 +29,7 @@ proof coverage.
 A local or farm pytest run reads through the same classifier:
 
 ```bash
-uv run --python 3.12 python tools/ci_triage.py --junit junit.xml
+uv run python tools/ci_triage.py --junit junit.xml
 ```
 
 It groups the failures by cause (the child's most specific error line, with
@@ -41,7 +41,7 @@ From the exact clean committed checkout that CI tested, retrieve and verify
 the complete selected proof coverage:
 
 ```bash
-uv run --python 3.12 python tools/ci_triage.py RUN_ID --verify
+uv run python tools/ci_triage.py RUN_ID --verify
 ```
 
 This downloads the classifier's source-bound selection and executable receipt
@@ -164,7 +164,7 @@ unresolved runs, `.../retired/` for finished ones, and `.../incidents/`;
 them), pytest outer-guard summaries, `logs/agents/codex_stall/*.json`, and
 `logs/agents/codex_crash/*.json` before relying on chat history. For Codex
 Desktop crash dialogs, run
-`uv run --python 3.12 python tools/agent_coordination.py codex-crash --crash-text "<dialog text>"`
+`uv run python tools/agent_coordination.py codex-crash --crash-text "<dialog text>"`
 to classify known Windows control-plane signatures without editing Codex state.
 Manual killing of a Molt-owned child/helper must be recorded as child failure or
 interruption; cleanup must not expand to Codex, Claude, app-server, renderer,
@@ -285,7 +285,7 @@ these steps, and the last step audits every lock for advisories.
 
 Python dependency resolution is uv-owned and future-forward. The project floor
 is CPython `>=3.12` with no artificial upper cap; run floor checks with
-`uv run --python 3.12 ...`, then add newer CPython lanes as they become
+`uv run ...`, then add newer CPython lanes as they become
 available and relevant to the touched compatibility surface.
 
 For a deliberate maintainer sweep that also upgrades direct Rust dependency requirements in manifests:
@@ -564,8 +564,8 @@ Use this workflow for high-velocity multi-agent iteration:
 1. `tools/new-agent-task.sh <task-name>` for each long-lived agent lane.
 2. `source logs/agents/<task-slug>/env.sh`
 3. `tools/throughput_env.sh --apply`
-4. `uv run --python 3.12 python3 -m molt.cli build --profile dev examples/hello.py --cache-report`
-5. `UV_NO_SYNC=1 uv run --python 3.12 python3 -u tests/molt_diff.py --build-profile dev --jobs 2 <tests...>`
+4. `uv run python3 -m molt.cli build --profile dev examples/hello.py --cache-report`
+5. `UV_NO_SYNC=1 uv run python3 -u tests/molt_diff.py --build-profile dev --jobs 2 <tests...>`
 
 Key controls:
 - These controls are for Molt repo development, maintainers, agents, and
@@ -797,40 +797,40 @@ If you want to modify Molt, follow these steps:
     above is the direct native-staticlib producer.
     For day-to-day compiler/runtime iteration, prefer the dev profile:
     ```bash
-    uv run --python 3.12 python3 -m molt.cli build --profile dev examples/hello.py
+    uv run python3 -m molt.cli build --profile dev examples/hello.py
     ```
     Use `--profile release` for production parity, benchmark baselines, and release artifacts.
 3.  **Test**:
     ```bash
     # Run the full dev suite
-    uv run --python 3.12 python3 tools/dev.py test
+    uv run python3 tools/dev.py test
     ```
     ```bash
     # Run the full dev suite in seeded randomized order
-    uv run --python 3.12 python3 tools/dev.py test --random-order --random-seed 17
+    uv run python3 tools/dev.py test --random-order --random-seed 17
     ```
     Randomized order is opt-in for developer DX only. The canonical full-suite
     proof lanes remain deterministic so failures stay reproducible.
     ```bash
     # Run CPython regrtest against Molt (logs under logs/cpython_regrtest/)
-    uv run --python 3.12 python3 tools/cpython_regrtest.py --clone
+    uv run python3 tools/cpython_regrtest.py --clone
     ```
     ```bash
     # Run with uv-managed Python 3.12 and coverage enabled
-    uv run --python 3.12 python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-prepare --coverage
+    uv run python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-prepare --coverage
     ```
     ```bash
     # Include Rust coverage (requires cargo-llvm-cov)
-    uv run --python 3.12 python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-prepare --rust-coverage
+    uv run python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-prepare --rust-coverage
     ```
     ```bash
     # Multi-version run (3.12 + 3.13) with a skip list
-    uv run --python 3.12 python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-python 3.13 \
+    uv run python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-python 3.13 \
         --uv-prepare --skip-file tools/cpython_regrtest_skip.txt
     ```
     ```bash
     # Core-only smoke run (curated test list)
-    uv run --python 3.12 python3 tools/cpython_regrtest.py --core-only --core-file tools/cpython_regrtest_core.txt
+    uv run python3 tools/cpython_regrtest.py --core-only --core-file tools/cpython_regrtest_core.txt
     ```
     The regrtest harness writes logs to `logs/cpython_regrtest/` with a
     per-version `summary.md` plus a root `summary.md`. Each run also includes
@@ -849,7 +849,7 @@ If you want to modify Molt, follow these steps:
     when it tries to sync or resolve dependencies. Use `UV_NO_SYNC=1` to reuse
     the existing environment and avoid the sync path:
     ```bash
-    UV_NO_SYNC=1 UV_CACHE_DIR=$PWD/.uv-cache uv run --python 3.12 python3 tools/dev.py test
+    UV_NO_SYNC=1 UV_CACHE_DIR=$PWD/.uv-cache uv run python3 tools/dev.py test
     ```
     Multi-Python benchmark and measurement lanes should isolate their uv project
     environment instead of rewriting the shared repo `.venv`. Interpreter and
@@ -857,7 +857,7 @@ If you want to modify Molt, follow these steps:
     Set `MOLT_SESSION_ID` explicitly when a lane requires isolated build artifacts;
     an explicit `CARGO_TARGET_DIR` remains caller-owned:
     ```bash
-    uv run --python 3.12 python3 tools/uv_project_env.py \
+    uv run python3 tools/uv_project_env.py \
       --python 3.14 --purpose output-startup-size -- \
       uv run --python 3.14 python3 tools/output_startup_size_audit.py --targets native
     ```
@@ -874,7 +874,7 @@ If you have a packaged install (Homebrew/Scoop/Winget), keep local dev
 isolated by running the repo CLI directly:
 
 ```bash
-MOLT_HOME=~/.molt-dev uv run --python 3.12 python3 -m molt.cli build examples/hello.py
+MOLT_HOME=~/.molt-dev uv run python3 -m molt.cli build examples/hello.py
 ```
 
 Build knobs (optional):
@@ -890,8 +890,8 @@ uv run pre-commit run -a
 ```
 
 Default pre-commit hooks are check-only. Use explicit commands such as
-`uv run --python 3.12 ruff check --fix .`, `uv run --python 3.12 ruff format .`,
-or `uv run --active --project . --python 3.12 python tools/check_rustfmt.py --changed --write`
+`uv run ruff check --fix .`, `uv run ruff format .`,
+or `uv run --active --project . python tools/check_rustfmt.py --changed --write`
 before staging when a check reports required formatting changes. `tools/dev.py
 fmt-check` and `tools/dev.py fmt` run the same repo-owned commands. Avoid raw
 workspace-wide `cargo fmt`: generated Rust is owned by its generator `--check`
@@ -900,7 +900,7 @@ gate, and the repo Rust formatter rewrites selected human Rust source only when
 
 ### Differential coverage reporting
 ```bash
-uv run --python 3.12 python3 tools/diff_coverage.py
+uv run python3 tools/diff_coverage.py
 # Writes tests/differential/COVERAGE_REPORT.md
 ```
 
@@ -910,14 +910,14 @@ The canonical type and stdlib matrices own complete gap records. This check
 requires the root roadmap to link to both matrices and rejects malformed records
 or stale roadmap duplicates; it does not require a second copy of each gap.
 ```bash
-uv run --python 3.12 python3 tools/check_type_coverage_todos.py
+uv run python3 tools/check_type_coverage_todos.py
 ```
 
 ### Runtime safety and fuzzing
 ```bash
-uv run --python 3.12 python3 tools/runtime_safety.py clippy
-uv run --python 3.12 python3 tools/runtime_safety.py miri
-uv run --python 3.12 python3 tools/runtime_safety.py fuzz --target string_ops --runs 10000
+uv run python3 tools/runtime_safety.py clippy
+uv run python3 tools/runtime_safety.py miri
+uv run python3 tools/runtime_safety.py fuzz --target string_ops --runs 10000
 ```
 
 ### Supply-chain audits (optional gates)
@@ -959,9 +959,9 @@ cargo flamegraph -p molt-runtime --bench ptr_registry
 
 ## WASM Workflow
 
-- Build (linked): `uv run --python 3.12 python3 -m molt.cli build --target wasm --linked examples/hello.py`
-- Build (custom linked output): `uv run --python 3.12 python3 -m molt.cli build --target wasm --linked --linked-output dist/app_linked.wasm examples/hello.py`
-- Build (require linked): `uv run --python 3.12 python3 -m molt.cli build --target wasm --require-linked examples/hello.py`
+- Build (linked): `uv run python3 -m molt.cli build --target wasm --linked examples/hello.py`
+- Build (custom linked output): `uv run python3 -m molt.cli build --target wasm --linked --linked-output dist/app_linked.wasm examples/hello.py`
+- Build (require linked): `uv run python3 -m molt.cli build --target wasm --require-linked examples/hello.py`
 - Run (Node/WASI): `node wasm/run_wasm.js dist/manifest.json` (the manifest selects and verifies linked or split-runtime modules)
 
 ## Operational Assumptions

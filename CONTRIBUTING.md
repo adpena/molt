@@ -106,10 +106,10 @@ Molt expects production-grade changes, not opportunistic patches.
   integration mistakes for the complete structural work class you touched. Do
   not shrink the implementation to match an easier proof lane.
 - After syncing the development environment, install the configured hooks with
-  `uv run --python 3.12 pre-commit install`. They validate staged changes on
+  `uv run pre-commit install`. They validate staged changes on
   commit, including the public-source artifact boundary.
 - Install Molt's managed Git hooks once per clone with
-  `uv run --python 3.12 python tools/install_git_hooks.py`: the `commit-msg`
+  `uv run python tools/install_git_hooks.py`: the `commit-msg`
   attribution policy. `tools/molt_dev.py lane start` refreshes them for each
   new lane.
 - Commit messages and pull requests carry no AI attribution: no

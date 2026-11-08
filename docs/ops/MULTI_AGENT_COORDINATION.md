@@ -292,14 +292,14 @@ benchmarks, or long validation must do this before the first heavy command:
    assumptions:
 
    ```bash
-   uv run --python 3.12 python tools/agent_coordination.py env
+   uv run python tools/agent_coordination.py env
    ```
 
    The command reports OS, architecture, Python executable, available Python
    launchers, `uv`, shell, WSL/Codex/CI hints, and the recommended Python
    command for this host. Use the wrapper `tools/new-agent-task.sh` only when a
    POSIX shell is available; otherwise run
-   `uv run --python 3.12 python tools/agent_coordination.py init <task>`.
+   `uv run python tools/agent_coordination.py init <task>`.
 4. Inspect local ownership without reverting partner work:
 
    ```bash
@@ -318,8 +318,8 @@ benchmarks, or long validation must do this before the first heavy command:
 6. Use the cross-platform DX authority before any build or harness command:
 
    ```bash
-   uv run --python 3.12 python -m molt.cli dx env
-   uv run --python 3.12 python -m molt.cli dx run -- <command>
+   uv run python -m molt.cli dx env
+   uv run python -m molt.cli dx run -- <command>
    ```
 
    The command syntax is identical on Windows, macOS, and Linux. The tool
@@ -332,7 +332,7 @@ benchmarks, or long validation must do this before the first heavy command:
    shell activation:
 
    ```bash
-   uv run --python 3.12 python -m molt.cli dx env --format posix
+   uv run python -m molt.cli dx env --format posix
    ```
 
    `tools/throughput_env.sh --apply` remains a POSIX compatibility wrapper over
@@ -375,10 +375,10 @@ Agents must use the JSON coordination records as the machine-readable discovery
 surface before long proof work.
 
 ```bash
-uv run --python 3.12 python tools/agent_coordination.py context
-uv run --python 3.12 python tools/agent_coordination.py scan
-uv run --python 3.12 python tools/agent_coordination.py check
-uv run --python 3.12 python tools/agent_coordination.py proof-plan
+uv run python tools/agent_coordination.py context
+uv run python tools/agent_coordination.py scan
+uv run python tools/agent_coordination.py check
+uv run python tools/agent_coordination.py proof-plan
 ```
 
 - `context` is the canonical read-only whole-project entrypoint. Its concise
@@ -486,7 +486,7 @@ If a worker is explicitly waiting for an ownership decision, put the request in
 that worker's existing `coordination.json`. For a new task:
 
 ```bash
-uv run --python 3.12 python tools/agent_coordination.py init llvm-worker \
+uv run python tools/agent_coordination.py init llvm-worker \
   --agent llvm-delegate --role implementer --status blocked \
   --request-owner integration --requested src/molt/verified_subset.py \
   --requested tools/verified_subset.py
@@ -559,7 +559,7 @@ Treat both as unsuitable for long proof lanes unless the environment snapshot
 marks them usable. Prefer:
 
 ```powershell
-uv run --python 3.12 python tools/agent_coordination.py <command>
+uv run python tools/agent_coordination.py <command>
 ```
 
 Environment reporting uses the canonical executable search over its captured

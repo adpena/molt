@@ -34,6 +34,9 @@ from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkRequirements,
     SourceExtensionLinkLoadingPolicy,
     source_extension_link_file,
+    render_source_extension_link_arguments,
+    SourceExtensionLinkProvider,
+    SourceExtensionLinkProviderKind,
 )
 from tests.process_guard_common import install_module_view
 from molt.cli import build_command as cli_build_command
@@ -169,6 +172,7 @@ def test_darwin_link_plans_use_admitted_target_without_arch_probe(
         runtime_codegen_binding=binding,
     )
     for plan in (app, runtime):
+        assert "-Wl,-dead_strip_dylibs" in plan.command
         assert plan.command.count("-arch") == 1
         assert plan.command[plan.command.index("-arch") + 1] == expected_arch
         assert "-target" not in plan.command
@@ -176,6 +180,8 @@ def test_darwin_link_plans_use_admitted_target_without_arch_probe(
         assert "-mmacosx-version-min=11.0" in plan.command
     assert "-dynamiclib" in runtime.command
     assert "-dynamiclib" not in app.command
+    assert "-Wl,-dead_strip" not in runtime.command
+    assert runtime.policy.dead_strip is False
 
 
 @pytest.mark.parametrize(
@@ -359,6 +365,125 @@ def test_missing_shared_stdlib_fails_before_link(monkeypatch, tmp_path) -> None:
             host_platform="linux",
             stdlib_path=tmp_path / "missing.a",
         )
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="executes a Mach-O framework consumer"
+)
+@pytest.mark.parametrize("linker_name", ["system", "lld"])
+def test_real_darwin_link_drops_unused_dylibs_and_keeps_referenced_framework(
+    tmp_path,
+    linker_name,
+) -> None:
+    tools = verified_llvm_tools()
+    target = resolve_native_target_spec(tools.native_target("macho"))
+    capabilities = native_link_plan.native_link_capabilities(
+        target=target, linker_hint=None if linker_name == "system" else "lld"
+    )
+    source = tmp_path / "security.c"
+    source.write_text(
+        "#include <Security/SecRandom.h>\n"
+        "int main(void) { unsigned char byte;\n"
+        "  return SecRandomCopyBytes(kSecRandomDefault, 1, &byte) == 0 ? 0 : 1; }\n",
+        encoding="utf-8",
+    )
+    executable = tmp_path / "security"
+
+    def run(command):
+        if linker_name == "lld" and command[0] == tools.clang:
+            command = [
+                tools.clang,
+                f"-fuse-ld={tools.linker('ld64.lld')}",
+                *command[1:],
+            ]
+        result = _COMMANDS.run(
+            command,
+            env=dict(tools.environment),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            encoding="utf-8",
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    # Frameworks added by a caller follow the ordinary linker policy. Security
+    # is genuinely referenced; libc++, iconv and CoreFoundation are not.
+    run(
+        [
+            tools.clang,
+            str(source),
+            "-o",
+            str(executable),
+            *native_link_plan.native_link_policy_flags(
+                target=target, capabilities=capabilities
+            ),
+            "-framework",
+            "Security",
+            "-framework",
+            "CoreFoundation",
+            "-liconv",
+            "-lc++",
+        ]
+    )
+    dependencies = run([str(tools.bin_dir / "llvm-otool"), "-L", str(executable)])
+    assert "Security.framework" in dependencies
+    for unused in ("CoreFoundation.framework", "libiconv", "libc++"):
+        assert unused not in dependencies
+    run([str(executable)])
+
+    # An extension's explicit default dependencies can exist for initializer
+    # side effects. Preserve that contract with the linker's needed policy.
+    initializer = tmp_path / "initializer.c"
+    initializer.write_text(
+        "#include <stdio.h>\n__attribute__((constructor)) static void start(void) {\n"
+        '  puts("extension initializer"); }\nint unused(void) { return 1; }\n',
+        encoding="utf-8",
+    )
+    library = tmp_path / "librequired.dylib"
+    run(
+        [
+            tools.clang,
+            "-dynamiclib",
+            str(initializer),
+            "-o",
+            str(library),
+            f"-Wl,-install_name,{library}",
+        ]
+    )
+    explicit = render_source_extension_link_arguments(
+        SourceExtensionLinkRequirements(
+            target.triple,
+            items=(
+                SourceExtensionLinkProvider(
+                    SourceExtensionLinkProviderKind.LIBRARY, "required"
+                ),
+                SourceExtensionLinkProvider(
+                    SourceExtensionLinkProviderKind.FRAMEWORK, "CoreFoundation"
+                ),
+            ),
+        )
+    )
+    run(
+        [
+            tools.clang,
+            str(source),
+            "-o",
+            str(executable),
+            *native_link_plan.native_link_policy_flags(
+                target=target, capabilities=capabilities
+            ),
+            f"-L{tmp_path}",
+            *explicit,
+            "-framework",
+            "Security",
+        ]
+    )
+    dependencies = run([str(tools.bin_dir / "llvm-otool"), "-L", str(executable)])
+    assert "CoreFoundation.framework" in dependencies
+    assert str(library) in dependencies
+    assert run([str(executable)]) == "extension initializer\n"
 
 
 @pytest.mark.slow
@@ -1186,11 +1311,11 @@ def test_native_candidate_failure_preserves_previous_published_artifact(
         (
             "darwin",
             ("clang",),
-            ("-Wl,-dead_strip", "-Wl,-no_deduplicate"),
+            ("-Wl,-dead_strip_dylibs", "-Wl,-dead_strip", "-Wl,-no_deduplicate"),
         ),
         # zig's own linker runs no identical-code folding and rejects ld64's
         # and LLD's flags for disabling it.
-        ("darwin", ("zig", "cc"), ("-Wl,-dead_strip",)),
+        ("darwin", ("zig", "cc"), ("-Wl,-dead_strip_dylibs", "-Wl,-dead_strip")),
         ("linux", ("zig", "cc"), ("-Wl,--gc-sections",)),
     ],
 )
@@ -1326,6 +1451,9 @@ def test_zig_linker_strip_capability_matches_its_output(
             str(source),
             "-o",
             str(image),
+            *native_link_plan.native_link_policy_flags(
+                target=target, capabilities=capabilities
+            ),
             *native_link_plan.native_link_strip_flags(target),
         ],
         check=True,

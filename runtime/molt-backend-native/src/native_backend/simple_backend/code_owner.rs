@@ -37,14 +37,16 @@ impl CodePlacement {
         }
     }
 
-    /// `use_colocated_libcalls` for this owner.
+    /// Whether calls from generated code to libcalls and imported runtime
+    /// functions are colocated (`use_colocated_libcalls`, and `colocated` on
+    /// each imported function).
     ///
-    /// In an object, generated code and libcalls share one link unit, so
-    /// colocated (PC-relative) libcalls skip GOT/PLT indirection. In process
-    /// memory, libcalls live in other images; `cranelift_jit` requires
-    /// long-range libcall relocations because a colocated AArch64 call reaches
-    /// only +/-128 MiB.
-    pub(crate) fn colocated_libcalls(self) -> bool {
+    /// In an object, generated code, libcalls and the runtime share one link
+    /// unit, so colocated (PC-relative) calls skip GOT/PLT indirection; the
+    /// linker inserts a stub or branch island only where it must. In process
+    /// memory, they live in other images; `cranelift_jit` requires long-range
+    /// relocations because a colocated AArch64 call reaches only +/-128 MiB.
+    pub(crate) fn colocated_calls(self) -> bool {
         match self {
             Self::Object => true,
             #[cfg(feature = "jit")]
@@ -166,7 +168,34 @@ impl Module for CodeOwner {
         func: cranelift_module::FuncId,
         in_func: &mut Function,
     ) -> FuncRef {
-        self.owner_mut().declare_func_in_func(func, in_func)
+        match self {
+            // An object links statically beside the runtime (release
+            // executables keep static linkage), so every imported function is
+            // in the same link unit: a direct PC-relative call reaches it, and
+            // the system linker adds a stub only for a target in a shared
+            // library, as it does for C and Rust calls. cranelift_module's
+            // default marks an import non-colocated, which makes each runtime
+            // call a GOT load plus an indirect branch. This mirrors
+            // `CodePlacement::colocated_calls`.
+            Self::Object(module) => {
+                let decl = &module.declarations().get_function_decl(func);
+                let signature = in_func.import_signature(decl.signature.clone());
+                let name = in_func.declare_imported_user_function(
+                    cranelift_codegen::ir::UserExternalName {
+                        namespace: 0,
+                        index: func.as_u32(),
+                    },
+                );
+                in_func.import_function(cranelift_codegen::ir::ExtFuncData {
+                    name: cranelift_codegen::ir::ExternalName::user(name),
+                    signature,
+                    colocated: CodePlacement::Object.colocated_calls(),
+                    patchable: false,
+                })
+            }
+            #[cfg(feature = "jit")]
+            Self::ProcessMemory(_) => self.owner_mut().declare_func_in_func(func, in_func),
+        }
     }
 
     fn declare_data_in_func(

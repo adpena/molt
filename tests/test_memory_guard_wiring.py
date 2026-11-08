@@ -1876,7 +1876,7 @@ def test_outer_memory_guard_requires_live_repo_memory_guard_ancestor(
             pid=200,
             ppid=100,
             rss_kb=1,
-            command="uv run --python 3.12 pytest",
+            command="uv run pytest",
         ),
         300: memory_guard.ProcessSample(
             pid=300,

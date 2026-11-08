@@ -4,6 +4,7 @@ use crate::builtins::attr::{
     DescriptorMutation, DescriptorMutationOutcome, class_inferred_field_offset, descriptor_call1,
     descriptor_call2, descriptor_mutate,
 };
+use crate::object::class_layout::is_real_subtype;
 use molt_cpython_abi::hooks::AttributeMutation;
 
 unsafe fn readonly_descriptor_metadata(
@@ -1750,8 +1751,7 @@ fn explicit_mutation_admitted(
             }
             return admitted;
         }
-        let is_metaclass = class == builtin_classes(py).type_obj
-            || class_mro_view(py, class_ptr).contains(&builtin_classes(py).type_obj);
+        let is_metaclass = is_real_subtype(py, class, builtin_classes(py).type_obj);
         if type_default == is_metaclass {
             return true;
         }

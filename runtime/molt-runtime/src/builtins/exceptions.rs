@@ -2929,10 +2929,19 @@ pub(crate) fn molt_exception_frame_origin_attached_body(
     crate::with_attached_entry_nopanic!(_py, py, {
         let owns_activation = expected_homes != 0
             && FRAME_STACK.with(|stack| {
-                stack
-                    .borrow()
-                    .last()
-                    .is_some_and(|entry| entry.bindings.homes_base() as u64 == expected_homes)
+                // Inline class regions have their own Python frames while
+                // borrowing the enclosing compiled activation's SSA homes.
+                // Only that typed chain may connect a cold Origin to the top
+                // frame; an intervening function/runtime frame still refuses it.
+                for entry in stack.borrow().iter().rev() {
+                    if entry.bindings.homes_base() as u64 == expected_homes {
+                        return true;
+                    }
+                    if !entry.is_class_body() {
+                        break;
+                    }
+                }
+                false
             });
         if owns_activation && exception_pending(py) {
             let selected = ExceptionValue::adopt(py, exception_last_pending_bits(py));

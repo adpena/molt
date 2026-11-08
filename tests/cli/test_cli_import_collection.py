@@ -7281,7 +7281,13 @@ def test_external_native_artifact_plan_rejects_sidecar_undefined_symbol_not_impo
     ), errors
 
 
-@pytest.mark.parametrize("runtime_symbol", ["molt_alloc", "hash_new"])
+@pytest.mark.parametrize(
+    "runtime_symbol",
+    [
+        compiled_execution_symbol("molt_alloc"),
+        compiled_execution_symbol("molt_hash_new"),
+    ],
+)
 def test_external_native_artifact_plan_records_runtime_abi_symbol_board(
     native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
@@ -7340,6 +7346,7 @@ def test_archive_provider_candidate_authority_excludes_non_provider_classes() ->
                 "project_owned",
                 "molt_capi_semantic_type",
                 "molt_alloc",
+                compiled_execution_symbol("molt_alloc"),
                 "molt_future_magic",
                 "__molt_future_magic",
                 "malloc",
@@ -7597,6 +7604,7 @@ def test_external_native_artifact_plan_rejects_runtime_abi_without_custody(
             "generated runtime symbols must not inspect provider archives"
         ),
     )
+    runtime_symbol = compiled_execution_symbol("molt_alloc")
     external_root = tmp_path / "site"
     _write_external_native_artifact(
         external_root,
@@ -7607,7 +7615,7 @@ def test_external_native_artifact_plan_rejects_runtime_abi_without_custody(
         artifact_bytes=_wasm_extension_artifact(
             "nativepkg.ndimage._nd_image",
             "molt_nativepkg_placeholder",
-            imports=("molt_alloc",),
+            imports=(runtime_symbol,),
         ),
         manifest_overrides={
             "target_triple": "wasm32-wasip1",
@@ -7616,7 +7624,7 @@ def test_external_native_artifact_plan_rejects_runtime_abi_without_custody(
             "artifact_kind": "wasm_relocatable_object",
             "object_closure": {
                 "runtime_symbols": [],
-                "undefined_symbols": ["molt_alloc"],
+                "undefined_symbols": [runtime_symbol],
             },
         },
     )
@@ -7630,7 +7638,7 @@ def test_external_native_artifact_plan_rejects_runtime_abi_without_custody(
 
     assert plan is None
     assert any(
-        "object_closure undefined ABI symbol 'molt_alloc' is generated "
+        f"object_closure undefined ABI symbol {runtime_symbol!r} is generated "
         "runtime-backed but missing from object_closure.runtime_symbols" in error
         for error in errors
     )
@@ -13612,7 +13620,8 @@ def test_darwin_link_force_loads_each_source_extension_archive_without_runtime_e
         NATIVE_LINK_COMMAND, "llvm_named_tool_candidates", lambda *_names, **_kwargs: ()
     )
 
-    external_link_arguments = ("-Wl,-framework,Accelerate",)
+    # Explicit extension frameworks stay loaded under dylib dead stripping.
+    external_link_arguments = ("-Wl,-needed_framework,Accelerate",)
     external_link_requirements = (
         SourceExtensionLinkRequirements(
             "aarch64-apple-darwin",
@@ -23640,14 +23649,12 @@ def test_reloc_runtime_wasm_exports_runtime_owned_gpu_intrinsics(
     )
     assert "link-arg=--import-memory" not in spec.cargo_rustflags
     assert "link-arg=--import-table" not in spec.cargo_rustflags
-    assert (
-        "link-arg=--export-if-defined=molt_gpu_matmul_contiguous"
-        not in spec.cargo_rustflags
+    gpu_export = (
+        "link-arg=--export-if-defined="
+        f"{compiled_execution_symbol('molt_gpu_matmul_contiguous')}"
     )
-    assert (
-        "link-arg=--export-if-defined=molt_gpu_matmul_contiguous"
-        in spec.runtime_exports
-    )
+    assert gpu_export not in spec.cargo_rustflags
+    assert gpu_export in spec.runtime_exports
 
 
 def _install_fake_wasm_link_runner(
@@ -24276,6 +24283,7 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    isolate_import = compiled_execution_symbol("molt_isolate_import")
     output_wasm = tmp_path / "out" / "output.wasm"
     output_wasm.parent.mkdir(parents=True, exist_ok=True)
     output_wasm.write_bytes(b"\0asm\x01\0\0\0")
@@ -24302,7 +24310,7 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
         if module_name == "molt_runtime":
             return {"alloc", "molt_fast_list_append"}
         if module_name == "env":
-            return {"molt_isolate_import"}
+            return {isolate_import}
         return set()
 
     monkeypatch.setattr(
@@ -24321,7 +24329,7 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
             "molt_runtime_execution_enter": {"params": [], "result": "i64"},
             "molt_runtime_execution_leave": {"params": ["i64"], "result": None},
             "molt_runtime_shutdown": {"params": [], "result": "i64"},
-            "molt_isolate_import": {"params": ["i64"], "result": "i64"},
+            isolate_import: {"params": ["i64", "i64"], "result": "i64"},
             "molt_not_an_abi_export": {"params": [], "result": None},
         }
         if export_name_prefix is not None:
@@ -24382,8 +24390,11 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
         "runtime_execution_enter": "molt_runtime_execution_enter",
         "runtime_execution_leave": "molt_runtime_execution_leave",
         "runtime_shutdown": "molt_runtime_shutdown",
+        "attached_context": "molt_attached_context",
+        "compiled_execution_enter": "molt_compiled_execution_enter",
+        "compiled_execution_leave": "molt_compiled_execution_leave",
     }
-    assert linked_manifest["abi"]["linked_self_imports"] == ["molt_isolate_import"]
+    assert linked_manifest["abi"]["linked_self_imports"] == [isolate_import]
     assert linked_manifest["modules"]["linked"] == {
         "path": linked_wasm.name,
         "size": linked_wasm.stat().st_size,
@@ -35166,7 +35177,13 @@ def test_external_native_package_symbol_closure_rejects_invalid_provider(
 
 
 @pytest.mark.parametrize(
-    "symbol", ["PyLong_FromLong", "molt_alloc", "molt_unregistered_runtime_helper"]
+    "symbol",
+    [
+        "PyLong_FromLong",
+        "molt_alloc",
+        compiled_execution_symbol("molt_alloc"),
+        "molt_unregistered_runtime_helper",
+    ],
 )
 def test_external_native_package_symbol_closure_rejects_runtime_authority_collision(
     native_archives: NativeArchiveFixtureCatalog,

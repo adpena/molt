@@ -103,6 +103,21 @@ pub unsafe extern "C" fn molt_guarded_class_def(
         )
     }
 }
+#[unsafe(export_name = "molt_class_def_namespace__molt_context_a8c6010e2cbb56a1")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_class_def_namespace(
+    __context: u64,
+    name: u64,
+    bases: u64,
+    namespace: u64,
+    layout_attrs: u64,
+    size: u64,
+    version: u64,
+) -> u64 {
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_class_def_namespace_attached_body(_py, name, bases, namespace, layout_attrs, size, version)
+}
 #[unsafe(export_name = "molt_fstring_build__molt_context_a8c6010e2cbb56a1")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_fstring_build(

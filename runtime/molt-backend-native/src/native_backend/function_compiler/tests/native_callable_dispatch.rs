@@ -382,8 +382,9 @@ pub extern "C" fn attached_molt_async_work_poll_and_exception_pending(_context: 
     molt_async_work_poll_and_exception_pending()
 }}
 pub fn molt_async_work_poll_and_exception_pending() -> u64 {{ 0 }}
-#[no_mangle]
-pub extern "C" fn molt_exception_frame_origin(_: u64) -> u64 {{
+#[export_name = "molt_exception_frame_origin@EXECUTION_SUFFIX@"]
+pub extern "C" fn molt_exception_frame_origin(context: u64, _: u64) -> u64 {{
+    assert_eq!(context, fixed_execution_context(), "wrong attached context");
     panic!("this provider never sets an error, so no Origin edge is taken")
 }}
 #[no_mangle]
@@ -2864,8 +2865,9 @@ pub extern "C" fn attached_molt_async_work_poll_and_exception_pending(_context: 
     molt_async_work_poll_and_exception_pending()
 }}
 pub fn molt_async_work_poll_and_exception_pending() -> u64 {{ 0 }}
-#[no_mangle]
-pub extern "C" fn molt_exception_frame_origin(_: u64) -> u64 {{
+#[export_name = "molt_exception_frame_origin@EXECUTION_SUFFIX@"]
+pub extern "C" fn molt_exception_frame_origin(context: u64, _: u64) -> u64 {{
+    assert_eq!(context, fixed_execution_context(), "wrong attached context");
     panic!("this provider never sets an error, so no Origin edge is taken")
 }}
 #[no_mangle]

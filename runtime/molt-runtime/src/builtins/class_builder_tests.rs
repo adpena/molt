@@ -33,10 +33,10 @@ fn class_builder_identity_restore_and_missing_binding() {
                 MoltObject::from_ptr(builtins).bits(),
                 0,
             );
-            molt_class_builder_check();
+            molt_class_builder_check_attached_body(py);
             assert!(!exception_pending(py));
             assert!(unsafe { dict_set_in_place(py, builtins, key, MoltObject::none().bits()) });
-            molt_class_builder_check();
+            molt_class_builder_check_attached_body(py);
             let error = crate::molt_exception_last_pending_attached_body(py);
             assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
@@ -46,13 +46,13 @@ fn class_builder_identity_restore_and_missing_binding() {
             dec_ref_bits(py, error);
             clear_exception(py);
             assert!(unsafe { dict_set_in_place(py, builtins, key, canonical) });
-            molt_class_builder_check();
+            molt_class_builder_check_attached_body(py);
             assert!(
                 !exception_pending(py),
                 "restoring the exact object is admitted"
             );
             assert_eq!(unsafe { dict_del_in_place(py, builtins, key) }, Ok(true));
-            molt_class_builder_check();
+            molt_class_builder_check_attached_body(py);
             let error = crate::molt_exception_last_pending_attached_body(py);
             assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
@@ -72,7 +72,11 @@ fn class_builder_identity_restore_and_missing_binding() {
 fn direct_builder_call_raises_the_static_model_exclusion() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        molt_build_class_builtin(MoltObject::none().bits(), MoltObject::none().bits());
+        molt_build_class_builtin_attached_body(
+            py,
+            MoltObject::none().bits(),
+            MoltObject::none().bits(),
+        );
         let error = crate::molt_exception_last_pending_attached_body(py);
         assert!(crate::builtins::exceptions::exception_matches_kind(
             py,

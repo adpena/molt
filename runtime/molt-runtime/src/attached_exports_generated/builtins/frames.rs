@@ -23,6 +23,34 @@ pub unsafe extern "C" fn molt_frame_locals_set(__context: u64, dict_bits: u64) -
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_frame_locals_set_attached_body(_py, dict_bits)
 }
+#[unsafe(export_name = "molt_frame_class_locals_set__molt_context_a8c6010e2cbb56a1")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_frame_class_locals_set(__context: u64, mapping_bits: u64) -> u64 {
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_frame_class_locals_set_attached_body(_py, mapping_bits)
+}
+#[unsafe(export_name = "molt_class_body_builtins__molt_context_a8c6010e2cbb56a1")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_class_body_builtins(__context: u64, globals_bits: u64) -> u64 {
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_class_body_builtins_attached_body(_py, globals_bits)
+}
+#[unsafe(export_name = "molt_code_set_class_body__molt_context_a8c6010e2cbb56a1")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_code_set_class_body(__context: u64, code_bits: u64) -> u64 {
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_code_set_class_body_attached_body(_py, code_bits)
+}
+#[unsafe(export_name = "molt_class_frame_set_location__molt_context_a8c6010e2cbb56a1")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_class_frame_set_location(__context: u64, index_bits: u64) -> u64 {
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_class_frame_set_location_attached_body(_py, index_bits)
+}
 #[unsafe(export_name = "molt_getframe__molt_context_a8c6010e2cbb56a1")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_getframe(__context: u64, depth_bits: u64) -> u64 {

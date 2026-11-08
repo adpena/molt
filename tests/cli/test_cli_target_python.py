@@ -619,7 +619,7 @@ def test_unsupported_interpreter_names_itself_and_the_uv_fix() -> None:
         "molt: error: Molt requires CPython 3.12+ (Python 3.14 requires 3.14.1+), "
         f"but this process runs cpython 3.9.6 ({sys.executable})."
     )
-    assert "`uv run --python 3.12 molt ...`" in completed.stderr
+    assert "`uv run molt ...`" in completed.stderr
 
 
 @pytest.mark.parametrize(

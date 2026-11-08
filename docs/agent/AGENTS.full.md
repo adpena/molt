@@ -150,7 +150,7 @@ touching code, docs, tests, benchmarks, or roadmap state.
   `tools/proof_queue.py`: Cargo builds, WASM/browser proofs, benchmark lanes,
   conformance shards, stress tests, and any test likely to contend for shared
   build/runtime resources. Run
-  `uv run --active --project . --python 3.12 python tools/proof_queue.py status`
+  `uv run --active --project . python tools/proof_queue.py status`
   before submitting work, use `exec` or a TOML DSL with a clear `--reason`,
   `--resource-family`, `--contention-key`, `--scope`, and `--note`, then cite
   the queue log/evidence path. Read `docs/agent/PROOF_QUEUE.md` for the full
@@ -163,7 +163,7 @@ touching code, docs, tests, benchmarks, or roadmap state.
   do not submit raw `cargo ...` through `exec`, TOML DSL, shell backgrounding,
   or interactive sessions because the cargo lane owns uv, `guarded_exec`,
   contention keys, timeouts, logs, and detached runners. Queue commands that
-  invoke `uv run` must use `uv run --active --project . --python 3.12 ...`;
+  invoke `uv run` must use `uv run --active --project . ...`;
   non-active `uv run` commands are rejected because they create throwaway
   environments and destroy proof latency. The queue derives `MOLT_SESSION_ID`
   from the contention key so
@@ -202,7 +202,7 @@ touching code, docs, tests, benchmarks, or roadmap state.
   or exact live-proved Molt-owned PID cleanup with an incident record. Plan
   future long commands so they can finish, timeout, or be owned by the queue.
 - Do not run raw workspace-wide `cargo fmt` for Molt DX or proof cleanup. Use
-  `uv run --active --project . --python 3.12 python tools/check_rustfmt.py --changed`
+  `uv run --active --project . python tools/check_rustfmt.py --changed`
   to check changed human Rust, and add `--write` only when you intend to format
   those human Rust files. `tools/dev.py fmt-check` and `tools/dev.py fmt` route
   through the same authority. Write mode compares `rustfmt --emit stdout`
@@ -864,7 +864,7 @@ working in this repo:
   for `python`, `python3`, `py`, `bash`, `node`, and `npm` if those tools may
   be used. Prefer `tools/agent_coordination.py env` for the repo-local snapshot.
 - Before intentionally broad differential, conformance, backend, or perf proof
-  work, run `uv run --python 3.12 python tools/agent_coordination.py proof-plan`
+  work, run `uv run python tools/agent_coordination.py proof-plan`
   or pass the intended touched paths explicitly. Ordinary structural
   implementation does not need this ceremony; choose one bounded proof for the
   owned arc and keep moving.
@@ -874,7 +874,7 @@ working in this repo:
   bounded relevant lines in chat.
 - During a suspected Codex/Desktop stall around a long Molt proof lane, wrap
   the proof command with the privacy-preserving stream timing diagnostic:
-  `uv run --python 3.12 python tools/agent_coordination.py codex-stall -- <proof-command>`.
+  `uv run python tools/agent_coordination.py codex-stall -- <proof-command>`.
   It writes `logs/agents/codex_stall/*.json`, records first-output gaps,
   stream-idle spans, byte counts, and return code, and deliberately stores no
   child stdout/stderr text or Codex state. The wrapper launches through
@@ -882,7 +882,7 @@ working in this repo:
   non-proof probe or an already guarded direct child.
 - When Codex Desktop shows a crash dialog, classify it through the same
   agent-first authority instead of editing app state from the repo lane:
-  `uv run --python 3.12 python tools/agent_coordination.py codex-crash --crash-text "<dialog text>"`.
+  `uv run python tools/agent_coordination.py codex-crash --crash-text "<dialog text>"`.
   It writes `logs/agents/codex_crash/*.json`, stores a hash plus parsed
   code/signal/warning fields, recognizes `3221225786`
   (`STATUS_CONTROL_C_EXIT`), response-stream retry pressure, plugin
@@ -934,7 +934,7 @@ working in this repo:
   state as a first response.
 - On Windows, treat `C:\Windows\System32\bash.exe`, WindowsApps `python.exe` /
   `python3.exe`, and Windows-side Node/npm shims visible from WSL as unstable
-  boundary shims. Prefer `uv run --python 3.12 ...`, `py -3.12 ...`, or an
+  boundary shims. Prefer `uv run ...`, `py -3.12 ...`, or an
   explicit venv interpreter for Python; prefer Git Bash only when a Bash script
   is required in a Windows-native lane; prefer WSL binaries only inside a
   verified WSL-native lane.
@@ -1268,7 +1268,7 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - For multi-Python measurement or benchmark lanes (`--python 3.13`, `3.14`, or
   future CPython versions), do not let `uv run` rewrite the shared interactive
   `.venv`. Wrap the inner uv command with
-  `uv run --python 3.12 python tools/uv_project_env.py --python <ver> --purpose <lane> -- uv run --python <ver> ...`;
+  `uv run python tools/uv_project_env.py --python <ver> --purpose <lane> -- uv run --python <ver> ...`;
   the wrapper sets a source-keyed environment under
   `<MOLT_EXT_ROOT>/uv-project-envs/`.
 - If the panic mentions `system-configuration` (macOS proxy lookup), pin explicit
@@ -1342,9 +1342,9 @@ conformance, regrtest, benchmark, or validation work, read
 create/update `logs/agents/<task>/` with `tools/new-agent-task.sh <task>`, and
 record whether you own a targeted proof lane or the single broad-sweep
 coordinator role for the shared target root. Use
-`uv run --python 3.12 python tools/agent_coordination.py env`, then
-`uv run --python 3.12 python tools/agent_coordination.py scan` or
-`uv run --python 3.12 python tools/agent_coordination.py check` to inspect
+`uv run python tools/agent_coordination.py env`, then
+`uv run python tools/agent_coordination.py scan` or
+`uv run python tools/agent_coordination.py check` to inspect
 machine-readable task claims before launching broad proof work. Do not invoke
 this protocol for ordinary structural implementation; one bounded proof for the
 owned structural arc is enough unless a failure exposes a wider contract risk.
@@ -1481,7 +1481,7 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
 - `python3 tools/bench_friends.py --manifest bench/friends/manifest.toml --suite <id>`: run friend benchmark suites with the pinned manifest (use `--json-out`/`--summary-out` to capture results).
 - `python3 tools/diff_memory_report.py --input <artifact-root>/rss_metrics.jsonl --top 10`: summarize top RSS offenders from diff RSS metrics.
 - `python3 tools/check_type_coverage_todos.py`: validate complete type/stdlib gap records in the canonical matrices, require both explicit matrix links from [the root roadmap](../../ROADMAP.md), and reject stale roadmap duplicates without requiring duplicate gap lists.
-- `uv run --python 3.12 python tools/compile_progress.py --clean-state`: capture standardized compile-progress metrics.
+- `uv run python tools/compile_progress.py --clean-state`: capture standardized compile-progress metrics.
 - `python3 tools/profile.py`: repeatable CPU/alloc profiling runs.
 - `python3 tools/runtime_safety.py clippy|miri|fuzz --target string_ops --runs 10000`: runtime safety gates.
 - `cargo audit` and `cargo deny check`: Rust supply-chain audits.
@@ -1489,9 +1489,9 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
 - `cargo nextest run -p molt-runtime --all-targets`: faster Rust test runner.
 - `export RUSTC_WRAPPER=sccache`: enable Rust compile caching (check stats with `sccache -s`).
 - The CLI auto-enables `sccache` when available (`MOLT_USE_SCCACHE=auto`); set `MOLT_USE_SCCACHE=0` to disable or `MOLT_USE_SCCACHE=1` to require it in your shell setup.
-- `uv run --python 3.12 python tools/throughput_matrix.py`: run the build-throughput matrix (single-agent vs concurrent, wrapper on/off, dev/release) and write JSON artifacts under the configured artifact root. Prefer `--shared-target-dir <apfs/ext4 path>` for faster Rust incremental compiles.
+- `uv run python tools/throughput_matrix.py`: run the build-throughput matrix (single-agent vs concurrent, wrapper on/off, dev/release) and write JSON artifacts under the configured artifact root. Prefer `--shared-target-dir <apfs/ext4 path>` for faster Rust incremental compiles.
 - `eval "$(tools/throughput_env.sh --print)"` (or `tools/throughput_env.sh --apply`): bootstrap throughput env defaults with canonical artifact/cache roots, shared target dir, shared diff target (`MOLT_DIFF_CARGO_TARGET_DIR`), and `sccache` sizing tuned for local or external roots.
-- Fast multi-agent bootstrap (recommended before long diff sweeps): `tools/throughput_env.sh --apply && uv run --python 3.12 python -m molt.cli build --profile dev examples/hello.py --cache-report`.
+- Fast multi-agent bootstrap (recommended before long diff sweeps): `tools/throughput_env.sh --apply && uv run python -m molt.cli build --profile dev examples/hello.py --cache-report`.
 - Throughput bootstrap also sets `CARGO_INCREMENTAL=0` by default to improve cross-run/cacheability in highly concurrent workflows; override to `1` when investigating local incremental-only behavior.
 - `python3 tools/molt_cache_prune.py`: enforce Molt cache retention policy (defaults: external `200G` + `30` days; local `30G` + `30` days).
 - `cargo bloat -p molt-runtime --release` and `cargo llvm-lines -p molt-runtime`: size attribution.
@@ -1512,7 +1512,7 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
 ## Coding Style & Naming Conventions
 - Python: 4-space indentation, `ruff` line length 88, target version 3.13, and strict typing via `ty`.
 - Formatting: use `ruff format` (black-style) as the canonical formatter before builds to avoid inconsistent quoting or style drift.
-- Rust: use `uv run --active --project . --python 3.12 python tools/check_rustfmt.py --changed`
+- Rust: use `uv run --active --project . python tools/check_rustfmt.py --changed`
   to check changed human Rust, add `--write` only when intentionally formatting
   those human Rust files, or use `tools/dev.py fmt-check` / `tools/dev.py fmt`
   for the same authority. Write mode compares `rustfmt --emit stdout` before
@@ -1539,7 +1539,7 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
 - When changing handle resolution or the pointer registry, run strict provenance checks (Miri when available) and the lock-sensitive bench subset.
 
 ## Testing Guidelines
-- Run differential parity through the harness, not raw pytest: `uv run --python 3.12 python -u tests/molt_diff.py <file_or_dir>`.
+- Run differential parity through the harness, not raw pytest: `uv run python -u tests/molt_diff.py <file_or_dir>`.
 - Differential lane contract:
   - `tests/differential/basic`: core language + builtins.
   - `tests/differential/stdlib`: stdlib modules/submodules.
@@ -1586,19 +1586,19 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
   - Optional cleanup for interrupted/crashed sessions before starting a new long run: use the custody-aware sentinel, for example `python3 tools/process_sentinel.py --once --stale-orphan-sec 3600 --stale-pytest-sec 900`. Keep one supervising diff run per shared target to minimize contention and memory spikes.
 - Before running differential examples, export the developer artifact authority:
   `eval "$(python3 tools/run_context_env.py --prefer-external-artifacts --dx --format posix)"`.
-- Example (configured artifact root + shared cache + temp root): `MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic`.
-- Example (RSS metrics): `MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic`.
+- Example (configured artifact root + shared cache + temp root): `MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run python -u tests/molt_diff.py tests/differential/basic`.
+- Example (RSS metrics): `MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run python -u tests/molt_diff.py tests/differential/basic`.
   - Example (watch RSS during run): `ps -o pid=,rss=,command= -p <PID> | awk '{printf "pid=%s rss_kb=%s cmd=%s\n",$1,$2,$3}'` (record spikes in [tests/differential/INDEX.md](tests/differential/INDEX.md)).
   - Example (abort on blowup): stop the Molt-owned harness through the memory guard or custody-aware sentinel, then log the abort plus last-known RSS in [tests/differential/INDEX.md](tests/differential/INDEX.md). Do not use raw PID/name/process-group cleanup; custody must reidentify live Molt-owned workers and must skip Claude/Codex/app-server/renderer/node-repl/shell/parent watcher groups.
-- Example (multi-target list, auto-parallel): `MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/augassign_inplace.py tests/differential/basic/container_mutation.py tests/differential/basic/ellipsis_basic.py`
+- Example (multi-target list, auto-parallel): `MOLT_DIFF_TIMEOUT=180 uv run python -u tests/molt_diff.py tests/differential/basic/augassign_inplace.py tests/differential/basic/container_mutation.py tests/differential/basic/ellipsis_basic.py`
   - Example (parallel full sweep + live log + aggregate log + per-test logs):
-    `MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_GLOB='**/*.py' uv run --python 3.12 python -u tests/molt_diff.py --jobs 8 --live --log-file ${MOLT_DIFF_TMPDIR:?}/diff_live.log --log-aggregate ${MOLT_DIFF_TMPDIR:?}/diff_full.log --log-dir ${MOLT_DIFF_TMPDIR:?}/diff_logs tests/differential`
+    `MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_GLOB='**/*.py' uv run python -u tests/molt_diff.py --jobs 8 --live --log-file ${MOLT_DIFF_TMPDIR:?}/diff_live.log --log-aggregate ${MOLT_DIFF_TMPDIR:?}/diff_full.log --log-dir ${MOLT_DIFF_TMPDIR:?}/diff_logs tests/differential`
   - Example (monitor live log): `tail -f ${MOLT_DIFF_TMPDIR:?}/diff_live.log`
   - Example (monitor aggregate log): `tail -f ${MOLT_DIFF_TMPDIR:?}/diff_full.log`
-  - Run a deliberate trusted investigation: `MOLT_CAPABILITY_TIER=full uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic`.
+  - Run a deliberate trusted investigation: `MOLT_CAPABILITY_TIER=full uv run python -u tests/molt_diff.py tests/differential/basic`.
   - Optional speed workflow: prebuild runtime (`cargo build --release --package molt-runtime`), then do a two-pass diff run (no RSS first, RSS only for failures).
   - Always update [tests/differential/INDEX.md](tests/differential/INDEX.md) after diff runs:
-    - Record the run date/time, host Python (`uv run --python 3.12/3.13/3.14`), totals, and failure list.
+    - Record the run date/time, host Python (`uv run/3.13/3.14`), totals, and failure list.
     - Use `<artifact-root>/rss_metrics.jsonl` to extract the latest per-test status when RSS is enabled.
     - Prefer re-running only failing tests (Failure Queue) unless a full sweep is explicitly requested.
 - `tests/molt_diff.py` accepts multiple file/dir arguments and runs them in parallel by default (auto `--jobs`); use a shell loop only when you need custom ordering or retries.
@@ -1626,7 +1626,7 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
 - Super bench runs (`tools/bench.py --super`, `tools/bench_wasm.py --super`) execute 10 samples and emit mean/median/variance/range stats; run only on explicit request or release tagging, and summarize the stats in [docs/spec/STATUS.md](docs/spec/STATUS.md) and [docs/benchmarks/bench_summary.md](docs/benchmarks/bench_summary.md).
 - Sound the alarm immediately on performance regressions and trigger an optimization-first feedback loop after the structural implementation is complete; do not spin bench/lint/test cycles while the authority move is still mid-flight.
 - Prefer performance wins even if they increase compile time or binary size; document tradeoffs explicitly.
-- Always run tests via `uv run --python 3.12/3.13/3.14`; never use the raw `.venv` interpreter directly.
+- Always run tests via `uv run/3.13/3.14`; never use the raw `.venv` interpreter directly.
   - For CPython regrtest runs, prefer `--uv --uv-prepare --uv-python 3.12/3.13/3.14` so results are reproducible across versions.
 
 ## Compatibility & Security Claim Policy

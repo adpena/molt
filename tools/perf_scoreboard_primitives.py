@@ -175,6 +175,14 @@ PRIMITIVES = (
         setup="\nfrom dataclasses import dataclass\n\n@dataclass\nclass Point:\n    x: int\n    y: int\n",
         result="(lambda p: (p.x, p.y))(run(n))",
     ),
+    Primitive(
+        "raise_user",
+        'count = 0\nfor _ in range(n):\n    try:\n        raise ValueError("x")\n    except ValueError:\n        count += 1\nreturn count',
+    ),
+    Primitive(
+        "raise_runtime",
+        'count = 0\nfor _ in range(n):\n    try:\n        int("abc")\n    except ValueError:\n        count += 1\nreturn count',
+    ),
 )
 
 

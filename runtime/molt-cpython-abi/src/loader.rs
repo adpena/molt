@@ -124,6 +124,14 @@ unsafe fn load_extension(
             detail: "requires registered runtime extension-initialization hooks".into(),
         });
     };
+    let _gil = crate::hooks::RuntimeGilGuard::enter();
+    // Dlopen can execute constructors which directly read exported C types.
+    // They must observe complete fields before any foreign code is loaded.
+    if unsafe { crate::abi_types::ready_exception_singleton_types() } < 0 {
+        return Err(LoadError::InitializationFailed {
+            name: name.to_owned(),
+        });
+    }
     let origin = path.to_string_lossy();
     let name_bits = unsafe { h.alloc_str(name.as_ptr(), name.len()) };
     if name_bits == 0 {

@@ -288,7 +288,7 @@ def _windows_msvc_env_advice() -> list[str]:
 def _python_setup_advice() -> list[str]:
     # uv selects the managed CPython; a python3 found on PATH is never the host
     # (HF-755: on macOS that is the Xcode system interpreter).
-    return ["uv python install 3.12", "uv run --python 3.12 molt ..."]
+    return ["uv python install 3.12", "uv run molt ..."]
 
 
 def _uv_setup_advice(system: str) -> list[str]:

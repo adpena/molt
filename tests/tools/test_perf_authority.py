@@ -149,6 +149,8 @@ def test_declared_primitive_programs_have_independent_cpython_oracles(
         "recursion": "100",
         "plain_construction": "(99, 2)",
         "dataclass_construction": "(99, 2)",
+        "raise_user": "100",
+        "raise_runtime": "100",
     }
     assert {p.name for p in primitive_axis.PRIMITIVES} == set(expected)
     monkeypatch.setattr("sys.argv", ["primitive.py", "100"])

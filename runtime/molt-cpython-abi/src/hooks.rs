@@ -3126,6 +3126,16 @@ pub(crate) struct RuntimeGilGuard {
 }
 
 impl RuntimeGilGuard {
+    /// A cold foreign entry can run callbacks which release the GIL. Ask the
+    /// execution owner to retain admission even when the lock is already held;
+    /// raw GIL ownership alone does not pin RuntimeState.
+    #[cfg(all(feature = "extension-loader", not(target_arch = "wasm32")))]
+    pub(crate) fn enter() -> Self {
+        Self {
+            token: unsafe { (hooks_or_stubs().operation_enter)() },
+        }
+    }
+
     #[inline]
     pub(crate) fn ensure() -> Self {
         let hooks = hooks_or_stubs();

@@ -111,5 +111,34 @@ static PyModuleDef pending_call_probe_module = {
 };
 
 PyMODINIT_FUNC PyInit__native(void) {
+    /* No bridge/API call may make these fields ready for this probe. An
+       extension can read exported type data directly on entering PyInit. */
+    PyTypeObject *types[] = {
+        &PyBaseObject_Type, &PyType_Type, &PyLong_Type, &PyTuple_Type,
+        (PyTypeObject *)PyExc_BaseException, (PyTypeObject *)PyExc_NameError,
+    };
+    for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
+        /* CPython 3.12 stores static builtin dictionaries per interpreter,
+           including static exceptions, leaving physical tp_dict NULL. All
+           six expose bases/MRO and READY directly, before any API call. */
+        if (types[i]->tp_mro == NULL ||
+                types[i]->tp_bases == NULL || !(types[i]->tp_flags & Py_TPFLAGS_READY)) {
+            PyErr_Format(PyExc_RuntimeError,
+                         "exported C type %s is not ready before PyInit (dict=%d mro=%d bases=%d)",
+                         types[i]->tp_name, types[i]->tp_dict != NULL,
+                         types[i]->tp_mro != NULL, types[i]->tp_bases != NULL);
+            return NULL;
+        }
+    }
+    for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
+        PyObject *dict = PyType_GetDict(types[i]);
+        if (dict == NULL) {
+            return NULL;
+        }
+        if (!PyDict_Check(dict)) {
+            PyErr_SetString(PyExc_RuntimeError, "exported C type dictionary is invalid");
+            return NULL;
+        }
+    }
     return PyModule_Create(&pending_call_probe_module);
 }

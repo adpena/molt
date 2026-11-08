@@ -505,7 +505,7 @@ does not admit a redirected or missing output variable. There is no post-identit
 temporary-directory rewrite. Input schema v2 makes the changed policy explicit;
 old receipts are not rewritten or retroactively made valid.
 
-Inspect one generation with `uv run --python 3.12 python tools/proof_queue.py
+Inspect one generation with `uv run python tools/proof_queue.py
 reclaim-cargo-generation --run-id RUN_ID`. This emits JSON and does not create
 queue state, hash build outputs, or delete files. Add `--apply` only for an
 authorized cleanup. The command requires a persisted terminal queue result,
@@ -541,7 +541,7 @@ an operator obligation; this command never prunes it. Failed preservation or
 interrupted removal retains the existing fail-closed recovery behavior.
 
 A sealed candidate is not part of unsealed reclamation. Inspect one with
-`uv run --python 3.12 python tools/proof_queue.py
+`uv run python tools/proof_queue.py
 retire-terminal-sealed-generation --run-id RUN_ID`. It becomes eligible only
 when the persisted terminal row, digest, immutable Cargo lifecycle receipt,
 owner binding, process closure, and the existing per-identity lease all agree;
@@ -1207,7 +1207,7 @@ Worker count never changes content identity or weakens mutation detection.
 Before queueing, always inspect live custody:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py status
+uv run --active --project . python tools\proof_queue.py status
 ```
 
 On this Windows workstation, expensive queue rows must refresh the canonical DX
@@ -1306,7 +1306,7 @@ proof budget rebuilding or syncing the Python project before Cargo starts is a
 queue DX regression.
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py cargo `
+uv run --active --project . python tools\proof_queue.py cargo `
   --id runtime-buffer-descriptor-authority `
   --reason "Prove typed storage exports one runtime-owned buffer descriptor" `
   --scope runtime/molt-runtime/src/object/memoryview.rs `
@@ -1322,7 +1322,7 @@ compile slot being protected. Use `cargo-template` to print the current command
 shape instead of reconstructing it from memory:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py cargo-template
+uv run --active --project . python tools\proof_queue.py cargo-template
 ```
 
 ## Required Submission Shape
@@ -1340,7 +1340,7 @@ and do not require a delimiter; `--help` after `--` remains an argument to the
 proof command.
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py exec `
+uv run --active --project . python tools\proof_queue.py exec `
   --id runtime-buffer-descriptor-authority `
   --reason "Prove typed storage exports one runtime-owned buffer descriptor" `
   --resource-family python `
@@ -1348,7 +1348,7 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py exec `
   --scope runtime/molt-runtime/src/object/memoryview.rs `
   --note "Moved buffer descriptor authority beside TypedStridedStorage; proving C API and ABI layout stay aligned." `
   --timeout 900 `
-  -- uv run --active --project . --python 3.12 --no-sync --no-config pytest tests/path.py -q
+  -- uv run --active --project . --no-sync --no-config pytest tests/path.py -q
 ```
 
 Use `--depends-on RUN_ID` when a proof is not valid until earlier evidence has
@@ -1388,7 +1388,7 @@ its existing streaming filesystem measurements while its cursor is open.
 Queue commands that invoke Python must use:
 
 ```powershell
-uv run --active --project . --python 3.12 --no-sync --no-config ...
+uv run --active --project . --no-sync --no-config ...
 ```
 
 Non-active `uv run` is rejected because it creates throwaway environments and
@@ -1776,7 +1776,7 @@ shell-specific quoting, or Codex interactive sessions. The queue owns detached
 launch:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py exec `
+uv run --active --project . python tools\proof_queue.py exec `
   --id runtime-buffer-descriptor-authority `
   --reason "Prove typed storage exports one runtime-owned buffer descriptor" `
   --resource-family python `
@@ -1785,13 +1785,13 @@ uv run --active --project . --python 3.12 python tools\proof_queue.py exec `
   --note "Detached queue-owned runner for the focused buffer proof." `
   --timeout 900 `
   --detach `
-  -- uv run --active --project . --python 3.12 pytest tests/path.py -q
+  -- uv run --active --project . pytest tests/path.py -q
 ```
 
 Named lanes support the same mode:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witness-acceptance --target wasm --detach
+uv run --active --project . python tools\proof_queue.py pact-witness-acceptance --target wasm --detach
 ```
 
 Detached submission creates a queued row, starts a queue-owned runner for that
@@ -1807,7 +1807,7 @@ before Cargo starts.
 Use the queue-size scheduler instead of launching several detached rows by hand:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py run `
+uv run --active --project . python tools\proof_queue.py run `
   --detach `
   --queue-size 3
 ```
@@ -1905,7 +1905,7 @@ If a row was deliberately parked with `--queue-only`, launch that exact row
 later through the same custody boundary:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py run --run-id RUN_ID --detach
+uv run --active --project . python tools\proof_queue.py run --run-id RUN_ID --detach
 ```
 
 Do not reconstruct the original command, start a shell background process, or
@@ -2021,7 +2021,7 @@ command = [
 Submit with:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py submit proof.toml
+uv run --active --project . python tools\proof_queue.py submit proof.toml
 ```
 
 ## Differential Case Selection
@@ -2057,13 +2057,13 @@ Use the named lane for Pact Kernel A acceptance. Do not queue ad hoc `molt
 build` commands for this contract:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witness-acceptance --target native
+uv run --active --project . python tools\proof_queue.py pact-witness-acceptance --target native
 ```
 
 For the normal heavyweight lane, prefer:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witness-acceptance --target wasm --detach
+uv run --active --project . python tools\proof_queue.py pact-witness-acceptance --target wasm --detach
 ```
 
 `pact-witness-acceptance` requires `--target native|wasm`; it has no default.
@@ -2098,7 +2098,7 @@ dossier.
 Before spending the heavy slot, inspect the rendered lane:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py pact-witness-acceptance --target native --print-spec
+uv run --active --project . python tools\proof_queue.py pact-witness-acceptance --target native --print-spec
 ```
 
 Root selection is authority-driven, not directory-discovery ordered. The queue
@@ -2123,7 +2123,7 @@ Proof notes are append-only at the SQLite layer. Do not edit or delete notes.
 If the understanding changes, append a new observation.
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py note RUN_ID `
+uv run --active --project . python tools\proof_queue.py note RUN_ID `
   --kind observation `
   --author codex `
   --note "R19 moved past PyInit and now traps at scipy.ndimage._nd_image isolate import."
@@ -2141,7 +2141,7 @@ Proof edges are append-only at the SQLite layer and reject cycles. Use them to
 make experimental lineage machine-readable instead of burying it in prose.
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py link CHILD_RUN_ID `
+uv run --active --project . python tools\proof_queue.py link CHILD_RUN_ID `
   --parent PARENT_RUN_ID `
   --kind reruns `
   --author codex `
@@ -2171,7 +2171,7 @@ Each run records:
 Inspect machine-readable evidence with:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py evidence --run-id RUN_ID
+uv run --active --project . python tools\proof_queue.py evidence --run-id RUN_ID
 ```
 
 Evidence includes deterministic `diagnostics` derived from queue metadata and
@@ -2204,14 +2204,14 @@ the quiescent execution receipt.
 Use `diagnose` before manual log spelunking or hand-written status notes:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py diagnose RUN_ID
+uv run --active --project . python tools\proof_queue.py diagnose RUN_ID
 ```
 
 To preserve the finding for other agents, append the deterministic diagnosis as
 an immutable note and regenerate the notebook projection:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py diagnose RUN_ID --append-note
+uv run --active --project . python tools\proof_queue.py diagnose RUN_ID --append-note
 ```
 
 `status` also prints the first diagnostic for recent failed rows. If a repeated
@@ -2255,7 +2255,7 @@ Use `audit` for recursive queue health review before starting another long
 proof tranche:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py audit
+uv run --active --project . python tools\proof_queue.py audit
 ```
 
 `audit` walks active and recent rows, diagnostics, append-only notes, DAG edges,
@@ -2288,7 +2288,7 @@ projection of queue evidence and log tail, not the source of truth. Do not hand
 edit it; regenerate it instead:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py notebook RUN_ID
+uv run --active --project . python tools\proof_queue.py notebook RUN_ID
 ```
 
 Use `--notebooks-root` to redirect projections for local experiments. Generated
@@ -2346,8 +2346,8 @@ build-admission floor, so kept evidence cannot eat the headroom a build needs.
 At the measured ~1.8 MB per ordinary run, only scratch-heavy runs reach it.
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py retention
-uv run --active --project . --python 3.12 python tools\proof_queue.py retention --apply
+uv run --active --project . python tools\proof_queue.py retention
+uv run --active --project . python tools\proof_queue.py retention --apply
 ```
 
 `molt queue retention` is the same command. Without `--apply` it opens the
@@ -2387,7 +2387,7 @@ runner reports it, and the next pass or the explicit command finishes the work.
 To cite a run that may leave the window, pin it first:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py note RUN_ID `
+uv run --active --project . python tools\proof_queue.py note RUN_ID `
   --kind retain `
   --note "cited by docs/agent/EXAMPLE.md"
 ```
@@ -2400,7 +2400,7 @@ whose evidence is already reclaimed.
 If a queue row stalls, inspect the log and memory-guard summary first:
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py evidence --run-id RUN_ID
+uv run --active --project . python tools\proof_queue.py evidence --run-id RUN_ID
 ```
 
 Use `prune-stale --run-id RUN_ID` for a stale row you own. The unscoped
@@ -2428,8 +2428,8 @@ for the guard process it launched. Use targeted pruning after an ownership
 check when a launch-summary-only row truly needs manual cleanup.
 
 ```powershell
-uv run --active --project . --python 3.12 python tools\proof_queue.py prune-stale --run-id RUN_ID
-uv run --active --project . --python 3.12 python tools\proof_queue.py prune-stale
+uv run --active --project . python tools\proof_queue.py prune-stale --run-id RUN_ID
+uv run --active --project . python tools\proof_queue.py prune-stale
 ```
 
 When citing proof, cite the run ID plus the log or evidence path, and pin the

@@ -545,8 +545,10 @@ The host entry uses this same authority, and runtime-originated callbacks requir
 A compiled activation retains its resolved runtime allocation until return, including through
 GIL suspension. Rebinding a later activation cannot refresh an earlier activation's cached pointer.
 
-The object witness is revision 9: the existing 66 facts plus context schema, argument position,
-carrier width, header size/alignment and thread-record offset. Physical bindings qualify each
+The merged object witness is revision 10, joining main's frame-location and refcount facts with
+the context schema, argument position, carrier width, header size/alignment and thread-record
+offset. `GeneratedObjectAbiFacts` in `molt-codegen-abi` owns its layout and fingerprint.
+Physical bindings qualify each
 individual producer as well as its selected runtime. WASM's application custom section contains
 exactly eight little-endian fingerprint bytes; manifest fingerprints use decimal strings so JS
 does not round them. Node, browser, Worker and Rust hosts enforce the generated schema and the

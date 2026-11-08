@@ -202,9 +202,8 @@ discovery_only = false
 tool = "tools/gen_cpython_coverage.py"
 outputs = [
   "docs/spec/areas/compat/surfaces/cpython_abi_coverage.generated.md",
-  "docs/spec/areas/compat/surfaces/cpython_version_assumptions.generated.md",
 ]
-source = "config/cpython_coverage.toml (declares version_assumption_audit.source_roots admitted through src/molt/source_admission.py) + config/cpython_stable_abi_3_12.toml + runtime/molt-cpython-abi/src + runtime/molt-cpython-abi/shims/pyarg_variadic.exports + tools/generator_io.py"
+source = "config/cpython_coverage.toml + config/cpython_stable_abi_3_12.toml + runtime/molt-cpython-abi/src + runtime/molt-cpython-abi/shims/pyarg_variadic.exports + tools/generator_io.py"
 check_mode = true
 toolchains = []
 check_command = "tools/gen_cpython_coverage.py --check"
@@ -449,6 +448,7 @@ outputs = [
   "runtime/molt-runtime/src/attached_exports_generated/builtins/attributes.rs",
   "runtime/molt-runtime/src/attached_exports_generated/builtins/binding_guards.rs",
   "runtime/molt-runtime/src/attached_exports_generated/builtins/callable.rs",
+  "runtime/molt-runtime/src/attached_exports_generated/builtins/class_builder.rs",
   "runtime/molt-runtime/src/attached_exports_generated/builtins/classes.rs",
   "runtime/molt-runtime/src/attached_exports_generated/builtins/codecs.rs",
   "runtime/molt-runtime/src/attached_exports_generated/builtins/codecs_ext.rs",
@@ -568,6 +568,7 @@ outputs = [
   "runtime/molt-runtime/src/attached_exports_generated/intrinsics/registry.rs",
   "runtime/molt-runtime/src/attached_exports_generated/itertools_bridge.rs",
   "runtime/molt-runtime/src/attached_exports_generated/itertools_class.rs",
+  "runtime/molt-runtime/src/attached_exports_generated/marshal/mod.rs",
   "runtime/molt-runtime/src/attached_exports_generated/object/accessors.rs",
   "runtime/molt-runtime/src/attached_exports_generated/object/buffer2d.rs",
   "runtime/molt-runtime/src/attached_exports_generated/object/builders.rs",

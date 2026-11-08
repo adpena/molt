@@ -609,6 +609,9 @@ class SerializationMixin(
                 else len(json_ops)
             )
             if end_idx > start_idx:
+                if mop.class_frame is not None:
+                    for entry in json_ops[start_idx:end_idx]:
+                        entry["class_frame"] = mop.class_frame.body_code_symbol
                 if mop.exception_source is not None:
                     for entry in json_ops[start_idx:end_idx]:
                         if entry["kind"] not in {

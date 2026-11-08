@@ -839,7 +839,12 @@ macro_rules! attached_symbol {
     ("molt_chan_try_send") => { "molt_chan_try_send__molt_context_a8c6010e2cbb56a1" };
     ("molt_chr") => { "molt_chr__molt_context_a8c6010e2cbb56a1" };
     ("molt_class_apply_set_name") => { "molt_class_apply_set_name__molt_context_a8c6010e2cbb56a1" };
+    ("molt_class_body_builtins") => { "molt_class_body_builtins__molt_context_a8c6010e2cbb56a1" };
     ("molt_class_builder_check") => { "molt_class_builder_check__molt_context_a8c6010e2cbb56a1" };
+    ("molt_class_def_namespace") => { "molt_class_def_namespace__molt_context_a8c6010e2cbb56a1" };
+    ("molt_class_frame_enter") => { "molt_class_frame_enter__molt_context_a8c6010e2cbb56a1" };
+    ("molt_class_frame_exit") => { "molt_class_frame_exit__molt_context_a8c6010e2cbb56a1" };
+    ("molt_class_frame_set_location") => { "molt_class_frame_set_location__molt_context_a8c6010e2cbb56a1" };
     ("molt_class_layout_version") => { "molt_class_layout_version__molt_context_a8c6010e2cbb56a1" };
     ("molt_class_new") => { "molt_class_new__molt_context_a8c6010e2cbb56a1" };
     ("molt_class_set_base") => { "molt_class_set_base__molt_context_a8c6010e2cbb56a1" };
@@ -878,6 +883,7 @@ macro_rules! attached_symbol {
     ("molt_code_new") => { "molt_code_new__molt_context_a8c6010e2cbb56a1" };
     ("molt_code_positions") => { "molt_code_positions__molt_context_a8c6010e2cbb56a1" };
     ("molt_code_replace") => { "molt_code_replace__molt_context_a8c6010e2cbb56a1" };
+    ("molt_code_set_class_body") => { "molt_code_set_class_body__molt_context_a8c6010e2cbb56a1" };
     ("molt_code_slot_set") => { "molt_code_slot_set__molt_context_a8c6010e2cbb56a1" };
     ("molt_code_slots_init") => { "molt_code_slots_init__molt_context_a8c6010e2cbb56a1" };
     ("molt_codecs_bom_utf16_be") => { "molt_codecs_bom_utf16_be__molt_context_a8c6010e2cbb56a1" };
@@ -1533,8 +1539,11 @@ macro_rules! attached_symbol {
     ("molt_fraction_to_str") => { "molt_fraction_to_str__molt_context_a8c6010e2cbb56a1" };
     ("molt_fraction_truediv") => { "molt_fraction_truediv__molt_context_a8c6010e2cbb56a1" };
     ("molt_frame_cell_publish") => { "molt_frame_cell_publish__molt_context_a8c6010e2cbb56a1" };
+    ("molt_frame_class_locals_set") => { "molt_frame_class_locals_set__molt_context_a8c6010e2cbb56a1" };
     ("molt_frame_clear") => { "molt_frame_clear__molt_context_a8c6010e2cbb56a1" };
     ("molt_frame_context_set") => { "molt_frame_context_set__molt_context_a8c6010e2cbb56a1" };
+    ("molt_frame_f_lasti_get") => { "molt_frame_f_lasti_get__molt_context_a8c6010e2cbb56a1" };
+    ("molt_frame_f_lineno_get") => { "molt_frame_f_lineno_get__molt_context_a8c6010e2cbb56a1" };
     ("molt_frame_f_locals_get") => { "molt_frame_f_locals_get__molt_context_a8c6010e2cbb56a1" };
     ("molt_frame_home_load") => { "molt_frame_home_load__molt_context_a8c6010e2cbb56a1" };
     ("molt_frame_home_take") => { "molt_frame_home_take__molt_context_a8c6010e2cbb56a1" };

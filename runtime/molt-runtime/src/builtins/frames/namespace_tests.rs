@@ -1,5 +1,6 @@
 //! Namespace custody is independent of call shape, source names and suspension.
 use super::bindings::molt_frame_homes_attached_body;
+use super::locals_proxy::molt_frame_f_locals_get_attached_body;
 use super::*;
 use crate::BuiltinExc;
 use crate::dict_set_in_place;
@@ -25,6 +26,85 @@ fn bind_code_target(py: &PyToken<'_>, code: u64, target: u64) {
     assert!(!function.is_null());
     assert!(unsafe { function_set_code_bits(py, function, code) });
     dec_ref_bits(py, MoltObject::from_ptr(function).bits());
+}
+
+#[test]
+fn class_frame_keeps_its_mapping_and_pre_base_builtins_without_function_bindings() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let (_, outer_code) = super::tests::alloc_test_code(py);
+        let (_, class_code) = super::tests::alloc_test_code(py);
+        let globals = dict(py);
+        let original = dict(py);
+        let replacement = dict(py);
+        let namespace = dict(py);
+        let key = crate::NameId::DunderBuiltins.bits(py);
+        let globals_ptr = obj_from_bits(globals).as_ptr().unwrap();
+        unsafe {
+            assert!(dict_set_in_place(py, globals_ptr, key, original));
+        }
+        let slot = crate::test_support::publish_test_code_slot(py, outer_code, globals);
+        crate::molt_trace_enter_slot_attached_body(py, slot);
+        let captured = molt_class_body_builtins_attached_body(py, globals);
+        unsafe {
+            assert!(dict_set_in_place(py, globals_ptr, key, replacement));
+        }
+        molt_code_set_class_body_attached_body(py, class_code);
+        crate::test_support::publish_test_code_slot(py, class_code, globals);
+        crate::molt_class_frame_enter_attached_body(py, class_code, globals, captured);
+        assert!(!exception_pending(py));
+        assert_eq!(frame_stack_active_builtins_bits(), original);
+        assert_eq!(frame_stack_active_globals_bits(), globals);
+        let entry = FRAME_STACK.with(|stack| *stack.borrow().last().unwrap());
+        assert!(!entry.bindings.has_python_bindings());
+        assert_eq!(entry.bindings.payload_bits, 0);
+        // A reflected elided mapping must refuse the observation, rather than
+        // exposing the enclosing function or module namespace.
+        let frame = molt_getframe_attached_body(py, MoltObject::from_int(0).bits());
+        assert!(!exception_pending(py));
+        let unavailable =
+            molt_frame_f_locals_get_attached_body(py, MoltObject::none().bits(), frame);
+        assert!(obj_from_bits(unavailable).is_none());
+        let error = crate::molt_exception_last_pending_attached_body(py);
+        assert!(crate::builtins::exceptions::exception_matches_kind(
+            py,
+            error,
+            BuiltinExc::TypeError
+        ));
+        crate::molt_exception_clear_attached_body(py);
+        dec_ref_bits(py, error);
+        dec_ref_bits(py, unavailable);
+        dec_ref_bits(py, frame);
+        molt_frame_class_locals_set_attached_body(py, namespace);
+        let observed = molt_locals_builtin_attached_body(py);
+        assert_eq!(observed, namespace);
+        assert_eq!(
+            unsafe { dict_get_in_place(py, obj_from_bits(namespace).as_ptr().unwrap(), key) },
+            Ok(None)
+        );
+        assert_eq!(
+            unsafe {
+                crate::object::layout::code_flags(obj_from_bits(class_code).as_ptr().unwrap())
+            } & 3,
+            0
+        );
+        crate::molt_trace_exit_attached_body(py);
+        assert_eq!(frame_stack_active_builtins_bits(), original);
+        crate::molt_trace_exit_attached_body(py);
+        for bits in [
+            observed,
+            captured,
+            namespace,
+            replacement,
+            original,
+            globals,
+            class_code,
+            outer_code,
+        ] {
+            dec_ref_bits(py, bits);
+        }
+        assert!(!exception_pending(py));
+    });
 }
 
 #[test]
