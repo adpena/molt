@@ -162,7 +162,7 @@ impl SimpleBackend {
         flag_builder
             .set(
                 "use_colocated_libcalls",
-                if placement.colocated_libcalls() {
+                if placement.colocated_calls() {
                     "true"
                 } else {
                     "false"

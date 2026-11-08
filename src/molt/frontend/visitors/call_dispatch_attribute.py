@@ -78,7 +78,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
         ):
             return None
         if (
-            self.python_class_body_context
+            self.python_class_frame_owner is not None
             or not self._free_var_cell_available("__class__")
             or not isinstance(self.current_python_first_arg, str)
         ):

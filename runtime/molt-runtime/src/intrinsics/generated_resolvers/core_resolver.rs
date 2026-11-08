@@ -397,6 +397,34 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_class_builder_check",
             crate::molt_class_builder_check as *const (),
         )),
+        "molt_class_body_builtins" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_class_body_builtins",
+            crate::molt_class_body_builtins as *const (),
+        )),
+        "molt_code_set_class_body" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_code_set_class_body",
+            crate::molt_code_set_class_body as *const (),
+        )),
+        "molt_class_frame_enter" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_class_frame_enter",
+            crate::molt_class_frame_enter as *const (),
+        )),
+        "molt_class_frame_exit" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_class_frame_exit",
+            crate::molt_class_frame_exit as *const (),
+        )),
+        "molt_frame_class_locals_set" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_frame_class_locals_set",
+            crate::molt_frame_class_locals_set as *const (),
+        )),
+        "molt_class_frame_set_location" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_class_frame_set_location",
+            crate::molt_class_frame_set_location as *const (),
+        )),
+        "molt_class_def_namespace" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_class_def_namespace",
+            crate::molt_class_def_namespace as *const (),
+        )),
         "molt_types_cell_contents_get" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_types_cell_contents_get",
             crate::molt_types_cell_contents_get as *const (),

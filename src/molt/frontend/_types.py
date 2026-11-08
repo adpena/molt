@@ -68,6 +68,7 @@ if TYPE_CHECKING:
 
 
 class SimpleIROp(TypedDict):
+    class_frame: NotRequired[str]
     exception_edge: NotRequired[ExceptionEdgeKind]
     exception_source: NotRequired[ExceptionEdgeKind]
     """Serialized operation: closed identity, existing operation-specific payload."""
@@ -157,6 +158,10 @@ class ClassId:
             return (self.module, self.qualname, 0, 0, 0)
         line, column = self.occurrence
         return (self.module, self.qualname, 1, line, column)
+
+    @property
+    def body_code_symbol(self) -> str:
+        return f"class_body:{self.definition_symbol}"
 
     def __lt__(self, other: object) -> bool:
         if not isinstance(other, ClassId):
@@ -379,6 +384,7 @@ class MoltOp:
     source_end_line: int | None = None
     exception_edge: ExceptionEdgeKind | None = None
     exception_source: ExceptionEdgeKind | None = None
+    class_frame: ClassId | None = None
 
 
 def loaded_method_self_name(op: MoltOp) -> str:

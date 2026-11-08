@@ -184,7 +184,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     optimization_profile: MidendProfile
     parameter_bindings: dict[str, str]
     python_binding_index: PythonBindingIndex | None
-    python_class_body_context: Any
+    python_class_frame_owner: ClassId | None
     python_frame_context_active: Any
     qualname_stack: list[tuple[str, bool]]
     reserved_func_symbols: dict[CallableId, str]
@@ -1762,9 +1762,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, restore: Callable[[], object]
     ) -> FrameRestoreScope: ...
 
-    def _enter_python_frame_context_scope(
-        self, *, class_body: bool = ...
-    ) -> PythonFrameContextScope: ...
+    def _enter_python_frame_context_scope(self) -> PythonFrameContextScope: ...
 
     def _entry_adopts_symbol(self, symbol: str) -> bool: ...
 

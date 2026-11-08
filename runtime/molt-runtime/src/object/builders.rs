@@ -1669,8 +1669,8 @@ pub(crate) fn alloc_code_obj(
     // immutable callable-context provenance paired with slots 9..11. Slot 22
     // owns optional immutable GPU body metadata; 23..24 own declaration
     // qualname/doc once packed metadata publishes them. Slot 25 owns an optional
-    // immutable dataclass initializer body plan. Slot 26 fixes module execution
-    // identity independently of mutable replacement metadata. No function grows.
+    // immutable dataclass initializer body plan. Slot 26 fixes the typed code
+    // scope independently of mutable replacement metadata. No function grows.
     let empty_lexical_ptr = alloc_tuple(_py, &[]);
     if empty_lexical_ptr.is_null() {
         return std::ptr::null_mut();
@@ -1713,9 +1713,15 @@ pub(crate) fn alloc_code_obj(
         *(ptr.add(23 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(24 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(25 * std::mem::size_of::<u64>()) as *mut u64) = 0;
-        *ptr.cast::<u64>().add(26) = u64::from(
-            crate::object::ops::exact_string_bytes(_py, name_bits)
-                .is_some_and(|name| name == b"<module>"),
+        crate::object::layout::code_set_scope_kind(
+            ptr,
+            if crate::object::ops::exact_string_bytes(_py, name_bits)
+                .is_some_and(|name| name == b"<module>")
+            {
+                crate::object::layout::CodeScopeKind::Module
+            } else {
+                crate::object::layout::CodeScopeKind::Function
+            },
         );
         if filename_bits != 0 {
             inc_ref_bits(_py, filename_bits);
@@ -1800,7 +1806,10 @@ unsafe fn clone_code_obj(
         if clone.is_null() {
             return clone;
         }
-        *clone.cast::<u64>().add(26) = u64::from(crate::object::layout::code_is_module(source));
+        crate::object::layout::code_set_scope_kind(
+            clone,
+            crate::object::layout::code_scope_kind(source),
+        );
         if (crate::object::layout::code_declaration_is_published(source)
             || metadata.qualname != metadata.name)
             && crate::object::layout::code_publish_declaration_metadata(

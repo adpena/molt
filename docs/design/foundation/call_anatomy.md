@@ -390,6 +390,10 @@ private canonical lane artifacts. No sampled percentage is converted to Ir.
 
 ### 2.5 Raise and catch (p7, HF-561)
 
+This is the historical constructor-detour measurement. See the
+[2026-11-05 refresh](#hf-561-refresh-and-first-implementation-slice-2026-11-05)
+for the current mechanism and measured first slice.
+
 210,274 instructions per iteration; CPython 2,038 (103x; wall 15.46 s against 0.09 s). Shares
 (12,372 samples):
 
@@ -990,8 +994,57 @@ rule in the TIR verify-each pass.
 
 ### 4.9 Literals
 
-Each code object owns a constant table filled at module initialization; a literal load is a table
-read (CPython `co_consts`, HF-507).
+Each runtime state owns one literal table; a literal load at its use site is a table read
+(CPython `co_consts`, HF-507). Revised after one Goldfish round (codebase-details and zoom-out).
+
+**Problem (measured 2026-10-23, HF-507).** Native code builds every heap literal (`str`, `bytes`,
+big `int`) in the function prologue on every call and resume, through `molt_string_from_bytes` and a
+32-slot direct-mapped cache whose collisions allocate and free literals on each call: a function
+with 8 cold `raise ValueError("...")` branches costs 27,693 instructions per call against 3,940
+without them (CPython: 1,905 and 1,067). LLVM runs the constructor at every use, inside loops too
+(`lowering/constant_ops.rs`); WASM builds stateful and jumpful functions' literals at entry and
+others at each use (`function_frame/planning/mod.rs`, `constant_ops.rs`). Payload decoding is
+shared (`molt_ir::literal_payload`); object construction is spelled three times.
+
+**Identity.** Every runtime pointer comparison of names has a content fallback, so identity is a
+parity question, not a correctness path. Parity rules: identifier-like strings are the runtime's
+interned immortal singletons; other literals are one object per module, as CPython merges
+constants per module (equal non-name literals in two modules are distinct objects).
+`sys.intern(literal) is literal` holds in CPython, so `molt_sys_intern` adopts an already-immortal
+literal instead of copying it (today it copies: a parity defect this work fixes).
+
+**Design (stage A, closes HF-507).**
+- *Table per runtime state.* Isolates each own a `RuntimeState`, an intern pool and a random hash
+  secret, and a `str` caches its hash in the object, so the table lives in the runtime state beside
+  `code_slots`, is created at init and is released at teardown; compiled code reaches its base
+  through the execution context (HF-198).
+- *Dense literal IDs.* The compiler assigns each unique (module, literal) a dense ID and emits the
+  payloads as read-only data. `ProgramSlotKind` stays a read-only index authority; the writable
+  cells are runtime-owned. Symbol names use a digest of the payload, not its hex spelling.
+- *One literal-load op.* A new opcode (row in `op_kinds.toml`) loads cell `id`; a zero cell takes one
+  cold runtime call that builds the object through the normal allocation and intern path, makes it
+  immortal unless it already is (pool, one-character and empty singletons), and publishes it with
+  the `canonical_singleton` protocol (build, recheck, only the winner is made immortal, release
+  store; the loser releases its copy). The load sits at the use, so a cold branch costs nothing
+  until it runs. A `representation_facts` rule keyed on this opcode makes its result
+  `BoxedImmortal`: a producer proof, which the RC contract admits (`inline_refcount.md`).
+- *Consumers.* Native, LLVM and WASM lower the one opcode; the JIT and the Rust and Luau preludes
+  are not affected (they do not consume `const_str`/`const_bytes`/`const_bigint` data segments).
+- *Deletions.* Prologue materialization (native `prepare_heap_literals`, WASM entry literal regions)
+  and `runtime/molt-runtime/src/const_data_cache.rs` with all its consumers (`builtins/strings.rs`,
+  `object/ops_convert.rs`, `state/lifecycle.rs`, `object/immortal_owner_tests.rs`, `lib.rs`). The
+  byte constructors stay: the WASM JS hosts and tests call them with transient buffers.
+
+**Gate.** The 8-literal function within 10% of its no-literal variant's instructions on native;
+`molt_string_from_bytes` absent from generator-resume samples (HF-229); LLVM and WASM baselines
+recorded first (never measured) and the same gate applied; startup instructions not worse; binary
+and WASM size recorded; differential tests for interned identity (`is` between identifier
+literals, `sys.intern(literal) is literal`) and per-module distinctness.
+
+**Stage B.** Static immortal literal objects at build time are HF-673's first slice (one static-data
+emitter for all build-time objects). Go only if stage A's remaining cost (cell test, first-use
+allocations, startup) is measurable; the table, its init hook and the cold call (for kinds without
+a static layout, such as big integers) remain.
 
 ### 4.10 Facts: what exists, what is missing
 
@@ -1094,7 +1147,7 @@ Closes HF-185 stages 4 and 5, HF-205; moves HF-198.
 
 `NativeSignature` and the two entries (4.2); `ctx` as the first argument on every backend (HF-198
 stage 2); module slot arrays and `GlobalSlot` sites (4.5); `Proven`/`Guarded`/`Monomorphic` call
-sites; per-code literal tables (HF-507); `runtime_generation` in the record (HF-200). Deletes
+sites; per-state literal tables with dense literal IDs (HF-507, 4.9); `runtime_generation` in the record (HF-200). Deletes
 `molt_module_get_global` from module-function call sites, `molt_thread_record`, the
 `pending_invocation` handoff, and `molt_string_from_bytes` in prologues. Targets: call loop ≤ 250
 instructions per iteration; `fib` ≤ 300 per call. Closes HF-507, HF-200; closes HF-198; moves HF-79.
@@ -1114,18 +1167,123 @@ remaining cost is the format plan and the wrapper, both cacheable). Closes the H
 
 Native exception classes without the C-API detour; lazy tracebacks; class-handle matching (4.4).
 Target: raise loop ≤ 1,500 instructions per iteration (CPython 2,038); `type(ValueError.__init__)`
-prints `wrapper_descriptor`. Closes HF-561; completes HF-207's raise side. New ledger row needed:
-builtin exception construction routes through the CPython-ABI bridge and `type()` of its `__init__`
-is wrong. Independent of stages 1-4 except for the traceback buffer, which uses the stage 1 record
-fields `(code, location)`; before stage 1 it can use the existing frame entry.
+prints `wrapper_descriptor`. These are the accepted stage targets, not current
+qualification. HF-589 records the descriptor defect from the historical anatomy;
+the refresh below distinguishes the current constructor from that old profile.
+Independent of stages 1-4 except for the traceback buffer, which uses the stage 1
+record fields `(code, location)`; before stage 1 it can use the existing frame entry.
 
-Lead for the worker: `construct_exception_from_args` (`runtime/molt-runtime/src/call/class_init.rs`)
-has a fast path for `molt_exception_init` (`tuple_init`). It never fires for `ValueError`, because
-`class_attr_lookup` for `__init__` returns a CPython-ABI descriptor, so the call takes
-`call_bind_with_arguments` → `call_foreign_with_arguments`. Find which publication installs that
-descriptor on the builtin exception classes (candidates under
-`runtime/molt-cpython-abi/src/api/typeobj/`), make the native slot the class's `__init__`, and let C
-code see a `wrapper_descriptor` view of it only when C code asks.
+#### HF-561 refresh and first implementation slice (2026-11-05)
+
+At source `5bdef368edd3`, macOS arm64, logical release with the release-output
+runtime, one million runtime-supplied user raises return the exact catch count
+in 1.04 s real (0.96 user), against CPython 3.12.16's 0.08 s (0.06 user).
+Native instructions are 23,744.456 per operation after subtracting N=0; the
+loop/control work remains included. These are single baseline observations,
+not a five-pair qualification or an improvement attributed to this slice.
+The old C-API-constructor anatomy above is historical: emitted code now calls
+`molt_exception_new_builtin_one`. Native exception descriptors already exist.
+
+A five-second wall sample has 3,499 self samples. Structural managed subtype
+queries contain 1,191 (34.04%); 889 (25.41% of the total) are descendants of ABI
+owner-add/release inside those queries. These overlapping inclusive counts must
+not be added. The constructor has 206 inclusive samples, traceback-prefix
+capture 316, and frame-column calls 200. A cold first launch spent 93.09 s at
+`_dyld_start`; retain that as startup evidence and do not subtract its wall time
+from a warm run. It does not explain the steady-state exception gap.
+
+The first change removes temporary tuple ownership from the canonical
+`object/class_layout.rs::managed_subtype_relation`. A managed class owns its
+immutable MRO. Under the supplied `PyToken` and with no callbacks, use the
+existing scoped `seq_access::with_immutable_tuple_slice` to return the scalar
+membership result. Exact class handles short-circuit. Nonclass and mixed/native
+pairs keep the existing structural type authority and incoming-error behavior.
+An unpublished MRO keeps the existing bootstrap traversal; no replacement
+hierarchy, cache, native ownership protocol or corruption policy is introduced.
+The duplicate metaclass membership scan in `attributes/mutation.rs` migrates to
+this same relation. Native, LLVM and WASM consume the shared runtime algorithm.
+
+The borrow cannot escape, allocate, call Python, or release an owner. A live
+receiver, descriptor, constructor transaction or builtin table owns each class
+through the query; `PyToken` carries current-thread GIL custody. The direct
+entries are `try_is_real_subtype` and `is_real_subtype`; their instance-relation,
+exception, descriptor, metaclass-construction, constructor, IO and mapping
+callers preserve that ownership. Debug builds assert GIL custody. Remaining
+MRO-view users compute different facts (first owner, protocol/field policy,
+finalizer eligibility, layout sealing, hash or attribute declarations); retain
+their existing pins, especially across callbacks. This is not a wholesale
+replacement of callback-safe MRO views with borrowed views.
+
+Two sequential independent read-only Goldfish reviews preceded implementation.
+The design review found three medium gaps: transient-owner evidence, bootstrap
+oracles and wall-cost methodology. The readiness review required closing the
+caller/sibling lifetime audit. Responses: audit the actual symbolized scalar
+machine-code path and retained sample ancestry for ownership work; net reference
+counts prove lifetime balance only. Exercise the same independently specified
+class graph before and after MRO publication, including a published C view,
+positive/negative/exact/nonclass relations and pending-error identity. The
+caller audit above closes the borrow prerequisite. Add no new event counter,
+guard or receipt mechanism. The complete private design and review responses
+remain in the lane evidence, outside tracked source.
+
+Add `raise_user` and `raise_runtime` (`int("abc")`) to the primitive declaration
+and its existing independent CPython output oracle. Preserve old workload bytes
+and normalization. Expanded base/head boards must use identical workload identity
+and an explicitly selected scratch ratchet, not the old fourteen-row identity.
+Run five canonical pairs, with no axis regressing. Separately measure wall slopes
+at N=0/K/2K, K=1,000,000, after one retained N=0 warm-up, in five alternating-order
+target/CPython pairs. Require positive adjacent slopes agreeing within 10% and
+median target/CPython ratios <=3 for both native and the canonical WASM runner;
+retain all samples and runner identities. Fixed launch/JIT costs stay separate.
+
+Semantic qualification uses exact CPython 3.12.16 on native, LLVM and WASM:
+traceback text/lines, context/cause/finally, nested and bare/explicit reraises,
+exception groups/except-star, generators and coroutines. Run direct readers,
+whole touched-crate/reverse-dependency library cells in their declared profiles
+and features, and one final plain-environment landing precheck. The first slice
+alone does not establish the <=3x outcome. Reprofile its changed source before
+choosing the next cost. Frame locations and traceback origin/propagation remain
+HF-764's reserved authority until it lands; then merge it from main and reuse its
+`LocationId`. Do not copy that implementation or create a second location table.
+
+The completed five-pair expanded primitive comparison at `39c629c1a1` measures
+the following native instruction slopes against exact CPython 3.12.16. The
+codec repair and workload bytes are held constant across base and head.
+
+| Caught raise | Base instructions/op | Head instructions/op | Base/CPython | Head/CPython |
+| --- | ---: | ---: | ---: | ---: |
+| User `ValueError("x")` | 22,947.928 | 15,585.818 | 11.2881 | 7.6672 |
+| Runtime `int("abc")` | 26,318.134 | 21,726.307 | 3.1539 | 2.6084 |
+
+These are diagnostic instruction measurements, not wall-time or release
+acceptance. The outlined tuple-membership helper makes no calls. Its caller
+invokes it and returns a published-tuple result before the bootstrap pin/drop
+paths. A new sample has 2,517 self samples, with
+managed ancestry at 69 (2.74%). Traceback prefix capture is 311 (12.36%), of which
+308 descend from `record_exception_with_caller_frame`; frame-column work is 181
+(7.19%). Terminal retirement is 696 (27.65%), including finalizer policy work.
+These inclusive buckets overlap. The next frame capture/location change must
+reuse HF-764's authority after it lands. Its branch deletes the old caller-frame
+sweep; it was not an ancestor of main `5bdef368edd3` at this measurement.
+
+Declared runtime semantic cells pass in dev, dev-fast and release-fast. Seven
+selected exception differentials pass on LLVM and on WASM, including context,
+finally, traceback access, `except*`, generator throws and nested reraises.
+The native selection exposes invalid-handler `TypeError` values losing their
+original exception context. Its current-base cause remains unisolated; the
+full exception matrix, traceback text/lines and coroutine obligations remain
+unqualified. Dynamic ABI calls per operation remain unknown; eliminating
+owner-transition calls from this one path is a different claim.
+
+The expanded primitive comparison reports no regression rows, but it does
+report four required improvement updates and dataclass spread 2.382% against
+its 1.400% bound. It is not a passing ratchet check. The default ratchet still
+has the old workload identity: complete its consumer migration with qualified
+calibration before landing the expanded declaration. Do not loosen its bounds
+to hide this result. The wall goal is also unqualified: native sampling stops
+on a guard custody failure, and the five WASM pairs have a descriptive median
+slope ratio 13.0321 but fail the adjacent-slope linearity requirement. Retain
+the evidence and resolve these obligations through their existing authorities.
 
 ### Stage 6: scalar loops and observation-point locals
 

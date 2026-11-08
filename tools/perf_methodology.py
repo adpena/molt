@@ -155,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
             f"perf methodology v{methodology.version}: content changed "
             f"({methodology.locked_sha256[:12]} -> {digest[:12]}). If the change can "
             "move a measured number or a verdict, run "
-            "`python3 tools/perf_methodology.py --bump`; otherwise `--relock`.",
+            "`uv run python tools/perf_methodology.py --bump`; otherwise `--relock`.",
             file=sys.stderr,
         )
         return 1

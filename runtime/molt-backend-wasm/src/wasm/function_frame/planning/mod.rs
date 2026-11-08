@@ -402,6 +402,77 @@ mod tests {
     }
 
     #[test]
+    fn one_counted_loop_keeps_local_sharing_for_the_whole_frame() {
+        let named = |kind, args: &[&str], var: Option<&str>, out: Option<&str>| OpIR {
+            args: (!args.is_empty()).then(|| args.iter().map(|arg| arg.to_string()).collect()),
+            var: var.map(str::to_string),
+            out: out.map(str::to_string),
+            ..OpIR::new(kind)
+        };
+        let copy_chain = |prefix: &str, first: &str, ops: &mut Vec<OpIR>| -> Vec<String> {
+            let names: Vec<String> = (0..200).map(|index| format!("{prefix}{index}")).collect();
+            let mut previous = first.to_string();
+            for name in &names {
+                ops.push(named(molt_ir::OpKind::Copy, &[&previous], None, Some(name)));
+                previous = name.clone();
+            }
+            names
+        };
+        // A module-body shape: long straight-line work on both sides of one
+        // counted loop in its normalized final form; the value before the
+        // loop is read again after it.
+        let mut ops = Vec::new();
+        let mut values = copy_chain("before", "start", &mut ops);
+        ops.push(named(
+            molt_ir::OpKind::StoreVar,
+            &["start"],
+            Some("carrier"),
+            None,
+        ));
+        ops.push(OpIR {
+            value: Some(1),
+            ..OpIR::new(molt_ir::OpKind::Label)
+        });
+        ops.extend([
+            named(molt_ir::OpKind::LoopStart, &[], None, None),
+            named(
+                molt_ir::OpKind::LoadVar,
+                &[],
+                Some("carrier"),
+                Some("index"),
+            ),
+            named(molt_ir::OpKind::Lt, &["index", "stop"], None, Some("cond")),
+            named(molt_ir::OpKind::LoopBreakIfFalse, &["cond"], None, None),
+            named(molt_ir::OpKind::Add, &["index", "stop"], None, Some("next")),
+            named(molt_ir::OpKind::StoreVar, &["next"], Some("carrier"), None),
+            named(molt_ir::OpKind::LoopContinue, &[], None, None),
+            named(molt_ir::OpKind::LoopEnd, &[], None, None),
+        ]);
+        values.extend(copy_chain("after", "before199", &mut ops));
+        ops.push(named(molt_ir::OpKind::Ret, &["after199"], None, None));
+        let function = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            name: "module_body_with_counted_loop".into(),
+            params: vec!["start".into(), "stop".into()],
+            ops,
+            ..FunctionIR::default()
+        };
+        values.extend(["carrier", "index", "cond", "next"].map(str::to_string));
+        let plan = WasmFunctionFramePlan::for_codegen_fixture(&function);
+        let physical: BTreeSet<u32> = values
+            .iter()
+            .map(|name| plan.frame.locals[name.as_str()])
+            .collect();
+        // One local per name would take 404; the chains alternate between two
+        // locals, and the loop adds `before199` plus its own few values.
+        assert!(
+            physical.len() <= 6,
+            "{} locals: {physical:?}",
+            physical.len()
+        );
+    }
+
+    #[test]
     fn jumpful_frames_seed_only_values_observable_at_entry() {
         let label = |id| OpIR {
             value: Some(id),

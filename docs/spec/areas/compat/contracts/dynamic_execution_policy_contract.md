@@ -26,6 +26,12 @@ from that intended scope. The restrictions concern:
   canonical binding before a class statement is supported; a missing binding
   raises `NameError`, as CPython's `LOAD_BUILD_CLASS` does.
 - unrestricted reflection/introspection lanes that block static reasoning
+  including `f_locals` on a traceback's class frame whose body was proved to
+  run no Python callback and no namespace reflection. Such a body can keep
+  class bindings in SSA; reconstructing its elided mapping would require
+  preserving every binding solely for a later traceback observer. This case
+  raises `TypeError`. Bodies that can reflect or run callbacks retain their
+  live mapping and support namespace reflection.
 
 Each exclusion requires a concrete performance or compilation rationale. Missing
 implementation, a slow implementation or a failing conformance test cannot justify
