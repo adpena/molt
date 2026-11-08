@@ -1461,12 +1461,10 @@ fn closure_extraction_retains_only_bound_borrowed_results() {
                 .map_or(0, |&index| call_count(&operators, index));
             assert_eq!(actual, expected, "bound={bound}: {symbol}: {operators:?}");
         }
-        for (symbol, expected) in [("dec_ref", 0)] {
-            let actual = imports
-                .get(symbol)
-                .map_or(0, |&index| call_count(&operators, index));
-            assert_eq!(actual, expected, "bound={bound}: {symbol}: {operators:?}");
-        }
+        let dec_ref_calls = imports
+            .get("dec_ref")
+            .map_or(0, |&index| call_count(&operators, index));
+        assert_eq!(dec_ref_calls, 0, "bound={bound}: dec_ref: {operators:?}");
         let extract_call = format!("Call {{ function_index: {extract} }}");
         let position = operators.iter().position(|op| op == &extract_call).unwrap();
         if bound {

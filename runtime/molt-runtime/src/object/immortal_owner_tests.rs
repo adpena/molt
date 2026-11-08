@@ -496,7 +496,7 @@ fn reused_host_buffers_never_return_a_stale_literal() {
         clear_const_data_literal_caches(py);
         for kind in [ConstDataLiteralKind::String, ConstDataLiteralKind::Bytes] {
             let mut buffer = *b"host buffer, first contents!";
-            let mut construct = |buffer: &[u8]| {
+            let construct = |buffer: &[u8]| {
                 let mut bits = 0;
                 let status = unsafe {
                     match kind {
