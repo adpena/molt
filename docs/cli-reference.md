@@ -84,6 +84,7 @@ from project configuration: `[tool.molt.build] entry-file = "app.py"` or
 | `--capabilities SPEC` | Capability profiles/tokens or path to manifest. |
 | `--sysroot PATH` | Sysroot path for native cross-compilation. |
 | `--lib-path DIR` | Additional Python package search directories (repeatable). |
+| `--include-module MODULE` | Compile MODULE and its imports although no static import reaches it, for code that imports it by a runtime name (repeatable; adds to `[tool.molt.build] include-modules`). An include module that does not resolve fails the build. |
 | `--emit-ir PATH` | Write lowered IR JSON to a file. |
 | `--diagnostics / --no-diagnostics` | Enable compile diagnostics. |
 | `--diagnostics-file PATH` | Path for diagnostics JSON output. |
@@ -597,12 +598,12 @@ deterministic = true
 target = "wasm"
 python-version = "3.13"
 release = true
-codec = "msgpack"
 type-hints = "trust"
-fallback = "error"
 split-runtime = true
 stdlib-profile = "micro"
 portable = false
+# Modules imported only by a runtime name (importlib, plugin registries)
+include-modules = ["myapp.plugins.csv_backend"]
 
 [tool.molt.run]
 # Run-specific overrides

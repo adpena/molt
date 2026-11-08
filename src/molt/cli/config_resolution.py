@@ -3,9 +3,10 @@ from __future__ import annotations
 from molt.compilation_target import Target, TargetKind, admit_target
 
 import os
+import re
 import tomllib
 from pathlib import Path
-from typing import Any, Literal, Mapping, cast, get_args
+from typing import Any, Literal, Mapping, Sequence, cast, get_args
 
 from molt.backend_executable_names import (
     CODEGEN_BACKENDS,
@@ -40,7 +41,51 @@ def _load_molt_config(project_root: Path) -> dict[str, Any]:
 
 
 ENTRY_OVERRIDE_ENV = "MOLT_ENTRY_MODULE"
-STATIC_IMPORT_MODULES_ENV = "MOLT_STATIC_IMPORT_MODULES"
+
+# --- include-modules: the build's explicit reachability roots ------------------
+#
+# Modules the program reaches only by a runtime name (importlib with a computed
+# string, a plugin registry) are invisible to the import plan. The build
+# declares them as explicit roots: `--include-module NAME` (repeatable) and
+# `[tool.molt.build] include-modules = [...]`, the same trade as Nuitka's
+# `--include-module` and GraalVM's reachability metadata (doc 60 slice 1).
+INCLUDE_MODULES_CONFIG_KEY = "include-modules"
+_DOTTED_MODULE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
+
+
+def resolve_include_modules(
+    *, flag: Sequence[str], build_cfg: Mapping[str, Any] | None
+) -> tuple[str, ...]:
+    """The union of the flag and config roots, sorted and deduplicated.
+
+    Both sources declare roots, so they add. An entry that is not a dotted
+    module name raises ``ValueError`` naming its source.
+    """
+
+    configured = (
+        None if build_cfg is None else build_cfg.get(INCLUDE_MODULES_CONFIG_KEY)
+    )
+    if configured is None:
+        configured = []
+    if not isinstance(configured, list):
+        raise ValueError(
+            f"[tool.molt.build] {INCLUDE_MODULES_CONFIG_KEY} must be a list of "
+            "module names"
+        )
+    names: set[str] = set()
+    for source, values in (
+        ("--include-module", list(flag)),
+        (f"[tool.molt.build] {INCLUDE_MODULES_CONFIG_KEY}", configured),
+    ):
+        for value in values:
+            if not isinstance(value, str) or not _DOTTED_MODULE_NAME.fullmatch(value):
+                raise ValueError(
+                    f"{source} entries must be dotted Python module names; "
+                    f"invalid entry: {value!r}"
+                )
+            names.add(value)
+    return tuple(sorted(names))
+
 
 # --- stdlib_profile: the single config authority (doctrine D5, §4.4) ----------
 #

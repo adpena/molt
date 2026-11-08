@@ -4159,14 +4159,6 @@ owner = "tools/startup_bench.py"
 summary = "Path of the development baseline CPython interpreter that tools/startup_bench.py measures against; unset uses the running interpreter. The selected interpreter is verified before measurement; an invalid explicit path fails without substitution. This does not select an interpreter for compiled Molt programs."
 
 [[variable]]
-name = "MOLT_STATIC_IMPORT_MODULES"
-audience = "user"
-kind = "list"
-default = ""
-owner = "src/molt/cli/config_resolution.py"
-summary = "Comma or space separated Python module names forced into the build's module graph; each must be a dotted identifier that resolves to an admitted module, else the build fails; unset adds none."
-
-[[variable]]
 name = "MOLT_STDLIB_CACHE_ENTRY"
 audience = "internal"
 kind = "path"

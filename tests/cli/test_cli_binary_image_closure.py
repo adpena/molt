@@ -25,7 +25,7 @@ from molt.cli import module_resolution as cli_module_resolution
 from molt.cli import wrapper_build as cli_wrapper_build
 from molt.cli.cache_keys import FunctionDigests
 from molt.cli import function_records
-from molt.cli.config_resolution import STATIC_IMPORT_MODULES_ENV
+from molt.cli.config_resolution import resolve_include_modules
 from molt.cli.models import _ExternalPackageNativeArtifactPlan
 from molt.cli.external_native import _ExternalPackageNativeArtifact
 from molt.cli.source_extension_link_requirements import (
@@ -76,6 +76,7 @@ def _materialize_plan(
     entry_module: str,
     *,
     image_scope=None,
+    include_modules: tuple[str, ...] = (),
 ):
     entry_tree = ast.parse(
         entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
@@ -94,6 +95,7 @@ def _materialize_plan(
         target=admit_target("native"),
         image_scope=image_scope,
         target_sys_platform=None,
+        include_modules=include_modules,
     )
     assert error is None
     assert prepared is not None
@@ -228,9 +230,8 @@ def test_import_plan_classifies_binary_image_closure(tmp_path: Path) -> None:
     assert "helper" not in payload["declared_root_modules"]
 
 
-def test_project_config_static_import_keeps_compile_scope_in_image_closure(
+def test_project_config_include_module_keeps_compile_scope_in_image_closure(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     entry = tmp_path / "app.py"
     helper = tmp_path / "helper.py"
@@ -245,12 +246,9 @@ def test_project_config_static_import_keeps_compile_scope_in_image_closure(
         "import base64\nENCODE = base64.b64encode\n", encoding="utf-8"
     )
     (tmp_path / "unreferenced.py").write_text("VALUE = 'dead'\n", encoding="utf-8")
-    monkeypatch.setenv(STATIC_IMPORT_MODULES_ENV, "pkg.runtime.ops_cpu")
+    build_config = {"entry-file": "app.py", "include-modules": ["pkg.runtime.ops_cpu"]}
 
-    resolved, error = _resolve_entry(
-        tmp_path,
-        build_config={"entry-file": "app.py"},
-    )
+    resolved, error = _resolve_entry(tmp_path, build_config=build_config)
     assert error is None
     assert resolved is not None
     assert resolved.image_scope is not None
@@ -260,6 +258,7 @@ def test_project_config_static_import_keeps_compile_scope_in_image_closure(
         entry,
         resolved.entry_module,
         image_scope=resolved.image_scope,
+        include_modules=resolve_include_modules(flag=(), build_cfg=build_config),
     )
 
     assert import_plan.image_scope.kind == "project_entry_script"
@@ -268,7 +267,7 @@ def test_project_config_static_import_keeps_compile_scope_in_image_closure(
         "app",
         "pkg.runtime.ops_cpu",
     ]
-    # The static root's package parents are compiled with it (R4).
+    # The include module's package parents are compiled with it (R4).
     assert {
         "app",
         "helper",
@@ -282,7 +281,7 @@ def test_project_config_static_import_keeps_compile_scope_in_image_closure(
     assert import_plan.direct_call_modules <= import_plan.known_modules
 
 
-def test_wrapper_build_cache_input_uses_static_import_closure_plan(
+def test_wrapper_build_cache_input_uses_include_module_closure_plan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -311,10 +310,11 @@ def test_wrapper_build_cache_input_uses_static_import_closure_plan(
             file_path=None,
             stdlib_profile="auto",
             python_version=resolved.target_python.short,
+            include_modules=("pkg.runtime.ops_cpu",),
         ),
         resolved_build_entry=resolved,
-        build_args=["--target", "native"],
-        env={STATIC_IMPORT_MODULES_ENV: "pkg.runtime.ops_cpu"},
+        build_args=["--target", "native", "--include-module=pkg.runtime.ops_cpu"],
+        env={},
         project_root=tmp_path,
     )
 

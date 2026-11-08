@@ -26,6 +26,7 @@ from typing import (
     Any,
     Callable,
     Collection,
+    Final,
     Literal,
     Mapping,
     NamedTuple,
@@ -1715,12 +1716,20 @@ class _ResolvedBuildEntry:
 
 
 class ModuleReason(StrEnum):
-    """Why the import plan collected a module. Reachability roots derive from it."""
+    """Why the import plan collected a module. Reachability roots derive from it.
+
+    Each producer stamps a root value on the modules it names and the paired
+    closure value on the modules those reach (doc 60 slice 1), so diagnostics
+    and R3 name roots exactly.
+    """
 
     ENTRY_ROOT = "entry_root"
     ENTRY_CLOSURE = "entry_closure"
-    EXPLICIT_STATIC_IMPORT = "explicit_static_import"
-    RUNTIME_IMPORT_SUPPORT = "runtime_import_support"
+    EXPLICIT_ROOT = "explicit_root"
+    EXPLICIT_CLOSURE = "explicit_closure"
+    RUNTIME_IMPORT_ROOT = "runtime_import_root"
+    RUNTIME_IMPORT_CLOSURE = "runtime_import_closure"
+    SPAWN_ROOT = "spawn_root"
     SPAWN_CLOSURE = "spawn_closure"
     CORE_REQUIRED = "core_required"
     CORE_CLOSURE = "core_closure"
@@ -1729,13 +1738,45 @@ class ModuleReason(StrEnum):
     NATIVE_SUPPORT_SOURCE = "native_support_source"
     NATIVE_SUPPORT_SOURCE_CLOSURE = "native_support_source_closure"
     NATIVE_RUNTIME_PYTHON_IMPORT = "native_runtime_python_import"
+    NATIVE_RUNTIME_PYTHON_IMPORT_CLOSURE = "native_runtime_python_import_closure"
+
+    @property
+    def is_root(self) -> bool:
+        return self in _CLOSURE_OF_ROOT
+
+    @property
+    def closure(self) -> ModuleReason:
+        """The value a root producer stamps on the modules its roots reach."""
+        try:
+            return _CLOSURE_OF_ROOT[self]
+        except KeyError:
+            raise ValueError(f"{self.value} is a closure reason, not a root") from None
+
+
+# Each root reason and the closure reason its producer pairs with it: an
+# explicit table, never derived from the spelling. A test proves it pairs every
+# value of ModuleReason exactly once.
+_CLOSURE_OF_ROOT: Final[Mapping[ModuleReason, ModuleReason]] = MappingProxyType(
+    {
+        ModuleReason.ENTRY_ROOT: ModuleReason.ENTRY_CLOSURE,
+        ModuleReason.EXPLICIT_ROOT: ModuleReason.EXPLICIT_CLOSURE,
+        ModuleReason.RUNTIME_IMPORT_ROOT: ModuleReason.RUNTIME_IMPORT_CLOSURE,
+        ModuleReason.SPAWN_ROOT: ModuleReason.SPAWN_CLOSURE,
+        ModuleReason.CORE_REQUIRED: ModuleReason.CORE_CLOSURE,
+        ModuleReason.PACKAGE_PARENT: ModuleReason.PACKAGE_PARENT_CLOSURE,
+        ModuleReason.NATIVE_SUPPORT_SOURCE: ModuleReason.NATIVE_SUPPORT_SOURCE_CLOSURE,
+        ModuleReason.NATIVE_RUNTIME_PYTHON_IMPORT: (
+            ModuleReason.NATIVE_RUNTIME_PYTHON_IMPORT_CLOSURE
+        ),
+    }
+)
 
 
 class UnresolvedRoot(ValueError):
     """A typed root the import plan cannot resolve; the build fails naming both."""
 
     def __init__(self, module: str, reason: ModuleReason) -> None:
-        super().__init__(f"{reason.value} root {module!r} does not resolve")
+        super().__init__(f"root {module!r} ({reason.value}) does not resolve")
         self.module = module
         self.reason = reason
 

@@ -40,9 +40,6 @@ from molt.cli.run_tier import JIT_IMAGE_SUFFIX, RunTier
 from molt.host_tool_products import HostToolProduct
 from molt.backend_executable_names import backend_features_for_target
 from molt.cli.command_runtime import _CLI_MEMORY_GUARD_PREFIX, _run_completed_command
-from molt.cli.config_resolution import (
-    STATIC_IMPORT_MODULES_ENV,
-)
 from molt.default_paths import _default_molt_bin
 from molt.cli.env_overrides import temporary_env_overrides
 from molt.cli.external_native import (
@@ -92,14 +89,13 @@ def _build_args_has_python_version_flag(args: Sequence[str]) -> bool:
     )
 
 
-_WRAPPER_BUILD_CACHE_SCHEMA_VERSION = 5
+_WRAPPER_BUILD_CACHE_SCHEMA_VERSION = 6
 _WRAPPER_BUILD_CACHE_ENV_KEYS = (
     "MOLT_CAPABILITIES",
     "MOLT_CAPABILITY_TIER",
     "MOLT_EXTERNAL_STATIC_PACKAGES",
     "MOLT_HERMETIC_MODULE_ROOTS",
     "MOLT_MODULE_ROOTS",
-    STATIC_IMPORT_MODULES_ENV,
     # External build inputs share this environment; backend payload determinism
     # alone does not prove cross-seed equivalence of the complete wrapper build.
     "PYTHONHASHSEED",
@@ -195,6 +191,7 @@ def _wrapper_build_dependency_fingerprints(
                     runtime_import_machinery=RuntimeImportMachinery.for_build(
                         target, request.wasm_profile
                     ),
+                    include_modules=request.include_modules,
                 )
             )
         except (OSError, SyntaxError, UnicodeDecodeError):

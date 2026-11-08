@@ -581,29 +581,28 @@ Reachable code whose operation is unavailable on the target produces the warning
 `docs/design/wasm_hosts.md` §4. The module set is a function of the entry, the target facts
 (platform branches, import admission) and the selected stdlib profile, and of nothing else.
 
-**Root kinds.** Each root producer stamps a `ModuleReason`. Today four values stamp a whole
-closure, not only its roots (`EXPLICIT_STATIC_IMPORT`, `RUNTIME_IMPORT_SUPPORT`,
-`NATIVE_RUNTIME_PYTHON_IMPORT`, and `SPAWN_CLOSURE` for the spawn entry); stage 1b splits each into
-a root value and a closure value with a `ModuleReason.is_root` property, so diagnostics and R3
-name roots exactly:
+**Root kinds.** Each root producer stamps a root `ModuleReason` on the modules it names and the
+paired closure value on the modules those reach (`ModuleReason.is_root`, `ModuleReason.closure`,
+one explicit table that a test proves pairs every value once), so diagnostics and R3 name roots
+exactly. Until stage 1b four producers stamped one value on a whole closure.
 
-| Producer | Reason it stamps | Authority after this slice |
+| Producer | Root / closure reason | Authority |
 |---|---|---|
-| the entry module (`module_graph.py`, `_prepare_entry_module_graph`) | `ENTRY_ROOT` | unchanged |
-| core modules and builtin providers (`module_stdlib_policy._ensure_core_stdlib_modules`) | `CORE_REQUIRED` | unchanged; stamped on every core module, not only those it adds |
-| the runtime-import support roots (`module_import_scanner._RUNTIME_IMPORT_SUPPORT_ROOT_MODULES`) | `RUNTIME_IMPORT_SUPPORT` | fed by a `[runtime_modules]` list of `NameId` keys in `runtime_names.toml` (R2, stage 1c) |
-| the `multiprocessing` spawn entry the backend initializes | `SPAWN_CLOSURE` | unchanged |
-| `_collect_package_parents`, iterated to a fixed point with each parent's closure | `PACKAGE_PARENT` | unchanged; R4 closes the set under parents after every producer |
-| the native artifact plan's support sources | `NATIVE_SUPPORT_SOURCE` | unchanged |
-| imports that C extensions declare | `NATIVE_RUNTIME_PYTHON_IMPORT` | unchanged (the extension manifest) |
-| `MOLT_STATIC_IMPORT_MODULES` | `EXPLICIT_STATIC_IMPORT` | a typed `roots` list in the build manifest, part of build identity; the variable is deleted (stage 1b); until then the variable is that authority and is part of the build cache key |
+| the entry module (`module_graph.py`, `_prepare_entry_module_graph`) | `ENTRY_ROOT` / `ENTRY_CLOSURE` | unchanged |
+| core modules and builtin providers (`module_stdlib_policy._ensure_core_stdlib_modules`) | `CORE_REQUIRED` / `CORE_CLOSURE` | unchanged; stamped on every core module, not only those it adds |
+| the runtime-import support roots (`module_import_scanner._RUNTIME_IMPORT_SUPPORT_ROOT_MODULES`) | `RUNTIME_IMPORT_ROOT` / `RUNTIME_IMPORT_CLOSURE` | fed by a `[runtime_modules]` list of `NameId` keys in `runtime_names.toml` (R2, stage 1c) |
+| the `multiprocessing` spawn entry the backend initializes | `SPAWN_ROOT` / `SPAWN_CLOSURE` | unchanged |
+| `_collect_package_parents`, iterated to a fixed point with each parent's closure | `PACKAGE_PARENT` / `PACKAGE_PARENT_CLOSURE` | unchanged; R4 closes the set under parents after every producer |
+| the native artifact plan's support sources | `NATIVE_SUPPORT_SOURCE` / `NATIVE_SUPPORT_SOURCE_CLOSURE` | unchanged |
+| imports that C extensions declare | `NATIVE_RUNTIME_PYTHON_IMPORT` / `NATIVE_RUNTIME_PYTHON_IMPORT_CLOSURE` | unchanged (the extension manifest) |
+| the build's declared roots | `EXPLICIT_ROOT` / `EXPLICIT_CLOSURE` | `BuildRequest.include_modules`: `--include-module NAME` (repeatable) and `[tool.molt.build] include-modules = [...]`, resolved once by `resolve_include_modules` (stage 1b; `MOLT_STATIC_IMPORT_MODULES` is deleted). The user-facing name avoids "roots" because `module_roots` already means search paths |
 
 **Data-driven imports.** Pickle's class lookup, `importlib` with a runtime string and C-API
 `PyImport_ImportModule` with a runtime name resolve against the compiled set. The compiler emits one
 warning per reached data-driven site, with the shortest chain from user code (the HF-790
 attribution); `--strict-reachability` makes it an error. At run time, a module outside the set
 raises `ModuleNotFoundError` whose message says the module was not compiled in and names the
-manifest's `roots` list. GraalVM Native Image (reachability metadata, a named missing-registration
+`include-modules` list. GraalVM Native Image (reachability metadata, a named missing-registration
 error), Go (`gob.Register`), Nuitka (`--include-module`) and PyInstaller (`hiddenimports`) make
 the same trade with the same escape hatch.
 
@@ -662,7 +661,7 @@ class UnresolvedRoot(ValueError):
     """A typed root the import plan cannot resolve; the build fails naming both."""
 
     def __init__(self, module: str, reason: ModuleReason) -> None:
-        super().__init__(f"{reason.value} root {module!r} does not resolve")
+        super().__init__(f"root {module!r} ({reason.value}) does not resolve")
         self.module = module
         self.reason = reason
 
@@ -682,15 +681,17 @@ def _ensure_core_stdlib_modules(
 ```
 
 **Stages.** All under HF-809:
-- **1a (this lane):** delete the second walk and `tree_shake`; collapse the plan's duplicate module
-  set; R3 for the core and runtime-support producers; R4's check; the `RuntimeImportMachinery`
-  target fact (below).
-- **1b:** `MOLT_STATIC_IMPORT_MODULES` becomes the manifest's typed `roots` list; split root and
-  closure reasons (`ModuleReason.is_root`).
+- **1a (landed 905a1cf07):** delete the second walk and `tree_shake`; collapse the plan's
+  duplicate module set; R3 for the core and runtime-support producers; R4's check; the
+  `RuntimeImportMachinery` target fact (below).
+- **1b:** `MOLT_STATIC_IMPORT_MODULES` becomes the build's typed `include_modules` (flag and
+  `[tool.molt.build]` key, above); split root and closure reasons (`ModuleReason.is_root`). The
+  import plan reads no process environment. An unresolved include module fails naming
+  `explicit_root` (R3). The closure helper takes one root reason and stamps its pair.
 - **1c (after HF-198, in the runtime):** R2's `[runtime_modules]` list, the typed entry point and
   the census.
 - **1d:** the data-driven import diagnostics: the per-site warning with its chain,
-  `--strict-reachability`, and the `ModuleNotFoundError` text naming the roots list.
+  `--strict-reachability`, and the `ModuleNotFoundError` text naming the `include-modules` list.
 
 Deleted in stage 1a:
 - the walk: `_apply_dead_module_elimination`, `_compute_reachable_modules`,

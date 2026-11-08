@@ -520,6 +520,7 @@ def build(request: BuildRequest) -> int:
                 emit_ir=request.emit_ir,
                 type_facts_path=request.type_facts_path,
                 stdlib_profile=stdlib_profile,
+                include_modules=request.include_modules,
             )
         )
         if prepared_frontend_pipeline_error is not None:

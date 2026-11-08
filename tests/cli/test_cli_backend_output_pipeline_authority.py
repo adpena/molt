@@ -898,6 +898,7 @@ def test_frontend_preparation_failure_flushes_without_repeating_error_json(
         emit_ir=None,
         type_facts_path=None,
         stdlib_profile="auto",
+        include_modules=(),
     )
     assert frontend_pipeline._prepare_frontend_pipeline(**args) == (None, 2)
     captured = capsys.readouterr()

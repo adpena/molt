@@ -1895,10 +1895,15 @@ def test_friend_manifest_registers_tinygrad_off_the_shelf_suite() -> None:
         molt.env["MOLT_EXTERNAL_STATIC_PACKAGES"]
         == "tinygrad _molt_tinygrad_upat_static_exec_registry"
     )
-    assert (
-        molt.env["MOLT_STATIC_IMPORT_MODULES"]
-        == "tinygrad.runtime.ops_python tinygrad.uop.ops _molt_tinygrad_upat_static_exec_registry"
-    )
+    assert [
+        part
+        for part in molt.run_cmd
+        if part.startswith("--build-arg=--include-module=")
+    ] == [
+        "--build-arg=--include-module=tinygrad.runtime.ops_python",
+        "--build-arg=--include-module=tinygrad.uop.ops",
+        "--build-arg=--include-module=_molt_tinygrad_upat_static_exec_registry",
+    ]
     assert (
         molt.env["MOLT_TINYGRAD_UPAT_STATIC_EXEC_ROOT"]
         == "{output_root}/tinygrad_static_exec"

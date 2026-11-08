@@ -6069,16 +6069,6 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "user",
-      "default": "",
-      "kind": "list",
-      "name": "MOLT_STATIC_IMPORT_MODULES",
-      "output_neutral": false,
-      "owner": "src/molt/cli/config_resolution.py",
-      "summary": "Comma or space separated Python module names forced into the build's module graph; each must be a dotted identifier that resolves to an admitted module, else the build fails; unset adds none.",
-      "values": []
-    },
-    {
       "audience": "internal",
       "default": "",
       "kind": "path",

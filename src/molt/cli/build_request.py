@@ -73,6 +73,8 @@ class BuildRequest:
     snapshot: bool = False
     stdlib_profile: StdlibProfile | None = None
     lib_paths: list[str] | None = None
+    # The build's explicit reachability roots (resolve_include_modules).
+    include_modules: tuple[str, ...] = ()
     split_runtime: bool = False
     capability_manifest: str | None = None
     require_signed_manifest: bool = False
@@ -155,6 +157,7 @@ def build_request_values(request: BuildRequest) -> dict[str, Any]:
         field.name: getattr(request, field.name) for field in fields(BuildRequest)
     }
     payload["target"] = target_name(request.target)
+    payload["include_modules"] = list(request.include_modules)
     graph = request.fact_graph_request
     if graph is not None:
         if not isinstance(graph, FactGraphRequest) or not isinstance(

@@ -12,6 +12,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from molt.cli.module_graph_discovery import _DiscoveredModuleGraph
+from molt.cli.models import ModuleReason
 
 import pytest
 from tests.process_guard_common import run_guarded_test_process
@@ -27,15 +28,13 @@ _MODULE_GRAPH_DISCOVERY_NAMES = (
     "_discover_module_graph",
     "_discover_module_graph_from_paths",
     "_extend_module_graph_with_closure",
-    "_extend_module_graph_with_static_import_modules",
+    "_extend_module_graph_with_include_modules",
     "_load_module_imports",
     "_load_module_import_scan",
     "_LoadedModuleImportScan",
-    "_parse_static_import_modules",
-    "_parse_static_import_modules_from_env",
     "_record_module_reason",
     "_record_new_module_reasons",
-    "_resolve_static_import_module_paths",
+    "_resolve_include_module_paths",
 )
 
 _MODULE_GRAPH_DISCOVERY_DEFINITIONS = (
@@ -43,15 +42,13 @@ _MODULE_GRAPH_DISCOVERY_DEFINITIONS = (
     "def _discover_module_graph(",
     "def _discover_module_graph_from_paths(",
     "def _extend_module_graph_with_closure(",
-    "def _extend_module_graph_with_static_import_modules(",
+    "def _extend_module_graph_with_include_modules(",
     "def _load_module_imports(",
     "def _load_module_import_scan(",
     "class _LoadedModuleImportScan",
-    "def _parse_static_import_modules(",
-    "def _parse_static_import_modules_from_env(",
     "def _record_module_reason(",
     "def _record_new_module_reasons(",
-    "def _resolve_static_import_module_paths(",
+    "def _resolve_include_module_paths(",
 )
 
 
@@ -2320,7 +2317,7 @@ def test_late_closure_writer_updates_prior_source_without_rescanning_siblings(
             resolver_cache=cache,
             diagnostics_enabled=False,
             module_reasons={},
-            reason="native_support_source",
+            root_reason=ModuleReason.NATIVE_SUPPORT_SOURCE,
             discovery=state,
         )
         assert later.discovery is state
@@ -2346,7 +2343,7 @@ def test_late_closure_writer_updates_prior_source_without_rescanning_siblings(
             resolver_cache=cache,
             diagnostics_enabled=False,
             module_reasons={},
-            reason="native_support_source",
+            root_reason=ModuleReason.NATIVE_SUPPORT_SOURCE,
             discovery=state,
         )
         assert state.demands is solver
