@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from molt.compilation_target import is_wasm_target
 
-from collections.abc import Mapping, MutableMapping, Sequence
+from collections.abc import Mapping, Sequence
 import os
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -49,6 +49,7 @@ from molt.cli.lockfiles import _check_lockfiles
 from molt.cli.build_request import BuildProfile, BuildRequest
 from molt.compilation_target import Target, TargetKind, native_target_spec
 from molt.cli.models import (
+    ModuleReason,
     BinaryImageKind,
     BuildEntrySelectorOrigin,
     BuildEntrySelectorTarget,
@@ -60,7 +61,6 @@ from molt.cli.models import (
     _PreparedBuildRoots,
     _ResolvedBuildEntry,
 )
-from molt.cli.module_graph_discovery import _record_module_reason
 from molt.cli.module_resolution import (
     _ModuleRootAliases,
     _is_stdlib_resolved_path,
@@ -880,7 +880,7 @@ def _prepare_build_preamble(
     backend_daemon_cached: bool | None = None
     backend_daemon_cache_tier: str | None = None
     backend_daemon_config_digest: str | None = None
-    module_reasons: dict[str, set[str]] = {}
+    module_reasons: dict[str, set[ModuleReason]] = {}
     if diagnostics_enabled:
         phase_starts["resolve_entry"] = diagnostics_start
     stdlib_root = _stdlib_root_path()
@@ -1283,17 +1283,6 @@ def _is_stdlib_path(path: Path, stdlib_root: Path) -> bool:
     resolved = path.resolve()
     resolved_stdlib_root = stdlib_root.resolve()
     return _is_stdlib_resolved_path(resolved, resolved_stdlib_root)
-
-
-def _merge_module_graph_with_reason(
-    module_graph: MutableMapping[str, Path],
-    additions: Mapping[str, Path],
-    module_reasons: MutableMapping[str, set[str]],
-    reason: str,
-) -> None:
-    for name, path in additions.items():
-        _record_module_reason(module_reasons, name, reason)
-        module_graph.setdefault(name, path)
 
 
 def _latest_mtime(paths: list[Path]) -> float:

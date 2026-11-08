@@ -19,6 +19,7 @@ import json
 import os
 from concurrent.futures import Future
 from dataclasses import asdict, dataclass, field, replace
+from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from typing import (
@@ -755,7 +756,7 @@ class _BuildDiagnosticsContext:
     binary_image_analysis: Mapping[str, Any] | None
     module_graph: Mapping[str, Path]
     module_graph_operation_counts: Mapping[str, int]
-    module_reasons: Mapping[str, set[str]]
+    module_reasons: Mapping[str, set[ModuleReason]]
     frontend_module_timings: Sequence[dict[str, Any]]
     allocation_diagnostics_enabled: bool
     frontend_parallel_details: Mapping[str, Any]
@@ -1712,6 +1713,23 @@ class _ResolvedBuildEntry:
             )
 
 
+class ModuleReason(StrEnum):
+    """Why the import plan collected a module. Reachability roots derive from it."""
+
+    ENTRY_ROOT = "entry_root"
+    ENTRY_CLOSURE = "entry_closure"
+    EXPLICIT_STATIC_IMPORT = "explicit_static_import"
+    RUNTIME_IMPORT_SUPPORT = "runtime_import_support"
+    SPAWN_CLOSURE = "spawn_closure"
+    CORE_REQUIRED = "core_required"
+    CORE_CLOSURE = "core_closure"
+    PACKAGE_PARENT = "package_parent"
+    PACKAGE_PARENT_CLOSURE = "package_parent_closure"
+    NATIVE_SUPPORT_SOURCE = "native_support_source"
+    NATIVE_SUPPORT_SOURCE_CLOSURE = "native_support_source_closure"
+    NATIVE_RUNTIME_PYTHON_IMPORT = "native_runtime_python_import"
+
+
 @dataclass(frozen=True)
 class _ImportPlan:
     image_scope: _BinaryImageScope
@@ -1889,7 +1907,7 @@ class _PreparedBuildPreamble:
     backend_daemon_cached: bool | None
     backend_daemon_cache_tier: str | None
     backend_daemon_config_digest: str | None
-    module_reasons: dict[str, set[str]]
+    module_reasons: dict[str, set[ModuleReason]]
     stdlib_root: Path
     warnings: list[str]
     rust_cpu: RustCpuPolicy

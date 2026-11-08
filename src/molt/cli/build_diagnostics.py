@@ -13,7 +13,11 @@ from typing import Any, cast
 from molt.cli.atomic_io import _atomic_write_json
 from molt.cli.config_resolution import _coerce_bool
 from molt.cli.build_request import BuildProfile
-from molt.cli.models import _BuildDiagnosticsContext, _FrontendTimingRecorderConfig
+from molt.cli.models import (
+    ModuleReason,
+    _BuildDiagnosticsContext,
+    _FrontendTimingRecorderConfig,
+)
 from molt.cli.runtime_wasm_cache_diagnostics import (
     _runtime_wasm_cache_diagnostics_snapshot,
 )
@@ -23,7 +27,7 @@ from molt.frontend.lowering.midend_telemetry import RSS_SAMPLE_INTERVAL_S
 
 
 def _build_reason_summary(
-    module_reasons: Mapping[str, set[str]],
+    module_reasons: Mapping[str, set[ModuleReason]],
 ) -> dict[str, int]:
     summary: dict[str, int] = {}
     for reasons in module_reasons.values():

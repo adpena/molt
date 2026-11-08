@@ -72,6 +72,7 @@ from molt.cli.build_request import (
     TypeHintPolicy,
 )
 from molt.cli.models import (
+    ModuleReason,
     _RuntimeImportScanCustody,
     _BuildDiagnosticsContext,
     _BinaryImageScope,
@@ -203,7 +204,7 @@ def _syntax_error_info_from_exception(exc: SyntaxError) -> ModuleSyntaxErrorInfo
 def _prepare_build_module_outputs(
     *,
     prepared_module_graph: _PreparedEntryModuleGraph,
-    module_reasons: MutableMapping[str, set[str]],
+    module_reasons: MutableMapping[str, set[ModuleReason]],
     stdlib_root: Path,
     artifacts_root: Path,
     entry_module: str,
@@ -567,7 +568,7 @@ def _prepare_build_callbacks(
     phase_starts: dict[str, float],
     module_graph: Mapping[str, Path],
     module_graph_operation_counts: Mapping[str, int],
-    module_reasons: Mapping[str, set[str]],
+    module_reasons: Mapping[str, set[ModuleReason]],
     allocation_diagnostics_enabled: bool,
     frontend_parallel_details: dict[str, Any],
     profile: BuildProfile,

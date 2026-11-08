@@ -20601,24 +20601,6 @@ def test_spawn_entry_override_required_for_spawn_import() -> None:
     assert cli_module_graph._requires_spawn_entry_override(graph, explicit_imports)
 
 
-def test_merge_module_graph_with_reason_tracks_sources(tmp_path: Path) -> None:
-    module_graph = {"__main__": tmp_path / "main.py"}
-    reasons: dict[str, set[str]] = {}
-    additions = {
-        "__main__": tmp_path / "main.py",
-        "multiprocessing.spawn": tmp_path / "spawn.py",
-    }
-    cli_build_inputs._merge_module_graph_with_reason(
-        module_graph,
-        additions,
-        reasons,
-        "spawn_closure",
-    )
-    assert "multiprocessing.spawn" in module_graph
-    assert reasons["__main__"] == {"spawn_closure"}
-    assert reasons["multiprocessing.spawn"] == {"spawn_closure"}
-
-
 def test_build_reason_summary_is_stable() -> None:
     reasons = {
         "a": {"entry_closure"},

@@ -403,7 +403,8 @@ def test_ensure_runtime_reloc_wasm_exports_wasi_clock_ids(
 
     project_root = Path(__file__).resolve().parents[2]
     runtime_reloc = tmp_path / "wasm" / "molt_runtime_reloc.wasm"
-    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
+    # The managed project target serializes runtime builds through its build
+    # locks, so a warm runtime is reused instead of rebuilt cold per run.
     monkeypatch.setenv("MOLT_BACKEND_DAEMON", "0")
 
     runtime_state = _RuntimeArtifactState(
@@ -415,7 +416,7 @@ def test_ensure_runtime_reloc_wasm_exports_wasi_clock_ids(
         build_profile="release",
         json_output=True,
         cargo_profile="dev-fast",
-        cargo_timeout=300.0,
+        cargo_timeout=1200.0,
         project_root=project_root,
         simd_enabled=True,
         freestanding=False,
