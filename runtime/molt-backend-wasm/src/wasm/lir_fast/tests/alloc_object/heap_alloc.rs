@@ -88,11 +88,11 @@ fn released_heap_alloc_publishes_before_releasing_its_owner() {
     assert!(!output.bails_to_generic_path);
     assert_eq!(
         output.runtime_calls,
-        [
-            "refcount_admission",
-            "alloc",
-            "object_publish_initialized",
-            "dec_ref_obj"
-        ]
+        ["refcount_admission", "alloc", "object_publish_initialized"]
+    );
+    assert_eq!(
+        output.refcount_calls,
+        [molt_codegen_abi::inline_refcount::RefcountOperation::Release],
+        "the published object's owner is released through the generated body"
     );
 }

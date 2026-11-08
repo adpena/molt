@@ -41,12 +41,18 @@ fn bool1_and_stays_raw_without_selected_ref_retain() {
 
     let annotated = lower_tir_to_wasm(&func).test_view();
     assert_eq!(annotated.param_types, vec![ValType::I64; 2]);
-    for call in ["is_truthy", "inc_ref_obj", "exception_pending"] {
+    for call in ["is_truthy", "exception_pending"] {
         assert!(
             annotated.runtime_calls.contains(&call),
-            "annotation-only operands need boxed truth testing and selected ownership: missing {call}"
+            "annotation-only operands need boxed truth testing: missing {call}"
         );
     }
+    assert!(
+        annotated
+            .refcount_calls
+            .contains(&molt_codegen_abi::inline_refcount::RefcountOperation::Retain),
+        "annotation-only operands need selected ownership"
+    );
     let left = func.fresh_value();
     let right = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -75,9 +81,11 @@ fn bool1_and_stays_raw_without_selected_ref_retain() {
         output.instructions
     );
     assert!(
-        !output.runtime_calls.contains(&"inc_ref_obj"),
+        !output
+            .refcount_calls
+            .contains(&molt_codegen_abi::inline_refcount::RefcountOperation::Retain),
         "raw Bool1 and must not retain a selected boxed operand: {:?}",
-        output.runtime_calls
+        output.refcount_calls
     );
 }
 

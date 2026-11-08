@@ -35,10 +35,11 @@ fn compile_main(params: Vec<&str>, ops: Vec<OpIR>) -> Vec<u8> {
     wasm
 }
 
-fn import_call_count(wasm: &[u8], import: &str) -> usize {
+/// Dynamic RC sites of one operation ("retain" or "release") in `molt_main`.
+fn refcount_site_count(wasm: &[u8], operation: &str) -> usize {
     let operators = wasm_operator_debug_for_export(wasm, "molt_main");
-    wasm_function_import_indices(wasm)
-        .get(import)
+    wasm_refcount_site_callees(wasm)
+        .get(operation)
         .map_or(0, |&index| {
             let call = format!("Call {{ function_index: {index} }}");
             operators
@@ -66,8 +67,8 @@ fn a_value_released_on_the_calling_path_is_not_retained_across_the_call() {
             wasm_test_op(molt_ir::OpKind::EndIf, None, vec![]),
         ],
     );
-    assert_eq!(import_call_count(&wasm, "inc_ref_obj"), 0);
-    assert_eq!(import_call_count(&wasm, "dec_ref_obj"), 1);
+    assert_eq!(refcount_site_count(&wasm, "retain"), 0);
+    assert_eq!(refcount_site_count(&wasm, "release"), 1);
 }
 
 #[test]
@@ -80,8 +81,8 @@ fn a_value_live_across_a_call_is_still_retained() {
             wasm_test_op(molt_ir::OpKind::Ret, None, vec!["kept"]),
         ],
     );
-    assert_eq!(import_call_count(&wasm, "inc_ref_obj"), 1);
-    assert_eq!(import_call_count(&wasm, "dec_ref_obj"), 1);
+    assert_eq!(refcount_site_count(&wasm, "retain"), 1);
+    assert_eq!(refcount_site_count(&wasm, "release"), 1);
 }
 
 /// `seeded` is read only after a jump that skips its definition, so it must

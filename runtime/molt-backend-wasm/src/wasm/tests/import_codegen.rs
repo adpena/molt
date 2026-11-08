@@ -183,9 +183,13 @@ fn method_load_reads_its_out_word_before_releasing_a_discarded_callable() {
         .iter()
         .position(|operator| operator.starts_with("I64Load {"))
         .unwrap_or_else(|| panic!("the scratch word is never read; operators={operators:?}"));
+    let release_body = format!(
+        "Call {{ function_index: {} }}",
+        wasm_refcount_site_callees(&output.wasm)["release"]
+    );
     let release = after_load
         .iter()
-        .position(|operator| operator == &call("dec_ref_obj"))
+        .position(|operator| operator == &release_body)
         .unwrap_or_else(|| panic!("the discarded words are not released; operators={operators:?}"));
     assert!(
         word_read < release,

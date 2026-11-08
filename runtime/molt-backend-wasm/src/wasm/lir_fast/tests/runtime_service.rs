@@ -142,7 +142,9 @@ fn fixed_runtime_service_and_module_ops_stay_lir_fast_runtime_calls() {
             output.runtime_calls
         );
         assert_eq!(
-            output.runtime_calls.contains(&"dec_ref_obj"),
+            output
+                .refcount_calls
+                .contains(&molt_codegen_abi::inline_refcount::RefcountOperation::Release),
             !has_result,
             "{name} must release the owned runtime result exactly when TIR has no result"
         );
@@ -242,7 +244,9 @@ fn runtime_guards_keep_both_reads_and_borrow_the_alias_result() {
                 1
             );
             assert!(
-                !output.runtime_calls.contains(&"inc_ref_obj"),
+                !output
+                    .refcount_calls
+                    .contains(&molt_codegen_abi::inline_refcount::RefcountOperation::Retain),
                 "guard alias mints no owner"
             );
             let module = super::execution_support::executable_module(&body);
@@ -321,6 +325,7 @@ fn assert_linked_guard_call(module: &[u8], parameter_operands: bool) {
 
     let mut imports = Vec::new();
     let mut operators = Vec::new();
+    let mut bodies = Vec::new();
     for payload in Parser::new(0).parse_all(module) {
         match payload.expect("valid linked guard module") {
             Payload::ImportSection(section) => {
@@ -333,12 +338,14 @@ fn assert_linked_guard_call(module: &[u8], parameter_operands: bool) {
                 }
             }
             Payload::CodeSectionEntry(body) => {
-                operators.extend(
-                    body.get_operators_reader()
-                        .unwrap()
-                        .into_iter()
-                        .map(Result::unwrap),
-                );
+                let body_operators: Vec<_> = body
+                    .get_operators_reader()
+                    .unwrap()
+                    .into_iter()
+                    .map(Result::unwrap)
+                    .collect();
+                operators.extend(body_operators.iter().cloned());
+                bodies.push(body_operators);
             }
             _ => {}
         }
@@ -377,8 +384,23 @@ fn assert_linked_guard_call(module: &[u8], parameter_operands: bool) {
             "guard reads the tag parameter"
         );
     }
-    assert!(
-        !imports.contains(&"inc_ref_obj"),
-        "guard alias creates no independent owner"
-    );
+    // The generated retain body is the only function that calls the runtime
+    // retain transaction; no other function may call that body.
+    let retain_import = imports.iter().position(|name| *name == "inc_ref_obj");
+    let retain_body = retain_import.and_then(|import| {
+        bodies.iter().position(|body| {
+            body.iter().any(
+                |op| matches!(op, Operator::Call { function_index } if *function_index as usize == import),
+            )
+        })
+    });
+    if let Some(body) = retain_body {
+        let retain_function = (imports.len() + body) as u32;
+        assert!(
+            !operators.iter().any(
+                |op| matches!(op, Operator::Call { function_index } if *function_index == retain_function)
+            ),
+            "guard alias creates no independent owner"
+        );
+    }
 }

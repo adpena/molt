@@ -96,7 +96,7 @@ fn typed_task_constructors_guard_allocation_before_payload_and_completion() {
         (
             "async_generator",
             "asyncgen_body",
-            &["asyncgen_new", "dec_ref_obj"][..],
+            &["asyncgen_new", "release"][..],
         ),
     ] {
         for payload in [
@@ -119,6 +119,7 @@ fn typed_task_constructors_guard_allocation_before_payload_and_completion() {
                 });
 
             let imports = wasm_function_import_indices(&wasm);
+            let rc = wasm_refcount_site_callees(&wasm);
             let task_new = *imports
                 .get("task_new")
                 .unwrap_or_else(|| panic!("{task_kind} must import task_new; imports={imports:?}"));
@@ -144,9 +145,9 @@ fn typed_task_constructors_guard_allocation_before_payload_and_completion() {
                 let resolve = *imports
                     .get("handle_resolve")
                     .expect("payload trampoline must import handle_resolve");
-                let retain = *imports
-                    .get("inc_ref_obj")
-                    .expect("payload trampoline must import inc_ref_obj");
+                let retain = *rc
+                    .get("retain")
+                    .expect("payload trampoline must retain through the generated body");
                 assert!(call_position(&ops, resolve) > guard_end);
                 assert!(call_position(&ops, retain) > guard_end);
                 assert!(
@@ -166,9 +167,12 @@ fn typed_task_constructors_guard_allocation_before_payload_and_completion() {
 
             let mut previous_completion = guard_end;
             for import_name in completion_imports {
-                let import_index = *imports.get(*import_name).unwrap_or_else(|| {
-                    panic!("{task_kind} must import {import_name}; imports={imports:?}")
-                });
+                let import_index = *imports
+                    .get(*import_name)
+                    .or_else(|| rc.get(*import_name))
+                    .unwrap_or_else(|| {
+                        panic!("{task_kind} must call {import_name}; imports={imports:?}")
+                    });
                 let position = call_position(&ops, import_index);
                 assert!(position > previous_completion, "{ops:?}");
                 previous_completion = position;

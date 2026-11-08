@@ -994,8 +994,57 @@ rule in the TIR verify-each pass.
 
 ### 4.9 Literals
 
-Each code object owns a constant table filled at module initialization; a literal load is a table
-read (CPython `co_consts`, HF-507).
+Each runtime state owns one literal table; a literal load at its use site is a table read
+(CPython `co_consts`, HF-507). Revised after one Goldfish round (codebase-details and zoom-out).
+
+**Problem (measured 2026-10-23, HF-507).** Native code builds every heap literal (`str`, `bytes`,
+big `int`) in the function prologue on every call and resume, through `molt_string_from_bytes` and a
+32-slot direct-mapped cache whose collisions allocate and free literals on each call: a function
+with 8 cold `raise ValueError("...")` branches costs 27,693 instructions per call against 3,940
+without them (CPython: 1,905 and 1,067). LLVM runs the constructor at every use, inside loops too
+(`lowering/constant_ops.rs`); WASM builds stateful and jumpful functions' literals at entry and
+others at each use (`function_frame/planning/mod.rs`, `constant_ops.rs`). Payload decoding is
+shared (`molt_ir::literal_payload`); object construction is spelled three times.
+
+**Identity.** Every runtime pointer comparison of names has a content fallback, so identity is a
+parity question, not a correctness path. Parity rules: identifier-like strings are the runtime's
+interned immortal singletons; other literals are one object per module, as CPython merges
+constants per module (equal non-name literals in two modules are distinct objects).
+`sys.intern(literal) is literal` holds in CPython, so `molt_sys_intern` adopts an already-immortal
+literal instead of copying it (today it copies: a parity defect this work fixes).
+
+**Design (stage A, closes HF-507).**
+- *Table per runtime state.* Isolates each own a `RuntimeState`, an intern pool and a random hash
+  secret, and a `str` caches its hash in the object, so the table lives in the runtime state beside
+  `code_slots`, is created at init and is released at teardown; compiled code reaches its base
+  through the execution context (HF-198).
+- *Dense literal IDs.* The compiler assigns each unique (module, literal) a dense ID and emits the
+  payloads as read-only data. `ProgramSlotKind` stays a read-only index authority; the writable
+  cells are runtime-owned. Symbol names use a digest of the payload, not its hex spelling.
+- *One literal-load op.* A new opcode (row in `op_kinds.toml`) loads cell `id`; a zero cell takes one
+  cold runtime call that builds the object through the normal allocation and intern path, makes it
+  immortal unless it already is (pool, one-character and empty singletons), and publishes it with
+  the `canonical_singleton` protocol (build, recheck, only the winner is made immortal, release
+  store; the loser releases its copy). The load sits at the use, so a cold branch costs nothing
+  until it runs. A `representation_facts` rule keyed on this opcode makes its result
+  `BoxedImmortal`: a producer proof, which the RC contract admits (`inline_refcount.md`).
+- *Consumers.* Native, LLVM and WASM lower the one opcode; the JIT and the Rust and Luau preludes
+  are not affected (they do not consume `const_str`/`const_bytes`/`const_bigint` data segments).
+- *Deletions.* Prologue materialization (native `prepare_heap_literals`, WASM entry literal regions)
+  and `runtime/molt-runtime/src/const_data_cache.rs` with all its consumers (`builtins/strings.rs`,
+  `object/ops_convert.rs`, `state/lifecycle.rs`, `object/immortal_owner_tests.rs`, `lib.rs`). The
+  byte constructors stay: the WASM JS hosts and tests call them with transient buffers.
+
+**Gate.** The 8-literal function within 10% of its no-literal variant's instructions on native;
+`molt_string_from_bytes` absent from generator-resume samples (HF-229); LLVM and WASM baselines
+recorded first (never measured) and the same gate applied; startup instructions not worse; binary
+and WASM size recorded; differential tests for interned identity (`is` between identifier
+literals, `sys.intern(literal) is literal`) and per-module distinctness.
+
+**Stage B.** Static immortal literal objects at build time are HF-673's first slice (one static-data
+emitter for all build-time objects). Go only if stage A's remaining cost (cell test, first-use
+allocations, startup) is measurable; the table, its init hook and the cold call (for kinds without
+a static layout, such as big integers) remain.
 
 ### 4.10 Facts: what exists, what is missing
 
@@ -1098,7 +1147,7 @@ Closes HF-185 stages 4 and 5, HF-205; moves HF-198.
 
 `NativeSignature` and the two entries (4.2); `ctx` as the first argument on every backend (HF-198
 stage 2); module slot arrays and `GlobalSlot` sites (4.5); `Proven`/`Guarded`/`Monomorphic` call
-sites; per-code literal tables (HF-507); `runtime_generation` in the record (HF-200). Deletes
+sites; per-state literal tables with dense literal IDs (HF-507, 4.9); `runtime_generation` in the record (HF-200). Deletes
 `molt_module_get_global` from module-function call sites, `molt_thread_record`, the
 `pending_invocation` handoff, and `molt_string_from_bytes` in prologues. Targets: call loop ≤ 250
 instructions per iteration; `fib` ≤ 300 per call. Closes HF-507, HF-200; closes HF-198; moves HF-79.

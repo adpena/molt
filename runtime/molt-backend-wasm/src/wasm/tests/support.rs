@@ -310,6 +310,45 @@ pub(super) fn wasm_operator_debug_for_export(wasm: &[u8], export_name: &str) -> 
     operators
 }
 
+/// Callees of a module's dynamic RC sites, keyed "retain" and "release".
+/// They are found from the binary: the generated transition bodies are the
+/// only defined functions that call the runtime's `inc_ref_obj` or
+/// `dec_ref_obj` transaction, so each must be unique.
+pub(super) fn wasm_refcount_site_callees(wasm: &[u8]) -> BTreeMap<&'static str, u32> {
+    let imports = wasm_function_import_indices(wasm);
+    let import_count = wasm_function_import_names(wasm).len() as u32;
+    let mut callees = BTreeMap::new();
+    for (key, import) in [("retain", "inc_ref_obj"), ("release", "dec_ref_obj")] {
+        let Some(&target) = imports.get(import) else {
+            continue;
+        };
+        let mut owners = BTreeSet::new();
+        let mut body_index = 0u32;
+        for payload in Parser::new(0).parse_all(wasm) {
+            if let Payload::CodeSectionEntry(body) = payload.expect("valid WASM module payload") {
+                let mut ops = body.get_operators_reader().expect("valid WASM operators");
+                while !ops.eof() {
+                    if let wasmparser::Operator::Call { function_index } =
+                        ops.read().expect("valid WASM instruction")
+                        && function_index == target
+                    {
+                        owners.insert(import_count + body_index);
+                    }
+                }
+                body_index += 1;
+            }
+        }
+        assert!(
+            owners.len() <= 1,
+            "only the generated {key} body may call {import}: {owners:?}"
+        );
+        if let Some(&owner) = owners.first() {
+            callees.insert(key, owner);
+        }
+    }
+    callees
+}
+
 pub(super) fn wasm_direct_call_indices_for_body(wasm: &[u8], body_filter: Option<u32>) -> Vec<u32> {
     let mut calls = Vec::new();
     wasm_visit_operators(wasm, body_filter, |op| {

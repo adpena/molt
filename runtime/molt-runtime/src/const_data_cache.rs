@@ -7,8 +7,12 @@ use std::sync::OnceLock;
 use crate::{PyToken, dec_ref_bits, inc_ref_bits};
 
 // `const_str`, `const_bytes`, and heap `const_bigint` IR ops call runtime
-// constructors with pointers into immutable compiler-emitted data segments.
-// The pointer+len pair is therefore literal identity within a process.
+// constructors with pointers into immutable compiler-emitted data segments, so
+// pointer+len usually names one literal. Hosts also pass transient buffers to
+// the same `str`/`bytes` constructors (the WASM JS hosts free theirs at once), and
+// a reused address can repeat a length with different bytes: a `str`/`bytes` hit
+// is therefore confirmed against the cached object's payload. Big-int literals
+// reach this cache only from compiled data segments.
 const CONST_DATA_CACHE_SIZE: usize = 32; // must be power of 2
 
 #[derive(Clone, Copy)]
@@ -42,11 +46,12 @@ impl ConstDataCache {
         h & (CONST_DATA_CACHE_SIZE - 1)
     }
 
-    fn lookup(&self, data_ptr: usize, len: usize) -> Option<u64> {
+    fn lookup(&self, kind: ConstDataLiteralKind, data_ptr: usize, len: usize) -> Option<u64> {
         let idx = Self::slot_index(data_ptr, len);
         self.slots[idx]
             .as_ref()
             .filter(|entry| entry.data_ptr == data_ptr && entry.len == len)
+            .filter(|entry| payload_matches(kind, entry.bits, data_ptr, len))
             .map(|entry| entry.bits)
     }
 
@@ -64,6 +69,39 @@ impl ConstDataCache {
     fn take_entries(&mut self) -> [Option<ConstDataCacheEntry>; CONST_DATA_CACHE_SIZE] {
         std::mem::replace(&mut self.slots, ConstDataCache::new().slots)
     }
+}
+
+/// Whether a cached `str`/`bytes` object still holds the caller's bytes.
+fn payload_matches(kind: ConstDataLiteralKind, bits: u64, data_ptr: usize, len: usize) -> bool {
+    let (payload, payload_len) = match kind {
+        ConstDataLiteralKind::BigInt => return true,
+        ConstDataLiteralKind::String | ConstDataLiteralKind::Bytes => {
+            let Some(ptr) = crate::obj_from_bits(bits).as_ptr() else {
+                return false;
+            };
+            // SAFETY: the cache owns a reference, so the object is live; its kind
+            // matches the constructor that inserted it.
+            unsafe {
+                match kind {
+                    ConstDataLiteralKind::String => (
+                        crate::object::string_bytes(ptr),
+                        crate::object::string_len(ptr),
+                    ),
+                    _ => (
+                        crate::object::bytes_data(ptr),
+                        crate::object::bytes_len(ptr),
+                    ),
+                }
+            }
+        }
+    };
+    payload_len == len
+        // SAFETY: the caller's buffer is valid for `len` bytes during the call,
+        // and the object's payload is valid for `payload_len` bytes.
+        && unsafe {
+            std::slice::from_raw_parts(payload, len)
+                == std::slice::from_raw_parts(data_ptr as *const u8, len)
+        }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -117,7 +155,7 @@ pub(crate) fn const_data_literal_lookup(
     // different thread may evict this slot as soon as its mutex is released.
     with_cache(kind, |cache| {
         cache
-            .lookup(data_ptr, len)
+            .lookup(kind, data_ptr, len)
             .inspect(|&bits| inc_ref_bits(py, bits))
     })
 }

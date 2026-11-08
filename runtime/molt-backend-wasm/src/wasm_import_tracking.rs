@@ -2,13 +2,18 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use crate::wasm::refcount::WasmRefcountBodies;
 use crate::wasm_abi_generated::{WasmRuntimeImport, wasm_runtime_import};
+use molt_codegen_abi::inline_refcount::RefcountOperation;
 
 #[derive(Clone)]
 pub(crate) struct TrackedImportIds {
     inner: BTreeMap<WasmRuntimeImport, u32>,
     by_index: BTreeMap<u32, WasmRuntimeImport>,
     used: Rc<RefCell<BTreeSet<WasmRuntimeImport>>>,
+    /// The module's generated RC transition bodies: the callees that replace
+    /// direct inc/dec imports at every dynamic site.
+    refcount_bodies: Option<WasmRefcountBodies>,
 }
 
 impl TrackedImportIds {
@@ -21,6 +26,7 @@ impl TrackedImportIds {
             inner,
             by_index,
             used: Rc::new(RefCell::new(BTreeSet::new())),
+            refcount_bodies: None,
         }
     }
 
@@ -38,6 +44,22 @@ impl TrackedImportIds {
                 "duplicate WASM runtime import function index {value}"
             );
         }
+    }
+
+    pub(crate) fn set_refcount_bodies(&mut self, bodies: WasmRefcountBodies) {
+        assert!(
+            self.refcount_bodies.replace(bodies).is_none(),
+            "a WASM module emits its RC transition bodies once"
+        );
+    }
+
+    /// The function index of `operation`'s generated body. Every dynamic RC
+    /// site calls it; a module that reaches a site before emitting its bodies
+    /// is a backend ordering defect.
+    pub(crate) fn refcount_body(&self, operation: RefcountOperation) -> u32 {
+        self.refcount_bodies
+            .expect("RC transition bodies must be emitted before any function body")
+            .index(operation)
     }
 
     pub(crate) fn len(&self) -> usize {
