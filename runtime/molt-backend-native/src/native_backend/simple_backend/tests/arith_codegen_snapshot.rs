@@ -156,6 +156,13 @@ fn arith_codegen_is_deterministic_and_size_bounded() {
 // 10.3% layout headroom rather than pinning the old runtime-call representation.
 // Explicit live transport previously emitted 3,713 bytes. Deterministic layout
 // movement while making another unbounded live-range/code-size regression red.
+// The matching Linux x86_64 control at 4d99469744 emits a 5,576-byte ELF
+// object (FNV 57e0d4815f12c728), including its different code and object
+// layout. Keep approximately the same headroom for that measured target;
+// the arm64 calibration is not an x86_64 object-format budget.
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+const ARITH_OBJECT_SIZE_CEILING: usize = 6_144;
+#[cfg(not(all(target_arch = "x86_64", target_os = "linux")))]
 const ARITH_OBJECT_SIZE_CEILING: usize = 5_024;
 
 /// One-shot capture probe: run with `--ignored --nocapture` to print the

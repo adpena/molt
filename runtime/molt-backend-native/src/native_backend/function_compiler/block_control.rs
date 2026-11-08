@@ -76,21 +76,21 @@ impl BlockTransportPlan {
         &self,
         builder: &mut FunctionBuilder<'_>,
         block: Block,
-        ssa_values: &NativeSsaValues,
     ) {
-        let params = builder.block_params(block).to_vec();
         assert_eq!(
-            params.len(),
+            builder.block_params(block).len(),
             self.vars.len(),
             "semantic transport block parameter arity drift"
         );
-        for (&var, param) in self.vars.iter().zip(params) {
-            builder.def_var(var, param);
+        for (index, &var) in self.vars.iter().enumerate() {
+            builder.bind_var_to_block_param(var, block, index);
         }
         for &(id, var) in &self.direct {
-            let value = ssa_values.emitted[id as usize].unwrap_or_else(|| {
-                panic!("proven canonical SSA definition #{id} was not captured before block materialization")
-            });
+            // Plans precede lowering. A terminated or skipped definition may
+            // never have been captured; Cranelift still owns its backing.
+            let value = builder
+                .canonical_ssa_value(id)
+                .unwrap_or_else(|| builder.use_var(var));
             builder.def_var(var, value);
         }
     }
@@ -107,11 +107,12 @@ struct NativeTransportBinding {
 /// Variable/representation/storage projections are resolved once after setup;
 /// they never establish identity or create another name registry.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) struct NativeSsaValues {
+pub(in crate::native_backend) struct NativeSsaValues {
     definitions: Vec<Option<crate::tir::simple_def_use::SimpleDefinitionSite>>,
-    dominance: Option<crate::tir::dominators::SimpleExecutionDominance>,
+    dominance: crate::tir::dominators::SimpleExecutionDominance,
     emitted: Vec<Option<Value>>,
     bindings: Vec<Option<NativeTransportBinding>>,
+    names_by_variable: Vec<Option<u32>>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -120,7 +121,7 @@ impl NativeSsaValues {
         parameters: &[String],
         ops: &[OpIR],
         names: &crate::tir::cfg_liveness::SimpleNameTable,
-        dominance: Option<crate::tir::dominators::SimpleExecutionDominance>,
+        dominance: crate::tir::dominators::SimpleExecutionDominance,
     ) -> Self {
         let facts = crate::tir::simple_def_use::SimpleDefinitionFacts::compute(parameters, ops);
         Self {
@@ -130,6 +131,7 @@ impl NativeSsaValues {
             dominance,
             emitted: vec![None; names.len()],
             bindings: vec![None; names.len()],
+            names_by_variable: Vec::new(),
         }
     }
 
@@ -143,7 +145,7 @@ impl NativeSsaValues {
             parameters,
             ops,
             names,
-            Some(crate::tir::cfg::CFG::build(ops).execution_points(ops)),
+            crate::tir::cfg::CFG::build(ops).execution_points(ops),
         )
     }
 
@@ -153,16 +155,99 @@ impl NativeSsaValues {
         stateful: bool,
         names: &crate::tir::cfg_liveness::SimpleNameTable,
     ) -> Self {
-        // Backend-managed loop carriers and resume-frame values do not expose
-        // every definition as an immutable value in this invocation.
-        let explicit_definitions =
-            !stateful && !func.ops.iter().any(|op| op.kind.is_pre_ssa_rewritten());
-        Self::with_facts(
+        let mut values = Self::with_facts(
             &func.params,
             &func.ops,
             names,
-            explicit_definitions.then(|| cfg.execution_points(&func.ops)),
+            cfg.execution_points(&func.ops),
+        );
+        // These carriers have native writes outside their SimpleIR definition.
+        // Their neighbouring immutable temporaries still use dominance facts.
+        for op in &func.ops {
+            if let Some(binding) = simple_ir_binding(op) {
+                values.exclude(names, binding.destination);
+            }
+            if op.kind == OpKind::LoopIndexStart
+                && let Some(name) = op.out.as_deref()
+            {
+                values.exclude(names, name);
+            }
+        }
+        if stateful {
+            for name in &func.params {
+                values.exclude(names, name);
+            }
+        }
+        values
+    }
+
+    pub(in crate::native_backend::function_compiler) fn exclude(
+        &mut self,
+        names: &crate::tir::cfg_liveness::SimpleNameTable,
+        name: &str,
+    ) {
+        if let Some(id) = names.id(name) {
+            self.definitions[id as usize] = None;
+        }
+    }
+
+    pub(in crate::native_backend) fn emitted(&self, id: u32) -> Option<Value> {
+        self.emitted[id as usize]
+    }
+
+    pub(in crate::native_backend::function_compiler) fn exclude_cleanup_definition(
+        &mut self,
+        id: u32,
+    ) {
+        // Borrowed invocation parameters never acquire a native cleanup root.
+        // Only operation-produced owner carriers can be scrubbed on release.
+        if matches!(
+            self.definitions[id as usize],
+            Some(crate::tir::simple_def_use::SimpleDefinitionSite::Operation(
+                _
+            ))
+        ) {
+            self.definitions[id as usize] = None;
+        }
+    }
+
+    fn id_for_variable(&self, var: Variable) -> Option<u32> {
+        self.names_by_variable
+            .get(var.as_u32() as usize)
+            .copied()
+            .flatten()
+    }
+
+    #[cfg(debug_assertions)]
+    pub(in crate::native_backend) fn captured_value(&self, var: Variable) -> Option<Value> {
+        self.emitted(self.id_for_variable(var)?)
+    }
+
+    pub(in crate::native_backend) fn capture_materialized_phi(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        var: Variable,
+    ) {
+        if let Some(id) = self.id_for_variable(var)
+            && matches!(
+                self.definitions[id as usize],
+                Some(crate::tir::simple_def_use::SimpleDefinitionSite::Operation(
+                    _
+                ))
+            )
+        {
+            self.capture_binding(builder, id);
+        }
+    }
+
+    pub(in crate::native_backend) fn read(&self, var: Variable, operation: usize) -> Option<Value> {
+        let id = self.id_for_variable(var)?;
+        self.can_bind_directly(
+            id,
+            crate::tir::dominators::SimpleProgramPoint::Before(operation),
         )
+        .then(|| self.emitted(id))
+        .flatten()
     }
 
     pub(in crate::native_backend::function_compiler) fn project_variables(
@@ -178,6 +263,11 @@ impl NativeSsaValues {
                 continue;
             }
             if let Some(&var) = vars.get(name) {
+                if self.names_by_variable.len() <= var.as_u32() as usize {
+                    self.names_by_variable
+                        .resize(var.as_u32() as usize + 1, None);
+                }
+                self.names_by_variable[var.as_u32() as usize] = Some(id as u32);
                 *binding = Some(NativeTransportBinding {
                     var,
                     ty: if representation_plan.is_float_unboxed(name) {
@@ -205,9 +295,7 @@ impl NativeSsaValues {
         {
             return false;
         }
-        self.dominance
-            .as_ref()
-            .is_some_and(|d| d.definition_available(definition, point))
+        self.dominance.definition_available(definition, point)
     }
 
     pub(in crate::native_backend::function_compiler) fn capture_parameters(
@@ -216,43 +304,41 @@ impl NativeSsaValues {
         parameters: &[String],
         names: &crate::tir::cfg_liveness::SimpleNameTable,
     ) {
-        if self.dominance.is_none() {
-            return;
-        }
         for name in parameters {
             let Some(id) = names.id(name) else {
                 continue;
             };
             if self.definitions[id as usize]
                 == Some(crate::tir::simple_def_use::SimpleDefinitionSite::Invocation)
-                && let Some(binding) = self.bindings[id as usize]
             {
-                self.emitted[id as usize] = Some(builder.use_var(binding.var));
+                self.capture_binding(builder, id);
             }
         }
     }
 
-    pub(in crate::native_backend::function_compiler) fn capture_operation(
+    pub(in crate::native_backend) fn capture_operation(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
         index: usize,
         op: &OpIR,
         names: &crate::tir::cfg_liveness::SimpleNameTable,
     ) {
-        if self.dominance.is_none() {
-            return;
-        }
         crate::tir::simple_def_use::visit_simple_ir_defined_names(op, |name| {
             let id = names.id(name).expect("canonical definition name");
             if self.definitions[id as usize]
                 == Some(crate::tir::simple_def_use::SimpleDefinitionSite::Operation(
                     index,
                 ))
-                && let Some(binding) = self.bindings[id as usize]
             {
-                self.emitted[id as usize] = Some(builder.use_var(binding.var));
+                self.capture_binding(builder, id);
             }
         });
+    }
+
+    fn capture_binding(&mut self, builder: &mut FunctionBuilder<'_>, id: u32) {
+        if let Some(binding) = self.bindings[id as usize] {
+            self.emitted[id as usize] = Some(builder.use_var(binding.var));
+        }
     }
 }
 
@@ -279,9 +365,8 @@ pub(in crate::native_backend::function_compiler) fn collect_slot_backed_join_nam
     // Stateful functions (generators / async / comprehension polls) carry their
     // SSA values across state_yield / state_label resume points the same way
     // exception-bearing functions carry values across check_exception splits.
-    // The state machine generates many block edges that aren't eagerly sealed,
-    // so phi resolution at seal_all_blocks() time can explode block-parameter
-    // counts past regalloc2's u32-indexed entity tables (u32::MAX panic).
+    // Persistent local storage keeps its memory custody across suspension;
+    // prompt sealing of transient SSA values does not replace that boundary.
     //
     // Treat stateful functions like exception functions: route all store_var
     // targets through stack slots so the state machine carries memory values,
@@ -295,8 +380,8 @@ pub(in crate::native_backend::function_compiler) fn collect_slot_backed_join_nam
     let mut exception_written_locals: BTreeSet<String> = BTreeSet::new();
 
     // Collect ALL persistent local-slot mutation targets that appear anywhere
-    // in a function with exception handling or stateful resume points. When the function defers
-    // block sealing to seal_all_blocks(), Cranelift must resolve SSA phi
+    // in a function with exception handling or stateful resume points. Without
+    // memory custody, Cranelift must resolve SSA phi
     // nodes for every variable that has definitions reaching from different
     // predecessors. Each check_exception or state_yield creates a new block
     // split, and variables carried across these splits become block
@@ -378,7 +463,6 @@ pub(in crate::native_backend::function_compiler) fn materialize_label_block(
     block: Block,
     is_block_filled: &mut bool,
     transport: Option<&BlockTransportPlan>,
-    ssa_values: &NativeSsaValues,
 ) {
     ensure_block_in_layout(builder, block);
     // If we're already inside `block` and it's still open, the label has
@@ -399,7 +483,7 @@ pub(in crate::native_backend::function_compiler) fn materialize_label_block(
         crate::switch_to_block_tracking(builder, block, is_block_filled);
     }
     if let Some(plan) = transport {
-        plan.bind_block_params(builder, block, ssa_values);
+        plan.bind_block_params(builder, block);
     }
 }
 

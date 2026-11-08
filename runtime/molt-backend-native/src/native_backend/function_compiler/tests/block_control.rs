@@ -1,6 +1,485 @@
 use super::super::seal_block_once;
 use super::*;
+use cranelift_frontend::Variable;
 use molt_ir::OpKind;
+
+fn native_ssa_facts(
+    ops: &[OpIR],
+    parameters: &[&str],
+    stateful: bool,
+) -> (NativeSsaValues, crate::tir::cfg_liveness::SimpleNameTable) {
+    let function = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        name: "direct_ssa_control".into(),
+        params: parameters.iter().map(|name| (*name).into()).collect(),
+        ops: ops.to_vec(),
+        param_types: None,
+        source_file: None,
+        is_extern: false,
+        codegen_partition: false,
+        parameter_custody: Vec::new(),
+        execution_context: Default::default(),
+    };
+    let cfg = crate::tir::cfg::CFG::build(ops);
+    let names =
+        crate::tir::cfg_liveness::analyze_simple_cfg_liveness_facts_with_cfg(ops, &cfg).names;
+    let values = NativeSsaValues::for_function(&function, &cfg, stateful, &names);
+    (values, names)
+}
+
+fn ssa_constant(name: &str, value: i64) -> OpIR {
+    OpIR {
+        out: Some(name.into()),
+        value: Some(value),
+        ..OpIR::new(OpKind::ConstInt)
+    }
+}
+
+fn ssa_label(kind: OpKind, value: i64) -> OpIR {
+    OpIR {
+        value: Some(value),
+        ..OpIR::new(kind)
+    }
+}
+
+#[test]
+fn direct_label_transport_uses_captured_or_backing_value() {
+    for capture in [false, true] {
+        let ops = vec![
+            ssa_constant("immutable", 37),
+            OpIR {
+                args: Some(vec!["immutable".into()]),
+                ..OpIR::new(OpKind::Ret)
+            },
+        ];
+        let (mut values, names) = native_ssa_facts(&ops, &[], false);
+        let mut sig = Signature::new(CallConv::SystemV);
+        sig.returns.push(AbiParam::new(types::I64));
+        let mut function = Function::with_name_signature(UserFuncName::default(), sig);
+        let mut context = FunctionBuilderContext::new();
+        {
+            let mut builder = FunctionBuilder::new(&mut function, &mut context);
+            let entry = builder.create_block();
+            let target = builder.create_block();
+            builder.switch_to_block(entry);
+            let var = builder.declare_var(types::I64);
+            let expected = builder.ins().iconst(types::I64, 37);
+            builder.def_var(var, expected);
+            values.project_variables(
+                &names,
+                &BTreeMap::from([("immutable".into(), var)]),
+                &ScalarRepresentationPlan::default(),
+                &BTreeMap::new(),
+            );
+            let id = names.id("immutable").unwrap();
+            let plan = BlockTransportPlan::from_live_ids(
+                [id].into_iter(),
+                &values,
+                crate::tir::dominators::SimpleProgramPoint::Before(1),
+            );
+            assert!(plan.edge_args(&mut builder).is_empty());
+            plan.append_block_params(&mut builder, target);
+            assert!(builder.block_params(target).is_empty());
+            builder.install_ssa_values(values);
+            if capture {
+                builder.capture_operation(0, &ops[0], &names);
+            }
+            builder.begin_op(1);
+            builder.ins().jump(target, &[]);
+            builder.switch_to_block(target);
+            let before = builder.func.dfg.num_values();
+            plan.bind_block_params(&mut builder, target);
+            builder.end_op();
+            if capture {
+                assert_eq!(builder.func.dfg.num_values(), before);
+                assert_eq!(builder.use_var(var), expected);
+            } else {
+                assert!(builder.canonical_ssa_value(id).is_none());
+            }
+            let actual = builder.use_var(var);
+            builder.ins().return_(&[actual]);
+            builder.seal_all_blocks();
+            assert_eq!(builder.func.dfg.resolve_aliases(actual), expected);
+            builder.finalize(crate::test_support::host_frontend_config());
+        }
+        verify_function(&function, &settings::Flags::new(settings::builder())).unwrap();
+    }
+}
+
+#[test]
+fn native_ssa_reads_preserve_sparse_reverse_variable_projection() {
+    let ops = vec![
+        ssa_constant("a", 37),
+        ssa_constant("z", 41),
+        OpIR {
+            out: Some("sum".into()),
+            args: Some(vec!["a".into(), "z".into()]),
+            ..OpIR::new(OpKind::Add)
+        },
+        OpIR {
+            args: Some(vec!["sum".into()]),
+            ..OpIR::new(OpKind::Ret)
+        },
+    ];
+    let (mut values, names) = native_ssa_facts(&ops, &[], false);
+    let mut function =
+        Function::with_name_signature(UserFuncName::default(), Signature::new(CallConv::SystemV));
+    let mut context = FunctionBuilderContext::new();
+    let mut builder = FunctionBuilder::new(&mut function, &mut context);
+    let entry = builder.create_block();
+    builder.switch_to_block(entry);
+    // Name order visits the highest Variable first. A shrinking projection
+    // loses a's binding when it later visits z.
+    let z = builder.declare_var(types::I64);
+    let internal = builder.declare_var(types::I64);
+    let a = builder.declare_var(types::I64);
+    values.project_variables(
+        &names,
+        &BTreeMap::from([("a".into(), a), ("z".into(), z)]),
+        &ScalarRepresentationPlan::default(),
+        &BTreeMap::new(),
+    );
+    assert_eq!(values.read(a, 2), None, "uncaptured definition");
+    let a_value = builder.ins().iconst(types::I64, 37);
+    let z_value = builder.ins().iconst(types::I64, 41);
+    builder.def_var(a, a_value);
+    builder.def_var(z, z_value);
+    values.capture_operation(&mut builder, 0, &ops[0], &names);
+    values.capture_operation(&mut builder, 1, &ops[1], &names);
+    assert_eq!(values.read(a, 0), None, "before its definition");
+    assert_eq!(values.read(z, 1), None, "definition is not yet available");
+    assert_eq!(values.read(a, 2), Some(a_value));
+    assert_eq!(values.read(z, 2), Some(z_value));
+    assert_eq!(values.read(internal, 2), None, "internal Variable");
+    assert_eq!(values.read(Variable::from_u32(127), 2), None);
+    builder.ins().return_(&[]);
+    builder.seal_all_blocks();
+    builder.finalize(crate::test_support::host_frontend_config());
+}
+
+#[test]
+fn live_id_transport_only_parameterizes_mutable_projected_carriers() {
+    let ops = vec![
+        ssa_constant("immutable", 37),
+        OpIR {
+            var: Some("mutable".into()),
+            args: Some(vec!["immutable".into()]),
+            ..OpIR::new(OpKind::StoreVar)
+        },
+        OpIR {
+            out: Some("sum".into()),
+            args: Some(vec!["immutable".into(), "mutable".into()]),
+            ..OpIR::new(OpKind::Add)
+        },
+        OpIR {
+            out: Some("result".into()),
+            args: Some(vec!["sum".into(), "unprojected".into()]),
+            ..OpIR::new(OpKind::Add)
+        },
+        OpIR {
+            args: Some(vec!["result".into()]),
+            ..OpIR::new(OpKind::Ret)
+        },
+    ];
+    let (mut values, names) = native_ssa_facts(&ops, &["mutable", "unprojected"], false);
+    let mut sig = Signature::new(CallConv::SystemV);
+    sig.returns = vec![AbiParam::new(types::I64), AbiParam::new(types::I64)];
+    let mut function = Function::with_name_signature(UserFuncName::default(), sig);
+    let mut context = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut function, &mut context);
+        let entry = builder.create_block();
+        let target = builder.create_block();
+        builder.switch_to_block(entry);
+        let immutable = builder.declare_var(types::I64);
+        let mutable = builder.declare_var(types::I64);
+        let expected = builder.ins().iconst(types::I64, 37);
+        let carried = builder.ins().iconst(types::I64, 11);
+        builder.def_var(immutable, expected);
+        builder.def_var(mutable, carried);
+        values.project_variables(
+            &names,
+            &BTreeMap::from([("immutable".into(), immutable), ("mutable".into(), mutable)]),
+            &ScalarRepresentationPlan::default(),
+            &BTreeMap::new(),
+        );
+        let plan = BlockTransportPlan::from_live_ids(
+            ["immutable", "mutable", "unprojected"]
+                .into_iter()
+                .map(|name| names.id(name).unwrap()),
+            &values,
+            crate::tir::dominators::SimpleProgramPoint::Before(2),
+        );
+        builder.install_ssa_values(values);
+        builder.capture_operation(0, &ops[0], &names);
+        builder.begin_op(2);
+        plan.append_block_params(&mut builder, target);
+        assert_eq!(builder.block_params(target).len(), 1);
+        let param = builder.block_params(target)[0];
+        assert_eq!(builder.func.dfg.value_type(param), types::I64);
+        let args = plan.edge_args(&mut builder);
+        assert_eq!(args, vec![carried]);
+        jump_block(&mut builder, target, &args);
+        builder.switch_to_block(target);
+        plan.bind_block_params(&mut builder, target);
+        assert_eq!(builder.use_var(immutable), expected);
+        assert_eq!(builder.use_var(mutable), param);
+        builder.ins().return_(&[expected, param]);
+        builder.seal_all_blocks();
+        builder.finalize(crate::test_support::host_frontend_config());
+    }
+    verify_function(&function, &settings::Flags::new(settings::builder())).unwrap();
+}
+
+#[test]
+fn native_ssa_handler_reads_observe_the_earliest_exception_transfer() {
+    for early_exception in [false, true] {
+        let mut ops = vec![ssa_constant("before", 7), ssa_label(OpKind::TryStart, 90)];
+        if early_exception {
+            ops.push(ssa_label(OpKind::CheckException, 90));
+        }
+        let inside = ops.len();
+        ops.push(ssa_constant("inside", 37));
+        ops.push(ssa_label(OpKind::CheckException, 90));
+        ops.push(ssa_label(OpKind::TryEnd, 90));
+        let normal_read = ops.len();
+        ops.push(ssa_label(OpKind::Jump, 91));
+        ops.push(ssa_label(OpKind::Label, 90));
+        let handler_read = ops.len();
+        ops.push(OpIR {
+            args: Some(vec!["inside".into()]),
+            ..OpIR::new(OpKind::Ret)
+        });
+        ops.push(ssa_label(OpKind::Label, 91));
+        ops.push(OpIR {
+            args: Some(vec!["before".into()]),
+            ..OpIR::new(OpKind::Ret)
+        });
+        let (mut values, names) = native_ssa_facts(&ops, &[], false);
+        let mut function = Function::with_name_signature(
+            UserFuncName::default(),
+            Signature::new(CallConv::SystemV),
+        );
+        let mut context = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut function, &mut context);
+        let entry = builder.create_block();
+        builder.switch_to_block(entry);
+        let before_var = builder.declare_var(types::I64);
+        let inside_var = builder.declare_var(types::I64);
+        values.project_variables(
+            &names,
+            &BTreeMap::from([("before".into(), before_var), ("inside".into(), inside_var)]),
+            &ScalarRepresentationPlan::default(),
+            &BTreeMap::new(),
+        );
+        let before_value = builder.ins().iconst(types::I64, 7);
+        let inside_value = builder.ins().iconst(types::I64, 37);
+        builder.def_var(before_var, before_value);
+        builder.def_var(inside_var, inside_value);
+        values.capture_operation(&mut builder, 0, &ops[0], &names);
+        values.capture_operation(&mut builder, inside, &ops[inside], &names);
+        // A handler reachable only by an exception edge still sees a value
+        // defined before every observation. Removing those edges fails this.
+        assert_eq!(values.read(before_var, handler_read), Some(before_value));
+        assert_eq!(values.read(inside_var, normal_read), Some(inside_value));
+        assert_eq!(
+            values.read(inside_var, handler_read),
+            (!early_exception).then_some(inside_value),
+            "a failure before the try-body definition must not reuse it",
+        );
+        builder.ins().return_(&[]);
+        builder.seal_all_blocks();
+        builder.finalize(crate::test_support::host_frontend_config());
+    }
+}
+
+#[test]
+fn native_ssa_loop_carriers_are_mutable_but_neighbouring_values_are_direct() {
+    let ops = vec![
+        OpIR::new(OpKind::LoopStart),
+        OpIR {
+            out: Some("index".into()),
+            ..ssa_label(OpKind::LoopIndexStart, 0)
+        },
+        ssa_constant("fresh", 37),
+        OpIR {
+            out: Some("next".into()),
+            args: Some(vec!["carry".into(), "fresh".into()]),
+            ..OpIR::new(OpKind::Add)
+        },
+        OpIR {
+            var: Some("carry".into()),
+            args: Some(vec!["next".into()]),
+            ..OpIR::new(OpKind::StoreVar)
+        },
+        OpIR::new(OpKind::LoopEnd),
+        OpIR {
+            args: Some(vec!["carry".into()]),
+            ..OpIR::new(OpKind::Ret)
+        },
+    ];
+    assert!(
+        crate::tir::cfg::CFG::build(&ops)
+            .loop_depth
+            .iter()
+            .any(|&depth| depth > 0)
+    );
+    let (mut values, names) = native_ssa_facts(&ops, &["carry"], false);
+    let mut function =
+        Function::with_name_signature(UserFuncName::default(), Signature::new(CallConv::SystemV));
+    let mut context = FunctionBuilderContext::new();
+    let mut builder = FunctionBuilder::new(&mut function, &mut context);
+    let entry = builder.create_block();
+    builder.switch_to_block(entry);
+    let carry = builder.declare_var(types::I64);
+    let index = builder.declare_var(types::I64);
+    let fresh = builder.declare_var(types::I64);
+    values.project_variables(
+        &names,
+        &BTreeMap::from([
+            ("carry".into(), carry),
+            ("index".into(), index),
+            ("fresh".into(), fresh),
+        ]),
+        &ScalarRepresentationPlan::default(),
+        &BTreeMap::new(),
+    );
+    let zero = builder.ins().iconst(types::I64, 0);
+    let expected = builder.ins().iconst(types::I64, 37);
+    builder.def_var(carry, zero);
+    builder.def_var(index, zero);
+    builder.def_var(fresh, expected);
+    values.capture_parameters(&mut builder, &["carry".into()], &names);
+    values.capture_operation(&mut builder, 1, &ops[1], &names);
+    values.capture_operation(&mut builder, 2, &ops[2], &names);
+    assert_eq!(values.read(carry, 3), None, "loop-carried binding");
+    assert_eq!(values.read(index, 3), None, "native backedge writes");
+    assert_eq!(values.read(fresh, 3), Some(expected));
+    builder.ins().return_(&[]);
+    builder.seal_all_blocks();
+    builder.finalize(crate::test_support::host_frontend_config());
+}
+
+#[test]
+fn native_ssa_resume_reads_do_not_reuse_values_from_an_earlier_invocation() {
+    let ops = vec![
+        ssa_constant("invocation", 7),
+        OpIR {
+            state_targets: Some(vec![(1, 10)]),
+            ..OpIR::new(OpKind::StateSwitch)
+        },
+        ssa_constant("saved", 37),
+        OpIR {
+            args: Some(vec!["saved".into()]),
+            ..ssa_label(OpKind::StateYield, 1)
+        },
+        ssa_label(OpKind::StateLabel, 10),
+        ssa_constant("resumed", 41),
+        OpIR {
+            args: Some(vec!["saved".into()]),
+            ..OpIR::new(OpKind::Ret)
+        },
+    ];
+    let (mut values, names) = native_ssa_facts(&ops, &[], true);
+    let mut function =
+        Function::with_name_signature(UserFuncName::default(), Signature::new(CallConv::SystemV));
+    let mut context = FunctionBuilderContext::new();
+    let mut builder = FunctionBuilder::new(&mut function, &mut context);
+    let entry = builder.create_block();
+    builder.switch_to_block(entry);
+    let mut vars = BTreeMap::new();
+    let mut emitted = BTreeMap::new();
+    for name in ["invocation", "saved", "resumed"] {
+        vars.insert(name.to_string(), builder.declare_var(types::I64));
+    }
+    values.project_variables(
+        &names,
+        &vars,
+        &ScalarRepresentationPlan::default(),
+        &BTreeMap::new(),
+    );
+    for index in [0, 2, 5] {
+        let op = &ops[index];
+        let name = op.out.as_ref().unwrap();
+        let value = builder.ins().iconst(types::I64, op.value.unwrap());
+        builder.def_var(vars[name], value);
+        emitted.insert(name.clone(), value);
+        values.capture_operation(&mut builder, index, op, &names);
+    }
+    assert_eq!(values.read(vars["saved"], 3), Some(emitted["saved"]));
+    assert_eq!(
+        values.read(vars["saved"], 6),
+        None,
+        "resume bypasses its producer"
+    );
+    assert_eq!(
+        values.read(vars["invocation"], 6),
+        Some(emitted["invocation"])
+    );
+    assert_eq!(values.read(vars["resumed"], 6), Some(emitted["resumed"]));
+    builder.ins().return_(&[]);
+    builder.seal_all_blocks();
+    builder.finalize(crate::test_support::host_frontend_config());
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn captured_native_ssa_redefinitions_require_the_block_parameter_boundary() {
+    let ops = vec![
+        ssa_constant("immutable", 37),
+        OpIR {
+            args: Some(vec!["immutable".into()]),
+            ..OpIR::new(OpKind::Ret)
+        },
+    ];
+    let (mut values, names) = native_ssa_facts(&ops, &[], false);
+    let mut sig = Signature::new(CallConv::SystemV);
+    sig.returns.push(AbiParam::new(types::I64));
+    let mut function = Function::with_name_signature(UserFuncName::default(), sig);
+    let mut context = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut function, &mut context);
+        let entry = builder.create_block();
+        let target = builder.create_block();
+        builder.switch_to_block(entry);
+        let var = builder.declare_var(types::I64);
+        let expected = builder.ins().iconst(types::I64, 37);
+        let different = builder.ins().iconst(types::I64, 41);
+        builder.def_var(var, expected);
+        values.project_variables(
+            &names,
+            &BTreeMap::from([("immutable".into(), var)]),
+            &ScalarRepresentationPlan::default(),
+            &BTreeMap::new(),
+        );
+        builder.install_ssa_values(values);
+        builder.capture_operation(0, &ops[0], &names);
+        builder.begin_op(1);
+        builder.def_var(var, expected);
+        let unexpected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            builder.def_var(var, different)
+        }));
+        assert!(
+            unexpected.is_err(),
+            "an unregistered extra writer must be detected"
+        );
+        let param = builder.append_block_param(target, types::I64);
+        builder.ins().jump(target, &[expected.into()]);
+        builder.switch_to_block(target);
+        builder.bind_var_to_block_param(var, target, 0);
+        assert_eq!(builder.use_var(var), expected);
+        builder.end_op();
+        assert_eq!(
+            builder.use_var(var),
+            param,
+            "epilogue reads leave the source operation"
+        );
+        builder.ins().return_(&[param]);
+        builder.seal_all_blocks();
+        builder.finalize(crate::test_support::host_frontend_config());
+    }
+    verify_function(&function, &settings::Flags::new(settings::builder())).unwrap();
+}
 
 #[test]
 fn block_transport_plan_emits_typed_args_and_rebinds_values() {
@@ -27,7 +506,7 @@ fn block_transport_plan_emits_typed_args_and_rebinds_values() {
     builder.seal_block(entry);
 
     switch_to_block_materialized(&mut builder, target);
-    plan.bind_block_params(&mut builder, target, &empty_ssa_values());
+    plan.bind_block_params(&mut builder, target);
 
     assert_eq!(builder.use_var(float_var), builder.block_params(target)[0]);
     assert_eq!(builder.use_var(word_var), builder.block_params(target)[1]);
@@ -49,13 +528,7 @@ fn materialize_label_block_defines_unreached_forward_label() {
     builder.seal_block(entry);
 
     let mut is_block_filled = true;
-    materialize_label_block(
-        &mut builder,
-        detached_label,
-        &mut is_block_filled,
-        None,
-        &empty_ssa_values(),
-    );
+    materialize_label_block(&mut builder, detached_label, &mut is_block_filled, None);
 
     assert!(
         builder.func.layout.is_block_inserted(detached_label),
@@ -79,13 +552,7 @@ fn materialize_label_block_does_not_self_jump_current_resume_block() {
     switch_to_block_materialized(&mut builder, resume_block);
 
     let mut is_block_filled = false;
-    materialize_label_block(
-        &mut builder,
-        resume_block,
-        &mut is_block_filled,
-        None,
-        &empty_ssa_values(),
-    );
+    materialize_label_block(&mut builder, resume_block, &mut is_block_filled, None);
 
     assert_eq!(builder.current_block(), Some(resume_block));
     assert!(
@@ -100,12 +567,58 @@ fn materialize_label_block_does_not_self_jump_current_resume_block() {
 
 // â”€â”€ scan_loop_int_sum_reduction tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-fn empty_ssa_values() -> NativeSsaValues {
-    NativeSsaValues::for_test(
-        &[],
-        &[],
-        &crate::tir::cfg_liveness::SimpleNameTable::default(),
-    )
+#[test]
+fn immutable_reads_do_not_construct_phis_in_unsealed_native_blocks() {
+    let ops = vec![
+        OpIR {
+            out: Some("immutable".into()),
+            value: Some(37),
+            ..OpIR::new(OpKind::Const)
+        },
+        OpIR {
+            args: Some(vec!["immutable".into()]),
+            ..OpIR::new(OpKind::Ret)
+        },
+    ];
+    let names = crate::tir::cfg_liveness::analyze_simple_cfg_liveness_facts(&ops).names;
+    let mut values = NativeSsaValues::for_test(&[], &ops, &names);
+    let mut sig = Signature::new(CallConv::SystemV);
+    sig.returns.push(AbiParam::new(types::I64));
+    let mut function = Function::with_name_signature(UserFuncName::default(), sig);
+    let mut context = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut function, &mut context);
+        let entry = builder.create_block();
+        builder.switch_to_block(entry);
+        let var = builder.declare_var(types::I64);
+        let expected = builder.ins().iconst(types::I64, 37);
+        builder.def_var(var, expected);
+        values.project_variables(
+            &names,
+            &BTreeMap::from([("immutable".into(), var)]),
+            &ScalarRepresentationPlan::default(),
+            &BTreeMap::new(),
+        );
+        builder.install_ssa_values(values);
+        builder.capture_operation(0, &ops[0], &names);
+        builder.begin_op(1);
+        let mut blocks = vec![entry];
+        for _ in 0..128 {
+            let next = builder.create_block();
+            builder.ins().jump(next, &[]);
+            builder.switch_to_block(next);
+            blocks.push(next);
+        }
+        let before = builder.func.dfg.num_values();
+        assert_eq!(builder.use_var(var), expected);
+        assert_eq!(builder.func.dfg.num_values(), before);
+        builder.ins().return_(&[expected]);
+        for block in blocks {
+            builder.seal_block(block);
+        }
+        builder.finalize(crate::test_support::host_frontend_config());
+    }
+    verify_function(&function, &settings::Flags::new(settings::builder())).unwrap();
 }
 
 #[test]

@@ -674,7 +674,40 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
     let cfg = crate::tir::cfg::CFG::build(&func_ir.ops);
     let cfg_liveness =
         crate::tir::cfg_liveness::analyze_simple_cfg_liveness_facts_with_cfg(&func_ir.ops, &cfg);
-    let ssa_values = NativeSsaValues::for_function(func_ir, &cfg, stateful, &cfg_liveness.names);
+    let mut ssa_values =
+        NativeSsaValues::for_function(func_ir, &cfg, stateful, &cfg_liveness.names);
+    for names in loop_body_init_vars.values() {
+        for name in names {
+            ssa_values.exclude(&cfg_liveness.names, name);
+        }
+    }
+    for (index, op) in func_ir.ops.iter().enumerate() {
+        if op.kind == OpKind::LoopIndexStart
+            && let Some(name) = op.out.as_deref()
+            && let Some(reduction) = fc::list_index_fast_path::scan_loop_int_sum_reduction(
+                &func_ir.ops,
+                index,
+                name,
+                representation_plan,
+            )
+        {
+            for name in [
+                &reduction.acc_operand_name,
+                &reduction.acc_store_slot,
+                &reduction.add_out_name,
+            ] {
+                ssa_values.exclude(&cfg_liveness.names, name);
+            }
+        }
+    }
+    if NativeRcAuthority::from_drop_inserted(drop_inserted).native_value_tracking_enabled() {
+        for id in 0..cfg_liveness.names.len() {
+            let name = cfg_liveness.names.name(id as u32);
+            if !representation_plan.carrier_refcount_is_noop(name) {
+                ssa_values.exclude_cleanup_definition(id as u32);
+            }
+        }
+    }
 
     FunctionPreanalysis {
         returns_value,

@@ -20,6 +20,7 @@ use cleanup_roots::*;
 mod shared;
 use shared::*;
 mod block_control;
+pub(super) use block_control::NativeSsaValues;
 use block_control::*;
 mod preanalysis;
 use preanalysis::*;
@@ -1034,6 +1035,7 @@ impl SimpleBackend {
             }
         }
         let ops = &func_ir.ops;
+        builder.install_ssa_values(ssa_values);
         // 2. Implementation
         let mut skip_ops: BTreeSet<usize> = BTreeSet::new();
         let metadata_loop_ops = fc::loops::metadata_only_structured_loop_ops(ops);
@@ -1086,6 +1088,7 @@ impl SimpleBackend {
         }
         let mut pending_definition_op = None;
         for op_idx in 0..ops.len() {
+            builder.begin_op(op_idx);
             // Capture the preceding operation before any new label switch,
             // including handlers that intentionally bypass the per-op epilogue.
             if let Some(index) = pending_definition_op.take()
@@ -1093,26 +1096,12 @@ impl SimpleBackend {
                     .current_block()
                     .is_some_and(|block| !block_has_terminator(&builder, block))
             {
-                ssa_values.capture_operation(&mut builder, index, &ops[index], &cfg_liveness.names);
+                builder.capture_operation(index, &ops[index], &cfg_liveness.names);
             }
             if skip_ops.contains(&op_idx) || metadata_loop_ops.contains(&op_idx) {
-                // Structured lowering materializes SSA-only join operations at
-                // its merge. Consume their declared definitions at the logical
-                // source point even though no second instruction is emitted.
-                // All structured phi discovery paths share this boundary.
-                if skip_ops.contains(&op_idx)
-                    && ops[op_idx].kind.is_ssa_only()
-                    && builder
-                        .current_block()
-                        .is_some_and(|block| !block_has_terminator(&builder, block))
-                {
-                    ssa_values.capture_operation(
-                        &mut builder,
-                        op_idx,
-                        &ops[op_idx],
-                        &cfg_liveness.names,
-                    );
-                }
+                // Structured phis are captured by their materializing writer.
+                // Other skipped operations (including unrolled loop bodies)
+                // did not lower and must not acquire an emitted SSA value.
                 continue;
             }
             let op = ops[op_idx].clone();
@@ -2084,7 +2073,6 @@ impl SimpleBackend {
                             &mut reachable_blocks,
                             &label_blocks,
                             &label_transport_plans,
-                            &ssa_values,
                             function_exception_label_id,
                             &slot_backed_join_slots,
                             &raw_backed_slot_names,
@@ -2347,6 +2335,8 @@ impl SimpleBackend {
             }
         }
 
+        builder.end_op();
+
         // Finalize Master Return Block
         if !is_block_filled {
             cleanup_roots.release_all(&mut builder, local_dec_ref_obj);
@@ -2487,6 +2477,15 @@ impl SimpleBackend {
             )
         });
         builder.seal_all_blocks();
+        if debug_seal {
+            eprintln!(
+                "SEAL_SUMMARY {} values={} blocks={} drop_inserted={}",
+                func_ir.name,
+                builder.func.dfg.num_values(),
+                builder.func.dfg.num_blocks(),
+                drop_inserted
+            );
+        }
         builder.finalize(frontend_config);
 
         if let Some(config) = should_dump_ir()

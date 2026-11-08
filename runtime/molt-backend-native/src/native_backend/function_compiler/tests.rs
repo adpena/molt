@@ -13,6 +13,7 @@ use super::{
     import_func_ref, is_cold_module_chunk_function, jump_block, materialize_label_block,
     preanalyze_function_ir, protect_cleanup_names, switch_to_block_materialized,
 };
+use crate::native_backend::native_ssa::FunctionBuilder;
 use crate::native_backend::{NativeFunctionImports, NativeRefcountSite};
 use crate::repr::{ContainerStorageKind, ScalarKind};
 use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
@@ -22,7 +23,7 @@ use cranelift_codegen::{
     settings,
     verifier::verify_function,
 };
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use cranelift_frontend::FunctionBuilderContext;
 use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_ir::OpKind;
 use std::collections::{BTreeMap, BTreeSet};
