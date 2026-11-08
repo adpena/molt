@@ -39,11 +39,12 @@ samples the current year.
 
 Causes:
 
-1. **Six hosts implement one ABI**, about 24,000 lines in all. They are `wasm/run_wasm.js`
+1. **Seven hosts implement one ABI**, about 24,000 lines in all. They are `wasm/run_wasm.js`
    (Node, the differential-test host), `wasm/browser_host.js` (runs programs in a browser),
    `wasm/browser_embed.js` (calls exports from JS), the Workers JS emitted inline by
-   `src/molt/cli/wasm.py`, `tools/wasm_worker_template.js` (no product caller), and the Rust
-   Wasmtime host `runtime/molt-wasm-host` (`--precompile`, direct runs). Each one implements the
+   `src/molt/cli/wasm.py`, `tools/wasm_worker_template.js` (no product caller), the edgebox
+   example's `db-bridge.ts`, and the Rust Wasmtime host `runtime/molt-wasm-host`
+   (`--precompile`, direct runs). Each one implements the
    `env` imports and WASI by hand, and they drift apart:
    - the Workers host returns `-ENOSYS` for about 35 imports, among them `molt_time_tzname_host`,
      although workerd reports time zone `UTC` (measured);
@@ -200,48 +201,116 @@ conversion. Then the JS VFS, the dead `molt_vfs_*` imports and the JS TmpFs are 
 
 ## Skeleton of the end state
 
-Structure is part of the specification (Skeleton Coding, arXiv 2610.38214). Implementations must
-keep these types, signatures and owners; the differential tests (`tests/differential/stdlib/
-time_zone_constants_*.py`, the workerd cell) specify the behavior.
+Structure is part of the specification (Skeleton Coding, arXiv 2610.38214). Behavioral tests cannot
+see the structural requirements this design exists for: one host-import table, behavior in Rust,
+no duplicate host code. Seven drifting hosts can pass every output test. So those requirements live
+here, as global invariants enforced by generated code and generator checks, and the tests specify
+behavior.
+
+The skeleton has three tiers. Tier 1 is signature stubs with one-paragraph docstrings. Tier 2 adds
+local contracts to the high-complexity callables. Tier 3 is the global invariants, cited from
+docstrings. Implementations keep these types, signatures and owners.
+
+### Global invariants
+
+- **I1. One host-import table.** Every host import has exactly one `[[host_import]]` row. Rust
+  externs, the Wasmtime glue and every JS import table are generated from it. No hand-written
+  extern or binding names a host import.
+- **I2. Rust owns behavior.** A host binding is a total function of one host primitive. It
+  contains no Python semantics: no errno policy, no fallbacks, no profile computation.
+- **I3. Availability is one fact.** An import is available on a target exactly when every
+  operation in its row is admitted by `host_capabilities.toml` for that target. The generator
+  refuses a host table that binds an unadmitted import or misses an admitted one.
+- **I4. No silent defaults.** A failed primitive is an error the caller sees, never a default value.
+- **I5. One time-zone answer.** For a zone and an instant, every target computes `LocalZone` from
+  the same IANA data (libc on native, embedded data on WASM).
+
+### Runtime (Rust)
 
 ```rust
-// runtime/molt-runtime/src/object/ops_sys_time.rs: one implementation for every target.
-pub(crate) struct LocalZone { pub(crate) utc_offset_east: i64, pub(crate) label: String }
+// runtime/molt-runtime/src/object/ops_sys_time.rs
+
+/// What `localtime` reports for one instant. (I5)
+pub(crate) struct LocalZone {
+    pub(crate) utc_offset_east: i64,
+    pub(crate) label: String,
+}
+
+/// The `time` module's zone constants.
 pub(crate) struct ZoneProfile {
-    pub(crate) timezone: i64, pub(crate) altzone: i64, pub(crate) daylight: i64,
+    pub(crate) timezone: i64,
+    pub(crate) altzone: i64,
+    pub(crate) daylight: i64,
     pub(crate) tzname: (String, String),
 }
-pub(crate) enum ZoneProfileError { Localtime(String), InvalidOffset } // OSError, RuntimeError
-/// CPython's sampling `init_timezone` (Unix, WASM). Windows: CPython's declared branch.
-pub(crate) fn zone_profile_from_samples(
-    now: i64, sample: impl FnMut(i64) -> Result<LocalZone, String>,
-) -> Result<ZoneProfile, ZoneProfileError>;
-/// The primitive. Unix: `localtime_r`. WASM: `zone_data::local_zone(host zone, secs)`.
-pub(crate) fn local_zone(secs: i64) -> Result<LocalZone, String>;
-/// CPython's `local_to_seconds` (`_datetimemodule.c`), shared with molt-runtime-serial
-/// through `RuntimeVtable::time_local_offset_west`.
-pub(crate) fn local_to_utc(local_secs: i64) -> Result<i64, String>;
 
-// wasm32 only: offsets and abbreviations from embedded IANA data, for targets whose
-// hosts have a local zone (browser, node). cloudflare and wasi are UTC by target fact.
-mod zone_data { pub(crate) fn local_zone(zone: &ZoneId, secs: i64) -> LocalZone; }
+/// `Localtime` surfaces as OSError, `InvalidOffset` as RuntimeError("invalid GMT offset"). (I4)
+pub(crate) enum ZoneProfileError { Localtime(String), InvalidOffset }
+
+/// CPython's sampling `init_timezone`.
+/// Requires: `sample` is `local_zone` for the current target.
+/// Ensures: the samples are taken at t0 = (now / YEAR) * YEAR and t0 + YEAR / 2, where
+///   YEAR = (365 * 24 + 6) * 3600; when January's westward offset is smaller, the two swap;
+///   daylight == (the offsets differ); each name keeps at most nine bytes.
+/// Raises: InvalidOffset when an offset exceeds 48 hours; Localtime when a sample fails. (I4)
+pub(crate) fn zone_profile_from_samples(
+    now: i64,
+    sample: impl FnMut(i64) -> Result<LocalZone, String>,
+) -> Result<ZoneProfile, ZoneProfileError> {
+    unimplemented!("specification stub")
+}
+
+/// The primitive. (I5)
+/// Ensures: on Unix, equals `localtime_r`'s tm_gmtoff and tm_zone (three spaces when tm_zone is
+///   null); on WASM, equals `zone_data::local_zone(host_zone(), secs)`.
+pub(crate) fn local_zone(secs: i64) -> Result<LocalZone, String> {
+    unimplemented!("specification stub")
+}
+
+/// CPython's `local_to_seconds` (`_datetimemodule.c`), for naive datetime timestamps.
+/// Ensures: for a local time inside a DST gap or fold, the result is CPython's on the same
+///   zone data; molt-runtime-serial reaches it through `RuntimeVtable::time_local_offset_west`.
+pub(crate) fn local_to_utc(local_secs: i64) -> Result<i64, String> {
+    unimplemented!("specification stub")
+}
+
+/// wasm32 only, for the browser and node profiles. cloudflare and wasi are UTC by target fact.
+mod zone_data {
+    /// Ensures: equals what libc's `localtime` computes from the same IANA release. (I5)
+    pub(crate) fn local_zone(zone: &ZoneId, secs: i64) -> LocalZone {
+    unimplemented!("specification stub")
+}
+}
 ```
 
+### Host-import table (TOML) and the time family's only JS
+
 ```toml
-# wasm_abi_manifest.toml: the one host-import table (signatures, operations, family).
+# runtime/molt-backend-wasm/src/wasm_abi_manifest.toml (I1, I3)
 [[host_import]]
 module = "env"
-name = "molt_time_zone_name_host"   # IANA name, e.g. "Asia/Kolkata"
+name = "molt_time_zone_name_host"   # writes the IANA zone name, e.g. "Asia/Kolkata"
 params = ["u32", "u32", "u32"]      # buffer, capacity, out length
-results = ["i32"]                   # 0, or a negative errno
-operations = []                     # always available
+results = ["i32"]                   # 0, or a negative errno (I4)
+operations = []                     # always available on targets that bind it
 family = "time"
 ```
 
 ```js
-// wasm/host/time.js: the time family's only JS, shared by every JS host.
-export const timeZoneNameHost = (memory) => (bufPtr, bufCap, outLenPtr) => { /* Intl ... */ };
+// wasm/host/time.js: shared by every JS host; generated tables import it. (I1, I2)
+/** Writes Intl's resolved IANA zone name; returns 0 or -ENOMEM. */
+export const timeZoneNameHost = (memory) => (bufPtr, bufCap, outLenPtr) => {
+  throw new Error("specification stub");
+};
 ```
+
+### Tests
+
+- Local, per component: `zone_profile_tests` (sampling, swap, truncation, the 48-hour check,
+  failure propagation); `zone_data::local_zone` against libc `localtime_r` for every zone and
+  instant in a fixed table; generator tests that refuse an I3 mismatch.
+- Compatibility (differential, CPython as oracle): `tests/differential/stdlib/
+  time_zone_constants_*.py` under `TZ` on native, llvm, jit and WASM on Node; the workerd cell.
 
 ## The Tier 1 cell (HF-790)
 
@@ -270,7 +339,8 @@ honest. B adds an in-isolate OCR demonstration if you want one.
 ## Stages
 
 0. Owner: the Falcon decision. It does not block stages 1 to 4.
-1. The time family (§2) across the runtime and all six hosts; cloudflare and fastly move to `auto`
+1. The time family (§2) across the runtime and all seven hosts; cloudflare and fastly move to
+   `auto`
    (§3), with Falcon's size measured; the workerd runner with hello.
 2. Delete the template; one import table with generated Rust externs (§1); unavailable errors and
    the typed execution target (§4).
