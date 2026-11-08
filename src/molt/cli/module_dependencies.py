@@ -394,6 +394,11 @@ def _compute_reachable_modules(
             return
         reachable.add(name)
         queue.append(name)
+        # Importing a.b runs a's body first, so a package parent is reached like
+        # an edge and its own imports are traversed.
+        parent = name.rpartition(".")[0]
+        if parent and parent in module_name_set:
+            _seed(parent)
 
     _seed(entry_module)
     for safe in seed_safelist:
@@ -406,14 +411,6 @@ def _compute_reachable_modules(
         current = queue.popleft()
         for dep in module_deps.get(current, ()):
             _seed(dep)
-    parents_to_add: set[str] = set()
-    for name in list(reachable):
-        parts = name.split(".")
-        for i in range(1, len(parts)):
-            parent = ".".join(parts[:i])
-            if parent in module_name_set:
-                parents_to_add.add(parent)
-    reachable.update(parents_to_add)
     return reachable
 
 

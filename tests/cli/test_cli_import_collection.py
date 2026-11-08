@@ -4158,6 +4158,28 @@ def test_dead_module_elimination_keeps_runtime_dispatch_roots() -> None:
     assert eliminated == 1
 
 
+def test_dead_module_elimination_traverses_package_parents() -> None:
+    # CPython runs pkg/__init__ before pkg.sub, so modules that pkg/__init__
+    # imports are needed whenever pkg.sub is.
+    module_order = ["helper", "pkg", "pkg.sub", "unused", "demo"]
+    module_layers = [["helper", "unused"], ["pkg"], ["pkg.sub"], ["demo"]]
+    module_deps = {"demo": {"pkg.sub"}, "pkg.sub": set(), "pkg": {"helper"}}
+
+    filtered_order, _layers, eliminated = (
+        cli_module_dependencies._apply_dead_module_elimination(
+            module_order,
+            module_layers,
+            entry_module="demo",
+            module_deps=module_deps,
+            module_names=set(module_order),
+            safelist=(),
+        )
+    )
+
+    assert filtered_order == ["helper", "pkg", "pkg.sub", "demo"]
+    assert eliminated == 1
+
+
 def test_dead_module_elimination_pure_wasm_safelist_skips_host_stdlib() -> None:
     module_order = ["builtins", "sys", "os", "typing", "warnings", "array", "demo"]
     module_layers = [
