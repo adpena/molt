@@ -58,6 +58,7 @@ from molt.cli.json_contract import (
     _wrapper_build_payload_data,
 )
 from molt.cli.models import (
+    ModuleReason,
     _ResolvedBuildEntry,
 )
 from molt.cli.module_graph import _materialize_import_plan, _prepare_entry_module_graph
@@ -156,7 +157,7 @@ def _wrapper_build_dependency_fingerprints(
     # Only resolved wrapper requests reach graph construction.
     assert request.stdlib_profile is not None
     stdlib_root = _stdlib_root_path()
-    module_reasons: dict[str, set[str]] = {}
+    module_reasons: dict[str, set[ModuleReason]] = {}
     # The child build reads these ambient inputs from its own environment;
     # predicting its module graph in process applies the same mapping for the
     # prediction only (see molt.cli.env_overrides).

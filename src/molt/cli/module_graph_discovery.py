@@ -29,6 +29,7 @@ from molt.cli import module_import_scanner as _module_import_scanner
 from molt.cli import module_resolution as _module_resolution
 from molt.cli import module_source as _module_source
 from molt.cli.models import (
+    ModuleReason,
     ImportScanMode,
     _CompleteImportScan,
     _ModuleGraphScanAuthority,
@@ -338,9 +339,9 @@ def _parse_static_import_modules_from_env(
 
 
 def _record_module_reason(
-    module_reasons: MutableMapping[str, set[str]],
+    module_reasons: MutableMapping[str, set[ModuleReason]],
     module_name: str,
-    reason: str,
+    reason: ModuleReason,
 ) -> None:
     module_reasons.setdefault(module_name, set()).add(reason)
 
@@ -360,8 +361,8 @@ def _extend_module_graph_with_closure(
     stdlib_allowlist: set[str],
     resolver_cache: "_module_resolution._ModuleResolutionCache",
     diagnostics_enabled: bool,
-    module_reasons: MutableMapping[str, set[str]],
-    reason: str,
+    module_reasons: MutableMapping[str, set[ModuleReason]],
+    reason: ModuleReason,
     skip_modules: set[str] | None = None,
     stub_parents: set[str] | None = None,
     import_admission_policy: _ImportAdmissionPolicy | None = None,
@@ -470,7 +471,7 @@ def _extend_module_graph_with_static_import_modules(
     stdlib_allowlist: set[str],
     resolver_cache: "_module_resolution._ModuleResolutionCache",
     diagnostics_enabled: bool,
-    module_reasons: MutableMapping[str, set[str]],
+    module_reasons: MutableMapping[str, set[ModuleReason]],
     import_admission_policy: _ImportAdmissionPolicy | None,
     target_python: TargetPythonVersion,
     discovery: _ModuleGraphDiscovery | None = None,
@@ -501,7 +502,7 @@ def _extend_module_graph_with_static_import_modules(
         resolver_cache=resolver_cache,
         diagnostics_enabled=diagnostics_enabled,
         module_reasons=module_reasons,
-        reason="explicit_static_import",
+        reason=ModuleReason.EXPLICIT_STATIC_IMPORT,
         discovery=discovery,
         import_admission_policy=import_admission_policy,
         allow_entry_external_imports=False,
@@ -514,8 +515,8 @@ def _extend_module_graph_with_static_import_modules(
 def _record_new_module_reasons(
     module_graph: Mapping[str, Path],
     before_names: set[str],
-    module_reasons: MutableMapping[str, set[str]],
-    reason: str,
+    module_reasons: MutableMapping[str, set[ModuleReason]],
+    reason: ModuleReason,
 ) -> None:
     for name in module_graph:
         if name in before_names:

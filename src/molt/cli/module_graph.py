@@ -22,6 +22,7 @@ from molt.cli import module_source as _module_source
 from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
 from molt.cli import module_stdlib_policy as _module_stdlib_policy
 from molt.cli.models import (
+    ModuleReason,
     ImportScanMode,
     ModuleExecutionKind,
     ModuleSourceRole,
@@ -339,16 +340,22 @@ def _requires_spawn_entry_override(
     return False
 
 
-_ENTRY_REACHABLE_REASONS = frozenset({"entry_closure"})
-_RUNTIME_SUPPORT_REASONS = frozenset({"runtime_import_support", "spawn_closure"})
-_STDLIB_SUPPORT_REASONS = frozenset({"core_required", "core_closure"})
-_PACKAGE_PARENT_REASONS = frozenset({"package_parent", "package_parent_closure"})
+_ENTRY_REACHABLE_REASONS = frozenset({ModuleReason.ENTRY_CLOSURE})
+_RUNTIME_SUPPORT_REASONS = frozenset(
+    {ModuleReason.RUNTIME_IMPORT_SUPPORT, ModuleReason.SPAWN_CLOSURE}
+)
+_STDLIB_SUPPORT_REASONS = frozenset(
+    {ModuleReason.CORE_REQUIRED, ModuleReason.CORE_CLOSURE}
+)
+_PACKAGE_PARENT_REASONS = frozenset(
+    {ModuleReason.PACKAGE_PARENT, ModuleReason.PACKAGE_PARENT_CLOSURE}
+)
 
 
 def _modules_with_any_reason(
     module_graph: Mapping[str, Path],
-    module_reasons: Mapping[str, set[str]],
-    reasons: Collection[str],
+    module_reasons: Mapping[str, set[ModuleReason]],
+    reasons: Collection[ModuleReason],
 ) -> frozenset[str]:
     reason_set = set(reasons)
     return frozenset(
@@ -376,7 +383,7 @@ def _extend_native_support_source_closure(
     discovery: "_graph_discovery._ModuleGraphDiscovery",
     module_graph: MutableMapping[str, Path],
     scan_authorities: MutableMapping[str, _ModuleSourceScanAuthority],
-    module_reasons: MutableMapping[str, set[str]],
+    module_reasons: MutableMapping[str, set[ModuleReason]],
     native_artifact_plan,
     artifacts_root: Path,
     roots: list[Path],
@@ -479,9 +486,9 @@ def _extend_native_support_source_closure(
             _graph_discovery._record_module_reason(
                 module_reasons,
                 name,
-                "native_support_source"
+                ModuleReason.NATIVE_SUPPORT_SOURCE
                 if name == module_name
-                else "native_support_source_closure",
+                else ModuleReason.NATIVE_SUPPORT_SOURCE_CLOSURE,
             )
     return frozenset(explicit_imports)
 
@@ -491,7 +498,7 @@ def _extend_native_runtime_python_import_closure(
     discovery: "_graph_discovery._ModuleGraphDiscovery",
     module_graph: MutableMapping[str, Path],
     scan_authorities: MutableMapping[str, _ModuleSourceScanAuthority],
-    module_reasons: MutableMapping[str, set[str]],
+    module_reasons: MutableMapping[str, set[ModuleReason]],
     native_artifact_plan,
     roots: list[Path],
     stdlib_root: Path,
@@ -504,7 +511,7 @@ def _extend_native_runtime_python_import_closure(
     for name in declared:
         if name in module_graph:
             _graph_discovery._record_module_reason(
-                module_reasons, name, "native_runtime_python_import"
+                module_reasons, name, ModuleReason.NATIVE_RUNTIME_PYTHON_IMPORT
             )
     pending = sorted(declared - module_graph.keys())
     if not pending:
@@ -534,7 +541,7 @@ def _extend_native_runtime_python_import_closure(
         _graph_discovery._record_module_reason(
             module_reasons,
             module_name,
-            "native_runtime_python_import",
+            ModuleReason.NATIVE_RUNTIME_PYTHON_IMPORT,
         )
     return declared | frozenset(closure.explicit_imports)
 
@@ -1188,7 +1195,7 @@ def _finalize_runtime_import_closure(
     discovery: "_graph_discovery._ModuleGraphDiscovery",
     module_graph: MutableMapping[str, Path],
     scan_authorities: MutableMapping[str, _ModuleSourceScanAuthority],
-    module_reasons: MutableMapping[str, set[str]],
+    module_reasons: MutableMapping[str, set[ModuleReason]],
     explicit_imports: Collection[str],
     dispatch_roots: Collection[str],
     module_resolution_cache: "_module_resolution._ModuleResolutionCache",
@@ -1328,7 +1335,7 @@ def _finalize_runtime_import_closure(
             resolver_cache=module_resolution_cache,
             diagnostics_enabled=True,
             module_reasons=module_reasons,
-            reason="runtime_import_support",
+            reason=ModuleReason.RUNTIME_IMPORT_SUPPORT,
             import_admission_policy=import_admission_policy,
             target_python=target_python,
             runtime_import_custody=custody,
@@ -1349,7 +1356,7 @@ def _finalize_runtime_import_closure(
 def _materialize_import_plan(
     *,
     prepared_module_graph: _PreparedEntryModuleGraph,
-    module_reasons: MutableMapping[str, set[str]],
+    module_reasons: MutableMapping[str, set[ModuleReason]],
     stdlib_root: Path,
     artifacts_root: Path,
     entry_module: str,
@@ -1620,7 +1627,7 @@ def _augment_module_graph_for_entry_and_runtime(
     module_resolution_cache: "_module_resolution._ModuleResolutionCache",
     module_graph: MutableMapping[str, Path],
     scan_authorities: MutableMapping[str, _ModuleSourceScanAuthority],
-    module_reasons: MutableMapping[str, set[str]],
+    module_reasons: MutableMapping[str, set[ModuleReason]],
     diagnostics_enabled: bool,
     json_output: bool,
     target: Target,
@@ -1655,7 +1662,7 @@ def _augment_module_graph_for_entry_and_runtime(
         resolver_cache=module_resolution_cache,
         diagnostics_enabled=diagnostics_enabled,
         module_reasons=module_reasons,
-        reason="core_closure",
+        reason=ModuleReason.CORE_CLOSURE,
         stub_parents=stub_parents,
         import_admission_policy=import_admission_policy,
         target_python=target_python,
@@ -1710,7 +1717,7 @@ def _augment_module_graph_for_entry_and_runtime(
             resolver_cache=module_resolution_cache,
             diagnostics_enabled=diagnostics_enabled,
             module_reasons=module_reasons,
-            reason="spawn_closure",
+            reason=ModuleReason.SPAWN_CLOSURE,
             stub_parents=stub_parents,
             import_admission_policy=import_admission_policy,
             target_python=target_python,
@@ -1738,7 +1745,7 @@ def _prepare_entry_module_graph(
     import_topology: _module_resolution.PythonImportTopology | None = None,
     module_root_aliases: _module_resolution._ModuleRootAliases | None = None,
     diagnostics_enabled: bool,
-    module_reasons: MutableMapping[str, set[str]],
+    module_reasons: MutableMapping[str, set[ModuleReason]],
     json_output: bool,
     target_sys_platform: str | None,
     target: Target,
@@ -1813,9 +1820,13 @@ def _prepare_entry_module_graph(
     module_graph = discovered.graph
     explicit_imports = discovered.explicit_imports
     scan_authorities = dict(discovered.scan_authority.by_module)
-    _graph_discovery._record_module_reason(module_reasons, entry_module, "entry_root")
+    _graph_discovery._record_module_reason(
+        module_reasons, entry_module, ModuleReason.ENTRY_ROOT
+    )
     for name in module_graph:
-        _graph_discovery._record_module_reason(module_reasons, name, "entry_closure")
+        _graph_discovery._record_module_reason(
+            module_reasons, name, ModuleReason.ENTRY_CLOSURE
+        )
     static_import_modules, static_import_error = (
         _graph_discovery._parse_static_import_modules_from_env(os.environ)
     )
@@ -1860,7 +1871,7 @@ def _prepare_entry_module_graph(
             module_graph,
             package_before,
             module_reasons,
-            "package_parent",
+            ModuleReason.PACKAGE_PARENT,
         )
         if not added_package_parents:
             break
@@ -1884,7 +1895,7 @@ def _prepare_entry_module_graph(
             resolver_cache=module_resolution_cache,
             diagnostics_enabled=True,
             module_reasons=module_reasons,
-            reason="package_parent_closure",
+            reason=ModuleReason.PACKAGE_PARENT_CLOSURE,
             stub_parents=STUB_PARENT_MODULES,
             import_admission_policy=import_admission_policy,
             allow_entry_external_imports=False,
@@ -1895,7 +1906,7 @@ def _prepare_entry_module_graph(
             module_graph,
             before_parent_closure,
             module_reasons,
-            "package_parent_closure",
+            ModuleReason.PACKAGE_PARENT_CLOSURE,
         )
     core_before = set(module_graph)
     _module_stdlib_policy._ensure_core_stdlib_modules(
@@ -1908,7 +1919,7 @@ def _prepare_entry_module_graph(
         module_graph,
         core_before,
         module_reasons,
-        "core_required",
+        ModuleReason.CORE_REQUIRED,
     )
     # Runtime-feature availability is decided by REACHABILITY, not whole-file
     # import-graph presence. The old coarse profile gate was deleted because it

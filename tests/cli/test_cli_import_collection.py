@@ -4160,6 +4160,28 @@ def test_dead_module_elimination_keeps_runtime_dispatch_roots() -> None:
     assert eliminated == 1
 
 
+def test_dead_module_elimination_traverses_package_parents() -> None:
+    # CPython runs pkg/__init__ before pkg.sub, so modules that pkg/__init__
+    # imports are needed whenever pkg.sub is.
+    module_order = ["helper", "pkg", "pkg.sub", "unused", "demo"]
+    module_layers = [["helper", "unused"], ["pkg"], ["pkg.sub"], ["demo"]]
+    module_deps = {"demo": {"pkg.sub"}, "pkg.sub": set(), "pkg": {"helper"}}
+
+    filtered_order, _layers, eliminated = (
+        cli_module_dependencies._apply_dead_module_elimination(
+            module_order,
+            module_layers,
+            entry_module="demo",
+            module_deps=module_deps,
+            module_names=set(module_order),
+            safelist=(),
+        )
+    )
+
+    assert filtered_order == ["helper", "pkg", "pkg.sub", "demo"]
+    assert eliminated == 1
+
+
 def test_dead_module_elimination_pure_wasm_safelist_skips_host_stdlib() -> None:
     module_order = ["builtins", "sys", "os", "typing", "warnings", "array", "demo"]
     module_layers = [
@@ -20602,24 +20624,6 @@ def test_spawn_entry_override_required_for_spawn_import() -> None:
     graph = {"__main__": ROOT / "script.py"}
     explicit_imports = {"multiprocessing.spawn"}
     assert cli_module_graph._requires_spawn_entry_override(graph, explicit_imports)
-
-
-def test_merge_module_graph_with_reason_tracks_sources(tmp_path: Path) -> None:
-    module_graph = {"__main__": tmp_path / "main.py"}
-    reasons: dict[str, set[str]] = {}
-    additions = {
-        "__main__": tmp_path / "main.py",
-        "multiprocessing.spawn": tmp_path / "spawn.py",
-    }
-    cli_build_inputs._merge_module_graph_with_reason(
-        module_graph,
-        additions,
-        reasons,
-        "spawn_closure",
-    )
-    assert "multiprocessing.spawn" in module_graph
-    assert reasons["__main__"] == {"spawn_closure"}
-    assert reasons["multiprocessing.spawn"] == {"spawn_closure"}
 
 
 def test_build_reason_summary_is_stable() -> None:

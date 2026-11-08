@@ -541,6 +541,9 @@ def test_run_cmd_timeout_gracefully_collects_sigterm_output(tmp_path: Path) -> N
         "    sys.stderr.write('TERM_CLEANUP\\n')\n"
         "    sys.stderr.flush()\n"
         "    raise SystemExit(0)\n"
+        # Python timeouts receive a fatal diagnostic abort before the TERM
+        # fallback. Keep this child alive to exercise that graceful fallback.
+        "signal.signal(signal.SIGABRT, signal.SIG_IGN)\n"
         "signal.signal(signal.SIGTERM, _on_term)\n"
         "while True:\n"
         "    time.sleep(1)\n",
