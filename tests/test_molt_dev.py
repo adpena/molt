@@ -11626,9 +11626,12 @@ def test_a_probe_never_sends_a_runner_away(drv, tmp_path, monkeypatch):
 
     def probe_ends_after_the_first_try(path, **kwargs):
         handle = real_try(path, **kwargs)
-        attempts.append(handle is not None)
-        if len(attempts) == 1:
-            drv._release_file_lock(probe)
+        # The patch is process-global: count only the runner lock, so another
+        # thread's unrelated lock in this worker cannot add an attempt.
+        if Path(path) == paths.runner_lock:
+            attempts.append(handle is not None)
+            if len(attempts) == 1:
+                drv._release_file_lock(probe)
         return handle
 
     monkeypatch.setattr(
