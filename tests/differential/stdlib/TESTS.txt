@@ -1959,6 +1959,10 @@ tests/differential/stdlib/time_basic.py
 tests/differential/stdlib/time_daylight_altzone_mktime.py
 tests/differential/stdlib/time_localtime_strftime.py
 tests/differential/stdlib/time_timegm.py
+tests/differential/stdlib/time_zone_constants_kolkata.py
+tests/differential/stdlib/time_zone_constants_st_johns.py
+tests/differential/stdlib/time_zone_constants_sydney.py
+tests/differential/stdlib/time_zone_constants_utc.py
 tests/differential/stdlib/tkinter_phase0_core_semantics.py
 tests/differential/stdlib/tkinter_tix_version_gate.py
 tests/differential/stdlib/token_core_api.py

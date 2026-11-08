@@ -62,12 +62,13 @@ impl WasmFrameLocals {
     ) {
         assert!(self.refcount.is_none());
         self.refcount = Some(crate::wasm::refcount::WasmRefcountScratch::allocate(|ty| {
+            assert_eq!(
+                ty,
+                ValType::I64,
+                "the RC admission snapshot is one i64 local"
+            );
             self.allocate_anonymous(
-                if ty == ValType::I32 {
-                    WasmFrameAnonymousLocal::RefcountPredicate
-                } else {
-                    WasmFrameAnonymousLocal::RefcountWord
-                },
+                WasmFrameAnonymousLocal::RefcountAdmission,
                 local_types,
                 local_count,
             )

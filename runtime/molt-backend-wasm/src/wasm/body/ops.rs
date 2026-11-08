@@ -25,6 +25,8 @@ impl WasmLirFallbackReason {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum WasmCallTarget {
     RuntimeImport(LirRuntimeCall),
+    /// The module's generated RC transition body for one operation.
+    RefcountBody(molt_codegen_abi::inline_refcount::RefcountOperation),
     BailToGenericPath(WasmLirFallbackReason),
 }
 
@@ -50,6 +52,14 @@ impl WasmBodyOps {
     pub(crate) fn push_runtime_import_call(&mut self, call: LirRuntimeCall) {
         self.ops
             .push(WasmBodyOp::Call(WasmCallTarget::RuntimeImport(call)));
+    }
+
+    pub(crate) fn push_refcount_body_call(
+        &mut self,
+        operation: molt_codegen_abi::inline_refcount::RefcountOperation,
+    ) {
+        self.ops
+            .push(WasmBodyOp::Call(WasmCallTarget::RefcountBody(operation)));
     }
 
     pub(crate) fn push_bail_to_generic_path(&mut self, reason: WasmLirFallbackReason) {

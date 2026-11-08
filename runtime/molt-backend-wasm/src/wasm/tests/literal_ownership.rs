@@ -424,7 +424,14 @@ for (const test of config.cases) {
     );
 }
 
-fn compile_literal_body(params: Vec<&str>, ops: Vec<OpIR>) -> (Vec<String>, BTreeMap<String, u32>) {
+fn compile_literal_body(
+    params: Vec<&str>,
+    ops: Vec<OpIR>,
+) -> (
+    Vec<String>,
+    BTreeMap<String, u32>,
+    BTreeMap<&'static str, u32>,
+) {
     // Bind every class statement the ops name to a dense slot (HF-220).
     let statements: std::collections::BTreeSet<String> = ops
         .iter()
@@ -449,6 +456,7 @@ fn compile_literal_body(params: Vec<&str>, ops: Vec<OpIR>) -> (Vec<String>, BTre
     (
         wasm_operator_debug_for_export(&output.wasm, "molt_main"),
         wasm_function_import_indices(&output.wasm),
+        wasm_refcount_site_callees(&output.wasm),
     )
 }
 
@@ -474,7 +482,7 @@ fn raw_allocations_publish_before_binding_or_releasing_the_result() {
                 },
             );
             allocation.value = Some(8);
-            let (operators, imports) = compile_literal_body(
+            let (operators, imports, rc) = compile_literal_body(
                 vec!["class"],
                 vec![
                     allocation,
@@ -501,8 +509,8 @@ fn raw_allocations_publish_before_binding_or_releasing_the_result() {
                 "the exact allocation result feeds publication before binding or cleanup"
             );
             assert_eq!(call_count(&operators, publish), 1, "{kind} {result:?}");
-            let releases = imports
-                .get("dec_ref_obj")
+            let releases = rc
+                .get("release")
                 .map_or(0, |&index| call_count(&operators, index));
             assert_eq!(
                 releases,
@@ -557,7 +565,7 @@ fn owned_runtime_and_constructor_results_release_every_discard_shape() {
     ] {
         for result in [None, Some("none"), Some("unused"), Some("result")] {
             let retained = result == Some("result");
-            let (operators, imports) = compile_literal_body(
+            let (operators, _, rc) = compile_literal_body(
                 vec!["value"],
                 vec![
                     wasm_test_op(kind, result, vec!["value"; argc]),
@@ -568,8 +576,8 @@ fn owned_runtime_and_constructor_results_release_every_discard_shape() {
                     ),
                 ],
             );
-            let releases = imports
-                .get("dec_ref_obj")
+            let releases = rc
+                .get("release")
                 .map_or(0, |&index| call_count(&operators, index));
             assert_eq!(
                 releases,
@@ -712,7 +720,7 @@ fn raw_and_borrowed_runtime_results_do_not_acquire_discarded_owners() {
             if kind == molt_ir::OpKind::Call {
                 operation.s_value = Some("molt_int_as_i64".into());
             }
-            let (operators, imports) = compile_literal_body(
+            let (operators, _, rc) = compile_literal_body(
                 vec!["value"],
                 vec![
                     operation,
@@ -723,11 +731,11 @@ fn raw_and_borrowed_runtime_results_do_not_acquire_discarded_owners() {
                     ),
                 ],
             );
-            let releases = imports
-                .get("dec_ref_obj")
+            let releases = rc
+                .get("release")
                 .map_or(0, |&index| call_count(&operators, index));
-            let retains = imports
-                .get("inc_ref_obj")
+            let retains = rc
+                .get("retain")
                 .map_or(0, |&index| call_count(&operators, index));
             assert_eq!(releases, 0, "{kind} {result:?}: {operators:?}");
             assert_eq!(
@@ -765,7 +773,7 @@ fn manual_field_and_closure_consumers_obey_selected_import_ownership() {
             ) {
                 op.class_definition = Some("class:m:Owner".into());
             }
-            let (operators, imports) = compile_literal_body(
+            let (operators, imports, rc) = compile_literal_body(
                 vec!["value"],
                 vec![
                     op,
@@ -790,13 +798,13 @@ fn manual_field_and_closure_consumers_obey_selected_import_ownership() {
                     );
                 } else {
                     assert!(
-                        operators[index + 1].starts_with("LocalSet {"),
-                        "the effect result enters its checked release unchanged: {kind} {result:?}: {operators:?}"
+                        operators[index + 1].starts_with("LocalGet {"),
+                        "the release site passes the invocation admission: {kind} {result:?}: {operators:?}"
                     );
-                    assert!(
-                        operators[(index + 2)..].iter().any(|op| op
-                            == &format!("Call {{ function_index: {} }}", imports["dec_ref_obj"])),
-                        "effect result retains the original terminal transition: {operators:?}"
+                    assert_eq!(
+                        operators[index + 2],
+                        format!("Call {{ function_index: {} }}", rc["release"]),
+                        "the effect result enters its release transition unchanged: {kind} {result:?}"
                     );
                 }
             }
@@ -818,7 +826,7 @@ fn representation_aliases_retain_only_observable_results() {
     ] {
         for result in [None, Some("none"), Some("unused"), Some("result")] {
             let bound = result == Some("result");
-            let (operators, imports) = compile_literal_body(
+            let (operators, _, rc) = compile_literal_body(
                 vec!["value"],
                 vec![
                     wasm_test_op(
@@ -840,9 +848,7 @@ fn representation_aliases_retain_only_observable_results() {
                     ),
                 ],
             );
-            let retains = imports
-                .get("inc_ref_obj")
-                .map_or(0, |&i| call_count(&operators, i));
+            let retains = rc.get("retain").map_or(0, |&i| call_count(&operators, i));
             assert_eq!(
                 retains,
                 usize::from(bound),
@@ -861,7 +867,7 @@ fn effect_output_metadata_cannot_publish_a_runtime_value() {
     ] {
         let mut effect = wasm_test_op(kind, Some("value"), vec!["value"; argc]);
         effect.value = Some(0);
-        let (operators, imports) = compile_literal_body(
+        let (operators, imports, rc) = compile_literal_body(
             vec!["value"],
             vec![
                 effect,
@@ -872,7 +878,7 @@ fn effect_output_metadata_cannot_publish_a_runtime_value() {
         let expected = if borrowed {
             "Drop".to_string()
         } else {
-            format!("Call {{ function_index: {} }}", imports["dec_ref_obj"])
+            format!("Call {{ function_index: {} }}", rc["release"])
         };
         for index in operators
             .iter()
@@ -883,18 +889,17 @@ fn effect_output_metadata_cannot_publish_a_runtime_value() {
                 assert_eq!(operators[index + 1], expected, "{kind}: {operators:?}");
             } else {
                 assert!(
-                    operators[index + 1].starts_with("LocalSet {"),
-                    "the original effect word enters the checked release: {kind}: {operators:?}"
+                    operators[index + 1].starts_with("LocalGet {"),
+                    "the release site passes the invocation admission: {kind}: {operators:?}"
                 );
-                assert!(
-                    operators[(index + 2)..].contains(&expected),
-                    "the effect retains its cold terminal transition: {operators:?}"
+                assert_eq!(
+                    operators[index + 2],
+                    expected,
+                    "the original effect word enters its release transition: {kind}: {operators:?}"
                 );
             }
         }
-        let retains = imports
-            .get("inc_ref_obj")
-            .map_or(0, |&i| call_count(&operators, i));
+        let retains = rc.get("retain").map_or(0, |&i| call_count(&operators, i));
         assert_eq!(retains, 0, "{kind}: metadata must not acquire an owner");
     }
 }
@@ -902,18 +907,18 @@ fn effect_output_metadata_cannot_publish_a_runtime_value() {
 #[test]
 fn effect_refcount_metadata_never_overwrites_an_existing_local() {
     for (kind, import) in [
-        (molt_ir::OpKind::IncRef, "inc_ref_obj"),
-        (molt_ir::OpKind::DecRef, "dec_ref_obj"),
+        (molt_ir::OpKind::IncRef, "retain"),
+        (molt_ir::OpKind::DecRef, "release"),
     ] {
         for output in [None, Some("none"), Some("value")] {
-            let (operators, imports) = compile_literal_body(
+            let (operators, _, rc) = compile_literal_body(
                 vec!["value"],
                 vec![
                     wasm_test_op(kind, output, vec!["value"]),
                     wasm_test_op(molt_ir::OpKind::Ret, None, vec!["value"]),
                 ],
             );
-            assert_eq!(call_count(&operators, imports[import]), 1, "{kind}");
+            assert_eq!(call_count(&operators, rc[import]), 1, "{kind}");
             assert!(
                 !operators
                     .iter()
@@ -1060,16 +1065,17 @@ fn direct_calls_release_only_owned_value_results() {
                 .unwrap_or_else(|error| panic!("{kind} {target}, bound={bound}: {error}"));
             let operators = wasm_operator_debug_for_export(&output.wasm, "molt_main");
             let imports = wasm_function_import_indices(&output.wasm);
-            let releases = imports
-                .get("dec_ref_obj")
+            let rc = wasm_refcount_site_callees(&output.wasm);
+            let releases = rc
+                .get("release")
                 .map_or(0, |&index| call_count(&operators, index));
             assert_eq!(
                 releases,
                 usize::from(owns_result && !bound),
                 "{kind} {target}, bound={bound}: {operators:?}"
             );
-            let retains = imports
-                .get("inc_ref_obj")
+            let retains = rc
+                .get("retain")
                 .map_or(0, |&index| call_count(&operators, index));
             assert_eq!(
                 retains,
@@ -1111,10 +1117,9 @@ fn runtime_bootstrap_does_not_retain_live_locals() {
             .validate_all(&output.wasm)
             .unwrap();
         let operators = wasm_operator_debug_for_export(&output.wasm, "molt_main");
-        let imports = wasm_function_import_indices(&output.wasm);
-        ["inc_ref_obj", "dec_ref_obj"].map(|name| {
-            imports
-                .get(name)
+        let rc = wasm_refcount_site_callees(&output.wasm);
+        ["retain", "release"].map(|name| {
+            rc.get(name)
                 .map_or(0, |&index| call_count(&operators, index))
         })
     };
@@ -1203,8 +1208,9 @@ fn dynamic_calls_release_discarded_owned_results() {
                 .unwrap_or_else(|error| panic!("{kind} {target:?}, bound={bound}: {error}"));
             let operators = wasm_operator_debug_for_export(&output.wasm, "molt_main");
             let imports = wasm_function_import_indices(&output.wasm);
-            let releases = imports
-                .get("dec_ref_obj")
+            let rc = wasm_refcount_site_callees(&output.wasm);
+            let releases = rc
+                .get("release")
                 .map_or(0, |&index| call_count(&operators, index));
             assert_eq!(
                 releases,
@@ -1262,9 +1268,9 @@ fn native_symbol_results_release_only_discarded_owned_results() {
                 .validate_all(&output.wasm)
                 .unwrap_or_else(|error| panic!("{abi}, bound={bound}: {error}"));
             let operators = wasm_operator_debug_for_export(&output.wasm, "molt_main");
-            let imports = wasm_function_import_indices(&output.wasm);
-            let releases = imports
-                .get("dec_ref_obj")
+            let rc = wasm_refcount_site_callees(&output.wasm);
+            let releases = rc
+                .get("release")
                 .map_or(0, |&index| call_count(&operators, index));
             assert_eq!(
                 releases,
@@ -1380,6 +1386,7 @@ fn callable_constructors_release_only_discarded_owned_results() {
                 .unwrap_or_else(|error| panic!("{kind}, bound={bound}: {error}"));
             let operators = wasm_operator_debug_for_export(&output.wasm, "molt_main");
             let imports = wasm_function_import_indices(&output.wasm);
+            let rc = wasm_refcount_site_callees(&output.wasm);
             let symbol = if kind == molt_ir::OpKind::BuiltinFunc {
                 assert!(imports.contains_key("abs_builtin"));
                 if argc == 0 {
@@ -1395,8 +1402,8 @@ fn callable_constructors_release_only_discarded_owned_results() {
                 1,
                 "{kind}: {operators:?}"
             );
-            let releases = imports
-                .get("dec_ref_obj")
+            let releases = rc
+                .get("release")
                 .map_or(0, |&index| call_count(&operators, index));
             assert_eq!(
                 releases,
@@ -1410,13 +1417,13 @@ fn callable_constructors_release_only_discarded_owned_results() {
                     .position(|operator| operator == &call)
                     .unwrap();
                 assert!(
-                    operators[position + 1].starts_with("LocalSet {"),
-                    "the owned result must enter the checked RC site's original-word local: {operators:?}"
+                    operators[position + 1].starts_with("LocalGet {"),
+                    "the release site passes the invocation admission: {operators:?}"
                 );
-                assert!(
-                    operators[(position + 2)..].iter().any(|op| op
-                        == &format!("Call {{ function_index: {} }}", imports["dec_ref_obj"])),
-                    "discarded result must retain its cold terminal transition: {operators:?}"
+                assert_eq!(
+                    operators[position + 2],
+                    format!("Call {{ function_index: {} }}", rc["release"]),
+                    "the discarded owned result enters its release transition: {operators:?}"
                 );
             }
         }
@@ -1450,18 +1457,19 @@ fn closure_extraction_retains_only_bound_borrowed_results() {
             .expect("bound and discarded borrowed results must produce valid WASM");
         let operators = wasm_operator_debug_for_export(&output.wasm, "molt_main");
         let imports = wasm_function_import_indices(&output.wasm);
+        let rc = wasm_refcount_site_callees(&output.wasm);
         let extract = imports["function_closure_bits"];
         assert_eq!(call_count(&operators, extract), 1, "{operators:?}");
-        for (symbol, expected) in [
-            ("inc_ref_obj", usize::from(bound)),
-            ("dec_ref_obj", 0),
-            ("dec_ref", 0),
-        ] {
-            let actual = imports
+        for (symbol, expected) in [("retain", usize::from(bound)), ("release", 0)] {
+            let actual = rc
                 .get(symbol)
                 .map_or(0, |&index| call_count(&operators, index));
             assert_eq!(actual, expected, "bound={bound}: {symbol}: {operators:?}");
         }
+        let dec_ref_calls = imports
+            .get("dec_ref")
+            .map_or(0, |&index| call_count(&operators, index));
+        assert_eq!(dec_ref_calls, 0, "bound={bound}: dec_ref: {operators:?}");
         let extract_call = format!("Call {{ function_index: {extract} }}");
         let position = operators.iter().position(|op| op == &extract_call).unwrap();
         if bound {
@@ -1470,15 +1478,13 @@ fn closure_extraction_retains_only_bound_borrowed_results() {
                 "{operators:?}"
             );
             assert!(
-                operators[position + 2].starts_with("LocalSet {"),
-                "selected borrowed result must enter its checked retain: {operators:?}"
+                operators[position + 2].starts_with("LocalGet {"),
+                "the retain site passes the invocation admission: {operators:?}"
             );
-            assert!(
-                operators[(position + 3)..]
-                    .iter()
-                    .any(|op| op
-                        == &format!("Call {{ function_index: {} }}", imports["inc_ref_obj"])),
-                "bound borrowed result needs its cold retain transition: {operators:?}"
+            assert_eq!(
+                operators[position + 3],
+                format!("Call {{ function_index: {} }}", rc["retain"]),
+                "the selected borrowed result enters its retain transition: {operators:?}"
             );
         } else {
             assert_eq!(operators[position + 1], "Drop", "{operators:?}");
@@ -1486,8 +1492,8 @@ fn closure_extraction_retains_only_bound_borrowed_results() {
     }
 }
 
-pub(super) fn assert_single_anchor_epilogue(operators: &[String], dec_ref_index: u32) {
-    let release = format!("Call {{ function_index: {dec_ref_index} }}");
+pub(super) fn assert_single_anchor_epilogue(operators: &[String], release_body: u32) {
+    let release = format!("Call {{ function_index: {release_body} }}");
     assert_eq!(
         operators
             .iter()
@@ -1498,16 +1504,8 @@ pub(super) fn assert_single_anchor_epilogue(operators: &[String], dec_ref_index:
     assert_eq!(operators.last().map(String::as_str), Some("End"));
     let release_index = operators.iter().rposition(|op| op == &release).unwrap();
     assert!(
-        {
-            let start = operators[..release_index]
-                .windows(2)
-                .rposition(|ops| {
-                    ops[0] == "Block { blockty: Empty }" && ops[1] == "Block { blockty: Empty }"
-                })
-                .expect("checked release has explicit outer/slow blocks");
-            assert!(operators[start - 1].starts_with("LocalSet {"));
-            operators[start - 2].starts_with("I64Store {")
-        },
+        operators[release_index - 1].starts_with("LocalGet {")
+            && operators[release_index - 2].starts_with("I64Store {"),
         "publish an empty owner before the cleanup callback: {operators:?}"
     );
     assert!(
@@ -1532,7 +1530,7 @@ fn jumpful_literals_share_one_anchor_and_mint_each_dynamic_result_owner() {
     let mut label = wasm_test_op(molt_ir::OpKind::Label, None, vec![]);
     label.value = Some(7);
 
-    let (operators, imports) = compile_literal_body(
+    let (operators, imports, rc) = compile_literal_body(
         vec!["cond"],
         vec![
             first,
@@ -1548,11 +1546,11 @@ fn jumpful_literals_share_one_anchor_and_mint_each_dynamic_result_owner() {
     assert_eq!(call_count(&operators, imports["string_from_bytes"]), 1);
     assert_eq!(call_count(&operators, imports["exception_pending"]), 1);
     assert_eq!(
-        call_count(&operators, imports["inc_ref_obj"]),
+        call_count(&operators, rc["retain"]),
         2,
         "each original literal op must mint its own result owner from the shared anchor; operators={operators:?}"
     );
-    assert_single_anchor_epilogue(&operators, imports["dec_ref_obj"]);
+    assert_single_anchor_epilogue(&operators, rc["release"]);
 }
 
 #[test]
@@ -1560,17 +1558,17 @@ fn discarded_literal_results_release_their_owner_without_writing_none() {
     for out in ["unused", "none"] {
         let mut literal = wasm_test_op(molt_ir::OpKind::ConstStr, Some(out), vec![]);
         literal.s_value = Some("discarded-payload".into());
-        let (operators, imports) = compile_literal_body(
+        let (operators, _, rc) = compile_literal_body(
             vec![],
             vec![
                 literal,
                 wasm_test_op(molt_ir::OpKind::Ret, None, vec!["none"]),
             ],
         );
-        assert_eq!(call_count(&operators, imports["inc_ref_obj"]), 1);
-        assert_single_anchor_epilogue(&operators, imports["dec_ref_obj"]);
+        assert_eq!(call_count(&operators, rc["retain"]), 1);
+        assert_single_anchor_epilogue(&operators, rc["release"]);
         assert_eq!(
-            call_count(&operators, imports["dec_ref_obj"]),
+            call_count(&operators, rc["release"]),
             2,
             "{out}: discard must release the site owner as well as its anchor"
         );
@@ -1581,7 +1579,7 @@ fn discarded_literal_results_release_their_owner_without_writing_none() {
 fn full_i64_const_uses_fallible_anchor_instead_of_inline_47_truncation() {
     let mut wide = wasm_test_op(molt_ir::OpKind::Const, Some("wide"), vec![]);
     wide.value = Some(i64::MAX);
-    let (operators, imports) = compile_literal_body(
+    let (operators, imports, rc) = compile_literal_body(
         vec![],
         vec![
             wide,
@@ -1592,7 +1590,7 @@ fn full_i64_const_uses_fallible_anchor_instead_of_inline_47_truncation() {
 
     assert_eq!(call_count(&operators, imports["int_from_i64"]), 1);
     assert_eq!(call_count(&operators, imports["exception_pending"]), 1);
-    assert_eq!(call_count(&operators, imports["inc_ref_obj"]), 1);
+    assert_eq!(call_count(&operators, rc["retain"]), 1);
     assert!(
         operators
             .iter()
@@ -1600,11 +1598,11 @@ fn full_i64_const_uses_fallible_anchor_instead_of_inline_47_truncation() {
         "full-width constant must reach int_from_i64 without a 47-bit mask; operators={operators:?}"
     );
     assert_eq!(
-        call_count(&operators, imports["dec_ref_obj"]),
+        call_count(&operators, rc["release"]),
         2,
         "the boxed BigInt has two independently owned credits: its literal anchor and its explicit result; both must release"
     );
-    assert_single_anchor_epilogue(&operators, imports["dec_ref_obj"]);
+    assert_single_anchor_epilogue(&operators, rc["release"]);
 }
 
 #[test]
@@ -1625,8 +1623,8 @@ fn anchor_cleanup_size_is_independent_of_return_site_count() {
                 ops.push(wasm_test_op(molt_ir::OpKind::EndIf, None, vec![]));
             }
             ops.push(wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]));
-            let (operators, imports) = compile_literal_body(vec!["cond"], ops);
-            assert_single_anchor_epilogue(&operators, imports["dec_ref_obj"]);
+            let (operators, _, rc) = compile_literal_body(vec!["cond"], ops);
+            assert_single_anchor_epilogue(&operators, rc["release"]);
             assert_eq!(
                 operators
                     .iter()
@@ -1636,7 +1634,7 @@ fn anchor_cleanup_size_is_independent_of_return_site_count() {
                 "initialization and cleanup code do not grow with anchor or return count"
             );
             assert_eq!(
-                call_count(&operators, imports["dec_ref_obj"]),
+                call_count(&operators, rc["release"]),
                 constant_count + 1,
                 "one release per discarded result plus one anchor-loop call site, independent of {return_count} exits"
             );
@@ -1767,7 +1765,7 @@ for (const failure of [-1, 0, 1, 2, 3]) {
 
 #[test]
 fn proven_none_aliases_and_explicit_rc_have_no_header_transition() {
-    let (operators, imports) = compile_literal_body(
+    let (operators, _, rc) = compile_literal_body(
         vec![],
         vec![
             wasm_test_op(molt_ir::OpKind::ConstNone, Some("immortal"), vec![]),
@@ -1783,19 +1781,12 @@ fn proven_none_aliases_and_explicit_rc_have_no_header_transition() {
             wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
         ],
     );
-    for name in ["inc_ref_obj", "dec_ref_obj"] {
+    for name in ["retain", "release"] {
         assert_eq!(
-            imports
-                .get(name)
+            rc.get(name)
                 .map_or(0, |&index| call_count(&operators, index)),
             0,
             "producer-proven None never acquires or releases a heap credit: {operators:?}"
         );
     }
-    assert!(
-        !operators
-            .iter()
-            .any(|op| op.starts_with("I64Load32U") || op.starts_with("I32Store")),
-        "proven None must not touch a header: {operators:?}"
-    );
 }

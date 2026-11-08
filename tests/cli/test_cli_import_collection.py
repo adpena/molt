@@ -25626,108 +25626,67 @@ def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_t
     assert prepared is not None
 
 
-def _install_generated_runtime_export_signatures(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def generated_signatures(
-        _path: Path, *, export_names: set[str]
-    ) -> dict[str, dict[str, object]]:
-        signatures: dict[str, dict[str, object]] = {}
-        for name in export_names:
-            canonical_name = (
-                RUNTIME_WASM_VALIDATION.wasm_split_runtime_import_name_for_export(name)
-                or RUNTIME_WASM_VALIDATION.wasm_runtime_import_name(name)
-                or name
-            )
-            expected = RUNTIME_WASM_VALIDATION.WASM_CPYTHON_ABI_LINK_IMPORT_FUNCTION_SIGNATURES.get(
-                canonical_name
-            )
-            if expected is None:
-                generated = RUNTIME_WASM_VALIDATION.wasm_import_signature(
-                    canonical_name
-                )
-                if generated is None:
-                    continue
-                params, results = generated
-                expected = {
-                    "params": list(params),
-                    "result": "nil" if not results else ", ".join(results),
-                }
-            signatures[name] = expected
-        return signatures
-
-    monkeypatch.setattr(
-        RUNTIME_WASM_VALIDATION,
-        "_wasm_export_function_signatures",
-        generated_signatures,
+def _runtime_export_fixture(exports: Mapping[str, int]) -> bytes:
+    """Real definitions with explicit physical i64 arities, independent of ABI tables."""
+    count = wasm_artifact._write_wasm_varuint(len(exports))
+    types = bytearray(count)
+    functions = bytearray(count)
+    names = bytearray(count)
+    bodies = bytearray(count)
+    for index, (name, arity) in enumerate(exports.items()):
+        types.extend(b"\x60" + wasm_artifact._write_wasm_varuint(arity))
+        types.extend(b"\x7e" * arity + b"\x01\x7e")
+        functions.extend(wasm_artifact._write_wasm_varuint(index))
+        names.extend(wasm_artifact._write_wasm_string(name) + b"\x00")
+        names.extend(wasm_artifact._write_wasm_varuint(index))
+        bodies.extend(b"\x04\x00\x42\x00\x0b")  # no locals, i64.const 0, end
+    return wasm_artifact._build_wasm_sections(
+        [
+            (1, bytes(types)),
+            (3, bytes(functions)),
+            (7, bytes(names)),
+            (10, bytes(bodies)),
+        ]
     )
 
 
-def test_runtime_wasm_exports_satisfy_required_surface(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _install_generated_runtime_export_signatures(monkeypatch)
+def test_runtime_wasm_exports_satisfy_required_surface(tmp_path: Path) -> None:
     wasm = tmp_path / "runtime.wasm"
-    payload = bytearray()
-    payload.extend(b"\x02")  # export count
-    for name, index in (
-        ("molt_fast_list_append", 0),
-        ("molt_resource_on_free", 1),
-    ):
-        encoded = name.encode("utf-8")
-        payload.append(len(encoded))
-        payload.extend(encoded)
-        payload.append(0x00)  # func export
-        payload.append(index)
-    wasm.write_bytes(b"\0asm\x01\0\0\0" + b"\x07" + bytes([len(payload)]) + payload)
+    append = compiled_execution_symbol("molt_fast_list_append")
+    free = compiled_execution_symbol("molt_resource_on_free")
+    # Physical parameters are context + (list, value) and context + resource.
+    wasm.write_bytes(_runtime_export_fixture({append: 3, free: 2}))
     assert RUNTIME_WASM_VALIDATION._runtime_wasm_exports_satisfy(
         wasm, {"molt_fast_list_append", "molt_resource_on_free"}
     )
     assert not RUNTIME_WASM_VALIDATION._runtime_wasm_exports_satisfy(
         wasm, {"molt_fast_list_append", "molt_dict_getitem"}
     )
+    # A physical name cannot hide the omitted context, and an obsolete raw
+    # name cannot satisfy the current ABI even with the current parameter count.
+    for invalid in ({append: 2, free: 2}, {"molt_fast_list_append": 3, free: 2}):
+        wasm.write_bytes(_runtime_export_fixture(invalid))
+        assert RUNTIME_WASM_VALIDATION._runtime_wasm_missing_exports(
+            wasm, {"molt_fast_list_append", "molt_resource_on_free"}
+        ) == {append}
 
 
-def test_runtime_wasm_exports_require_canonical_browser_surface(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _install_generated_runtime_export_signatures(monkeypatch)
-
-    def _encode_varuint(value: int) -> bytes:
-        out = bytearray()
-        while True:
-            byte = value & 0x7F
-            value >>= 7
-            if value:
-                out.append(byte | 0x80)
-            else:
-                out.append(byte)
-                return bytes(out)
-
+def test_runtime_wasm_exports_require_canonical_browser_surface(tmp_path: Path) -> None:
     wasm = tmp_path / "runtime_fallbacks.wasm"
-    payload = bytearray()
-    exports = (
-        "molt_call_bind_ic",
-        "molt_callargs_new",
-        "molt_callargs_push_pos",
-        "molt_dict_getitem_borrowed",
-        "molt_dict_set",
-        "molt_resource_on_allocate",
-        "molt_resource_on_free",
-        "molt_tuple_getitem_borrowed",
-    )
-    payload.append(len(exports))
-    for index, name in enumerate(exports):
-        encoded = name.encode("utf-8")
-        payload.append(len(encoded))
-        payload.extend(encoded)
-        payload.append(0x00)  # func export
-        payload.append(index)
-    wasm.write_bytes(
-        b"\0asm\x01\0\0\0" + b"\x07" + _encode_varuint(len(payload)) + payload
-    )
-
+    exports = {
+        compiled_execution_symbol(name): arity
+        for name, arity in (
+            ("molt_call_bind_ic", 4),
+            ("molt_callargs_new", 3),
+            ("molt_callargs_push_pos", 3),
+            ("molt_dict_getitem_borrowed", 3),
+            ("molt_dict_set", 4),
+            ("molt_resource_on_allocate", 2),
+            ("molt_resource_on_free", 2),
+            ("molt_tuple_getitem_borrowed", 3),
+        )
+    }
+    wasm.write_bytes(_runtime_export_fixture(exports))
     required = {
         "molt_fast_dict_get",
         "molt_fast_list_append",
@@ -25738,26 +25697,28 @@ def test_runtime_wasm_exports_require_canonical_browser_surface(
         "molt_resource_on_allocate",
         "molt_resource_on_free",
     }
-    missing = required - {"molt_resource_on_allocate", "molt_resource_on_free"}
+    missing = {
+        compiled_execution_symbol(name)
+        for name in required - {"molt_resource_on_allocate", "molt_resource_on_free"}
+    }
     assert not RUNTIME_WASM_VALIDATION._runtime_wasm_exports_satisfy(wasm, required)
     assert (
         RUNTIME_WASM_VALIDATION._runtime_wasm_missing_exports(wasm, required) == missing
     )
     # Adding the exact six producers admits the same runtime image. The old
     # substitutes remain present, so presence alone cannot explain the result.
-    canonical_payload = bytearray(_encode_varuint(len(exports) + len(missing)))
-    for index, name in enumerate((*exports, *sorted(missing))):
-        encoded = name.encode("utf-8")
-        canonical_payload.extend(_encode_varuint(len(encoded)))
-        canonical_payload.extend(encoded)
-        canonical_payload.append(0x00)
-        canonical_payload.extend(_encode_varuint(index))
-    wasm.write_bytes(
-        b"\0asm\x01\0\0\0"
-        + b"\x07"
-        + _encode_varuint(len(canonical_payload))
-        + canonical_payload
+    exports.update(
+        (compiled_execution_symbol(name), arity)
+        for name, arity in (
+            ("molt_fast_dict_get", 4),
+            ("molt_fast_list_append", 3),
+            ("molt_fast_str_join", 3),
+            ("molt_dict_getitem", 3),
+            ("molt_dict_setitem", 4),
+            ("molt_tuple_getitem", 3),
+        )
     )
+    wasm.write_bytes(_runtime_export_fixture(exports))
     assert RUNTIME_WASM_VALIDATION._runtime_wasm_exports_satisfy(wasm, required)
     assert (
         RUNTIME_WASM_VALIDATION._runtime_wasm_missing_exports(wasm, required) == set()
@@ -25767,41 +25728,21 @@ def test_runtime_wasm_exports_require_canonical_browser_surface(
 def test_runtime_wasm_resource_exports_are_not_satisfied_by_browser_fallbacks(
     tmp_path: Path,
 ) -> None:
-    def _encode_varuint(value: int) -> bytes:
-        out = bytearray()
-        while True:
-            byte = value & 0x7F
-            value >>= 7
-            if value:
-                out.append(byte | 0x80)
-            else:
-                out.append(byte)
-                return bytes(out)
-
     wasm = tmp_path / "runtime_missing_resource_exports.wasm"
-    payload = bytearray()
-    exports = (
-        "molt_call_bind_ic",
-        "molt_callargs_new",
-        "molt_callargs_push_pos",
-    )
-    payload.append(len(exports))
-    for index, name in enumerate(exports):
-        encoded = name.encode("utf-8")
-        payload.append(len(encoded))
-        payload.extend(encoded)
-        payload.append(0x00)
-        payload.append(index)
     wasm.write_bytes(
-        b"\0asm\x01\0\0\0" + b"\x07" + _encode_varuint(len(payload)) + payload
+        _runtime_export_fixture(
+            {
+                compiled_execution_symbol("molt_call_bind_ic"): 4,
+                compiled_execution_symbol("molt_callargs_new"): 3,
+                compiled_execution_symbol("molt_callargs_push_pos"): 3,
+            }
+        )
     )
-
     required = {"molt_resource_on_allocate", "molt_resource_on_free"}
     assert not RUNTIME_WASM_VALIDATION._runtime_wasm_exports_satisfy(wasm, required)
-    assert (
-        RUNTIME_WASM_VALIDATION._runtime_wasm_missing_exports(wasm, required)
-        == required
-    )
+    assert RUNTIME_WASM_VALIDATION._runtime_wasm_missing_exports(wasm, required) == {
+        compiled_execution_symbol(name) for name in required
+    }
 
 
 def test_run_subprocess_captured_to_tempfiles_emits_keepalive(

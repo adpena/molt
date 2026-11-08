@@ -194,9 +194,11 @@ fn dynbox_or_retains_selected_operand_result() {
         output.runtime_calls
     );
     assert!(
-        output.runtime_calls.contains(&"inc_ref_obj"),
+        output
+            .refcount_calls
+            .contains(&molt_codegen_abi::inline_refcount::RefcountOperation::Retain),
         "boxed or must retain the selected borrowed operand result: {:?}",
-        output.runtime_calls
+        output.refcount_calls
     );
     assert!(
         output

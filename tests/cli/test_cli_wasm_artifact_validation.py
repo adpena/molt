@@ -42,6 +42,8 @@ from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import entrypoint_dispatch, entrypoint_parser, runtime_build
 from tests.cli.process_guard import run_cli_test_process
 from molt.cli import command_runtime as cli_command_runtime
+from molt.cargo_execution_policy import default_nested_process_timeout_seconds
+from tests.process_guard_common import GuardedProcessRole
 
 RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
 RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
@@ -410,12 +412,15 @@ def test_ensure_runtime_reloc_wasm_exports_wasi_clock_ids(
         runtime_wasm=runtime_reloc.with_name("molt_runtime.wasm"),
         runtime_reloc_wasm=runtime_reloc,
     )
+    # This empty private target uses the canonical cold-build envelope.
     assert RUNTIME_WASM_PAIR._ensure_runtime_wasm_both(
         runtime_state,
         build_profile="release",
         json_output=True,
         cargo_profile="dev-fast",
-        cargo_timeout=300.0,
+        cargo_timeout=default_nested_process_timeout_seconds(
+            GuardedProcessRole.BUILD.value
+        ),
         project_root=project_root,
         simd_enabled=True,
         freestanding=False,

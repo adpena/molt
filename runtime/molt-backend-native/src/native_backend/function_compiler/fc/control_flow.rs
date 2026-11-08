@@ -1057,9 +1057,9 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                 *is_block_filled = true;
             } else if reachable_blocks.contains(&frame.merge_block) {
                 ensure_block_in_layout(&mut *builder, frame.merge_block);
-                // For plain structured if/else the predecessor set is
-                // complete at `end_if`, so early sealing keeps SSA
-                // repair from inventing placeholder predecessors.
+                // Retain the original local seal for plain structured if/else:
+                // both incoming arms have been emitted at `end_if`. This is
+                // independent of the rejected whole-function sealing tracker.
                 //
                 // Exception-bearing functions are different: handler
                 // paths can still reach the merge later in the linear
@@ -1133,6 +1133,9 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                             param,
                             out_storage,
                         );
+                        if let Some(&var) = vars.get(out) {
+                            builder.capture_materialized_phi(var);
+                        }
                         if rc_authority.native_value_tracking_enabled()
                             && cleanup_roots.contains(out)
                         {

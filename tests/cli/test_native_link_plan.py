@@ -3,6 +3,7 @@ from __future__ import annotations
 from molt import native_target
 
 from molt.native_target import resolve_native_target_spec
+from molt.process_guard import FRESH_EXECUTABLE_TIMEOUT_S
 
 from types import SimpleNamespace
 
@@ -390,7 +391,7 @@ def test_real_darwin_link_drops_unused_dylibs_and_keeps_referenced_framework(
     )
     executable = tmp_path / "security"
 
-    def run(command):
+    def run(command, *, timeout=60):
         if linker_name == "lld" and command[0] == tools.clang:
             command = [
                 tools.clang,
@@ -402,7 +403,7 @@ def test_real_darwin_link_drops_unused_dylibs_and_keeps_referenced_framework(
             env=dict(tools.environment),
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=timeout,
             encoding="utf-8",
         )
         assert result.returncode == 0, result.stderr
@@ -431,7 +432,7 @@ def test_real_darwin_link_drops_unused_dylibs_and_keeps_referenced_framework(
     assert "Security.framework" in dependencies
     for unused in ("CoreFoundation.framework", "libiconv", "libc++"):
         assert unused not in dependencies
-    run([str(executable)])
+    run([str(executable)], timeout=FRESH_EXECUTABLE_TIMEOUT_S)
 
     # An extension's explicit default dependencies can exist for initializer
     # side effects. Preserve that contract with the linker's needed policy.
@@ -483,7 +484,10 @@ def test_real_darwin_link_drops_unused_dylibs_and_keeps_referenced_framework(
     dependencies = run([str(tools.bin_dir / "llvm-otool"), "-L", str(executable)])
     assert "CoreFoundation.framework" in dependencies
     assert str(library) in dependencies
-    assert run([str(executable)]) == "extension initializer\n"
+    assert (
+        run([str(executable)], timeout=FRESH_EXECUTABLE_TIMEOUT_S)
+        == "extension initializer\n"
+    )
 
 
 @pytest.mark.slow

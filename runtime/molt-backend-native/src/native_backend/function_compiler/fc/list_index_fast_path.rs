@@ -107,7 +107,8 @@ pub(in crate::native_backend::function_compiler) fn observe_generic_list_storage
     let data = builder.ins().select(is_flat, flat_data, boxed_data);
     let len = builder.ins().select(is_flat, flat_len, boxed_len);
     for (field, value) in fields.into_iter().zip([data, len, is_bool, is_int]) {
-        let variable = builder.declare_var(builder.func.dfg.value_type(value));
+        let ty = builder.func.dfg.value_type(value);
+        let variable = builder.declare_var(ty);
         builder.def_var(variable, value);
         fast_paths.insert(field, name.to_string(), variable, builder);
     }

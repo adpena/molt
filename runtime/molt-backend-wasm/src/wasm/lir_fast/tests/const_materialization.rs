@@ -228,8 +228,10 @@ fn binding_alias_copy_retains_before_forwarding_bits() {
 
     let output = lower_tir_to_wasm(&func).test_view();
     assert!(
-        output.runtime_calls.contains(&"inc_ref_obj"),
+        output
+            .refcount_calls
+            .contains(&molt_codegen_abi::inline_refcount::RefcountOperation::Retain),
         "binding_alias Copy must retain its forwarded source: {:?}",
-        output.runtime_calls
+        output.refcount_calls
     );
 }

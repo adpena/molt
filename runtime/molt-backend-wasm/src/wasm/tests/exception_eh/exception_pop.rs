@@ -32,9 +32,10 @@ fn generic_wasm_exception_pop_then_drop_keeps_dec_ref_import_across_eh_modes() {
             imports.iter().any(|name| name == "exception_pop"),
             "the runtime owns handled exception state in every EH mode: native_eh_enabled={native_eh_enabled}; imports={imports:?}"
         );
+        let release = wasm_refcount_site_callees(&wasm)["release"];
         assert!(
-            imports.iter().any(|name| name == "dec_ref_obj"),
-            "generic WASM shared drops must keep dec_ref_obj import for native_eh_enabled={native_eh_enabled}; imports={imports:?}"
+            wasm_direct_call_indices(&wasm).contains(&release),
+            "generic WASM shared drops call the generated release body for native_eh_enabled={native_eh_enabled}"
         );
     }
 }
@@ -62,17 +63,17 @@ fn generic_wasm_del_boundary_lowers_through_shared_dec_ref_authority() {
         ..WasmCompileOptions::default()
     })
     .compile(ir);
-    let imports = wasm_function_import_names(&wasm);
+    let release = wasm_refcount_site_callees(&wasm)["release"];
     assert!(
-        imports.iter().any(|name| name == "dec_ref_obj"),
-        "generic WASM must lower DelBoundary through dec_ref_obj; imports={imports:?}"
+        wasm_direct_call_indices(&wasm).contains(&release),
+        "generic WASM must lower DelBoundary through the generated release body"
     );
 }
 
 fn compile_local_alias_body(
     params: Vec<&str>,
     ops: Vec<OpIR>,
-) -> (Vec<u32>, Vec<String>, BTreeMap<String, u32>) {
+) -> (Vec<u32>, Vec<String>, BTreeMap<&'static str, u32>) {
     let ir = SimpleIR {
         functions: vec![wasm_test_function("molt_main", params, None, ops)],
         profile: None,
@@ -86,7 +87,7 @@ fn compile_local_alias_body(
     (
         wasm_direct_call_indices_for_export(&wasm, "molt_main"),
         wasm_operator_debug_for_export(&wasm, "molt_main"),
-        wasm_function_import_indices(&wasm),
+        wasm_refcount_site_callees(&wasm),
     )
 }
 
@@ -100,7 +101,7 @@ fn generic_wasm_local_alias_retain_policy_follows_function_rc_authority() {
     owned.s_value = Some("owned".to_string());
     let mut store = wasm_test_op(molt_ir::OpKind::StoreVar, None, vec!["owned"]);
     store.var = Some("slot".to_string());
-    let (drop_calls, drop_operators, drop_imports) = compile_local_alias_body(
+    let (drop_calls, drop_operators, drop_rc) = compile_local_alias_body(
         vec![],
         vec![
             owned,
@@ -117,8 +118,8 @@ fn generic_wasm_local_alias_retain_policy_follows_function_rc_authority() {
             wasm_test_op(molt_ir::OpKind::Ret, None, vec!["result"]),
         ],
     );
-    let dec_index = drop_imports["dec_ref_obj"];
-    let inc_count = drop_imports.get("inc_ref_obj").map_or(0, |inc_index| {
+    let dec_index = drop_rc["release"];
+    let inc_count = drop_rc.get("retain").map_or(0, |inc_index| {
         drop_calls
             .iter()
             .filter(|call_index| **call_index == *inc_index)
@@ -132,17 +133,17 @@ fn generic_wasm_local_alias_retain_policy_follows_function_rc_authority() {
     assert_eq!(
         (inc_count, dec_count),
         (1, 2),
-        "the literal site mints one result owner; store_var/load_var alias it without another retain. DelBoundary has one release site and the shared epilogue releases the distinct anchor: calls={drop_calls:?} imports={drop_imports:?}"
+        "the literal site mints one result owner; store_var/load_var alias it without another retain. DelBoundary has one release site and the shared epilogue releases the distinct anchor: calls={drop_calls:?} rc={drop_rc:?}"
     );
 
-    let (binding_calls, _, binding_imports) = compile_local_alias_body(
+    let (binding_calls, _, binding_rc) = compile_local_alias_body(
         vec!["slot"],
         vec![
             wasm_test_op(molt_ir::OpKind::BindingAlias, Some("owned"), vec!["slot"]),
             wasm_test_op(molt_ir::OpKind::Ret, None, vec!["owned"]),
         ],
     );
-    let inc_index = binding_imports["inc_ref_obj"];
+    let inc_index = binding_rc["retain"];
     assert_eq!(
         binding_calls
             .iter()
@@ -152,9 +153,9 @@ fn generic_wasm_local_alias_retain_policy_follows_function_rc_authority() {
         "binding_alias retains the declared borrowed parameter for its owned return: calls={binding_calls:?}"
     );
     assert!(
-        binding_imports
-            .get("dec_ref_obj")
+        binding_rc
+            .get("release")
             .is_none_or(|index| !binding_calls.contains(index)),
-        "return transfers the retained alias; neither it nor the borrowed parameter is dropped: calls={binding_calls:?} imports={binding_imports:?}"
+        "return transfers the retained alias; neither it nor the borrowed parameter is dropped: calls={binding_calls:?} rc={binding_rc:?}"
     );
 }

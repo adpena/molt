@@ -27,7 +27,54 @@ impl WasmRuntimeSurfacePlan {
             ir.functions.iter().map(|func| func.name.as_str()).collect();
         let known_imports: BTreeSet<WasmRuntimeImport> =
             IMPORT_REGISTRY.iter().map(|spec| spec.import).collect();
-        let requirements = collect_app_callable_requirements(&ir.functions);
+        let plan = Self::observe(
+            &ir.functions,
+            &defined_function_names,
+            &known_imports,
+            profile,
+        );
+        if let Some(import) = plan.disallowed_import(profile) {
+            // Name the functions whose own closure reaches the import, so the
+            // refusal leads to its source. Only the failure path pays for this.
+            let users: Vec<&str> = ir
+                .functions
+                .iter()
+                .filter(|func| {
+                    Self::observe(
+                        std::slice::from_ref(*func),
+                        &defined_function_names,
+                        &known_imports,
+                        profile,
+                    )
+                    .reachable_imports()
+                    .any(|reached| reached == import)
+                })
+                .map(|func| func.name.as_str())
+                .collect();
+            const SHOWN: usize = 8;
+            let more = users.len().saturating_sub(SHOWN);
+            panic!(
+                "WASM pure profile cannot admit reachable runtime import '{}'; required by {} function(s): {}{}; select a profile supporting this callable closure",
+                import.name(),
+                users.len(),
+                users[..users.len().min(SHOWN)].join(", "),
+                if more > 0 {
+                    format!(" and {more} more")
+                } else {
+                    String::new()
+                },
+            );
+        }
+        plan
+    }
+
+    fn observe(
+        functions: &[crate::FunctionIR],
+        defined_function_names: &BTreeSet<&str>,
+        known_imports: &BTreeSet<WasmRuntimeImport>,
+        profile: WasmProfile,
+    ) -> Self {
+        let requirements = collect_app_callable_requirements(functions);
         let mut builtin_trampoline_specs = requirements.builtin_trampolines;
         // Namespace construction publishes what this profile supports; it is
         // not a demand to execute every public builtin. Actual global lookup
@@ -59,10 +106,9 @@ impl WasmRuntimeSurfacePlan {
             required_imports: BTreeSet::new(),
         };
 
-        for func_ir in &ir.functions {
-            plan.observe_function(func_ir, &defined_function_names, &known_imports);
+        for func_ir in functions {
+            plan.observe_function(func_ir, defined_function_names, known_imports);
         }
-        plan.validate_profile(profile);
         plan
     }
 
@@ -79,16 +125,12 @@ impl WasmRuntimeSurfacePlan {
         auto_imports
     }
 
-    pub(super) fn validate_profile(&self, profile: WasmProfile) {
-        if profile == WasmProfile::Pure {
-            for import in self.reachable_imports() {
-                assert!(
-                    profile.allows_runtime_import(import),
-                    "WASM pure profile cannot admit reachable runtime import '{}'; select a profile supporting this callable closure",
-                    import.name()
-                );
-            }
+    fn disallowed_import(&self, profile: WasmProfile) -> Option<WasmRuntimeImport> {
+        if profile != WasmProfile::Pure {
+            return None;
         }
+        self.reachable_imports()
+            .find(|&import| !profile.allows_runtime_import(import))
     }
 
     fn reachable_imports(&self) -> impl Iterator<Item = WasmRuntimeImport> + '_ {
@@ -342,7 +384,7 @@ mod tests {
 
     #[test]
     #[should_panic(
-        expected = "WASM pure profile cannot admit reachable runtime import 'open_builtin'"
+        expected = "WASM pure profile cannot admit reachable runtime import 'open_builtin'; required by 1 function(s): builtin_bootstrap;"
     )]
     fn builtin_namespace_publication_does_not_weaken_mandatory_global_lookup() {
         let ir = builtin_publication_ir(vec![

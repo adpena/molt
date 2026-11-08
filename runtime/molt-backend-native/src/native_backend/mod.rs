@@ -17,13 +17,15 @@ use cranelift_codegen::ir::{
 use cranelift_codegen::isa;
 use cranelift_codegen::settings;
 use cranelift_codegen::settings::Configurable;
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variable};
+use cranelift_frontend::{FunctionBuilderContext, Switch, Variable};
+mod native_ssa;
 use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule, ObjectProduct};
 use molt_ir::runtime_callable_abi_generated::{
     ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX, RuntimeExecutionContext, compiled_execution_symbol,
     runtime_execution_abi,
 };
+use native_ssa::FunctionBuilder;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashSet;

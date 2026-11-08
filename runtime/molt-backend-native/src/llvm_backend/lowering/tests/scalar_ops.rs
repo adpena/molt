@@ -680,8 +680,14 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
             )),
             "{ir}"
         );
-        assert!(merge.contains_execution("@molt_exception_pending()"), "{ir}");
-        assert!(merge.contains_execution("icmp ne i64 %check_exc, 0"), "{ir}");
+        assert!(
+            merge.contains_execution("@molt_exception_pending()"),
+            "{ir}"
+        );
+        assert!(
+            merge.contains_execution("icmp ne i64 %check_exc, 0"),
+            "{ir}"
+        );
         let origin = llvm_fn
             .get_basic_blocks()
             .into_iter()
@@ -696,7 +702,8 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
             "{ir}"
         );
         assert_eq!(
-            ir.matches_execution("@molt_exception_frame_origin(").count(),
+            ir.matches_execution("@molt_exception_frame_origin(")
+                .count(),
             1,
             "{ir}"
         );

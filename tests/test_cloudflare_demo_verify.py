@@ -231,15 +231,10 @@ def test_validate_bundle_contract_rejects_missing_split_runtime_abi(
     (bundle_root / "worker.js").write_text(WORKER_ABI_JS, encoding="utf-8")
     (bundle_root / "app.wasm").write_bytes(EMPTY_CALLABLE_WASM)
     (bundle_root / "molt_runtime.wasm").write_bytes(EMPTY_CALLABLE_WASM)
+    manifest = split_wasm_execution_manifest(EMPTY_CALLABLE_WASM, EMPTY_CALLABLE_WASM)
+    del manifest["abi"]
     (bundle_root / "manifest.json").write_text(
-        json.dumps(
-            {
-                **split_wasm_execution_manifest(
-                    EMPTY_CALLABLE_WASM, EMPTY_CALLABLE_WASM
-                ),
-            }
-        )
-        + "\n",
+        json.dumps(manifest) + "\n",
         encoding="utf-8",
     )
     wrangler_config = bundle_root / "wrangler.jsonc"

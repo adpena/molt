@@ -68,10 +68,12 @@ fn iterator_result_roles_survive_absent_and_discarded_siblings() {
                 !done_bound,
                 "an unbound done flag is dropped without a release: value={value:?}, done={done:?}"
             );
-            let releases = imports.get("dec_ref_obj").map_or(0, |index| {
-                let release = format!("Call {{ function_index: {index} }}");
-                operators.iter().filter(|op| *op == &release).count()
-            });
+            let releases = wasm_refcount_site_callees(&output.wasm)
+                .get("release")
+                .map_or(0, |index| {
+                    let release = format!("Call {{ function_index: {index} }}");
+                    operators.iter().filter(|op| *op == &release).count()
+                });
             assert_eq!(
                 releases,
                 usize::from(!value_bound),

@@ -267,8 +267,8 @@ def test_all_runtime_entropy_sources_use_generated_operation_authority() -> None
     assert "OperationId::RandomEntropy" in sources["math_host"]
     assert "require_random_entropy(_py)" in sources["secrets"]
     assert "require_random_entropy(_py)" in sources["random"]
-    random_new = sources["random"].split('pub extern "C" fn molt_random_new', 1)[1]
-    random_new = random_new.split('pub extern "C" fn molt_random_seed', 1)[0]
+    random_new = sources["random"].split("pub fn molt_random_new_attached_body", 1)[1]
+    random_new = random_new.split("pub fn molt_random_seed_attached_body", 1)[0]
     assert "Fallback: single-word 0 seed" not in random_new
 
 

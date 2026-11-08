@@ -252,7 +252,11 @@ mod tests {
         let mut imports = ImportSection::new();
         imports.import("molt_runtime", poll_import.name(), EntityType::Function(0));
         imports.import("molt_runtime", trace_import.name(), EntityType::Function(1));
-        imports.import("molt_runtime", origin_import.name(), EntityType::Function(1));
+        imports.import(
+            "molt_runtime",
+            origin_import.name(),
+            EntityType::Function(1),
+        );
         module.section(&imports);
         let mut functions = FunctionSection::new();
         functions.function(0);

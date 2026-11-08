@@ -1,6 +1,13 @@
-//! WASM instruction spelling for the shared checked RC generator.
+//! WASM spelling for the shared checked RC generator.
+//!
+//! The generated decision is written once per module, as one internal
+//! `(context: i64, word: i64, admission: i64)` body per operation; every dynamic site calls
+//! its operation's body through the attached call emitter
+//! (docs/design/foundation/inline_refcount.md, "WASM: one generated body per
+//! transition"). The caller forwards its context, word and admission instead
+//! of repeating the whole decision, which was 76-78% of compiled code.
+use crate::wasm::WasmBackend;
 use crate::wasm::body::WasmBodyOps;
-use crate::wasm::lir_fast::LirRuntimeCall;
 use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
@@ -10,31 +17,40 @@ use molt_codegen_abi::inline_refcount::{
 };
 use wasm_encoder::{BlockType, Instruction, MemArg, ValType};
 
+/// Body parameters: the attached context, word, and invocation's admission snapshot.
+const WORD_PARAM: u32 = 1;
+const ADMISSION_PARAM: u32 = 2;
 const WORDS: u32 = 40;
 const PREDICATES: u32 = 16;
+const FIRST_WORD: u32 = 3;
+const FIRST_PREDICATE: u32 = FIRST_WORD + WORDS;
 
+/// Function indices of the two generated transition bodies of one module.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct WasmRefcountBodies {
+    retain: u32,
+    release: u32,
+}
+
+impl WasmRefcountBodies {
+    pub(crate) fn index(self, operation: RefcountOperation) -> u32 {
+        match operation {
+            RefcountOperation::Retain => self.retain,
+            RefcountOperation::Release => self.release,
+        }
+    }
+}
+
+/// The one per-invocation admission local a function's RC sites pass by value.
 #[derive(Clone, Copy, Debug)]
 pub(in crate::wasm) struct WasmRefcountScratch {
     pub(in crate::wasm) admission: u32,
-    words: u32,
-    predicates: u32,
 }
 
 impl WasmRefcountScratch {
     pub(in crate::wasm) fn allocate(mut allocate: impl FnMut(ValType) -> u32) -> Self {
-        let admission = allocate(ValType::I64);
-        let words = allocate(ValType::I64);
-        for index in 1..WORDS {
-            assert_eq!(allocate(ValType::I64), words + index);
-        }
-        let predicates = allocate(ValType::I32);
-        for index in 1..PREDICATES {
-            assert_eq!(allocate(ValType::I32), predicates + index);
-        }
         Self {
-            admission,
-            words,
-            predicates,
+            admission: allocate(ValType::I64),
         }
     }
 
@@ -49,6 +65,41 @@ impl WasmRefcountScratch {
     }
 }
 
+/// Declare and emit the module's two transition bodies. They must precede every
+/// other defined function whose index is derived from `func_count`, so callers
+/// run this before the callable-table layout fixes user function indices.
+pub(in crate::wasm) fn emit_refcount_bodies(backend: &mut WasmBackend, reloc: bool) {
+    let type_idx = backend.types.function(&[ValType::I64; 3], &[]);
+    let mut index_of = |operation| {
+        let index = backend.func_count;
+        std::rc::Rc::make_mut(&mut backend.execution_call_abis)
+            .register_attached(index, &[ValType::I64; 2]);
+        backend.funcs.function(type_idx);
+        let mut locals = vec![ValType::I64; WORDS as usize];
+        locals.extend(std::iter::repeat_n(ValType::I32, PREDICATES as usize));
+        let mut func = Function::new_with_locals_types(locals);
+        func.attach_context(3, backend.execution_call_abis.clone());
+        generate_body(
+            &mut BodySink {
+                func: &mut func,
+                reloc,
+                imports: &backend.import_ids,
+            },
+            operation,
+        );
+        func.instruction(&Instruction::End);
+        backend.codes.function(&func);
+        backend.func_count += 1;
+        index
+    };
+    let bodies = WasmRefcountBodies {
+        retain: index_of(RefcountOperation::Retain),
+        release: index_of(RefcountOperation::Release),
+    };
+    backend.import_ids.set_refcount_bodies(bodies);
+}
+
+/// A dynamic op-loop site: the word is on the operand stack.
 pub(in crate::wasm) fn emit_refcount(
     func: &mut Function,
     reloc: bool,
@@ -56,40 +107,32 @@ pub(in crate::wasm) fn emit_refcount(
     scratch: WasmRefcountScratch,
     operation: RefcountOperation,
 ) {
-    generate(
-        &mut FunctionSink {
-            func,
-            reloc,
-            imports,
-        },
-        scratch,
-        operation,
-    );
+    func.instruction(&Instruction::LocalGet(scratch.admission));
+    emit_call(func, reloc, imports.refcount_body(operation));
 }
 
+/// A dynamic LIR site: the word is on the operand stack; the body index is
+/// resolved where the LIR body is emitted into its module.
 pub(in crate::wasm) fn emit_lir_refcount(
     body: &mut WasmBodyOps,
     scratch: WasmRefcountScratch,
     operation: RefcountOperation,
 ) {
-    generate(body, scratch, operation);
+    body.push(Instruction::LocalGet(scratch.admission));
+    body.push_refcount_body_call(operation);
 }
 
-trait Sink {
-    fn push(&mut self, instruction: Instruction<'static>);
-    fn slow(&mut self, operation: RefcountOperation);
-}
-
-struct FunctionSink<'a> {
+struct BodySink<'a> {
     func: &'a mut Function,
     reloc: bool,
     imports: &'a TrackedImportIds,
 }
 
-impl Sink for FunctionSink<'_> {
+impl BodySink<'_> {
     fn push(&mut self, instruction: Instruction<'static>) {
         self.func.instruction(&instruction);
     }
+
     fn slow(&mut self, operation: RefcountOperation) {
         let import = match operation {
             RefcountOperation::Retain => WasmRuntimeImport::IncRefObj,
@@ -99,60 +142,45 @@ impl Sink for FunctionSink<'_> {
     }
 }
 
-impl Sink for WasmBodyOps {
-    fn push(&mut self, instruction: Instruction<'static>) {
-        WasmBodyOps::push(self, instruction);
-    }
-    fn slow(&mut self, operation: RefcountOperation) {
-        self.push_runtime_import_call(match operation {
-            RefcountOperation::Retain => LirRuntimeCall::IncRefObj,
-            RefcountOperation::Release => LirRuntimeCall::DecRefObj,
-        });
-    }
-}
-
-fn generate(sink: &mut impl Sink, scratch: WasmRefcountScratch, operation: RefcountOperation) {
-    sink.push(Instruction::LocalSet(scratch.words));
+fn generate_body(sink: &mut BodySink<'_>, operation: RefcountOperation) {
     // Every rejection exits the inner block to one unchanged runtime call.
     // A successful/no-op transition exits the outer block around that call.
     sink.push(Instruction::Block(BlockType::Empty));
     sink.push(Instruction::Block(BlockType::Empty));
     let mut b = WasmRefcountBuilder {
         sink,
-        scratch,
-        word_count: 1,
+        word_count: 0,
         predicate_count: 0,
         depth: 0,
     };
     generate_refcount(
         &mut b,
-        scratch.words,
-        scratch.admission,
+        WORD_PARAM,
+        ADMISSION_PARAM,
         operation,
         RefcountStorage::for_build(false),
     );
     b.sink.push(Instruction::Br(1));
     b.sink.push(Instruction::End);
-    b.sink.push(Instruction::LocalGet(scratch.words));
+    b.sink.push(Instruction::LocalGet(WORD_PARAM));
     b.sink.slow(operation);
     b.sink.push(Instruction::End);
 }
 
-struct WasmRefcountBuilder<'a, S> {
-    sink: &'a mut S,
-    scratch: WasmRefcountScratch,
+struct WasmRefcountBuilder<'s, 'a> {
+    sink: &'s mut BodySink<'a>,
     word_count: u32,
     predicate_count: u32,
     depth: u32,
 }
 
-impl<S: Sink> WasmRefcountBuilder<'_, S> {
+impl WasmRefcountBuilder<'_, '_> {
     fn word(&mut self) -> u32 {
         assert!(
             self.word_count < WORDS,
             "shared RC generator exhausted its word scratch"
         );
-        let slot = self.scratch.words + self.word_count;
+        let slot = FIRST_WORD + self.word_count;
         self.word_count += 1;
         self.sink.push(Instruction::LocalSet(slot));
         slot
@@ -162,7 +190,7 @@ impl<S: Sink> WasmRefcountBuilder<'_, S> {
             self.predicate_count < PREDICATES,
             "shared RC generator exhausted predicate scratch"
         );
-        let slot = self.scratch.predicates + self.predicate_count;
+        let slot = FIRST_PREDICATE + self.predicate_count;
         self.predicate_count += 1;
         self.sink.push(Instruction::LocalSet(slot));
         slot
@@ -178,7 +206,7 @@ impl<S: Sink> WasmRefcountBuilder<'_, S> {
     }
 }
 
-impl<S: Sink> RefcountBuilder for WasmRefcountBuilder<'_, S> {
+impl RefcountBuilder for WasmRefcountBuilder<'_, '_> {
     type Word = u32;
     type Predicate = u32;
     fn pointer_width(&self) -> molt_codegen_abi::PointerWidth {
@@ -236,7 +264,7 @@ impl<S: Sink> RefcountBuilder for WasmRefcountBuilder<'_, S> {
         }));
     }
     fn slow_call(&mut self, _operation: RefcountOperation, bits: u32) {
-        assert_eq!(bits, self.scratch.words);
+        assert_eq!(bits, WORD_PARAM);
         self.sink.push(Instruction::Br(self.depth));
     }
     fn if_else(&mut self, condition: u32, yes: impl FnOnce(&mut Self), no: impl FnOnce(&mut Self)) {

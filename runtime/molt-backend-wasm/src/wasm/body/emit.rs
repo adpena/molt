@@ -66,6 +66,10 @@ impl WasmBody {
                     .expect("admitted program slot binding");
                     func.instruction(&wasm_encoder::Instruction::I64Const(slot as i64));
                 }
+                WasmBodyOp::Call(WasmCallTarget::RefcountBody(operation)) => {
+                    let body_index = backend.import_ids.refcount_body(*operation);
+                    emit_call(func, reloc_enabled, body_index);
+                }
                 WasmBodyOp::Call(WasmCallTarget::BailToGenericPath(reason)) => {
                     panic!(
                         "LIR fast body for '{func_name}' reached a generic-path bail marker during emission: {}",
