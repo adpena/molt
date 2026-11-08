@@ -1019,8 +1019,12 @@ literal instead of copying it (today it copies: a parity defect this work fixes)
   `code_slots`, is created at init and is released at teardown; compiled code reaches its base
   through the execution context (HF-198).
 - *Dense literal IDs.* The compiler assigns each unique (module, literal) a dense ID and emits the
-  payloads as read-only data. `ProgramSlotKind` stays a read-only index authority; the writable
-  cells are runtime-owned. Symbol names use a digest of the payload, not its hex spelling.
+  payloads as read-only data. The module component is a typed origin, not a name: generated
+  bootstrap, chunk, poll and helper bodies today lack a complete originating code identity (lane
+  w-startup, 2026-11-07), so each generated body carries its originating module's typed identity
+  from the IR, and a body without one is a compile error. `ProgramSlotKind` stays a read-only index
+  authority; the writable cells are runtime-owned. Symbol names use a digest of the payload, not its
+  hex spelling.
 - *One literal-load op.* A new opcode (row in `op_kinds.toml`) loads cell `id`; a zero cell takes one
   cold runtime call that builds the object through the normal allocation and intern path, makes it
   immortal unless it already is (pool, one-character and empty singletons), and publishes it with
