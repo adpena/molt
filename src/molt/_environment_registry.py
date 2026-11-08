@@ -6523,20 +6523,10 @@ _REGISTRY_JSON = r"""{
       "audience": "user",
       "default": "0",
       "kind": "bool",
-      "name": "MOLT_TRACE_CALL_FUNCTION_OBJ0",
-      "output_neutral": false,
-      "owner": "runtime/molt-runtime/src/call/function.rs",
-      "summary": "Set to 1 on the wasm32 runtime to print the function name and trampoline details on stderr before call_function_obj0 enters a trampoline; the read is compiled only for wasm32, happens once per process, and unset or any other value prints nothing.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
       "name": "MOLT_TRACE_CALL_FUNCTION_OBJ1",
       "output_neutral": false,
       "owner": "runtime/molt-runtime/src/call/function.rs",
-      "summary": "Set to 1 on the wasm32 runtime to print the function name and trampoline details on stderr when call_function_obj1 dispatches a one-argument call; the read is compiled only for wasm32, happens once per process, and unset or any other value prints nothing.",
+      "summary": "Set to 1 on the wasm32 runtime to print the function name, call target and closure on stderr when call_function_obj1 dispatches a one-argument call; the read is compiled only for wasm32, happens once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -7334,16 +7324,6 @@ _REGISTRY_JSON = r"""{
       "audience": "user",
       "default": "0",
       "kind": "bool",
-      "name": "MOLT_TRACE_TRAMPOLINE_POLICY",
-      "output_neutral": false,
-      "owner": "runtime/molt-runtime/src/call/function.rs",
-      "summary": "Set to exactly 1 to print the fixed-arity trampoline decision (fn_ptr, tramp_ptr, nargs, reserved_info, force_trampoline) to stderr on every function-object call; the value is read once per process; unset or any other value stays silent.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
       "name": "MOLT_TRACE_TYPE_CALL",
       "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/ops_builtins.rs",
@@ -7786,8 +7766,8 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_WASM_CALL_INDIRECT_DEBUG",
       "output_neutral": false,
-      "owner": "wasm/loader_bridge.js",
-      "summary": "Set to exactly 1 to make the WASM host scripts (run_wasm.js, loader_bridge.js and browser_host.js when run under Node) print each molt_call_indirect dispatch with its table index and call arguments to stderr; any other value or unset stays silent.",
+      "owner": "wasm/run_wasm.js",
+      "summary": "Set to exactly 1 to make the WASM host scripts (run_wasm.js and browser_host.js when run under Node) print each molt_call_indirect dispatch with its table index and call arguments to stderr; any other value or unset stays silent.",
       "values": []
     },
     {
