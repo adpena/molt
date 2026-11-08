@@ -58,7 +58,6 @@ def full_payload():
         "wasm_profile": "wasi",
         "snapshot": True,
         "stdlib_profile": "full",
-        "tree_shake": False,
         "lib_paths": ["lib", "other"],
         "split_runtime": True,
         "capability_manifest": "capabilities.json",

@@ -7,11 +7,7 @@ from molt.cli import module_dependencies
 from molt.cli import module_graph
 
 _MODULE_DEPENDENCY_NAMES = (
-    "_DEAD_MODULE_ELIMINATION_SAFELIST",
-    "_PURE_WASM_DEAD_MODULE_ELIMINATION_SAFELIST",
     "_analyze_module_schedule",
-    "_apply_dead_module_elimination",
-    "_compute_reachable_modules",
     "_expand_module_chain",
     "_expand_module_chain_cached",
     "_module_dependencies_from_imports",
@@ -24,11 +20,7 @@ _MODULE_DEPENDENCY_NAMES = (
 )
 
 _MODULE_DEPENDENCY_DEFINITIONS = (
-    "_DEAD_MODULE_ELIMINATION_SAFELIST",
-    "_PURE_WASM_DEAD_MODULE_ELIMINATION_SAFELIST",
     "def _analyze_module_schedule(",
-    "def _apply_dead_module_elimination(",
-    "def _compute_reachable_modules(",
     "def _expand_module_chain(",
     "def _expand_module_chain_cached(",
     "def _module_dependencies_from_imports(",

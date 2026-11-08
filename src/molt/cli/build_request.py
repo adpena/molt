@@ -72,7 +72,6 @@ class BuildRequest:
     wasm_profile: str = "auto"
     snapshot: bool = False
     stdlib_profile: StdlibProfile | None = None
-    tree_shake: bool = True
     lib_paths: list[str] | None = None
     split_runtime: bool = False
     capability_manifest: str | None = None

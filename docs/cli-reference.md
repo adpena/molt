@@ -189,8 +189,8 @@ uses its provisioned pinned Node when available, then Node on `PATH`.
 | `--build-arg ARG` | Extra args passed to `molt build` (repeatable). |
 
 `molt run` wrapper-cache identity includes the resolved binary image scope, the
-full binary-image closure payload, target Python version, dead-module
-elimination mode, static import modules, external static package/native artifact
+full binary-image closure payload, target Python version, static import
+modules, external static package/native artifact
 custody, and the discovered source closure. A cache hit is valid only when those
 facts and the output binary hash still match the manifest. A JIT launch never
 runs the backend compiler, so a JIT-tier key holds the `molt-jit` runner's source

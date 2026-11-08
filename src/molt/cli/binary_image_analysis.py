@@ -243,7 +243,7 @@ def _module_roles(
         ("package_parent", import_plan.package_parent_modules),
         ("namespace", import_plan.namespace_module_names),
         ("native_artifact", native_module_names),
-        ("compile", import_plan.compile_modules),
+        ("compile", import_plan.direct_call_modules),
         ("known", import_plan.known_modules),
     )
     roles = [name for name, modules in role_sets if module_name in modules]
@@ -276,7 +276,7 @@ def _source_site_identity_payload(
     modules: Sequence[dict[str, Any]],
     target_python_tag: str,
 ) -> dict[str, Any]:
-    compile_modules = set(import_plan.compile_modules)
+    compile_modules = set(import_plan.direct_call_modules)
     compile_site_count = sum(
         int(module["site_count"])
         for module in modules
@@ -298,7 +298,7 @@ def _source_site_identity_payload(
             {
                 "schema_version": 1,
                 "image": import_plan.image_scope.diagnostic_payload(),
-                "compile_modules": sorted(import_plan.compile_modules),
+                "compile_modules": sorted(import_plan.direct_call_modules),
                 "modules": module_digest_payload,
                 "native_artifact_plan": import_plan.native_artifact_plan.digest_payload(),
             }
@@ -331,7 +331,7 @@ def _frontend_binary_image_analysis_payload(
     include_source_details: bool = True,
 ) -> dict[str, Any]:
     known_modules = set(import_plan.known_modules)
-    compile_modules = set(import_plan.compile_modules)
+    compile_modules = set(import_plan.direct_call_modules)
     target_python_tag = getattr(target_python, "tag", str(target_python))
     module_order = list(frontend_analysis.module_order)
     compile_order = list(compile_module_order)

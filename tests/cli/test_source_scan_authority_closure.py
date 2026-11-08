@@ -25,6 +25,7 @@ from molt.cli import module_graph_discovery as discovery
 from molt.cli import module_import_scanner as scanner
 from molt.cli.module_source import PythonSourceSnapshot
 from molt.cli.models import (
+    RuntimeImportMachinery,
     _BinaryImageScope,
     _CompleteImportScan,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
@@ -435,6 +436,7 @@ def test_late_native_root_refreshes_policy_and_catalog(
         runtime_import_support_policy=_RuntimeImportSupportPolicy(False),
         native_artifact_plan=_EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
         target_python=PYTHON,
+        runtime_import_machinery=RuntimeImportMachinery.PYTHON,
     )
 
     def add_native_root(*, module_graph, scan_authorities, **kwargs):
@@ -466,9 +468,6 @@ def test_late_native_root_refreshes_policy_and_catalog(
     assert plan.module_graph_operation_counts["native_support_iterations"] < 6
     assert "late" in plan.runtime_import_dispatch_roots
     assert plan.scan_authority.mode_for("late", late) == "full"
-    narrowed = plan.with_compile_modules({"entry"})
-    assert narrowed.scan_authority is plan.scan_authority
-    assert narrowed.runtime_import_scan_custody is plan.runtime_import_scan_custody
 
 
 def test_runtime_owner_catalog_refresh_rescans_only_under_new_custody(
@@ -1840,6 +1839,7 @@ def test_materialized_namespace_package_identity_matches_cpython(
         runtime_import_support_policy=_RuntimeImportSupportPolicy(False),
         native_artifact_plan=_EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
         target_python=PYTHON,
+        runtime_import_machinery=RuntimeImportMachinery.PYTHON,
     )
     plan = graphs._materialize_import_plan(
         prepared_module_graph=prepared,
@@ -1849,6 +1849,20 @@ def test_materialized_namespace_package_identity_matches_cpython(
         entry_module="entry",
         diagnostics_enabled=False,
     )
+    # A pure WASM guest has no Python import machinery to build a namespace
+    # spec, so the plan refuses the program instead of emitting a broken image.
+    with pytest.raises(ValueError, match="namespace package.*hf226_namespace"):
+        graphs._materialize_import_plan(
+            prepared_module_graph=replace(
+                prepared,
+                runtime_import_machinery=RuntimeImportMachinery.REGISTRY_ONLY,
+            ),
+            module_reasons={},
+            stdlib_root=tmp_path / "stdlib",
+            artifacts_root=tmp_path / "artifacts",
+            entry_module="entry",
+            diagnostics_enabled=False,
+        )
     reference = run_guarded_test_process(
         [
             sys.executable,
@@ -1875,7 +1889,6 @@ def test_materialized_namespace_package_identity_matches_cpython(
     assert plan.namespace_module_names == {"hf226_namespace"}
     assert "hf226_namespace" in plan.known_modules
     assert "hf226_namespace" not in plan.module_graph
-    assert "hf226_namespace" not in plan.compile_modules
     assert "hf226_namespace" not in plan.direct_call_modules
     assert "hf226_namespace" not in plan.scan_authority.by_module
     metadata = plan.module_graph_metadata

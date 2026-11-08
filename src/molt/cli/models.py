@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from molt.compilation_target import Target
+from molt.compilation_target import Target, is_wasm_target
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 from molt.compiler_analysis.python_imports import (
     SourceImportSite,
@@ -1678,6 +1678,7 @@ class _PreparedEntryModuleGraph:
     runtime_import_support_policy: _RuntimeImportSupportPolicy
     native_artifact_plan: _ExternalPackageNativeArtifactPlan
     target_python: TargetPythonVersion
+    runtime_import_machinery: RuntimeImportMachinery
     runtime_import_scan_custody: _RuntimeImportScanCustody | None = None
     project_root: Path | None = None
 
@@ -1730,6 +1731,40 @@ class ModuleReason(StrEnum):
     NATIVE_RUNTIME_PYTHON_IMPORT = "native_runtime_python_import"
 
 
+class UnresolvedRoot(ValueError):
+    """A typed root the import plan cannot resolve; the build fails naming both."""
+
+    def __init__(self, module: str, reason: ModuleReason) -> None:
+        super().__init__(f"{reason.value} root {module!r} does not resolve")
+        self.module = module
+        self.reason = reason
+
+
+class RuntimeImportMachinery(StrEnum):
+    """The import machinery the target's runtime runs; a target fact the import
+    plan's roots depend on (doc 60 slice 1, R1).
+
+    ``PYTHON``: the runtime falls back to the Python import machinery
+    (``importlib``, path finders, ``zipimport``), so the plan roots it when a
+    module imports. ``REGISTRY_ONLY``: the pure WASM profile strips the
+    filesystem the path finders need; the runtime serves compiled modules from
+    its registry, so the plan roots no machinery and refuses a program that
+    needs it.
+    """
+
+    PYTHON = "python"
+    REGISTRY_ONLY = "registry_only"
+
+    @classmethod
+    def for_build(
+        cls, target: Target, wasm_profile: str | None
+    ) -> "RuntimeImportMachinery":
+        # The backend treats any spelling other than auto, full or pure as auto.
+        if is_wasm_target(target) and (wasm_profile or "").strip().lower() == "pure":
+            return cls.REGISTRY_ONLY
+        return cls.PYTHON
+
+
 @dataclass(frozen=True)
 class _ImportPlan:
     image_scope: _BinaryImageScope
@@ -1753,7 +1788,6 @@ class _ImportPlan:
     runtime_support_modules: frozenset[str]
     stdlib_support_modules: frozenset[str]
     package_parent_modules: frozenset[str]
-    compile_modules: frozenset[str]
     known_modules_sorted: tuple[str, ...]
     stdlib_allowlist_sorted: tuple[str, ...]
     module_graph_metadata: _ModuleGraphMetadata
@@ -1767,55 +1801,12 @@ class _ImportPlan:
     def namespace_module_names(self) -> frozenset[str]:
         return frozenset(self.namespace_portions_by_module)
 
-    def with_compile_modules(self, compile_modules: Collection[str]) -> "_ImportPlan":
-        compile_set = frozenset(compile_modules)
-        unknown = sorted(compile_set - frozenset(self.module_graph))
-        if unknown:
-            raise ValueError(
-                "compile module set contains modules outside the closure plan "
-                "or without source graph entries: " + ", ".join(unknown)
-            )
-        return _ImportPlan(
-            image_scope=self.image_scope,
-            stdlib_allowlist=self.stdlib_allowlist,
-            roots=self.roots,
-            stdlib_root=self.stdlib_root,
-            module_resolution_cache=self.module_resolution_cache,
-            module_graph=self.module_graph,
-            scan_authority=self.scan_authority,
-            module_graph_operation_counts=self.module_graph_operation_counts,
-            explicit_imports=self.explicit_imports,
-            runtime_import_dispatch_roots=self.runtime_import_dispatch_roots,
-            stub_parents=self.stub_parents,
-            spawn_enabled=self.spawn_enabled,
-            runtime_import_support_policy=self.runtime_import_support_policy,
-            runtime_import_scan_custody=self.runtime_import_scan_custody,
-            namespace_portions_by_module=self.namespace_portions_by_module,
-            known_modules=self.known_modules,
-            direct_call_modules=frozenset(
-                name for name in compile_set if name in self.direct_call_modules
-            ),
-            declared_root_modules=self.declared_root_modules,
-            entry_reachable_modules=self.entry_reachable_modules,
-            runtime_support_modules=self.runtime_support_modules,
-            stdlib_support_modules=self.stdlib_support_modules,
-            package_parent_modules=self.package_parent_modules,
-            compile_modules=compile_set,
-            known_modules_sorted=tuple(sorted(self.known_modules)),
-            stdlib_allowlist_sorted=self.stdlib_allowlist_sorted,
-            module_graph_metadata=self.module_graph_metadata,
-            native_artifact_plan=self.native_artifact_plan,
-            native_support_function_roots_by_module=dict(
-                self.native_support_function_roots_by_module
-            ),
-        )
-
     def closure_payload(self) -> dict[str, Any]:
         return {
             "image": self.image_scope.diagnostic_payload(),
             "known_modules": sorted(self.known_modules),
-            "direct_call_modules": sorted(self.direct_call_modules),
-            "compile_modules": sorted(self.compile_modules),
+            # The compiled set is the plan's source modules (doc 60 slice 1, R1).
+            "compile_modules": sorted(self.direct_call_modules),
             "declared_root_modules": sorted(self.declared_root_modules),
             "entry_reachable_modules": sorted(self.entry_reachable_modules),
             "runtime_support_modules": sorted(self.runtime_support_modules),

@@ -3632,11 +3632,31 @@ def test_pure_profile_keeps_every_intrinsic_core_stdlib_modules_require() -> Non
         export: import_name for import_name, export in WASM_RUNTIME_IMPORT_EXPORT_NAMES
     }
 
+    from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
+    from molt.cli.module_import_scanner import _RUNTIME_IMPORT_SUPPORT_ROOT_MODULES
+    from molt.cli.module_stdlib_policy import _core_stdlib_module_names_for_profile
+
     stdlib = ROOT / "src" / "molt" / "stdlib"
-    core_modules = ("builtins", "sys", "__future__", "_sitebuiltins", "_intrinsics")
+    # Every Pure guest compiles the import plan's core and runtime-support roots
+    # (doc 60 slice 1: no pass removes them), plus the core closure modules
+    # builtins and sys import.
+    core_modules = {
+        *_core_stdlib_module_names_for_profile(DEFAULT_STDLIB_PROFILE),
+        *_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES,
+        "__future__",
+        "_sitebuiltins",
+        "_intrinsics",
+    }
+    assert {"builtins", "sys", "copyreg", "_io", "importlib.util"} <= core_modules
     required = set()
-    for module in core_modules:
-        source = (stdlib / f"{module}.py").read_text(encoding="utf-8")
+    for module in sorted(core_modules):
+        module_path = stdlib.joinpath(*module.split("."))
+        source_path = (
+            module_path / "__init__.py"
+            if module_path.is_dir()
+            else module_path.with_suffix(".py")
+        )
+        source = source_path.read_text(encoding="utf-8")
         required.update(
             re.findall(r"""_require_intrinsic\(\s*["'](molt_\w+)["']""", source)
         )
