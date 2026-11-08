@@ -11,6 +11,7 @@ from molt.cli.config_resolution import (
     DEFAULT_STDLIB_PROFILE,
 )
 from molt.cli import module_resolution as _module_resolution
+from molt.cli.models import ModuleReason, UnresolvedRoot
 from molt.source_root import compiler_source_root
 from molt.cli.python_import_topology import PythonImportTopology
 
@@ -93,21 +94,27 @@ def _ensure_core_stdlib_modules(
     stdlib_profile: str = DEFAULT_STDLIB_PROFILE,
     *,
     import_topology: PythonImportTopology,
-) -> None:
+) -> tuple[str, ...]:
     """Add the profile's unconditional core stdlib modules to the graph.
 
     ``stdlib_profile`` is the value `build()` resolved through the single
     config authority (`config_resolution.resolve_stdlib_profile`) and also
     passes to the staticlib selector, so the closure and the linked staticlib
     cannot disagree. The process environment is not consulted here.
+
+    Returns the core module names, which the caller stamps ``CORE_REQUIRED``
+    whether or not the entry already imported them. A core module that does not
+    resolve fails the build (doc 60 slice 1, R3).
     """
     core_modules = _core_stdlib_module_names_for_profile(stdlib_profile)
     for name in core_modules:
         path = _module_resolution._resolve_module_path(
             name, [stdlib_root], import_topology=import_topology
         )
-        if path is not None:
-            module_graph.setdefault(name, path)
+        if path is None:
+            raise UnresolvedRoot(name, ModuleReason.CORE_REQUIRED)
+        module_graph.setdefault(name, path)
+    return core_modules
 
 
 def _looks_like_stdlib_module_name(module_name: str) -> bool:

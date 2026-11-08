@@ -519,7 +519,6 @@ def build(request: BuildRequest) -> int:
                 output=request.output,
                 emit_ir=request.emit_ir,
                 type_facts_path=request.type_facts_path,
-                tree_shake=request.tree_shake,
                 stdlib_profile=stdlib_profile,
             )
         )

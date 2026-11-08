@@ -22,7 +22,6 @@ from molt.cli import binary_image_analysis as cli_binary_image_analysis
 from molt.cli import frontend_pipeline as cli_frontend_pipeline
 from molt.cli import module_graph as cli_module_graph
 from molt.cli import module_resolution as cli_module_resolution
-from molt.cli import module_dependencies as cli_module_dependencies
 from molt.cli import wrapper_build as cli_wrapper_build
 from molt.cli.cache_keys import FunctionDigests
 from molt.cli import function_records
@@ -221,20 +220,15 @@ def test_import_plan_classifies_binary_image_closure(tmp_path: Path) -> None:
     assert "app" in import_plan.declared_root_modules
     assert "helper" not in import_plan.declared_root_modules
     assert {"app", "helper"}.issubset(import_plan.entry_reachable_modules)
-    assert import_plan.compile_modules == import_plan.known_modules
+    assert import_plan.direct_call_modules == frozenset(import_plan.module_graph)
     assert payload["image"]["entry_module"] == "app"
     assert {"app", "helper"}.issubset(payload["known_modules"])
-    assert {"app", "helper"}.issubset(payload["compile_modules"])
+    assert payload["compile_modules"] == sorted(import_plan.module_graph)
+    assert "direct_call_modules" not in payload
     assert "helper" not in payload["declared_root_modules"]
-    narrowed_plan = import_plan.with_compile_modules({"app"})
-    assert narrowed_plan.compile_modules == frozenset({"app"})
-    assert narrowed_plan.known_modules == import_plan.known_modules
-    assert narrowed_plan.module_graph == import_plan.module_graph
-    with pytest.raises(ValueError, match="outside the closure plan"):
-        import_plan.with_compile_modules({"outside"})
 
 
-def test_project_config_static_import_dme_keeps_compile_scope_in_image_closure(
+def test_project_config_static_import_keeps_compile_scope_in_image_closure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -267,39 +261,25 @@ def test_project_config_static_import_dme_keeps_compile_scope_in_image_closure(
         resolved.entry_module,
         image_scope=resolved.image_scope,
     )
-    analysis = _prepare_analysis_for_plan(tmp_path, import_plan)
-    dme_roots = (
-        import_plan.runtime_import_dispatch_roots
-        | import_plan.declared_root_modules
-        | import_plan.runtime_support_modules
-        | import_plan.stdlib_support_modules
-        | import_plan.package_parent_modules
-        | import_plan.namespace_module_names
-    )
-    compile_order, _compile_layers, _eliminated = (
-        cli_module_dependencies._apply_dead_module_elimination(
-            list(analysis.module_order),
-            [list(layer) for layer in analysis.module_layers],
-            entry_module=resolved.entry_module,
-            module_deps=analysis.module_deps,
-            module_names=set(import_plan.module_graph),
-            extra_roots=dme_roots,
-        )
-    )
-    narrowed_plan = import_plan.with_compile_modules(compile_order)
 
-    assert narrowed_plan.image_scope.kind == "project_entry_script"
-    assert narrowed_plan.image_scope.selector_source == "config:entry-file"
-    assert narrowed_plan.image_scope.diagnostic_payload()["root_modules"] == [
+    assert import_plan.image_scope.kind == "project_entry_script"
+    assert import_plan.image_scope.selector_source == "config:entry-file"
+    assert import_plan.image_scope.diagnostic_payload()["root_modules"] == [
         "app",
         "pkg.runtime.ops_cpu",
     ]
-    assert {"app", "helper", "pkg.runtime.ops_cpu", "base64"}.issubset(
-        narrowed_plan.compile_modules
-    )
-    assert "pkg.runtime.ops_cpu" in narrowed_plan.declared_root_modules
-    assert "unreferenced" not in narrowed_plan.known_modules
-    assert narrowed_plan.compile_modules <= narrowed_plan.known_modules
+    # The static root's package parents are compiled with it (R4).
+    assert {
+        "app",
+        "helper",
+        "pkg",
+        "pkg.runtime",
+        "pkg.runtime.ops_cpu",
+        "base64",
+    }.issubset(import_plan.direct_call_modules)
+    assert "pkg.runtime.ops_cpu" in import_plan.declared_root_modules
+    assert "unreferenced" not in import_plan.known_modules
+    assert import_plan.direct_call_modules <= import_plan.known_modules
 
 
 def test_wrapper_build_cache_input_uses_static_import_closure_plan(
@@ -400,56 +380,6 @@ def test_wrapper_complete_binary_cache_tracks_policy_with_same_source_graph(
     assert base_key != changed_key
 
 
-def test_wrapper_build_cache_identity_tracks_dead_module_elimination(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        cli_wrapper_build, "_cache_fingerprint", lambda **_kwargs: "compiler"
-    )
-    monkeypatch.setattr(
-        cli_wrapper_build, "_cache_tooling_fingerprint", lambda: "tooling"
-    )
-    entry = tmp_path / "app.py"
-    entry.write_text("value = 'entry'\n", encoding="utf-8")
-    resolved, error = _resolve_entry(tmp_path, file_path=str(entry))
-    assert error is None
-    assert resolved is not None
-
-    base_payload, base_key = cli_wrapper_build._wrapper_build_cache_input(
-        request=BuildRequest(
-            file_path=None,
-            stdlib_profile="auto",
-            python_version=resolved.target_python.short,
-        ),
-        resolved_build_entry=resolved,
-        build_args=["--target", "native"],
-        env={},
-        project_root=tmp_path,
-    )
-    dme_payload, dme_key = cli_wrapper_build._wrapper_build_cache_input(
-        request=BuildRequest(
-            file_path=None,
-            stdlib_profile="auto",
-            python_version=resolved.target_python.short,
-        ),
-        resolved_build_entry=resolved,
-        build_args=["--target", "native"],
-        env={"MOLT_DEAD_MODULE_ELIMINATION": "1"},
-        project_root=tmp_path,
-    )
-
-    assert base_payload is not None
-    assert dme_payload is not None
-    assert base_key != dme_key
-    assert "MOLT_DEAD_MODULE_ELIMINATION" not in base_payload["semantic_env"]
-    assert dme_payload["semantic_env"]["MOLT_DEAD_MODULE_ELIMINATION"] == "1"
-    assert (
-        dme_payload["binary_image_closure"]["known_modules"]
-        == base_payload["binary_image_closure"]["known_modules"]
-    )
-
-
 def test_build_diagnostics_emits_final_binary_image_closure(
     tmp_path: Path,
 ) -> None:
@@ -458,7 +388,8 @@ def test_build_diagnostics_emits_final_binary_image_closure(
     entry.write_text("import helper\nvalue = helper.VALUE\n", encoding="utf-8")
     helper.write_text("VALUE = 7\n", encoding="utf-8")
     import_plan = _materialize_plan(tmp_path, entry, "app")
-    narrowed_plan = import_plan.with_compile_modules({"app"})
+    # A compiled set smaller than the known set exercises the analysis split.
+    narrowed_plan = replace(import_plan, direct_call_modules=frozenset({"app"}))
     callbacks = cli_frontend_pipeline._prepare_build_callbacks(
         frontend_module_timings=[],
         frontend_timing_enabled=False,
@@ -524,7 +455,8 @@ def test_frontend_binary_image_analysis_bridges_ast_schedule_and_lowering(
     helper.write_text("VALUE = 7\n", encoding="utf-8")
     import_plan = _materialize_plan(tmp_path, entry, "app")
     analysis = _prepare_analysis_for_plan(tmp_path, import_plan)
-    narrowed_plan = import_plan.with_compile_modules({"app"})
+    # A compiled set smaller than the known set exercises the analysis split.
+    narrowed_plan = replace(import_plan, direct_call_modules=frozenset({"app"}))
 
     payload = cli_binary_image_analysis._frontend_binary_image_analysis_payload(
         import_plan=narrowed_plan,
@@ -573,7 +505,8 @@ def test_frontend_binary_image_analysis_omits_source_sites_when_not_full(
     helper.write_text("VALUE = 7\n", encoding="utf-8")
     import_plan = _materialize_plan(tmp_path, entry, "app")
     analysis = _prepare_analysis_for_plan(tmp_path, import_plan)
-    narrowed_plan = import_plan.with_compile_modules({"app"})
+    # A compiled set smaller than the known set exercises the analysis split.
+    narrowed_plan = replace(import_plan, direct_call_modules=frozenset({"app"}))
 
     payload = cli_binary_image_analysis._frontend_binary_image_analysis_payload(
         import_plan=narrowed_plan,
@@ -633,7 +566,8 @@ def test_frontend_binary_image_analysis_labels_external_native_known_modules(
     external_known_modules = native_plan.native_module_names()
     known_modules = frozenset(import_plan.known_modules | external_known_modules)
     external_plan = replace(
-        import_plan.with_compile_modules({"app"}),
+        import_plan,
+        direct_call_modules=frozenset({"app"}),
         known_modules=known_modules,
         known_modules_sorted=tuple(sorted(known_modules)),
         native_artifact_plan=native_plan,

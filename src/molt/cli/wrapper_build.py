@@ -59,6 +59,7 @@ from molt.cli.json_contract import (
 )
 from molt.cli.models import (
     ModuleReason,
+    RuntimeImportMachinery,
     _ResolvedBuildEntry,
 )
 from molt.cli.module_graph import _materialize_import_plan, _prepare_entry_module_graph
@@ -91,14 +92,13 @@ def _build_args_has_python_version_flag(args: Sequence[str]) -> bool:
     )
 
 
-_WRAPPER_BUILD_CACHE_SCHEMA_VERSION = 4
+_WRAPPER_BUILD_CACHE_SCHEMA_VERSION = 5
 _WRAPPER_BUILD_CACHE_ENV_KEYS = (
     "MOLT_CAPABILITIES",
     "MOLT_CAPABILITY_TIER",
     "MOLT_EXTERNAL_STATIC_PACKAGES",
     "MOLT_HERMETIC_MODULE_ROOTS",
     "MOLT_MODULE_ROOTS",
-    "MOLT_DEAD_MODULE_ELIMINATION",
     STATIC_IMPORT_MODULES_ENV,
     # External build inputs share this environment; backend payload determinism
     # alone does not prove cross-seed equivalence of the complete wrapper build.
@@ -192,6 +192,9 @@ def _wrapper_build_dependency_fingerprints(
                     target_sys_platform=_build_inputs._target_sys_platform(target),
                     image_scope=resolved_build_entry.image_scope,
                     stdlib_profile=request.stdlib_profile,
+                    runtime_import_machinery=RuntimeImportMachinery.for_build(
+                        target, request.wasm_profile
+                    ),
                 )
             )
         except (OSError, SyntaxError, UnicodeDecodeError):

@@ -47,7 +47,7 @@ def _inputs(
     names = frozenset(paths)
     plan = SimpleNamespace(
         known_modules=names,
-        compile_modules=names,
+        direct_call_modules=names,
         declared_root_modules=frozenset({"app"}),
         entry_reachable_modules=names,
         runtime_support_modules=frozenset(),

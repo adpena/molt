@@ -838,9 +838,10 @@ separate from host graph and binding-fact validation.
   classifies declared roots, entry-reachable modules, runtime support, stdlib
   support, package parents, namespace/generated modules, and external native
   artifacts.
-  `known_modules` is the whole admitted runtime import-visibility closure;
-  `direct_call_modules` is the Python `module__function` link authority; and
-  `compile_modules` is the sole authority for modules lowered into the binary.
+  `known_modules` is the whole admitted runtime import-visibility closure, and
+  `direct_call_modules` (projected as `compile_modules` in the closure payload)
+  is both the Python `module__function` link authority and the set of modules
+  lowered into the binary: every source module the plan collects is compiled.
   Native artifacts and package parents may appear in `known_modules` so imports
   can resolve, but they must not leak fake Python direct-call symbols unless
   they are also present in `direct_call_modules`. Native executable entrypoints
@@ -850,12 +851,11 @@ separate from host graph and binding-fact validation.
   `child.native_export(...)` may then route through validated
   `callable_exports`, while ordinary from-imported attributes remain attribute
   bindings and cannot mint direct-call symbols.
-  Dead-module elimination may narrow `compile_modules`, but it must not mutate
-  the known closure, direct-call authority, runtime import dispatch roots, or
-  wrapper-cache dependency graph. Wrapper build manifests and diagnostics must
-  carry and fingerprint the same closure plan, including dead-module-elimination
-  mode, rather than exposing a selector-only payload or rediscovering a parallel
-  graph.
+  No pass filters the plan's modules after collection: the import plan is the
+  reachable set on every build, target and profile (doc 60 slice 1, R1), and
+  it is closed under package parents (R4). Wrapper build manifests and
+  diagnostics must carry and fingerprint the same closure plan rather than
+  exposing a selector-only payload or rediscovering a parallel graph.
 - A persisted strict source scan is one complete, content-validated record of
   imports and static loader/runpy execution roots. Imports-only consumers project
   that record; they must not publish an uncomputed execution projection as empty.

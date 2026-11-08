@@ -2127,16 +2127,6 @@ _REGISTRY_JSON = r"""{
       "audience": "user",
       "default": "0",
       "kind": "bool",
-      "name": "MOLT_DEAD_MODULE_ELIMINATION",
-      "output_neutral": false,
-      "owner": "src/molt/cli/frontend_pipeline.py",
-      "summary": "Set to exactly 1 to make `molt build` drop modules unreachable from the entry module, runtime import roots and support modules before compilation; otherwise only tree-shaken pure-wasm builds eliminate modules.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
       "name": "MOLT_DEBUG_ALLOC_LIST_BUILDER",
       "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/mod.rs",
@@ -8181,7 +8171,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_WASM_PROFILE",
       "output_neutral": false,
       "owner": "runtime/molt-backend-wasm/src/wasm_options.rs",
-      "summary": "Wasm import-planning profile for the wasm backend: auto, full, or pure (the backend treats any other spelling as auto); molt build sets it from --wasm-profile in the backend process environment, and the frontend takes the same value as a parameter (pure also enables pure-wasm dead-module elimination when tree shaking is on); default auto.",
+      "summary": "Wasm import-planning profile for the wasm backend: auto, full, or pure (the backend treats any other spelling as auto); molt build sets it from --wasm-profile in the backend process environment; default auto.",
       "values": [
         "auto",
         "full",

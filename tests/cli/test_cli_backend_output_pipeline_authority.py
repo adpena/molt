@@ -855,12 +855,9 @@ def test_frontend_preparation_failure_flushes_without_repeating_error_json(
     preamble.midend_policy_outcomes_by_function = {}
     preamble.midend_pass_stats_by_function = {}
 
-    def invalid_closure(_):
-        case.clock.now += 5.0
-        raise ValueError("rejected compile module")
-
     stage_bundle = (
-        SimpleNamespace(with_compile_modules=invalid_closure),
+        # The plan names a module the (empty) schedule does not compile.
+        SimpleNamespace(direct_call_modules=frozenset({"orphan"})),
         SimpleNamespace(output_layout=case.args["output_layout"]),
         SimpleNamespace(module_order=[], module_layers=[]),
         SimpleNamespace(frontend_parallel_worker_timings=[]),
@@ -874,9 +871,6 @@ def test_frontend_preparation_failure_flushes_without_repeating_error_json(
         frontend_pipeline,
         "_prepare_frontend_stage_state",
         lambda **_: (stage_bundle, None),
-    )
-    monkeypatch.setattr(
-        frontend_pipeline, "_dead_module_elimination_mode", lambda **_: None
     )
     args = {
         key: case.args[key]
@@ -903,7 +897,6 @@ def test_frontend_preparation_failure_flushes_without_repeating_error_json(
         output=None,
         emit_ir=None,
         type_facts_path=None,
-        tree_shake=True,
         stdlib_profile="auto",
     )
     assert frontend_pipeline._prepare_frontend_pipeline(**args) == (None, 2)
@@ -915,11 +908,12 @@ def test_frontend_preparation_failure_flushes_without_repeating_error_json(
     assert message["status"] == "error"
     assert message["data"]["returncode"] == 2
     assert message["errors"] == [
-        "internal error: binary image closure plan is invalid: rejected compile module"
+        "internal error: binary image closure plan is invalid: the module schedule "
+        "and the import plan disagree on: orphan"
     ]
     diagnostics = json.loads(case.diagnostics_file.read_text(encoding="utf-8"))
-    assert diagnostics["total_sec"] == 15.0
-    assert case.snapshots == [15.0]
+    assert diagnostics["total_sec"] == 10.0
+    assert case.snapshots == [10.0]
     assert not case.identity_calls
 
 

@@ -1471,8 +1471,8 @@ regression coverage, not an installed release receipt or other-platform proof.
 		  and module graph metadata before frontend analysis or backend lowering can
 		  observe the graph. The final binary-image closure payload is emitted in
 		  build diagnostics and wrapper-cache manifests; static imports are final
-		  image roots, and dead-module-elimination mode participates in wrapper
-		  cache identity. Build diagnostics also emit `binary_image_analysis`,
+		  image roots, and the import plan's collection is the compiled set on
+		  every build (doc 60 slice 1). Build diagnostics also emit `binary_image_analysis`,
 		  a cross-layer source/AST, schedule, lowering, backend IR/TIR-input, and
 		  artifact evidence envelope with a frontend SourceSite digest ledger:
 		  source hashes, span-derived AST site digests, binary-image roles, and a

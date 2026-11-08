@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,32 @@ from tests.wasm_linked_runner import (
 
 def _assert_no_recursive_mutex_panic(stderr: str) -> None:
     assert "cannot recursively acquire mutex" not in stderr, stderr
+
+
+def test_wasm_pure_profile_runs_runtime_imported_core_modules(tmp_path: Path) -> None:
+    """The runtime imports ``copyreg`` for ``object.__reduce_ex__``. A Pure guest
+    that never imports it must still run the call: no pass removes the import
+    plan's core roots (doc 60 slice 1). Pure-profile dead-module elimination
+    dropped ``copyreg``, and Cloudflare answered an empty HTTP 500. The import
+    statement checks the other half: a Pure guest roots no Python import
+    machinery, so ``os`` (which Pure cannot initialize) stays out of the image."""
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "reduce_ex.py"
+    src.write_text(
+        "import json\n\n\nclass A:\n    pass\n\n\n"
+        "print(A().__reduce_ex__(2)[0].__name__)\n"
+        'print(json.dumps({"a": [1, 2]}))\n',
+        encoding="utf-8",
+    )
+    expected = _run_wasm_test_process(
+        [sys.executable, str(src)], role="tool", cwd=tmp_path, check=True
+    ).stdout
+    output_wasm = build_wasm_linked(
+        root, src, tmp_path, extra_args=["--wasm-profile", "pure"]
+    )
+    run = run_wasm_linked(root, output_wasm)
+    assert run.returncode == 0, run.stderr
+    assert run.stdout == expected
 
 
 def test_wasm_imported_syntax_errors_keep_native_identity_and_payload(

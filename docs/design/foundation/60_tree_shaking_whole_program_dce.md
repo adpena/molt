@@ -529,6 +529,250 @@ IR-correctness pieces touch the safety-adjacent DFE so carry A-lane discipline
 > host-Python (no Rust rebuild on the critical path); Phases 1–4 touch Rust and serialize
 > through the backend daemon.
 
+### Slice 1 (2026-11-08): module reachability on every build
+
+Status: design, revision 4, settled. Goldfish round 1 (codebase details, design), the
+measurements below (which changed the design from "type the elimination pass's roots" to "delete
+the elimination pass") and Goldfish round 2 (codebase details: two text blockers, fixed here;
+design: no blocker). Row: HF-809. It implements Phase 1 (typed roots) at module granularity,
+ahead of the unified fact. Function-level reachability (F2, F4) and the retirement of the WASM
+`pure` strip list stay in Phases 2 to 4; module elimination does not replace intrinsic or import
+stripping.
+
+**Measured problem.** The import plan already computes module reachability. It walks import edges
+from the entry and from typed reason roots, iterates package parents to a fixed point, and records
+why it collected each module (`ModuleReason`, a closed `StrEnum` since 0ef6fedc0). A second
+reachability walk, dead-module elimination (DME, `module_dependencies._apply_dead_module_elimination`),
+filters that set in two modes; no other build runs it, and no tool or suite sets its variable:
+- *explicit* (`MOLT_DEAD_MODULE_ELIMINATION=1`): roots are the plan's dispatch, declared-root,
+  runtime-support, stdlib-support and package-parent sets plus a hand-written 27-module safelist
+  (`frontend_pipeline.py`, `_dead_module_elimination_extra_roots`). These cover every reason the
+  plan records except a `NATIVE_SUPPORT_SOURCE` root module, which no root set names, so explicit
+  DME drops it whenever no compiled module imports it: a defect, not a saving. On 2026-11-08 (main
+  464f306e1, macOS arm64, native, release) it compiled the same modules as a normal build, with
+  identical module-order hashes: 7 for `str_methods.py`, 98 for `async_loop_sleep.py`. On a
+  191-test differential subset (71 targeted, 120 sampled with seed 20261108) both arms passed the
+  same 181 and failed the same 30 (20 stale expected-failure markers and 10 failures HF-215 owns).
+- *pure-wasm* (any `--wasm-profile pure` build, including `--profile cloudflare` and `--profile
+  fastly`; commit 084b7c55d0, 2026-06-29): roots are `builtins`, `sys`, the explicit imports, the
+  declared roots, package parents and, when the plan has namespace packages, the runtime-support
+  modules. It drops the plan's other reason roots: 2 of 7 modules for hello, 21 of 27
+  for `import json; print(json.dumps(...))`, including `_io` and `copyreg`, which the stdlib policy
+  marks `core_required`, and the whole import machinery. On local workerd (Wrangler 4.151.3,
+  `molt deploy cloudflare --dry-run`), `print(A().__reduce_ex__(2)[0].__name__)` answers an empty
+  HTTP 500, because the runtime imports `copyreg` and the build dropped it; adding `import copyreg`
+  makes it answer `__newobj__`, as CPython, native and WASI WASM do. A molt-gate arm with these
+  minimal roots on every native build failed 41 of the first 54 differential tests.
+
+The second walk is redundant where it is safe and unsound where it removes code. The plan's
+collection is the reachable set; this slice deletes the second walk and makes the plan's typed
+reasons the one root authority.
+
+**What belongs where.**
+
+| Concern | Question | Authority | Scope |
+|---|---|---|---|
+| Reachability | What code is in the artifact? | this doc's fact: entry, edges, typed roots | every build, backend and profile, dev included |
+| Availability | What can the host do? | `host_capabilities.toml` `targets` | per target |
+| Permission | What may the program do? | capability grants and tiers | per manifest |
+| Optimization policy | How hard to optimize? | the build profile | per profile; never changes the module set |
+
+Reachable code whose operation is unavailable on the target produces the warning of
+`docs/design/wasm_hosts.md` §4. The module set is a function of the entry, the target facts
+(platform branches, import admission) and the selected stdlib profile, and of nothing else.
+
+**Root kinds.** Each root producer stamps a `ModuleReason`. Today four values stamp a whole
+closure, not only its roots (`EXPLICIT_STATIC_IMPORT`, `RUNTIME_IMPORT_SUPPORT`,
+`NATIVE_RUNTIME_PYTHON_IMPORT`, and `SPAWN_CLOSURE` for the spawn entry); stage 1b splits each into
+a root value and a closure value with a `ModuleReason.is_root` property, so diagnostics and R3
+name roots exactly:
+
+| Producer | Reason it stamps | Authority after this slice |
+|---|---|---|
+| the entry module (`module_graph.py`, `_prepare_entry_module_graph`) | `ENTRY_ROOT` | unchanged |
+| core modules and builtin providers (`module_stdlib_policy._ensure_core_stdlib_modules`) | `CORE_REQUIRED` | unchanged; stamped on every core module, not only those it adds |
+| the runtime-import support roots (`module_import_scanner._RUNTIME_IMPORT_SUPPORT_ROOT_MODULES`) | `RUNTIME_IMPORT_SUPPORT` | fed by a `[runtime_modules]` list of `NameId` keys in `runtime_names.toml` (R2, stage 1c) |
+| the `multiprocessing` spawn entry the backend initializes | `SPAWN_CLOSURE` | unchanged |
+| `_collect_package_parents`, iterated to a fixed point with each parent's closure | `PACKAGE_PARENT` | unchanged; R4 closes the set under parents after every producer |
+| the native artifact plan's support sources | `NATIVE_SUPPORT_SOURCE` | unchanged |
+| imports that C extensions declare | `NATIVE_RUNTIME_PYTHON_IMPORT` | unchanged (the extension manifest) |
+| `MOLT_STATIC_IMPORT_MODULES` | `EXPLICIT_STATIC_IMPORT` | a typed `roots` list in the build manifest, part of build identity; the variable is deleted (stage 1b); until then the variable is that authority and is part of the build cache key |
+
+**Data-driven imports.** Pickle's class lookup, `importlib` with a runtime string and C-API
+`PyImport_ImportModule` with a runtime name resolve against the compiled set. The compiler emits one
+warning per reached data-driven site, with the shortest chain from user code (the HF-790
+attribution); `--strict-reachability` makes it an error. At run time, a module outside the set
+raises `ModuleNotFoundError` whose message says the module was not compiled in and names the
+manifest's `roots` list. GraalVM Native Image (reachability metadata, a named missing-registration
+error), Go (`gob.Register`), Nuitka (`--include-module`) and PyInstaller (`hiddenimports`) make
+the same trade with the same escape hatch.
+
+#### Skeleton
+
+Global invariants:
+- **R1. One reachable-module set.** The import plan computes the compiled set once per build, as
+  a deterministic function of the entry, the target facts, the resolved stdlib profile and the
+  typed roots. Each input is part of build identity, nothing else affects the set, and no second
+  walk filters it. Consequence, tested: dev and release, and every backend for one target, emit
+  the same closure payload, so a missing root fails in dev first.
+- **R2. Runtime roots are typed.** A runtime import of a fixed module names it by `NameId` through
+  a typed entry point, in every runtime crate; the bridges take a `NameId`, not name bits. The
+  `[runtime_modules]` list is the root set. A census over all runtime crates finds every caller of
+  the import entry points (`molt_module_import`, `catalog_import_attempt`,
+  `isolate_import_dispatch`, `importlib_import_module_impl`, `importlib_module_support_bits`) and
+  fails on a fixed-name caller missing from the list; dynamic sites are an explicit allowlist.
+- **R3. A root outside the graph fails the build.** A typed root the import plan cannot resolve
+  is a build error naming the root and its reason, never a silent skip. Today
+  `_ensure_core_stdlib_modules` skips an unresolved core module silently, and the runtime-support
+  producer raises an untyped `ValueError`; spawn (`_fail`) and static imports (error strings)
+  already fail loud with the module named.
+- **R4. The set is closed under package parents.** For every dotted member, its package parent is
+  a member (a source, native or namespace module) or a stub parent. The plan checks this once when
+  it builds `_ImportPlan` (`_require_package_parent_closure`), because the package-parent fixed
+  point runs before the core, augmentation and runtime-support producers. Static edges are closed
+  by the walk itself; an optional import (for example under `except ImportError`) may stay absent.
+
+```toml
+# runtime/molt-ir/src/tir/runtime_names.toml (R2): keys of [names], no second spelling.
+runtime_modules = ["Copyreg", "Select", "QualifiedAsyncioFutures", "Zipimport", "ImportlibMachinery"]
+```
+
+Stage 1c ties each `runtime_modules` entry to the runtime function that imports it, so a module is
+rooted only when the TIR reachability of that function says so (Phase 2's fact at function
+granularity); until then the entries are unconditional, which keeps today's behavior. `copyreg` and
+`importlib.machinery` leave `_CORE_STDLIB_MODULES_*` when the list takes them over, so one producer
+owns each fact.
+
+```rust
+// runtime/molt-runtime/src/builtins/modules.rs (R2)
+/// Imports a module the runtime itself needs, through the policy its caller names.
+/// Requires: `module` is listed in `runtime_modules` (the census enforces it).
+pub(crate) fn import_runtime_module(
+    py: &PyToken<'_>,
+    module: NameId,
+    policy: RuntimeImportPolicy, // PublicFinders | Catalog
+) -> Result<u64, u64> {
+    unimplemented!("specification stub")
+}
+```
+
+```python
+# src/molt/cli/models.py (R3): one error type for the producers that resolve stdlib roots.
+class UnresolvedRoot(ValueError):
+    """A typed root the import plan cannot resolve; the build fails naming both."""
+
+    def __init__(self, module: str, reason: ModuleReason) -> None:
+        super().__init__(f"{reason.value} root {module!r} does not resolve")
+        self.module = module
+        self.reason = reason
+
+
+# src/molt/cli/module_stdlib_policy.py (R3)
+def _ensure_core_stdlib_modules(
+    module_graph: dict[str, Path],
+    stdlib_root: Path,
+    stdlib_profile: str = DEFAULT_STDLIB_PROFILE,
+    *,
+    import_topology: PythonImportTopology,
+) -> tuple[str, ...]:
+    """Ensures: every core module of the profile is in module_graph; returns their names, which
+    the caller stamps CORE_REQUIRED whether or not the entry already imported them.
+    Raises: UnresolvedRoot(name, ModuleReason.CORE_REQUIRED) when one does not resolve."""
+    raise NotImplementedError("specification stub")
+```
+
+**Stages.** All under HF-809:
+- **1a (this lane):** delete the second walk and `tree_shake`; collapse the plan's duplicate module
+  set; R3 for the core and runtime-support producers; R4's check; the `RuntimeImportMachinery`
+  target fact (below).
+- **1b:** `MOLT_STATIC_IMPORT_MODULES` becomes the manifest's typed `roots` list; split root and
+  closure reasons (`ModuleReason.is_root`).
+- **1c (after HF-198, in the runtime):** R2's `[runtime_modules]` list, the typed entry point and
+  the census.
+- **1d:** the data-driven import diagnostics: the per-site warning with its chain,
+  `--strict-reachability`, and the `ModuleNotFoundError` text naming the roots list.
+
+Deleted in stage 1a:
+- the walk: `_apply_dead_module_elimination`, `_compute_reachable_modules`,
+  `_DEAD_MODULE_ELIMINATION_SAFELIST`, `_PURE_WASM_DEAD_MODULE_ELIMINATION_SAFELIST`
+  (`module_dependencies.py`), `_dead_module_elimination_mode`, `_dead_module_elimination_safelist`,
+  `_dead_module_elimination_extra_roots`, and their call site and stderr notice
+  (`frontend_pipeline.py`);
+- `BuildRequest.tree_shake`, its only consumer: the field, its `build_command.py` and
+  `frontend_pipeline.py` plumbing (the wasm-link `_tree_shake_runtime` is unrelated and stays);
+- `_ImportPlan.compile_modules` and `with_compile_modules`: without the walk, `compile_modules`
+  always equals `direct_call_modules`, so the plan keeps one field, the closure payload keeps one
+  key (`compile_modules`, projected from it; the duplicate `direct_call_modules` key goes) and
+  the diagnostics project their `compile_*` metrics from it; a check that the module schedule
+  covers exactly the plan replaces `with_compile_modules`;
+- `MOLT_DEAD_MODULE_ELIMINATION`: its `environment_registry.toml` row, the generated
+  `_environment_registry.py` and `environment-variables.generated.md`, and its wrapper-build cache
+  key entry (with the schema version bump); the `MOLT_WASM_PROFILE` summary that says pure enables
+  elimination;
+- docs: `cli-reference.md`, `STATUS.md`, `import_system_contract.md`,
+  `import_bedrock_frozen_module_layer.md`; the ledger's history rows stay as history;
+- tests: the DME tests in `test_cli_import_collection.py` and `test_cli_binary_image_closure.py`,
+  the monkeypatch in `test_cli_backend_output_pipeline_authority.py`, the `tree_shake` assertions
+  in `test_build_request.py`, `test_cli_frontend_pipeline_authority.py` and
+  `test_cli_backend_output_pipeline_authority.py`, and the authority lists in
+  `test_cli_module_dependencies_authority.py` and `test_cli_frontend_pipeline_authority.py`.
+
+R3 in stage 1a: `_ensure_core_stdlib_modules` and the runtime-support producer raise
+`UnresolvedRoot`; `_prepare_entry_module_graph` catches it where it already turns the
+runtime-support `ValueError` into `_fail`, so the build fails with the module and reason named.
+
+**Tests.**
+- Local: an unresolved core module raises `UnresolvedRoot` naming `CORE_REQUIRED`; every stdlib
+  profile resolves its whole core set from the bundled stdlib, so failing loud cannot break a cell
+  on landing; R4's check rejects a hand-built plan missing a package parent; the package-parent
+  closure test (`test_cli_import_collection.py`) keeps covering the producer.
+- The pure-profile guard (`test_gen_wasm_abi.py`,
+  `test_pure_profile_keeps_every_intrinsic_core_stdlib_modules_require`) derives its module list
+  from the core-set and runtime-support authorities, not a hand list, so it covers `_io`,
+  `copyreg`, `importlib.*`, `zipimport` and `_warnings`, which pure guests now compile.
+- The target fact: `RuntimeImportMachinery.for_build` maps only a pure WASM build to
+  `REGISTRY_ONLY`; for `import json` on WASM, the `REGISTRY_ONLY` plan holds `json` and the core set
+  and none of `zipimport`, `importlib.machinery` or `os`, and is a strict subset of the `PYTHON`
+  plan; a namespace package under `REGISTRY_ONLY` fails naming the package.
+- Behavior, independent oracle: a program that imports `json` and calls `__reduce_ex__`, built
+  with `--wasm-profile pure` and run through the linked WASM runner, prints CPython's output; on
+  main it fails with `ModuleNotFoundError: No module named 'copyreg'`. This pins the
+  pure profile directly, so it keeps testing the defect after `wasm_hosts.md` §3 moves Cloudflare
+  and Fastly off `pure`. The workerd run is the HF-790 cell's job.
+- R1's consequence: one entry's closure payload is equal across dev and release.
+- Compatibility: explicit DME never runs in a suite, so native results cannot change; the WASM
+  suite under the pure profile is the changed cell.
+
+**Target fact (found in implementation, 2026-11-08).** Deleting the walk alone made every pure
+build of a program with an import statement fail: any module that imports "uses the runtime import
+protocol" (`_module_graph_needs_runtime_import_support`), so the plan roots the Python import
+machinery (`importlib`, `zipimport`, `_warnings`) and, through `importlib._bootstrap_external`,
+`os`, whose body needs `path_exists`, which the pure profile strips; the backend refused the json
+program ("WASM pure profile cannot admit reachable runtime import 'path_exists'"). The pure-wasm
+walk had hidden this by dropping the machinery, and the json program still ran, so a static import
+of a compiled module never needs it: the runtime registry serves it. Stage 1a therefore adds one
+typed target fact, `RuntimeImportMachinery` (`PYTHON`, or `REGISTRY_ONLY` for a pure WASM build,
+`RuntimeImportMachinery.for_build`). Both plan producers (`frontend_pipeline.py` and the wrapper's
+prediction in `wrapper_build.py`) pass it; under `REGISTRY_ONLY` the runtime-import-support
+producer roots no machinery and still seals custody for dynamic relative-import owners, and a
+program with a namespace package, whose spec needs the machinery, fails the build with a message
+that names the package and the fix (`--wasm-profile auto`). Pure builds with namespace packages
+failed before too, in the backend, because the walk kept the machinery and `os` for them. The set
+stays a function of target facts (R1), with no second walk. Native builds are unchanged.
+
+**Size.** Measured before (main 464f306e1, `molt deploy cloudflare --dry-run`): `app.wasm` is
+662,859 bytes for hello, 829,159 for the json program and 665,751 for the `__reduce_ex__` program;
+the runtime module is 10,440 KB. After (stage 1a, same command): 765,084, 931,503 and 767,980
+bytes (about +102 KB each, the core modules the walk dropped: `copyreg` and the `_io` provider);
+the runtime module is unchanged. On local workerd the `__reduce_ex__` program now answers
+`__newobj__` (HTTP 200) and the json program answers its CPython output. The acceptance
+bound is the Workers script limit `deploy/cloudflare/wrangler.toml` cites (10 MB compressed); the
+bytes come back from inside the plan, not from a second walk: provider roots gated by target (a
+Pure guest must not initialize file I/O, `module_stdlib_policy.py`), the import machinery rooted
+only when a data-driven import site is reached (stage 1d's facts), and Phases 2 to 4 at function
+granularity. Whether the import catalog keeps every compiled module's initializer alive decides
+how much Phase 2 can recover; Phase 0 measures it.
+
 ### Phase 0 — Lock the current identity + characterize the size baseline. *Do first; no behavior change.*
 - **Why first:** F1 *locks* that the Rust edge list (`passes.rs:2520-2565`) and the Python
   frozenset (`cli/__init__.py:19180`) are identical TODAY (verified: same 26 strings).

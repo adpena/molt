@@ -1085,7 +1085,7 @@ def test_materialize_import_plan_retains_external_native_artifact_plan(
     assert import_plan.native_artifact_plan.artifacts[0].module == "nativepkg._native"
     assert "nativepkg._native" in import_plan.known_modules
     assert "nativepkg._native" not in import_plan.module_graph
-    assert "nativepkg._native" not in import_plan.compile_modules
+    assert "nativepkg._native" not in import_plan.direct_call_modules
 
 
 @_source_tree_fingerprint_transaction()
@@ -1146,7 +1146,7 @@ def test_materialize_import_plan_keeps_runtime_dispatch_native_artifact(
     assert import_plan.native_artifact_plan.artifacts
     assert import_plan.native_artifact_plan.artifacts[0].module == "nativepkg._native"
     assert "nativepkg._native" in import_plan.known_modules
-    assert "nativepkg._native" not in import_plan.compile_modules
+    assert "nativepkg._native" not in import_plan.direct_call_modules
 
 
 def test_source_extension_runtime_python_imports_detects_c_import_calls() -> None:
@@ -1362,9 +1362,9 @@ def test_materialize_import_plan_adds_native_runtime_python_import_closure(
     )
 
     assert "math" in import_plan.module_graph
-    assert "math" in import_plan.compile_modules
+    assert "math" in import_plan.direct_call_modules
     assert "nativepkg.exceptions" in import_plan.module_graph
-    assert "nativepkg.exceptions" in import_plan.compile_modules
+    assert "nativepkg.exceptions" in import_plan.direct_call_modules
     assert "native_runtime_python_import" in module_reasons["math"]
     assert "native_support_source" in module_reasons["nativepkg.exceptions"]
     assert not any(
@@ -1697,7 +1697,7 @@ def test_materialize_import_plan_adds_reachable_native_support_source_closure(
     )
 
     assert "nativepkg.ndimage._filters" in import_plan.module_graph
-    assert "nativepkg.ndimage._filters" in import_plan.compile_modules
+    assert "nativepkg.ndimage._filters" in import_plan.direct_call_modules
     assert [
         artifact.module for artifact in import_plan.native_artifact_plan.artifacts
     ] == ["nativepkg.ndimage._nd_image", "nativepkg.ndimage._ni_label"]
@@ -1841,14 +1841,14 @@ def test_materialize_import_plan_closes_cross_package_native_support_source(
     assert [
         artifact.module for artifact in import_plan.native_artifact_plan.artifacts
     ] == ["numpy._core._multiarray_umath", "scipy.ndimage._nd_image"]
-    assert "scipy.ndimage._filters" in import_plan.compile_modules
-    assert "math" in import_plan.compile_modules
+    assert "scipy.ndimage._filters" in import_plan.direct_call_modules
+    assert "math" in import_plan.direct_call_modules
     assert "math" in import_plan.runtime_import_dispatch_roots
-    assert "scipy._lib._util" in import_plan.compile_modules
+    assert "scipy._lib._util" in import_plan.direct_call_modules
     assert "scipy._lib" in import_plan.known_modules
     assert "scipy._lib" in import_plan.runtime_import_dispatch_roots
     assert "scipy._lib._array_api" not in import_plan.runtime_import_dispatch_roots
-    assert "numpy.exceptions" in import_plan.compile_modules
+    assert "numpy.exceptions" in import_plan.direct_call_modules
     assert "numpy.exceptions" in import_plan.known_modules
     assert "numpy" in import_plan.runtime_import_dispatch_roots
     native_init_modules = {
@@ -2248,8 +2248,8 @@ def test_materialize_import_plan_adds_capsule_provider_runtime_import_closure(
     assert "math" in import_plan.module_graph
     assert "math" in import_plan.runtime_import_dispatch_roots
     assert "native_runtime_python_import" in module_reasons["math"]
-    assert "nativepkg._internal" in import_plan.compile_modules
-    assert "nativepkg.exceptions" in import_plan.compile_modules
+    assert "nativepkg._internal" in import_plan.direct_call_modules
+    assert "nativepkg.exceptions" in import_plan.direct_call_modules
     assert "native_support_source" in module_reasons["nativepkg._internal"]
     assert "native_support_source" in module_reasons["nativepkg.exceptions"]
     internal_source = import_plan.module_graph["nativepkg._internal"].read_text(
@@ -2388,7 +2388,7 @@ def test_materialize_import_plan_compiles_native_runtime_package_import_init(
         diagnostics_enabled=False,
     )
 
-    assert expected_modules <= set(import_plan.compile_modules)
+    assert expected_modules <= set(import_plan.direct_call_modules)
     for module in expected_modules:
         assert "native_support_source" in module_reasons[module]
     init_source = import_plan.module_graph["nativepkg"].read_text(encoding="utf-8")
@@ -2487,11 +2487,11 @@ def test_entry_native_package_import_compiles_package_init_closure(
         diagnostics_enabled=False,
     )
 
-    assert "nativepkg" in import_plan.compile_modules
-    assert "nativepkg._core" in import_plan.compile_modules
-    assert "nativepkg._expired_attrs_2_0" in import_plan.compile_modules
-    assert "nativepkg._globals" in import_plan.compile_modules
-    assert "nativepkg._docstrings" not in import_plan.compile_modules
+    assert "nativepkg" in import_plan.direct_call_modules
+    assert "nativepkg._core" in import_plan.direct_call_modules
+    assert "nativepkg._expired_attrs_2_0" in import_plan.direct_call_modules
+    assert "nativepkg._globals" in import_plan.direct_call_modules
+    assert "nativepkg._docstrings" not in import_plan.direct_call_modules
     assert "entry_closure" in module_reasons["nativepkg"]
     assert "entry_closure" in module_reasons["nativepkg._core"]
     assert "entry_closure" in module_reasons["nativepkg._expired_attrs_2_0"]
@@ -2573,7 +2573,7 @@ def test_materialize_import_plan_does_not_compile_package_init_support_without_r
         diagnostics_enabled=False,
     )
 
-    assert "nativepkg" not in import_plan.compile_modules
+    assert "nativepkg" not in import_plan.direct_call_modules
     assert "nativepkg" not in import_plan.module_graph
 
 
@@ -2836,7 +2836,7 @@ def test_materialize_import_plan_accepts_relocated_object_closure_source_custody
     )
 
     assert "nativepkg.ndimage._measurements" in import_plan.module_graph
-    assert "nativepkg.ndimage._measurements" in import_plan.compile_modules
+    assert "nativepkg.ndimage._measurements" in import_plan.direct_call_modules
     assert "nativepkg.ndimage._ni_label" not in import_plan.module_graph
     assert [
         artifact.module for artifact in import_plan.native_artifact_plan.artifacts
@@ -3081,8 +3081,8 @@ def test_native_support_source_stdlib_imports_join_compile_closure(
     assert "collections.abc" in import_plan.module_graph
     assert "collections" in import_plan.known_modules
     assert "collections.abc" in import_plan.known_modules
-    assert "collections" in import_plan.compile_modules
-    assert "collections.abc" in import_plan.compile_modules
+    assert "collections" in import_plan.direct_call_modules
+    assert "collections.abc" in import_plan.direct_call_modules
     assert "collections.abc" in import_plan.runtime_import_dispatch_roots
     assert "never_needed_artifact_dependency" not in import_plan.module_graph
     assert (
@@ -4140,146 +4140,99 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
     )
 
 
-def test_dead_module_elimination_keeps_runtime_dispatch_roots() -> None:
-    module_order = ["importlib", "importlib.machinery", "json", "demo"]
-    module_layers = [["importlib", "importlib.machinery", "json"], ["demo"]]
-
-    filtered_order, filtered_layers, eliminated = (
-        cli_module_dependencies._apply_dead_module_elimination(
-            module_order,
-            module_layers,
-            entry_module="demo",
-            module_deps={"demo": set()},
-            module_names=set(module_order),
-            extra_roots={"importlib.machinery"},
+def test_import_plan_rejects_a_module_whose_package_parent_is_absent() -> None:
+    # Importing pkg.sub runs pkg first, so an image holding pkg.sub without pkg
+    # fails at run time; the plan refuses it (doc 60 slice 1, R4).
+    with pytest.raises(ValueError, match=r"pkg\.sub \(parent pkg\)"):
+        cli_module_graph._require_package_parent_closure(
+            frozenset({"demo", "pkg.sub"}), stub_parents=()
         )
+    cli_module_graph._require_package_parent_closure(
+        frozenset({"demo", "pkg", "pkg.sub", "ns.portion", "ns"}), stub_parents=()
+    )
+    cli_module_graph._require_package_parent_closure(
+        frozenset({"demo", "stubbed.child"}), stub_parents=("stubbed",)
     )
 
-    assert filtered_order == ["importlib", "importlib.machinery", "demo"]
-    assert filtered_layers == [["importlib", "importlib.machinery"], ["demo"]]
-    assert eliminated == 1
 
-
-def test_dead_module_elimination_traverses_package_parents() -> None:
-    # CPython runs pkg/__init__ before pkg.sub, so modules that pkg/__init__
-    # imports are needed whenever pkg.sub is.
-    module_order = ["helper", "pkg", "pkg.sub", "unused", "demo"]
-    module_layers = [["helper", "unused"], ["pkg"], ["pkg.sub"], ["demo"]]
-    module_deps = {"demo": {"pkg.sub"}, "pkg.sub": set(), "pkg": {"helper"}}
-
-    filtered_order, _layers, eliminated = (
-        cli_module_dependencies._apply_dead_module_elimination(
-            module_order,
-            module_layers,
-            entry_module="demo",
-            module_deps=module_deps,
-            module_names=set(module_order),
-            safelist=(),
+def test_unresolved_core_module_fails_naming_its_reason(tmp_path: Path) -> None:
+    empty_stdlib = tmp_path / "stdlib"
+    empty_stdlib.mkdir()
+    with pytest.raises(cli_models.UnresolvedRoot) as excinfo:
+        cli_module_stdlib_policy._ensure_core_stdlib_modules(
+            {},
+            empty_stdlib,
+            import_topology=cli_module_resolution.PythonImportTopology(),
         )
+    assert excinfo.value.reason is cli_models.ModuleReason.CORE_REQUIRED
+    assert excinfo.value.module == "builtins"
+    assert "core_required root 'builtins' does not resolve" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("profile", cli_config_resolution.STDLIB_PROFILE_CHOICES)
+def test_every_stdlib_profile_resolves_its_whole_core_set(profile: str) -> None:
+    # A core module that does not resolve now fails the build (R3), so every
+    # profile's core set must resolve from the bundled stdlib.
+    module_graph: dict[str, Path] = {}
+    core = cli_module_stdlib_policy._ensure_core_stdlib_modules(
+        module_graph,
+        cli_module_resolution._stdlib_root_path(),
+        profile,
+        import_topology=cli_module_resolution.PythonImportTopology(),
     )
-
-    assert filtered_order == ["helper", "pkg", "pkg.sub", "demo"]
-    assert eliminated == 1
-
-
-def test_dead_module_elimination_pure_wasm_safelist_skips_host_stdlib() -> None:
-    module_order = ["builtins", "sys", "os", "typing", "warnings", "array", "demo"]
-    module_layers = [
-        ["builtins", "sys", "os", "typing", "warnings", "array"],
-        ["demo"],
-    ]
-    module_deps = {
-        "demo": {"array"},
-        "array": set(),
-        "typing": {"warnings"},
-        "os": set(),
-        "warnings": set(),
-    }
-
-    filtered_order, filtered_layers, eliminated = (
-        cli_module_dependencies._apply_dead_module_elimination(
-            module_order,
-            module_layers,
-            entry_module="demo",
-            module_deps=module_deps,
-            module_names=set(module_order),
-            safelist=(
-                cli_module_dependencies._PURE_WASM_DEAD_MODULE_ELIMINATION_SAFELIST
-            ),
-        )
-    )
-
-    assert filtered_order == ["builtins", "sys", "array", "demo"]
-    assert filtered_layers == [["builtins", "sys", "array"], ["demo"]]
-    assert eliminated == 3
+    assert core
+    assert set(core) <= module_graph.keys()
 
 
-def test_pure_wasm_dme_mode_overrides_legacy_env(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    output_layout = cli_frontend_pipeline._BuildOutputLayout(
-        is_wasm=True,
-        is_wasm_freestanding=False,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
-        is_mlir_emit=False,
-        split_runtime=True,
-        linked=True,
-        target_triple=None,
-        emit_mode="wasm",
-        output_artifact=Path("output.wasm"),
-        output_binary=None,
-        linked_output_path=Path("output_linked.wasm"),
-        emit_ir_path=None,
-        facts_target=_target("wasm32-wasip1"),
-    )
-    monkeypatch.setenv("MOLT_DEAD_MODULE_ELIMINATION", "1")
-
+def test_runtime_import_machinery_is_a_wasm_pure_target_fact() -> None:
+    machinery = cli_models.RuntimeImportMachinery
+    assert machinery.for_build(admit_target("wasm"), "pure") is machinery.REGISTRY_ONLY
     assert (
-        cli_frontend_pipeline._dead_module_elimination_mode(
-            output_layout=output_layout,
-            tree_shake=True,
-            wasm_profile="pure",
-        )
-        == "pure-wasm"
+        machinery.for_build(admit_target("wasm"), " Pure ") is machinery.REGISTRY_ONLY
     )
+    assert machinery.for_build(admit_target("wasm"), "auto") is machinery.PYTHON
+    assert machinery.for_build(admit_target("wasm"), None) is machinery.PYTHON
+    assert machinery.for_build(admit_target("native"), "pure") is machinery.PYTHON
 
 
-@pytest.mark.parametrize("namespace_modules", [frozenset(), frozenset({"ns"})])
-def test_pure_wasm_dme_roots_retain_support_for_namespace_specs(
-    namespace_modules: frozenset[str],
+@pytest.mark.long_pole
+def test_registry_only_target_roots_no_python_import_machinery(
+    tmp_path: Path,
 ) -> None:
-    import_plan = types.SimpleNamespace(
-        explicit_imports=frozenset({"array"}),
-        declared_root_modules=frozenset({"demo"}),
-        package_parent_modules=frozenset(),
-        namespace_module_names=namespace_modules,
-        runtime_import_dispatch_roots=frozenset({"array", "importlib", "typing"}),
-        runtime_support_modules=frozenset({"importlib", "importlib.machinery"}),
-        stdlib_support_modules=frozenset({"builtins", "sys", "typing"}),
+    # A pure WASM guest serves compiled modules from the runtime registry, so a
+    # static import roots json and the core set but no importlib, zipimport or
+    # os; the default target roots the machinery for the same program.
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("import json\nprint(json.dumps([1]))\n", encoding="utf-8")
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
     )
-
-    roots = cli_frontend_pipeline._dead_module_elimination_extra_roots(
-        import_plan,
-        mode="pure-wasm",
-    )
-
-    expected = {"array", "demo"}
-    if namespace_modules:
-        expected.update({"importlib", "importlib.machinery"})
-    assert roots == expected
-    # Metadata-only namespace names have no source body; their support does.
-    order = ["demo", "array", "importlib", "importlib.machinery", "typing"]
-    kept, _layers, _removed = cli_frontend_pipeline._apply_dead_module_elimination(
-        order,
-        [order],
-        entry_module="demo",
-        module_deps={},
-        module_names=set(order),
-        extra_roots=roots,
-        safelist=cli_frontend_pipeline._dead_module_elimination_safelist("pure-wasm"),
-    )
-    assert set(kept) == expected
+    graphs = {}
+    for machinery in cli_models.RuntimeImportMachinery:
+        prepared, error = cli_module_graph._prepare_entry_module_graph(
+            source_path=entry_path,
+            entry_module="demo",
+            module_roots=[tmp_path],
+            stdlib_root=cli_module_resolution._stdlib_root_path(),
+            project_root=None,
+            entry_tree=entry_tree,
+            diagnostics_enabled=True,
+            module_reasons={},
+            json_output=False,
+            target=admit_target("wasm"),
+            target_sys_platform=None,
+            runtime_import_machinery=machinery,
+        )
+        assert error is None
+        assert prepared is not None
+        assert prepared.runtime_import_machinery is machinery
+        graphs[machinery] = set(prepared.module_graph)
+    registry_only = graphs[cli_models.RuntimeImportMachinery.REGISTRY_ONLY]
+    python = graphs[cli_models.RuntimeImportMachinery.PYTHON]
+    assert {"demo", "json", "copyreg", "builtins", "sys"} <= registry_only
+    assert registry_only.isdisjoint({"zipimport", "importlib.machinery", "os"})
+    assert {"zipimport", "importlib.machinery"} <= python
+    assert registry_only < python
 
 
 def test_prepare_entry_module_graph_marks_getattr_runtime_import_entry_as_supported(
@@ -27800,7 +27753,7 @@ def test_run_wrapper_build_rejects_child_time_source_mutation(
         ([source_zero] if prior_receipt else []) + [source_a, source_b]
     )
     receipt = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert receipt["version"] == 4
+    assert receipt["version"] == cli_wrapper_build._WRAPPER_BUILD_CACHE_SCHEMA_VERSION
     assert (
         receipt["binary_sha256"] == hashlib.sha256(b"compiled:" + source_b).hexdigest()
     )

@@ -1063,14 +1063,6 @@ owner = "runtime/molt-worker/src/main.rs"
 summary = "Opens the molt-worker SQLite database read-write when set to exactly 1, true, or yes; otherwise the database opens read-only."
 
 [[variable]]
-name = "MOLT_DEAD_MODULE_ELIMINATION"
-audience = "user"
-kind = "bool"
-default = "0"
-owner = "src/molt/cli/frontend_pipeline.py"
-summary = "Set to exactly 1 to make `molt build` drop modules unreachable from the entry module, runtime import roots and support modules before compilation; otherwise only tree-shaken pure-wasm builds eliminate modules."
-
-[[variable]]
 name = "MOLT_DEBUG_ALLOC_LIST_BUILDER"
 audience = "user"
 kind = "bool"
@@ -5828,7 +5820,7 @@ kind = "enum"
 default = "auto"
 values = ["auto", "full", "pure"]
 owner = "runtime/molt-backend-wasm/src/wasm_options.rs"
-summary = "Wasm import-planning profile for the wasm backend: auto, full, or pure (the backend treats any other spelling as auto); molt build sets it from --wasm-profile in the backend process environment, and the frontend takes the same value as a parameter (pure also enables pure-wasm dead-module elimination when tree shaking is on); default auto."
+summary = "Wasm import-planning profile for the wasm backend: auto, full, or pure (the backend treats any other spelling as auto); molt build sets it from --wasm-profile in the backend process environment; default auto."
 
 [[variable]]
 name = "MOLT_WASM_RELOCATABLE"

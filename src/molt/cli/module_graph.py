@@ -23,6 +23,8 @@ from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
 from molt.cli import module_stdlib_policy as _module_stdlib_policy
 from molt.cli.models import (
     ModuleReason,
+    UnresolvedRoot,
+    RuntimeImportMachinery,
     ImportScanMode,
     ModuleExecutionKind,
     ModuleSourceRole,
@@ -1206,12 +1208,17 @@ def _finalize_runtime_import_closure(
     import_admission_policy: _ImportAdmissionPolicy | None,
     previous_custody: _RuntimeImportScanCustody | None = None,
     project_root: Path | None = None,
+    runtime_import_machinery: RuntimeImportMachinery = RuntimeImportMachinery.PYTHON,
 ) -> _RuntimeImportClosure:
     """Seal source custody independently of the backend's dispatch representation.
 
     Both registry rows and source-emitted dispatch consume the retained roots.
     This proves the finite source closure, not that a target can execute its
     operations; generated target admission owns that separate contract.
+
+    A ``REGISTRY_ONLY`` target roots none of the Python import machinery; it
+    still seals custody for dynamic relative-import owners, which the registry
+    serves.
     """
     authority = _ModuleGraphScanAuthority(tuple(scan_authorities.values()))
     policy = _module_import_scanner._module_graph_needs_runtime_import_support(
@@ -1226,7 +1233,14 @@ def _finalize_runtime_import_closure(
         policy = _RuntimeImportSupportPolicy(
             True,
         )
-    if not policy.needs_runtime_import_support and not dynamic_owner_required:
+    machinery_roots = (
+        ()
+        if runtime_import_machinery is RuntimeImportMachinery.REGISTRY_ONLY
+        else _module_import_scanner._RUNTIME_IMPORT_SUPPORT_ROOT_MODULES
+    )
+    if not dynamic_owner_required and (
+        not policy.needs_runtime_import_support or not machinery_roots
+    ):
         return _RuntimeImportClosure(policy, None, frozenset(runtime_roots))
     prior = previous_custody
     while True:
@@ -1235,14 +1249,14 @@ def _finalize_runtime_import_closure(
             for source in scan_authorities.values()
         )
         owners: dict[str, Path] = {}
-        for name in _module_import_scanner._RUNTIME_IMPORT_SUPPORT_ROOT_MODULES:
+        for name in machinery_roots:
             path = _module_resolution._resolve_module_path(
                 name,
                 [stdlib_root],
                 import_topology=module_resolution_cache.import_topology,
             )
             if path is None:
-                raise ValueError(f"Missing required stdlib support module: {name}")
+                raise UnresolvedRoot(name, ModuleReason.RUNTIME_IMPORT_SUPPORT)
             path = path.resolve()
             if name in module_graph and module_graph[name].resolve() != path:
                 raise ValueError(
@@ -1350,6 +1364,24 @@ def _finalize_runtime_import_closure(
         custody.validate_graph(module_graph)
         runtime_roots.update(custody.modules)
         prior = custody
+
+
+def _require_package_parent_closure(
+    known_modules: frozenset[str], *, stub_parents: Collection[str]
+) -> None:
+    """Doc 60 slice 1, R4: importing ``a.b`` runs ``a`` first, so ``a`` is in
+    the image (a source, native or namespace module) or is a stub parent."""
+    allowed = known_modules | frozenset(stub_parents)
+    orphans = sorted(
+        f"{name} (parent {parent})"
+        for name in known_modules
+        if (parent := name.rpartition(".")[0]) and parent not in allowed
+    )
+    if orphans:
+        raise ValueError(
+            "internal error: the import plan is not closed under package parents: "
+            + ", ".join(orphans)
+        )
 
 
 @_source_tree_fingerprint_transaction()
@@ -1462,6 +1494,7 @@ def _materialize_import_plan(
                 next_native_artifact_plan
             ),
             previous_custody=runtime_closure.custody,
+            runtime_import_machinery=prepared_module_graph.runtime_import_machinery,
         )
         if (
             next_native_artifact_plan == native_artifact_plan
@@ -1506,6 +1539,17 @@ def _materialize_import_plan(
         stub_parents=stub_parents,
         resolver_cache=prepared_module_graph.module_resolution_cache,
     )
+    if (
+        prepared_module_graph.runtime_import_machinery
+        is RuntimeImportMachinery.REGISTRY_ONLY
+        and namespace_portions_by_module
+    ):
+        raise ValueError(
+            "the pure WASM profile has no Python import machinery to build the spec "
+            "of namespace package(s) "
+            + ", ".join(sorted(namespace_portions_by_module))
+            + "; give each package an __init__.py or build with --wasm-profile auto"
+        )
     source_modules = frozenset(module_graph)
     native_artifact_modules = native_artifact_plan.native_module_names()
     native_support_function_roots_by_module = {
@@ -1518,6 +1562,7 @@ def _materialize_import_plan(
         | native_artifact_modules
         | frozenset(namespace_portions_by_module)
     )
+    _require_package_parent_closure(known_modules, stub_parents=stub_parents)
     stdlib_allowlist.update(stub_parents)
     stdlib_allowlist.add("molt.stdlib")
     module_graph_metadata = _build_module_graph_metadata(
@@ -1602,7 +1647,6 @@ def _materialize_import_plan(
         package_parent_modules=frozenset(
             name for name in package_parent_modules if name in source_modules
         ),
-        compile_modules=source_modules,
         known_modules_sorted=tuple(sorted(known_modules)),
         stdlib_allowlist_sorted=tuple(sorted(stdlib_allowlist)),
         module_graph_metadata=module_graph_metadata,
@@ -1753,8 +1797,11 @@ def _prepare_entry_module_graph(
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     image_scope: _BinaryImageScope | None = None,
     stdlib_profile: str = DEFAULT_STDLIB_PROFILE,
+    runtime_import_machinery: RuntimeImportMachinery = RuntimeImportMachinery.PYTHON,
 ) -> tuple[_PreparedEntryModuleGraph | None, _CliFailure | None]:
-    """``stdlib_profile`` is the build's resolved intent (resolve_stdlib_profile)."""
+    """``stdlib_profile`` is the build's resolved intent (resolve_stdlib_profile);
+    ``runtime_import_machinery`` is the target fact from
+    ``RuntimeImportMachinery.for_build``."""
     stdlib_allowlist = _module_stdlib_policy._stdlib_allowlist()
     roots = module_roots + [stdlib_root]
     module_resolution_cache = _module_resolution._ModuleResolutionCache(
@@ -1908,19 +1955,21 @@ def _prepare_entry_module_graph(
             module_reasons,
             ModuleReason.PACKAGE_PARENT_CLOSURE,
         )
-    core_before = set(module_graph)
-    _module_stdlib_policy._ensure_core_stdlib_modules(
-        module_graph,
-        stdlib_root,
-        stdlib_profile,
-        import_topology=module_resolution_cache.import_topology,
-    )
-    _graph_discovery._record_new_module_reasons(
-        module_graph,
-        core_before,
-        module_reasons,
-        ModuleReason.CORE_REQUIRED,
-    )
+    try:
+        core_modules = _module_stdlib_policy._ensure_core_stdlib_modules(
+            module_graph,
+            stdlib_root,
+            stdlib_profile,
+            import_topology=module_resolution_cache.import_topology,
+        )
+    except UnresolvedRoot as exc:
+        return None, _fail(str(exc), json_output, command="build")
+    # Every core module carries its reason, whether or not the entry reached it
+    # first, so the recorded reasons do not depend on discovery order.
+    for name in core_modules:
+        _graph_discovery._record_module_reason(
+            module_reasons, name, ModuleReason.CORE_REQUIRED
+        )
     # Runtime-feature availability is decided by REACHABILITY, not whole-file
     # import-graph presence. The old coarse profile gate was deleted because it
     # forced a feature the instant a module appeared anywhere in the static graph,
@@ -1967,6 +2016,7 @@ def _prepare_entry_module_graph(
             stdlib_allowlist=stdlib_allowlist,
             target_python=target_python,
             import_admission_policy=import_admission_policy,
+            runtime_import_machinery=runtime_import_machinery,
         )
     except ValueError as exc:
         return None, _fail(str(exc), json_output, command="build")
@@ -2004,6 +2054,7 @@ def _prepare_entry_module_graph(
         spawn_enabled=augmentation.spawn_enabled,
         runtime_import_support_policy=runtime_closure.policy,
         runtime_import_scan_custody=runtime_closure.custody,
+        runtime_import_machinery=runtime_import_machinery,
         native_artifact_plan=(
             import_admission_policy.native_artifact_plan
             if import_admission_policy is not None

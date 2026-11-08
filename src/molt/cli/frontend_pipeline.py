@@ -52,10 +52,7 @@ from molt.cli.module_graph import (
     _prepare_entry_module_graph,
 )
 from molt.cli.module_dependencies import (
-    _DEAD_MODULE_ELIMINATION_SAFELIST,
-    _PURE_WASM_DEAD_MODULE_ELIMINATION_SAFELIST,
     _analyze_module_schedule,
-    _apply_dead_module_elimination,
     _module_dependencies_from_imports,
 )
 from molt.cli.module_resolution import _ModuleResolutionCache
@@ -73,6 +70,7 @@ from molt.cli.build_request import (
 )
 from molt.cli.models import (
     ModuleReason,
+    RuntimeImportMachinery,
     _RuntimeImportScanCustody,
     _BuildDiagnosticsContext,
     _BinaryImageScope,
@@ -668,58 +666,6 @@ def _prepare_build_callbacks(
     )
 
 
-def _dead_module_elimination_mode(
-    *,
-    output_layout: _BuildOutputLayout,
-    tree_shake: bool,
-    wasm_profile: str | None,
-) -> str | None:
-    """``wasm_profile`` is the build's selection (CodegenSelection.wasm_profile)."""
-    if (
-        tree_shake
-        and output_layout.is_wasm
-        and (wasm_profile or "").strip().lower() == "pure"
-    ):
-        return "pure-wasm"
-    if os.environ.get("MOLT_DEAD_MODULE_ELIMINATION") == "1":
-        return "explicit"
-    return None
-
-
-def _dead_module_elimination_safelist(mode: str) -> frozenset[str]:
-    if mode == "pure-wasm":
-        return _PURE_WASM_DEAD_MODULE_ELIMINATION_SAFELIST
-    return _DEAD_MODULE_ELIMINATION_SAFELIST
-
-
-def _dead_module_elimination_extra_roots(
-    import_plan: _ImportPlan,
-    *,
-    mode: str,
-) -> frozenset[str]:
-    # Namespace rows have no source dependency edges. Constructing their specs
-    # needs the real import machinery even in the minimal WASM profile.
-    namespace_support = (
-        import_plan.runtime_support_modules
-        if import_plan.namespace_module_names
-        else frozenset()
-    )
-    if mode == "pure-wasm":
-        return frozenset(
-            import_plan.explicit_imports
-            | import_plan.declared_root_modules
-            | import_plan.package_parent_modules
-            | namespace_support
-        )
-    return frozenset(
-        import_plan.runtime_import_dispatch_roots
-        | import_plan.declared_root_modules
-        | import_plan.runtime_support_modules
-        | import_plan.stdlib_support_modules
-        | import_plan.package_parent_modules
-    )
-
-
 def _prepare_frontend_stage_state(
     *,
     prepared_build_preamble: _PreparedBuildPreamble,
@@ -824,6 +770,9 @@ def _prepare_frontend_stage_state(
         target_sys_platform=prepared_build_config.target_sys_platform,
         image_scope=resolved_build_entry.image_scope,
         stdlib_profile=stdlib_profile,
+        runtime_import_machinery=RuntimeImportMachinery.for_build(
+            target, prepared_build_config.codegen.wasm_profile
+        ),
     )
     if prepared_module_graph_error is not None:
         return None, prepared_module_graph_error
@@ -1079,7 +1028,6 @@ def _prepare_frontend_pipeline(
     output: str | None,
     emit_ir: str | None,
     type_facts_path: str | None,
-    tree_shake: bool,
     stdlib_profile: str,
 ) -> tuple[_PreparedFrontendPipelineBundle | None, _CliFailure | None]:
     if is_wasm_target(target) and split_runtime:
@@ -1181,46 +1129,20 @@ def _prepare_frontend_pipeline(
         _progress.frontend_module(module_name, exec_ms / 1000.0)
         return item
 
+    # The import plan is the reachable set (doc 60 slice 1, R1): the schedule
+    # compiles exactly its modules, and nothing filters them.
     compile_module_order: list[str] = list(prepared_frontend_analysis.module_order)
     compile_module_layers: list[list[str]] = [
         list(layer) for layer in prepared_frontend_analysis.module_layers
     ]
-    dme_mode = _dead_module_elimination_mode(
-        output_layout=prepared_build_outputs.output_layout,
-        tree_shake=tree_shake,
-        wasm_profile=prepared_build_config.codegen.wasm_profile,
+    unscheduled = sorted(
+        set(import_plan.direct_call_modules).symmetric_difference(compile_module_order)
     )
-    if dme_mode is not None:
-        dme_roots = _dead_module_elimination_extra_roots(
-            import_plan,
-            mode=dme_mode,
-        )
-        compile_module_order, compile_module_layers, dme_eliminated = (
-            _apply_dead_module_elimination(
-                compile_module_order,
-                compile_module_layers,
-                entry_module=resolved_build_entry.entry_module,
-                module_deps=prepared_frontend_analysis.module_deps,
-                module_names=set(import_plan.module_graph),
-                extra_roots=dme_roots,
-                safelist=_dead_module_elimination_safelist(dme_mode),
-            )
-        )
-        if dme_eliminated > 0:
-            import sys as _dme_sys
-
-            print(
-                f"[molt] dead module elimination: skipping {dme_eliminated} "
-                f"unreachable modules (compiling {len(compile_module_order)} of "
-                f"{len(prepared_frontend_analysis.module_order)})",
-                file=_dme_sys.stderr,
-            )
-    try:
-        import_plan = import_plan.with_compile_modules(compile_module_order)
-    except ValueError as exc:
+    if unscheduled:
         return None, _emit_build_diagnostics_for_result(
             _fail(
-                f"internal error: binary image closure plan is invalid: {exc}",
+                "internal error: binary image closure plan is invalid: the module "
+                "schedule and the import plan disagree on: " + ", ".join(unscheduled),
                 json_output,
                 command="build",
             ),
@@ -1270,11 +1192,7 @@ def _prepare_frontend_pipeline(
             max(0.0, (time.perf_counter() - binary_image_analysis_start) * 1000.0),
             6,
         )
-    compile_module_graph = {
-        name: path
-        for name, path in import_plan.module_graph.items()
-        if name in import_plan.compile_modules
-    }
+    compile_module_graph = dict(import_plan.module_graph)
     prepare_execution_start = time.perf_counter()
     (
         frontend_layer_execution_context,

@@ -530,9 +530,10 @@ extension* (a `Ready`-at-image-start state), explicitly out of scope now
 ### 8.4 Binary size / tree-shaking
 
 The registry is the reachability spine: `compile_modules` (existing closure
-authority) rows only. Dead-module elimination shrinks N. The PHF and name
-table are the only string data; init preambles, string_eq chains, per-import
-name literals at call sites, and trace scaffolding all net-delete.
+authority) rows only. More precise plan roots and function-level
+reachability (doc 60) shrink N. The PHF and name table are the only string
+data; init preambles, string_eq chains, per-import name literals at call
+sites, and trace scaffolding all net-delete.
 
 ---
 
