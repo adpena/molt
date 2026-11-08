@@ -304,7 +304,10 @@ Stages (each lands one whole family; no build sees two identities for one callab
   the split worker template in `cli/wasm.py` and `tools/wasm_worker_template.js`; the browser
   ABI `reserved_runtime_callables` and `table_layout`; and the split runtime's base and gap
   inference in `wasm_artifact.py`. A linked build of the reserved-callable witness imports 1
-  reserved callable instead of 80 and no poll, and its app table holds no sentinel (main: 20).
+  reserved callable instead of 80 and no poll; its app table holds no sentinel (main: 20) and 2
+  reserved callables, both app-resolver entries of intrinsics the stdlib names (main: 79).
+  App-resolver entries for reserved callables keep slots, as on native; giving them keys is the
+  K1 follow-up.
   The deletions that edit HF-198's paths wait for HF-198 to land: `--table-base=191`
   (`runtime_wasm_build_spec.py`), `include_fixed_prefix` and the reserved link exports
   (`wasm_link_pipeline.py`), the generated `WASM_RESERVED_RUNTIME_CALLABLE_BASE`, the manifest's
@@ -330,8 +333,8 @@ Tests (CPython is the oracle):
 - E2: `test_wasm_reserved_runtime_callables_match_cpython` (a builtin through a function object
   at two arities, a starred call, bound methods, a variadic `Context.run`, keywords, and
   generator and coroutine methods; linked and split) and
-  `test_wasm_app_callable_table_reserves_no_runtime_region` (the app's table holds no runtime poll,
-  reserved callable or sentinel) in the same file; the backend's `keyed_callables` tests (a
+  `test_wasm_app_callable_table_reserves_no_runtime_region` (the app's table holds no runtime poll
+  and no sentinel, and a reserved callable at most once, as an app-resolver entry) in the same file; the backend's `keyed_callables` tests (a
   `builtin_func` stores the key; `UnpackArgs` gets an app trampoline, `CallFrame` none).
 
 ## Skeleton of the end state

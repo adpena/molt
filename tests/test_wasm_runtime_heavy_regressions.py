@@ -420,9 +420,14 @@ def _element_function_indices(module: bytes) -> list[int]:
 def test_wasm_app_callable_table_reserves_no_runtime_region(
     reserved_callables_build: _AsyncPollsBuild,
 ) -> None:
-    """HF-699 K3: the app's table holds no runtime poll, no reserved runtime
-    callable and no sentinel for one. Before E2 every app table started with
-    190 such slots, 20 of them sentinels in a linked build of this witness."""
+    """HF-699 K3: the app's table reserves no runtime region. It holds no
+    runtime poll and no sentinel, and a reserved runtime callable at most once,
+    as the app-resolver entry of an intrinsic the program names (giving those
+    entries keys is HF-699's follow-up). Before E2 every app table began with
+    the 190-slot prefix: a linked build of this witness held 79 reserved
+    callables there and 20 sentinels."""
+    from collections import Counter
+
     from molt._wasm_abi_generated import (
         WASM_CALL_INDIRECT_IMPORTS,
         WASM_POLL_TABLE_IMPORTS,
@@ -431,26 +436,34 @@ def test_wasm_app_callable_table_reserves_no_runtime_region(
     from molt.wasm_artifact import parse_wasm_exports
 
     module = _call_indirect_module(reserved_callables_build.manifest).read_bytes()
-    imports = {
-        wasm_import.name: wasm_import.index
-        for wasm_import in parse_wasm_imports(module)
-        if wasm_import.kind == 0 and wasm_import.module == "molt_runtime"
+    # Imported functions take the first function indices, in import order.
+    function_imports = [imp for imp in parse_wasm_imports(module) if imp.kind == 0]
+    runtime_imports = {
+        wasm_import.name: index
+        for index, wasm_import in enumerate(function_imports)
+        if wasm_import.module == "molt_runtime"
     }
-    runtime_owned = {
-        import_name
+    polls = {
+        runtime_imports[name]
+        for _slot, name in WASM_POLL_TABLE_IMPORTS
+        if name in runtime_imports
+    }
+    reserved = {
+        runtime_imports[import_name]
         for _index, _name, import_name, _arity, _dispatch in (
             WASM_RESERVED_RUNTIME_CALLABLES
         )
-    } | {name for _slot, name in WASM_POLL_TABLE_IMPORTS}
-    runtime_owned_indices = {imports[name] for name in runtime_owned if name in imports}
+        if import_name in runtime_imports
+    }
     exports = {
         export.name: export.index for export in parse_wasm_exports(module, kind=0)
     }
     sentinel = exports[WASM_CALL_INDIRECT_IMPORTS[0]] + len(WASM_CALL_INDIRECT_IMPORTS)
-    elements = _element_function_indices(module)
+    elements = Counter(_element_function_indices(module))
     assert elements, "the app publishes its own callable table"
-    assert not runtime_owned_indices.intersection(elements)
+    assert not polls.intersection(elements)
     assert sentinel not in elements
+    assert all(elements[index] == 1 for index in reserved.intersection(elements))
 
 
 # (module (import "host" "hit" (func (param i64) (result i64)))
