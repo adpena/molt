@@ -369,7 +369,8 @@ pub(crate) fn days_from_civil(year: i32, month: i32, day: i32) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+/// Windows has no `tm_gmtoff`; CPython derives the offset from the civil time.
+#[cfg(windows)]
 pub(crate) fn tm_to_epoch_seconds(tm: &libc::tm) -> i64 {
     let year = tm.tm_year + 1900;
     let month = tm.tm_mon + 1;
@@ -377,16 +378,6 @@ pub(crate) fn tm_to_epoch_seconds(tm: &libc::tm) -> i64 {
     let days = days_from_civil(year, month, day);
     let seconds = (tm.tm_hour as i64) * 3600 + (tm.tm_min as i64) * 60 + (tm.tm_sec as i64);
     days.saturating_mul(86_400).saturating_add(seconds)
-}
-
-#[cfg(unix)]
-pub(crate) fn offset_west_from_secs(secs: i64) -> Result<i64, String> {
-    let secs = secs as libc::time_t;
-    let local_tm = localtime_tm(secs)?;
-    let utc_tm = gmtime_tm(secs)?;
-    let local_secs = tm_to_epoch_seconds(&local_tm);
-    let utc_secs = tm_to_epoch_seconds(&utc_tm);
-    Ok(utc_secs.saturating_sub(local_secs))
 }
 
 /// One argument conversion owns the native Unicode view through every later
@@ -1002,177 +993,164 @@ pub(crate) fn strftime_wasm(format: &str, value: &ParsedTime) -> Result<String, 
     Ok(out)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn tzname_native() -> Result<(String, String), String> {
-    #[cfg(unix)]
-    unsafe {
-        unsafe extern "C" {
-            fn tzset();
-            static mut tzname: [*mut libc::c_char; 2];
-        }
-        tzset();
-        let std_ptr = tzname[0];
-        let dst_ptr = tzname[1];
-        if std_ptr.is_null() || dst_ptr.is_null() {
-            return Err("tzname unavailable".to_string());
-        }
-        let std_name = CStr::from_ptr(std_ptr).to_string_lossy().into_owned();
-        let dst_name = CStr::from_ptr(dst_ptr).to_string_lossy().into_owned();
-        Ok((std_name, dst_name))
-    }
-    #[cfg(windows)]
-    unsafe {
-        use windows_sys::Win32::System::Time::{
-            GetTimeZoneInformation, TIME_ZONE_ID_INVALID, TIME_ZONE_INFORMATION,
-        };
-        let mut info = TIME_ZONE_INFORMATION {
-            Bias: 0,
-            StandardName: [0u16; 32],
-            StandardDate: std::mem::zeroed(),
-            StandardBias: 0,
-            DaylightName: [0u16; 32],
-            DaylightDate: std::mem::zeroed(),
-            DaylightBias: 0,
-        };
-        let status = GetTimeZoneInformation(&mut info as *mut TIME_ZONE_INFORMATION);
-        if status == TIME_ZONE_ID_INVALID {
-            return Err("tzname unavailable".to_string());
-        }
-        let std_len = info
-            .StandardName
-            .iter()
-            .position(|&c| c == 0)
-            .unwrap_or(info.StandardName.len());
-        let dst_len = info
-            .DaylightName
-            .iter()
-            .position(|&c| c == 0)
-            .unwrap_or(info.DaylightName.len());
-        let std_name = String::from_utf16_lossy(&info.StandardName[..std_len]);
-        let dst_name = String::from_utf16_lossy(&info.DaylightName[..dst_len]);
-        Ok((std_name, dst_name))
-    }
+/// What `localtime` reports for one instant: `tm_gmtoff` (seconds east of UTC)
+/// and `tm_zone`.
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LocalZone {
+    pub(crate) utc_offset_east: i64,
+    pub(crate) label: String,
 }
 
+/// The `time` module's zone constants.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn timezone_native() -> Result<i64, String> {
-    #[cfg(unix)]
-    unsafe {
-        unsafe extern "C" {
-            fn tzset();
-            static mut timezone: libc::c_long;
-        }
-        tzset();
-        Ok(timezone)
-    }
-    #[cfg(windows)]
-    unsafe {
-        use windows_sys::Win32::System::Time::{
-            GetTimeZoneInformation, TIME_ZONE_ID_INVALID, TIME_ZONE_INFORMATION,
-        };
-        let mut info = TIME_ZONE_INFORMATION {
-            Bias: 0,
-            StandardName: [0u16; 32],
-            StandardDate: std::mem::zeroed(),
-            StandardBias: 0,
-            DaylightName: [0u16; 32],
-            DaylightDate: std::mem::zeroed(),
-            DaylightBias: 0,
-        };
-        let status = GetTimeZoneInformation(&mut info as *mut TIME_ZONE_INFORMATION);
-        if status == TIME_ZONE_ID_INVALID {
-            return Err("timezone unavailable".to_string());
-        }
-        let bias = info.Bias + info.StandardBias;
-        Ok((bias as i64) * 60)
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ZoneProfile {
+    pub(crate) timezone: i64,
+    pub(crate) altzone: i64,
+    pub(crate) daylight: i64,
+    pub(crate) tzname: (String, String),
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn daylight_native() -> Result<i64, String> {
-    #[cfg(unix)]
-    unsafe {
-        unsafe extern "C" {
-            fn tzset();
-            static mut daylight: libc::c_int;
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ZoneProfileError {
+    /// `localtime` failed at a sample instant.
+    Localtime(String),
+    /// A sampled offset is beyond 48 hours (CPython raises `RuntimeError`).
+    InvalidOffset,
+}
+
+#[cfg(unix)]
+impl ZoneProfileError {
+    pub(crate) fn message(&self) -> String {
+        match self {
+            Self::Localtime(message) => message.clone(),
+            Self::InvalidOffset => "invalid GMT offset".to_string(),
         }
-        tzset();
-        Ok(if daylight != 0 { 1 } else { 0 })
-    }
-    #[cfg(windows)]
-    unsafe {
-        use windows_sys::Win32::System::Time::{
-            GetTimeZoneInformation, TIME_ZONE_ID_INVALID, TIME_ZONE_INFORMATION,
-        };
-        let mut info = TIME_ZONE_INFORMATION {
-            Bias: 0,
-            StandardName: [0u16; 32],
-            StandardDate: std::mem::zeroed(),
-            StandardBias: 0,
-            DaylightName: [0u16; 32],
-            DaylightDate: std::mem::zeroed(),
-            DaylightBias: 0,
-        };
-        let status = GetTimeZoneInformation(&mut info as *mut TIME_ZONE_INFORMATION);
-        if status == TIME_ZONE_ID_INVALID {
-            return Err("daylight unavailable".to_string());
-        }
-        Ok(if info.DaylightDate.wMonth != 0 { 1 } else { 0 })
     }
 }
 
 #[cfg(unix)]
-pub(crate) fn sample_offset_west_native(year: i32, month: i32, day: i32) -> Result<i64, String> {
-    let days = days_from_civil(year, month, day);
-    let secs = days.saturating_mul(86_400).saturating_add(12 * 3600);
-    offset_west_from_secs(secs)
+const ZONE_SAMPLE_YEAR_SECONDS: i64 = (365 * 24 + 6) * 3600;
+#[cfg(unix)]
+const MAX_ZONE_OFFSET_SECONDS: i64 = 48 * 3600;
+#[cfg(unix)]
+const ZONE_NAME_MAX_BYTES: usize = 9;
+
+#[cfg(unix)]
+fn sampled_zone_name(label: &str) -> String {
+    let bytes = label.as_bytes();
+    String::from_utf8_lossy(&bytes[..bytes.len().min(ZONE_NAME_MAX_BYTES)]).into_owned()
+}
+
+/// CPython's `init_timezone` (`Modules/timemodule.c`, unchanged from 3.12 to
+/// 3.14) on builds without a `tzname` declaration: every Unix
+/// python-build-standalone and WASI build. It samples `localtime` at the start
+/// of the current sample year and half a year later, swaps the two for the
+/// southern hemisphere, and keeps at most nine bytes of each zone name.
+#[cfg(unix)]
+pub(crate) fn zone_profile_from_samples(
+    now: i64,
+    mut sample: impl FnMut(i64) -> Result<LocalZone, String>,
+) -> Result<ZoneProfile, ZoneProfileError> {
+    let jan_t = (now / ZONE_SAMPLE_YEAR_SECONDS) * ZONE_SAMPLE_YEAR_SECONDS;
+    let jan = sample(jan_t).map_err(ZoneProfileError::Localtime)?;
+    let jul = sample(jan_t + ZONE_SAMPLE_YEAR_SECONDS / 2).map_err(ZoneProfileError::Localtime)?;
+    let janzone = -jan.utc_offset_east;
+    let julyzone = -jul.utc_offset_east;
+    let admitted = -MAX_ZONE_OFFSET_SECONDS..=MAX_ZONE_OFFSET_SECONDS;
+    if !admitted.contains(&janzone) || !admitted.contains(&julyzone) {
+        return Err(ZoneProfileError::InvalidOffset);
+    }
+    let jan_name = sampled_zone_name(&jan.label);
+    let july_name = sampled_zone_name(&jul.label);
+    let daylight = i64::from(janzone != julyzone);
+    Ok(if janzone < julyzone {
+        // DST is reversed in the southern hemisphere.
+        ZoneProfile {
+            timezone: julyzone,
+            altzone: janzone,
+            daylight,
+            tzname: (july_name, jan_name),
+        }
+    } else {
+        ZoneProfile {
+            timezone: janzone,
+            altzone: julyzone,
+            daylight,
+            tzname: (jan_name, july_name),
+        }
+    })
+}
+
+/// `localtime` for one instant, as CPython's `get_zone` and `get_gmtoff` read
+/// it: a missing `tm_zone` reads as three spaces.
+#[cfg(unix)]
+pub(crate) fn local_zone(secs: i64) -> Result<LocalZone, String> {
+    let tm = localtime_tm(secs as libc::time_t)?;
+    let label = if tm.tm_zone.is_null() {
+        "   ".to_string()
+    } else {
+        unsafe { CStr::from_ptr(tm.tm_zone) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    Ok(LocalZone {
+        utc_offset_east: molt_codegen_abi::c_width::c_long_to_i64(tm.tm_gmtoff),
+        label,
+    })
+}
+
+#[cfg(unix)]
+pub(crate) fn zone_profile_native() -> Result<ZoneProfile, String> {
+    zone_profile_from_samples(current_epoch_secs_i64()?, local_zone).map_err(|err| err.message())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn tzname_native() -> Result<(String, String), String> {
+    Ok(zone_profile_native()?.tzname)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn timezone_native() -> Result<i64, String> {
+    Ok(zone_profile_native()?.timezone)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn daylight_native() -> Result<i64, String> {
+    Ok(zone_profile_native()?.daylight)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn altzone_native() -> Result<i64, String> {
-    let std_offset = timezone_native()?;
-    if daylight_native()? == 0 {
-        return Ok(std_offset);
+    Ok(zone_profile_native()?.altzone)
+}
+
+/// CPython on Windows declares `tzname` (`PC/pyconfig.h`) and has no
+/// `altzone`, so `init_timezone` takes its declared branch: `altzone` is
+/// `timezone - 3600`, and the names are `GetTimeZoneInformation`'s.
+#[cfg(windows)]
+pub(crate) fn zone_profile_native() -> Result<ZoneProfile, String> {
+    use windows_sys::Win32::System::Time::{
+        GetTimeZoneInformation, TIME_ZONE_ID_INVALID, TIME_ZONE_INFORMATION,
+    };
+    let mut info: TIME_ZONE_INFORMATION = unsafe { std::mem::zeroed() };
+    let status = unsafe { GetTimeZoneInformation(&mut info as *mut TIME_ZONE_INFORMATION) };
+    if status == TIME_ZONE_ID_INVALID {
+        return Err("timezone unavailable".to_string());
     }
-    #[cfg(windows)]
-    unsafe {
-        use windows_sys::Win32::System::Time::{
-            GetTimeZoneInformation, TIME_ZONE_ID_INVALID, TIME_ZONE_INFORMATION,
-        };
-        let mut info = TIME_ZONE_INFORMATION {
-            Bias: 0,
-            StandardName: [0u16; 32],
-            StandardDate: std::mem::zeroed(),
-            StandardBias: 0,
-            DaylightName: [0u16; 32],
-            DaylightDate: std::mem::zeroed(),
-            DaylightBias: 0,
-        };
-        let status = GetTimeZoneInformation(&mut info as *mut TIME_ZONE_INFORMATION);
-        if status == TIME_ZONE_ID_INVALID {
-            return Err("altzone unavailable".to_string());
-        }
-        let bias = info.Bias + info.DaylightBias;
-        Ok((bias as i64) * 60)
-    }
-    #[cfg(unix)]
-    {
-        let now = current_epoch_secs_i64()?;
-        let local_tm = localtime_tm(now as libc::time_t)?;
-        let year = local_tm.tm_year + 1900;
-        let jan = sample_offset_west_native(year, 1, 1).unwrap_or(std_offset);
-        let jul = sample_offset_west_native(year, 7, 1).unwrap_or(std_offset);
-        if jan != std_offset && jul == std_offset {
-            return Ok(jan);
-        }
-        if jul != std_offset && jan == std_offset {
-            return Ok(jul);
-        }
-        if jan != jul {
-            return Ok(std::cmp::min(jan, jul));
-        }
-        Ok(jan)
-    }
+    let wide_name = |name: &[u16]| {
+        let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+        String::from_utf16_lossy(&name[..len])
+    };
+    let timezone = i64::from(info.Bias + info.StandardBias) * 60;
+    Ok(ZoneProfile {
+        timezone,
+        altzone: timezone - 3600,
+        daylight: i64::from(info.DaylightDate.wMonth != 0),
+        tzname: (wide_name(&info.StandardName), wide_name(&info.DaylightName)),
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1256,4 +1234,88 @@ pub(crate) fn mktime_wasm(parts: TimeParts) -> Result<f64, String> {
         guess
     };
     Ok(utc_secs as f64)
+}
+
+#[cfg(all(test, unix))]
+mod zone_profile_tests {
+    use super::{LocalZone, ZoneProfile, ZoneProfileError, zone_profile_from_samples};
+
+    const YEAR: i64 = (365 * 24 + 6) * 3600;
+
+    fn zone(utc_offset_east: i64, label: &str) -> LocalZone {
+        LocalZone {
+            utc_offset_east,
+            label: label.to_string(),
+        }
+    }
+
+    fn profile(jan: LocalZone, jul: LocalZone) -> Result<ZoneProfile, ZoneProfileError> {
+        let now = 1_794_000_000;
+        let jan_t = (now / YEAR) * YEAR;
+        zone_profile_from_samples(now, |t| {
+            if t == jan_t {
+                Ok(jan.clone())
+            } else if t == jan_t + YEAR / 2 {
+                Ok(jul.clone())
+            } else {
+                Err(format!("unexpected sample instant {t}"))
+            }
+        })
+    }
+
+    fn expected(timezone: i64, altzone: i64, daylight: i64, names: (&str, &str)) -> ZoneProfile {
+        ZoneProfile {
+            timezone,
+            altzone,
+            daylight,
+            tzname: (names.0.to_string(), names.1.to_string()),
+        }
+    }
+
+    // Expected values are CPython 3.12.16's on macOS and Linux for the same
+    // zones (TZ=UTC, America/Chicago, Australia/Sydney, Asia/Kolkata).
+    #[test]
+    fn matches_cpython_for_zones_without_daylight_saving() {
+        assert_eq!(
+            profile(zone(0, "UTC"), zone(0, "UTC")),
+            Ok(expected(0, 0, 0, ("UTC", "UTC")))
+        );
+        assert_eq!(
+            profile(zone(19_800, "IST"), zone(19_800, "IST")),
+            Ok(expected(-19_800, -19_800, 0, ("IST", "IST")))
+        );
+    }
+
+    #[test]
+    fn matches_cpython_north_and_south_of_the_equator() {
+        assert_eq!(
+            profile(zone(-21_600, "CST"), zone(-18_000, "CDT")),
+            Ok(expected(21_600, 18_000, 1, ("CST", "CDT")))
+        );
+        assert_eq!(
+            profile(zone(39_600, "AEDT"), zone(36_000, "AEST")),
+            Ok(expected(-36_000, -39_600, 1, ("AEST", "AEDT")))
+        );
+    }
+
+    #[test]
+    fn keeps_nine_bytes_of_a_zone_name_and_refuses_offsets_beyond_two_days() {
+        assert_eq!(
+            profile(zone(0, "ABCDEFGHIJK"), zone(0, "ABCDEFGHIJK")),
+            Ok(expected(0, 0, 0, ("ABCDEFGHI", "ABCDEFGHI")))
+        );
+        assert_eq!(
+            profile(zone(49 * 3600, "X"), zone(0, "Y")),
+            Err(ZoneProfileError::InvalidOffset)
+        );
+    }
+
+    #[test]
+    fn a_failed_sample_is_an_error_not_a_default() {
+        let failed = zone_profile_from_samples(0, |_| Err("localtime failed".to_string()));
+        assert_eq!(
+            failed,
+            Err(ZoneProfileError::Localtime("localtime failed".to_string()))
+        );
+    }
 }
