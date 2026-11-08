@@ -2321,6 +2321,13 @@ def test_native_poll_keys_follow_manifest_slots_in_runtime_and_compiler() -> Non
     compiler = gen.render_runtime_callable_abi_rs(data)
     keys = compiler.split("pub fn runtime_poll_native_key(symbol: &str)", 1)[1]
     assert "const BASE: u64 = 0xFFFFFF0000000100;" in keys
+    # The WASM backend seeds runtime poll identities with the same keys
+    # (HF-699 K1), from one generator constant.
+    backend = gen._render_rs_runtime_callables(data, gen._runtime_import_variants(data))
+    assert (
+        "pub(crate) const RUNTIME_POLL_CALLABLE_KEY_BASE: u64 = 0xFFFFFF0000000100;"
+        in backend
+    )
     assert "RUNTIME_CALLABLE_KEY_BASE: u64 = 0xFFFFFF0000000000;" in rendered
     assert "RUNTIME_CALLABLE_KEY_BASE + 0x100;" in rendered
     expected = {

@@ -7097,7 +7097,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_TRACE_POLL_RETURN",
       "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/poll.rs",
-      "summary": "Set to 1 on the wasm32 runtime to print the poll function kind (async_sleep, promise, the asyncio watchers and others) and result on stderr after every indirect poll call; the read is compiled only for wasm32, happens once per process, and unset or any other value prints nothing.",
+      "summary": "Set to 1 on the wasm32 runtime to print the poll function kind (async_sleep, promise, the asyncio watchers and others) and result on stderr after every poll call; the read is compiled only for wasm32, happens once per process, and unset or any other value prints nothing.",
       "values": []
     },
     {
@@ -8111,7 +8111,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_WASM_POLL_DEBUG",
       "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/poll.rs",
-      "summary": "Set to 1 to print each async poll function address, with its normalized wasm table address when they differ, to stderr from the wasm32 runtime; any other value is off and native builds never read it.",
+      "summary": "Set to 1 to print each async poll identity (a runtime poll key or a compiled poll's table index) to stderr from the wasm32 runtime; any other value is off and native builds never read it.",
       "values": []
     },
     {

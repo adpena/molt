@@ -5,8 +5,8 @@ use crate::wasm_abi::{NATIVE_CALLABLE_IMPORT_MODULE, RUNTIME_IMPORT_MODULE};
 use crate::wasm_binary::{emit_call_indirect, encode_u32_leb128_padded, strip_unused_imports};
 use crate::wasm_data::WasmDataSegments;
 use crate::wasm_table::{
-    TableRelocSite, WasmCallableTableAddress, WasmCallableTableRole, WasmCallableTableTarget,
-    WasmFunctionSymbol, WasmTableRelocations,
+    TableRelocSite, WasmCallableTableAddress, WasmCallableTableRole, WasmCallableTableSlot,
+    WasmCallableTableTarget, WasmFunctionSymbol, WasmTableRelocations,
 };
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -331,14 +331,14 @@ fn table_reloc_sites_use_symbol_identity_after_import_strip() {
         2,
         3,
         &mut second,
-        &WasmCallableTableTarget {
+        &WasmCallableTableTarget::TableSlot(WasmCallableTableSlot {
             current_table_index: 4101,
             address: WasmCallableTableAddress::Relocatable(WasmFunctionSymbol::RuntimeImport(
                 crate::wasm_abi_generated::wasm_runtime_import("abc_bootstrap")
                     .expect("generated abc_bootstrap import"),
             )),
             role: WasmCallableTableRole::DirectCallable,
-        },
+        }),
     );
     second.instruction(&Instruction::Drop);
     table_relocations.emit_i64(
@@ -346,13 +346,13 @@ fn table_reloc_sites_use_symbol_identity_after_import_strip() {
         2,
         3,
         &mut second,
-        &WasmCallableTableTarget {
+        &WasmCallableTableTarget::TableSlot(WasmCallableTableSlot {
             current_table_index: 4102,
             address: WasmCallableTableAddress::Relocatable(WasmFunctionSymbol::Defined {
                 defined_func_index: 0,
             }),
             role: WasmCallableTableRole::Trampoline,
-        },
+        }),
     );
     second.instruction(&Instruction::Drop);
     second.instruction(&Instruction::End);
@@ -428,7 +428,7 @@ fn native_initializer_table_reloc_resolves_native_import_symbol_after_import_str
         3,
         3,
         &mut body,
-        &WasmCallableTableTarget {
+        &WasmCallableTableTarget::TableSlot(WasmCallableTableSlot {
             current_table_index: 4101,
             address: WasmCallableTableAddress::Relocatable(
                 WasmFunctionSymbol::NativeCallableImport {
@@ -436,7 +436,7 @@ fn native_initializer_table_reloc_resolves_native_import_symbol_after_import_str
                 },
             ),
             role: WasmCallableTableRole::DirectCallable,
-        },
+        }),
     );
     body.instruction(&Instruction::Drop);
     body.instruction(&Instruction::End);
@@ -474,13 +474,13 @@ fn fixed_shared_runtime_table_address_emits_no_linker_relocation() {
         0,
         0,
         &mut body,
-        &WasmCallableTableTarget {
+        &WasmCallableTableTarget::TableSlot(WasmCallableTableSlot {
             current_table_index: 4097,
             address: WasmCallableTableAddress::FixedSharedRuntimeAbi {
                 finalized_app_base: 8192,
             },
             role: WasmCallableTableRole::DirectCallable,
-        },
+        }),
     );
 
     assert!(
@@ -563,7 +563,7 @@ fn wasm_ld_applies_shifted_table_relocations_to_indirect_calls() {
         0,
         1,
         &mut prefix_invoke,
-        &WasmCallableTableTarget {
+        &WasmCallableTableSlot {
             current_table_index: FIXED_RUNTIME_SLOT,
             address: WasmCallableTableAddress::FixedSharedRuntimeAbi {
                 finalized_app_base: FINALIZED_APP_BASE,
@@ -584,7 +584,7 @@ fn wasm_ld_applies_shifted_table_relocations_to_indirect_calls() {
         0,
         2,
         &mut candidate_invoke,
-        &WasmCallableTableTarget {
+        &WasmCallableTableSlot {
             current_table_index: 0,
             address: WasmCallableTableAddress::Relocatable(WasmFunctionSymbol::Defined {
                 defined_func_index: 0,

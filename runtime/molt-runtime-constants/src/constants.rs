@@ -59,11 +59,6 @@ pub const fn wasm_table_base() -> u64 {
     WASM_TABLE_BASE_FALLBACK
 }
 
-#[inline]
-pub const fn wasm_table_base_fallback() -> u64 {
-    WASM_TABLE_BASE_FALLBACK
-}
-
 pub const MAX_SMALL_LIST: usize = 16;
 pub const ITER_EXHAUSTED: usize = usize::MAX;
 

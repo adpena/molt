@@ -58,6 +58,7 @@ impl WasmModuleTypeLayout {
                 .exports
                 .export(spec.import_name, ExportKind::Func, backend.func_count);
             let mut call_indirect = Function::new_with_locals_types(Vec::new());
+            emit_reject_non_table_index(&mut call_indirect);
             for idx in 0..arity {
                 call_indirect.instruction(&Instruction::LocalGet((idx + 1) as u32));
             }
@@ -79,6 +80,20 @@ impl WasmModuleTypeLayout {
         backend.func_count += 1;
         sentinel_func_idx
     }
+}
+
+/// HF-699 K2: an index above `u32::MAX` is a runtime key or a stray word,
+/// never a table slot. `i32.wrap_i64` would keep its low 32 bits and call a
+/// live slot, so the entry traps first. This guard is the only `unreachable`
+/// in a `molt_call_indirectN` body, so the trapping frame names the cause.
+/// It costs one compare and one predicted branch per call.
+fn emit_reject_non_table_index(func: &mut Function) {
+    func.instruction(&Instruction::LocalGet(0));
+    func.instruction(&Instruction::I64Const(i64::from(u32::MAX)));
+    func.instruction(&Instruction::I64GtU);
+    func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
+    func.instruction(&Instruction::Unreachable);
+    func.instruction(&Instruction::End);
 }
 
 #[cfg(test)]

@@ -2,8 +2,11 @@ use std::collections::BTreeMap;
 
 use wasm_encoder::{Function, Instruction};
 
+use super::callable_table::CallableIdentity;
 use crate::wasm::WasmBackend;
-use crate::wasm_abi::{POLL_TABLE_IMPORTS, WasmRuntimeImport, poll_table_import_slot};
+use crate::wasm_abi::{
+    POLL_TABLE_IMPORTS, RUNTIME_POLL_CALLABLE_KEY_BASE, WasmRuntimeImport, poll_table_import_slot,
+};
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_options::WasmRuntimePollSlots;
@@ -15,6 +18,10 @@ use crate::wasm_options::WasmRuntimePollSlots;
 /// its poll functions; the app does not import an absent one, and its slot
 /// holds the sentinel. No future can name an absent slot: the runtime that
 /// would create it lacks the feature that defines the poll function.
+///
+/// HF-699 E1: compiled code names a runtime poll by its key, never by these
+/// slots, so the prefix is unused. It stays until E2 deletes the prefix, the
+/// table base and the host dispatch in one change.
 pub(super) struct WasmPollTableLayout {
     prefix_len: u32,
     runtime_slots: WasmRuntimePollSlots,
@@ -101,12 +108,23 @@ impl WasmPollTableLayout {
         table_indices
     }
 
-    pub(super) fn seed_function_table_slots(&self, func_to_table_idx: &mut BTreeMap<String, u32>) {
+    /// Seeds each runtime poll's identity with its key constant
+    /// (`RUNTIME_POLL_CALLABLE_KEY_BASE` + poll table slot), not a table slot
+    /// (HF-699 K1, K5). The runtime resolves the key through its generated
+    /// key table on every target. Only polls the bound runtime defines get an
+    /// identity, so no code can name a poll the runtime lacks.
+    pub(super) fn seed_function_table_slots(
+        &self,
+        identities: &mut BTreeMap<String, CallableIdentity>,
+    ) {
         for (_, import) in self.defined_imports() {
             let table_slot = poll_table_import_slot(import).unwrap_or_else(|| {
                 panic!("missing generated poll table slot for {}", import.name())
             });
-            func_to_table_idx.insert(import.runtime_export_name().to_string(), table_slot);
+            identities.insert(
+                import.runtime_export_name().to_string(),
+                CallableIdentity::RuntimeKey(runtime_poll_key(table_slot)),
+            );
         }
     }
 }
@@ -117,4 +135,9 @@ fn safe_table_index(idx: u32, sentinel_func_idx: u32) -> u32 {
     } else {
         idx
     }
+}
+
+/// The key of the runtime poll at manifest `table_slot` (HF-699 K1).
+pub(super) fn runtime_poll_key(table_slot: u32) -> u64 {
+    RUNTIME_POLL_CALLABLE_KEY_BASE + u64::from(table_slot)
 }

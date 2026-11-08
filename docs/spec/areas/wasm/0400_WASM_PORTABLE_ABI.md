@@ -97,6 +97,10 @@ modules; product startup tests cover runtime/app initialization ordering.
 
 ### Callable-table execution-state admission
 
+HF-699 retires this protocol: runtime callables become keys and the table
+reserves no runtime region ([wasm_hosts.md §6](../../../design/wasm_hosts.md)).
+Stage E1 (runtime polls) leaves the protocol below unchanged; E2 rewrites it.
+
 `prepareWasmTableAdmission` and `publishWasmTableAdmission` in
 `wasm/loader_bridge.js` own this protocol for Node, browser, minimal embeds and
 both Worker generators, in linked and split-runtime modes. The Rust deployment
@@ -306,6 +310,9 @@ poll table itself becomes reachability-sliced. A slot is a root only when the
 bound runtime defines its poll function: the codegen layout passes that set as
 `MOLT_WASM_RUNTIME_POLL_SLOTS`, and an absent slot holds the sentinel and adds
 no import (a runtime without `stdlib_net` defines no networking poll function).
+Since HF-699 stage E1 no code names these slots: a runtime poll's identity is
+its key, which the runtime resolves itself, so the slots are unused until E2
+deletes the prefix.
 If an ordinary callable is not
 observed, it must be absent from the app import section, absent from any
 app-local resolver table, and unavailable as a fake fallback symbol.

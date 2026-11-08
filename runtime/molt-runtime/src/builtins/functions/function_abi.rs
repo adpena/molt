@@ -82,20 +82,6 @@ pub(crate) fn canonicalize_runtime_callable_key(fn_ptr: u64) -> u64 {
     fn_ptr
 }
 
-/// Runtime poll entries accept object words; compiled poll entries accept raw
-/// payload addresses. The manifest owns a dense, disjoint interval for each
-/// target's runtime poll identities. This check is on the hot dispatch path.
-#[inline]
-pub(crate) fn runtime_poll_uses_object_argument(poll_fn: u64) -> bool {
-    #[cfg(target_arch = "wasm32")]
-    let base = crate::wasm_table_base();
-    #[cfg(not(target_arch = "wasm32"))]
-    let base = wasm_callables::RUNTIME_POLL_CALLABLE_KEY_BASE;
-    poll_fn
-        .checked_sub(base)
-        .is_some_and(|slot| (1..=wasm_callables::WASM_POLL_SLOT_MAX_OFFSET).contains(&slot))
-}
-
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn reserved_wasm_runtime_callable_info(
     fn_ptr: u64,
@@ -270,18 +256,40 @@ pub(crate) fn runtime_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
         .map(|target| target.0)
 }
 
-/// Resolve the executable target of a task's poll identity. A named key
-/// resolves only through the generated table. An address key is its own
-/// target (`runtime_fn_key` publishes the address itself), so each resume
-/// takes no registry lock.
-#[cfg(not(target_arch = "wasm32"))]
+/// What a task's stored poll identity calls (HF-699 K2, K4). The variant also
+/// fixes the argument convention, so one resolution serves both.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum PollTarget {
+    /// A runtime poll, resolved from its key. It takes the task's object word.
+    /// On wasm32 the pointer is the runtime's own table slot, which wasm-ld
+    /// assigns and the runtime's element segment publishes in every layout.
+    Runtime(extern "C" fn(u64) -> i64),
+    /// A compiled poll: the identity the app stored, which is its table index
+    /// on wasm32 and its code address on native. It takes the raw payload
+    /// address of the task.
+    AppTableIndex(u64),
+}
+
+/// Resolve a stored poll identity: a named key through the generated table,
+/// otherwise the app's table index. Requires: `poll_fn` is a key or an app
+/// table index (K1). Returns `None` for a named key that names no runtime
+/// poll in this build, and for zero or a value wider than the target's
+/// machine word, which no table index or code address can be.
+/// This runs on every resume; it takes no lock and allocates nothing.
 #[inline]
-pub(crate) fn runtime_poll_call_target(poll_fn: u64) -> Option<*const ()> {
+pub(crate) fn runtime_poll_call_target(poll_fn: u64) -> Option<PollTarget> {
     if runtime_callable_key_is_named(poll_fn) {
-        wasm_callables::runtime_callable_target_ptr(poll_fn)
-    } else {
-        crate::provenance::abi::function_ptr(poll_fn)
+        let target = wasm_callables::runtime_poll_callable_target_ptr(poll_fn)?;
+        // SAFETY: the generated poll table holds only manifest runtime polls,
+        // and the manifest validator admits a poll only with the unary
+        // (i64) -> i64 ABI, which is `extern "C" fn(u64) -> i64`.
+        let poll = unsafe { std::mem::transmute::<*const (), extern "C" fn(u64) -> i64>(target) };
+        return Some(PollTarget::Runtime(poll));
     }
+    if poll_fn == 0 || crate::provenance::abi::address(poll_fn).is_none() {
+        return None;
+    }
+    Some(PollTarget::AppTableIndex(poll_fn))
 }
 
 #[inline]
@@ -3041,13 +3049,17 @@ mod wasm_runtime_callable_tests {
     }
 
     #[test]
-    #[cfg(not(target_arch = "wasm32"))]
     fn poll_dispatch_never_treats_a_named_key_as_an_address() {
         let past_the_poll_interval = wasm_callables::RUNTIME_POLL_CALLABLE_KEY_BASE
             + wasm_callables::WASM_POLL_SLOT_MAX_OFFSET
             + 1;
         assert!(runtime_callable_key_is_named(past_the_poll_interval));
-        assert_eq!(runtime_poll_call_target(past_the_poll_interval), None);
+        assert!(runtime_poll_call_target(past_the_poll_interval).is_none());
+        // A reserved runtime callable's key is a key, not a poll: poll
+        // dispatch refuses it instead of calling a non-poll function.
+        let reserved = fn_key!(crate::molt_type_init);
+        assert!(runtime_callable_key_is_named(reserved));
+        assert!(runtime_poll_call_target(reserved).is_none());
     }
 
     #[test]

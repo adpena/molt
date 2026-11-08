@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+import json
 import os
 import subprocess
 import sys
@@ -8,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from molt.node_runtime import resolve_node_runtime
-from molt.wasm_artifact import wasm_runtime_manifest_path
+from molt.wasm_artifact import parse_wasm_imports, wasm_runtime_manifest_path
 from tests.wasm_runtime_heavy_witnesses import WasmWitnessLayout, heavy_wasm_witness
 from tests.wasm_linked_runner import (
     _run_wasm_test_process,
@@ -79,19 +81,19 @@ def test_wasm_asyncio_task_basic_has_no_table_ref_trap(
     _assert_no_recursive_mutex_panic(run.stderr)
 
 
-def _run_wasm_layout(
+def _build_wasm_layout(
     root: Path,
     src: Path,
     tmp_path: Path,
     layout: WasmWitnessLayout,
     *,
     extra_args: tuple[str, ...],
-) -> subprocess.CompletedProcess[str]:
-    node = resolve_node_runtime(source_root=root, guard_prefix="MOLT_WASM_TEST")
+) -> Path:
+    """Build one layout and return its execution manifest."""
     if layout == "linked":
         output = build_wasm_linked(root, src, tmp_path, extra_args=list(extra_args))
-        manifest = wasm_runtime_manifest_path(output)
-    elif layout == "split":
+        return wasm_runtime_manifest_path(output)
+    if layout == "split":
         from tests.test_wasm_split_runtime import _build_split
 
         output_dir = tmp_path / "split"
@@ -101,9 +103,26 @@ def _run_wasm_layout(
             extra_args=list(extra_args),
         )
         assert build.returncode == 0, build.stdout + build.stderr
-        manifest = output_dir / "manifest.json"
-    else:
-        raise ValueError(f"Unsupported heavy WASM execution layout: {layout!r}")
+        return output_dir / "manifest.json"
+    raise ValueError(f"Unsupported heavy WASM execution layout: {layout!r}")
+
+
+def _run_wasm_layout(
+    root: Path,
+    src: Path,
+    tmp_path: Path,
+    layout: WasmWitnessLayout,
+    *,
+    extra_args: tuple[str, ...],
+) -> subprocess.CompletedProcess[str]:
+    manifest = _build_wasm_layout(root, src, tmp_path, layout, extra_args=extra_args)
+    return _run_wasm_manifest(root, tmp_path, manifest)
+
+
+def _run_wasm_manifest(
+    root: Path, tmp_path: Path, manifest: Path
+) -> subprocess.CompletedProcess[str]:
+    node = resolve_node_runtime(source_root=root, guard_prefix="MOLT_WASM_TEST")
     env = os.environ.copy()
     for key in (
         "MOLT_WASM_TABLE_BASE",
@@ -290,3 +309,193 @@ def test_wasm_open_reports_all_missing_grants_before_mutation(tmp_path: Path) ->
             sentinel if missing is not None else payload
         ), diagnostic
         _assert_no_recursive_mutex_panic(run.stderr)
+
+
+@dataclass(frozen=True)
+class _AsyncPollsBuild:
+    layout: WasmWitnessLayout
+    source: Path
+    work: Path
+    manifest: Path
+
+
+@pytest.fixture(scope="module", params=["linked", "split"])
+def async_polls_build(
+    request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
+) -> _AsyncPollsBuild:
+    """One build per layout of the HF-699 witness, shared by its tests."""
+    layout: WasmWitnessLayout = request.param
+    root = Path(__file__).resolve().parents[1]
+    work = tmp_path_factory.mktemp(f"async-polls-{layout}")
+    witness = heavy_wasm_witness("async-polls", layout)
+    source = witness.materialize(root, work)
+    manifest = _build_wasm_layout(
+        root, source, work, layout, extra_args=witness.extra_args
+    )
+    return _AsyncPollsBuild(layout, source, work, manifest)
+
+
+def test_wasm_runtime_polls_match_cpython(async_polls_build: _AsyncPollsBuild) -> None:
+    """HF-699: a runtime poll's identity is its key on every target, and the
+    runtime calls the resolved poll itself. A split build trapped on the first
+    ``await asyncio.sleep`` with ``molt_call_indirect1 missing table entry at
+    2``: slot 2 was ``async_sleep_poll`` in a poll region nothing filled."""
+    root = Path(__file__).resolve().parents[1]
+    build = async_polls_build
+    expected = _run_wasm_test_process(
+        [sys.executable, str(build.source)], role="tool", cwd=build.work, check=True
+    ).stdout
+    run = _run_wasm_manifest(root, build.work, build.manifest)
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout == expected
+    assert "missing table entry" not in run.stderr, run.stderr
+    _assert_no_recursive_mutex_panic(run.stderr)
+
+
+# (module (import "host" "hit" (func (param i64) (result i64)))
+#         (func (export "f") (param i64) (result i64) local.get 0 call 0))
+_RECORDER_WASM = (
+    b"\x00asm\x01\x00\x00\x00\x01\x06\x01\x60\x01\x7e\x01\x7e"
+    b"\x02\x0c\x01\x04host\x03hit\x00\x00\x03\x02\x01\x00"
+    b"\x07\x05\x01\x01f\x00\x01\x0a\x08\x01\x06\x00\x20\x00\x10\x00\x0b"
+)
+
+# Instantiates one built module with inert imports, installs a recorder at
+# the slot a wrapped key would reach, then calls molt_call_indirect1 with the
+# slot (control) and with the key. Every runtime import throws if called.
+_CALL_INDIRECT_KEY_PROBE = r"""
+const fs = require('fs');
+const spec = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const wasmModule = new WebAssembly.Module(fs.readFileSync(spec.module));
+let hits = 0;
+const recorder = new WebAssembly.Instance(
+  new WebAssembly.Module(Uint8Array.from(spec.recorder)),
+  {host: {hit: () => { hits += 1; return 7n; }}},
+).exports.f;
+const imports = {};
+let table = null;
+for (const entry of spec.imports) {
+  const namespace = (imports[entry.module] ??= {});
+  if (entry.kind === 'function') {
+    namespace[entry.name] = () => {
+      throw new Error(`unexpected import call ${entry.module}.${entry.name}`);
+    };
+  } else if (entry.kind === 'table') {
+    table = new WebAssembly.Table({initial: entry.minimum, element: 'anyfunc'});
+    namespace[entry.name] = table;
+  } else if (entry.kind === 'memory') {
+    const descriptor = {initial: entry.minimum};
+    if (entry.maximum !== null) descriptor.maximum = entry.maximum;
+    if (entry.shared) descriptor.shared = true;
+    namespace[entry.name] = new WebAssembly.Memory(descriptor);
+  } else if (entry.kind === 'global') {
+    const zero = entry.value === 'i64' ? 0n : 0;
+    namespace[entry.name] = new WebAssembly.Global(
+      {value: entry.value, mutable: entry.mutable}, zero);
+  } else {
+    throw new Error(`unsupported import kind ${entry.kind}`);
+  }
+}
+const instance = new WebAssembly.Instance(wasmModule, imports);
+table ??= instance.exports.molt_table ?? instance.exports.__indirect_function_table;
+const callIndirect = instance.exports.molt_call_indirect1;
+if (typeof callIndirect !== 'function') throw new Error('molt_call_indirect1 export missing');
+const key = BigInt(spec.key);
+const slot = Number(key & 0xffffffffn);
+if (table.length <= slot) table.grow(slot + 1 - table.length);
+table.set(slot, recorder);
+const control = callIndirect(BigInt(slot), 5n);
+const controlHits = hits;
+let error = null;
+try {
+  callIndirect(key, 5n);
+} catch (caught) {
+  error = caught;
+}
+console.log(JSON.stringify({
+  control: String(control),
+  controlHits,
+  keyHits: hits - controlHits,
+  trap: error instanceof WebAssembly.RuntimeError,
+  message: error === null ? null : String(error.message),
+  stack: error === null ? null : String(error.stack),
+}));
+"""
+
+_WASM_VALUE_TYPES = {0x7F: "i32", 0x7E: "i64", 0x7D: "f32", 0x7C: "f64"}
+_WASM_IMPORT_KINDS = {0: "function", 1: "table", 2: "memory", 3: "global"}
+
+
+def _call_indirect_module(manifest: Path) -> Path:
+    """The app object the backend emitted for this build (``output.wasm``).
+
+    It defines the ``molt_call_indirectN`` exports. A linked build binds the
+    runtime's imports to them, and wasm-ld copies their bodies unchanged and
+    exports none, so the runtime is their only caller. A split build's final
+    ``app.wasm`` drops them, because the host serves the runtime's
+    ``molt_call_indirectN`` imports itself (that host dispatch goes in E2)."""
+    app_object = manifest.parent / "output.wasm"
+    assert app_object.is_file(), f"build left no app object beside {manifest}"
+    return app_object
+
+
+def test_wasm_call_indirect_rejects_runtime_keys(
+    async_polls_build: _AsyncPollsBuild,
+) -> None:
+    """HF-699 K2: every exported ``molt_call_indirectN`` traps on an index
+    above ``u32::MAX``. ``i32.wrap_i64`` kept a key's low 32 bits, so a key
+    called whatever function sat at that slot."""
+    from molt._wasm_abi_generated import WASM_CALL_INDIRECT_IMPORTS
+
+    assert "molt_call_indirect1" in WASM_CALL_INDIRECT_IMPORTS
+    root = Path(__file__).resolve().parents[1]
+    node = resolve_node_runtime(source_root=root, guard_prefix="MOLT_WASM_TEST")
+    module = _call_indirect_module(async_polls_build.manifest)
+    imports = []
+    for wasm_import in parse_wasm_imports(module.read_bytes()):
+        kind = _WASM_IMPORT_KINDS[wasm_import.kind]
+        imports.append(
+            {
+                "module": wasm_import.module,
+                "name": wasm_import.name,
+                "kind": kind,
+                "minimum": wasm_import.minimum,
+                "maximum": wasm_import.maximum,
+                "shared": bool((wasm_import.limits_flags or 0) & 0x02),
+                "value": (
+                    _WASM_VALUE_TYPES[wasm_import.value_type[0]]
+                    if kind == "global" and wasm_import.value_type
+                    else None
+                ),
+                "mutable": bool(wasm_import.mutable),
+            }
+        )
+    # The async_sleep_poll key: base 0xFFFF_FF00_0000_0100 plus slot 1.
+    key = 0xFFFF_FF00_0000_0101
+    spec = async_polls_build.work / f"call-indirect-key-{async_polls_build.layout}.json"
+    spec.write_text(
+        json.dumps(
+            {
+                "module": str(module),
+                "recorder": list(_RECORDER_WASM),
+                "imports": imports,
+                "key": str(key),
+            }
+        ),
+        encoding="utf-8",
+    )
+    script = async_polls_build.work / "call_indirect_key_probe.cjs"
+    script.write_text(_CALL_INDIRECT_KEY_PROBE, encoding="utf-8")
+    run = _run_wasm_test_process(
+        [str(node.path), str(script), str(spec)],
+        role="guest-host",
+        cwd=async_polls_build.work,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    result = json.loads(run.stdout.strip().splitlines()[-1])
+    # Control: the slot a wrapped key would reach dispatches the recorder.
+    assert result["control"] == "7" and result["controlHits"] == 1, result
+    # The key traps before dispatch, so the recorder never runs.
+    assert result["keyHits"] == 0, result
+    assert result["trap"] is True, result
+    assert result["message"] == "unreachable", result

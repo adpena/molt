@@ -6,7 +6,7 @@ use crate::wasm::task_runtime::{
     WasmTaskRuntimeLayout, emit_store_task_payload_local, emit_task_payload_base,
 };
 use crate::wasm_abi::GEN_CONTROL_SIZE;
-use crate::wasm_table::WasmCallableTableTarget;
+use crate::wasm_table::{WasmCallableTableSlot, WasmCallableTableTarget};
 use crate::wasm_values::emit_boxed_none;
 
 const TASK_LOCAL: u32 = 3;
@@ -23,7 +23,7 @@ pub(super) fn emit_task_trampoline(
     func: &mut Function,
     reloc_enabled: bool,
     owner_func_index: u32,
-    table_target: &WasmCallableTableTarget,
+    table_target: &WasmCallableTableSlot,
     task_kind: TrampolineTaskKind,
     arity: usize,
     has_closure: bool,
@@ -47,7 +47,7 @@ pub(super) fn emit_task_trampoline(
         reloc_enabled,
         backend.func_import_count,
         owner_func_index,
-        table_target,
+        &WasmCallableTableTarget::TableSlot(*table_target),
         closure_size,
     );
     func.instruction(&Instruction::LocalSet(TASK_LOCAL));

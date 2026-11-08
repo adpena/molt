@@ -367,8 +367,8 @@ def _render_rs_mod() -> str:
             "pub(crate) use pure_profile::pure_profile_skips_import;\n",
             "pub(crate) use runtime_callables::{\n",
             "    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,\n",
-            "    RUNTIME_CALLABLE_IMPORTS, ReservedRuntimeCallableDispatch,\n",
-            "    poll_table_import_slot, runtime_callable_import,\n",
+            "    RUNTIME_CALLABLE_IMPORTS, RUNTIME_POLL_CALLABLE_KEY_BASE,\n",
+            "    ReservedRuntimeCallableDispatch, poll_table_import_slot, runtime_callable_import,\n",
             "};\n",
             "pub(crate) use static_types::STATIC_FUNC_TYPES;\n",
         ]
@@ -1518,6 +1518,10 @@ def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str])
             "    pub(crate) table_slot: u32,\n",
             "    pub(crate) import: WasmRuntimeImport,\n",
             "}\n\n",
+            "/// The key of the runtime poll at `table_slot` is this base plus the\n",
+            "/// slot, on every target (HF-699 K1); the runtime's key table agrees.\n",
+            "pub(crate) const RUNTIME_POLL_CALLABLE_KEY_BASE: u64 = ",
+            f"0x{NATIVE_RUNTIME_CALLABLE_KEY_BASE + NATIVE_RUNTIME_POLL_KEY_OFFSET:016X};\n\n",
             "pub(crate) const POLL_TABLE_IMPORTS: &[PollTableImportSpec] = &[\n",
         ]
     )
@@ -2104,8 +2108,10 @@ def render_runtime_callables_rs(data: dict) -> str:
             "        _ => None,\n",
             "    }\n",
             "}\n\n",
+            "/// The one key table of runtime polls: every target resolves a poll\n",
+            "/// key here (HF-699 K1, K4).\n",
             "#[inline]\n",
-            "fn runtime_poll_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {\n",
+            "pub(crate) fn runtime_poll_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {\n",
             "    match fn_ptr.checked_sub(RUNTIME_POLL_CALLABLE_KEY_BASE)? {\n",
         ]
     )

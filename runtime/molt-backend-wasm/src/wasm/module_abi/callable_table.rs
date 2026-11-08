@@ -18,16 +18,40 @@ use crate::wasm::WasmBackend;
 use crate::wasm_binary::{emit_call, encode_u32_leb128_padded};
 use crate::wasm_data::DataSegmentRef;
 use crate::wasm_table::{
-    WasmCallableTableAddress, WasmCallableTableRole, WasmCallableTableTarget, WasmFunctionSymbol,
+    WasmCallableTableAddress, WasmCallableTableRole, WasmCallableTableSlot,
+    WasmCallableTableTarget, WasmFunctionSymbol,
 };
 pub(in crate::wasm) use call_site::WasmCallableCallSiteAbi;
+
+/// How the table plan names a callable (HF-699 K5): a slot of this plan's
+/// callable table, or a runtime key that the runtime resolves through its
+/// generated key table. Runtime polls are keys on every target (K1); compact
+/// builtins and app-resolver entries keep table slots until their own stage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CallableIdentity {
+    TableSlot(u32),
+    RuntimeKey(u64),
+}
+
+impl CallableIdentity {
+    /// The plan slot of a callable that only a table slot can name, such as
+    /// a trampoline target or a compiled body.
+    fn table_slot(self, name: &str) -> u32 {
+        match self {
+            Self::TableSlot(slot) => slot,
+            Self::RuntimeKey(key) => {
+                panic!("`{name}` is runtime key 0x{key:x}, not a callable-table slot")
+            }
+        }
+    }
+}
 
 pub(in crate::wasm) struct WasmCallableTablePlan {
     table_base: u32,
     fixed_shared_runtime_abi_base: Option<u32>,
     table_entries: Vec<WasmCallableTableEntry>,
     split_runtime_shared_abi_slot_end: usize,
-    func_to_table_idx: BTreeMap<String, u32>,
+    func_to_table_idx: BTreeMap<String, CallableIdentity>,
     func_to_index: BTreeMap<String, u32>,
     func_to_trampoline_idx: BTreeMap<String, u32>,
     /// Table slots of address-taken native initializers, keyed by symbol.
@@ -40,20 +64,20 @@ pub(in crate::wasm) struct WasmCallableTablePlan {
 
 pub(super) struct WasmAppCallableResolverPlan {
     resolver_func_index: u32,
-    resolver_target: WasmCallableTableTarget,
+    resolver_target: WasmCallableTableSlot,
     entries: Vec<WasmAppCallableResolverEntry>,
 }
 
 pub(super) struct WasmAppCallableResolverEntry {
     name: String,
-    target: WasmCallableTableTarget,
+    target: WasmCallableTableSlot,
 }
 
 pub(super) struct WasmCallableTrampolineEntry {
     name: String,
     expected_func_index: u32,
     target_func_index: u32,
-    target: WasmCallableTableTarget,
+    target: WasmCallableTableSlot,
     spec: TrampolineSpec,
 }
 
@@ -88,13 +112,28 @@ impl WasmCallableTablePlan {
         )
     }
 
-    fn app_callable_resolver_target(&self) -> Option<WasmCallableTableTarget> {
+    fn app_callable_resolver_target(&self) -> Option<WasmCallableTableSlot> {
         self.app_callable_resolver
             .as_ref()
             .map(|resolver| resolver.resolver_target)
     }
 
-    fn target_for_slot(&self, slot: u32, role: WasmCallableTableRole) -> WasmCallableTableTarget {
+    /// The stored identity of a planned callable: a runtime key as itself
+    /// (K5), a plan slot as its current table address.
+    fn target_for_slot(
+        &self,
+        identity: CallableIdentity,
+        role: WasmCallableTableRole,
+    ) -> WasmCallableTableTarget {
+        match identity {
+            CallableIdentity::TableSlot(slot) => {
+                WasmCallableTableTarget::TableSlot(self.table_slot_target(slot, role))
+            }
+            CallableIdentity::RuntimeKey(key) => WasmCallableTableTarget::RuntimeKey(key),
+        }
+    }
+
+    fn table_slot_target(&self, slot: u32, role: WasmCallableTableRole) -> WasmCallableTableSlot {
         let entry = self
             .table_entries
             .get(slot as usize)
@@ -119,7 +158,7 @@ impl WasmCallableTablePlan {
                 WasmCallableTableAddress::Relocatable(entry.symbol),
             )
         };
-        WasmCallableTableTarget {
+        WasmCallableTableSlot {
             current_table_index,
             address,
             role,
@@ -234,7 +273,13 @@ impl WasmCallableTablePlan {
                         "{owner} op {op_idx} {kind} targets {target}, expected task ABI (i64) -> i64, got {target_signature:?}"
                     ));
                 }
-                self.require_table_slot(issues, owner, op_idx, kind, target);
+                // A task stores its poll identity as a value, so a runtime
+                // poll's key serves as well as a compiled poll's slot (K1).
+                if !self.func_to_table_idx.contains_key(target) {
+                    issues.push(format!(
+                        "{owner} op {op_idx} {kind} task target not indexed: {target}"
+                    ));
+                }
             }
             TargetRequirement::FunctionObject => {
                 self.require_table_slot(issues, owner, op_idx, kind, target);
@@ -266,10 +311,14 @@ impl WasmCallableTablePlan {
         kind: molt_ir::OpKind,
         target: &str,
     ) {
-        if !self.func_to_table_idx.contains_key(target) {
-            issues.push(format!(
+        match self.func_to_table_idx.get(target) {
+            Some(CallableIdentity::TableSlot(_)) => {}
+            Some(CallableIdentity::RuntimeKey(key)) => issues.push(format!(
+                "{owner} op {op_idx} {kind} targets runtime key 0x{key:x} of {target}, which only a task constructor may store"
+            )),
+            None => issues.push(format!(
                 "{owner} op {op_idx} {kind} table target not indexed: {target}"
-            ));
+            )),
         }
     }
 
@@ -436,7 +485,7 @@ impl WasmBackend {
         &mut self,
         reloc_enabled: bool,
         entry_index: u32,
-        app_callable_resolver_target: Option<WasmCallableTableTarget>,
+        app_callable_resolver_target: Option<WasmCallableTableSlot>,
         manifest_segment: DataSegmentRef,
         manifest_len: u32,
     ) -> u32 {
@@ -464,7 +513,7 @@ impl WasmBackend {
         reloc_enabled: bool,
         func_index: u32,
         func: &mut Function,
-        app_callable_resolver_target: Option<WasmCallableTableTarget>,
+        app_callable_resolver_target: Option<WasmCallableTableSlot>,
         manifest_segment: DataSegmentRef,
         manifest_len: u32,
     ) {
@@ -474,7 +523,9 @@ impl WasmBackend {
                 self.func_import_count,
                 func_index,
                 func,
-                &target.with_role(WasmCallableTableRole::AppCallableResolver),
+                &WasmCallableTableTarget::TableSlot(
+                    target.with_role(WasmCallableTableRole::AppCallableResolver),
+                ),
             );
             emit_call(
                 func,
@@ -532,7 +583,10 @@ mod tests {
             fixed_shared_runtime_abi_base: None,
             table_entries: Vec::new(),
             split_runtime_shared_abi_slot_end: 0,
-            func_to_table_idx,
+            func_to_table_idx: func_to_table_idx
+                .into_iter()
+                .map(|(name, slot)| (name, CallableIdentity::TableSlot(slot)))
+                .collect(),
             func_to_index,
             func_to_trampoline_idx,
             native_initializer_to_table_idx: BTreeMap::new(),
@@ -613,19 +667,47 @@ mod tests {
         }
     }
 
+    fn plan_with_runtime_poll_key(target: &str) -> WasmCallableTablePlan {
+        let mut table = plan(BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
+        let key = crate::wasm_abi::RUNTIME_POLL_CALLABLE_KEY_BASE + 1;
+        table
+            .func_to_table_idx
+            .insert(target.to_string(), CallableIdentity::RuntimeKey(key));
+        table
+    }
+
     #[test]
     fn task_target_validation_accepts_generated_runtime_poll_signature() {
+        // A runtime poll's identity is its key (HF-699 K1), and a task
+        // constructor may store a key.
         let target = "molt_async_sleep_poll";
-        let table = plan(
-            BTreeMap::from([(target.to_string(), 7)]),
-            BTreeMap::new(),
-            BTreeMap::new(),
-        );
-        assert!(
-            table
-                .ir_call_target_closure_issue(&ir_with_op(molt_ir::OpKind::CallAsync, target))
-                .is_none()
-        );
+        let table = plan_with_runtime_poll_key(target);
+        for kind in [molt_ir::OpKind::CallAsync, molt_ir::OpKind::AllocTask] {
+            assert!(
+                table
+                    .ir_call_target_closure_issue(&ir_with_op(kind, target))
+                    .is_none(),
+                "{kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn callable_table_validation_rejects_runtime_keys_outside_task_constructors() {
+        // Only a task constructor stores an identity as a value the runtime
+        // resolves. A guarded call or a function object needs a table slot.
+        let target = "molt_async_sleep_poll";
+        let mut table = plan_with_runtime_poll_key(target);
+        table.func_to_index.insert(target.to_string(), 42);
+        for kind in [molt_ir::OpKind::CallGuarded, molt_ir::OpKind::FuncNew] {
+            let issue = table
+                .ir_call_target_closure_issue(&ir_with_op(kind, target))
+                .unwrap_or_else(|| panic!("{kind} must refuse a runtime key"));
+            assert!(
+                issue.contains("which only a task constructor may store"),
+                "{kind}: {issue}"
+            );
+        }
     }
 
     #[test]

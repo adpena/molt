@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::WasmCallableTablePlan;
+use super::{CallableIdentity, WasmCallableTablePlan};
 use crate::wasm_table::{WasmCallableTableRole, WasmCallableTableTarget};
 
 pub(in crate::wasm) struct WasmCallableCallSiteAbi<'a> {
-    func_table_slots: &'a BTreeMap<String, u32>,
+    func_table_slots: &'a BTreeMap<String, CallableIdentity>,
     func_indices: &'a BTreeMap<String, u32>,
     trampoline_slots: &'a BTreeMap<String, u32>,
     plan: &'a WasmCallableTablePlan,
@@ -53,17 +53,20 @@ impl<'a> WasmCallableCallSiteAbi<'a> {
             })
     }
 
+    /// The identity compiled code stores for `target_name`: a runtime
+    /// poll's key or a table slot (K5). The validator admits a key only for a
+    /// task constructor (`CallAsync`, `AllocTask`).
     pub(in crate::wasm) fn table_target(
         &self,
         target_name: &str,
         call_kind: molt_ir::OpKind,
     ) -> WasmCallableTableTarget {
-        let slot = *self
+        let identity = *self
             .func_table_slots
             .get(target_name)
             .unwrap_or_else(|| panic!("{call_kind} table target not found: {target_name}"));
         self.plan
-            .target_for_slot(slot, WasmCallableTableRole::DirectCallable)
+            .target_for_slot(identity, WasmCallableTableRole::DirectCallable)
     }
 
     pub(in crate::wasm) fn function_index(
@@ -96,8 +99,10 @@ impl<'a> WasmCallableCallSiteAbi<'a> {
             .trampoline_slots
             .get(target_name)
             .unwrap_or_else(|| panic!("{call_kind} trampoline target not found: {target_name}"));
-        self.plan
-            .target_for_slot(slot, WasmCallableTableRole::Trampoline)
+        WasmCallableTableTarget::TableSlot(
+            self.plan
+                .table_slot_target(slot, WasmCallableTableRole::Trampoline),
+        )
     }
 
     /// Table address of a native initializer handed to the runtime
@@ -111,8 +116,10 @@ impl<'a> WasmCallableCallSiteAbi<'a> {
             .native_initializer_to_table_idx
             .get(symbol)
             .unwrap_or_else(|| panic!("native initializer `{symbol}` has no callable-table slot"));
-        self.plan
-            .target_for_slot(slot, WasmCallableTableRole::DirectCallable)
+        WasmCallableTableTarget::TableSlot(
+            self.plan
+                .table_slot_target(slot, WasmCallableTableRole::DirectCallable),
+        )
     }
 
     pub(in crate::wasm) fn callable_table_pair(
@@ -172,7 +179,10 @@ mod tests {
                 })
                 .collect(),
             split_runtime_shared_abi_slot_end: 0,
-            func_to_table_idx: BTreeMap::from([("callee".to_string(), 7)]),
+            func_to_table_idx: BTreeMap::from([(
+                "callee".to_string(),
+                super::super::CallableIdentity::TableSlot(7),
+            )]),
             func_to_index: BTreeMap::from([("callee".to_string(), 42)]),
             func_to_trampoline_idx: BTreeMap::from([("callee".to_string(), 9)]),
             native_initializer_to_table_idx: BTreeMap::new(),
@@ -193,8 +203,8 @@ mod tests {
         );
 
         let table_pair = abi.callable_table_pair("callee", molt_ir::OpKind::Call);
-        assert_eq!(table_pair.function.current_table_index, 107);
-        assert_eq!(table_pair.trampoline.current_table_index, 109);
+        assert_eq!(slot(table_pair.function).current_table_index, 107);
+        assert_eq!(slot(table_pair.trampoline).current_table_index, 109);
         assert_eq!(abi.function_index("callee", molt_ir::OpKind::Call), 42);
         assert!(abi.function_abi_returns_value("callee"));
         assert!(abi.is_closure_function("callee"));
@@ -216,7 +226,10 @@ mod tests {
                 })
                 .collect(),
             split_runtime_shared_abi_slot_end: 8,
-            func_to_table_idx: BTreeMap::from([("callee".to_string(), 7)]),
+            func_to_table_idx: BTreeMap::from([(
+                "callee".to_string(),
+                super::super::CallableIdentity::TableSlot(7),
+            )]),
             func_to_index: BTreeMap::from([("callee".to_string(), 42)]),
             func_to_trampoline_idx: BTreeMap::from([("callee".to_string(), 9)]),
             native_initializer_to_table_idx: BTreeMap::new(),
@@ -231,14 +244,56 @@ mod tests {
         let pair = abi.callable_table_pair("callee", molt_ir::OpKind::Call);
 
         assert!(matches!(
-            pair.function.address,
+            slot(pair.function).address,
             crate::wasm_table::WasmCallableTableAddress::FixedSharedRuntimeAbi { .. }
         ));
-        assert_eq!(pair.function.current_table_index, 47);
-        assert_eq!(pair.trampoline.current_table_index, 101);
+        assert_eq!(slot(pair.function).current_table_index, 47);
+        assert_eq!(slot(pair.trampoline).current_table_index, 101);
         assert!(matches!(
-            pair.trampoline.address,
+            slot(pair.trampoline).address,
             crate::wasm_table::WasmCallableTableAddress::Relocatable(_)
         ));
+    }
+
+    fn slot(
+        target: crate::wasm_table::WasmCallableTableTarget,
+    ) -> crate::wasm_table::WasmCallableTableSlot {
+        match target {
+            crate::wasm_table::WasmCallableTableTarget::TableSlot(slot) => slot,
+            other => panic!("expected a table slot, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runtime_poll_identity_is_its_key_not_a_table_slot() {
+        // HF-699 K5: a runtime key passes through the plan as itself, in
+        // every layout, and never becomes a table address.
+        let key = crate::wasm_abi::RUNTIME_POLL_CALLABLE_KEY_BASE + 1;
+        for fixed_shared_runtime_abi_base in [None, Some(40)] {
+            let plan = WasmCallableTablePlan {
+                table_base: 100,
+                fixed_shared_runtime_abi_base,
+                table_entries: Vec::new(),
+                split_runtime_shared_abi_slot_end: 0,
+                func_to_table_idx: BTreeMap::from([(
+                    "molt_async_sleep_poll".to_string(),
+                    super::super::CallableIdentity::RuntimeKey(key),
+                )]),
+                func_to_index: BTreeMap::new(),
+                func_to_trampoline_idx: BTreeMap::new(),
+                native_initializer_to_table_idx: BTreeMap::new(),
+                app_callable_resolver: None,
+                positional_call_shapes: BTreeMap::new(),
+                function_abi_returns_value: BTreeMap::new(),
+                trampoline_entries: Vec::new(),
+            };
+            let escaped = BTreeSet::new();
+            let entry_custody = BTreeMap::new();
+            let abi = plan.call_site_abi(&escaped, 0, &entry_custody);
+            assert_eq!(
+                abi.table_target("molt_async_sleep_poll", molt_ir::OpKind::AllocTask),
+                crate::wasm_table::WasmCallableTableTarget::RuntimeKey(key)
+            );
+        }
     }
 }
