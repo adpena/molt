@@ -352,6 +352,107 @@ def test_wasm_runtime_polls_match_cpython(async_polls_build: _AsyncPollsBuild) -
     _assert_no_recursive_mutex_panic(run.stderr)
 
 
+@pytest.fixture(scope="module", params=["linked", "split"])
+def reserved_callables_build(
+    request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
+) -> _AsyncPollsBuild:
+    """One build per layout of the HF-699 E2 witness, shared by its tests."""
+    layout: WasmWitnessLayout = request.param
+    root = Path(__file__).resolve().parents[1]
+    work = tmp_path_factory.mktemp(f"reserved-callables-{layout}")
+    witness = heavy_wasm_witness("reserved-callables", layout)
+    source = witness.materialize(root, work)
+    manifest = _build_wasm_layout(
+        root, source, work, layout, extra_args=witness.extra_args
+    )
+    return _AsyncPollsBuild(layout, source, work, manifest)
+
+
+def test_wasm_reserved_runtime_callables_match_cpython(
+    reserved_callables_build: _AsyncPollsBuild,
+) -> None:
+    """HF-699 E2: a reserved runtime callable is its key on every target, and
+    a function object resolves the key when it is built. Before E2 a split
+    build dispatched these slots through a host table of names, and a split
+    app that binds the runtime's ``molt_call_indirectN`` to its own export
+    trapped on the empty reserved region (``uninitialized element``)."""
+    root = Path(__file__).resolve().parents[1]
+    build = reserved_callables_build
+    expected = _run_wasm_test_process(
+        [sys.executable, str(build.source)], role="tool", cwd=build.work, check=True
+    ).stdout
+    run = _run_wasm_manifest(root, build.work, build.manifest)
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout == expected
+    assert "uninitialized element" not in run.stderr, run.stderr
+    _assert_no_recursive_mutex_panic(run.stderr)
+
+
+def _element_function_indices(module: bytes) -> list[int]:
+    """Function indices of every table-0 element row (active or passive)."""
+    from molt.wasm_artifact import (
+        _read_wasm_varuint,
+        _skip_wasm_init_expr,
+        parse_wasm_sections,
+    )
+
+    indices: list[int] = []
+    for section_id, payload in parse_wasm_sections(module):
+        if section_id != 9:
+            continue
+        count, offset = _read_wasm_varuint(payload, 0)
+        for _ in range(count):
+            flags, offset = _read_wasm_varuint(payload, offset)
+            if flags == 0:
+                offset, _base = _skip_wasm_init_expr(payload, offset)
+            elif flags == 1:
+                assert payload[offset] == 0x00, "funcref element kind"
+                offset += 1
+            else:
+                raise AssertionError(f"unexpected element segment flags {flags}")
+            elem_count, offset = _read_wasm_varuint(payload, offset)
+            for _ in range(elem_count):
+                func_index, offset = _read_wasm_varuint(payload, offset)
+                indices.append(func_index)
+    return indices
+
+
+def test_wasm_app_callable_table_reserves_no_runtime_region(
+    reserved_callables_build: _AsyncPollsBuild,
+) -> None:
+    """HF-699 K3: the app's table holds no runtime poll, no reserved runtime
+    callable and no sentinel for one. Before E2 every app table started with
+    190 such slots, 20 of them sentinels in a linked build of this witness."""
+    from molt._wasm_abi_generated import (
+        WASM_CALL_INDIRECT_IMPORTS,
+        WASM_POLL_TABLE_IMPORTS,
+        WASM_RESERVED_RUNTIME_CALLABLES,
+    )
+    from molt.wasm_artifact import parse_wasm_exports
+
+    module = _call_indirect_module(reserved_callables_build.manifest).read_bytes()
+    imports = {
+        wasm_import.name: wasm_import.index
+        for wasm_import in parse_wasm_imports(module)
+        if wasm_import.kind == 0 and wasm_import.module == "molt_runtime"
+    }
+    runtime_owned = {
+        import_name
+        for _index, _name, import_name, _arity, _dispatch in (
+            WASM_RESERVED_RUNTIME_CALLABLES
+        )
+    } | {name for _slot, name in WASM_POLL_TABLE_IMPORTS}
+    runtime_owned_indices = {imports[name] for name in runtime_owned if name in imports}
+    exports = {
+        export.name: export.index for export in parse_wasm_exports(module, kind=0)
+    }
+    sentinel = exports[WASM_CALL_INDIRECT_IMPORTS[0]] + len(WASM_CALL_INDIRECT_IMPORTS)
+    elements = _element_function_indices(module)
+    assert elements, "the app publishes its own callable table"
+    assert not runtime_owned_indices.intersection(elements)
+    assert sentinel not in elements
+
+
 # (module (import "host" "hit" (func (param i64) (result i64)))
 #         (func (export "f") (param i64) (result i64) local.get 0 call 0))
 _RECORDER_WASM = (

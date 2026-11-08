@@ -4494,7 +4494,6 @@ fn cext_trampoline_key() -> u64 {
 pub(crate) unsafe fn is_cext_callable(function: *mut u8) -> bool {
     crate::builtins::functions::runtime_callable_represents_symbol(
         unsafe { crate::function_fn_ptr(function) },
-        unsafe { crate::function_trampoline_ptr(function) },
         cext_trampoline_key(),
     )
 }
@@ -4854,7 +4853,6 @@ unsafe extern "C" fn hook_register_c_function(
             );
             return 0;
         }
-        #[cfg(not(target_arch = "wasm32"))]
         let raw_trampoline = molt_cpython_abi_cext_call_trampoline_admitted as *const ();
         let fn_ptr_value = fn_addr!(molt_cpython_abi_cext_call_trampoline_admitted);
         let func_ptr = alloc_function_obj(&_py, fn_ptr_value, dispatch_kind.arity());
@@ -4862,7 +4860,6 @@ unsafe extern "C" fn hook_register_c_function(
             return 0;
         }
         unsafe {
-            #[cfg(not(target_arch = "wasm32"))]
             function_set_call_target_ptr(func_ptr, raw_trampoline);
             function_set_trampoline_ptr(&_py, func_ptr, fn_ptr_value);
             if dispatch_kind.is_variadic() {

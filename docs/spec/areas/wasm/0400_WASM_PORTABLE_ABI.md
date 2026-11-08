@@ -95,38 +95,33 @@ Molt additionally preserves result ownership, which machine types alone cannot
 express. Wasm receiver tests execute all four actual host binders against real
 modules; product startup tests cover runtime/app initialization ordering.
 
-### Callable-table execution-state admission
+### Callable-table keys and attestation
 
-HF-699 retires this protocol: runtime callables become keys and the table
-reserves no runtime region ([wasm_hosts.md §6](../../../design/wasm_hosts.md)).
-Stage E1 (runtime polls) leaves the protocol below unchanged; E2 rewrites it.
+A runtime callable or runtime poll is a key on every target
+([wasm_hosts.md §6](../../../design/wasm_hosts.md), HF-699): a reserved runtime
+callable is `RUNTIME_CALLABLE_KEY_BASE` plus its manifest index, a runtime poll
+is `RUNTIME_POLL_CALLABLE_KEY_BASE` plus its `poll_table_slot`. Compiled code
+stores the key as an `i64` constant. The runtime resolves a key through its
+generated key tables when it builds a function object or resumes a task, and
+calls the resolved target itself. The shared table reserves no runtime region:
+the runtime owns the slots its own element segment publishes, and the app owns
+the slots after them. Every `molt_call_indirectN` an app exports traps on an
+index above `u32::MAX`, so a stray key never reaches a live slot.
 
-`prepareWasmTableAdmission` and `publishWasmTableAdmission` in
-`wasm/loader_bridge.js` own this protocol for Node, browser, minimal embeds and
-both Worker generators, in linked and split-runtime modes. The Rust deployment
-host uses `molt_wasm_facts::admit_callable_table` with the same generated ABI
-constants and final-module attestation validator; its typed empty/publish outcome
-owns setter selection and `MOLT_WASM_TABLE_BASE` publication, overriding ambient
-and launch-policy values only for Molt applications. Raw and manifest-bound WASI
-commands retain their separate environment contract. Byte consumers and
-precompiled `WebAssembly.Module` consumers read the same generated callable-table
-attestation and layout. An explicit zero-entry attestation yields `empty`: no
-reserved callable region needs publication, even if the module exposes a table.
-A non-empty attestation yields `publish` only with a positive resolved base and
-the canonical setter identity named by the runtime import ABI. The base comes
-from the published layout or the first attested callable slot, with a manifest
-base constrained by that binary authority; element-segment guesses are forbidden.
-The host must call that export immediately after runtime instantiation, before runtime lifetime
-admission, WASI/libc initialization or application execution. Missing setters
-never select an environment-only fallback.
+Hosts therefore publish no table base and dispatch no runtime callable by name.
+A host's `molt_call_indirectN` binding serves shared-table slots only.
+`readCallableTableAttestation` in `wasm/loader_bridge.js` reads the app's (or
+the linked module's) `molt.callable_table` attestation for Node, browser,
+minimal embeds and both Worker generators; hosts use it for the signatures of
+attested entries. A missing or malformed attestation fails with
+`MOLT_WASM_TABLE_ATTESTATION_MISSING` or `MOLT_WASM_TABLE_ATTESTATION_MALFORMED`;
+parser failures cannot become absent metadata.
 
-Missing or malformed attestations fail with
-`MOLT_WASM_TABLE_ATTESTATION_MISSING` or
-`MOLT_WASM_TABLE_ATTESTATION_MALFORMED`. Missing positive bases and canonical
-exports fail with `MOLT_WASM_TABLE_BASE_REQUIRED` and
-`MOLT_WASM_TABLE_EXPORT_REQUIRED`. Parser failures cannot become absent metadata.
-The host-parity guest oracle in `tests/test_wasm_runner_table_base.py` exercises
-these verdicts and checks publication ordering with actual Wasm globals and traps.
+Until its table-base chain is deleted with HF-198's paths (HF-699 E2), the Rust
+deployment host still admits a table base through
+`molt_wasm_facts::admit_callable_table` and calls the runtime's
+`molt_set_wasm_table_base`, which no longer has a consumer. The host-parity guest
+oracle in `tests/test_wasm_runner_table_base.py` exercises both verdict sets.
 
 ---
 
@@ -304,15 +299,13 @@ callable names may appear in the manifest and host export policy, but that
 catalog is not an import root. The WASM backend must admit ordinary callable
 imports only from observed app IR: op dependency facts, `builtin_func`
 materialization, direct runtime-call specs, literal intrinsic lookup, or
-native-extension sidecar custody. Poll-table callables are the current
-exception: their generated table slots make them table-layout roots until the
-poll table itself becomes reachability-sliced. A slot is a root only when the
-bound runtime defines its poll function: the codegen layout passes that set as
-`MOLT_WASM_RUNTIME_POLL_SLOTS`, and an absent slot holds the sentinel and adds
-no import (a runtime without `stdlib_net` defines no networking poll function).
-Since HF-699 stage E1 no code names these slots: a runtime poll's identity is
-its key, which the runtime resolves itself, so the slots are unused until E2
-deletes the prefix.
+native-extension sidecar custody. Runtime polls and reserved runtime callables
+are keys (HF-699), not table slots, so they are never import roots: the app
+imports one only when its code calls it directly or a `builtin_func`
+trampoline calls it. The codegen layout still passes the set of polls the bound
+runtime defines as `MOLT_WASM_RUNTIME_POLL_SLOTS`, so a task can name only a poll
+that runtime defines (a runtime without `stdlib_net` defines no networking poll
+function).
 If an ordinary callable is not
 observed, it must be absent from the app import section, absent from any
 app-local resolver table, and unavailable as a fake fallback symbol.

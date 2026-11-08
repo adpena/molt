@@ -63,7 +63,6 @@ pub(super) unsafe fn is_default_type_call(_py: &PyToken<'_>, call_bits: u64) -> 
             }
             TYPE_ID_FUNCTION => crate::builtins::functions::runtime_callable_represents_symbol(
                 function_fn_ptr(call_ptr),
-                function_trampoline_ptr(call_ptr),
                 fn_key!(molt_type_call),
             ),
             _ => false,

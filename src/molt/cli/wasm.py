@@ -9,11 +9,6 @@ from molt._wasm_abi_generated import (
     WASM_SYNTHETIC_ERRNO,
     WASM_WASI_PREVIEW1_ERRNO,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
-    WASM_DEFAULT_APP_TABLE_BASE,
-    WASM_RESERVED_RUNTIME_CALLABLE_BASE,
-    WASM_RESERVED_RUNTIME_CALLABLES,
-    WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME,
-    WASM_RESERVED_RUNTIME_CALLABLE_COUNT,
     wasm_import_result_kind,
     wasm_import_signature,
     wasm_runtime_import_name,
@@ -200,32 +195,10 @@ def _runtime_import_result_kind_from_manifest(import_name: str) -> str | None:
     return wasm_import_result_kind(manifest_import_name)
 
 
-def _reserved_runtime_callables_from_manifest() -> list[dict[str, object]]:
-    return [
-        {
-            "index": index,
-            "runtime_export": runtime_name,
-            "import_name": import_name,
-            "arity": arity,
-            "dispatch": dispatch,
-            "trampoline_abi": WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME[
-                runtime_name
-            ],
-        }
-        for index, runtime_name, import_name, arity, dispatch in WASM_RESERVED_RUNTIME_CALLABLES
-    ]
-
-
 def _split_runtime_browser_abi_from_manifest() -> dict[str, object]:
-    return {
-        "call_indirect_imports": list(WASM_CALL_INDIRECT_IMPORTS),
-        "reserved_runtime_callables": _reserved_runtime_callables_from_manifest(),
-        "table_layout": {
-            "default_app_table_base": WASM_DEFAULT_APP_TABLE_BASE,
-            "reserved_runtime_callable_base": WASM_RESERVED_RUNTIME_CALLABLE_BASE,
-            "reserved_runtime_callable_count": WASM_RESERVED_RUNTIME_CALLABLE_COUNT,
-        },
-    }
+    # Runtime callables are keys the runtime resolves itself: the browser ABI
+    # names no reserved callable and no table layout (HF-699 K1, K3).
+    return {"call_indirect_imports": list(WASM_CALL_INDIRECT_IMPORTS)}
 
 
 def _generate_split_worker_js(
@@ -261,7 +234,6 @@ def _generate_split_worker_js(
                 "runtime_execution_enter",
                 "runtime_execution_leave",
                 "runtime_shutdown",
-                "molt_set_wasm_table_base",
             )
         )
     )
@@ -289,14 +261,6 @@ def _generate_split_worker_js(
         dict(runtime_export_signatures or {}), sort_keys=True
     )
     call_indirect_imports_json = json.dumps(list(WASM_CALL_INDIRECT_IMPORTS))
-    reserved_runtime_callables_json = json.dumps(
-        _reserved_runtime_callables_from_manifest(),
-        sort_keys=True,
-    )
-    reserved_runtime_callable_base = WASM_RESERVED_RUNTIME_CALLABLE_BASE
-    reserved_runtime_shared_prefix_len = (
-        reserved_runtime_callable_base + WASM_RESERVED_RUNTIME_CALLABLE_COUNT * 2
-    )
     worker_js = """// Molt split-runtime Cloudflare Workers shim
 // Runtime module is cached independently by the CDN.
 import "./molt_vfs_browser.js";
@@ -311,8 +275,7 @@ const {
   deploymentLaunchEnvironment,
   bindRuntimeFunctionImports,
   callableTableFromModule,
-  prepareWasmTableAdmission,
-  publishWasmTableAdmission,
+  readCallableTableAttestation,
   callableTableSignature,
   runtimeExceptionPending,
   verifyCallableTableEntries,
@@ -320,13 +283,10 @@ const {
 const deploymentManifest = requireMoltDeploymentManifest(__MOLT_DEPLOYMENT_MANIFEST__);
 const runtimeCallableTable = callableTableFromModule(runtimeModule, "runtime wasm");
 const { createRuntimeLifetime, combinedError } = globalThis.MoltRuntimeLifecycle;
-const tableAdmission = prepareWasmTableAdmission({
+const appCallableTable = readCallableTableAttestation({
   module: appModule,
-  manifest: { ...deploymentManifest, wasm_table_base: __MOLT_SHARED_TABLE_BASE__ },
-  runtimeExportNames: __MOLT_RUNTIME_IMPORT_EXPORT_NAMES__,
   label: "app wasm",
 });
-const appCallableTable = tableAdmission.callableTable;
 
 // The ABI generator owns both protocols. Allocate immutable views once per module.
 const GUEST_ERRNO = Object.freeze(__MOLT_SYNTHETIC_ERRNO__);
@@ -398,9 +358,6 @@ export default {
 
     const guestEnvironment = deploymentLaunchEnvironment(deploymentManifest);
     guestEnvironment.MOLT_EXECUTION_TARGET = "cloudflare";
-    if (tableAdmission.base !== null) {
-      guestEnvironment.MOLT_WASM_TABLE_BASE = String(tableAdmission.base);
-    }
     if (queryString) guestEnvironment.QUERY_STRING = queryString;
     const envVars = Object.entries(guestEnvironment).map(([name, value]) => `${name}=${value}`);
     const envEncoded = envVars.map(e => encoder.encode(e + "\\0"));
@@ -413,10 +370,6 @@ export default {
     const runtimeImportExportNames = __MOLT_RUNTIME_IMPORT_EXPORT_NAMES__;
     const runtimeExportSignatures = __MOLT_RUNTIME_EXPORT_SIGNATURES__;
     const callIndirectImportNames = __MOLT_CALL_INDIRECT_IMPORTS__;
-    const reservedRuntimeCallables = __MOLT_RESERVED_RUNTIME_CALLABLES__;
-    const DEFAULT_WASM_APP_TABLE_BASE = __MOLT_DEFAULT_WASM_APP_TABLE_BASE__;
-    const RESERVED_RUNTIME_CALLABLE_BASE = __MOLT_RESERVED_RUNTIME_CALLABLE_BASE__;
-    const RESERVED_RUNTIME_SHARED_PREFIX_LEN = __MOLT_RESERVED_RUNTIME_SHARED_PREFIX_LEN__;
     const WEBGPU_DISPATCH_HOST_IMPORT = __MOLT_WEBGPU_DISPATCH_HOST_IMPORT__;
     const WASI_FILETYPE_CHARACTER_DEVICE = 2;
     const WASI_FILETYPE_DIRECTORY = 3;
@@ -957,110 +910,6 @@ export default {
       return normalizeImportResult(out, signature.result || null);
     };
 
-    const remapDefaultAppRuntimeSharedIdx = (idx) => {
-      if (tableAdmission.base === null || tableAdmission.base <= DEFAULT_WASM_APP_TABLE_BASE) {
-        return idx;
-      }
-      if (
-        idx >= DEFAULT_WASM_APP_TABLE_BASE + RESERVED_RUNTIME_CALLABLE_BASE &&
-        idx < DEFAULT_WASM_APP_TABLE_BASE + RESERVED_RUNTIME_SHARED_PREFIX_LEN
-      ) {
-        return idx - DEFAULT_WASM_APP_TABLE_BASE + tableAdmission.base;
-      }
-      return idx;
-    };
-
-    const reservedRuntimeCallableForTableIndex = (idx) => {
-      if (!Number.isInteger(idx) || tableAdmission.base === null) {
-        return null;
-      }
-      const directStart = tableAdmission.base + RESERVED_RUNTIME_CALLABLE_BASE;
-      const trampolineStart = directStart + reservedRuntimeCallables.length;
-      let offset = idx - directStart;
-      let trampoline = false;
-      if (offset < 0 || offset >= reservedRuntimeCallables.length) {
-        offset = idx - trampolineStart;
-        trampoline = true;
-      }
-      if (offset < 0 || offset >= reservedRuntimeCallables.length) {
-        return null;
-      }
-      const spec = reservedRuntimeCallables.find((entry) => entry.index === offset);
-      return spec ? { ...spec, trampoline } : null;
-    };
-
-    const planReservedRuntimeDispatch = ({
-      dispatchIdx,
-    }) => {
-      const reservedRuntimeCallable = reservedRuntimeCallableForTableIndex(dispatchIdx);
-      if (
-        reservedRuntimeCallable &&
-        !reservedRuntimeCallable.trampoline &&
-        reservedRuntimeCallable.dispatch === 'trampoline'
-      ) {
-        throw new Error(
-          `reserved runtime callable ${reservedRuntimeCallable.runtimeExport} at idx=${dispatchIdx} is trampoline-only`,
-        );
-      }
-      return {
-        reservedRuntimeCallable,
-        dispatchReservedRuntimeCallable: Boolean(reservedRuntimeCallable),
-      };
-    };
-
-    const readRuntimeCallargsVector = (ptr, len) => {
-      const count = Number(len);
-      if (!Number.isInteger(count) || count < 0) {
-        throw new Error(`reserved runtime trampoline arg count must be non-negative, got ${len}`);
-      }
-      const base = Number(ptr);
-      if (!Number.isInteger(base) || base < 0) {
-        throw new Error(`reserved runtime trampoline argv pointer must be non-negative, got ${ptr}`);
-      }
-      const view = new DataView(wasmMemory.buffer);
-      const args = [];
-      for (let idx = 0; idx < count; idx += 1) {
-        args.push(view.getBigUint64(base + idx * 8, true));
-      }
-      return args;
-    };
-
-    const callReservedRuntimeCallable = (entry, indirectName, args) => {
-      const fn = rtInstance?.exports?.[entry.runtime_export];
-      if (typeof fn !== "function") {
-        throw new Error(`${indirectName} reserved runtime callable ${entry.runtime_export} is not exported`);
-      }
-      let callArgs = args;
-      if (entry.trampoline) {
-        if (args.length !== 3) {
-          throw new Error(
-            `${indirectName} reserved runtime trampoline ${entry.runtime_export} expects closure, argv, argc; got ${args.length} args`,
-          );
-        }
-        if (entry.trampoline_abi === "call_frame") {
-          callArgs = args;
-        } else {
-          const closureBits = normalizeI64BridgeValue(args[0], `${indirectName} closure`);
-          if (closureBits !== 0n) {
-            throw new Error(
-              `${indirectName} reserved runtime trampoline ${entry.runtime_export} does not accept closure bits ${closureBits}`,
-            );
-          }
-          callArgs = readRuntimeCallargsVector(args[1], args[2]);
-        }
-      }
-      if (callArgs.length !== entry.arity) {
-        throw new Error(
-          `${indirectName} reserved runtime callable ${entry.runtime_export} arity mismatch: expected ${entry.arity}, got ${callArgs.length}`,
-        );
-      }
-      return callWithSignature(
-        fn,
-        { params: Array.from({ length: entry.arity }, () => "i64"), result: "i64" },
-        callArgs,
-      );
-    };
-
     const buildRuntimeImports = (module, runtimeInstance) => bindRuntimeFunctionImports(
       WebAssembly.Module.imports(module), runtimeInstance.exports,
       name => runtimeImportExportNames[name] || null,
@@ -1205,24 +1054,9 @@ export default {
 
     for (const indirectName of callIndirectImportNames) {
       hostEnv[indirectName] = (fnIndex, ...args) => {
-        const idx = Number(fnIndex);
-        const dispatchIdx = remapDefaultAppRuntimeSharedIdx(idx);
-        const reservedDispatch = planReservedRuntimeDispatch({
-          dispatchIdx,
-        });
-        const reservedRuntimeCallable = reservedDispatch.reservedRuntimeCallable;
-        if (reservedDispatch.dispatchReservedRuntimeCallable) {
-          try {
-            return callReservedRuntimeCallable(
-              reservedRuntimeCallable,
-              indirectName,
-              args,
-            );
-          } catch (err) {
-            const detail = err && typeof err.message === "string" ? err.message : String(err);
-            throw new Error(`${indirectName} reserved runtime callable failed at idx=${dispatchIdx}: ${detail}`);
-          }
-        }
+        // Runtime callables are keys the runtime resolves itself, so every
+        // index here is a slot of the shared table (HF-699 K1, K3).
+        const dispatchIdx = Number(fnIndex);
         const tableFn = sharedTable.get(dispatchIdx);
         const directSignature =
           callableTableSignature(appCallableTable, dispatchIdx) ||
@@ -1263,7 +1097,6 @@ export default {
         env: { ...hostEnv, __indirect_function_table: sharedTable },
       };
       rtInstance = await WebAssembly.instantiate(runtimeModule, rtImports);
-      publishWasmTableAdmission(tableAdmission, rtInstance);
       lifetime = createRuntimeLifetime(rtInstance, runtimeImportExportNames, () => {
         if (runtimeExceptionPending(rtInstance)) {
           throw new Error("MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception");
@@ -1344,15 +1177,6 @@ export default {
         "__MOLT_RUNTIME_IMPORT_EXPORT_NAMES__": runtime_import_export_names_json,
         "__MOLT_RUNTIME_EXPORT_SIGNATURES__": runtime_export_signatures_json,
         "__MOLT_CALL_INDIRECT_IMPORTS__": call_indirect_imports_json,
-        "__MOLT_RESERVED_RUNTIME_CALLABLES__": reserved_runtime_callables_json,
-        "__MOLT_DEFAULT_WASM_APP_TABLE_BASE__": str(WASM_DEFAULT_APP_TABLE_BASE),
-        "__MOLT_RESERVED_RUNTIME_CALLABLE_BASE__": str(reserved_runtime_callable_base),
-        "__MOLT_RESERVED_RUNTIME_SHARED_PREFIX_LEN__": str(
-            reserved_runtime_shared_prefix_len
-        ),
-        "__MOLT_SHARED_TABLE_BASE__": "null"
-        if shared_table_base is None
-        else str(shared_table_base),
         "__MOLT_WEBGPU_DISPATCH_HOST_IMPORT__": json.dumps(WEBGPU_DISPATCH_HOST_IMPORT),
     }
     # Substitute only the original template: policy strings remain data even

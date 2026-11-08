@@ -2113,8 +2113,8 @@ def assert_split_worker_runtime_lifecycle(
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const {createRuntimeLifetime, combinedError} = require(lifetimePath);
-const {prepareWasmTableAdmission, publishWasmTableAdmission} = require(loaderPath);
-const tableAdmission = prepareWasmTableAdmission({module: new WebAssembly.Module(moduleBytes)});
+const {readCallableTableAttestation} = require(loaderPath);
+readCallableTableAttestation({module: new WebAssembly.Module(moduleBytes)});
 async function exercise(fail, primary, failShutdown, failInstantiate = false) {
   const events = [];
   const cleanup = new Error('shutdown failed');
@@ -2129,7 +2129,6 @@ async function exercise(fail, primary, failShutdown, failInstantiate = false) {
   const runtimeModule = {};
   const context = {
     createRuntimeLifetime, combinedError, runtimeExceptionPending: () => false,
-    tableAdmission, publishWasmTableAdmission,
     runtimeImportExportNames: {runtime_execution_enter: 'enter', runtime_execution_leave: 'leave', runtime_shutdown: 'shutdown'},
     runtimeModule, appModule: {}, appInstance: null, wasi: {}, hostEnv: {}, sharedTable: {}, wasmMemory: {},
     runtimeCallableTable: {}, appCallableTable: {}, verifyCallableTableEntries() {}, buildRuntimeImports: () => ({}),

@@ -12,7 +12,7 @@ mod finalize;
 mod host_surface;
 mod imports;
 mod native_callables;
-mod poll_table;
+mod poll_keys;
 mod runtime_surface;
 mod type_layout;
 mod user_functions;

@@ -31,7 +31,6 @@ const {
   manifestModuleUrl,
   verifyManifestModuleBytes,
   callIsolateImportExport,
-  callReservedRuntimeCallable,
   callRuntimeByteSpanOutImport,
   bindRuntimeFunctionImports,
   callRuntimeObjectArrayArgImport,
@@ -39,12 +38,8 @@ const {
   installWasmTagImports,
   normalizeValueForKind,
   parseWasmImports: parseMoltWasmImports,
-  planReservedRuntimeDispatch,
+  readCallableTableAttestation,
   requireWasmCallableTable,
-  prepareWasmTableAdmission,
-  publishWasmTableAdmission,
-  remapDefaultAppRuntimeSharedTableIndex,
-  runtimeCallableTableLayoutFromAbi,
   runtimeExceptionPending,
   runtimeImportByteSpanOutNames,
   runtimeImportObjectArrayArgNames,
@@ -174,24 +169,9 @@ const browserAbiFromManifest = (manifest) => {
     }
     callIndirectImports.add(name);
   }
-  const runtimeCallableLayout = runtimeCallableTableLayoutFromAbi(
-    abi,
-    'manifest.abi.browser_embed',
-  );
-  const { defaultAppTableBase, reservedRuntimeCallableBase, reservedRuntimeCallables } =
-    runtimeCallableLayout;
-  const reservedRuntimeCallableCount = reservedRuntimeCallables.length;
   return {
     callIndirectImports,
-    reservedRuntimeCallables,
     nativeCallables: nativeCallableManifestFromAbi(abi.native_callables),
-    tableLayout: {
-      defaultAppTableBase,
-      reservedRuntimeCallableBase,
-      reservedRuntimeCallableCount,
-      reservedRuntimeSharedPrefixLen:
-        reservedRuntimeCallableBase + reservedRuntimeCallableCount * 2,
-    },
   };
 };
 
@@ -813,62 +793,16 @@ const buildMinimalEnv = (state, manifest, browserAbi, options = {}) => {
   const stubZero = () => 0;
   const stubZeroI64 = () => 0n;
   const gpuHost = createBrowserGpuHost(state, options);
-  const sharedTableBase = options.tableAdmission.base;
-  const tableLayout = browserAbi.tableLayout;
   const appCallableTable = options.appCallableTable;
   const runtimeCallableTable = options.runtimeCallableTable;
-  const remapDefaultAppRuntimeSharedIdx = (idx) => {
-    return remapDefaultAppRuntimeSharedTableIndex(idx, {
-      sharedTableBase,
-      defaultAppTableBase: tableLayout.defaultAppTableBase,
-      reservedRuntimeCallableBase: tableLayout.reservedRuntimeCallableBase,
-      reservedRuntimeCallableCount: browserAbi.reservedRuntimeCallables.length,
-      rawIndexHasInstalledEntry: (rawTableIdx) => {
-        if (!state.table) {
-          return false;
-        }
-        try {
-          return typeof state.table.get(rawTableIdx) === 'function';
-        } catch (err) {
-          return false;
-        }
-      },
-    });
-  };
   const callIndirect = (name) => (fnIndex, ...args) => {
-    const idx = Number(fnIndex);
-    const dispatchIdx = remapDefaultAppRuntimeSharedIdx(idx);
+    // Runtime callables are keys the runtime resolves itself, so every index
+    // here is a slot of the shared table (HF-699 K1, K3).
+    const dispatchIdx = Number(fnIndex);
     const directSignature =
       callableTableSignature(appCallableTable, dispatchIdx) ||
       callableTableSignature(runtimeCallableTable, dispatchIdx);
     const tableFn = state.table ? state.table.get(dispatchIdx) : null;
-    const reservedDispatch = planReservedRuntimeDispatch({
-      dispatchIdx,
-      sharedTableBase,
-      reservedRuntimeCallableBase: tableLayout.reservedRuntimeCallableBase,
-      reservedRuntimeCallableCount: browserAbi.reservedRuntimeCallables.length,
-      reservedRuntimeCallables: browserAbi.reservedRuntimeCallables,
-    });
-    const reservedRuntimeCallable = reservedDispatch.reservedRuntimeCallable;
-    if (reservedDispatch.dispatchReservedRuntimeCallable) {
-      try {
-        return callReservedRuntimeCallable({
-          runtimeExports: state.runtimeInstance?.exports,
-          memory: state.memory,
-          entry: reservedRuntimeCallable,
-          indirectName: name,
-          args,
-        });
-      } catch (err) {
-        const detail = err && typeof err.message === 'string' ? err.message : String(err);
-        if (logFn && err && typeof err.stack === 'string') {
-          logFn(
-            `[molt wasm] ${name} reserved runtime callable original stack at idx=${dispatchIdx}:\n${err.stack}`,
-          );
-        }
-        throw new Error(`${name} reserved runtime callable failed at idx=${dispatchIdx}: ${detail}`);
-      }
-    }
     if (typeof tableFn === 'function' && directSignature) {
       try {
         return callWithSignature(tableFn, directSignature, args);
@@ -1054,12 +988,11 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
     verifyManifestModuleBytes(appBytes, manifest?.modules?.app, 'app wasm', appUrl, globalThis.crypto, manifestUrl, moduleUrl),
     verifyManifestModuleBytes(runtimeBytes, manifest?.modules?.runtime, 'runtime wasm', runtimeUrl, globalThis.crypto, manifestUrl, moduleUrl),
   ]);
-  const tableAdmission = prepareWasmTableAdmission({
-    buffer: appBytes, manifest, label: 'app wasm',
+  const appCallableTable = readCallableTableAttestation({
+    buffer: appBytes, label: 'app wasm',
   });
   const appImports = parseMoltWasmImports(appBytes);
   const runtimeImports = parseMoltWasmImports(runtimeBytes);
-  const appCallableTable = tableAdmission.callableTable;
   const runtimeCallableTable = requireWasmCallableTable(runtimeBytes, 'runtime wasm');
   verifyCallableTableManifestSummary(
     appCallableTable,
@@ -1105,7 +1038,6 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
     ...options,
     appCallableTable,
     runtimeCallableTable,
-    tableAdmission,
   });
   const runtimeWasi = buildMinimalWasi(state, options.log || null, environmentBytes, environmentSize);
   const appWasi = buildMinimalWasi(appHostState, options.log || null, environmentBytes, environmentSize);
@@ -1121,7 +1053,6 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
     installWasmTagImports(runtimeImportObject, runtimeImports);
     runtimeInstance = await WebAssembly.instantiate(runtimeModule, runtimeImportObject);
     state.runtimeInstance = runtimeInstance;
-    publishWasmTableAdmission(tableAdmission, runtimeInstance);
     lifetime = createRuntimeLifetime(runtimeInstance, manifest?.abi?.runtime_imports?.export_names, () => {
       if (runtimeExceptionPending(runtimeInstance)) {
         throw new Error(pendingRuntimeExceptionMessage(runtimeInstance, memory) ||

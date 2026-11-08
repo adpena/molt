@@ -2,8 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::class_def_layout::ClassDefLayout;
 use crate::wasm_abi::{
-    IMPORT_REGISTRY, RESERVED_RUNTIME_CALLABLE_SPECS, WasmRuntimeImport, runtime_callable_import,
-    wasm_runtime_import,
+    IMPORT_REGISTRY, WasmRuntimeImport, runtime_callable_import, wasm_runtime_import,
 };
 use crate::wasm_abi_generated::op_loop_runtime_call;
 use crate::wasm_import_tracking::TrackedImportIds;
@@ -113,12 +112,9 @@ impl WasmRuntimeSurfacePlan {
     }
 
     pub(super) fn auto_imports(&self, import_ids: &TrackedImportIds) -> Vec<WasmRuntimeImport> {
+        // Reserved runtime callables are keys (HF-699 K1): the app imports
+        // one only when its code calls it or a trampoline calls it.
         let mut auto_imports: Vec<WasmRuntimeImport> = self.reachable_imports().collect();
-        auto_imports.extend(
-            RESERVED_RUNTIME_CALLABLE_SPECS
-                .iter()
-                .map(|spec| spec.import),
-        );
         auto_imports.retain(|&import| !import_ids.contains_key(import));
         auto_imports.sort_by_key(|import| import.name());
         auto_imports.dedup();
@@ -294,7 +290,6 @@ impl RuntimeArityPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wasm_import_tracking::TrackedImportIds;
     use molt_ir::python_builtin_callables_generated::PYTHON_BUILTIN_CALLABLES;
 
     fn builtin_publication_ir(extra_ops: Vec<OpIR>) -> SimpleIR {
@@ -570,25 +565,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn auto_imports_root_the_complete_reserved_runtime_callable_family() {
-        let plan = WasmRuntimeSurfacePlan {
-            max_call_arity: 0,
-            max_class_def_words: 0,
-            builtin_trampoline_specs: BTreeMap::new(),
-            direct_import_call_specs: BTreeMap::new(),
-            manifest_intrinsic_names: BTreeSet::new(),
-            required_imports: BTreeSet::new(),
-        };
-        let import_ids = TrackedImportIds::new(BTreeMap::new());
-        let imports = plan.auto_imports(&import_ids);
-
-        let expected = RESERVED_RUNTIME_CALLABLE_SPECS
-            .iter()
-            .map(|spec| spec.import)
-            .collect::<BTreeSet<_>>();
-        assert_eq!(imports.into_iter().collect::<BTreeSet<_>>(), expected);
     }
 }

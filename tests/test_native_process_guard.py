@@ -348,6 +348,8 @@ def test_compiled_preparation_projects_host_and_shares_one_elapsed_budget(
         "wasm-asyncio-linked",
         "wasm-async-polls-linked",
         "wasm-async-polls-split",
+        "wasm-reserved-callables-linked",
+        "wasm-reserved-callables-split",
         "wasm-finder-linked",
         "wasm-finder-split",
         "wasm-final-tir-linked",

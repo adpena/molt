@@ -102,15 +102,12 @@ def _reconcile_split_callable_layout(
     app_layout: CallableTableLayout,
     runtime_layout: WasmSplitRuntimeCallableLayout,
 ) -> CallableTableLayout:
-    if (
-        app_layout.fixed_prefix_base != runtime_layout.runtime_callable_base
-        or app_layout.fixed_prefix_len != runtime_layout.fixed_prefix_len
-    ):
+    """The final split layout: the app's region after the runtime's own
+    entries. Neither side reserves a runtime region (HF-699 K3)."""
+    if app_layout.fixed_prefix_len != 0 or app_layout.fixed_prefix_base != 0:
         raise ValueError(
-            "app compiler callable prefix disagrees with the executable runtime: "
-            f"app=({app_layout.fixed_prefix_base},{app_layout.fixed_prefix_len}) "
-            f"runtime=({runtime_layout.runtime_callable_base},"
-            f"{runtime_layout.fixed_prefix_len})"
+            "split app reserves a fixed runtime callable prefix: "
+            f"app=({app_layout.fixed_prefix_base},{app_layout.fixed_prefix_len})"
         )
     if runtime_layout.runtime_occupied_end > app_layout.finalized_app_base:
         raise ValueError(
@@ -118,14 +115,8 @@ def _reconcile_split_callable_layout(
             f"runtime_occupied_end={runtime_layout.runtime_occupied_end}, "
             f"app_base={app_layout.finalized_app_base}"
         )
-    reconciled = CallableTableLayout(
-        runtime_layout.runtime_callable_base,
-        runtime_layout.fixed_prefix_len,
-        app_layout.finalized_app_base,
-        app_layout.app_entry_count,
-    )
-    reconciled.validate()
-    return reconciled
+    app_layout.validate()
+    return app_layout
 
 
 def _callable_entry_export_name(slot: int) -> str:

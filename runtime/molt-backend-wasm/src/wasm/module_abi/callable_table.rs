@@ -18,15 +18,15 @@ use crate::wasm::WasmBackend;
 use crate::wasm_binary::{emit_call, encode_u32_leb128_padded};
 use crate::wasm_data::DataSegmentRef;
 use crate::wasm_table::{
-    WasmCallableTableAddress, WasmCallableTableRole, WasmCallableTableSlot,
-    WasmCallableTableTarget, WasmFunctionSymbol,
+    WasmCallableTableRole, WasmCallableTableSlot, WasmCallableTableTarget, WasmFunctionSymbol,
 };
 pub(in crate::wasm) use call_site::WasmCallableCallSiteAbi;
 
 /// How the table plan names a callable (HF-699 K5): a slot of this plan's
 /// callable table, or a runtime key that the runtime resolves through its
-/// generated key table. Runtime polls are keys on every target (K1); compact
-/// builtins and app-resolver entries keep table slots until their own stage.
+/// generated key table. Runtime polls and reserved runtime callables are keys
+/// on every target (K1); compact builtins and app-resolver entries keep table
+/// slots until their own stage.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CallableIdentity {
     TableSlot(u32),
@@ -48,12 +48,12 @@ impl CallableIdentity {
 
 pub(in crate::wasm) struct WasmCallableTablePlan {
     table_base: u32,
-    fixed_shared_runtime_abi_base: Option<u32>,
     table_entries: Vec<WasmCallableTableEntry>,
-    split_runtime_shared_abi_slot_end: usize,
     func_to_table_idx: BTreeMap<String, CallableIdentity>,
     func_to_index: BTreeMap<String, u32>,
-    func_to_trampoline_idx: BTreeMap<String, u32>,
+    /// A trampoline is an app slot, or the key of a runtime entry that
+    /// consumes the call frame itself (K1).
+    func_to_trampoline_idx: BTreeMap<String, CallableIdentity>,
     /// Table slots of address-taken native initializers, keyed by symbol.
     native_initializer_to_table_idx: BTreeMap<String, u32>,
     app_callable_resolver: Option<WasmAppCallableResolverPlan>,
@@ -138,29 +138,12 @@ impl WasmCallableTablePlan {
             .table_entries
             .get(slot as usize)
             .unwrap_or_else(|| panic!("callable table slot outside plan: {slot}"));
-        let fixed_prefix_len = self.split_runtime_shared_abi_slot_end as u32;
-        let (current_table_index, address) = if slot < fixed_prefix_len {
-            let base = self.fixed_shared_runtime_abi_base.unwrap_or_else(|| {
-                panic!("fixed callable-table slot {slot} has no shared runtime base")
-            });
-            (
-                base.checked_add(slot)
-                    .expect("fixed callable-table address overflow"),
-                WasmCallableTableAddress::FixedSharedRuntimeAbi {
-                    finalized_app_base: self.table_base,
-                },
-            )
-        } else {
-            (
-                self.table_base
-                    .checked_add(slot - fixed_prefix_len)
-                    .expect("relocatable callable-table address overflow"),
-                WasmCallableTableAddress::Relocatable(entry.symbol),
-            )
-        };
         WasmCallableTableSlot {
-            current_table_index,
-            address,
+            current_table_index: self
+                .table_base
+                .checked_add(slot)
+                .expect("relocatable callable-table address overflow"),
+            symbol: entry.symbol,
             role,
         }
     }
@@ -356,8 +339,8 @@ impl WasmBackend {
     ) -> WasmCallableTableElements {
         let mut element_section = None;
         let mut element_payload = None;
-        let fixed_prefix_len = plan.split_runtime_shared_abi_slot_end;
-        let app_entries = &plan.table_entries[fixed_prefix_len..];
+        // Every entry belongs to the app (HF-699 K3).
+        let app_entries = &plan.table_entries[..];
         if reloc_enabled {
             for (slot, entry) in plan.table_entries.iter().enumerate() {
                 self.exports.export(
@@ -447,10 +430,9 @@ impl WasmBackend {
         let mut layout_payload = Vec::new();
         crate::wasm_abi_generated::callable_table::CALLABLE_TABLE_LAYOUT_VERSION
             .encode(&mut layout_payload);
-        plan.fixed_shared_runtime_abi_base
-            .unwrap_or(0)
-            .encode(&mut layout_payload);
-        (fixed_prefix_len as u32).encode(&mut layout_payload);
+        // No fixed runtime prefix (HF-699 K3): base and length are zero.
+        0u32.encode(&mut layout_payload);
+        0u32.encode(&mut layout_payload);
         plan.table_base.encode(&mut layout_payload);
         (app_entries.len() as u32).encode(&mut layout_payload);
         WasmCallableTableElements {
@@ -580,15 +562,16 @@ mod tests {
             .collect();
         WasmCallableTablePlan {
             table_base: 0,
-            fixed_shared_runtime_abi_base: None,
             table_entries: Vec::new(),
-            split_runtime_shared_abi_slot_end: 0,
             func_to_table_idx: func_to_table_idx
                 .into_iter()
                 .map(|(name, slot)| (name, CallableIdentity::TableSlot(slot)))
                 .collect(),
             func_to_index,
-            func_to_trampoline_idx,
+            func_to_trampoline_idx: func_to_trampoline_idx
+                .into_iter()
+                .map(|(name, slot)| (name, CallableIdentity::TableSlot(slot)))
+                .collect(),
             native_initializer_to_table_idx: BTreeMap::new(),
             app_callable_resolver: None,
             positional_call_shapes: BTreeMap::new(),

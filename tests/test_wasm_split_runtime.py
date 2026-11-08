@@ -203,21 +203,19 @@ def test_generate_split_worker_js_lifecycle_contract() -> None:
     assert "const stderrDecoder = new TextDecoder();" in worker_js
     # Runtime shutdown and error ordering are executed by the shared witness in
     # test_wasm_startup_failures, including the emitted artifact below.
-    # The declared base reaches the shared admission, which publishes it before
-    # runtime admission; test_wasm_runner_table_base.py
-    # test_hosts_share_callable_table_admission runs this Worker's verdicts.
-    assert "manifest: { ...deploymentManifest, wasm_table_base: 4096 }," in worker_js
-    assert "publishWasmTableAdmission(tableAdmission, rtInstance);" in worker_js
+    # Runtime callables are keys the runtime resolves itself: the Worker reads
+    # the app's attestation and publishes no table base (HF-699 K3).
+    assert "readCallableTableAttestation({" in worker_js
+    assert "wasm_table_base" not in worker_js
+    assert "MOLT_WASM_TABLE_BASE" not in worker_js
     assert (
         'const WEBGPU_DISPATCH_HOST_IMPORT = "molt_gpu_webgpu_dispatch_host";'
         in worker_js
     )
     assert "[WEBGPU_DISPATCH_HOST_IMPORT]: () => -ENOSYS," in worker_js
     assert "const { ENOSYS," in worker_js
-    assert "const planReservedRuntimeDispatch = ({" in worker_js
-    assert "appOwnsReservedTrampoline" not in worker_js
-    assert "dispatchReservedRuntimeCallable" in worker_js
-    assert "reservedDispatch.dispatchReservedRuntimeCallable" in worker_js
+    assert "ReservedRuntime" not in worker_js
+    assert "reservedRuntime" not in worker_js
 
 
 def test_build_isolate_import_ops_initializes_code_slots() -> None:

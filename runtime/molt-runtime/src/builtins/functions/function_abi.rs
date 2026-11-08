@@ -59,7 +59,8 @@ pub(crate) fn runtime_fn_publish(named_key: Option<u64>, raw_ptr: *const ()) -> 
 
 /// Named keys sit in a reserved range above every function address. The
 /// generated table owns their targets.
-fn runtime_callable_key_is_named(key: u64) -> bool {
+#[inline]
+pub(crate) fn runtime_callable_key_is_named(key: u64) -> bool {
     key >= wasm_callables::RUNTIME_CALLABLE_KEY_BASE
 }
 
@@ -82,167 +83,12 @@ pub(crate) fn canonicalize_runtime_callable_key(fn_ptr: u64) -> u64 {
     fn_ptr
 }
 
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn reserved_wasm_runtime_callable_info(
-    fn_ptr: u64,
-) -> Option<(u64, &'static str, &'static str, usize)> {
-    wasm_callables::reserved_wasm_runtime_callable_info(fn_ptr)
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn reserved_wasm_runtime_callable_info_for_table_idx(
-    table_idx: u64,
-) -> Option<(u64, &'static str, &'static str, usize)> {
-    let base = crate::wasm_table_base();
-    let start = base + wasm_callables::RESERVED_WASM_RUNTIME_CALLABLE_BASE;
-    let idx = table_idx.checked_sub(start)?;
-    if idx >= wasm_callables::RESERVED_WASM_RUNTIME_CALLABLE_COUNT {
-        return None;
-    }
-    wasm_callables::RESERVED_RUNTIME_CALLABLES
-        .iter()
-        .find(|entry| entry.index == idx)
-        .map(|entry| {
-            (
-                entry.index,
-                entry.runtime_name,
-                entry.import_name,
-                entry.arity,
-            )
-        })
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn reserved_wasm_runtime_direct_callable_info_for_table_idx(
-    table_idx: u64,
-) -> Option<(u64, &'static str, &'static str, usize)> {
-    let info = reserved_wasm_runtime_callable_info_for_table_idx(table_idx)?;
-    let dispatch = wasm_callables::reserved_wasm_runtime_callable_dispatch_for_index(info.0)?;
-    if dispatch != wasm_callables::ReservedRuntimeCallableDispatch::Direct {
-        return None;
-    }
-    Some(info)
-}
-
-/// Map a reserved-callable table index — in either the direct region OR the
-/// trampoline region — to its canonical *direct* table slot, but only when the
-/// callable uses `Direct` dispatch.
-///
-/// The fixed-arity call lanes lower a Python call of a reserved callable to
-/// `molt_call_indirectN(<slot>, <N positional args>)`. The host resolves the
-/// slot's region: a *direct*-region slot is invoked as an N-argument direct
-/// call; a *trampoline*-region slot is invoked with the closure/argv/argc
-/// convention (exactly 3 host arguments). A fixed-arity lane therefore MUST
-/// target the direct region for a `Direct`-dispatch reserved callable; handing
-/// it the trampoline slot makes the host reject the call as a malformed
-/// trampoline. `reserved_wasm_runtime_callable_info_for_table_idx` only
-/// recognizes the direct region, so a function object whose stored `fn_ptr`
-/// already is the trampoline slot was silently treated as a non-reserved
-/// pointer and routed straight back to the trampoline region. This closes that
-/// gap by recognizing both regions and always returning the direct slot.
-/// Pure region math for [`reserved_wasm_runtime_direct_slot_for_any_reserved_slot`],
-/// factored out so the direct/trampoline-region reconciliation is unit-testable
-/// on native targets. Given a table index that may sit in the direct region
-/// (`[direct_start, direct_start + count)`) or the trampoline region
-/// (`[trampoline_start, trampoline_start + count)`), returns the reserved
-/// callable index it belongs to, or `None` when it is outside both regions.
-#[cfg(any(test, target_arch = "wasm32"))]
-fn reserved_slot_index_for_any_region(
-    table_idx: u64,
-    direct_start: u64,
-    trampoline_start: u64,
-    count: u64,
-) -> Option<u64> {
-    table_idx
-        .checked_sub(direct_start)
-        .filter(|o| *o < count)
-        .or_else(|| {
-            table_idx
-                .checked_sub(trampoline_start)
-                .filter(|o| *o < count)
-        })
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn reserved_wasm_runtime_direct_slot_for_any_reserved_slot(
-    table_idx: u64,
-) -> Option<u64> {
-    let base = crate::wasm_table_base();
-    let direct_start = base + wasm_callables::RESERVED_WASM_RUNTIME_CALLABLE_BASE;
-    let trampoline_start = base + wasm_callables::RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE;
-    let count = wasm_callables::RESERVED_WASM_RUNTIME_CALLABLE_COUNT;
-    let idx = reserved_slot_index_for_any_region(table_idx, direct_start, trampoline_start, count)?;
-    let dispatch = wasm_callables::reserved_wasm_runtime_callable_dispatch_for_index(idx)?;
-    if dispatch != wasm_callables::ReservedRuntimeCallableDispatch::Direct {
-        return None;
-    }
-    Some(direct_start + idx)
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn reserved_wasm_runtime_callable_ptr(fn_ptr: u64) -> Option<u64> {
-    let base = crate::wasm_table_base();
-    reserved_wasm_runtime_callable_info(fn_ptr).map(|(idx, _sym, _import, _arity)| {
-        base + wasm_callables::RESERVED_WASM_RUNTIME_CALLABLE_BASE + idx
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
+/// Whether a stored callable identity names the runtime symbol whose key or
+/// address is `symbol_fn_ptr`. A reserved runtime callable is its key on
+/// every target (HF-699 K1), so identity is equality of keys.
 #[inline]
-pub(crate) fn normalize_runtime_callable_ptr(fn_ptr: u64) -> u64 {
-    reserved_wasm_runtime_callable_ptr(fn_ptr).unwrap_or(fn_ptr)
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn reserved_wasm_runtime_callable_arity(fn_ptr: u64) -> Option<usize> {
-    reserved_wasm_runtime_callable_info(fn_ptr).map(|(_idx, _sym, _import, arity)| arity)
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn reserved_wasm_runtime_trampoline_ptr(fn_ptr: u64) -> Option<u64> {
-    let base = crate::wasm_table_base();
-    reserved_wasm_runtime_callable_info(fn_ptr).map(|(idx, _sym, _import, _arity)| {
-        base + wasm_callables::RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE + idx
-    })
-}
-
-#[inline]
-pub(crate) fn normalize_runtime_trampoline_ptr(fn_ptr: u64, tramp_ptr: u64) -> u64 {
-    let _ = fn_ptr;
-    #[cfg(target_arch = "wasm32")]
-    {
-        reserved_wasm_runtime_trampoline_ptr(fn_ptr).unwrap_or(tramp_ptr)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        tramp_ptr
-    }
-}
-
-#[inline]
-pub(crate) fn runtime_callable_represents_symbol(
-    fn_ptr: u64,
-    tramp_ptr: u64,
-    symbol_fn_ptr: u64,
-) -> bool {
-    let _ = tramp_ptr;
-    if canonicalize_runtime_callable_key(fn_ptr) == canonicalize_runtime_callable_key(symbol_fn_ptr)
-    {
-        return true;
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        if normalize_runtime_callable_ptr(fn_ptr) == normalize_runtime_callable_ptr(symbol_fn_ptr) {
-            return true;
-        }
-        let expected_tramp_ptr = normalize_runtime_trampoline_ptr(symbol_fn_ptr, 0);
-        if expected_tramp_ptr != 0
-            && normalize_runtime_trampoline_ptr(fn_ptr, tramp_ptr) == expected_tramp_ptr
-        {
-            return true;
-        }
-    }
-    false
+pub(crate) fn runtime_callable_represents_symbol(fn_ptr: u64, symbol_fn_ptr: u64) -> bool {
+    canonicalize_runtime_callable_key(fn_ptr) == canonicalize_runtime_callable_key(symbol_fn_ptr)
 }
 
 pub(crate) fn runtime_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
@@ -301,17 +147,14 @@ unsafe fn init_runtime_callable_function_obj(
     trampoline_ptr: u64,
     native_direct_target: bool,
 ) {
-    #[cfg(not(target_arch = "wasm32"))]
+    // A key resolves once, here, on every target (HF-699 K4): a call then
+    // costs one load. On wasm32 the resolved pointer is the runtime's own
+    // table slot, which its element segment publishes in every layout.
     if let Some(call_target) = runtime_callable_target_ptr(fn_key) {
         unsafe {
             function_set_call_target_ptr(ptr, call_target);
         }
     }
-    #[cfg(target_arch = "wasm32")]
-    let _ = fn_key;
-    #[cfg(target_arch = "wasm32")]
-    let _ = native_direct_target;
-    #[cfg(not(target_arch = "wasm32"))]
     if native_direct_target
         && unsafe { function_call_target_ptr(ptr) }.is_null()
         && raw_fn_ptr != 0
@@ -321,10 +164,9 @@ unsafe fn init_runtime_callable_function_obj(
             function_set_call_target_ptr(ptr, raw_target);
         }
     }
-    let normalized_trampoline_ptr = normalize_runtime_trampoline_ptr(raw_fn_ptr, trampoline_ptr);
-    if normalized_trampoline_ptr != 0 {
+    if trampoline_ptr != 0 {
         unsafe {
-            function_set_trampoline_ptr(py, ptr, normalized_trampoline_ptr);
+            function_set_trampoline_ptr(py, ptr, trampoline_ptr);
         }
     }
 }
@@ -374,11 +216,8 @@ pub(crate) unsafe fn function_replace_code_bits(
             return false;
         }
 
-        #[cfg(not(target_arch = "wasm32"))]
         let call_target = runtime_callable_target_ptr(identity.fn_ptr)
             .or_else(|| crate::provenance::abi::function_ptr(identity.fn_ptr));
-        #[cfg(target_arch = "wasm32")]
-        let call_target = Some(std::ptr::null());
         let Some(call_target) = call_target else {
             raise_exception::<u64>(
                 _py,
@@ -3065,64 +2904,5 @@ mod wasm_runtime_callable_tests {
     #[test]
     fn wasm_runtime_callable_symbols_resolve_in_functions_scope() {
         wasm_callables::assert_reserved_runtime_symbols_resolve();
-    }
-
-    /// Regression for the reserved-callable fixed-arity dispatch bug: a `Direct`
-    /// reserved callable (e.g. `molt_type_new`) whose function object stored the
-    /// *trampoline* table slot as its identity pointer was routed back onto the
-    /// trampoline lane, emitting `molt_call_indirectN` with N positional args
-    /// into the trampoline region — which the host rejects because that region
-    /// expects the 3-argument closure/argv/argc convention. The region math must
-    /// recognize a reserved slot from EITHER region so the fixed-arity lanes can
-    /// canonicalize it back to the direct slot.
-    #[test]
-    fn reserved_slot_index_resolves_from_direct_and_trampoline_regions() {
-        // Mirror the wasm layout: direct region [1000, 1024), trampoline region
-        // [1024, 1048), 24 reserved callables.
-        let direct_start = 1000u64;
-        let count = 24u64;
-        let trampoline_start = direct_start + count;
-
-        // molt_type_new is reserved index 1.
-        let direct_slot = direct_start + 1;
-        let trampoline_slot = trampoline_start + 1;
-
-        // A pointer in the direct region resolves to its index.
-        assert_eq!(
-            reserved_slot_index_for_any_region(direct_slot, direct_start, trampoline_start, count),
-            Some(1)
-        );
-        // The bug shape: a pointer in the TRAMPOLINE region must also resolve to
-        // the same reserved index (previously returned None → dispatch fell back
-        // to the trampoline lane and produced the arg-count mismatch).
-        assert_eq!(
-            reserved_slot_index_for_any_region(
-                trampoline_slot,
-                direct_start,
-                trampoline_start,
-                count
-            ),
-            Some(1)
-        );
-        // Out-of-range indices (below both regions, at the boundary, and above
-        // the trampoline region) resolve to nothing.
-        assert_eq!(
-            reserved_slot_index_for_any_region(
-                direct_start - 1,
-                direct_start,
-                trampoline_start,
-                count
-            ),
-            None
-        );
-        assert_eq!(
-            reserved_slot_index_for_any_region(
-                trampoline_start + count,
-                direct_start,
-                trampoline_start,
-                count
-            ),
-            None
-        );
     }
 }

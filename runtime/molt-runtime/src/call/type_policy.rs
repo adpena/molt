@@ -1,7 +1,7 @@
 use crate::{
     PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_FUNCTION, bound_method_func_bits,
-    class_attr_lookup_raw_mro, function_fn_ptr, function_trampoline_ptr, molt_object_init,
-    molt_object_new_bound, obj_from_bits, object_type_id,
+    class_attr_lookup_raw_mro, function_fn_ptr, molt_object_init, molt_object_new_bound,
+    obj_from_bits, object_type_id,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -18,12 +18,11 @@ pub(crate) enum ObjectConstructorCall {
 }
 
 /// A callback-free observation of an admitted function's symbol identity.
-/// Keep it within one policy selection: replacing `__code__` or a trampoline
-/// requires a fresh observation, not a persistent identity cache.
+/// Keep it within one policy selection: replacing `__code__` requires a fresh
+/// observation, not a persistent identity cache.
 #[derive(Clone, Copy)]
 pub(crate) struct FunctionSymbolIdentity {
     function: u64,
-    trampoline: u64,
 }
 
 impl FunctionSymbolIdentity {
@@ -33,18 +32,13 @@ impl FunctionSymbolIdentity {
         unsafe {
             Self {
                 function: function_fn_ptr(function),
-                trampoline: function_trampoline_ptr(function),
             }
         }
     }
 
     #[inline]
     pub(crate) fn represents(self, symbol: u64) -> bool {
-        crate::builtins::functions::runtime_callable_represents_symbol(
-            self.function,
-            self.trampoline,
-            symbol,
-        )
+        crate::builtins::functions::runtime_callable_represents_symbol(self.function, symbol)
     }
 }
 

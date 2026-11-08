@@ -30,23 +30,13 @@ pub(crate) enum WasmCallableTableRole {
     ResolverEntry,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum WasmCallableTableAddress {
-    /// The shared runtime ABI prefix is deliberately stable across separately
-    /// instantiated runtime and app modules. These addresses are ABI constants,
-    /// not linker-owned function-table allocations.
-    FixedSharedRuntimeAbi {
-        finalized_app_base: u32,
-    },
-    Relocatable(WasmFunctionSymbol),
-}
-
-/// A callable-table slot as compiled code names it: its index now, how a
-/// relocatable link rebinds it, and the role of the reference.
+/// A callable-table slot as compiled code names it: its index now, the
+/// function a relocatable link rebinds it to, and the role of the reference.
+/// Every slot belongs to the app; runtime callables are keys (HF-699 K1, K3).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WasmCallableTableSlot {
     pub(crate) current_table_index: u32,
-    pub(crate) address: WasmCallableTableAddress,
+    pub(crate) symbol: WasmFunctionSymbol,
     pub(crate) role: WasmCallableTableRole,
 }
 
@@ -93,32 +83,20 @@ impl WasmTableRelocations {
         target: &WasmCallableTableSlot,
     ) {
         if reloc_enabled {
-            match &target.address {
-                WasmCallableTableAddress::Relocatable(symbol) => {
-                    let defined_func_index = owner_func_index
-                        .checked_sub(func_import_count)
-                        .expect(
-                            "callable-table relocation can only be recorded for defined WASM function bodies",
-                        );
-                    let body_len = u32::try_from(func.byte_len())
-                        .expect("callable-table relocation body length exceeds u32");
-                    let offset_in_func = body_len
-                        .checked_add(1)
-                        .expect("callable-table relocation instruction offset overflow");
-                    self.relocs.push(TableRelocSite {
-                        defined_func_index,
-                        offset_in_func,
-                        target: *symbol,
-                        role: target.role,
-                    });
-                }
-                WasmCallableTableAddress::FixedSharedRuntimeAbi { finalized_app_base } => assert!(
-                    target.current_table_index < *finalized_app_base,
-                    "fixed shared-runtime callable address {} must be below finalized app base {}",
-                    target.current_table_index,
-                    finalized_app_base
-                ),
-            }
+            let defined_func_index = owner_func_index.checked_sub(func_import_count).expect(
+                "callable-table relocation can only be recorded for defined WASM function bodies",
+            );
+            let body_len = u32::try_from(func.byte_len())
+                .expect("callable-table relocation body length exceeds u32");
+            let offset_in_func = body_len
+                .checked_add(1)
+                .expect("callable-table relocation instruction offset overflow");
+            self.relocs.push(TableRelocSite {
+                defined_func_index,
+                offset_in_func,
+                target: target.symbol,
+                role: target.role,
+            });
         }
         emit_i32_const(func, reloc_enabled, target.current_table_index as i32);
     }

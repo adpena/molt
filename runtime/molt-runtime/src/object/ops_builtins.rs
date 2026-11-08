@@ -472,163 +472,15 @@ pub unsafe extern "C" fn molt_guarded_call_obj(
 /// **Violation consequence:** Arity mismatch or invalid fn_ptr causes stack
 /// corruption, segfault, or silent data corruption. There is no runtime guard;
 /// correctness depends entirely on the compiler backend.
-#[cfg(target_arch = "wasm32")]
-#[inline(always)]
-unsafe fn molt_guarded_call_dispatch_wasm(
-    call_target: *const (),
-    args_ptr: *const u64,
-    n: usize,
-) -> Option<u64> {
-    let func_idx = call_target as usize as u64;
-    unsafe {
-        Some(match n {
-            0 => molt_call_indirect0(func_idx) as u64,
-            1 => molt_call_indirect1(func_idx, *args_ptr) as u64,
-            2 => molt_call_indirect2(func_idx, *args_ptr, *args_ptr.add(1)) as u64,
-            3 => {
-                molt_call_indirect3(func_idx, *args_ptr, *args_ptr.add(1), *args_ptr.add(2)) as u64
-            }
-            4 => molt_call_indirect4(
-                func_idx,
-                *args_ptr,
-                *args_ptr.add(1),
-                *args_ptr.add(2),
-                *args_ptr.add(3),
-            ) as u64,
-            5 => molt_call_indirect5(
-                func_idx,
-                *args_ptr,
-                *args_ptr.add(1),
-                *args_ptr.add(2),
-                *args_ptr.add(3),
-                *args_ptr.add(4),
-            ) as u64,
-            6 => molt_call_indirect6(
-                func_idx,
-                *args_ptr,
-                *args_ptr.add(1),
-                *args_ptr.add(2),
-                *args_ptr.add(3),
-                *args_ptr.add(4),
-                *args_ptr.add(5),
-            ) as u64,
-            7 => molt_call_indirect7(
-                func_idx,
-                *args_ptr,
-                *args_ptr.add(1),
-                *args_ptr.add(2),
-                *args_ptr.add(3),
-                *args_ptr.add(4),
-                *args_ptr.add(5),
-                *args_ptr.add(6),
-            ) as u64,
-            8 => molt_call_indirect8(
-                func_idx,
-                *args_ptr,
-                *args_ptr.add(1),
-                *args_ptr.add(2),
-                *args_ptr.add(3),
-                *args_ptr.add(4),
-                *args_ptr.add(5),
-                *args_ptr.add(6),
-                *args_ptr.add(7),
-            ) as u64,
-            9 => molt_call_indirect9(
-                func_idx,
-                *args_ptr,
-                *args_ptr.add(1),
-                *args_ptr.add(2),
-                *args_ptr.add(3),
-                *args_ptr.add(4),
-                *args_ptr.add(5),
-                *args_ptr.add(6),
-                *args_ptr.add(7),
-                *args_ptr.add(8),
-            ) as u64,
-            10 => molt_call_indirect10(
-                func_idx,
-                *args_ptr,
-                *args_ptr.add(1),
-                *args_ptr.add(2),
-                *args_ptr.add(3),
-                *args_ptr.add(4),
-                *args_ptr.add(5),
-                *args_ptr.add(6),
-                *args_ptr.add(7),
-                *args_ptr.add(8),
-                *args_ptr.add(9),
-            ) as u64,
-            11 => molt_call_indirect11(
-                func_idx,
-                *args_ptr,
-                *args_ptr.add(1),
-                *args_ptr.add(2),
-                *args_ptr.add(3),
-                *args_ptr.add(4),
-                *args_ptr.add(5),
-                *args_ptr.add(6),
-                *args_ptr.add(7),
-                *args_ptr.add(8),
-                *args_ptr.add(9),
-                *args_ptr.add(10),
-            ) as u64,
-            12 => molt_call_indirect12(
-                func_idx,
-                *args_ptr,
-                *args_ptr.add(1),
-                *args_ptr.add(2),
-                *args_ptr.add(3),
-                *args_ptr.add(4),
-                *args_ptr.add(5),
-                *args_ptr.add(6),
-                *args_ptr.add(7),
-                *args_ptr.add(8),
-                *args_ptr.add(9),
-                *args_ptr.add(10),
-                *args_ptr.add(11),
-            ) as u64,
-            13 => molt_call_indirect13(
-                func_idx,
-                *args_ptr,
-                *args_ptr.add(1),
-                *args_ptr.add(2),
-                *args_ptr.add(3),
-                *args_ptr.add(4),
-                *args_ptr.add(5),
-                *args_ptr.add(6),
-                *args_ptr.add(7),
-                *args_ptr.add(8),
-                *args_ptr.add(9),
-                *args_ptr.add(10),
-                *args_ptr.add(11),
-                *args_ptr.add(12),
-            ) as u64,
-            _ => return None,
-        })
-    }
-}
-
 #[inline(never)]
 unsafe fn molt_guarded_call_dispatch(
     call_target: *const (),
     args_ptr: *const u64,
     n: usize,
 ) -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        if let Some(result) = unsafe { molt_guarded_call_dispatch_wasm(call_target, args_ptr, n) } {
-            return result;
-        }
-        crate::with_gil_entry_nopanic!(_py, {
-            raise_exception::<u64>(
-                _py,
-                BuiltinExc::RuntimeError,
-                "WASM indirect function call arity exceeds manifest call_indirect max",
-            )
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
+    // The runtime calls the resolved target itself on every target: on wasm32
+    // a slot of the shared table, the runtime's own for a runtime callable
+    // (HF-699 K2).
     unsafe {
         match n {
             0 => {
@@ -1122,13 +974,6 @@ unsafe fn direct_call_target_for_function(func_ptr: *mut u8, fn_ptr: u64) -> Opt
     if !target.is_null() {
         return Some(target);
     }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let tramp_ptr = unsafe { function_trampoline_ptr(func_ptr) };
-        let call_target = crate::call::function::fixed_arity_call_target_ptr(fn_ptr, tramp_ptr);
-        crate::provenance::abi::function_ptr(call_target)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
     runtime_callable_target_ptr(fn_ptr)
 }
 
@@ -1159,11 +1004,6 @@ fn missing_direct_call_target(_py: &crate::concurrency::PyToken<'_>, fn_ptr: u64
 
 #[inline(always)]
 unsafe fn direct_call_0(call_target: *const ()) -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { molt_call_indirect0(call_target as usize as u64) as u64 }
-    }
-    #[cfg(not(target_arch = "wasm32"))]
     unsafe {
         let f: extern "C" fn() -> u64 = std::mem::transmute(call_target);
         f()

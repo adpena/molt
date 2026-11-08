@@ -6285,17 +6285,17 @@ def test_explicit_deploy_runtime_outranks_ambient_and_fails_closed(
 
 
 def test_split_callable_layout_preserves_conservative_app_boundary() -> None:
+    # Runtime callables are keys: the app reserves no runtime prefix, and its
+    # region follows the runtime's last entry (HF-699 K3).
     app_layout = wasm_link_format.CallableTableLayout(
-        fixed_prefix_base=1,
-        fixed_prefix_len=81,
+        fixed_prefix_base=0,
+        fixed_prefix_len=0,
         finalized_app_base=2_794,
         app_entry_count=8_440,
     )
     final_runtime_layout = wasm_artifact.WasmSplitRuntimeCallableLayout(
-        runtime_callable_base=1,
         runtime_occupied_end=1_849,
         runtime_table_min=1_849,
-        fixed_prefix_len=81,
     )
 
     assert (
@@ -6309,22 +6309,39 @@ def test_split_callable_layout_preserves_conservative_app_boundary() -> None:
 
 def test_split_callable_layout_rejects_final_runtime_overlap() -> None:
     app_layout = wasm_link_format.CallableTableLayout(
-        fixed_prefix_base=1,
-        fixed_prefix_len=81,
+        fixed_prefix_base=0,
+        fixed_prefix_len=0,
         finalized_app_base=2_794,
         app_entry_count=8_440,
     )
     overlapping_runtime_layout = wasm_artifact.WasmSplitRuntimeCallableLayout(
-        runtime_callable_base=1,
         runtime_occupied_end=2_795,
         runtime_table_min=2_795,
-        fixed_prefix_len=81,
     )
 
     with pytest.raises(ValueError, match="overlap the app-owned callable region"):
         wasm_link_callable_table._reconcile_split_callable_layout(
             app_layout,
             overlapping_runtime_layout,
+        )
+
+
+def test_split_callable_layout_refuses_an_app_runtime_prefix() -> None:
+    app_layout = wasm_link_format.CallableTableLayout(
+        fixed_prefix_base=1,
+        fixed_prefix_len=81,
+        finalized_app_base=2_794,
+        app_entry_count=8_440,
+    )
+    runtime_layout = wasm_artifact.WasmSplitRuntimeCallableLayout(
+        runtime_occupied_end=1_849,
+        runtime_table_min=1_849,
+    )
+
+    with pytest.raises(ValueError, match="reserves a fixed runtime callable prefix"):
+        wasm_link_callable_table._reconcile_split_callable_layout(
+            app_layout,
+            runtime_layout,
         )
 
 

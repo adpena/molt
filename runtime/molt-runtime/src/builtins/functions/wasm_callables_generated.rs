@@ -73,29 +73,16 @@ pub(crate) fn runtime_callable_symbol_is_non_callable(symbol_name: &str) -> bool
     NON_RUNTIME_CALLABLE_INTRINSICS.contains(&symbol_name)
 }
 
+/// The largest poll key offset: `poll_table_slot` names a poll's key
+/// (`RUNTIME_POLL_CALLABLE_KEY_BASE` + slot), never a table slot.
 pub(crate) const WASM_POLL_SLOT_MAX_OFFSET: u64 = 29;
 
-#[cfg(target_arch = "wasm32")]
-pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = 30;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_COUNT: u64 = 80;
-#[cfg(target_arch = "wasm32")]
-pub(crate) const RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE: u64 =
-    RESERVED_WASM_RUNTIME_CALLABLE_BASE + RESERVED_WASM_RUNTIME_CALLABLE_COUNT;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ReservedRuntimeCallableDispatch {
-    Direct,
-    Trampoline,
-}
-
+/// A reserved runtime callable: its key is
+/// `RUNTIME_CALLABLE_KEY_BASE` + `index` on every target (HF-699 K1).
 #[derive(Clone, Copy)]
 pub(crate) struct ReservedRuntimeCallableInfo {
     pub(crate) index: u64,
     pub(crate) runtime_name: &'static str,
-    pub(crate) import_name: &'static str,
-    pub(crate) arity: usize,
-    pub(crate) dispatch: ReservedRuntimeCallableDispatch,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,562 +116,322 @@ pub(crate) const RESERVED_RUNTIME_CALLABLES: &[ReservedRuntimeCallableInfo] = &[
     ReservedRuntimeCallableInfo {
         index: 0,
         runtime_name: "molt_type_call",
-        import_name: "type_call",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 1,
         runtime_name: "molt_type_new",
-        import_name: "type_new",
-        arity: 5,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 2,
         runtime_name: "molt_type_init",
-        import_name: "type_init",
-        arity: 5,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 3,
         runtime_name: "molt_object_new_bound",
-        import_name: "object_new_bound",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 4,
         runtime_name: "molt_object_init",
-        import_name: "object_init",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 5,
         runtime_name: "molt_object_init_subclass",
-        import_name: "object_init_subclass",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 6,
         runtime_name: "molt_exception_new_bound",
-        import_name: "exception_new_bound",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 7,
         runtime_name: "molt_exception_init",
-        import_name: "exception_init",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 8,
         runtime_name: "molt_exceptiongroup_init",
-        import_name: "exceptiongroup_init",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 9,
         runtime_name: "molt_types_mappingproxy_new",
-        import_name: "types_mappingproxy_new",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 10,
         runtime_name: "molt_types_mappingproxy_init",
-        import_name: "types_mappingproxy_init",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 11,
         runtime_name: "molt_types_method_new",
-        import_name: "types_method_new",
-        arity: 3,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 12,
         runtime_name: "molt_types_method_init",
-        import_name: "types_method_init",
-        arity: 3,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 13,
         runtime_name: "molt_types_simplenamespace_init",
-        import_name: "types_simplenamespace_init",
-        arity: 3,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 14,
         runtime_name: "molt_types_capsule_new",
-        import_name: "types_capsule_new",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 15,
         runtime_name: "molt_types_cell_new",
-        import_name: "types_cell_new",
-        arity: 3,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 16,
         runtime_name: "molt_types_dynamic_class_attr_init",
-        import_name: "types_dynamic_class_attr_init",
-        arity: 3,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 17,
         runtime_name: "molt_types_coroutine",
-        import_name: "types_coroutine",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 18,
         runtime_name: "molt_types_get_original_bases",
-        import_name: "types_get_original_bases",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 19,
         runtime_name: "molt_types_prepare_class",
-        import_name: "types_prepare_class",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 20,
         runtime_name: "molt_types_resolve_bases",
-        import_name: "types_resolve_bases",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 21,
         runtime_name: "molt_types_new_class",
-        import_name: "types_new_class",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 22,
         runtime_name: "molt_cpython_abi_cext_call_trampoline",
-        import_name: "cpython_abi_cext_call_trampoline",
-        arity: 3,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 23,
         runtime_name: "molt_importlib_import_transaction",
-        import_name: "importlib_import_transaction",
-        arity: 5,
-        dispatch: ReservedRuntimeCallableDispatch::Trampoline,
     },
     ReservedRuntimeCallableInfo {
         index: 24,
         runtime_name: "molt_importlib_module_spec_init",
-        import_name: "importlib_module_spec_init",
-        arity: 5,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 25,
         runtime_name: "molt_importlib_compiled_loader_create_module",
-        import_name: "importlib_compiled_loader_create_module",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 26,
         runtime_name: "molt_importlib_compiled_loader_exec_module",
-        import_name: "importlib_compiled_loader_exec_module",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 27,
         runtime_name: "molt_importlib_compiled_loader_load_module",
-        import_name: "importlib_compiled_loader_load_module",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 28,
         runtime_name: "molt_importlib_module_spec_repr",
-        import_name: "importlib_module_spec_repr",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 29,
         runtime_name: "molt_importlib_module_spec_parent",
-        import_name: "importlib_module_spec_parent",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 30,
         runtime_name: "molt_importlib_compiled_loader_find_spec",
-        import_name: "importlib_compiled_loader_find_spec",
-        arity: 4,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 31,
         runtime_name: "molt_importlib_module_spec_cached_get",
-        import_name: "importlib_module_spec_cached_get",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 32,
         runtime_name: "molt_importlib_module_spec_cached_set",
-        import_name: "importlib_module_spec_cached_set",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 33,
         runtime_name: "molt_importlib_module_spec_has_location_get",
-        import_name: "importlib_module_spec_has_location_get",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 34,
         runtime_name: "molt_importlib_module_spec_has_location_set",
-        import_name: "importlib_module_spec_has_location_set",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 35,
         runtime_name: "molt_dataclasses_init_trampoline",
-        import_name: "dataclasses_init_trampoline",
-        arity: 3,
-        dispatch: ReservedRuntimeCallableDispatch::Trampoline,
     },
     ReservedRuntimeCallableInfo {
         index: 36,
         runtime_name: "molt_coroutine_send_method",
-        import_name: "coroutine_send_method",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 37,
         runtime_name: "molt_coroutine_throw_method",
-        import_name: "coroutine_throw_method",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 38,
         runtime_name: "molt_coroutine_close_method",
-        import_name: "coroutine_close_method",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 39,
         runtime_name: "molt_awaitable_await",
-        import_name: "awaitable_await",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 40,
         runtime_name: "molt_coroutine_wrapper_iter",
-        import_name: "coroutine_wrapper_iter",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 41,
         runtime_name: "molt_coroutine_wrapper_next",
-        import_name: "coroutine_wrapper_next",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 42,
         runtime_name: "molt_asyncgen_awaitable_self",
-        import_name: "asyncgen_awaitable_self",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 43,
         runtime_name: "molt_asyncgen_awaitable_next",
-        import_name: "asyncgen_awaitable_next",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 44,
         runtime_name: "molt_asyncgen_awaitable_send",
-        import_name: "asyncgen_awaitable_send",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 45,
         runtime_name: "molt_asyncgen_awaitable_throw",
-        import_name: "asyncgen_awaitable_throw",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 46,
         runtime_name: "molt_asyncgen_awaitable_close",
-        import_name: "asyncgen_awaitable_close",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 47,
         runtime_name: "molt_generator_throw_method",
-        import_name: "generator_throw_method",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 48,
         runtime_name: "molt_contextvars_types",
-        import_name: "contextvars_types",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 49,
         runtime_name: "molt_contextvars_copy_current",
-        import_name: "contextvars_copy_current",
-        arity: 0,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 50,
         runtime_name: "molt_contextvars_new",
-        import_name: "contextvars_new",
-        arity: 3,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 51,
         runtime_name: "molt_contextvars_token_new",
-        import_name: "contextvars_token_new",
-        arity: 3,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 52,
         runtime_name: "molt_contextvars_missing_new",
-        import_name: "contextvars_missing_new",
-        arity: 3,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 53,
         runtime_name: "molt_contextvars_keys_new",
-        import_name: "contextvars_keys_new",
-        arity: 3,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 54,
         runtime_name: "molt_contextvars_values_new",
-        import_name: "contextvars_values_new",
-        arity: 3,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 55,
         runtime_name: "molt_contextvars_items_new",
-        import_name: "contextvars_items_new",
-        arity: 3,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 56,
         runtime_name: "molt_contextvars_var_new",
-        import_name: "contextvars_var_new",
-        arity: 3,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 57,
         runtime_name: "molt_contextvars_var_get",
-        import_name: "contextvars_var_get",
-        arity: 3,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 58,
         runtime_name: "molt_contextvars_var_set",
-        import_name: "contextvars_var_set",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 59,
         runtime_name: "molt_contextvars_var_reset",
-        import_name: "contextvars_var_reset",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 60,
         runtime_name: "molt_contextvars_var_hash",
-        import_name: "contextvars_var_hash",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 61,
         runtime_name: "molt_contextvars_copy",
-        import_name: "contextvars_copy",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 62,
         runtime_name: "molt_contextvars_len",
-        import_name: "contextvars_len",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 63,
         runtime_name: "molt_contextvars_getitem",
-        import_name: "contextvars_getitem",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 64,
         runtime_name: "molt_contextvars_contains",
-        import_name: "contextvars_contains",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 65,
         runtime_name: "molt_contextvars_get",
-        import_name: "contextvars_get",
-        arity: 3,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 66,
         runtime_name: "molt_contextvars_run",
-        import_name: "contextvars_run",
-        arity: 3,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 67,
         runtime_name: "molt_contextvars_keys",
-        import_name: "contextvars_keys",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 68,
         runtime_name: "molt_contextvars_values",
-        import_name: "contextvars_values",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 69,
         runtime_name: "molt_contextvars_items",
-        import_name: "contextvars_items",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 70,
         runtime_name: "molt_contextvars_iter_self",
-        import_name: "contextvars_iter_self",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 71,
         runtime_name: "molt_contextvars_iter_next",
-        import_name: "contextvars_iter_next",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 72,
         runtime_name: "molt_contextvars_eq",
-        import_name: "contextvars_eq",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 73,
         runtime_name: "molt_contextvars_ne",
-        import_name: "contextvars_ne",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 74,
         runtime_name: "molt_contextvars_property",
-        import_name: "contextvars_property",
-        arity: 2,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 75,
         runtime_name: "molt_contextvars_token_enter",
-        import_name: "contextvars_token_enter",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 76,
         runtime_name: "molt_contextvars_token_exit",
-        import_name: "contextvars_token_exit",
-        arity: 4,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 77,
         runtime_name: "molt_contextvars_var_repr",
-        import_name: "contextvars_var_repr",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 78,
         runtime_name: "molt_contextvars_token_repr",
-        import_name: "contextvars_token_repr",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
         index: 79,
         runtime_name: "molt_contextvars_missing_repr",
-        import_name: "contextvars_missing_repr",
-        arity: 1,
-        dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
 ];
 
@@ -912,34 +659,6 @@ pub(crate) fn runtime_poll_callable_target_ptr(fn_ptr: u64) -> Option<*const ()>
         29 => Some(crate::molt_coroutine_wrapper_poll as *const ()),
         _ => None,
     }
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn reserved_wasm_runtime_callable_info(
-    fn_ptr: u64,
-) -> Option<(u64, &'static str, &'static str, usize)> {
-    let idx = fn_ptr.checked_sub(RUNTIME_CALLABLE_KEY_BASE)?;
-    RESERVED_RUNTIME_CALLABLES
-        .iter()
-        .find(|entry| entry.index == idx)
-        .map(|entry| {
-            (
-                entry.index,
-                entry.runtime_name,
-                entry.import_name,
-                entry.arity,
-            )
-        })
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn reserved_wasm_runtime_callable_dispatch_for_index(
-    index: u64,
-) -> Option<ReservedRuntimeCallableDispatch> {
-    RESERVED_RUNTIME_CALLABLES
-        .iter()
-        .find(|entry| entry.index == index)
-        .map(|entry| entry.dispatch)
 }
 
 #[rustfmt::skip]

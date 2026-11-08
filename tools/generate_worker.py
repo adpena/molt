@@ -72,7 +72,6 @@ def generate_worker(
             "runtime_execution_enter",
             "runtime_execution_leave",
             "runtime_shutdown",
-            "molt_set_wasm_table_base",
         )
     }
     if not all(c.isalnum() or c in "._-" for c in wasm_filename):
