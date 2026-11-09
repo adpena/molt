@@ -512,12 +512,16 @@ fn reused_host_buffers_never_return_a_stale_literal() {
                 let mut bits = 0;
                 let status = unsafe {
                     match kind {
-                        ConstDataLiteralKind::String => crate::molt_string_from_bytes(
-                            buffer.as_ptr(),
-                            buffer.len() as u64,
-                            &mut bits,
-                        ),
-                        _ => crate::molt_bytes_from_bytes(
+                        ConstDataLiteralKind::String => {
+                            crate::builtins::strings::molt_string_from_bytes_attached_body(
+                                py,
+                                buffer.as_ptr(),
+                                buffer.len() as u64,
+                                &mut bits,
+                            )
+                        }
+                        _ => crate::builtins::strings::molt_bytes_from_bytes_attached_body(
+                            py,
                             buffer.as_ptr(),
                             buffer.len() as u64,
                             &mut bits,
