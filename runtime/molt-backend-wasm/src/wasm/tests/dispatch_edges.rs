@@ -11,7 +11,8 @@ fn marked(kind: molt_ir::OpKind, value: i64) -> OpIR {
     }
 }
 
-fn emit(function: FunctionIR) -> Vec<u8> {
+fn emit(mut function: FunctionIR) -> Vec<u8> {
+    function.ops = print_after_each_line(function.ops);
     wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
         SimpleIR {
             functions: vec![function],
@@ -129,8 +130,10 @@ fn saved_state_roundtrip_guest(state_id: i64, anchored: bool) -> Vec<u8> {
                 ..wasm_test_op(molt_ir::OpKind::ConstBool, Some("initial"), vec![])
             },
             wasm_test_op(molt_ir::OpKind::Ret, None, vec!["initial"]),
-            // Authored operation 8 is the resume identity. Its persisted word
-            // is ~8, independently of physical blocks or dispatcher ordinals.
+            // Authored operation 8 is the resume identity; the executed-line
+            // oracle adds two operations to each of the two statements above,
+            // so it is emitted operation 12, persisted as ~12, independently
+            // of physical blocks or dispatcher ordinals.
             marked(molt_ir::OpKind::StateLabel, 70),
             marked(molt_ir::OpKind::Line, 20),
             marked(molt_ir::OpKind::CheckException, 90),
@@ -291,6 +294,9 @@ fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
                 "molt_main",
                 vec!["task"],
                 None,
+                // No output: a `print` here makes the owned activation import
+                // `thread_record`, which this isolated image does not provide.
+                // The awaited result and the future poll are its observers.
                 vec![
                     wasm_test_op(molt_ir::OpKind::StateSwitch, None, vec![]),
                     marked(molt_ir::OpKind::StateLabel, 1),
@@ -449,6 +455,7 @@ fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
             "yes":molt_codegen_abi::box_bool_bits(1).to_string(),
             "no":molt_codegen_abi::box_bool_bits(0).to_string(),
             "anchor_payload":"poll-anchor-β\0雪",
+            "int_base":executed_line_int_base(),
         }))
         .unwrap(),
     )
@@ -459,17 +466,18 @@ fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
 const fs = require('fs'), assert = require('assert/strict');
 const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
 const none = BigInt(config.none), yes = BigInt(config.yes), no = BigInt(config.no);
+const intBase = BigInt(config.int_base);
 for (const test of config.cases) {
   const module = new WebAssembly.Module(fs.readFileSync(test.path));
   const anchored = test.name.startsWith('roundtrip_anchor_');
-  let lines, polls, failAt, savedState=0n;
+  let lines, polls, failAt, savedState=0n, futurePolls=0;
   let stateReads=0, stateWrites=[];
   let anchor, nextOwner=0x7ffc0000000003e9n;
   const owners=new Map(), returnedOwners=new Set();
   const hooks = {
   refcount_admission: () => 0n, // isolated image: no runtime execution custody
 
-    trace_set_line(line) { lines.push(Number(line)); return none; },
+    print_obj(value) { lines.push(Number(value - intBase)); },
     exception_frame_origin(homes) { assert.equal(homes,0n); return none; },
     exception_pending() {
       if (anchored && !anchor.checked) {
@@ -540,7 +548,7 @@ for (const test of config.cases) {
         stateWrites.push(state); savedState=state;
       }
     },
-    future_poll(future) { assert.equal(future, none); return yes; },
+    future_poll(future) { assert.equal(future, none); futurePolls++; return yes; },
   };
   const imports = {env:{memory:new WebAssembly.Memory({initial:test.memory_pages+Number(anchored)}),
     __indirect_function_table:new WebAssembly.Table({initial:test.table_entries,element:'anyfunc'})}};
@@ -550,11 +558,13 @@ for (const test of config.cases) {
     imports[entry.module][entry.name] = hooks[entry.name] ?? (() => {throw Error('unexpected import '+entry.name);});
   }
   const app = new WebAssembly.Instance(module, imports).exports;
+  // A checked statement prints after its check passes: a failing statement
+  // prints nothing, and its handler prints next.
   if (test.name === 'linear') {
     for (const failure of [0,1,32,64]) for (const condition of [no,yes]) {
       lines=[]; polls=0; failAt=failure;
       assert.equal(app.molt_main(condition), failure ? none : condition);
-      assert.deepEqual(lines, Array.from({length:failure || 64}, (_,i)=>i+1));
+      assert.deepEqual(lines, Array.from({length:failure ? failure - 1 : 64}, (_,i)=>i+1));
       assert.equal(polls, failure || 64);
     }
     // This forward-only body has no operation map to corrupt. Arbitrary
@@ -587,12 +597,12 @@ for (const test of config.cases) {
       assert.deepEqual(lines,[7,7,7]); assert.equal(polls,3);
     }
   } else if (test.name === 'ready') {
-    lines=[]; polls=0; failAt=0;
-    assert.equal(app.molt_main(64n), yes); assert.deepEqual(lines, [23]);
+    polls=0; failAt=0; futurePolls=0;
+    assert.equal(app.molt_main(64n), yes); assert.equal(futurePolls, 1);
     for (const invalid of [2n, 0x100000000n, -999n]) {
-      savedState=invalid; lines=[];
+      savedState=invalid; futurePolls=0;
       assert.throws(()=>app.molt_main(64n), WebAssembly.RuntimeError);
-      assert.deepEqual(lines, []);
+      assert.equal(futurePolls, 0);
     }
   } else if (test.name === 'structured') {
     for (const condition of [no,yes]) {
@@ -615,9 +625,11 @@ for (const test of config.cases) {
     }
   } else if (test.name.startsWith('roundtrip_')) {
     const resume = test.name.endsWith('dense') ? 3n : 10000n;
-    // No planner/map helper supplies this expectation: the authored source
-    // continuation is operation 8, so the external saved word must be ~8.
-    const encoded = ~8n;
+    // No planner/map helper supplies this expectation: the emitted source
+    // continuation is operation 12 (authored 8, plus the executed-line
+    // oracle's two operations in each of two statements), so the external
+    // saved word must be ~12.
+    const encoded = ~12n;
     const reset = (failure=0,scenario='normal') => {
       lines=[]; polls=0; failAt=failure; stateReads=0; stateWrites=[];
       anchor={scenario,owner:null,ptr:null,live:false,pending:false,checked:false,
@@ -671,7 +683,7 @@ for (const test of config.cases) {
       savedState=state; reset(failure);
       assert.equal(app.molt_main(64n),none);
       finishAnchor(none,0);
-      assert.deepEqual(lines,failure===1 ? [8,90] : [8,state===0n?10:20,90]);
+      assert.deepEqual(lines,failure===1 ? [90] : [8,90]);
       assert.equal(polls,failure); assert.equal(stateReads,1);
       assert.deepEqual(stateWrites,[]); assert.equal(savedState,state);
     }
@@ -700,14 +712,14 @@ for (const test of config.cases) {
     for (const condition of [no,yes]) for (const failure of [0,1]) {
       lines=[]; polls=0; failAt=failure;
       assert.equal(app.molt_main(condition), condition);
-      assert.deepEqual(lines, failure || condition===yes ? [20,10] : [20,30,10]);
+      assert.deepEqual(lines, failure ? [10] : condition===yes ? [20,10] : [20,30,10]);
       assert.equal(polls, 1);
     }
   } else if (test.name === 'final_check') {
     for (const failure of [0,1]) {
       lines=[]; polls=0; failAt=failure;
       assert.equal(app.molt_main(), none);
-      assert.deepEqual(lines, failure ? [20,10] : [20]);
+      assert.deepEqual(lines, failure ? [10] : [20]);
     }
   } else {
     lines=[]; polls=0; failAt=0;

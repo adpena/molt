@@ -29,7 +29,8 @@ fn marked(kind: molt_ir::OpKind, value: i64) -> OpIR {
     }
 }
 
-fn emit(function: FunctionIR) -> Vec<u8> {
+fn emit(mut function: FunctionIR) -> Vec<u8> {
+    function.ops = print_after_each_line(function.ops);
     wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
         SimpleIR {
             functions: vec![function],
@@ -326,6 +327,7 @@ fn control_nesting_stays_bounded_across_dispatch_modes() {
             "cases":entries,
             "none":molt_codegen_abi::box_none_bits().to_string(),
             "forward":FORWARD, "head":HEAD, "tail":TAIL, "state":STATE, "pad":PAD_LINE,
+            "int_base":executed_line_int_base(),
         }))
         .unwrap(),
     )
@@ -336,6 +338,7 @@ fn control_nesting_stays_bounded_across_dispatch_modes() {
 const fs = require('fs'), assert = require('assert/strict');
 const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
 const none = BigInt(config.none);
+const intBase = BigInt(config.int_base);
 const range = (first, last) => Array.from({length: last - first + 1}, (_, i) => first + i);
 for (const test of config.cases) {
   const module = new WebAssembly.Module(fs.readFileSync(test.path));
@@ -343,7 +346,7 @@ for (const test of config.cases) {
   const hooks = {
   refcount_admission: () => 0n, // isolated image: no runtime execution custody
 
-    trace_set_line(line) { lines.push(Number(line)); return none; },
+    print_obj(value) { lines.push(Number(value - intBase)); },
     exception_frame_origin(homes) { assert.equal(homes,0n); assert.equal(polls,failAt); return none; },
     exception_pending() { return ++polls === failAt ? 1n : 0n; },
     obj_get_state(task) { assert.equal(task, 64n); return savedState; },
@@ -365,12 +368,13 @@ for (const test of config.cases) {
   };
   // Statement s ends physical block s, so failures at radix boundaries of
   // both fan-outs leave from the first and last block of a node and must
-  // reach exactly their own pad.
+  // reach exactly their own pad. A statement prints after its check passes,
+  // so the failing statement prints nothing and its pad prints.
   const failures = [1, 2, 3, 4, 5, 15, 16, 17, 63, 64, 65, 127, 128, 129, 255, 256, 257,
     1023, 1024, 1025, config.head, config.head + 1, total].filter((failure) => failure <= total);
   for (const failure of failures) {
     if (mode === 'stateful') run(failure, 64n); else run(failure);
-    assert.deepEqual(lines, [...range(1, failure), config.pad + failure], `${test.name} fail@${failure}`);
+    assert.deepEqual(lines, [...range(1, failure - 1), config.pad + failure], `${test.name} fail@${failure}`);
     assert.equal(polls, failure);
   }
   if (mode === 'stateful') {

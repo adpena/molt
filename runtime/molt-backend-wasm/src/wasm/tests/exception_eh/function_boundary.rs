@@ -44,8 +44,13 @@ fn python_eh_returns_preserve_guarded_calls_and_dispatch_handlers() {
                     value: Some(999),
                     ..wasm_test_op(molt_ir::OpKind::Line, None, vec![])
                 },
-                labelled(molt_ir::OpKind::TryEnd),
             ]);
+            // Only the fallthrough prints. The handler label also follows the
+            // try body, so its pop runs on both paths. After a failed call the
+            // handler runs with the exception pending, and a print there would
+            // feed the same exception check as the call.
+            ops.extend(print_line(999, "fallthrough_line"));
+            ops.push(labelled(molt_ir::OpKind::TryEnd));
             ops.push(labelled(molt_ir::OpKind::Label));
             ops.extend([
                 wasm_test_op(molt_ir::OpKind::DecRef, None, vec!["callee_obj"]),
@@ -125,7 +130,8 @@ fn python_eh_returns_preserve_guarded_calls_and_dispatch_handlers() {
         &config,
         serde_json::to_vec(&json!({"cases":cases,
         "none":molt_codegen_abi::box_none_bits().to_string(),
-        "yes":molt_codegen_abi::box_bool_bits(1).to_string()}))
+        "yes":molt_codegen_abi::box_bool_bits(1).to_string(),
+        "int_base":executed_line_int_base()}))
         .unwrap(),
     )
     .unwrap();
@@ -134,7 +140,7 @@ fn python_eh_returns_preserve_guarded_calls_and_dispatch_handlers() {
         r#"
 const fs = require('fs'), assert = require('assert/strict');
 const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
-const none = BigInt(config.none), yes = BigInt(config.yes);
+const none = BigInt(config.none), yes = BigInt(config.yes), intBase = BigInt(config.int_base);
 for (const test of config.cases) {
   const module = new WebAssembly.Module(fs.readFileSync(test.path));
   let frames=0, handlers=0, recursion=0, owners=1, pending=false;
@@ -150,7 +156,7 @@ for (const test of config.cases) {
 
     trace_enter_slot: () => { frames++; return none; },
     trace_exit: () => { assert.equal(frames,1); frames--; return none; },
-    trace_set_line: line => { assert.equal(frames,1); lines.push(Number(line)); return none; },
+    print_obj: value => { assert.equal(frames,1); lines.push(Number(value - intBase)); },
     obj_get_state: () => 0n,
     exception_push: () => { handlers++; return none; },
     exception_pop: () => { assert.equal(handlers,1); handlers--; return none; },
@@ -184,7 +190,9 @@ for (const test of config.cases) {
   new DataView(imports.env.memory.buffer).setBigInt64(128,BigInt(target),true);
   new DataView(imports.env.memory.buffer).setBigInt64(handoff,5n,true);
   assert.equal(test.mode==='stateful' ? app.molt_main(64n,777n) : app.molt_main(777n),none);
-  assert.deepEqual(lines,[3],test.mode+': failed call must reach its handler');
+  // The handler pops its region on either path; without the fallthrough
+  // output, the pop proves the failed call took the handler edge.
+  assert.deepEqual(lines,[],test.mode+': failed call must skip the fallthrough');
   assert.equal(pending,true);
   assert.deepEqual([frames,handlers,recursion,owners],[0,0,0,1],test.mode);
   // The callee ran with itself handed over; the outer handoff came back.
