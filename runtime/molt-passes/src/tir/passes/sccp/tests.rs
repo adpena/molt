@@ -1836,3 +1836,131 @@ fn non_int_switch_constant_keeps_every_case() {
         Terminator::Switch { .. }
     ));
 }
+
+fn make_copy(result: u32, source: u32, origin: Option<molt_ir::OpKind>) -> TirOp {
+    TirOp {
+        origin,
+        dialect: Dialect::Molt,
+        opcode: OpCode::Copy,
+        operands: vec![ValueId(source)],
+        results: vec![ValueId(result)],
+        attrs: AttrDict::new(),
+        source_span: None,
+    }
+}
+
+/// `if param: x = 5 else: x = 5; return x + 1`, where each arm assigns through
+/// a copy, as the frontend lowers a variable assignment.
+fn copy_join(origin: Option<molt_ir::OpKind>) -> (TirFunction, BlockId, BlockId) {
+    let mut func = TirFunction::new(
+        "test".into(),
+        vec![TirType::Bool],
+        TirType::I64,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let (left, right, join) = (func.fresh_block(), func.fresh_block(), func.fresh_block());
+    let entry = func.entry_block;
+    func.blocks.get_mut(&entry).unwrap().terminator = Terminator::CondBranch {
+        cond: ValueId(0),
+        then_block: left,
+        then_args: vec![],
+        else_block: right,
+        else_args: vec![],
+    };
+    func.blocks.insert(
+        left,
+        block(
+            left,
+            &[],
+            vec![make_const_int(1, 5), make_copy(2, 1, origin)],
+            branch(join, &[2]),
+        ),
+    );
+    func.blocks.insert(
+        right,
+        block(
+            right,
+            &[],
+            vec![make_const_int(3, 5), make_copy(4, 3, origin)],
+            branch(join, &[4]),
+        ),
+    );
+    func.blocks.insert(
+        join,
+        block(
+            join,
+            &[5],
+            vec![make_const_int(6, 1), make_binop(OpCode::Add, 7, 5, 6)],
+            ret(&[7]),
+        ),
+    );
+    func.next_value = 8;
+    (func, left, join)
+}
+
+#[test]
+fn a_join_through_plain_copies_folds() {
+    let (mut func, left, join) = copy_join(Some(molt_ir::OpKind::CopyVar));
+    run(&mut func);
+    assert_eq!(
+        op_in(&func, join, 7).attrs.get("value"),
+        Some(&AttrValue::Int(6))
+    );
+    // A copy that copy propagation may erase becomes the constant itself.
+    assert_eq!(op_in(&func, left, 2).opcode, OpCode::ConstInt);
+}
+
+#[test]
+fn a_slot_store_copy_keeps_its_effect_but_folds_its_readers() {
+    let (mut func, left, join) = copy_join(Some(molt_ir::OpKind::StoreVar));
+    run(&mut func);
+    assert_eq!(
+        op_in(&func, join, 7).attrs.get("value"),
+        Some(&AttrValue::Int(6))
+    );
+    let store = op_in(&func, left, 2);
+    assert_eq!(store.opcode, OpCode::Copy);
+    assert_eq!(store.origin, Some(molt_ir::OpKind::StoreVar));
+}
+
+#[test]
+fn an_opaque_copy_passthrough_stays_overdefined() {
+    // A Copy carrying an unknown SimpleIR op is not a value copy.
+    let (mut func, left, join) = copy_join(Some(molt_ir::OpKind::ExceptionPop));
+    run(&mut func);
+    assert_eq!(op_in(&func, join, 7).opcode, OpCode::Add);
+    assert_eq!(op_in(&func, left, 2).opcode, OpCode::Copy);
+}
+
+#[test]
+fn a_frame_home_store_forwards_a_scalar_and_keeps_its_effect() {
+    let (mut func, left, join) = copy_join(Some(molt_ir::OpKind::FrameHomeStore));
+    run(&mut func);
+    assert_eq!(
+        op_in(&func, join, 7).attrs.get("value"),
+        Some(&AttrValue::Int(6))
+    );
+    let store = op_in(&func, left, 2);
+    assert_eq!(store.opcode, OpCode::Copy);
+    assert_eq!(store.origin, Some(molt_ir::OpKind::FrameHomeStore));
+}
+
+#[test]
+fn a_frame_home_store_does_not_forward_a_string() {
+    // Only an immutable scalar crosses an effectful publication.
+    let mut func = void_function();
+    let entry = func.entry_block;
+    {
+        let entry = func.blocks.get_mut(&entry).unwrap();
+        entry.ops = vec![
+            make_const_str(0, "a"),
+            make_copy(1, 0, Some(molt_ir::OpKind::FrameHomeStore)),
+            make_const_str(2, "b"),
+            make_binop(OpCode::Add, 3, 1, 2),
+        ];
+        entry.terminator = ret(&[]);
+    }
+    func.next_value = 4;
+    run(&mut func);
+    assert_eq!(op_in(&func, entry, 3).opcode, OpCode::Add);
+}

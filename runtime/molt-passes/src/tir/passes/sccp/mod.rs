@@ -15,13 +15,16 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use super::PassStats;
+use super::copy_prop;
 use super::effects;
 use super::reachability::metadata_preserving_reachable_blocks;
+use super::value_identity;
 use crate::tir::blocks::{BlockId, CaseIndex, LoopRole, Terminator, TerminatorEdge};
 use crate::tir::dominators;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
-    ExceptionRegionNestingRole, SccpConstantSeedRule, opcode_exception_region_nesting_role_table,
+    ExceptionRegionNestingRole, SccpConstantEvalRule, SccpConstantSeedRule,
+    opcode_exception_region_nesting_role_table, opcode_sccp_constant_eval_rule_table,
     opcode_sccp_constant_seed_rule_table,
 };
 use crate::tir::ops::{AttrDict, AttrValue, OpCode, TirOp};
@@ -476,6 +479,12 @@ impl<'f> Solver<'f> {
         if let Some(seed) = seed_constant_lattice_value(op) {
             return Some(seed);
         }
+        if let Some(source) = value_identity::copy_value_source(op) {
+            return self.forwarded(source, Forwarding::Value);
+        }
+        if let Some(source) = value_identity::scalar_value_source(op) {
+            return self.forwarded(source, Forwarding::ImmutableScalar);
+        }
         let mut operands = Vec::with_capacity(op.operands.len());
         for operand in &op.operands {
             match self.state(*operand) {
@@ -490,6 +499,22 @@ impl<'f> Solver<'f> {
                 .or_else(|| evaluate_builtin_call(op, &operands))
                 .map_or(Lattice::Overdefined, Lattice::Constant),
         )
+    }
+
+    /// The state of a result that holds `source`'s value on every execution
+    /// that observes it, or `None` while `source` is Unknown.
+    fn forwarded(&self, source: ValueId, forwarding: Forwarding) -> Option<Lattice> {
+        match (self.state(source), forwarding) {
+            (Lattice::Unknown, _) => None,
+            (state, Forwarding::Value) => Some(state.clone()),
+            (
+                Lattice::Constant(
+                    constant @ (ConstVal::Int(_) | ConstVal::Float(_) | ConstVal::Bool(_)),
+                ),
+                Forwarding::ImmutableScalar,
+            ) => Some(Lattice::Constant(constant.clone())),
+            (_, Forwarding::ImmutableScalar) => Some(Lattice::Overdefined),
+        }
     }
 
     fn visit_terminator(&mut self, block_id: BlockId) {
@@ -632,6 +657,9 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             if opcode_sccp_constant_seed_rule_table(op.opcode) != SccpConstantSeedRule::None {
                 continue;
             }
+            if !rewrites_to_constant(op) {
+                continue;
+            }
             if let Some(Lattice::Constant(constant)) = lattice.get(&op.results[0])
                 && rewrite_as_constant(op, constant)
             {
@@ -676,6 +704,26 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     }
 
     stats
+}
+
+/// Which value-identity authority makes a result hold its source's value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Forwarding {
+    /// A value copy (`value_identity::copy_value_source`): any state crosses.
+    Value,
+    /// An effectful publication or a guard (`value_identity::scalar_value_source`):
+    /// only an immutable scalar constant crosses; anything else is Overdefined.
+    ImmutableScalar,
+}
+
+/// Whether a constant result may replace `op`. Replacing erases the op, so only
+/// ops whose constant the evaluator computed, and copies that copy propagation
+/// may erase, qualify. A forwarding publication, slot store or guard keeps its
+/// effect; its constant still folds the values that read it.
+fn rewrites_to_constant(op: &TirOp) -> bool {
+    opcode_sccp_constant_eval_rule_table(op.opcode) != SccpConstantEvalRule::None
+        || op.opcode == OpCode::CallBuiltin
+        || (op.opcode == OpCode::Copy && copy_prop::removable_copy_source(op).is_some())
 }
 
 /// Rewrite `op` as the constant constructor of `constant`; false when TIR has
