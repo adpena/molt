@@ -415,8 +415,9 @@ struct NoneTests<'f> {
     /// The defining op of each result, for value-identity roots.
     producers: HashMap<ValueId, &'f TirOp>,
     by_edge: HashMap<Edge, NoneTest>,
-    /// The test on a block's only entry edge.
-    on_entry: HashMap<BlockId, NoneTest>,
+    /// Per subject, each block entered only through an edge that tests it,
+    /// with the nullness that edge establishes there.
+    guards: HashMap<ValueId, Vec<(BlockId, bool)>>,
     dominance: Option<dominators::DominatorTree>,
 }
 
@@ -495,10 +496,14 @@ impl<'f> NoneTests<'f> {
                     dominators::exception_transfer_target(op, label_to_block) == Some(target)
                 });
             if sole_entry {
-                tests.on_entry.insert(target, *test);
+                tests
+                    .guards
+                    .entry(test.subject)
+                    .or_default()
+                    .push((target, test.is_none));
             }
         }
-        if !tests.on_entry.is_empty() {
+        if !tests.guards.is_empty() {
             tests.dominance = Some(dominators::compute_dominator_tree(func, &pred_map));
         }
         tests
@@ -554,21 +559,17 @@ impl<'f> NoneTests<'f> {
     }
 
     /// Whether `value is None` holds on every execution of `block`, from the
-    /// tested edges that guard it.
+    /// tested edges that guard it. One check per guard of the value's root,
+    /// each O(1) on the numbered dominator tree. Guards that dominate one
+    /// block hold together; if two disagree, the block runs on no execution
+    /// and either answer is sound.
     fn nullness_in(&self, block: BlockId, value: ValueId) -> Option<bool> {
         let dominance = self.dominance.as_ref()?;
-        let subject = self.copy_root(value);
-        let mut node = Some(block);
-        for _ in 0..=dominance.len() {
-            let current = node?;
-            if let Some(test) = self.on_entry.get(&current)
-                && test.subject == subject
-            {
-                return Some(test.is_none);
-            }
-            node = dominance.idom(current);
-        }
-        None
+        self.guards
+            .get(&self.copy_root(value))?
+            .iter()
+            .find(|&&(guarded, _)| dominance.dominates(guarded, block))
+            .map(|&(_, is_none)| is_none)
     }
 }
 
