@@ -166,6 +166,10 @@ primitive_operator_effect_cases = [
 #                  generated opcode-only facts for polyhedral.rs loop-header
 #                  annotation and affine-body eligibility. The pass owns body
 #                  traversal and Copy refinement; the registry owns membership.
+#   - negated_predicates - generated opcode -> the predicate it negates
+#                  (`IsNot` negates `Is`). One authority for canonical
+#                  predicate polarity: truth-wrapper peeling, None tests and
+#                  the branch census read it; none spells the pairs.
 #   - sccp_constant_seed_rules / sccp_constant_eval_rules - generated
 #                  opcode-to-rule lattices for SCCP constant seeding and
 #                  constant evaluation. The registry owns opcode membership;
@@ -1601,6 +1605,13 @@ type_refine_operand_type_rules = [
     { opcode = "UnboxVal", rule = "unbox_val" },
 ]
 
+negated_predicates = [
+    { opcode = "IsNot", negates = "Is" },
+    { opcode = "Ne", negates = "Eq" },
+    { opcode = "NotIn", negates = "In" },
+    { opcode = "Not", negates = "Bool" },
+]
+
 sccp_constant_seed_rules = [
     { opcode = "ConstInt", rule = "int_attr" },
     { opcode = "ConstFloat", rule = "float_attr" },
@@ -1621,6 +1632,8 @@ sccp_constant_eval_rules = [
     { opcode = "Pow", rule = "pow" },
     { opcode = "Eq", rule = "eq" },
     { opcode = "Ne", rule = "ne" },
+    { opcode = "Is", rule = "is" },
+    { opcode = "IsNot", rule = "is_not" },
     { opcode = "Lt", rule = "lt" },
     { opcode = "Le", rule = "le" },
     { opcode = "Gt", rule = "gt" },

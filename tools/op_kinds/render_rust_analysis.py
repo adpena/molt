@@ -348,6 +348,27 @@ def _render_sccp_constant_seed_rule(opcodes: list[dict], data: dict) -> str:
     return "".join(lines)
 
 
+def _render_negated_predicate(opcodes: list[dict], data: dict) -> str:
+    negates = {
+        row["opcode"]: row["negates"] for row in data.get("negated_predicates", [])
+    }
+    lines = [
+        "/// The predicate an opcode negates (`IsNot` negates `Is`), from the\n",
+        "/// registry's `negated_predicates`. EXHAUSTIVE over OpCode so a new\n",
+        "/// negating predicate cannot hide behind a hand-written default.\n",
+        "#[inline]\n",
+        "pub fn opcode_negated_predicate_table(opcode: OpCode) -> Option<OpCode> {\n",
+        "    match opcode {\n",
+    ]
+    for row in opcodes:
+        name = row["name"]
+        target = negates.get(name)
+        result = f"Some(OpCode::{target})" if target is not None else "None"
+        lines.append(f"        OpCode::{name} => {result},\n")
+    lines.append("    }\n}\n")
+    return "".join(lines)
+
+
 def _render_sccp_constant_eval_rule(opcodes: list[dict], data: dict) -> str:
     rule_by_opcode = {
         row["opcode"]: row["rule"] for row in data.get("sccp_constant_eval_rules", [])
