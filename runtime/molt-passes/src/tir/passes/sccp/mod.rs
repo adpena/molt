@@ -15,7 +15,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use super::PassStats;
-use super::copy_prop;
 use super::effects;
 use super::reachability::metadata_preserving_reachable_blocks;
 use super::value_identity;
@@ -716,14 +715,17 @@ enum Forwarding {
     ImmutableScalar,
 }
 
-/// Whether a constant result may replace `op`. Replacing erases the op, so only
-/// ops whose constant the evaluator computed, and copies that copy propagation
-/// may erase, qualify. A forwarding publication, slot store or guard keeps its
-/// effect; its constant still folds the values that read it.
+/// Whether a constant result may replace `op`: only an op whose constant the
+/// evaluator computed. A forwarding op keeps its op even when its value is
+/// constant: a publication, slot store or guard keeps its effect, and a plain
+/// copy is copy propagation's to forward. A copy rewritten into a fresh
+/// constant would survive copy propagation as a duplicate, and a string
+/// constant would add an owned materialization, a release and an exception
+/// check (measured: +283 of each in bench_generator). Readers of a forwarded
+/// constant still fold.
 fn rewrites_to_constant(op: &TirOp) -> bool {
     opcode_sccp_constant_eval_rule_table(op.opcode) != SccpConstantEvalRule::None
         || op.opcode == OpCode::CallBuiltin
-        || (op.opcode == OpCode::Copy && copy_prop::removable_copy_source(op).is_some())
 }
 
 /// Rewrite `op` as the constant constructor of `constant`; false when TIR has

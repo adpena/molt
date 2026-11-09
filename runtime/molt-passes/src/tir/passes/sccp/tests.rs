@@ -1906,8 +1906,9 @@ fn a_join_through_plain_copies_folds() {
         op_in(&func, join, 7).attrs.get("value"),
         Some(&AttrValue::Int(6))
     );
-    // A copy that copy propagation may erase becomes the constant itself.
-    assert_eq!(op_in(&func, left, 2).opcode, OpCode::ConstInt);
+    // The copy stays for copy propagation to forward; a fresh constant in its
+    // place would survive copy propagation as a duplicate.
+    assert_eq!(op_in(&func, left, 2).opcode, OpCode::Copy);
 }
 
 #[test]

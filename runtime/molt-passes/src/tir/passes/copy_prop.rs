@@ -27,7 +27,7 @@ use crate::tir::values::ValueId;
 /// provenance does not make an operation impure, but unknown attributes do not
 /// become permission to erase it. Mutable-slot transport, owned bindings,
 /// runtime/context metadata and asynchronous observations stay intact.
-pub(super) fn removable_copy_source(op: &TirOp) -> Option<ValueId> {
+fn removable_copy_source(op: &TirOp) -> Option<ValueId> {
     let source = super::value_identity::copy_value_source(op)?;
     if op.operands.len() != 1
         || op.operand_custody(0) != crate::ir::ParameterCustody::Borrowed
