@@ -915,24 +915,32 @@ pub extern "C" fn molt_tuple_new_bound(cls_bits: u64, iterable_bits: u64) -> u64
 const CLASS_ATTACHMENT_LAYOUT_ERROR: &str =
     "object class assignment requires an identical sealed instance layout";
 
-unsafe fn class_attachment_layouts_match(
+/// How an instance keeps its attributes across a compatible `__class__`
+/// assignment. Inferred rows are Molt's private representation of instance
+/// dictionary entries, so they never decide compatibility: CPython's
+/// `compatible_for_assignment` reads only the visible layout.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClassAttachment {
+    /// Every row agrees, so the instance's inline words stay valid as they are.
+    Inline,
+    /// Only inferred rows differ. The attributes move to the instance
+    /// dictionary first, as CPython materializes a managed dictionary before
+    /// it changes the type; a dictionary-backed instance never reads its
+    /// inferred rows again, so the target's rows need not fit its allocation.
+    Dictionary,
+}
+
+/// `None` when the Python-visible layouts differ.
+unsafe fn class_attachment(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
     current_class: *mut u8,
     target_class: *mut u8,
-) -> bool {
+) -> Option<ClassAttachment> {
     unsafe {
-        let Some(current_size) = crate::object::layout::class_cached_layout_size(current_class)
-        else {
-            return false;
-        };
-        let Some(target_size) = crate::object::layout::class_cached_layout_size(target_class)
-        else {
-            return false;
-        };
-        if current_size != target_size
-            || crate::object::native_instance::field_payload_size(obj_ptr) < target_size
-            || object_type_id(obj_ptr) != crate::object::class_instance_type_id(current_class)
+        let current_size = crate::object::layout::class_cached_layout_size(current_class)?;
+        let target_size = crate::object::layout::class_cached_layout_size(target_class)?;
+        if object_type_id(obj_ptr) != crate::object::class_instance_type_id(current_class)
             || object_type_id(obj_ptr) != crate::object::class_instance_type_id(target_class)
             || crate::object::object_shape_id(obj_ptr)
                 != crate::object::class_instance_shape_id(current_class)
@@ -943,23 +951,34 @@ unsafe fn class_attachment_layouts_match(
             || intrinsic_layout_owner(_py, current_class)
                 != intrinsic_layout_owner(_py, target_class)
         {
-            return false;
+            return None;
         }
 
-        let Some(current_slots) = crate::builtins::attr::class_slots_info(_py, current_class)
-        else {
-            return false;
-        };
-        let Some(target_slots) = crate::builtins::attr::class_slots_info(_py, target_class) else {
-            return false;
-        };
+        let current_slots = crate::builtins::attr::class_slots_info(_py, current_class)?;
+        let target_slots = crate::builtins::attr::class_slots_info(_py, target_class)?;
         if current_slots != target_slots {
-            return false;
+            return None;
         }
 
         // Ordinary slots may have different solid owners: same-slot siblings
         // remain compatible after their intrinsic storage owner agrees.
-        crate::object::class_layout::fields_match(_py, current_class, target_class)
+        if !crate::object::class_layout::visible_fields_match(_py, current_class, target_class) {
+            return None;
+        }
+        let dictionary_backed = crate::object::instance_dict_bits(obj_ptr) != 0;
+        if current_size == target_size
+            && crate::object::class_layout::fields_match(_py, current_class, target_class)
+            && (dictionary_backed
+                || crate::object::native_instance::field_payload_size(obj_ptr) >= target_size)
+        {
+            return Some(ClassAttachment::Inline);
+        }
+        // Native payloads keep inferred attributes in their dictionary and
+        // have no inferred rows, so only a plain instance reaches this point.
+        (current_slots.allows_dict
+            && crate::object::object_has_class_shape(obj_ptr)
+            && !crate::object::native_instance::has_fields(obj_ptr))
+        .then_some(ClassAttachment::Dictionary)
     }
 }
 
@@ -1031,7 +1050,7 @@ pub(crate) unsafe fn object_set_class(
         if current_class_bits == class_bits {
             return Ok(());
         }
-        if !class_attachment_layouts_match(_py, obj_ptr, current_class, class_ptr) {
+        let Some(attachment) = class_attachment(_py, obj_ptr, current_class, class_ptr) else {
             raise_exception::<()>(
                 _py,
                 BuiltinExc::TypeError,
@@ -1042,6 +1061,17 @@ pub(crate) unsafe fn object_set_class(
                 ),
             );
             return Err(());
+        };
+        if attachment == ClassAttachment::Dictionary {
+            // Materialize only for a replacement that will commit, so a refused
+            // edge leaves the instance exactly as it was.
+            if !crate::object::object_admits_class_edge(_py, obj_ptr, class_bits) {
+                reject_class_attachment::<()>(_py);
+                return Err(());
+            }
+            if crate::object::field_storage::materialize(_py, obj_ptr).is_none() {
+                return Err(());
+            }
         }
         if !object_replace_class_edge(_py, obj_ptr, class_bits, ClassEdgeOwnership::Owned) {
             reject_class_attachment::<()>(_py);
