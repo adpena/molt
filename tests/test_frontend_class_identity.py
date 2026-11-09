@@ -24,6 +24,7 @@ from molt.frontend import (
     ReceiverKind,
     SimpleTIRGenerator,
 )
+from molt.frontend._types import class_namespace_closed
 
 _REGISTERED_CLASSES = """\
 REGISTRY = []
@@ -105,8 +106,65 @@ def test_method_code_mutation_rejects_class_body_folding(method):
     generator = SimpleTIRGenerator(module_name="mod", namespace_premise=premise)
     generator.visit(tree)
     info = generator.classes[ClassId("mod", "C")]
-    assert info["dynamic"]
+    assert info["definition_exposed"]
+    assert not class_namespace_closed(info)
     assert not info["constructor_binding_proven"]
+
+
+_EXPOSED_LAYOUT = """\
+class Point:
+    def __init__(self, x):
+        self.x = x
+class Child(Point):
+    pass
+def use():
+    p = Point(1)
+    p.x = 2
+    return p.x
+print(use())
+"""
+
+
+def test_exposed_definition_keeps_its_layout_but_no_unguarded_fact() -> None:
+    """Exposure is an identity fact, not a layout fact (HF-812).
+
+    A layout guard sees every mutation of its own class, so an exposed class
+    keeps its field offsets. Its allocation protocol is unproved, so a fresh
+    instance takes the generic path, and a subclass's guard cannot see a
+    mutation of the exposed base.
+    """
+
+    def lower(opaque: tuple[str, ...]) -> SimpleTIRGenerator:
+        premise = PythonNamespacePremise((), 0, 0, (), opaque)
+        generator = SimpleTIRGenerator(module_name="mod", namespace_premise=premise)
+        generator.visit(tree)
+        return generator
+
+    def use_kinds(generator: SimpleTIRGenerator) -> set[str]:
+        return {op.kind for op in generator.funcs_map["mod__use"]["ops"]}
+
+    def offset_tables(generator: SimpleTIRGenerator) -> int:
+        return sum(
+            op.kind == "CONST_STR" and op.args == ["__molt_field_offsets__"]
+            for op in _ops(generator)
+        )
+
+    tree = ast.parse(_EXPOSED_LAYOUT)
+    closed = lower(())
+    assert class_namespace_closed(closed.classes[ClassId("mod", "Point")])
+    assert offset_tables(closed) == 2
+    assert {"GUARDED_SETATTR", "GUARDED_GETATTR"} <= use_kinds(closed)
+
+    exposed = lower((python_node_source_key(tree.body[0]),))
+    point = exposed.classes[ClassId("mod", "Point")]
+    child = exposed.classes[ClassId("mod", "Child")]
+    assert point["definition_exposed"] and not point["dynamic"]
+    assert not class_namespace_closed(point)
+    assert child["dynamic"] and not child["definition_exposed"]
+    assert offset_tables(exposed) == 1
+    kinds = use_kinds(exposed)
+    assert {"SETATTR_GENERIC_OBJ", "GETATTR_GENERIC_OBJ"} <= kinds
+    assert not kinds & {"GUARDED_SETATTR", "GUARDED_GETATTR", "SETATTR", "GETATTR"}
 
 
 def test_non_none_initializer_requires_runtime_constructor_validation():

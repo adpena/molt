@@ -31,6 +31,7 @@ from molt.frontend._types import (
     MoltValue,
     ReceiverKind,
     TypeHint,
+    class_namespace_closed,
 )
 
 # Data descriptors every user class reaches through ``object`` and ``type``:
@@ -215,7 +216,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
         info = self.classes.get(class_id)
         if (
             info is None
-            or info.get("dynamic")
+            or not class_namespace_closed(info)
             or info.get("custom_metaclass")
             or class_id in self.class_definition_pending
         ):
@@ -224,7 +225,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
             if owner == OBJECT_CLASS:
                 continue
             owner_info = self.classes.get(owner) if isinstance(owner, ClassId) else None
-            if owner_info is None or owner_info.get("dynamic"):
+            if owner_info is None or not class_namespace_closed(owner_info):
                 return True
             # ``__new__`` may return an object of another type.
             for name in ("__set__", "__delete__", "__new__"):
@@ -1110,7 +1111,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
         ):
             fields = class_info.get("fields", {})
             if (
-                not class_info.get("dynamic")
+                class_namespace_closed(class_info)
                 and declared_class.module == self.module_name
                 and node.attr not in fields
                 and not self._instance_attr_mutated(declared_class, node.attr)
@@ -1143,7 +1144,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
             and class_info is not None
             and method_info
             and method_info["descriptor"] == "property"
-            and not class_info.get("dynamic")
+            and class_namespace_closed(class_info)
             and not receiver_is_class_object
         ):
             property_field = method_info.get("property_field")

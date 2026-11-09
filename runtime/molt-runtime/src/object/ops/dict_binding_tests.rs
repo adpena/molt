@@ -2165,3 +2165,54 @@ fn dictionary_fromkeys_nonempty_exact_constructor_preserves_live_capacity() {
         }
     });
 }
+
+/// `dict_get_str_borrowed` gives the byte probe's answer from the cached hash:
+/// an exact `str` decides over exact candidates, and a same-hash key of another
+/// kind sends the read to the byte probe without running its `__eq__`.
+#[test]
+fn physical_string_reads_answer_as_the_byte_probe_without_equality() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let query = string_key(py, b"selected");
+            let missing = string_key(py, b"missing");
+            let stored = string_key(py, b"selected");
+            let value = MoltObject::from_int(42).bits();
+            let plain = alloc_dict_with_pairs(py, &[stored, value]);
+            assert!(!plain.is_null());
+            let (probe, class, function) = same_hash_probe_key(py);
+            let collided = dict_with_same_hash_key(py, &[], probe, b"selected");
+            assert!(dict_set_in_place(py, collided, stored, value));
+            assert!(!exception_pending(py));
+            // Ordinary lookup would select the probe row if its `__eq__` ran.
+            PROBE_MODE.store(PROBE_EQUAL, Ordering::SeqCst);
+            PROBE_CALLS.store(0, Ordering::SeqCst);
+            for dict in [plain, collided] {
+                for (key, name) in [(query, b"selected".as_slice()), (missing, b"missing")] {
+                    assert_eq!(
+                        dict_get_str_borrowed(py, dict, key),
+                        dict_get_str_bytes_borrowed(py, dict, name)
+                    );
+                }
+                assert_eq!(dict_get_str_borrowed(py, dict, query), Some(value));
+                assert_eq!(dict_get_str_borrowed(py, dict, missing), None);
+                assert_eq!(dict_get_str_borrowed(py, dict, value), None);
+            }
+            assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 0);
+            PROBE_MODE.store(PROBE_UNEQUAL, Ordering::SeqCst);
+            for bits in [
+                MoltObject::from_ptr(plain).bits(),
+                MoltObject::from_ptr(collided).bits(),
+                query,
+                missing,
+                stored,
+                probe,
+                class,
+                function,
+            ] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        }
+    });
+}
