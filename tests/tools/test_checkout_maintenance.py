@@ -38,6 +38,8 @@ def published_source(tmp_path, monkeypatch):
         "tools/cache_maintenance.py": "# published cache collector\n",
         "src/molt/__init__.py": "",
         "src/sitecustomize.py": "",
+        "tests/__init__.py": "",
+        "tests/findings/__init__.py": "",
         "config/policy.toml": "",
         "pyproject.toml": "[project]\nname='fixture'\nversion='0'\n",
         "uv.lock": "version=1\n",

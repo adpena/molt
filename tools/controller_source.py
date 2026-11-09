@@ -37,11 +37,16 @@ SCHEMA = "molt.integration-controller.v2"
 # run from (``config``: tool release pins and policy tables, 1.9 MB), and the
 # Python startup source, project, lock and interpreter version that define its
 # environment. A lane start provisions through molt.dx, which reads config/tool_releases.toml
-# from the controller (HF-468 review v2, B-1).
+# from the controller (HF-468 review v2, B-1). The landing receipt imports the
+# crate-test gate, whose suite-honesty check reads the findings ledger's typed
+# identities from ``tests.findings``: that package and its parent marker are
+# driver modules too, and import no test framework at module level.
 CONTROLLER_PATHS = (
     "tools",
     "src/molt",
     "src/sitecustomize.py",
+    "tests/__init__.py",
+    "tests/findings",
     "config",
     "pyproject.toml",
     "uv.lock",
