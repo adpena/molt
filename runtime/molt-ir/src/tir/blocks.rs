@@ -40,6 +40,31 @@ pub struct TirBlock {
     pub terminator: Terminator,
 }
 
+/// Position of a case within a `Switch` or `StateDispatch` case list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CaseIndex(pub u32);
+
+/// The label of one explicit CFG edge of a terminator. The variant names what
+/// the edge means, so no pass carries a positional successor index whose meaning
+/// depends on the terminator kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TerminatorEdge {
+    /// The only edge of a `Branch`.
+    Branch,
+    /// The truthy edge of a `CondBranch`.
+    Then,
+    /// The falsy edge of a `CondBranch`.
+    Else,
+    /// A `Switch` case edge.
+    SwitchCase(CaseIndex),
+    /// The `Switch` default edge.
+    SwitchDefault,
+    /// A `StateDispatch` resume edge.
+    StateCase(CaseIndex),
+    /// The `StateDispatch` initial-entry edge (state 0).
+    StateDefault,
+}
+
 /// Block terminator — controls transfer at the end of a basic block.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum Terminator {
@@ -100,8 +125,22 @@ impl Terminator {
     /// added. The visitor is monomorphized and allocation-free.
     #[inline]
     pub fn for_each_edge(&self, mut visit: impl FnMut(BlockId, &[ValueId])) {
+        self.for_each_labeled_edge(|_, target, args| visit(target, args));
+    }
+
+    /// Visit every explicit CFG edge with its typed label, target and forwarded
+    /// values, in the same order as [`Terminator::for_each_edge`].
+    ///
+    /// This is the one variant-to-edge mapping; `for_each_edge` delegates here.
+    /// A pass that must name an edge (for example, which edge a constant
+    /// predicate takes) uses the label instead of a positional index.
+    #[inline]
+    pub fn for_each_labeled_edge<'a>(
+        &'a self,
+        mut visit: impl FnMut(TerminatorEdge, BlockId, &'a [ValueId]),
+    ) {
         match self {
-            Terminator::Branch { target, args } => visit(*target, args),
+            Terminator::Branch { target, args } => visit(TerminatorEdge::Branch, *target, args),
             Terminator::CondBranch {
                 then_block,
                 then_args,
@@ -109,24 +148,29 @@ impl Terminator {
                 else_args,
                 ..
             } => {
-                visit(*then_block, then_args);
-                visit(*else_block, else_args);
+                visit(TerminatorEdge::Then, *then_block, then_args);
+                visit(TerminatorEdge::Else, *else_block, else_args);
             }
             Terminator::Switch {
                 cases,
                 default,
                 default_args,
                 ..
+            } => {
+                for (index, (_, target, args)) in (0u32..).zip(cases) {
+                    visit(TerminatorEdge::SwitchCase(CaseIndex(index)), *target, args);
+                }
+                visit(TerminatorEdge::SwitchDefault, *default, default_args);
             }
-            | Terminator::StateDispatch {
+            Terminator::StateDispatch {
                 cases,
                 default,
                 default_args,
             } => {
-                for (_, target, args) in cases {
-                    visit(*target, args);
+                for (index, (_, target, args)) in (0u32..).zip(cases) {
+                    visit(TerminatorEdge::StateCase(CaseIndex(index)), *target, args);
                 }
-                visit(*default, default_args);
+                visit(TerminatorEdge::StateDefault, *default, default_args);
             }
             Terminator::Return { .. } | Terminator::Unreachable => {}
         }

@@ -17,7 +17,8 @@ use std::sync::Arc;
 use super::PassStats;
 use super::effects;
 use super::reachability::metadata_preserving_reachable_blocks;
-use crate::tir::blocks::{BlockId, LoopRole, Terminator};
+use crate::tir::blocks::{BlockId, CaseIndex, LoopRole, Terminator, TerminatorEdge};
+use crate::tir::dominators;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
     ExceptionRegionNestingRole, SccpConstantSeedRule, opcode_exception_region_nesting_role_table,
@@ -28,15 +29,33 @@ use crate::tir::values::ValueId;
 
 use eval::{evaluate_builtin_call, evaluate_op};
 
-/// A value in the constant-propagation lattice.
+/// One SSA value's state. Descends Unknown -> Constant -> Overdefined, never back.
 #[derive(Debug, Clone, PartialEq)]
-enum LatticeValue {
-    /// Unknown — may still be constant (not yet visited).
-    Top,
-    /// Known constant value.
+enum Lattice {
+    /// No execution reaching the definition has been found yet.
+    Unknown,
+    /// The value on every execution found so far.
     Constant(ConstVal),
-    /// Overdefined — definitely not constant.
-    Bottom,
+    /// Not one constant.
+    Overdefined,
+}
+
+impl Lattice {
+    /// The greatest lower bound of `self` and `incoming`.
+    fn meet(&self, incoming: Lattice) -> Lattice {
+        match (self, incoming) {
+            (Lattice::Overdefined, _) | (_, Lattice::Overdefined) => Lattice::Overdefined,
+            (Lattice::Unknown, incoming) => incoming,
+            (current, Lattice::Unknown) => current.clone(),
+            (Lattice::Constant(current), Lattice::Constant(incoming)) => {
+                if *current == incoming {
+                    Lattice::Constant(incoming)
+                } else {
+                    Lattice::Overdefined
+                }
+            }
+        }
+    }
 }
 
 /// Immutable value constants carried through the flow-insensitive lattice.
@@ -155,278 +174,500 @@ fn build_try_region_results(func: &TirFunction) -> HashSet<ValueId> {
     result_set
 }
 
+/// Position of an op within its block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct OpIndex(u32);
+
+/// Position of an argument within a block's argument list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct BlockArgIndex(u32);
+
+/// Where control leaves a block: its terminator, or an exception-transfer op
+/// in the middle of the block (`dominators::exception_transfer_target`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum EdgeSource {
+    Terminator(TerminatorEdge),
+    Exception(OpIndex),
+}
+
+/// One CFG edge, named by its source block and how control leaves it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct Edge {
+    from: BlockId,
+    source: EdgeSource,
+}
+
+/// The values an edge binds to its target's arguments. A region registration
+/// (`TryStart`) keeps its handler reachable but binds nothing
+/// (`dominators::exception_edge_binds_handler_arguments`).
+#[derive(Debug, Clone, Copy)]
+enum EdgeBinding<'f> {
+    Args(&'f [ValueId]),
+    Unbound,
+}
+
+/// An edge found feasible and not yet processed.
+#[derive(Debug, Clone, Copy)]
+struct PendingEdge<'f> {
+    edge: Edge,
+    target: BlockId,
+    binding: EdgeBinding<'f>,
+}
+
+/// A read of an SSA value that must be revisited when the value's state drops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Use {
+    /// An operand of an op with results.
+    Op { block: BlockId, op: OpIndex },
+    /// The predicate of a `CondBranch` or `Switch`.
+    Predicate { block: BlockId },
+    /// A value an edge forwards to its target's argument.
+    EdgeArg {
+        edge: Edge,
+        target: BlockId,
+        arg: BlockArgIndex,
+    },
+}
+
+/// Which edge a constant `CondBranch` predicate takes, or `None` when the
+/// constant does not decide it. One authority for analysis and rewrite: a
+/// branch is folded exactly when the analysis marked one edge executable.
+fn constant_branch_choice(value: &ConstVal) -> Option<TerminatorEdge> {
+    let truthy = match value {
+        ConstVal::Bool(value) => *value,
+        ConstVal::Int(value) => *value != 0,
+        ConstVal::None => false,
+        ConstVal::Float(_) | ConstVal::Str(_) | ConstVal::Tuple(_) | ConstVal::Range { .. } => {
+            return None;
+        }
+    };
+    Some(if truthy {
+        TerminatorEdge::Then
+    } else {
+        TerminatorEdge::Else
+    })
+}
+
+/// Which edge a constant `Switch` value takes, or `None` when the constant does
+/// not decide it. Only an exact `Int` selects a case.
+fn constant_switch_choice(
+    cases: &[(i64, BlockId, Vec<ValueId>)],
+    value: &ConstVal,
+) -> Option<TerminatorEdge> {
+    let ConstVal::Int(value) = value else {
+        return None;
+    };
+    Some(
+        (0u32..)
+            .zip(cases)
+            .find(|(_, (case, _, _))| case == value)
+            .map_or(TerminatorEdge::SwitchDefault, |(index, _)| {
+                TerminatorEdge::SwitchCase(CaseIndex(index))
+            }),
+    )
+}
+
+/// The edge a terminator takes on every execution, when its predicate's state
+/// decides one. `None` means the predicate does not decide a single edge.
+fn decided_edge(term: &Terminator, lattice: &HashMap<ValueId, Lattice>) -> Option<TerminatorEdge> {
+    let constant = |value: &ValueId| match lattice.get(value) {
+        Some(Lattice::Constant(constant)) => Some(constant),
+        _ => None,
+    };
+    match term {
+        Terminator::CondBranch { cond, .. } => constant(cond).and_then(constant_branch_choice),
+        Terminator::Switch { value, cases, .. } => {
+            constant(value).and_then(|value| constant_switch_choice(cases, value))
+        }
+        Terminator::Branch { .. }
+        | Terminator::StateDispatch { .. }
+        | Terminator::Return { .. }
+        | Terminator::Unreachable => None,
+    }
+}
+
+/// The Wegman-Zadeck solver state for one function.
+struct Solver<'f> {
+    func: &'f TirFunction,
+    label_to_block: HashMap<i64, BlockId>,
+    try_region_results: HashSet<ValueId>,
+    lattice: HashMap<ValueId, Lattice>,
+    executable_blocks: HashSet<BlockId>,
+    executable_edges: HashSet<Edge>,
+    edge_worklist: Vec<PendingEdge<'f>>,
+    value_worklist: Vec<ValueId>,
+    uses: HashMap<ValueId, Vec<Use>>,
+}
+
+impl<'f> Solver<'f> {
+    fn new(func: &'f TirFunction) -> Self {
+        let label_to_block = dominators::exception_label_to_block(func);
+        let try_region_results = if func.has_exception_handling {
+            build_try_region_results(func)
+        } else {
+            HashSet::new()
+        };
+        let uses = build_uses(func, &label_to_block);
+        Self {
+            func,
+            label_to_block,
+            try_region_results,
+            lattice: HashMap::new(),
+            executable_blocks: HashSet::new(),
+            executable_edges: HashSet::new(),
+            edge_worklist: Vec::new(),
+            value_worklist: Vec::new(),
+            uses,
+        }
+    }
+
+    fn state(&self, value: ValueId) -> &Lattice {
+        self.lattice.get(&value).unwrap_or(&Lattice::Unknown)
+    }
+
+    /// Meet `incoming` into `value`'s state (I-1: a state never rises).
+    fn lower(&mut self, value: ValueId, incoming: Lattice) {
+        let current = self.lattice.entry(value).or_insert(Lattice::Unknown);
+        let met = current.meet(incoming);
+        if met != *current {
+            *current = met;
+            self.value_worklist.push(value);
+        }
+    }
+
+    fn solve(&mut self) {
+        let func = self.func;
+        let entry = func.entry_block;
+        // Function parameters: no edge binds them.
+        for arg in &func.blocks[&entry].args {
+            self.lower(arg.id, Lattice::Overdefined);
+        }
+        self.executable_blocks.insert(entry);
+        self.visit_block(entry);
+        loop {
+            if let Some(pending) = self.edge_worklist.pop() {
+                self.visit_edge(pending);
+            } else if let Some(value) = self.value_worklist.pop() {
+                self.visit_value(value);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn visit_edge(&mut self, pending: PendingEdge<'f>) {
+        if !self.executable_edges.insert(pending.edge) {
+            return;
+        }
+        let func = self.func;
+        let Some(target) = func.blocks.get(&pending.target) else {
+            return;
+        };
+        for (index, arg) in target.args.iter().enumerate() {
+            let incoming = match pending.binding {
+                EdgeBinding::Args(values) => values
+                    .get(index)
+                    .map_or(Lattice::Overdefined, |value| self.state(*value).clone()),
+                EdgeBinding::Unbound => Lattice::Overdefined,
+            };
+            self.lower(arg.id, incoming);
+        }
+        if self.executable_blocks.insert(pending.target) {
+            self.visit_block(pending.target);
+        }
+    }
+
+    fn visit_value(&mut self, value: ValueId) {
+        // Uses are fixed for the solve. Visits never read this value's own list,
+        // so it is taken for the loop and restored after, with no copy.
+        let Some(uses) = self.uses.get_mut(&value).map(std::mem::take) else {
+            return;
+        };
+        for &use_site in &uses {
+            match use_site {
+                Use::Op { block, op } => {
+                    if self.executable_blocks.contains(&block) {
+                        self.visit_op(block, op);
+                    }
+                }
+                Use::Predicate { block } => {
+                    if self.executable_blocks.contains(&block) {
+                        self.visit_terminator(block);
+                    }
+                }
+                Use::EdgeArg { edge, target, arg } => {
+                    if self.executable_edges.contains(&edge) {
+                        let incoming = self.state(value).clone();
+                        let func = self.func;
+                        if let Some(argument) = func
+                            .blocks
+                            .get(&target)
+                            .and_then(|block| block.args.get(arg.0 as usize))
+                        {
+                            self.lower(argument.id, incoming);
+                        }
+                    }
+                }
+            }
+        }
+        self.uses.insert(value, uses);
+    }
+
+    fn visit_block(&mut self, block_id: BlockId) {
+        let func = self.func;
+        let block = &func.blocks[&block_id];
+        for (index, op) in (0u32..).zip(&block.ops) {
+            let op_index = OpIndex(index);
+            self.visit_op(block_id, op_index);
+            if let Some(target) = dominators::exception_transfer_target(op, &self.label_to_block) {
+                let binding = if dominators::exception_edge_binds_handler_arguments(op.opcode) {
+                    EdgeBinding::Args(&op.operands)
+                } else {
+                    EdgeBinding::Unbound
+                };
+                self.edge_worklist.push(PendingEdge {
+                    edge: Edge {
+                        from: block_id,
+                        source: EdgeSource::Exception(op_index),
+                    },
+                    target,
+                    binding,
+                });
+            }
+        }
+        self.visit_terminator(block_id);
+    }
+
+    fn visit_op(&mut self, block_id: BlockId, op_index: OpIndex) {
+        let func = self.func;
+        let op = &func.blocks[&block_id].ops[op_index.0 as usize];
+        if op.results.is_empty() {
+            return;
+        }
+        let Some(state) = self.evaluate(op) else {
+            return;
+        };
+        for &result in &op.results {
+            self.lower(result, state.clone());
+        }
+    }
+
+    /// The state an op's results take from its operands' current states, or
+    /// `None` while an operand is still Unknown.
+    fn evaluate(&self, op: &TirOp) -> Option<Lattice> {
+        if !admits_constant_result(op) {
+            // Malformed producers never seed downstream constants or branches.
+            return Some(Lattice::Overdefined);
+        }
+        // Loop-carried values change on each iteration.
+        if matches!(
+            op.origin,
+            Some(
+                molt_ir::OpKind::LoopIndexStart
+                    | molt_ir::OpKind::LoopIndexNext
+                    | molt_ir::OpKind::IterNext
+            )
+        ) {
+            return Some(Lattice::Overdefined);
+        }
+        if self.try_region_results.contains(&op.results[0]) {
+            return Some(Lattice::Overdefined);
+        }
+        if let Some(seed) = seed_constant_lattice_value(op) {
+            return Some(seed);
+        }
+        let mut operands = Vec::with_capacity(op.operands.len());
+        for operand in &op.operands {
+            match self.state(*operand) {
+                Lattice::Overdefined => return Some(Lattice::Overdefined),
+                Lattice::Unknown => return None,
+                Lattice::Constant(constant) => operands.push(Some(constant)),
+            }
+        }
+        // A single Unknown operand waits; reaching here means every operand is Constant.
+        Some(
+            evaluate_op(op.opcode, &operands)
+                .or_else(|| evaluate_builtin_call(op, &operands))
+                .map_or(Lattice::Overdefined, Lattice::Constant),
+        )
+    }
+
+    fn visit_terminator(&mut self, block_id: BlockId) {
+        let func = self.func;
+        let term = &func.blocks[&block_id].terminator;
+        let feasible: Option<TerminatorEdge> = match term {
+            Terminator::CondBranch { cond, .. } => match self.state(*cond) {
+                Lattice::Unknown => return,
+                _ => decided_edge(term, &self.lattice),
+            },
+            Terminator::Switch { value, .. } => match self.state(*value) {
+                Lattice::Unknown => return,
+                _ => decided_edge(term, &self.lattice),
+            },
+            Terminator::Branch { .. } | Terminator::StateDispatch { .. } => None,
+            Terminator::Return { .. } | Terminator::Unreachable => return,
+        };
+        term.for_each_labeled_edge(|label, target, args| {
+            if feasible.is_some_and(|decided| decided != label) {
+                return;
+            }
+            let edge = Edge {
+                from: block_id,
+                source: EdgeSource::Terminator(label),
+            };
+            if !self.executable_edges.contains(&edge) {
+                self.edge_worklist.push(PendingEdge {
+                    edge,
+                    target,
+                    binding: EdgeBinding::Args(args),
+                });
+            }
+        });
+    }
+}
+
+/// Every read of every value, built once (I-4 needs each state drop to visit
+/// only its own uses).
+fn build_uses(
+    func: &TirFunction,
+    label_to_block: &HashMap<i64, BlockId>,
+) -> HashMap<ValueId, Vec<Use>> {
+    let mut uses: HashMap<ValueId, Vec<Use>> = HashMap::new();
+    let mut block_ids: Vec<BlockId> = func.blocks.keys().copied().collect();
+    block_ids.sort_unstable();
+    for block_id in block_ids {
+        let block = &func.blocks[&block_id];
+        for (index, op) in (0u32..).zip(&block.ops) {
+            let op_index = OpIndex(index);
+            if !op.results.is_empty() {
+                for operand in &op.operands {
+                    uses.entry(*operand).or_default().push(Use::Op {
+                        block: block_id,
+                        op: op_index,
+                    });
+                }
+            }
+            if let Some(target) = dominators::exception_transfer_target(op, label_to_block)
+                && dominators::exception_edge_binds_handler_arguments(op.opcode)
+            {
+                let edge = Edge {
+                    from: block_id,
+                    source: EdgeSource::Exception(op_index),
+                };
+                for (arg, operand) in (0u32..).zip(&op.operands) {
+                    uses.entry(*operand).or_default().push(Use::EdgeArg {
+                        edge,
+                        target,
+                        arg: BlockArgIndex(arg),
+                    });
+                }
+            }
+        }
+        match &block.terminator {
+            Terminator::CondBranch {
+                cond: predicate, ..
+            }
+            | Terminator::Switch {
+                value: predicate, ..
+            } => uses
+                .entry(*predicate)
+                .or_default()
+                .push(Use::Predicate { block: block_id }),
+            Terminator::Branch { .. }
+            | Terminator::StateDispatch { .. }
+            | Terminator::Return { .. }
+            | Terminator::Unreachable => {}
+        }
+        block
+            .terminator
+            .for_each_labeled_edge(|label, target, args| {
+                let edge = Edge {
+                    from: block_id,
+                    source: EdgeSource::Terminator(label),
+                };
+                for (arg, value) in (0u32..).zip(args) {
+                    uses.entry(*value).or_default().push(Use::EdgeArg {
+                        edge,
+                        target,
+                        arg: BlockArgIndex(arg),
+                    });
+                }
+            });
+    }
+    uses
+}
+
 /// Run the SCCP pass on `func`, returning statistics.
+///
+/// Requires: `func` verifies.
+/// Ensures: every rewritten value equals its value on every execution; a branch
+/// is folded only when its predicate takes one edge on every execution and no
+/// target is a loop header; blocks no longer reachable are removed so the
+/// result verifies. Each value's state drops at most twice and each drop visits
+/// only that value's uses, so the solve is O(edges + uses) lattice steps, each
+/// costing at most one `ConstVal` comparison (bounded by MAX_COMPOUND_ELEMENTS).
 pub fn run(func: &mut TirFunction) -> PassStats {
     let mut stats = PassStats {
         name: "sccp",
         ..Default::default()
     };
 
-    let has_eh = func.has_exception_handling;
-
-    // Phase 1: Build the lattice from all existing ops.
-    let mut lattice: HashMap<ValueId, LatticeValue> = HashMap::new();
-
-    // Block arguments are Bottom (parameters / phi-like — not constant).
-    for block in func.blocks.values() {
-        for arg in &block.args {
-            lattice.insert(arg.id, LatticeValue::Bottom);
-        }
-    }
-
-    // When exception handling is present, mark results of potentially-throwing
-    // ops inside try regions as Bottom (unfoldable) so SCCP never rewrites them.
-    let try_region_results = if has_eh {
-        build_try_region_results(func)
-    } else {
-        HashSet::new()
+    let lattice = {
+        let mut solver = Solver::new(func);
+        solver.solve();
+        solver.lattice
     };
 
-    // Collect block ids for deterministic iteration (sorted).
     let mut block_ids: Vec<BlockId> = func.blocks.keys().copied().collect();
-    block_ids.sort_by_key(|b| b.0);
+    block_ids.sort_unstable();
 
-    // First pass: seed constants from ConstInt/ConstFloat/ConstBool/ConstNone ops,
-    // mark everything else as Top initially.
-    // Results of potentially-throwing ops inside try regions are forced to Bottom.
-    for &bid in &block_ids {
-        let block = &func.blocks[&bid];
-        for op in &block.ops {
-            for &res in &op.results {
-                if !admits_constant_result(op) {
-                    // Malformed producers must not seed downstream constants or
-                    // branches even when we preserve their own instruction.
-                    lattice.insert(res, LatticeValue::Bottom);
-                    continue;
-                }
-                // Loop-carried values (loop_index_start, loop_index_next, iter_next)
-                // must not be folded — they change on each iteration.
-                let original_kind = op.origin;
-                if matches!(
-                    original_kind,
-                    Some(
-                        molt_ir::OpKind::LoopIndexStart
-                            | molt_ir::OpKind::LoopIndexNext
-                            | molt_ir::OpKind::IterNext
-                    )
-                ) {
-                    lattice.insert(res, LatticeValue::Bottom);
-                    continue;
-                }
-                // If this result is inside a try region and may throw, force Bottom.
-                if try_region_results.contains(&res) {
-                    lattice.insert(res, LatticeValue::Bottom);
-                    continue;
-                }
-                let val = seed_constant_lattice_value(op).unwrap_or(LatticeValue::Top);
-                lattice.insert(res, val);
-            }
-        }
-    }
-
-    // Phase 2: Forward propagation — try to fold ops with all-constant operands.
-    // Iterate until stable (bounded by number of values).
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for &bid in &block_ids {
-            let block = &func.blocks[&bid];
-            for op in &block.ops {
-                if !admits_constant_result(op) {
-                    continue;
-                }
-                // Skip ops that are already resolved as Constant or Bottom.
-                let result_id = op.results[0];
-                match lattice.get(&result_id) {
-                    Some(LatticeValue::Bottom) | Some(LatticeValue::Constant(_)) => continue,
-                    _ => {}
-                }
-
-                // Gather operand lattice values.
-                let operand_vals: Vec<Option<&ConstVal>> = op
-                    .operands
-                    .iter()
-                    .map(|v| match lattice.get(v) {
-                        Some(LatticeValue::Constant(c)) => Some(c),
-                        _ => None,
-                    })
-                    .collect();
-
-                // If any operand is Bottom, this result is Bottom.
-                let any_bottom = op
-                    .operands
-                    .iter()
-                    .any(|v| matches!(lattice.get(v), Some(LatticeValue::Bottom)));
-                if any_bottom {
-                    lattice.insert(result_id, LatticeValue::Bottom);
-                    changed = true;
-                    continue;
-                }
-
-                // If any operand is still Top, we can't fold yet.
-                if operand_vals.iter().any(|v| v.is_none()) {
-                    continue;
-                }
-
-                // All operands are Constant — try to evaluate.
-                let folded = evaluate_op(op.opcode, &operand_vals)
-                    .or_else(|| evaluate_builtin_call(op, &operand_vals));
-                if let Some(result) = folded {
-                    lattice.insert(result_id, LatticeValue::Constant(result));
-                    changed = true;
-                } else {
-                    // Can't fold this opcode — mark Bottom.
-                    lattice.insert(result_id, LatticeValue::Bottom);
-                    changed = true;
-                }
-            }
-        }
-    }
-
-    // Phase 3: Rewrite — replace constant-valued ops with ConstXxx ops.
+    // Rewrite: constant results become constant constructors. Values in blocks
+    // the solve never executed stay Unknown and are never rewritten.
     for &bid in &block_ids {
         let block = func.blocks.get_mut(&bid).unwrap();
         for op in &mut block.ops {
             if !admits_constant_result(op) {
                 continue;
             }
-            let result_id = op.results[0];
-            // Don't rewrite ops that are already constant constructors.
             if opcode_sccp_constant_seed_rule_table(op.opcode) != SccpConstantSeedRule::None {
                 continue;
             }
-            if let Some(LatticeValue::Constant(cv)) = lattice.get(&result_id) {
-                match cv {
-                    ConstVal::Int(v) => {
-                        let mut attrs = AttrDict::new();
-                        attrs.insert("value".into(), AttrValue::Int(*v));
-                        op.opcode = OpCode::ConstInt;
-                        op.operands.clear();
-                        op.attrs = attrs;
-                        op.origin = None;
-                        stats.values_changed += 1;
-                    }
-                    ConstVal::Float(v) => {
-                        let mut attrs = AttrDict::new();
-                        attrs.insert("f_value".into(), AttrValue::Float(*v));
-                        op.opcode = OpCode::ConstFloat;
-                        op.operands.clear();
-                        op.attrs = attrs;
-                        op.origin = None;
-                        stats.values_changed += 1;
-                    }
-                    ConstVal::Bool(v) => {
-                        let mut attrs = AttrDict::new();
-                        attrs.insert("value".into(), AttrValue::Bool(*v));
-                        op.opcode = OpCode::ConstBool;
-                        op.operands.clear();
-                        op.attrs = attrs;
-                        op.origin = None;
-                        stats.values_changed += 1;
-                    }
-                    ConstVal::Str(v) => {
-                        let mut attrs = AttrDict::new();
-                        attrs.insert("s_value".into(), AttrValue::Str(v.clone()));
-                        op.opcode = OpCode::ConstStr;
-                        op.operands.clear();
-                        op.attrs = attrs;
-                        op.origin = None;
-                        stats.values_changed += 1;
-                    }
-                    ConstVal::None => {
-                        op.opcode = OpCode::ConstNone;
-                        op.operands.clear();
-                        op.attrs = AttrDict::new();
-                        op.origin = None;
-                        stats.values_changed += 1;
-                    }
-                    // Immutable compounds inform downstream value observations,
-                    // but their producers retain runtime allocation/identity.
-                    // TIR has no ConstTuple or ConstRange materialization opcode.
-                    ConstVal::Tuple(_) | ConstVal::Range { .. } => {}
-                }
+            if let Some(Lattice::Constant(constant)) = lattice.get(&op.results[0])
+                && rewrite_as_constant(op, constant)
+            {
+                stats.values_changed += 1;
             }
         }
     }
 
-    // Phase 4: Fold constant conditional branches to unconditional branches.
-    // SAFETY: Never fold branches whose targets include a loop header —
-    // the loop condition depends on runtime iteration state that SCCP's
-    // forward-only lattice cannot model correctly.
+    // Fold branches whose predicate decides one edge. A loop-header target is
+    // never folded: lower_to_simple rebuilds structured loops from it.
     for &bid in &block_ids {
-        let block = func.blocks.get_mut(&bid).unwrap();
-        let new_term = match &block.terminator {
-            Terminator::CondBranch {
-                cond,
-                then_block,
-                then_args,
-                else_block,
-                else_args,
-            } => {
-                // Skip if either branch target is a loop header — folding
-                // these would eliminate loop bodies.
-                let targets_loop = func
-                    .loop_roles
-                    .get(then_block)
-                    .is_some_and(|r| *r == LoopRole::LoopHeader)
-                    || func
-                        .loop_roles
-                        .get(else_block)
-                        .is_some_and(|r| *r == LoopRole::LoopHeader);
-                if targets_loop {
-                    None
-                } else {
-                    match lattice.get(cond) {
-                        Some(LatticeValue::Constant(ConstVal::Bool(true))) => {
-                            Some(Terminator::Branch {
-                                target: *then_block,
-                                args: then_args.clone(),
-                            })
-                        }
-                        Some(LatticeValue::Constant(ConstVal::Bool(false))) => {
-                            Some(Terminator::Branch {
-                                target: *else_block,
-                                args: else_args.clone(),
-                            })
-                        }
-                        // Python truthiness: nonzero int is truthy
-                        Some(LatticeValue::Constant(ConstVal::Int(v))) => {
-                            if *v != 0 {
-                                Some(Terminator::Branch {
-                                    target: *then_block,
-                                    args: then_args.clone(),
-                                })
-                            } else {
-                                Some(Terminator::Branch {
-                                    target: *else_block,
-                                    args: else_args.clone(),
-                                })
-                            }
-                        }
-                        Some(LatticeValue::Constant(ConstVal::None)) => Some(Terminator::Branch {
-                            target: *else_block,
-                            args: else_args.clone(),
-                        }),
-                        _ => None,
-                    }
-                } // close else { ... } for targets_loop guard
-            }
-            _ => None,
+        let block = &func.blocks[&bid];
+        let Some(decided) = decided_edge(&block.terminator, &lattice) else {
+            continue;
         };
-        if let Some(term) = new_term {
-            block.terminator = term;
+        let mut targets_loop_header = false;
+        let mut taken = None;
+        block
+            .terminator
+            .for_each_labeled_edge(|label, target, args| {
+                targets_loop_header |= func.loop_roles.get(&target) == Some(&LoopRole::LoopHeader);
+                if label == decided {
+                    taken = Some((target, args.to_vec()));
+                }
+            });
+        if targets_loop_header {
+            continue;
+        }
+        if let Some((target, args)) = taken {
+            func.blocks.get_mut(&bid).unwrap().terminator = Terminator::Branch { target, args };
             stats.ops_removed += 1; // count branch simplification
         }
     }
 
-    // Phase 5: Eliminate blocks that became unreachable after branch folding.
-    // When a CondBranch is folded to a Branch, one successor is no longer
-    // reachable from the folded block. If that was the only path to the target,
-    // the target and its transitive successors become dead. Leaving dead blocks
-    // in the TIR is incorrect because their ops reference values whose
-    // definitions may no longer dominate them (the dominance tree changed when
-    // the CFG edge was removed). Removing dead blocks prevents downstream
-    // verification from reporting false SSA dominance violations.
+    // Remove blocks a fold left unreachable. Their ops may name values whose
+    // definitions no longer dominate them, which the verifier rejects.
     if stats.ops_removed > 0 {
         let reachable = metadata_preserving_reachable_blocks(func);
         stats.ops_removed += func
@@ -437,37 +678,70 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     stats
 }
 
-fn seed_constant_lattice_value(op: &TirOp) -> Option<LatticeValue> {
+/// Rewrite `op` as the constant constructor of `constant`; false when TIR has
+/// no constructor for it (immutable compounds keep their runtime producer).
+fn rewrite_as_constant(op: &mut TirOp, constant: &ConstVal) -> bool {
+    let (opcode, attrs) = match constant {
+        ConstVal::Int(value) => (
+            OpCode::ConstInt,
+            AttrDict::from([("value".into(), AttrValue::Int(*value))]),
+        ),
+        ConstVal::Float(value) => (
+            OpCode::ConstFloat,
+            AttrDict::from([("f_value".into(), AttrValue::Float(*value))]),
+        ),
+        ConstVal::Bool(value) => (
+            OpCode::ConstBool,
+            AttrDict::from([("value".into(), AttrValue::Bool(*value))]),
+        ),
+        ConstVal::Str(value) => (
+            OpCode::ConstStr,
+            AttrDict::from([("s_value".into(), AttrValue::Str(value.clone()))]),
+        ),
+        ConstVal::None => (OpCode::ConstNone, AttrDict::new()),
+        // Immutable compounds inform downstream value observations, but their
+        // producers retain runtime allocation/identity. TIR has no ConstTuple
+        // or ConstRange materialization opcode.
+        ConstVal::Tuple(_) | ConstVal::Range { .. } => return false,
+    };
+    op.opcode = opcode;
+    op.operands.clear();
+    op.attrs = attrs;
+    op.origin = None;
+    true
+}
+
+fn seed_constant_lattice_value(op: &TirOp) -> Option<Lattice> {
     if !admits_constant_result(op) {
-        return Some(LatticeValue::Bottom);
+        return Some(Lattice::Overdefined);
     }
     let attrs = &op.attrs;
     match opcode_sccp_constant_seed_rule_table(op.opcode) {
         SccpConstantSeedRule::None => None,
         SccpConstantSeedRule::IntAttr => Some(match attrs.get("value") {
-            Some(AttrValue::Int(v)) => LatticeValue::Constant(ConstVal::Int(*v)),
-            _ => LatticeValue::Bottom,
+            Some(AttrValue::Int(v)) => Lattice::Constant(ConstVal::Int(*v)),
+            _ => Lattice::Overdefined,
         }),
         SccpConstantSeedRule::FloatAttr => Some(match attrs.get("f_value") {
-            Some(AttrValue::Float(v)) => LatticeValue::Constant(ConstVal::Float(*v)),
-            _ => LatticeValue::Bottom,
+            Some(AttrValue::Float(v)) => Lattice::Constant(ConstVal::Float(*v)),
+            _ => Lattice::Overdefined,
         }),
         SccpConstantSeedRule::BoolAttr => Some(match attrs.get("value") {
-            Some(AttrValue::Bool(v)) => LatticeValue::Constant(ConstVal::Bool(*v)),
-            _ => LatticeValue::Bottom,
+            Some(AttrValue::Bool(v)) => Lattice::Constant(ConstVal::Bool(*v)),
+            _ => Lattice::Overdefined,
         }),
         SccpConstantSeedRule::StrAttr => {
             use molt_ir::literal_payload::LiteralPayload;
             let payload = LiteralPayload::from_tir(op).unwrap_or_else(|error| panic!("{error}"));
             Some(match payload {
                 LiteralPayload::Text(value) if value.len() <= MAX_COMPOUND_ELEMENTS => {
-                    LatticeValue::Constant(ConstVal::Str(value.to_owned()))
+                    Lattice::Constant(ConstVal::Str(value.to_owned()))
                 }
                 // Rust str cannot represent Python surrogate code points.
                 // Preserve the admitted byte carrier; never seed a lossy string.
-                LiteralPayload::Text(_) | LiteralPayload::Bytes(_) => LatticeValue::Bottom,
+                LiteralPayload::Text(_) | LiteralPayload::Bytes(_) => Lattice::Overdefined,
             })
         }
-        SccpConstantSeedRule::NoneSingleton => Some(LatticeValue::Constant(ConstVal::None)),
+        SccpConstantSeedRule::NoneSingleton => Some(Lattice::Constant(ConstVal::None)),
     }
 }

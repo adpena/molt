@@ -15,7 +15,7 @@ use super::op_kinds_generated::{
     ExceptionRegionNestingRole, kind_to_opcode_table, opcode_exception_region_nesting_role_table,
     opcode_is_exception_transfer_edge_table,
 };
-use super::ops::{AttrValue, OpCode};
+use super::ops::{AttrValue, OpCode, TirOp};
 
 mod indexed;
 mod points;
@@ -127,13 +127,26 @@ fn append_exception_successors(
     label_to_block: &HashMap<i64, BlockId>,
     successors: &mut Vec<BlockId>,
 ) {
-    for op in &block.ops {
-        if is_exception_transfer_edge(op.opcode)
-            && let Some(AttrValue::Int(target_label)) = op.attrs.get("value")
-            && let Some(&target) = label_to_block.get(target_label)
-        {
-            successors.push(target);
-        }
+    successors.extend(
+        block
+            .ops
+            .iter()
+            .filter_map(|op| exception_transfer_target(op, label_to_block)),
+    );
+}
+
+/// The handler block an exception-transfer op reaches, or `None` for any other
+/// op or an unresolved label. The one reader of an exception edge's target.
+pub fn exception_transfer_target(
+    op: &TirOp,
+    label_to_block: &HashMap<i64, BlockId>,
+) -> Option<BlockId> {
+    if !is_exception_transfer_edge(op.opcode) {
+        return None;
+    }
+    match op.attrs.get("value") {
+        Some(AttrValue::Int(target_label)) => label_to_block.get(target_label).copied(),
+        _ => None,
     }
 }
 
