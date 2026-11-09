@@ -4937,6 +4937,8 @@ def _publish_controller_stub(work: Path, role: str) -> str:
     # This stand-in has an empty package and no startup behavior; real driver
     # origins copy the genuine startup source through the shared file owner.
     _commit_file(work, "src/sitecustomize.py", "", "fixture Python startup")
+    _commit_file(work, "tests/__init__.py", "", "tests package")
+    _commit_file(work, "tests/findings/__init__.py", "", "findings package")
     tip = _commit_file(
         work, "tools/molt_dev.py", _CONTROLLER_STUB.format(role=role), "main driver"
     )
@@ -5354,7 +5356,7 @@ def test_controller_source_publishes_committed_policy_without_environment(
     _, work = origin_and_clone
     for path in controller_source.CONTROLLER_PATHS:
         target = work / path
-        if path in {"tools", "src/molt", "config"}:
+        if path in {"tools", "src/molt", "config", "tests/findings"}:
             target /= "source.txt"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("published source\n", encoding="utf-8")
@@ -5382,6 +5384,55 @@ def test_controller_source_publishes_committed_policy_without_environment(
             is None
         )
     assert (work / "tools/source.txt").read_text(encoding="utf-8") == "dirty caller\n"
+
+
+def test_pinned_controller_tree_imports_the_landing_receipt_closure(
+    tmp_path: Path,
+) -> None:
+    """The receipt step runs inside the extracted controller with ``python -I``.
+
+    Extract this checkout's committed controller paths exactly as a landing
+    does and import the modules ``land --fast`` loads after its gates pass.
+    A driver module outside CONTROLLER_PATHS fails here instead of after a
+    landing's gates (2026-11-09: tests.findings, imported through the
+    crate-test gate's suite-honesty check).
+    """
+    from tools import controller_source
+
+    archive = tmp_path / "controller.tar"
+    extracted = _run_fast_captured_command(
+        [
+            "git",
+            "archive",
+            "--format=tar",
+            "-o",
+            str(archive),
+            "HEAD",
+            "--",
+            *controller_source.CONTROLLER_PATHS,
+        ],
+        cwd=REPO_ROOT,
+    )
+    assert extracted.returncode == 0, extracted.stderr
+    root = tmp_path / "controller"
+    root.mkdir()
+    with tarfile.open(archive) as tar:
+        tar.extractall(root, filter="data")
+    # No site processing: the checkout's editable binding must not supply
+    # ``molt`` or ``tests``. Third-party packages come from this environment.
+    probe = (
+        "import sys; sys.path[:0] = [sys.argv[1] + '/src', sys.argv[1]]; "
+        "sys.path.append(sys.argv[2]); "
+        "import tools.molt_dev_land_fast, tools.check_changed_crate_tests"
+    )
+    purelib = sysconfig.get_paths()["purelib"]
+    result = run_guarded_test_process(
+        [sys.executable, "-I", "-S", "-c", probe, str(root), purelib],
+        cwd=tmp_path,
+        env=ProcessEnvironment(dict(os.environ)),
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.skipif(
