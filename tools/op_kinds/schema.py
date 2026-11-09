@@ -159,6 +159,8 @@ _SCCP_CONSTANT_EVAL_RULES = {
     "pow": "Pow",
     "eq": "Eq",
     "ne": "Ne",
+    "is": "Is",
+    "is_not": "IsNot",
     "lt": "Lt",
     "le": "Le",
     "gt": "Gt",
