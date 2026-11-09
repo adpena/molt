@@ -4167,14 +4167,6 @@ owner = "tools/startup_bench.py"
 summary = "Path of the development baseline CPython interpreter that tools/startup_bench.py measures against; unset uses the running interpreter. The selected interpreter is verified before measurement; an invalid explicit path fails without substitution. This does not select an interpreter for compiled Molt programs."
 
 [[variable]]
-name = "MOLT_STATIC_IMPORT_MODULES"
-audience = "user"
-kind = "list"
-default = ""
-owner = "src/molt/cli/config_resolution.py"
-summary = "Comma or space separated Python module names forced into the build's module graph; each must be a dotted identifier that resolves to an admitted module, else the build fails; unset adds none."
-
-[[variable]]
 name = "MOLT_STDLIB_CACHE_ENTRY"
 audience = "internal"
 kind = "path"
@@ -4985,7 +4977,7 @@ audience = "user"
 kind = "bool"
 default = "0"
 owner = "runtime/molt-runtime/src/async_rt/poll.rs"
-summary = "Set to 1 on the wasm32 runtime to print the poll function kind (async_sleep, promise, the asyncio watchers and others) and result on stderr after every indirect poll call; the read is compiled only for wasm32, happens once per process, and unset or any other value prints nothing."
+summary = "Set to 1 on the wasm32 runtime to print the poll function kind (async_sleep, promise, the asyncio watchers and others) and result on stderr after every poll call; the read is compiled only for wasm32, happens once per process, and unset or any other value prints nothing."
 
 [[variable]]
 name = "MOLT_TRACE_PROCESS_IO"
@@ -5787,7 +5779,7 @@ audience = "user"
 kind = "bool"
 default = "0"
 owner = "runtime/molt-runtime/src/async_rt/poll.rs"
-summary = "Set to 1 to print each async poll function address, with its normalized wasm table address when they differ, to stderr from the wasm32 runtime; any other value is off and native builds never read it."
+summary = "Set to 1 to print each async poll identity (a runtime poll key or a compiled poll's table index) to stderr from the wasm32 runtime; any other value is off and native builds never read it."
 
 [[variable]]
 name = "MOLT_WASM_PRECOMPILED"

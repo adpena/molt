@@ -22,7 +22,6 @@ from functools import cached_property
 from typing import NamedTuple
 
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
-from molt.cli.config_resolution import STATIC_IMPORT_MODULES_ENV
 from molt.cli import module_dependencies as _module_dependency_authority
 from molt.cli import module_graph_cache as _module_graph_cache
 from molt.cli import module_import_scanner as _module_import_scanner
@@ -30,6 +29,7 @@ from molt.cli import module_resolution as _module_resolution
 from molt.cli import module_source as _module_source
 from molt.cli.models import (
     ModuleReason,
+    UnresolvedRoot,
     ImportScanMode,
     _CompleteImportScan,
     _ModuleGraphScanAuthority,
@@ -315,29 +315,6 @@ def _merge_discovered_module_graph(
     scan_authorities.update(updates)
 
 
-def _parse_static_import_modules(raw: str) -> tuple[frozenset[str], str | None]:
-    modules: set[str] = set()
-    for part in re.split(r"[\s,]+", raw.strip()):
-        if not part:
-            continue
-        if not re.fullmatch(
-            r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*",
-            part,
-        ):
-            return frozenset(), (
-                f"{STATIC_IMPORT_MODULES_ENV} must contain comma/space-separated "
-                f"Python module names; invalid entry: {part!r}"
-            )
-        modules.add(part)
-    return frozenset(modules), None
-
-
-def _parse_static_import_modules_from_env(
-    environ: Mapping[str, str],
-) -> tuple[frozenset[str], str | None]:
-    return _parse_static_import_modules(environ.get(STATIC_IMPORT_MODULES_ENV, ""))
-
-
 def _record_module_reason(
     module_reasons: MutableMapping[str, set[ModuleReason]],
     module_name: str,
@@ -362,7 +339,7 @@ def _extend_module_graph_with_closure(
     resolver_cache: "_module_resolution._ModuleResolutionCache",
     diagnostics_enabled: bool,
     module_reasons: MutableMapping[str, set[ModuleReason]],
-    reason: ModuleReason,
+    root_reason: ModuleReason,
     skip_modules: set[str] | None = None,
     stub_parents: set[str] | None = None,
     import_admission_policy: _ImportAdmissionPolicy | None = None,
@@ -370,6 +347,10 @@ def _extend_module_graph_with_closure(
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     runtime_import_custody: _RuntimeImportScanCustody | None = None,
 ) -> _DiscoveredModuleGraph:
+    """Admit the closure of ``entry_paths``. Their modules carry ``root_reason``;
+    every other module the closure reaches carries ``root_reason.closure``."""
+    if not root_reason.is_root:
+        raise ValueError(f"closure producers stamp a root reason, not {root_reason}")
     if not entry_paths:
         return _DiscoveredModuleGraph({}, set(), _ModuleGraphScanAuthority())
     if runtime_import_custody is not None:
@@ -411,14 +392,19 @@ def _extend_module_graph_with_closure(
         discovery=discovery,
     )
     _merge_discovered_module_graph(module_graph, scan_authorities, closure)
-    for name in closure.graph:
-        _record_module_reason(module_reasons, name, reason)
+    root_paths = {path.resolve() for path in entry_paths}
+    for name, path in closure.graph.items():
+        _record_module_reason(
+            module_reasons,
+            name,
+            root_reason if path.resolve() in root_paths else root_reason.closure,
+        )
     if runtime_import_custody is not None:
         runtime_import_custody.validate_graph(module_graph)
     return closure
 
 
-def _resolve_static_import_module_paths(
+def _resolve_include_module_paths(
     *,
     module_names: Collection[str],
     roots: Sequence[Path],
@@ -437,9 +423,7 @@ def _resolve_static_import_module_paths(
             stdlib_allowlist,
         )
         if path is None:
-            errors.append(
-                f"{STATIC_IMPORT_MODULES_ENV} module {module_name!r} was not found"
-            )
+            errors.append(str(UnresolvedRoot(module_name, ModuleReason.EXPLICIT_ROOT)))
             continue
         if import_admission_policy is not None and not (
             import_admission_policy.admits_import(
@@ -449,8 +433,8 @@ def _resolve_static_import_module_paths(
             )
         ):
             errors.append(
-                f"{STATIC_IMPORT_MODULES_ENV} module {module_name!r} resolves under "
-                "an external root but is not within an admitted external static package"
+                f"include module {module_name!r} resolves under an external root "
+                "but is not within an admitted external static package"
             )
             continue
         resolved[module_name] = path
@@ -458,7 +442,7 @@ def _resolve_static_import_module_paths(
 
 
 @_source_tree_fingerprint_transaction()
-def _extend_module_graph_with_static_import_modules(
+def _extend_module_graph_with_include_modules(
     *,
     module_graph: MutableMapping[str, Path],
     scan_authorities: MutableMapping[str, _ModuleSourceScanAuthority],
@@ -478,7 +462,7 @@ def _extend_module_graph_with_static_import_modules(
 ) -> list[str]:
     if not module_names:
         return []
-    resolved, errors = _resolve_static_import_module_paths(
+    resolved, errors = _resolve_include_module_paths(
         module_names=module_names,
         roots=roots,
         stdlib_root=stdlib_root,
@@ -502,7 +486,7 @@ def _extend_module_graph_with_static_import_modules(
         resolver_cache=resolver_cache,
         diagnostics_enabled=diagnostics_enabled,
         module_reasons=module_reasons,
-        reason=ModuleReason.EXPLICIT_STATIC_IMPORT,
+        root_reason=ModuleReason.EXPLICIT_ROOT,
         discovery=discovery,
         import_admission_policy=import_admission_policy,
         allow_entry_external_imports=False,

@@ -14,6 +14,10 @@ pub(crate) struct PollTableImportSpec {
     pub(crate) import: WasmRuntimeImport,
 }
 
+/// The key of the runtime poll at `table_slot` is this base plus the
+/// slot, on every target (HF-699 K1); the runtime's key table agrees.
+pub(crate) const RUNTIME_POLL_CALLABLE_KEY_BASE: u64 = 0xFFFFFF0000000100;
+
 pub(crate) const POLL_TABLE_IMPORTS: &[PollTableImportSpec] = &[
     PollTableImportSpec {
         table_slot: 1,

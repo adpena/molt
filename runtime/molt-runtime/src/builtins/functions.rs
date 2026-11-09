@@ -73,11 +73,6 @@ pub(crate) use wasm_callables_generated::{
     python_builtin_function_info, resolve_test_python_builtin_symbol,
 };
 
-#[cfg(target_arch = "wasm32")]
-pub(crate) use wasm_callables_generated::{
-    WASM_POLL_SLOT_MAX_OFFSET, wasm_poll_table_slot_from_symbol_name,
-};
-
 fn enum_set_attr(
     _py: &crate::concurrency::gil::PyToken<'_>,
     target_bits: u64,

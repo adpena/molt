@@ -405,6 +405,17 @@ def _add_build_parser(
         help="Additional directories to search for Python packages (repeatable).",
     )
     build_parser.add_argument(
+        "--include-module",
+        action="append",
+        default=[],
+        metavar="MODULE",
+        help=(
+            "Compile MODULE and what it imports although no static import reaches "
+            "it, for code that imports it by a runtime name (repeatable; adds to "
+            "[tool.molt.build] include-modules)."
+        ),
+    )
+    build_parser.add_argument(
         "--bolt",
         action="store_true",
         default=False,

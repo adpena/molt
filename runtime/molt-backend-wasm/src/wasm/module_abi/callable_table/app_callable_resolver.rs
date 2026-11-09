@@ -81,7 +81,7 @@ fn emit_resolver_entry(
         backend.func_import_count,
         resolver_func_index,
         func,
-        &entry.target,
+        &crate::wasm_table::WasmCallableTableTarget::TableSlot(entry.target),
     );
     func.instruction(&Instruction::Return);
     func.instruction(&Instruction::End);

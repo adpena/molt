@@ -59,6 +59,7 @@ def full_payload():
         "snapshot": True,
         "stdlib_profile": "full",
         "lib_paths": ["lib", "other"],
+        "include_modules": ["pkg.plugin", "pkg.runtime.ops_cpu"],
         "split_runtime": True,
         "capability_manifest": "capabilities.json",
         "require_signed_manifest": True,

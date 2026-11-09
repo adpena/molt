@@ -270,7 +270,22 @@ def test_compiled_preparation_projects_host_and_shares_one_elapsed_budget(
     monkeypatch.setenv(PROOF_COMMAND_TIMEOUT_ENV, "1200")
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
     times = iter(
-        [0.0, 1.0, 200.0, 500.0, 550.0, 600.0, 650.0, 700.0, 750.0, 800.0, 850.0, 900.0]
+        [
+            0.0,
+            1.0,
+            200.0,
+            500.0,
+            550.0,
+            600.0,
+            650.0,
+            700.0,
+            750.0,
+            800.0,
+            850.0,
+            900.0,
+            950.0,
+            1000.0,
+        ]
     )
     monkeypatch.setattr(preparation, "monotonic", lambda: next(times))
     calls = []
@@ -304,6 +319,8 @@ def test_compiled_preparation_projects_host_and_shares_one_elapsed_budget(
         400.0,
         350.0,
         300.0,
+        250.0,
+        200.0,
     ]
     assert all(kw["check"] and kw["capture_output"] for _, kw in calls)
     for args, _ in calls[1:3]:
@@ -329,6 +346,8 @@ def test_compiled_preparation_projects_host_and_shares_one_elapsed_budget(
     assert {Path(record["source"]).parent.name for record in records} == {
         "wasm-syntax-run",
         "wasm-asyncio-linked",
+        "wasm-async-polls-linked",
+        "wasm-async-polls-split",
         "wasm-finder-linked",
         "wasm-finder-split",
         "wasm-final-tir-linked",

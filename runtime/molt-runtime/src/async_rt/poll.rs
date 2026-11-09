@@ -3,173 +3,67 @@ use crate::runtime_flags::{self, RuntimeFlag};
 use molt_obj_model::MoltObject;
 
 use crate::builtins::exceptions::{ActivationExceptionScope, ActivationKind};
+use crate::builtins::functions::PollTarget;
 use crate::{PyToken, set_task_raise_active, task_raise_active};
 
-#[cfg(target_arch = "wasm32")]
-use crate::raise_exception;
-
-#[cfg(target_arch = "wasm32")]
-use crate::builtins::functions::{
-    WASM_POLL_SLOT_MAX_OFFSET, wasm_poll_table_slot_from_symbol_name,
-};
-
-#[cfg(target_arch = "wasm32")]
-#[inline]
-fn wasm_poll_slot(symbol_name: &str) -> u64 {
-    let offset = wasm_poll_table_slot_from_symbol_name(symbol_name.as_bytes())
-        .unwrap_or_else(|| panic!("missing generated wasm poll slot for {symbol_name}"));
-    crate::wasm_table_base().saturating_add(offset)
-}
-
-#[cfg(target_arch = "wasm32")]
-#[inline]
-fn normalize_wasm_poll_fn_addr(poll_fn_addr: u64) -> u64 {
-    let table_base = crate::wasm_table_base();
-    if poll_fn_addr >= table_base {
-        return poll_fn_addr;
-    }
-    let legacy_base = crate::wasm_table_base_fallback();
-    if table_base == legacy_base || poll_fn_addr < legacy_base {
-        return poll_fn_addr;
-    }
-    let slot_offset = poll_fn_addr - legacy_base;
-    if slot_offset <= WASM_POLL_SLOT_MAX_OFFSET {
-        return table_base.saturating_add(slot_offset);
-    }
-    poll_fn_addr
-}
+// A runtime poll's identity is its named key on every target (HF-699 K1):
+// `fn_addr!` folds the key at compile time, and `call_poll_fn` resolves it
+// through the generated key table. No identity names a table slot.
 
 #[inline]
 pub(crate) fn async_sleep_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_async_sleep_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_async_sleep_poll)
-    }
+    fn_addr!(crate::molt_async_sleep_poll)
 }
 
 #[inline]
 pub(crate) fn anext_default_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_anext_default_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_anext_default_poll)
-    }
+    fn_addr!(crate::molt_anext_default_poll)
 }
 
 #[inline]
 pub(crate) fn asyncgen_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_asyncgen_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_asyncgen_poll)
-    }
+    fn_addr!(crate::molt_asyncgen_poll)
 }
 
 #[inline]
 pub(crate) fn promise_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_promise_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_promise_poll)
-    }
+    fn_addr!(crate::molt_promise_poll)
 }
 
 #[inline]
 pub(crate) fn await_iterator_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_await_iterator_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_await_iterator_poll)
-    }
+    fn_addr!(crate::molt_await_iterator_poll)
 }
 
 #[inline]
 pub(crate) fn coroutine_wrapper_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_coroutine_wrapper_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_coroutine_wrapper_poll)
-    }
+    fn_addr!(crate::molt_coroutine_wrapper_poll)
 }
 
 #[inline]
 pub(crate) fn contextlib_asyncgen_enter_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_contextlib_asyncgen_enter_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_contextlib_asyncgen_enter_poll)
-    }
+    fn_addr!(crate::molt_contextlib_asyncgen_enter_poll)
 }
 
 #[inline]
 pub(crate) fn contextlib_asyncgen_exit_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_contextlib_asyncgen_exit_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_contextlib_asyncgen_exit_poll)
-    }
+    fn_addr!(crate::molt_contextlib_asyncgen_exit_poll)
 }
 
 #[inline]
 pub(crate) fn contextlib_async_exitstack_exit_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_contextlib_async_exitstack_exit_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_contextlib_async_exitstack_exit_poll)
-    }
+    fn_addr!(crate::molt_contextlib_async_exitstack_exit_poll)
 }
 
 #[inline]
 pub(crate) fn contextlib_async_exitstack_enter_context_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_contextlib_async_exitstack_enter_context_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_contextlib_async_exitstack_enter_context_poll)
-    }
+    fn_addr!(crate::molt_contextlib_async_exitstack_enter_context_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn io_wait_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_io_wait")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_io_wait)
-    }
+    fn_addr!(crate::molt_io_wait)
 }
 
 /// Whether `poll_fn` polls an I/O wait future. Those futures exist only with a
@@ -190,233 +84,107 @@ pub(crate) fn is_io_wait_poll_fn(poll_fn: u64) -> bool {
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn ws_wait_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_ws_wait")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_ws_wait)
-    }
+    fn_addr!(crate::molt_ws_wait)
 }
 
 #[inline]
 pub(crate) fn thread_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_thread_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_thread_poll)
-    }
+    fn_addr!(crate::molt_thread_poll)
 }
 
 #[inline]
 pub(crate) fn process_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_process_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_process_poll)
-    }
+    fn_addr!(crate::molt_process_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_fd_watcher_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_asyncio_fd_watcher_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_asyncio_fd_watcher_poll)
-    }
+    fn_addr!(crate::molt_asyncio_fd_watcher_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_server_accept_loop_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_asyncio_server_accept_loop_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_asyncio_server_accept_loop_poll)
-    }
+    fn_addr!(crate::molt_asyncio_server_accept_loop_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_socket_reader_read_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_asyncio_socket_reader_read_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_asyncio_socket_reader_read_poll)
-    }
+    fn_addr!(crate::molt_asyncio_socket_reader_read_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_socket_reader_readline_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_asyncio_socket_reader_readline_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_asyncio_socket_reader_readline_poll)
-    }
+    fn_addr!(crate::molt_asyncio_socket_reader_readline_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_stream_reader_read_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_asyncio_stream_reader_read_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_asyncio_stream_reader_read_poll)
-    }
+    fn_addr!(crate::molt_asyncio_stream_reader_read_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_stream_reader_readline_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_asyncio_stream_reader_readline_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_asyncio_stream_reader_readline_poll)
-    }
+    fn_addr!(crate::molt_asyncio_stream_reader_readline_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_stream_send_all_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_asyncio_stream_send_all_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_asyncio_stream_send_all_poll)
-    }
+    fn_addr!(crate::molt_asyncio_stream_send_all_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_recv_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_asyncio_sock_recv_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_asyncio_sock_recv_poll)
-    }
+    fn_addr!(crate::molt_asyncio_sock_recv_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_connect_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_asyncio_sock_connect_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_asyncio_sock_connect_poll)
-    }
+    fn_addr!(crate::molt_asyncio_sock_connect_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_accept_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_asyncio_sock_accept_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_asyncio_sock_accept_poll)
-    }
+    fn_addr!(crate::molt_asyncio_sock_accept_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_recv_into_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_asyncio_sock_recv_into_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_asyncio_sock_recv_into_poll)
-    }
+    fn_addr!(crate::molt_asyncio_sock_recv_into_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_sendall_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_asyncio_sock_sendall_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_asyncio_sock_sendall_poll)
-    }
+    fn_addr!(crate::molt_asyncio_sock_sendall_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_recvfrom_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_asyncio_sock_recvfrom_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_asyncio_sock_recvfrom_poll)
-    }
+    fn_addr!(crate::molt_asyncio_sock_recvfrom_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_recvfrom_into_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_asyncio_sock_recvfrom_into_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_asyncio_sock_recvfrom_into_poll)
-    }
+    fn_addr!(crate::molt_asyncio_sock_recvfrom_into_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_sendto_poll_fn_addr() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        wasm_poll_slot("molt_asyncio_sock_sendto_poll")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn_addr!(crate::molt_asyncio_sock_sendto_poll)
-    }
+    fn_addr!(crate::molt_asyncio_sock_sendto_poll)
 }
 
 /// Both event-loop and block-on roots establish their own resume transport.
@@ -450,93 +218,33 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
         // real frame entry; it must not introduce a second visible Python frame.
         let _frame_invocation =
             crate::builtins::frames::FrameInvocationGuard::for_activation(_py, task_ptr);
-        let result = {
-            #[cfg(target_arch = "wasm32")]
-            {
-                let normalized_poll_fn_addr = normalize_wasm_poll_fn_addr(poll_fn_addr);
-                if runtime_flags::enabled(RuntimeFlag::MOLT_WASM_POLL_DEBUG) {
-                    if normalized_poll_fn_addr == poll_fn_addr {
-                        eprintln!("molt wasm poll: fn=0x{poll_fn_addr:x}");
-                    } else {
-                        eprintln!(
-                            "molt wasm poll: fn=0x{poll_fn_addr:x} normalized=0x{normalized_poll_fn_addr:x}"
-                        );
-                    }
-                }
-                if normalized_poll_fn_addr < crate::wasm_table_base() {
-                    return raise_exception::<i64>(
-                        _py,
-                        BuiltinExc::RuntimeError,
-                        "invalid wasm poll function",
-                    );
-                }
-                let argument = poll_argument(normalized_poll_fn_addr, task_ptr);
-                let res = crate::molt_call_indirect1(
-                    _py.attached_context(),
-                    normalized_poll_fn_addr,
-                    argument,
-                );
-                if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_POLL_RETURN) {
-                    let known_kind = traced_poll_kind(poll_fn_addr);
-                    let mut code_name = "<none>".to_string();
-                    let mut code_file = "<none>".to_string();
-                    let [_, _, code_bits] =
-                        crate::object::aux_header::object_frame_context_bits(task_ptr);
-                    if code_bits != 0
-                        && let Some(code_ptr) = crate::maybe_ptr_from_bits(code_bits)
-                    {
-                        let name_bits = crate::code_name_bits(code_ptr);
-                        code_name = crate::string_obj_to_owned(crate::obj_from_bits(name_bits))
-                            .unwrap_or_else(|| "<unknown>".to_string());
-                        let file_bits = crate::code_filename_bits(code_ptr);
-                        code_file = crate::string_obj_to_owned(crate::obj_from_bits(file_bits))
-                            .unwrap_or_else(|| "<unknown>".to_string());
-                    }
-                    let kind = if crate::exception_pending(_py) {
-                        let exc_bits = crate::exception_last_bits_noinc(_py)
-                            .unwrap_or_else(|| crate::MoltObject::none().bits());
-                        if let Some(exc_ptr) = crate::maybe_ptr_from_bits(exc_bits) {
-                            crate::builtins::exceptions::exception_diagnostic_name(exc_ptr)
-                        } else {
-                            "<none>".to_string()
-                        }
-                    } else {
-                        "<none>".to_string()
-                    };
-                    eprintln!(
-                        "molt poll return fn=0x{:x} normalized=0x{:x} kind={} code={} file={} res=0x{:x} pending={}",
-                        poll_fn_addr,
-                        normalized_poll_fn_addr,
-                        known_kind,
-                        code_name,
-                        code_file,
-                        res as u64,
-                        kind
-                    );
-                }
-                res
+        #[cfg(target_arch = "wasm32")]
+        if runtime_flags::enabled(RuntimeFlag::MOLT_WASM_POLL_DEBUG) {
+            eprintln!("molt wasm poll: fn=0x{poll_fn_addr:x}");
+        }
+        // One resolution gives the target and its argument convention (K4).
+        // A runtime poll is called through its own Rust pointer, never through
+        // the app's `molt_call_indirect1` (K2).
+        let result = match crate::builtins::functions::runtime_poll_call_target(poll_fn_addr) {
+            Some(PollTarget::Runtime(poll)) => poll(
+                _py.attached_context(),
+                MoltObject::from_ptr(task_ptr).bits(),
+            ),
+            Some(PollTarget::AppTableIndex(index)) => {
+                call_app_poll(_py, index, crate::provenance::abi::expose_address(task_ptr))
             }
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                // SAFETY: `poll_fn_addr` is a valid extern "C" fn pointer stored in the task object
-                // by the async runtime. The caller ensures it points to a 1-arg poll function. UB if null.
-                let Some(poll_target) =
-                    crate::builtins::functions::runtime_poll_call_target(poll_fn_addr)
-                else {
-                    return crate::raise_exception::<i64>(
-                        _py,
-                        BuiltinExc::RuntimeError,
-                        &format!("async poll target 0x{poll_fn_addr:x} does not resolve"),
-                    );
-                };
-                let poll_fn: unsafe extern "C" fn(u64, u64) -> i64 =
-                    std::mem::transmute(poll_target);
-                poll_fn(
-                    _py.attached_context(),
-                    poll_argument(poll_fn_addr, task_ptr),
-                )
+            None => {
+                return crate::raise_exception::<i64>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    &format!("async poll target 0x{poll_fn_addr:x} does not resolve"),
+                );
             }
         };
+        #[cfg(target_arch = "wasm32")]
+        if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_POLL_RETURN) {
+            trace_poll_return(_py, poll_fn_addr, task_ptr, result);
+        }
         // Only errors escaping a Python coroutine body cross this boundary.
         // Iterator exhaustion and a direct throw before entry are handled by
         // their own continuation and must not be converted to RuntimeError.
@@ -556,13 +264,67 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
     }
 }
 
+/// Call a compiled poll with the raw payload address of its task. On wasm32
+/// the app's own `molt_call_indirect1` dispatches its table index.
+/// Requires: `index` came from `runtime_poll_call_target`.
 #[inline]
-fn poll_argument(poll_fn: u64, task_ptr: *mut u8) -> u64 {
-    if crate::builtins::functions::runtime_poll_uses_object_argument(poll_fn) {
-        MoltObject::from_ptr(task_ptr).bits()
-    } else {
-        crate::provenance::abi::expose_address(task_ptr)
+unsafe fn call_app_poll(py: &PyToken<'_>, index: u64, payload_address: u64) -> i64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe { crate::molt_call_indirect1(py.attached_context(), index, payload_address) }
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let target = crate::provenance::abi::function_ptr(index)
+            .expect("runtime_poll_call_target admits only machine-word identities");
+        // SAFETY: compiled code stores the address of a task poll function,
+        // whose ABI takes the attached context then the raw task payload address
+        // (the backend validates every task target).
+        let poll = unsafe {
+            std::mem::transmute::<*const (), unsafe extern "C" fn(u64, u64) -> i64>(target)
+        };
+        unsafe { poll(py.attached_context(), payload_address) }
+    }
+}
+
+/// Print one poll's identity, kind, code object and result for
+/// `MOLT_TRACE_POLL_RETURN`.
+#[cfg(target_arch = "wasm32")]
+fn trace_poll_return(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr: *mut u8, res: i64) {
+    let known_kind = traced_poll_kind(poll_fn_addr);
+    let mut code_name = "<none>".to_string();
+    let mut code_file = "<none>".to_string();
+    let [_, _, code_bits] = crate::object::aux_header::object_frame_context_bits(task_ptr);
+    if code_bits != 0
+        && let Some(code_ptr) = crate::maybe_ptr_from_bits(code_bits)
+    {
+        // SAFETY: a task's frame context holds a live code object.
+        let (name_bits, file_bits) = unsafe {
+            (
+                crate::code_name_bits(code_ptr),
+                crate::code_filename_bits(code_ptr),
+            )
+        };
+        code_name = crate::string_obj_to_owned(crate::obj_from_bits(name_bits))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        code_file = crate::string_obj_to_owned(crate::obj_from_bits(file_bits))
+            .unwrap_or_else(|| "<unknown>".to_string());
+    }
+    let kind = if crate::exception_pending(_py) {
+        let exc_bits = crate::exception_last_bits_noinc(_py)
+            .unwrap_or_else(|| crate::MoltObject::none().bits());
+        if let Some(exc_ptr) = crate::maybe_ptr_from_bits(exc_bits) {
+            crate::builtins::exceptions::exception_diagnostic_name(exc_ptr)
+        } else {
+            "<none>".to_string()
+        }
+    } else {
+        "<none>".to_string()
+    };
+    eprintln!(
+        "molt poll return fn=0x{:x} kind={} code={} file={} res=0x{:x} pending={}",
+        poll_fn_addr, known_kind, code_name, code_file, res as u64, kind
+    );
 }
 
 pub(crate) unsafe fn poll_future_with_task_stack(
@@ -690,26 +452,40 @@ mod tests {
     use super::async_sleep_poll_fn_addr;
 
     #[test]
-    fn runtime_poll_argument_domain_excludes_the_table_sentinel() {
-        use crate::builtins::functions::runtime_poll_uses_object_argument;
-        assert!(runtime_poll_uses_object_argument(async_sleep_poll_fn_addr()));
-        assert!(runtime_poll_uses_object_argument(
-            super::promise_poll_fn_addr()
-        ));
-        // Sleep is manifest slot one, so its predecessor is the table sentinel.
-        assert!(!runtime_poll_uses_object_argument(
-            async_sleep_poll_fn_addr() - 1
-        ));
+    fn runtime_poll_keys_resolve_through_the_key_table_on_every_target() {
+        use crate::builtins::functions::{PollTarget, runtime_poll_call_target};
+        let runtime = |poll_fn: u64| match runtime_poll_call_target(poll_fn) {
+            Some(PollTarget::Runtime(poll)) => poll as *const (),
+            other => panic!("poll identity 0x{poll_fn:x} resolved to {other:?}"),
+        };
+        assert_eq!(
+            runtime(async_sleep_poll_fn_addr()),
+            crate::molt_async_sleep_poll as *const ()
+        );
+        assert_eq!(
+            runtime(super::promise_poll_fn_addr()),
+            crate::molt_promise_poll as *const ()
+        );
+        // Sleep is manifest slot one, so its predecessor names no poll. A
+        // named key never falls back to a table index or an address.
+        assert!(runtime_poll_call_target(async_sleep_poll_fn_addr() - 1).is_none());
+        // A runtime poll identity is a key on every target (HF-699 K1): no
+        // table index or address can equal it.
+        assert!(async_sleep_poll_fn_addr() > u64::from(u32::MAX));
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     static COMPILED_SELF: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     #[cfg(not(target_arch = "wasm32"))]
+    static COMPILED_CONTEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    #[cfg(not(target_arch = "wasm32"))]
     extern "C" fn raw_self_probe_poll(__context: u64, raw: u64) -> i64 {
         let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
         COMPILED_SELF.store(raw, std::sync::atomic::Ordering::Relaxed);
+        COMPILED_CONTEXT.store(__context, std::sync::atomic::Ordering::Relaxed);
         crate::MoltObject::from_int(73).bits() as i64
     }
 
@@ -803,6 +579,7 @@ mod tests {
             assert!(!ptr.is_null());
             assert_eq!(crate::object::object_poll_fn(ptr), compiled);
             COMPILED_SELF.store(0, std::sync::atomic::Ordering::Relaxed);
+            COMPILED_CONTEXT.store(0, std::sync::atomic::Ordering::Relaxed);
             assert_eq!(
                 crate::molt_future_poll_attached_body(py, future) as u64,
                 MoltObject::from_int(73).bits()
@@ -810,6 +587,10 @@ mod tests {
             assert_eq!(
                 COMPILED_SELF.load(std::sync::atomic::Ordering::Relaxed),
                 crate::provenance::abi::expose_address(ptr)
+            );
+            assert_eq!(
+                COMPILED_CONTEXT.load(std::sync::atomic::Ordering::Relaxed),
+                py.attached_context()
             );
             dec_ref_bits(py, future);
             assert!(!crate::exception_pending(py));
@@ -1128,14 +909,17 @@ mod tests {
         );
         // Dispatch resolves the named key through the table only, and an
         // unregistered address key to itself.
-        assert_eq!(
-            crate::builtins::functions::runtime_poll_call_target(poll_id),
-            Some(crate::molt_async_sleep_poll as *const ())
-        );
-        assert_eq!(
-            crate::builtins::functions::runtime_poll_call_target(raw_ptr),
-            Some(crate::molt_async_sleep_poll as *const ())
-        );
+        use crate::builtins::functions::{PollTarget, runtime_poll_call_target};
+        assert!(matches!(
+            runtime_poll_call_target(poll_id),
+            Some(PollTarget::Runtime(poll))
+                if poll as *const () == crate::molt_async_sleep_poll as *const ()
+        ));
+        assert!(matches!(
+            runtime_poll_call_target(raw_ptr),
+            Some(PollTarget::AppTableIndex(index)) if index == raw_ptr
+        ));
+        assert!(runtime_poll_call_target(0).is_none());
         assert_eq!(
             crate::builtins::functions::canonicalize_runtime_callable_key(raw_ptr),
             raw_ptr

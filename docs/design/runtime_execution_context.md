@@ -495,6 +495,10 @@ Python constructor; attached errors preserve normal construction, identity and c
 Private Python providers and cached executable pointers carry the same leading context, including
 native iterator-next slots, class-initializer caches, descriptor callbacks and async polls.
 Logical Python arity remains unchanged. Scoped reference owners retain their actual token borrow.
+Runtime poll keys resolve to attached exports taking the context followed by an object word;
+compiled polls receive that same context followed by the raw task payload address. The typed
+poll target chooses the argument convention on native and WASM. Indirect-call entries reject
+runtime keys in the index argument after the leading context, before narrowing to a table slot.
 Collections of owned handles store contiguous bits and one token; an array of token-bearing owners
 is not a bits slice. Release order and allocation-failure behavior remain observable contracts.
 

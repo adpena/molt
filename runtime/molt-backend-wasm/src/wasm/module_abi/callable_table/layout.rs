@@ -5,7 +5,9 @@ use wasm_encoder::{EntityType, ExportKind, RefType, TableType};
 
 use super::super::poll_table::WasmPollTableLayout;
 use super::runtime_callables::WasmRuntimeCallableTablePlan;
-use super::{WasmCallableTableEntry, WasmCallableTablePlan, WasmCallableTrampolineEntry};
+use super::{
+    CallableIdentity, WasmCallableTableEntry, WasmCallableTablePlan, WasmCallableTrampolineEntry,
+};
 use crate::wasm::WasmBackend;
 use crate::wasm::module_abi::WasmNativeCallableImports;
 use crate::wasm::module_abi::user_functions::WasmUserFunctionImports;
@@ -14,7 +16,7 @@ use crate::wasm_abi::{
     ReservedRuntimeCallableDispatch, runtime_callable_import, wasm_runtime_import,
 };
 use crate::wasm_table::{
-    WasmCallableTableAddress, WasmCallableTableRole, WasmCallableTableTarget, WasmFunctionSymbol,
+    WasmCallableTableAddress, WasmCallableTableRole, WasmCallableTableSlot, WasmFunctionSymbol,
 };
 use crate::{SimpleIR, TrampolineBehavior, TrampolineKind, TrampolineSpec};
 
@@ -415,7 +417,10 @@ impl WasmBackend {
                 reserved_runtime_callable_table_start,
                 spec.index,
             );
-            func_to_table_idx.insert(runtime_name.clone(), table_slot);
+            func_to_table_idx.insert(
+                runtime_name.clone(),
+                CallableIdentity::TableSlot(table_slot),
+            );
             func_to_index.insert(runtime_name, direct_target_idx);
             slots.set(table_slot, direct_target_idx, spec.runtime_name);
         }
@@ -428,7 +433,7 @@ impl WasmBackend {
                 compact_builtin_table_start,
                 compact_slot,
             );
-            func_to_table_idx.insert(runtime_key.clone(), idx);
+            func_to_table_idx.insert(runtime_key.clone(), CallableIdentity::TableSlot(idx));
             let target_index = if let Some(wrapper_idx) = builtin_wrapper_indices.get(&runtime_key)
             {
                 func_to_index.insert(runtime_key.clone(), *wrapper_idx);
@@ -594,9 +599,10 @@ impl WasmBackend {
             let target_func_index = *func_to_index
                 .get(name)
                 .unwrap_or_else(|| panic!("builtin trampoline target missing for {name}"));
-            let table_slot = *func_to_table_idx
+            let table_slot = func_to_table_idx
                 .get(name)
-                .unwrap_or_else(|| panic!("builtin trampoline table slot missing for {name}"));
+                .unwrap_or_else(|| panic!("builtin trampoline table slot missing for {name}"))
+                .table_slot(name);
             push_trampoline_entry(
                 &mut slots,
                 idx,
@@ -646,7 +652,7 @@ impl WasmBackend {
                     .expect("defined WASM user function offset overflow");
                 func_index
             };
-            func_to_table_idx.insert(func_ir.name.clone(), idx);
+            func_to_table_idx.insert(func_ir.name.clone(), CallableIdentity::TableSlot(idx));
             func_to_index.insert(func_ir.name.clone(), func_index);
             slots.set(idx, func_index, &func_ir.name);
         }
@@ -675,9 +681,10 @@ impl WasmBackend {
             let target_func_index = *func_to_index
                 .get(target_name)
                 .unwrap_or_else(|| panic!("trampoline target missing for {target_name}"));
-            let table_slot = *func_to_table_idx
+            let table_slot = func_to_table_idx
                 .get(target_name)
-                .unwrap_or_else(|| panic!("trampoline table slot missing for {target_name}"));
+                .unwrap_or_else(|| panic!("trampoline table slot missing for {target_name}"))
+                .table_slot(target_name);
             let closure_size = if is_task {
                 *task_closure_sizes
                     .get(&func_ir.name)
@@ -731,9 +738,10 @@ impl WasmBackend {
 
         if let Some(resolver) = app_callable_resolver.as_mut() {
             for name in compiled_body_symbols {
-                let slot = *func_to_table_idx
+                let slot = func_to_table_idx
                     .get(&name)
-                    .unwrap_or_else(|| panic!("compiled body has no callable table slot: {name}"));
+                    .unwrap_or_else(|| panic!("compiled body has no callable table slot: {name}"))
+                    .table_slot(&name);
                 let function_index = *func_to_index
                     .get(&name)
                     .unwrap_or_else(|| panic!("compiled body has no executable: {name}"));
@@ -768,7 +776,10 @@ impl WasmBackend {
         if let Ok(raw_slot) = backend_env::var(BackendEnv::MOLT_DEBUG_WASM_TABLE_SLOT)
             && let Ok(target_slot) = raw_slot.parse::<u32>()
         {
-            for (name, slot) in &func_to_table_idx {
+            for (name, identity) in &func_to_table_idx {
+                let CallableIdentity::TableSlot(slot) = identity else {
+                    continue;
+                };
                 if *slot == target_slot || table_base + *slot == target_slot {
                     eprintln!(
                         "[molt wasm table-slot] kind=function raw_slot={} table_index={} name={}",
@@ -857,7 +868,7 @@ fn callable_target(
     slot: u32,
     func_index: u32,
     role: WasmCallableTableRole,
-) -> WasmCallableTableTarget {
+) -> WasmCallableTableSlot {
     let fixed_prefix_len = u32::try_from(shared_runtime_abi_slot_end)
         .expect("shared runtime callable-table prefix exceeds wasm32 u32 capacity");
     let (current_table_index, address) = if slot < fixed_prefix_len {
@@ -882,7 +893,7 @@ fn callable_target(
             )),
         )
     };
-    WasmCallableTableTarget {
+    WasmCallableTableSlot {
         current_table_index,
         address,
         role,

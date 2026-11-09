@@ -722,6 +722,7 @@
         "tests/tools/test_signed_ratio.py/**",
         "tests/tools/test_test_dependency_graph.py/**",
         "tests/tools/test_consumer_gate.py/**",
+        "tests/tools/test_check_typed_facts.py/**",
         "tests/tools/test_gate_yield.py/**",
         "tests/test_agent_coordination.py/**",
         "tests/tools/test_release_outcomes.py/**",
@@ -3848,6 +3849,7 @@
         "tests/tools/test_signed_ratio.py",
         "tests/tools/test_test_dependency_graph.py",
         "tests/tools/test_consumer_gate.py",
+        "tests/tools/test_check_typed_facts.py",
         "tests/tools/test_gate_yield.py"
       ],
       "pytest_worker_memory_gb": 0.75,
@@ -9568,6 +9570,7 @@
       "python -m ruff format --check .",
       "python tools/check_rust_toolchain.py",
       "python tools/check_rustfmt.py --changed --base {integration_upstream_commit}",
+      "python tools/check_typed_facts.py --changed --base {integration_upstream_commit}",
       "python tools/generators.py check",
       "python tools/check_environment_registry.py --check",
       "python tools/check_test_ownership.py --check",
@@ -9617,7 +9620,8 @@
       "local.always.22",
       "local.always.23",
       "local.always.24",
-      "local.always.25"
+      "local.always.25",
+      "local.always.26"
     ],
     "cargo_target_access": {
       "local.always.0": "none",
@@ -9639,6 +9643,7 @@
       "local.always.23": "none",
       "local.always.24": "none",
       "local.always.25": "none",
+      "local.always.26": "none",
       "local.always.3": "none",
       "local.always.4": "none",
       "local.always.5": "none",
@@ -9776,6 +9781,7 @@
       "local.tinygrad-op-contract.pytest": "none",
       "local.tir-midend.0": "shared",
       "local.tir-midend.1": "shared",
+      "local.typed-facts-gate.pytest": "none",
       "local.wasm-facts-host-tool.0": "shared",
       "local.wasm-facts-host-tool.1": "shared",
       "local.wasm-host.0": "shared",
@@ -9785,30 +9791,31 @@
     "commands": {
       "local.always.0": "python -m ruff check .",
       "local.always.1": "python -m ruff format --check .",
-      "local.always.10": "python tools/check_subprocess_guard_coverage.py",
-      "local.always.11": "python tools/encoding_gate.py --check",
-      "local.always.12": "python tools/finding_coverage.py --check",
-      "local.always.13": "python tools/check_cargo_test_truth.py",
-      "local.always.14": "python tools/check_github_actions.py",
-      "local.always.15": "python tools/check_commit_attribution.py --range {integration_upstream_commit}..HEAD",
-      "local.always.16": "python tools/public_contract_gate.py --check",
-      "local.always.17": "python tools/check_stdlib_intrinsic_surface.py --check",
-      "local.always.18": "python tools/build_graph_audit.py --check",
-      "local.always.19": "python tools/check_runtime_symbol_owners.py",
+      "local.always.10": "python tools/canonicalization_contract.py --check",
+      "local.always.11": "python tools/check_subprocess_guard_coverage.py",
+      "local.always.12": "python tools/encoding_gate.py --check",
+      "local.always.13": "python tools/finding_coverage.py --check",
+      "local.always.14": "python tools/check_cargo_test_truth.py",
+      "local.always.15": "python tools/check_github_actions.py",
+      "local.always.16": "python tools/check_commit_attribution.py --range {integration_upstream_commit}..HEAD",
+      "local.always.17": "python tools/public_contract_gate.py --check",
+      "local.always.18": "python tools/check_stdlib_intrinsic_surface.py --check",
+      "local.always.19": "python tools/build_graph_audit.py --check",
       "local.always.2": "python tools/check_rust_toolchain.py",
-      "local.always.20": "python tools/check_runtime_serial_bridge_imports.py",
-      "local.always.21": "python tools/check_perf_gate_wiring.py",
-      "local.always.22": "python tools/check_ratio_direction.py",
-      "local.always.23": "python tools/check_subagent_contract.py",
-      "local.always.24": "python tools/check_perf_plane_gate.py",
-      "local.always.25": "python tools/check_public_source_boundary.py",
+      "local.always.20": "python tools/check_runtime_symbol_owners.py",
+      "local.always.21": "python tools/check_runtime_serial_bridge_imports.py",
+      "local.always.22": "python tools/check_perf_gate_wiring.py",
+      "local.always.23": "python tools/check_ratio_direction.py",
+      "local.always.24": "python tools/check_subagent_contract.py",
+      "local.always.25": "python tools/check_perf_plane_gate.py",
+      "local.always.26": "python tools/check_public_source_boundary.py",
       "local.always.3": "python tools/check_rustfmt.py --changed --base {integration_upstream_commit}",
-      "local.always.4": "python tools/generators.py check",
-      "local.always.5": "python tools/check_environment_registry.py --check",
-      "local.always.6": "python tools/check_test_ownership.py --check",
-      "local.always.7": "python tools/check_generator_manifest.py --check",
-      "local.always.8": "python tools/structural_audit.py --check",
-      "local.always.9": "python tools/canonicalization_contract.py --check",
+      "local.always.4": "python tools/check_typed_facts.py --changed --base {integration_upstream_commit}",
+      "local.always.5": "python tools/generators.py check",
+      "local.always.6": "python tools/check_environment_registry.py --check",
+      "local.always.7": "python tools/check_test_ownership.py --check",
+      "local.always.8": "python tools/check_generator_manifest.py --check",
+      "local.always.9": "python tools/structural_audit.py --check",
       "local.apparatus-a11.0": "python tools/claims_status.py --check",
       "local.apparatus-a11.1": "python tools/check_sister_landed.py --check",
       "local.apparatus-a11.2": "python tools/commit_serializer.py --check",
@@ -9939,6 +9946,7 @@
       "local.tinygrad-op-contract.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_gen_gpu_op_contract.py",
       "local.tir-midend.0": "cargo clippy --config 'build.warnings=\"deny\"' --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-targets --all-features",
       "local.tir-midend.1": "cargo test --locked --profile dev-fast -p molt-ir -p molt-passes -p molt-tir -p molt-backend-wasm --all-features --no-fail-fast",
+      "local.typed-facts-gate.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_check_typed_facts.py",
       "local.wasm-facts-host-tool.0": "cargo test --locked --profile release-fast -p molt-wasm-facts -p molt-artifact-publish -p molt-host-process --features molt-wasm-facts/host-tool --lib --bins --test wasm_link_facts_cli --no-fail-fast",
       "local.wasm-facts-host-tool.1": "python -m pytest -q tests/test_wasm_link_validation.py -k 'rust_facts or wasm_artifact_state'",
       "local.wasm-host.0": "cargo build --locked --profile release-fast -p molt-wasm-host",
@@ -11889,6 +11897,24 @@
       },
       {
         "command_ids": [
+          "local.typed-facts-gate.pytest"
+        ],
+        "description": "The added-lines typed-facts gate: unannotated parameters and returns, Any in signatures and bare type: ignore block a landing.",
+        "gates": [],
+        "globs": [
+          "tools/check_typed_facts.py",
+          "tests/tools/test_check_typed_facts.py"
+        ],
+        "name": "typed-facts-gate",
+        "pytest": [
+          "tests/tools/test_check_typed_facts.py"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
           "local.apparatus-hooks.0",
           "local.apparatus-hooks.1",
           "local.apparatus-hooks.pytest"
@@ -13187,6 +13213,13 @@
         "browser-acorn",
         "node"
       ],
+      "local.always.26": [
+        "python",
+        "git",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
       "local.always.3": [
         "python",
         "git",
@@ -13870,6 +13903,9 @@
         "git",
         "node",
         "wasm-ld"
+      ],
+      "local.typed-facts-gate.pytest": [
+        "python"
       ],
       "local.wasm-facts-host-tool.0": [
         "python",

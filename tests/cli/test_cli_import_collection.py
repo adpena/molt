@@ -961,12 +961,10 @@ def test_prepare_entry_module_graph_adds_runtime_import_support_once(
     assert prepared.runtime_import_support_policy.needs_runtime_import_support
     assert "importlib.util" in prepared.module_graph
     assert "importlib.machinery" in prepared.module_graph
-    assert "runtime_import_support" in module_reasons["importlib.util"]
-    assert "runtime_import_support" in module_reasons["importlib.machinery"]
-    # The meta-path walk loads the warning provider for an empty sys.meta_path.
-    assert "runtime_import_support" in module_reasons["_warnings"]
-    assert "import_support" not in module_reasons["importlib.util"]
-    assert "import_support" not in module_reasons["importlib.machinery"]
+    # The support modules are the producer's roots; the meta-path walk loads
+    # the warning provider for an empty sys.meta_path.
+    for name in ("importlib.util", "importlib.machinery", "_warnings"):
+        assert cli_models.ModuleReason.RUNTIME_IMPORT_ROOT in module_reasons[name]
     # Unknown metadata selects from the existing dispatch surface, not all
     # statically discovered application sources.
     custody = prepared.runtime_import_scan_custody
@@ -3331,7 +3329,7 @@ def test_prepare_entry_module_graph_keeps_dependency_function_dynamic_import_laz
     assert "pkg.runtime.ops_cpu" not in prepared.module_graph
 
 
-def test_prepare_entry_module_graph_admits_declared_static_runtime_import(
+def test_prepare_entry_module_graph_admits_declared_include_module(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     package = tmp_path / "pkg"
@@ -3352,7 +3350,7 @@ def test_prepare_entry_module_graph_admits_declared_static_runtime_import(
         entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
     )
     monkeypatch.setenv("MOLT_STDLIB_PROFILE", "full")
-    monkeypatch.setenv("MOLT_STATIC_IMPORT_MODULES", "pkg.runtime.ops_cpu")
+    module_reasons: dict[str, set[cli_models.ModuleReason]] = {}
 
     prepared, error = cli_module_graph._prepare_entry_module_graph(
         source_path=entry_path,
@@ -3362,7 +3360,7 @@ def test_prepare_entry_module_graph_admits_declared_static_runtime_import(
         project_root=None,
         entry_tree=entry_tree,
         diagnostics_enabled=False,
-        module_reasons={},
+        module_reasons=module_reasons,
         json_output=False,
         target=admit_target("native"),
         import_admission_policy=cli_models._ImportAdmissionPolicy(
@@ -3370,6 +3368,7 @@ def test_prepare_entry_module_graph_admits_declared_static_runtime_import(
             admitted_external_packages=frozenset({"pkg"}),
         ),
         target_sys_platform=None,
+        include_modules=("pkg.runtime.ops_cpu",),
     )
 
     assert error is None
@@ -3377,10 +3376,17 @@ def test_prepare_entry_module_graph_admits_declared_static_runtime_import(
     assert "pkg.runtime.ops_cpu" in prepared.module_graph
     assert "base64" in prepared.module_graph
     assert "pkg.runtime.ops_cpu" in prepared.explicit_imports
+    assert "pkg.runtime.ops_cpu" in prepared.declared_root_modules
+    # The declared module is the root; what it reaches is its closure.
+    reason = cli_models.ModuleReason
+    assert reason.EXPLICIT_ROOT in module_reasons["pkg.runtime.ops_cpu"]
+    assert reason.EXPLICIT_CLOSURE not in module_reasons["pkg.runtime.ops_cpu"]
+    assert reason.EXPLICIT_CLOSURE in module_reasons["base64"]
+    assert reason.EXPLICIT_ROOT not in module_reasons["base64"]
 
 
-def test_prepare_entry_module_graph_full_scans_declared_static_module(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_prepare_entry_module_graph_full_scans_declared_include_module(
+    tmp_path: Path,
 ) -> None:
     package = tmp_path / "pkg"
     runtime = package / "runtime"
@@ -3399,8 +3405,6 @@ def test_prepare_entry_module_graph_full_scans_declared_static_module(
     entry_tree = ast.parse(
         entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
     )
-    monkeypatch.setenv("MOLT_STATIC_IMPORT_MODULES", "pkg.device")
-
     prepared, error = cli_module_graph._prepare_entry_module_graph(
         source_path=entry_path,
         entry_module="demo",
@@ -3417,6 +3421,7 @@ def test_prepare_entry_module_graph_full_scans_declared_static_module(
             admitted_external_packages=frozenset({"pkg"}),
         ),
         target_sys_platform=None,
+        include_modules=("pkg.device",),
     )
 
     assert error is None
@@ -3426,8 +3431,8 @@ def test_prepare_entry_module_graph_full_scans_declared_static_module(
     assert "pkg.device" in prepared.explicit_imports
 
 
-def test_prepare_entry_module_graph_rejects_unadmitted_static_runtime_import(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_prepare_entry_module_graph_rejects_unadmitted_include_module(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     package = tmp_path / "pkg"
     runtime = package / "runtime"
@@ -3440,8 +3445,6 @@ def test_prepare_entry_module_graph_rejects_unadmitted_static_runtime_import(
     entry_tree = ast.parse(
         entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
     )
-    monkeypatch.setenv("MOLT_STATIC_IMPORT_MODULES", "pkg.runtime.ops_cpu")
-
     prepared, error = cli_module_graph._prepare_entry_module_graph(
         source_path=entry_path,
         entry_module="demo",
@@ -3457,12 +3460,13 @@ def test_prepare_entry_module_graph_rejects_unadmitted_static_runtime_import(
             external_roots=(tmp_path,)
         ),
         target_sys_platform=None,
+        include_modules=("pkg.runtime.ops_cpu",),
     )
 
     assert prepared is None
     assert error == 2
     err = capsys.readouterr().err
-    assert "MOLT_STATIC_IMPORT_MODULES" in err
+    assert "include module 'pkg.runtime.ops_cpu'" in err
     assert "not within an admitted external static package" in err
 
 
@@ -4166,7 +4170,79 @@ def test_unresolved_core_module_fails_naming_its_reason(tmp_path: Path) -> None:
         )
     assert excinfo.value.reason is cli_models.ModuleReason.CORE_REQUIRED
     assert excinfo.value.module == "builtins"
-    assert "core_required root 'builtins' does not resolve" in str(excinfo.value)
+    assert "root 'builtins' (core_required) does not resolve" in str(excinfo.value)
+
+
+def test_unresolved_include_module_fails_naming_its_reason(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("VALUE = 1\n", encoding="utf-8")
+    prepared, error = cli_module_graph._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path],
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        project_root=None,
+        entry_tree=ast.parse(entry_path.read_text(encoding="utf-8")),
+        diagnostics_enabled=False,
+        module_reasons={},
+        json_output=False,
+        target=admit_target("native"),
+        target_sys_platform=None,
+        include_modules=("missing.plugin",),
+    )
+    assert prepared is None
+    assert error == 2
+    err = capsys.readouterr().err
+    assert "root 'missing.plugin' (explicit_root) does not resolve" in err
+
+
+def test_every_module_reason_pairs_one_root_with_one_closure() -> None:
+    reason = cli_models.ModuleReason
+    roots = {value for value in reason if value.is_root}
+    closures = {value.closure for value in roots}
+    assert len(closures) == len(roots)
+    assert roots.isdisjoint(closures)
+    assert roots | closures == set(reason)
+    for value in closures:
+        with pytest.raises(ValueError, match="is a closure reason"):
+            value.closure
+
+
+def test_include_modules_add_flag_and_config_roots() -> None:
+    resolve = cli_config_resolution.resolve_include_modules
+    assert resolve(flag=["b.c", "a"], build_cfg={"include-modules": ["a", "z"]}) == (
+        "a",
+        "b.c",
+        "z",
+    )
+    assert resolve(flag=[], build_cfg=None) == ()
+    with pytest.raises(ValueError, match=r"--include-module entries .*'a-b'"):
+        resolve(flag=["a-b"], build_cfg=None)
+    with pytest.raises(ValueError, match=r"include-modules entries .*'1x'"):
+        resolve(flag=[], build_cfg={"include-modules": ["1x"]})
+    with pytest.raises(ValueError, match="must be a list"):
+        resolve(flag=[], build_cfg={"include-modules": "a"})
+
+
+def test_build_request_carries_flag_and_config_include_modules() -> None:
+    from molt.cli.build_request_resolution import (
+        parse_build_arguments,
+        resolve_build_request,
+    )
+
+    args = parse_build_arguments(
+        ["--include-module", "pkg.plugin", "--include-module=pkg.other"],
+        file_path="app.py",
+    )
+    request = resolve_build_request(
+        args,
+        build_cfg={"include-modules": ["pkg.config"]},
+        cfg_capabilities=None,
+        env={},
+    )
+    assert request.include_modules == ("pkg.config", "pkg.other", "pkg.plugin")
 
 
 @pytest.mark.parametrize("profile", cli_config_resolution.STDLIB_PROFILE_CHOICES)
@@ -21070,7 +21146,7 @@ def test_augmentation_preserves_initializer_closure_without_eager_import_seeds(
     assert imports <= set(graph)
 
 
-def test_static_import_seed_preserves_transitive_and_deferred_dependencies(
+def test_include_module_seed_preserves_transitive_and_deferred_dependencies(
     tmp_path: Path,
 ) -> None:
     from molt.cli import module_graph_discovery
@@ -21084,7 +21160,7 @@ def test_static_import_seed_preserves_transitive_and_deferred_dependencies(
         (tmp_path / f"{name}.py").write_text(text, encoding="utf-8")
     graph = {}
     imports = set()
-    errors = module_graph_discovery._extend_module_graph_with_static_import_modules(
+    errors = module_graph_discovery._extend_module_graph_with_include_modules(
         module_graph=graph,
         scan_authorities={},
         explicit_imports=imports,

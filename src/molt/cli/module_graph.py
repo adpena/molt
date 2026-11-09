@@ -7,7 +7,6 @@ import ast
 from molt.python_private_names import python_import_binding
 import hashlib
 import json
-import os
 import re
 from collections.abc import Collection, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, replace
@@ -344,7 +343,12 @@ def _requires_spawn_entry_override(
 
 _ENTRY_REACHABLE_REASONS = frozenset({ModuleReason.ENTRY_CLOSURE})
 _RUNTIME_SUPPORT_REASONS = frozenset(
-    {ModuleReason.RUNTIME_IMPORT_SUPPORT, ModuleReason.SPAWN_CLOSURE}
+    {
+        ModuleReason.RUNTIME_IMPORT_ROOT,
+        ModuleReason.RUNTIME_IMPORT_CLOSURE,
+        ModuleReason.SPAWN_ROOT,
+        ModuleReason.SPAWN_CLOSURE,
+    }
 )
 _STDLIB_SUPPORT_REASONS = frozenset(
     {ModuleReason.CORE_REQUIRED, ModuleReason.CORE_CLOSURE}
@@ -543,7 +547,9 @@ def _extend_native_runtime_python_import_closure(
         _graph_discovery._record_module_reason(
             module_reasons,
             module_name,
-            ModuleReason.NATIVE_RUNTIME_PYTHON_IMPORT,
+            ModuleReason.NATIVE_RUNTIME_PYTHON_IMPORT
+            if module_name in declared
+            else ModuleReason.NATIVE_RUNTIME_PYTHON_IMPORT_CLOSURE,
         )
     return declared | frozenset(closure.explicit_imports)
 
@@ -1256,7 +1262,7 @@ def _finalize_runtime_import_closure(
                 import_topology=module_resolution_cache.import_topology,
             )
             if path is None:
-                raise UnresolvedRoot(name, ModuleReason.RUNTIME_IMPORT_SUPPORT)
+                raise UnresolvedRoot(name, ModuleReason.RUNTIME_IMPORT_ROOT)
             path = path.resolve()
             if name in module_graph and module_graph[name].resolve() != path:
                 raise ValueError(
@@ -1349,7 +1355,7 @@ def _finalize_runtime_import_closure(
             resolver_cache=module_resolution_cache,
             diagnostics_enabled=True,
             module_reasons=module_reasons,
-            reason=ModuleReason.RUNTIME_IMPORT_SUPPORT,
+            root_reason=ModuleReason.RUNTIME_IMPORT_ROOT,
             import_admission_policy=import_admission_policy,
             target_python=target_python,
             runtime_import_custody=custody,
@@ -1706,7 +1712,7 @@ def _augment_module_graph_for_entry_and_runtime(
         resolver_cache=module_resolution_cache,
         diagnostics_enabled=diagnostics_enabled,
         module_reasons=module_reasons,
-        reason=ModuleReason.CORE_CLOSURE,
+        root_reason=ModuleReason.CORE_REQUIRED,
         stub_parents=stub_parents,
         import_admission_policy=import_admission_policy,
         target_python=target_python,
@@ -1761,7 +1767,7 @@ def _augment_module_graph_for_entry_and_runtime(
             resolver_cache=module_resolution_cache,
             diagnostics_enabled=diagnostics_enabled,
             module_reasons=module_reasons,
-            reason=ModuleReason.SPAWN_CLOSURE,
+            root_reason=ModuleReason.SPAWN_ROOT,
             stub_parents=stub_parents,
             import_admission_policy=import_admission_policy,
             target_python=target_python,
@@ -1798,10 +1804,12 @@ def _prepare_entry_module_graph(
     image_scope: _BinaryImageScope | None = None,
     stdlib_profile: str = DEFAULT_STDLIB_PROFILE,
     runtime_import_machinery: RuntimeImportMachinery = RuntimeImportMachinery.PYTHON,
+    include_modules: tuple[str, ...] = (),
 ) -> tuple[_PreparedEntryModuleGraph | None, _CliFailure | None]:
     """``stdlib_profile`` is the build's resolved intent (resolve_stdlib_profile);
     ``runtime_import_machinery`` is the target fact from
-    ``RuntimeImportMachinery.for_build``."""
+    ``RuntimeImportMachinery.for_build``; ``include_modules`` are the build's
+    explicit roots (resolve_include_modules)."""
     stdlib_allowlist = _module_stdlib_policy._stdlib_allowlist()
     roots = module_roots + [stdlib_root]
     module_resolution_cache = _module_resolution._ModuleResolutionCache(
@@ -1874,33 +1882,26 @@ def _prepare_entry_module_graph(
         _graph_discovery._record_module_reason(
             module_reasons, name, ModuleReason.ENTRY_CLOSURE
         )
-    static_import_modules, static_import_error = (
-        _graph_discovery._parse_static_import_modules_from_env(os.environ)
+    include_module_errors = _graph_discovery._extend_module_graph_with_include_modules(
+        module_graph=module_graph,
+        scan_authorities=scan_authorities,
+        explicit_imports=explicit_imports,
+        module_names=include_modules,
+        roots=roots,
+        module_roots=module_roots,
+        stdlib_root=stdlib_root,
+        project_root=project_root,
+        stdlib_allowlist=stdlib_allowlist,
+        discovery=discovery,
+        resolver_cache=module_resolution_cache,
+        diagnostics_enabled=True,
+        module_reasons=module_reasons,
+        import_admission_policy=import_admission_policy,
+        target_python=target_python,
     )
-    if static_import_error is not None:
-        return None, _fail(static_import_error, json_output, command="build")
-    static_import_errors = (
-        _graph_discovery._extend_module_graph_with_static_import_modules(
-            module_graph=module_graph,
-            scan_authorities=scan_authorities,
-            explicit_imports=explicit_imports,
-            module_names=static_import_modules,
-            roots=roots,
-            module_roots=module_roots,
-            stdlib_root=stdlib_root,
-            project_root=project_root,
-            stdlib_allowlist=stdlib_allowlist,
-            discovery=discovery,
-            resolver_cache=module_resolution_cache,
-            diagnostics_enabled=True,
-            module_reasons=module_reasons,
-            import_admission_policy=import_admission_policy,
-            target_python=target_python,
-        )
-    )
-    if static_import_errors:
+    if include_module_errors:
         return None, _fail(
-            "; ".join(static_import_errors),
+            "; ".join(include_module_errors),
             json_output,
             command="build",
         )
@@ -1927,7 +1928,6 @@ def _prepare_entry_module_graph(
             for name in sorted(added_package_parents)
             if name in module_graph
         ]
-        before_parent_closure = set(module_graph)
         parent_closure = _graph_discovery._extend_module_graph_with_closure(
             module_graph,
             scan_authorities=scan_authorities,
@@ -1942,19 +1942,13 @@ def _prepare_entry_module_graph(
             resolver_cache=module_resolution_cache,
             diagnostics_enabled=True,
             module_reasons=module_reasons,
-            reason=ModuleReason.PACKAGE_PARENT_CLOSURE,
+            root_reason=ModuleReason.PACKAGE_PARENT,
             stub_parents=STUB_PARENT_MODULES,
             import_admission_policy=import_admission_policy,
             allow_entry_external_imports=False,
             target_python=target_python,
         )
         explicit_imports.update(parent_closure.explicit_imports)
-        _graph_discovery._record_new_module_reasons(
-            module_graph,
-            before_parent_closure,
-            module_reasons,
-            ModuleReason.PACKAGE_PARENT_CLOSURE,
-        )
     try:
         core_modules = _module_stdlib_policy._ensure_core_stdlib_modules(
             module_graph,
@@ -2032,7 +2026,7 @@ def _prepare_entry_module_graph(
     image_scope = image_scope.with_root_modules(
         [
             entry_module,
-            *(name for name in sorted(static_import_modules) if name in module_graph),
+            *(name for name in include_modules if name in module_graph),
         ]
     )
     return _PreparedEntryModuleGraph(

@@ -7,7 +7,7 @@ use task::{emit_task_trampoline, task_trampoline_local_types};
 
 use crate::wasm::WasmBackend;
 use crate::wasm_binary::emit_call;
-use crate::wasm_table::WasmCallableTableTarget;
+use crate::wasm_table::WasmCallableTableSlot;
 use crate::wasm_values::emit_boxed_none;
 use crate::{TrampolineBehavior, TrampolineSpec};
 
@@ -16,7 +16,7 @@ impl WasmBackend {
         &mut self,
         reloc_enabled: bool,
         target_func_index: u32,
-        table_target: WasmCallableTableTarget,
+        table_target: WasmCallableTableSlot,
         spec: TrampolineSpec,
     ) {
         let TrampolineSpec {

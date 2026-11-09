@@ -2,8 +2,8 @@
 
 Status: design, revision 3 (2026-11-08). It went through Goldfish rounds 1 (codebase details,
 zoom-out) and 2 (design), a local workerd probe, and an online survey of WASI 0.2/0.3, jco and
-workerd. Owner: integrator. Rows: HF-790 (the Tier 1 Workers cell) and V1-19 (runtime capability
-enforcement).
+workerd. Owner: integrator. Rows: HF-790 (the Tier 1 Workers cell), V1-19 (runtime capability
+enforcement) and HF-699 (§6, runtime callables as keys).
 
 This design extends four authorities and duplicates none:
 - `runtime/host_capabilities.toml` and [CAPABILITIES.md](../CAPABILITIES.md): operations, and the
@@ -198,6 +198,105 @@ is not copied twice.
 
 The `strerror` leak (`os error 44`) is fixed in the runtime's `io::Error` to `OSError`
 conversion. Then the JS VFS, the dead `molt_vfs_*` imports and the JS TmpFs are deleted.
+
+### 6. Runtime callables are keys; the WASM table reserves no runtime region (HF-699)
+
+Settled after two Goldfish rounds (design revision 3, 2026-11-08). Row: HF-699.
+
+**Problem.** Every split-runtime program (the `browser` profile always builds split) trapped on
+its first `await asyncio.sleep` with `molt_call_indirect1 missing table entry at 2`. Slot 2 is base
+1 plus `poll_table_slot` 1, `async_sleep_poll`. WASM reserves a fixed prefix of 190 slots: 29 poll
+slots, 80 reserved runtime callables and 80 trampolines. The shared runtime links with
+`--table-base=191`, so in a split build nothing fills slots 1 to 190. Linked builds fill them from
+the backend. Split builds rely on JS hosts that dispatch the reserved region by name, and nothing
+dispatched the poll region. Native has no reserved region: a runtime callable is a synthetic key
+(`RUNTIME_CALLABLE_KEY_BASE`, `RUNTIME_POLL_CALLABLE_KEY_BASE`), and the runtime resolves it
+through generated tables.
+
+**Decision (E): one mechanism on every target.** A runtime callable or runtime poll is a key on
+every target, and the runtime resolves keys through the generated tables. On wasm32 the resolved
+Rust function pointer is the runtime's own table index, which wasm-ld assigns and the runtime's own
+element segment publishes, in linked and split builds alike. The table holds app functions and the
+runtime's own address-taken functions; no slot is reserved for runtime callables, so no producer,
+publisher, gap mode or host dispatch exists for them. Rejected: (A) the runtime publishes the fixed
+prefix, which needs a post-link step in the runtime generation identity and keeps a WASM-only
+mechanism; (D) resolve runtime addresses through relocations, which gives an imported function a
+second app slot unless a GOT-style import is added. The tool conventions and the component model's
+shared-everything linking (`DynamicLinking.md`, `SharedEverythingDynamicLinking.md`) give each
+function one slot, owned by the module that defines it. Emscripten's loader-side `GOT.func`
+filling is the host dispatch this design deletes.
+
+Global invariants:
+- **K1. Keys name reserved runtime callables and runtime polls** on every target. Compact builtins
+  and app-resolver entries keep table slots; giving them keys is a follow-up in HF-699.
+- **K2. The runtime resolves keys, and every table entry rejects one.** The runtime calls a
+  resolved Rust pointer directly, never through the `molt_call_indirectN` host import. Every
+  `molt_call_indirectN` traps on an index above `u32::MAX` before `i32.wrap_i64`, which would turn
+  a stray key into a live slot. The trap is the only `unreachable` in that function, so the
+  trapping frame (named in a linked module's name section) identifies it.
+- **K3. No reserved table region.** The shared runtime links at the default table base; no
+  validator models a fixed prefix.
+- **K4. Conventions come from keys, resolved once.** The poll argument and fixed arity versus argv
+  come from the generated key tables, never from table-slot ranges.
+- **K5. Keys and slots are distinct types** in the backend, and a key is emitted with `i64.const`.
+
+```rust
+// runtime/molt-runtime/src/builtins/functions/function_abi.rs (K2, K4)
+/// Resolve a stored poll identity: a named key through the generated table, otherwise the
+/// app's table index. Requires: poll_fn is a key or an app table index (K1).
+pub(crate) fn runtime_poll_call_target(poll_fn: u64) -> Option<PollTarget>;
+/// The variant fixes the argument convention: a runtime poll takes the task's object word, a
+/// compiled poll its raw payload address (its table index on wasm32, its address on native).
+pub(crate) enum PollTarget { Runtime(extern "C" fn(u64) -> i64), AppTableIndex(u64) }
+
+// runtime/molt-backend-wasm/src/wasm/module_abi/ (K1, K5)
+pub(crate) enum CallableIdentity { TableSlot(u32), RuntimeKey(u64) }
+/// Seeds each runtime poll's identity with RUNTIME_POLL_CALLABLE_KEY_BASE + poll_table_slot.
+fn seed_function_table_slots(&self, identities: &mut BTreeMap<String, CallableIdentity>);
+// crate::wasm_table: WasmCallableTableTarget::{TableSlot(WasmCallableTableSlot), RuntimeKey(u64)}
+// type_layout.rs (K2): each exported molt_call_indirectN compares its index with u32::MAX
+// (one i64.gt_u) and traps before i32.wrap_i64.
+```
+
+Stages (each lands one whole family; no build sees two identities for one callable):
+- **E1, runtime polls (fixes the trap; implemented in lane hf699-split-runtime-keys).** The backend seeds
+  poll keys; only a task constructor (`CallAsync`, `AllocTask`) may store a key. `call_poll_fn`
+  resolves keys on every target and calls the runtime poll itself; `wasm_poll_slot`, the poll
+  normalization and `wasm_table_base_fallback` are deleted. The K2 trap is in every
+  `molt_call_indirectN`. The target-neutral key base is one generated constant
+  (`molt_ir::runtime_callable_abi_generated::RUNTIME_POLL_CALLABLE_KEY_BASE`). The 29 poll slots
+  stay in the layout, unused, so the base, the host ABI and the prefix fixtures change once, in
+  E2. First check: the shared runtime member imports its table, and its one active element
+  segment starts at 191 and holds `molt_async_sleep_poll` and the other polls. Measured
+  (instructions retired, linked WASM, release, 200,000 `asyncio.sleep(0)` awaits under Node):
+  67.10 G before, 61.25 G after (-8.7%; about -29k instructions per await), because a runtime
+  poll is now one `call_indirect` instead of a trip through the app's `molt_call_indirect1` and
+  the table-base reads.
+- **E2, reserved callables.** Compiled code and function objects carry reserved callables as keys;
+  argv unpacking for the 78 `UnpackArgs` callables follows native's path; the 2 `CallFrame`
+  callables are called directly. The backend's reserved trampolines, the JS host dispatch (four
+  host files and `cli/wasm.py`), the prefix, `--table-base=191`,
+  `WASM_RESERVED_RUNTIME_CALLABLE_BASE`, the gap modes, `include_fixed_prefix`, the table-base
+  publication chain, the prefix fixtures and spec 0400's callable-table admission protocol go.
+  The census of every deleted site is in the design record
+  (`logs/agents/hf699-split-runtime-keys/design-rev3.md`).
+
+Tests (CPython is the oracle):
+- `tests/test_wasm_runtime_heavy_regressions.py::test_wasm_runtime_polls_match_cpython`: sleep,
+  an async generator through `anext`, and a task, built linked and split.
+- `test_wasm_call_indirect_rejects_runtime_keys` in the same file: a key passed to
+  `molt_call_indirect1` traps, and the function at the key's low 32 bits never runs; a call with
+  that slot reaches it. The probe drives the app object each build emits (linked and split), since
+  neither final module exports these functions: in a linked module wasm-ld binds the runtime's
+  imports to them (its name section names the trapping frame `molt_call_indirect1`), and a split
+  host serves those imports itself until E2.
+- The repaired DB parity fixture (grants `db.read,time`, rethrows the operation error) no longer
+  traps on split, but deadlocks: `run()` is synchronous and the DB host answers through `fetch`
+  promises that cannot settle inside synchronous WASM. It lands with an asynchronous browser run
+  (HF-699).
+- E2: a builtin called through a function object (both arities and argv) on split and linked; no
+  element row of an app or runtime targets a sentinel for a runtime callable; the
+  instructions-retired A/B on the async and call-heavy benchmarks, linked WASM.
 
 ## Skeleton of the end state
 

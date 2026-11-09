@@ -58,6 +58,7 @@ def _frontend_args(source_root: Path, *, target: str, split_runtime: bool):
         emit_ir=None,
         type_facts_path=None,
         stdlib_profile="auto",
+        include_modules=(),
     )
 
 

@@ -688,6 +688,7 @@ def _prepare_frontend_stage_state(
     type_hint_policy: TypeHintPolicy,
     profile: BuildProfile,
     stdlib_profile: str,
+    include_modules: tuple[str, ...],
 ) -> tuple[
     tuple[
         _ImportPlan,
@@ -773,6 +774,7 @@ def _prepare_frontend_stage_state(
         runtime_import_machinery=RuntimeImportMachinery.for_build(
             target, prepared_build_config.codegen.wasm_profile
         ),
+        include_modules=include_modules,
     )
     if prepared_module_graph_error is not None:
         return None, prepared_module_graph_error
@@ -1029,6 +1031,7 @@ def _prepare_frontend_pipeline(
     emit_ir: str | None,
     type_facts_path: str | None,
     stdlib_profile: str,
+    include_modules: tuple[str, ...],
 ) -> tuple[_PreparedFrontendPipelineBundle | None, _CliFailure | None]:
     if is_wasm_target(target) and split_runtime:
         from molt.browser_asset_closure import (
@@ -1072,6 +1075,7 @@ def _prepare_frontend_pipeline(
             type_hint_policy=type_hint_policy,
             profile=profile,
             stdlib_profile=stdlib_profile,
+            include_modules=include_modules,
         )
     )
     if prepared_frontend_stage_state_error is not None:

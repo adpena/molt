@@ -17,8 +17,8 @@ Landing checks execute the generator and authority inputs captured from the exac
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
 | Hashed executable authority inputs | 1 | 459 |
-| Local path rules | 35 | 84 |
-| Unique local commands | 73 | 84 |
+| Local path rules | 35 | 85 |
+| Unique local commands | 73 | 85 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -45,7 +45,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 
 | Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|
-| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2880 s | 120 s | 600 s | `repository-policy` | none | `docs-gates` needs none | 247 |
+| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2880 s | 120 s | 600 s | `repository-policy` | none | `docs-gates` needs none | 248 |
 | `wasm` | pre-push, pr, main | yes | `github-job` | 333 min | 19200 s | 180 s | 600 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 56 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 43 min | 2400 s per cell | 60 s | 120 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
@@ -403,6 +403,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `native-toolchain-transfer` | 40 | 0 |
 | `proof-plan-tests` | 1 | 0 |
 | `ci-wiring` | 51 | 0 |
+| `typed-facts-gate` | 2 | 0 |
 | `apparatus-hooks` | 11 | 2 |
 | `apparatus-learning-protection` | 6 | 1 |
 | `performance-measurement` | 39 | 1 |

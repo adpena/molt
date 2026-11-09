@@ -129,7 +129,8 @@ SECTIONS: dict[str, tuple[str, ...]] = {
     "model-tier": ("MODEL_TIER",),
     "triality": ("TRIALITY_WIRING",),
     "preflight": ("PREMISE_VERIFICATION",),
-    "egm": ("DESIGN_REVIEW",),
+    "egm": ("DESIGN_REVIEW", "TYPED_FACTS"),
+    "typed": ("TYPED_FACTS",),
     "handoff": ("HANDOFF_PRECHECK", "WHOLE_CRATE_TESTS"),
 }
 

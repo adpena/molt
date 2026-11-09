@@ -139,3 +139,23 @@ The apparatus work ends when all four hold; the integrator owns it until then.
 After that the apparatus is frozen: no new runner, receipt, ledger, scanner, dashboard or
 generated projection; a change to the apparatus deletes something or fixes a demonstrated
 defect. Capacity goes to the compiler.
+
+## Typed facts at the gate (owner 2026-11-08)
+
+Owner rule: "No fact should ever be carried as loose strings or untyped values, except where
+absolutely necessary or optimal." Prose rules read at session start did not hold, so the rule is
+mechanical. `tools/check_typed_facts.py` runs in the `always` static gates on the lines a change
+adds (prior art: reviewdog `filter-mode=added`, Tricorder's diff-scoped analysis):
+
+- **Blocking** (ruff): an unannotated parameter or return (ANN001, ANN002, ANN003, ANN201, ANN202),
+  `Any` in a signature (ANN401), a `type: ignore` without a rule code (PGH003).
+- **Advisory** (AST): an identity-shaped name (`kind`, `role`, `mode`, `state`, `status`, `tier`,
+  `surface` and similar) annotated as plain `str`, and `Any` in a variable annotation.
+
+Files `ty` does not check (`[tool.ty.src] exclude`) and generator outputs are skipped. The backlog
+the rule leaves (2026-11-08, ruff on `src/molt`: 311 `Any` in signatures, 690 unannotated
+parameters, 128 missing returns) burns down through a `gate_flip` per rule family. `TYPED_FACTS`
+in `tools/subagent_contract.py` puts the same check in every brief and design review
+(`dispatch_prompt.py --sections typed`, and in `egm`). A write-time hook waits for the pipeline
+redesign (HF-810): it must resolve the edited file's own checkout and run that checkout's launcher,
+since lanes edit slots, not the primary checkout.

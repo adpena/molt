@@ -859,8 +859,10 @@ fn runtime_reserved_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
     }
 }
 
+/// The one key table of runtime polls: every target resolves a poll
+/// key here (HF-699 K1, K4).
 #[inline]
-fn runtime_poll_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
+pub(crate) fn runtime_poll_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
     match fn_ptr.checked_sub(RUNTIME_POLL_CALLABLE_KEY_BASE)? {
         1 => Some(crate::molt_async_sleep_poll as *const ()),
         2 => Some(crate::molt_anext_default_poll as *const ()),

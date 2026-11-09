@@ -18,6 +18,7 @@ from molt.cli.config_resolution import (
     _coerce_bool,
     _select_capability_input,
     _select_codegen_backend,
+    resolve_include_modules,
     resolve_stdlib_profile,
     _load_molt_config,
     _resolve_build_config,
@@ -294,6 +295,9 @@ def resolve_build_request(
         snapshot=getattr(args, "snapshot", False),
         stdlib_profile=stdlib_profile,
         lib_paths=lib_paths or None,
+        include_modules=resolve_include_modules(
+            flag=args.include_module, build_cfg=build_cfg
+        ),
         split_runtime=split_runtime,
         capability_manifest=getattr(args, "capability_manifest", None),
         require_signed_manifest=getattr(args, "require_signed_manifest", False),

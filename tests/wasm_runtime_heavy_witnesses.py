@@ -15,7 +15,14 @@ from typing import Literal
 
 WasmWitnessLayout = Literal["run", "linked", "split"]
 WasmWitnessName = Literal[
-    "syntax", "asyncio", "finder", "final-tir", "zipimport", "smtplib", "missing-grants"
+    "syntax",
+    "asyncio",
+    "async-polls",
+    "finder",
+    "final-tir",
+    "zipimport",
+    "smtplib",
+    "missing-grants",
 ]
 
 
@@ -100,6 +107,39 @@ def asyncio_source(root: Path, tmp_path: Path) -> Path:
                 res = await task
                 print("res", res)
                 print("main", var.get())
+
+
+            asyncio.run(main())
+            """
+        ),
+        encoding="utf-8",
+    )
+    return src
+
+
+def async_polls_source(root: Path, tmp_path: Path) -> Path:
+    """Every task here resumes through a runtime poll: sleep, an async
+    generator's ``anext`` and a task wrapping a sleep (HF-699)."""
+    src = tmp_path / "wasm_async_polls.py"
+    src.write_text(
+        textwrap.dedent(
+            """\
+            import asyncio
+
+
+            async def agen():
+                yield 1
+                await asyncio.sleep(0)
+                yield 2
+
+
+            async def main():
+                await asyncio.sleep(0)
+                print("slept")
+                gen = agen()
+                print(await anext(gen), await anext(gen))
+                task = asyncio.create_task(asyncio.sleep(0, result="task"))
+                print(await task)
 
 
             asyncio.run(main())
@@ -306,6 +346,15 @@ class HeavyWasmWitness:
 HEAVY_WASM_WITNESSES = (
     HeavyWasmWitness("syntax", syntax_source, "run"),
     HeavyWasmWitness("asyncio", asyncio_source),
+    HeavyWasmWitness("async-polls", async_polls_source),
+    # The split helper deploys the cloudflare profile, whose default `pure`
+    # import profile refuses `anext`; `auto` plans imports from the IR.
+    HeavyWasmWitness(
+        "async-polls",
+        async_polls_source,
+        "split",
+        ("--build-profile", "dev", "--wasm-profile", "auto"),
+    ),
     HeavyWasmWitness("finder", finder_source, extra_args=("--no-trusted",)),
     HeavyWasmWitness(
         "finder", finder_source, "split", ("--build-profile", "dev", "--no-trusted")

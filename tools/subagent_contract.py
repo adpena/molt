@@ -27,6 +27,7 @@ __all__ = [
     "PREMISE_VERIFICATION",
     "PROJECT_IDENTITY",
     "TRIALITY_WIRING",
+    "TYPED_FACTS",
     "VERIFY_CHANGED_CONTRACT",
     "WEB_AUTHORITY",
     "WHOLE_CRATE_TESTS",
@@ -196,6 +197,19 @@ DESIGN_REVIEW = (
     "After implementation the integrator runs egm-drift-report against the design."
 )
 
+TYPED_FACTS = (
+    "TYPED FACTS (owner 2026-11-08): no fact is carried as a loose string or an untyped "
+    "value unless a closed type is impossible or measurably slower. Each identity (a kind, "
+    "role, mode, state, name drawn from a closed set, table key or tier) is a closed type "
+    "generated from its one authority: a Rust enum, a Python Literal or enum, a newtype. "
+    "Wrap a stringly framework API (pytest marks, CLI flags, JSON fields) in a typed "
+    "constructor at its boundary. Annotate every parameter and return; no Any, no bare "
+    "`type: ignore`. A runtime validator alone never satisfies this rule. A design "
+    "skeleton states each fact's type. A review answers: list every fact carried as str, "
+    "dict, Any or an untyped value, and say why a closed type is impossible or slower. "
+    "`tools/check_typed_facts.py` blocks new untyped signatures at landing."
+)
+
 WHOLE_CRATE_TESTS = (
     "WHOLE-CRATE TESTS: before reporting ready, run the whole library tests of every touched "
     "Rust crate and its reverse dependencies, `--lib --no-fail-fast`, in each profile and "
@@ -222,6 +236,7 @@ CONTRACT_CONSTANT_NAMES: tuple[str, ...] = (
     "TRIALITY_WIRING",
     "PREMISE_VERIFICATION",
     "DESIGN_REVIEW",
+    "TYPED_FACTS",
     "HANDOFF_PRECHECK",
     "WHOLE_CRATE_TESTS",
 )
@@ -241,6 +256,7 @@ MECHANIZES: dict[str, str] = {
     "TRIALITY_WIRING": "M63",
     "PREMISE_VERIFICATION": "M22/M24",
     "DESIGN_REVIEW": "M22/M24 (owner 2026-11-04: Elephant Goldfish review before implementation)",
+    "TYPED_FACTS": "M22/M24 (owner 2026-11-08: no fact as a loose string or untyped value; extends DESIGN_REVIEW)",
     "HANDOFF_PRECHECK": "M05/M12",
     "WHOLE_CRATE_TESTS": "M05 (HF-701: HF-205 and HF-764 regressions hid behind focused tests)",
 }
@@ -260,6 +276,7 @@ KEY_PHRASES: dict[str, str] = {
     "TRIALITY_WIRING": "all three legs",
     "PREMISE_VERIFICATION": "before your first Write",
     "DESIGN_REVIEW": "Elephant Goldfish",
+    "TYPED_FACTS": "closed type generated from its one authority",
     "HANDOFF_PRECHECK": "--precheck-only",
     "WHOLE_CRATE_TESTS": "--lib --no-fail-fast",
 }

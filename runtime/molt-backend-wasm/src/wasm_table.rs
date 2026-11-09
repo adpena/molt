@@ -42,20 +42,28 @@ pub(crate) enum WasmCallableTableAddress {
     Relocatable(WasmFunctionSymbol),
 }
 
+/// A callable-table slot as compiled code names it: its index now, how a
+/// relocatable link rebinds it, and the role of the reference.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct WasmCallableTableTarget {
+pub(crate) struct WasmCallableTableSlot {
     pub(crate) current_table_index: u32,
     pub(crate) address: WasmCallableTableAddress,
     pub(crate) role: WasmCallableTableRole,
 }
 
-impl WasmCallableTableTarget {
+/// The identity compiled code stores for a callable (HF-699 K5): an app
+/// table slot, or a runtime key that the runtime resolves through its
+/// generated table. Keys and slots are distinct types; a key is never a
+/// table index, so no relocation or `i32` encoding applies to it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WasmCallableTableTarget {
+    TableSlot(WasmCallableTableSlot),
+    RuntimeKey(u64),
+}
+
+impl WasmCallableTableSlot {
     pub(crate) fn with_role(&self, role: WasmCallableTableRole) -> Self {
-        Self {
-            current_table_index: self.current_table_index,
-            address: self.address,
-            role,
-        }
+        Self { role, ..*self }
     }
 }
 
@@ -83,7 +91,7 @@ impl WasmTableRelocations {
         func_import_count: u32,
         owner_func_index: u32,
         func: &mut Function,
-        target: &WasmCallableTableTarget,
+        target: &WasmCallableTableSlot,
     ) {
         if reloc_enabled {
             match &target.address {
@@ -124,13 +132,21 @@ impl WasmTableRelocations {
         func: &mut Function,
         target: &WasmCallableTableTarget,
     ) {
-        self.emit_i32(
-            reloc_enabled,
-            func_import_count,
-            owner_func_index,
-            func,
-            target,
-        );
-        func.instruction(&Instruction::I64ExtendI32U);
+        match target {
+            WasmCallableTableTarget::TableSlot(slot) => {
+                self.emit_i32(
+                    reloc_enabled,
+                    func_import_count,
+                    owner_func_index,
+                    func,
+                    slot,
+                );
+                func.instruction(&Instruction::I64ExtendI32U);
+            }
+            // A key is a 64-bit constant above every table index (K5).
+            WasmCallableTableTarget::RuntimeKey(key) => {
+                func.instruction(&Instruction::I64Const(*key as i64));
+            }
+        }
     }
 }
