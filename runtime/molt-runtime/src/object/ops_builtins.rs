@@ -2093,12 +2093,35 @@ pub extern "C" fn molt_int_bool_method(self_bits: u64) -> u64 {
     crate::object::ops_arith::native_slots::int_bool_slot(self_bits)
 }
 
+/// `int.__ceil__`, `__floor__` and `__trunc__` return the exact int value, as
+/// CPython's `int_int` does: a bool or int-subclass receiver yields a plain int.
+fn int_exact_value_method(self_bits: u64, method: &str) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if let Some(value) = crate::builtins::numbers::exact_integer_from_storage(_py, self_bits) {
+            return value;
+        }
+        let type_label = class_name_for_error(type_of_bits(_py, self_bits));
+        raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            &format!("descriptor '{method}' requires a 'int' object but received '{type_label}'"),
+        )
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_ceil_method(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        inc_ref_bits(_py, self_bits);
-        self_bits
-    })
+    int_exact_value_method(self_bits, "__ceil__")
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_floor_method(self_bits: u64) -> u64 {
+    int_exact_value_method(self_bits, "__floor__")
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_trunc_method(self_bits: u64) -> u64 {
+    int_exact_value_method(self_bits, "__trunc__")
 }
 
 #[unsafe(no_mangle)]
@@ -2136,6 +2159,13 @@ pub extern "C" fn molt_object_init(_self_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_init_subclass(_cls_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() })
+}
+
+/// `object.__subclasshook__`: abstract base classes override it; the default
+/// defers to the normal subclass algorithm.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_object_subclasshook(_cls_bits: u64, _subclass_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, { not_implemented_bits(_py) })
 }
 
 #[unsafe(no_mangle)]
