@@ -801,9 +801,16 @@ fn manual_field_and_closure_consumers_obey_selected_import_ownership() {
                         operators[index + 1].starts_with("LocalGet {"),
                         "the release site passes the invocation admission: {kind} {result:?}: {operators:?}"
                     );
+                    let release = format!("Call {{ function_index: {} }}", rc["release"]);
+                    let release_index = index
+                        + 1
+                        + operators[index + 1..]
+                            .iter()
+                            .position(|op| op == &release)
+                            .expect("discarded result release");
                     assert_eq!(
-                        operators[index + 2],
-                        format!("Call {{ function_index: {} }}", rc["release"]),
+                        attached_call_operands_end(&operators, release_index, 2),
+                        index + 2,
                         "the effect result enters its release transition unchanged: {kind} {result:?}"
                     );
                 }
@@ -892,9 +899,15 @@ fn effect_output_metadata_cannot_publish_a_runtime_value() {
                     operators[index + 1].starts_with("LocalGet {"),
                     "the release site passes the invocation admission: {kind}: {operators:?}"
                 );
+                let release_index = index
+                    + 1
+                    + operators[index + 1..]
+                        .iter()
+                        .position(|op| op == &expected)
+                        .expect("effect result release");
                 assert_eq!(
-                    operators[index + 2],
-                    expected,
+                    attached_call_operands_end(&operators, release_index, 2),
+                    index + 2,
                     "the original effect word enters its release transition: {kind}: {operators:?}"
                 );
             }
@@ -1420,9 +1433,16 @@ fn callable_constructors_release_only_discarded_owned_results() {
                     operators[position + 1].starts_with("LocalGet {"),
                     "the release site passes the invocation admission: {operators:?}"
                 );
+                let release = format!("Call {{ function_index: {} }}", rc["release"]);
+                let release_index = position
+                    + 1
+                    + operators[position + 1..]
+                        .iter()
+                        .position(|op| op == &release)
+                        .expect("discarded constructor result release");
                 assert_eq!(
-                    operators[position + 2],
-                    format!("Call {{ function_index: {} }}", rc["release"]),
+                    attached_call_operands_end(&operators, release_index, 2),
+                    position + 2,
                     "the discarded owned result enters its release transition: {operators:?}"
                 );
             }
@@ -1481,9 +1501,16 @@ fn closure_extraction_retains_only_bound_borrowed_results() {
                 operators[position + 2].starts_with("LocalGet {"),
                 "the retain site passes the invocation admission: {operators:?}"
             );
+            let retain = format!("Call {{ function_index: {} }}", rc["retain"]);
+            let retain_index = position
+                + 1
+                + operators[position + 1..]
+                    .iter()
+                    .position(|op| op == &retain)
+                    .expect("bound borrowed result retain");
             assert_eq!(
-                operators[position + 3],
-                format!("Call {{ function_index: {} }}", rc["retain"]),
+                attached_call_operands_end(&operators, retain_index, 2),
+                position + 3,
                 "the selected borrowed result enters its retain transition: {operators:?}"
             );
         } else {
@@ -1503,9 +1530,10 @@ pub(super) fn assert_single_anchor_epilogue(operators: &[String], release_body: 
     );
     assert_eq!(operators.last().map(String::as_str), Some("End"));
     let release_index = operators.iter().rposition(|op| op == &release).unwrap();
+    let operands_end = attached_call_operands_end(operators, release_index, 2);
     assert!(
-        operators[release_index - 1].starts_with("LocalGet {")
-            && operators[release_index - 2].starts_with("I64Store {"),
+        operators[operands_end - 1].starts_with("LocalGet {")
+            && operators[operands_end - 2].starts_with("I64Store {"),
         "publish an empty owner before the cleanup callback: {operators:?}"
     );
     assert!(
