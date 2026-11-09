@@ -336,6 +336,25 @@ unsafe fn class_declarations_word<'a>(ptr: *mut u8) -> &'a super::MoltAuxWord {
 // Mutable semantic state shares the existing declaration word, outside the
 // monotonic declaration bits. The packed layout-policy word has no free bits.
 const CLASS_STATE_ABSTRACT: u64 = 1 << 63;
+/// The class has been a heap base of some subclass, so a mutation must walk the
+/// subclass edges (`class_subclasses`). Monotone: a released subclass leaves the
+/// bit set, which costs only an edge lookup on a later mutation.
+const CLASS_STATE_HAS_SUBCLASS: u64 = 1 << 62;
+
+pub(crate) unsafe fn class_mark_has_subclass(class: *mut u8) {
+    unsafe {
+        class_declarations_word(class)
+            .fetch_or(CLASS_STATE_HAS_SUBCLASS, super::AtomicOrdering::AcqRel);
+    }
+}
+
+pub(crate) unsafe fn class_has_subclass(class: *mut u8) -> bool {
+    unsafe {
+        class_declarations_word(class).load(super::AtomicOrdering::Acquire)
+            & CLASS_STATE_HAS_SUBCLASS
+            != 0
+    }
+}
 
 pub(crate) unsafe fn class_is_abstract(class: *mut u8) -> bool {
     unsafe {
@@ -387,7 +406,7 @@ pub(crate) unsafe fn class_declare(ptr: *mut u8, declaration: ClassDeclaration) 
     unsafe {
         assert_eq!(crate::object_type_id(ptr), crate::TYPE_ID_TYPE);
         assert_eq!(
-            declaration as u64 & CLASS_STATE_ABSTRACT,
+            declaration as u64 & (CLASS_STATE_ABSTRACT | CLASS_STATE_HAS_SUBCLASS),
             0,
             "declaration overlaps mutable class state"
         );
@@ -790,6 +809,14 @@ pub(crate) unsafe fn detach_class_references(
             MoltObject::none().bits()
         }
     });
+    if ClassReferenceSlot::Bases.released_by(phase) {
+        // The detached tuple stays owned until the caller releases it.
+        let bases = ClassReferenceSlot::ALL
+            .iter()
+            .position(|&slot| slot == ClassReferenceSlot::Bases)
+            .map_or(0, |index| detached[index]);
+        unsafe { super::class_subclasses::forget(ptr, bases) };
+    }
     // Retired methods must not remain callable through class/attribute caches.
     // No callbacks can run until the caller releases the detached references.
     if detached

@@ -705,11 +705,12 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             and opaque is not None
             and not definition_exposed
         )
-        # Exposure is an identity fact, not a layout fact (HF-812): the class's
-        # own layout guard sees every mutation of the class, so an exposed
-        # statement keeps its inferred field offsets. Consumers of unguarded
-        # facts check ``class_namespace_closed``. A base's mutation is invisible
-        # to a subclass's guard, so an open base makes the subclass dynamic.
+        # Exposure is an identity fact, not a layout fact (HF-812): a mutation of
+        # the class or of a base advances the class's layout version, so an
+        # exposed statement keeps its inferred field offsets behind its guard.
+        # Consumers of unguarded facts check ``class_namespace_closed``. A
+        # subclass inherits its bases' members, so a base that is not closed
+        # makes the subclass dynamic.
         for base_ref in bases:
             if isinstance(base_ref, BuiltinClass):
                 continue

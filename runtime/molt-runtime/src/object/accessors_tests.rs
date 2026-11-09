@@ -1008,3 +1008,63 @@ fn layout_guard_admits_exactly_the_stamped_class_statement() {
         }
     });
 }
+
+/// HF-812: a subclass's inferred field depends on its whole MRO. A data
+/// descriptor added to a base must make the subclass's guard miss, although
+/// the guard reads only the receiver class's own layout version.
+#[test]
+fn layout_guard_misses_after_a_base_class_mutation() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        const STATEMENT: u64 = 5;
+        let base_name = dynamic_attr_name_bits(_py, b"GuardBase").unwrap();
+        let child_name = dynamic_attr_name_bits(_py, b"GuardChild").unwrap();
+        let field = dynamic_attr_name_bits(_py, b"field").unwrap();
+        let offsets_key = dynamic_attr_name_bits(_py, b"__molt_field_offsets__").unwrap();
+        let size_key = dynamic_attr_name_bits(_py, b"__molt_layout_size__").unwrap();
+        let base = crate::molt_class_new(base_name);
+        crate::molt_class_set_base(base, crate::builtin_classes(_py).object);
+        let child = crate::molt_class_new(child_name);
+        crate::molt_class_set_base(child, base);
+        let offsets = crate::alloc_dict_with_pairs(_py, &[field, MoltObject::from_int(0).bits()]);
+        assert!(!offsets.is_null());
+        let offsets = MoltObject::from_ptr(offsets).bits();
+        crate::molt_set_attr_name(child, offsets_key, offsets);
+        crate::molt_set_attr_name(child, size_key, MoltObject::from_int(16).bits());
+        let child_ptr = obj_from_bits(child).as_ptr().unwrap();
+        unsafe { crate::object::class_finish_definition(_py, child_ptr) }.expect("seal child");
+        assert_eq!(
+            crate::builtins::types::molt_class_set_definition(child, STATEMENT),
+            MoltObject::none().bits()
+        );
+        let object = alloc_class_instance(_py, 16, child);
+        let object_ptr = obj_from_bits(object).as_ptr().unwrap();
+        unsafe { crate::object::gc::gc_publish_initialized(_py, object_ptr) };
+        assert!(!exception_pending(_py));
+        let version =
+            MoltObject::from_int(unsafe { class_layout_version_bits(child_ptr) } as i64).bits();
+        assert!(unsafe { guard_layout_match(_py, object_ptr, STATEMENT, version) });
+
+        // `type(obj).__bases__[0].field = ...`: only the base is written.
+        crate::molt_set_attr_name(base, field, MoltObject::from_int(99).bits());
+        assert!(!exception_pending(_py));
+        assert!(
+            !unsafe { guard_layout_match(_py, object_ptr, STATEMENT, version) },
+            "a base mutation must invalidate the subclass's layout facts"
+        );
+        for bits in [
+            object,
+            offsets,
+            child,
+            base,
+            size_key,
+            offsets_key,
+            field,
+            child_name,
+            base_name,
+        ] {
+            dec_ref_bits(_py, bits);
+        }
+        assert!(!exception_pending(_py));
+    });
+}

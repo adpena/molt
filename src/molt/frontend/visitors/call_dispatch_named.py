@@ -914,9 +914,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                         # Carry static payload extent for typed-field analysis.
                         # The runtime owns physical class layout and allocation;
                         # layout metadata is not a placement or lifetime proof.
-                        class_size_bytes = (
-                            class_info.get("size", 0) if class_info else 0
-                        )
+                        class_size_bytes = class_info.get("size", 0)
                         self.emit(
                             MoltOp(
                                 kind="OBJECT_NEW_BOUND",
@@ -978,11 +976,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                                             # size in bytes carried via
                                             # metadata for the stack-alloc
                                             # lowering.
-                                            class_size_bytes = (
-                                                class_info.get("size", 0)
-                                                if class_info
-                                                else 0
-                                            )
+                                            class_size_bytes = class_info.get("size", 0)
                                             self.emit(
                                                 MoltOp(
                                                     kind="OBJECT_NEW_BOUND",

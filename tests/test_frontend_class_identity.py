@@ -128,10 +128,10 @@ print(use())
 def test_exposed_definition_keeps_its_layout_but_no_unguarded_fact() -> None:
     """Exposure is an identity fact, not a layout fact (HF-812).
 
-    A layout guard sees every mutation of its own class, so an exposed class
-    keeps its field offsets. Its allocation protocol is unproved, so a fresh
-    instance takes the generic path, and a subclass's guard cannot see a
-    mutation of the exposed base.
+    A mutation of a class or of its bases advances its layout version, so an
+    exposed class keeps its field offsets behind its guard. Its allocation
+    protocol is unproved, so a fresh instance takes the generic path, and a
+    subclass inherits members that unseen code may rebind on the exposed base.
     """
 
     def lower(opaque: tuple[str, ...]) -> SimpleTIRGenerator:
@@ -165,6 +165,100 @@ def test_exposed_definition_keeps_its_layout_but_no_unguarded_fact() -> None:
     kinds = use_kinds(exposed)
     assert {"SETATTR_GENERIC_OBJ", "GETATTR_GENERIC_OBJ"} <= kinds
     assert not kinds & {"GUARDED_SETATTR", "GUARDED_GETATTR", "SETATTR", "GETATTR"}
+
+
+_EXPOSURE_CONSUMERS = """\
+class Point:
+    def __init__(self, x):
+        self.x = x
+    def get(self):
+        return self.x
+def construct():
+    return Point(1)
+def read_exact():
+    p = Point(3)
+    p.x = 4
+    return p.x
+"""
+
+
+def _lower_exposing_first_class(source: str, exposed: bool) -> SimpleTIRGenerator:
+    tree = ast.parse(source)
+    opaque = (python_node_source_key(tree.body[0]),) if exposed else ()
+    premise = PythonNamespacePremise((), 0, 0, (), opaque)
+    generator = SimpleTIRGenerator(module_name="mod", namespace_premise=premise)
+    generator.visit(tree)
+    return generator
+
+
+def _function_kinds(generator: SimpleTIRGenerator, symbol: str) -> set[str]:
+    return {op.kind for op in generator.funcs_map[symbol]["ops"]}
+
+
+@pytest.mark.parametrize("exposed", [False, True])
+def test_exposure_keeps_guarded_layout_and_declines_each_unguarded_fact(
+    exposed: bool,
+) -> None:
+    """One assertion per consumer of the class facts (HF-812).
+
+    Layout consumers read ``dynamic`` and stay on for an exposed class:
+    guarded field access in its methods and its statement stamp. Consumers of
+    unguarded facts read ``class_namespace_closed`` and decline: constructor
+    folding with inline ``__init__``, the unguarded store of a layout-stable
+    exact instance, the default allocation protocol that types the result,
+    """
+    generator = _lower_exposing_first_class(_EXPOSURE_CONSUMERS, exposed)
+    point = generator.classes[ClassId("mod", "Point")]
+    assert not point["dynamic"]
+    assert point["definition_exposed"] is exposed
+    assert "GUARDED_SETATTR" in _function_kinds(generator, "mod__Point___init__")
+    assert "GUARDED_GETATTR" in _function_kinds(generator, "mod__Point_get")
+    assert any(op.kind == "CLASS_SET_DEFINITION" for op in _ops(generator))
+    construct = _function_kinds(generator, "mod__construct")
+    assert ("OBJECT_NEW_BOUND" in construct) is not exposed
+    assert ("SETATTR" in construct) is not exposed
+    assert ("CALL_BIND" in construct) is exposed
+    read = _function_kinds(generator, "mod__read_exact")
+    assert ("GUARDED_GETATTR" in read) is not exposed
+    assert ("GETATTR_GENERIC_OBJ" in read) is exposed
+    # Exact instances come only from a folded constructor, which an exposed
+    # class never gets, so these unguarded predicates are pinned directly.
+    point_id = ClassId("mod", "Point")
+    assert generator._class_layout_stable(point_id) is not exposed
+    assert generator._class_new_policy(point_id, point) == (exposed, exposed)
+
+
+@pytest.mark.parametrize("exposed", [False, True])
+def test_exposure_withdraws_the_instance_data_descriptor_proof(exposed: bool) -> None:
+    """Unseen code could give an exposed class ``__set__`` or ``__new__``."""
+    source = (
+        "class Point:\n"
+        "    def __init__(self, x):\n"
+        "        self.x = x\n"
+        "class Holder:\n"
+        "    point = Point(0)\n"
+    )
+    generator = _lower_exposing_first_class(source, exposed)
+    holder = generator.classes[ClassId("mod", "Holder")]
+    assert ("point" in holder["possible_data_descriptor_attrs"]) is exposed
+
+
+@pytest.mark.parametrize("exposed", [False, True])
+def test_exposure_leaves_decorator_descriptor_kinds_unproved(exposed: bool) -> None:
+    source = (
+        "class Point:\n"
+        "    def __init__(self, x):\n"
+        "        self.x = x\n"
+        "    @staticmethod\n"
+        "    def make():\n"
+        "        return 1\n"
+    )
+    generator = _lower_exposing_first_class(source, exposed)
+    point = generator.classes[ClassId("mod", "Point")]
+    assert not point["dynamic"]
+    assert point["methods"]["make"]["descriptor"] == (
+        "decorated" if exposed else "staticmethod"
+    )
 
 
 def test_non_none_initializer_requires_runtime_constructor_validation():
