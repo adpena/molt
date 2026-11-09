@@ -766,7 +766,7 @@ fn execution_kind_rejects_runtime_import_drift() {
     let split = Module::new(
         &engine,
         crate::execution_fixture::render(
-            r#"(module (import "molt_runtime" "recursion_exit_fast" (func (param i64))))"#,
+            r#"(module (import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64))))"#,
         ),
     )
     .expect("valid runtime import fixture");
@@ -1040,7 +1040,7 @@ fn module_entrypoint_abis_reject_before_wasm_start_sections_can_run() {
     let application = Module::new(
         &engine,
         crate::execution_fixture::render(r#"(module
-              (import "molt_runtime" "recursion_exit_fast" (func (param i64)))
+              (import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64)))
               (func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
             local.get $context i64.const 32768 i64.ne if unreachable end
  i64.const 0)
@@ -1559,7 +1559,7 @@ fn loaded_guest_primitive_executes_split_application_contract() {
         crate::execution_fixture::render(r#"
         (module
           (import "env" "memory" (memory 1))
-          (import "molt_runtime" "recursion_exit_fast" (func $anchor (param i64)))
+          (import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func $anchor (param i64)))
           (func (export "molt_isolate_bootstrap@CONTEXT_SUFFIX@") (param $context i64) (result i64)
             local.get $context i64.const 32768 i64.ne if unreachable end
  i64.const 0)
@@ -1642,7 +1642,7 @@ fn execute_split_import_fixture(
         engine,
         crate::execution_fixture::render(format!(
             r#"(module
-                (import "molt_runtime" "exception_pending"
+                (import "molt_runtime" "molt_exception_pending@CONTEXT_SUFFIX@"
                     (func $fixture_exception_pending (param i64) (result i64)))
                 {application_fields}
                 {core_start}
@@ -1692,49 +1692,49 @@ fn split_runtime_imports_are_admitted_before_either_core_start() {
     for (runtime_fields, application_fields, diagnostic) in [
         (
             "",
-            r#"(import "molt_runtime" "recursion_exit_fast" (func (param i64)))"#,
+            r#"(import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64)))"#,
             "missing runtime export molt_recursion_exit_fast@CONTEXT_SUFFIX@",
         ),
         (
             r#"(memory (export "molt_recursion_exit_fast@CONTEXT_SUFFIX@") 1)"#,
-            r#"(import "molt_runtime" "recursion_exit_fast" (func (param i64)))"#,
+            r#"(import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64)))"#,
             "malformed runtime export molt_recursion_exit_fast@CONTEXT_SUFFIX@",
         ),
         (
             r#"(global (export "molt_recursion_exit_fast@CONTEXT_SUFFIX@") i64 (i64.const 0))"#,
-            r#"(import "molt_runtime" "recursion_exit_fast" (func (param i64)))"#,
+            r#"(import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64)))"#,
             "malformed runtime export molt_recursion_exit_fast@CONTEXT_SUFFIX@",
         ),
         (
             r#"(table (export "molt_recursion_exit_fast@CONTEXT_SUFFIX@") 1 funcref)"#,
-            r#"(import "molt_runtime" "recursion_exit_fast" (func (param i64)))"#,
+            r#"(import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64)))"#,
             "malformed runtime export molt_recursion_exit_fast@CONTEXT_SUFFIX@",
         ),
         (
             r#"(func (export "molt_recursion_exit_fast@CONTEXT_SUFFIX@") (param $context i64) (param i64)
             local.get $context i64.const 32768 i64.ne if unreachable end
 )"#,
-            r#"(import "molt_runtime" "recursion_exit_fast" (func (param i64) (param i32)))"#,
+            r#"(import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64) (param i32)))"#,
             "runtime export molt_recursion_exit_fast@CONTEXT_SUFFIX@ signature mismatch",
         ),
         (
             r#"(func (export "molt_recursion_exit_fast@CONTEXT_SUFFIX@") (param $context i64) (result i32)
             local.get $context i64.const 32768 i64.ne if unreachable end
  i32.const 0)"#,
-            r#"(import "molt_runtime" "recursion_exit_fast" (func (param i64) (result i64)))"#,
+            r#"(import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64) (result i64)))"#,
             "runtime export molt_recursion_exit_fast@CONTEXT_SUFFIX@ signature mismatch",
         ),
         (
             r#"(memory (export "molt_recursion_exit_fast@CONTEXT_SUFFIX@") 1)"#,
-            r#"(import "molt_runtime" "recursion_exit_fast" (memory 1))"#,
-            "malformed molt_runtime::recursion_exit_fast import",
+            r#"(import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (memory 1))"#,
+            "malformed molt_runtime::molt_recursion_exit_fast@CONTEXT_SUFFIX@ import",
         ),
         (
             r#"(func (export "molt_recursion_exit_fast@CONTEXT_SUFFIX@") (param $context i64)
             local.get $context i64.const 32768 i64.ne if unreachable end
 )"#,
-            r#"(import "molt_runtime" "recursion_exit_fast" (func (param i64)))
-               (import "molt_runtime" "recursion_exit_fast" (func (param i64) (param i64)))"#,
+            r#"(import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64)))
+               (import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64) (param i64)))"#,
             "runtime export molt_recursion_exit_fast@CONTEXT_SUFFIX@ signature mismatch",
         ),
     ] {
@@ -1767,8 +1767,8 @@ fn split_runtime_import_plan_preserves_subtypes_and_duplicate_imports() {
             r#"(func (export "molt_exception_last@CONTEXT_SUFFIX@") (param $context i64) (result i64)
             local.get $context i64.const 32768 i64.ne if unreachable end
  i64.const 42)"#,
-            r#"(import "molt_runtime" "exception_last" (func $first (param i64) (result i64)))
-               (import "molt_runtime" "exception_last" (func $second (param i64) (result i64)))"#,
+            r#"(import "molt_runtime" "molt_exception_last@CONTEXT_SUFFIX@" (func $first (param i64) (result i64)))
+               (import "molt_runtime" "molt_exception_last@CONTEXT_SUFFIX@" (func $second (param i64) (result i64)))"#,
         ),
         (
             r#"(type $base (sub (func (param i64) (result i64))))
@@ -1778,8 +1778,8 @@ fn split_runtime_import_plan_preserves_subtypes_and_duplicate_imports() {
  i64.const 42)"#,
             r#"(type $base (sub (func (param i64) (result i64))))
                (type $derived (sub $base (func (param i64) (result i64))))
-               (import "molt_runtime" "exception_last" (func $first (type $base) (param i64) (result i64)))
-               (import "molt_runtime" "exception_last" (func $second (type $derived) (param i64) (result i64)))"#,
+               (import "molt_runtime" "molt_exception_last@CONTEXT_SUFFIX@" (func $first (type $base) (param i64) (result i64)))
+               (import "molt_runtime" "molt_exception_last@CONTEXT_SUFFIX@" (func $second (type $derived) (param i64) (result i64)))"#,
         ),
     ] {
         // Successful split fixtures explicitly share the context's memory.
@@ -1900,7 +1900,7 @@ fn split_runtime_admission_accepts_shared_host_definitions_and_preserves_start_t
         (import "env" "__indirect_function_table" (table 1 5 funcref))
         (import "env" "molt_getpid_host" (func $getpid (result i64)))
         (import "wasi_snapshot_preview1" "proc_exit" (func (param i32)))
-        (import "molt_runtime" "recursion_exit_fast" (func $anchor (param i64) (result i64)))"#;
+        (import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func $anchor (param i64) (result i64)))"#;
     let main_body = "call $getpid drop
         local.get $context call $anchor i64.const 42 i64.ne if unreachable end
         memory.size i32.const 2 i32.ne if unreachable end
@@ -2474,7 +2474,7 @@ fn split_reporter_admission_rejects_runtime_defect_despite_valid_app_shadow() {
             &engine,
             crate::execution_fixture::render(r#"(module
           (import "env" "memory" (memory 1))
-            (import "molt_runtime" "recursion_exit_fast" (func (param i64)))
+            (import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64)))
             (func $start unreachable) (start $start)
             (func (export "molt_isolate_bootstrap@CONTEXT_SUFFIX@") (param $context i64) (result i64)
             local.get $context i64.const 32768 i64.ne if unreachable end

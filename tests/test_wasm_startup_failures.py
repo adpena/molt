@@ -2233,7 +2233,7 @@ def assert_split_worker_runtime_lifecycle(
         + r"""
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
-const {createRuntimeLifetime, combinedError} = require(lifetimePath);
+const {createRuntimeLifetime, combinedError, runtimeExport} = require(lifetimePath);
 const {prepareWasmTableAdmission, publishWasmTableAdmission, requireAttachedExecutionAbi, requireSharedExecutionMemoryImport, requireSharedExecutionMemory} = require(loaderPath);
 const tableAdmission = prepareWasmTableAdmission({module: new WebAssembly.Module(moduleBytes)});
 async function exercise(fail, primary, failShutdown, failInstantiate = false) {
@@ -2254,7 +2254,7 @@ async function exercise(fail, primary, failShutdown, failInstantiate = false) {
   const context = {
     createRuntimeLifetime, combinedError, runtimeExceptionPending: () => false,
     tableAdmission, publishWasmTableAdmission,
-    compiledExecutionSymbol: fixtureCompiledSymbol, runtimeExport: fixtureRuntimeExport,
+    compiledExecutionSymbol: fixtureCompiledSymbol, runtimeExport,
     requireAttachedExecutionAbi, requireSharedExecutionMemoryImport, requireSharedExecutionMemory,
     deploymentManifest: {abi: {runtime_imports: fixtureAbi}},
     runtimeImportExportNames: fixtureScopeNames({runtime_execution_enter: 'enter', runtime_execution_leave: 'leave', runtime_shutdown: 'shutdown'}),

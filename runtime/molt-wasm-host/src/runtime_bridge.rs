@@ -28,7 +28,10 @@ impl RuntimeImportPlan {
                 bail!("malformed molt_runtime::{name} import: expected a function");
             };
             let runtime = runtime.context("molt_runtime imports require a runtime module")?;
-            let export_name = runtime_symbol(&format!("molt_{name}"))?.to_owned();
+            let export_name = runtime_execution_abi_for_symbol(name)
+                .with_context(|| format!("unclassified runtime execution ABI symbol: {name}"))?
+                .physical_symbol
+                .to_owned();
             let export_type = runtime
                 .get_export(&export_name)
                 .with_context(|| format!("missing runtime export {export_name}"))?;
@@ -771,7 +774,7 @@ mod indirect_dispatch_tests {
                 let application_import = if linked {
                     r#"(import "env" "molt_call_indirect0@CONTEXT_SUFFIX@" (func (param i64) (param i64) (result i64)))"#
                 } else {
-                    r#"(import "molt_runtime" "exception_last" (func (param i64) (result i64)))"#
+                    r#"(import "molt_runtime" "molt_exception_last@CONTEXT_SUFFIX@" (func (param i64) (result i64)))"#
                 };
                 let application = Module::new(
                     &engine,
@@ -1087,7 +1090,7 @@ mod indirect_dispatch_tests {
             crate::execution_fixture::render(r#"(module
             (import "env" "memory" (memory 1))
             (import "env" "molt_call_indirect0@CONTEXT_SUFFIX@" (func $call (param i64) (param i64) (result i64)))
-            (import "molt_runtime" "exception_last" (func $run (param i64) (result i64)))
+            (import "molt_runtime" "molt_exception_last@CONTEXT_SUFFIX@" (func $run (param i64) (result i64)))
             (func (export "molt_call_indirect0@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64) local.get $context i64.const 32768 i64.ne if unreachable end  i64.const 42)
             (func (export "molt_call_indirect1@CONTEXT_SUFFIX@") (param $context i64) (param i64 i64) (result i64) local.get $context i64.const 32768 i64.ne if unreachable end
                 local.get 1 local.get 2 i64.add)

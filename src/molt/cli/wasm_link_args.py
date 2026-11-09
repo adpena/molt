@@ -29,6 +29,7 @@ _RUNTIME_LINK_SWITCHES = frozenset(
     {
         "--relocatable",
         "--import-memory",
+        "--export-memory",
         "--import-table",
         "--growable-table",
         "--export-table",

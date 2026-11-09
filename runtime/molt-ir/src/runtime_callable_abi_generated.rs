@@ -12209,6 +12209,43 @@ pub fn runtime_poll_native_key(symbol: &str) -> Option<u64> {
     }
 }
 
+/// Application-owned entries declared by execution_context_abi.compiled_entries.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompiledExecutionEntry {
+    MoltMain,
+    MoltHostInit,
+    MoltIsolateImport,
+    MoltIsolateBootstrap,
+}
+
+impl CompiledExecutionEntry {
+    pub const ALL: &'static [Self] = &[
+        Self::MoltMain,
+        Self::MoltHostInit,
+        Self::MoltIsolateImport,
+        Self::MoltIsolateBootstrap,
+    ];
+
+    pub const fn physical_symbol(self) -> &'static str {
+        match self {
+            Self::MoltMain => "molt_main__molt_context_a8c6010e2cbb56a1",
+            Self::MoltHostInit => "molt_host_init__molt_context_a8c6010e2cbb56a1",
+            Self::MoltIsolateImport => "molt_isolate_import__molt_context_a8c6010e2cbb56a1",
+            Self::MoltIsolateBootstrap => "molt_isolate_bootstrap__molt_context_a8c6010e2cbb56a1",
+        }
+    }
+
+    pub fn from_symbol(symbol: &str) -> Option<Self> {
+        Some(match symbol {
+            "molt_main__molt_context_a8c6010e2cbb56a1" => Self::MoltMain,
+            "molt_host_init__molt_context_a8c6010e2cbb56a1" => Self::MoltHostInit,
+            "molt_isolate_import__molt_context_a8c6010e2cbb56a1" => Self::MoltIsolateImport,
+            "molt_isolate_bootstrap__molt_context_a8c6010e2cbb56a1" => Self::MoltIsolateBootstrap,
+            _ => return None,
+        })
+    }
+}
+
 /// Calling convention selected by the canonical runtime-call manifest.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeExecutionContext {
@@ -12233,6 +12270,15 @@ pub fn compiled_execution_symbol(logical: &str) -> String {
     physical.push_str(logical);
     physical.push_str(ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX);
     physical
+}
+
+/// Admit only the current physical identity of a registered execution ABI.
+pub fn runtime_execution_abi_for_symbol(physical: &str) -> Option<RuntimeExecutionAbi> {
+    let logical = physical
+        .strip_suffix(ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX)
+        .unwrap_or(physical);
+    let abi = runtime_execution_abi(logical)?;
+    (abi.physical_symbol == physical).then_some(abi)
 }
 
 pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {

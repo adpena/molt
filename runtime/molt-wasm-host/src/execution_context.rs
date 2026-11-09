@@ -2,7 +2,7 @@ use super::*;
 pub(super) use molt_ir::runtime_callable_abi_generated::{
     ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT, ATTACHED_EXECUTION_CONTEXT_ABI_SECTION,
     ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX, RuntimeExecutionContext, compiled_execution_symbol,
-    runtime_execution_abi,
+    runtime_execution_abi, runtime_execution_abi_for_symbol,
 };
 
 pub(super) fn runtime_symbol(logical: &str) -> Result<&'static str> {
@@ -174,6 +174,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn physical_runtime_imports_reject_obsolete_and_unregistered_identities() {
+        let attached = compiled_execution_symbol("molt_exception_last");
+        assert_eq!(
+            runtime_execution_abi_for_symbol(&attached).unwrap().context,
+            RuntimeExecutionContext::Attached
+        );
+        assert_eq!(
+            runtime_execution_abi_for_symbol("molt_runtime_shutdown")
+                .unwrap()
+                .context,
+            RuntimeExecutionContext::Boundary
+        );
+        for invalid in [
+            "exception_last".to_string(),
+            "molt_exception_last".to_string(),
+            "molt_exception_last__molt_context_obsolete".to_string(),
+            compiled_execution_symbol("molt_unknown_runtime_import"),
+            compiled_execution_symbol("molt_runtime_shutdown"),
+        ] {
+            assert!(
+                runtime_execution_abi_for_symbol(&invalid).is_none(),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
     fn application_schema_rejects_absent_stale_and_duplicate_witnesses() {
         let valid = crate::execution_fixture::application_bytes("(module)");
         validate_context_section(&valid).unwrap();
@@ -251,7 +278,7 @@ mod tests {
         let application_bytes = crate::execution_fixture::application_bytes(
             r#"(module
             (import "env" "memory" (memory 1))
-            (import "molt_runtime" "exception_pending" (func $pending (param i64) (result i64)))
+            (import "molt_runtime" "molt_exception_pending@CONTEXT_SUFFIX@" (func $pending (param i64) (result i64)))
             (export "memory" (memory 0))
             (func (export "molt_isolate_bootstrap@CONTEXT_SUFFIX@") (param i64) (result i64) i64.const 0)
             (func (export "molt_isolate_import@CONTEXT_SUFFIX@") (param i64 i64) (result i64) local.get 1)

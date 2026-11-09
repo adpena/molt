@@ -1452,7 +1452,7 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
     assert manifest["target_features"]["manifest_asset"] == target_feature_asset
     browser_abi = manifest["abi"]["browser_embed"]
     assert browser_abi["call_indirect_imports"] == [
-        f"molt_call_indirect{arity}" for arity in range(14)
+        compiled_execution_symbol(f"molt_call_indirect{arity}") for arity in range(14)
     ]
     assert browser_abi["table_layout"]["default_app_table_base"] == 256
     assert (
@@ -1462,7 +1462,9 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
     assert browser_abi["reserved_runtime_callables"] == [
         {
             "index": index,
-            "runtime_export": runtime_name,
+            "runtime_export": _runtime_export_name_for_import_from_manifest(
+                runtime_name
+            ),
             "import_name": import_name,
             "arity": arity,
             "dispatch": dispatch,
@@ -1495,7 +1497,13 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
     )
     runtime_import_name_set = set(runtime_imports["names"])
     assert runtime_import_name_set
-    assert set(runtime_imports["export_names"]).issubset(runtime_import_name_set)
+    lifetime_exports = wasm_runtime_lifetime_export_names()
+    assert {
+        role: runtime_imports["export_names"][role] for role in lifetime_exports
+    } == lifetime_exports
+    assert (set(runtime_imports["export_names"]) - lifetime_exports.keys()).issubset(
+        runtime_import_name_set
+    )
     assert set(runtime_imports["signatures"]) == runtime_import_name_set
     assert set(runtime_imports["result_kinds"]) == runtime_import_name_set
     assert set(runtime_imports["runtime_export_signatures"]).issubset(
@@ -1552,7 +1560,7 @@ try {{
         payload = json.loads(run.stdout)
         assert payload == {
             "ctor": "Float32Array",
-            "exportName": "forward__forward",
+            "exportName": compiled_execution_symbol("forward__forward"),
             "values": [2.125, -3.5, 0.25, 7.375],
         }
     finally:

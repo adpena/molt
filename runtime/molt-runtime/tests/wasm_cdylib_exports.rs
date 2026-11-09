@@ -334,6 +334,8 @@ fn cargo_cdylib_selection_reports_runtime_wasm_with_fixed_abi_surface() {
                 "-C",
                 "link-arg=--import-memory",
                 "-C",
+                "link-arg=--export-memory",
+                "-C",
                 "link-arg=--import-table",
                 "-C",
                 "link-arg=--growable-table",

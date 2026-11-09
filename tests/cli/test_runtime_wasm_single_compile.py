@@ -806,6 +806,8 @@ def test_reloc_and_shared_specs_share_compile_but_differ_in_fingerprint() -> Non
         "-C",
         "link-arg=--import-memory",
         "-C",
+        "link-arg=--export-memory",
+        "-C",
         "link-arg=--import-table",
         "-C",
         "link-arg=--growable-table",

@@ -521,6 +521,12 @@ It never derives identity by stripping a suffix; the generated ABI table owns th
 Unsuffixed attached exports are rejected, and the content-addressed projection is revision 4.
 Declared public C-API boundaries retain their separately generated entry signatures; their raw
 exports never satisfy admission of the corresponding attached runtime callable.
+WASM application exports keep object-scoped linker symbols even when their physical public
+names match runtime intrinsics. The attached suffix proves a calling convention, not ownership
+of the runtime's linker namespace; only compiled entry points and generated indirect-call
+exports retain stable global symbols. Public export aliases still select the application body.
+The manifest's `compiled_entries` generates `CompiledExecutionEntry`; relocation uses that
+closed identity so isolate entry points cannot disappear from a handwritten preservation list.
 Process exit may retain its caller's ordinary lease after closing Ready admission. After
 publishing Finalizing, it rebinds that retained lease to the finalizing owner before any cleanup
 callback; callers without a lease acquire the ordinary shutdown-drain binding instead.
@@ -556,6 +562,11 @@ existing shared-memory contract. The canonical backend imports memory zero: inli
 count, frame handoff, exception/work-word and context-header loads address that same memory.
 Raw byte/argv bridges retain their separate copying protocol and tests. A typed host lifetime is
 published before guest setup/validation calls so failures retain both primary and cleanup errors.
+
+The shared runtime re-exports its imported memory zero as `memory`, which WASI Preview 1
+callbacks access through the calling instance. Its link plan pairs `--import-memory` with
+[`--export-memory`](https://github.com/llvm/llvm-project/blob/main/lld/wasm/Options.td);
+the export refers to the same shared memory at index zero.
 
 ### 11.5 Review and acceptance
 

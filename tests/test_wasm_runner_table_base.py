@@ -513,7 +513,7 @@ def test_hosts_share_callable_table_admission(
         )
         runtime_wat = (
             runtime_wat[:-1]
-            + f'(func (export "molt_runtime_init") (result i64) {check} i64.const 1))'
+            + f'(func (export "{_runtime_symbol("molt_runtime_init")}") (result i64) {check} i64.const 1))'
         )
         runtime = _wasm_from_wat(
             tmp_path, "molt_runtime", runtime_wat, empty_callable_table=True
@@ -521,7 +521,7 @@ def test_hosts_share_callable_table_admission(
         wat = f"""(module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 8 funcref))
-          (import "molt_runtime" "runtime_init" (func $init (result i64)))
+          (import "molt_runtime" "{_runtime_symbol("molt_runtime_init")}" (func $init (result i64)))
           (export "memory" (memory 0))
           (func $ref)
           {f"(elem (i32.const {base}) func $ref)" if nonempty else ""}
@@ -593,9 +593,10 @@ def test_hosts_share_callable_table_admission(
             "browser_probes": {"webgpu": {"required": False}},
         }
         imports = data["abi"]["runtime_imports"]
-        imports["names"].append("runtime_init")
-        imports["export_names"]["runtime_init"] = "molt_runtime_init"
-        imports["signatures"] = {"runtime_init": {"params": [], "result": "i64"}}
+        init_symbol = _runtime_symbol("molt_runtime_init")
+        imports["names"].append(init_symbol)
+        imports["export_names"][init_symbol] = init_symbol
+        imports["signatures"] = {init_symbol: {"params": [], "result": "i64"}}
         data["abi"]["browser_embed"] = _split_runtime_browser_abi_from_manifest()
         data["abi"]["callable_table"] = {
             role: {
@@ -651,7 +652,7 @@ def test_hosts_share_callable_table_admission(
                 shared_table_base=base
                 if nonempty and case not in {"nonempty-layout", "nonempty-attested"}
                 else None,
-                runtime_import_names={"runtime_init"},
+                runtime_import_names={_runtime_symbol("molt_runtime_init")},
             ),
             encoding="utf-8",
         )
@@ -775,7 +776,7 @@ def _stderr_guest_manifest(
         f"""(module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
-          (import "molt_runtime" "runtime_init" (func $init (result i64)))
+          (import "molt_runtime" "{_runtime_symbol("molt_runtime_init")}" (func $init (result i64)))
           {wasi_import}
           (export "memory" (memory 0))
           {writer} {main})""",
@@ -1441,8 +1442,8 @@ def test_direct_split_runner_shares_runtime_memory_with_app_wasi(
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 2 funcref))
-          (import "molt_runtime" "runtime_init" (func $rt (result i64)))
-          (import "molt_runtime" "molt_string_from_bytes"
+          (import "molt_runtime" "{_runtime_symbol("molt_runtime_init")}" (func $rt (result i64)))
+          (import "molt_runtime" "{_runtime_symbol("molt_string_from_bytes")}"
             (func $string_from_bytes (param $context i64) (param i32 i64 i32) (result i32)))
           (import "wasi_snapshot_preview1" "fd_write"
             (func $fd_write (param i32 i32 i32 i32) (result i32)))
@@ -1581,8 +1582,8 @@ def test_direct_split_runner_reads_call_dispatch_argv_in_shared_memory(
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
-          (import "molt_runtime" "runtime_init" (func $rt (result i64)))
-          (import "molt_runtime" "call_func_dispatch"
+          (import "molt_runtime" "{_runtime_symbol("molt_runtime_init")}" (func $rt (result i64)))
+          (import "molt_runtime" "{_runtime_symbol("molt_call_func_dispatch")}"
             (func $dispatch (param $context i64) (param i64 i64 i64 i64) (result i64)))
           (import "wasi_snapshot_preview1" "fd_write"
             (func $fd_write (param i32 i32 i32 i32) (result i32)))
@@ -1711,8 +1712,8 @@ def test_direct_split_runner_keeps_call_dispatch_argv_i64_with_shared_memory(
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
-          (import "molt_runtime" "runtime_init" (func $rt (result i64)))
-          (import "molt_runtime" "call_func_dispatch"
+          (import "molt_runtime" "{_runtime_symbol("molt_runtime_init")}" (func $rt (result i64)))
+          (import "molt_runtime" "{_runtime_symbol("molt_call_func_dispatch")}"
             (func $dispatch (param $context i64) (param i64 i64 i64 i64) (result i64)))
           (import "wasi_snapshot_preview1" "fd_write"
             (func $fd_write (param i32 i32 i32 i32) (result i32)))
@@ -1805,8 +1806,8 @@ def test_direct_split_runner_uses_runtime_export_signature_for_missing_wit(
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
-          (import "molt_runtime" "runtime_init" (func $rt (result i64)))
-          (import "molt_runtime" "guarded_class_def"
+          (import "molt_runtime" "{_runtime_symbol("molt_runtime_init")}" (func $rt (result i64)))
+          (import "molt_runtime" "{_runtime_symbol("molt_guarded_class_def")}"
             (func $class_def (param $context i64)
               (param i64 i32 i64 i32 i64 i64 i64 i64) (result i64)))
           (import "wasi_snapshot_preview1" "fd_write"
@@ -1897,10 +1898,10 @@ def test_direct_split_runner_passes_pointer_imports_with_their_exact_types(
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 1 funcref))
-          (import "molt_runtime" "runtime_init" (func $rt (result i64)))
-          (import "molt_runtime" "closure_load"
+          (import "molt_runtime" "{_runtime_symbol("molt_runtime_init")}" (func $rt (result i64)))
+          (import "molt_runtime" "{_runtime_symbol("molt_closure_load")}"
             (func $closure_load (param $context i64) (param i64 i64) (result i64)))
-          (import "molt_runtime" "object_set_class"
+          (import "molt_runtime" "{_runtime_symbol("molt_object_set_class")}"
             (func $set_class (param $context i64) (param i64 i64) (result i64)))
           (import "wasi_snapshot_preview1" "fd_write"
             (func $fd_write (param i32 i32 i32 i32) (result i32)))
@@ -1989,7 +1990,7 @@ def test_direct_split_runner_coerces_call_indirect_table_ref_i64_args(
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 5 funcref))
-          (import "molt_runtime" "runtime_init" (func $rt (result i64)))
+          (import "molt_runtime" "{_runtime_symbol("molt_runtime_init")}" (func $rt (result i64)))
           (import "wasi_snapshot_preview1" "fd_write"
             (func $fd_write (param i32 i32 i32 i32) (result i32)))
           (data (i32.const 16) "\\40\\00\\00\\00\\02\\00\\00\\00")
@@ -2077,7 +2078,7 @@ def test_direct_split_runner_dispatches_reserved_runtime_trampoline(
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 4200 funcref))
-          (import "molt_runtime" "runtime_init" (func $rt (result i64)))
+          (import "molt_runtime" "{_runtime_symbol("molt_runtime_init")}" (func $rt (result i64)))
           (import "wasi_snapshot_preview1" "fd_write"
             (func $fd_write (param i32 i32 i32 i32) (result i32)))
           (data (i32.const 16) "\\40\\00\\00\\00\\02\\00\\00\\00")
@@ -2165,7 +2166,7 @@ def test_direct_split_runner_dispatches_runtime_owned_reserved_trampoline(
         (module
           (import "env" "memory" (memory 1))
           (import "env" "__indirect_function_table" (table 4200 funcref))
-          (import "molt_runtime" "runtime_init" (func $rt (result i64)))
+          (import "molt_runtime" "{_runtime_symbol("molt_runtime_init")}" (func $rt (result i64)))
           (import "wasi_snapshot_preview1" "fd_write"
             (func $fd_write (param i32 i32 i32 i32) (result i32)))
           (data (i32.const 16) "\\40\\00\\00\\00\\02\\00\\00\\00")

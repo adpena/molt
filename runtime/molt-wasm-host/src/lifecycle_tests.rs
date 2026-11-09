@@ -383,7 +383,7 @@ fn finite_lifetime_finalizes_after_linked_and_split_setup_failures() {
         let app_import = if linked {
             ""
         } else {
-            r#"(import "molt_runtime" "recursion_exit_fast" (func (param i64)))"#
+            r#"(import "molt_runtime" "molt_recursion_exit_fast@CONTEXT_SUFFIX@" (func (param i64)))"#
         };
         let core_start = if fail_table_setup {
             ""

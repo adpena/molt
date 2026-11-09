@@ -46,7 +46,10 @@ from tests.wasm_linked_runner import (
 from tests.wasm_execution_manifest import write_wasm_execution_manifest
 from tests.runtime_profile_fixtures import process_profile_payload
 from molt._runtime_profile_schema import validate_process_profile
-from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+from molt._wasm_abi_generated import (
+    WASM_EXECUTION_MANIFEST_VERSION,
+    compiled_execution_symbol,
+)
 from molt._runtime_profile_schema_generated import RSS_SOURCE_BY_TARGET
 
 # Measured transfer-size ratchet for the split runtime; see test_runtime_wasm_size.
@@ -872,7 +875,7 @@ class TestSplitRuntimeArtifacts:
         assert runtime_imports, (
             "app.wasm must retain molt_runtime imports in split mode"
         )
-        assert "molt_string_from_bytes" in runtime_imports
+        assert compiled_execution_symbol("molt_string_from_bytes") in runtime_imports
         # PROGRAM_A has no Python import operation. The shared runtime still
         # publishes import support for other applications using the same image.
         runtime = _require_split_artifact(out_dir, "molt_runtime.wasm")
@@ -945,8 +948,8 @@ def test_split_runtime_app_exports_host_init(
 
     app_wasm = out_dir / "app.wasm"
     exports = wasm_artifact._collect_wasm_export_names(app_wasm)
-    assert "molt_host_init" in exports
-    assert "molt_main" in exports
+    assert compiled_execution_symbol("molt_host_init") in exports
+    assert compiled_execution_symbol("molt_main") in exports
 
 
 @pytest.mark.slow
@@ -1995,7 +1998,7 @@ class TestManifestJson:
         data = self._read_manifest(split_build_a)
         entry = data["entry"]
         assert entry["module"] == "app"
-        assert entry["function"] == "molt_main"
+        assert entry["function"] == compiled_execution_symbol("molt_main")
 
     def test_total_size_consistent(self, split_build_a):
         data = self._read_manifest(split_build_a)

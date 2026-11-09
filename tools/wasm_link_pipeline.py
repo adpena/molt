@@ -882,7 +882,10 @@ def _prepare_link_inputs_stage(
                 *contract_app_exports,
                 *(
                     name
-                    for name in _format._OUTPUT_RUNTIME_EXPORT_ALIASES
+                    for name in (
+                        *_format._OUTPUT_RUNTIME_EXPORT_ALIASES,
+                        *_format.WASM_CALL_INDIRECT_IMPORTS,
+                    )
                     if name in export_symbol_map
                 ),
                 *(

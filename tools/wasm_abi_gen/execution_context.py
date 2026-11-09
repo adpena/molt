@@ -109,7 +109,35 @@ def runtime_execution_specs(data: dict) -> list[dict]:
 
 def render_rust_context_abi(data: dict) -> str:
     suffix = context_suffix(data)
+    compiled = context_schema(data)["compiled_entries"]
+    variants = {
+        name: "".join(part.title() for part in name.split("_")) for name in compiled
+    }
+    if any(not name.isascii() or not name.isidentifier() for name in compiled) or len(
+        set(variants.values())
+    ) != len(compiled):
+        raise ValueError("compiled entries must form distinct Rust identities")
     lines = [
+        "\n/// Application-owned entries declared by execution_context_abi.compiled_entries.\n",
+        "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+        "pub enum CompiledExecutionEntry {\n",
+        *(f"    {variants[name]},\n" for name in compiled),
+        "}\n\nimpl CompiledExecutionEntry {\n",
+        "    pub const ALL: &'static [Self] = &[\n",
+        *(f"        Self::{variants[name]},\n" for name in compiled),
+        "    ];\n\n    pub const fn physical_symbol(self) -> &'static str {\n",
+        "        match self {\n",
+        *(
+            f"            Self::{variants[name]} => {json.dumps(name + suffix)},\n"
+            for name in compiled
+        ),
+        "        }\n    }\n\n    pub fn from_symbol(symbol: &str) -> Option<Self> {\n",
+        "        Some(match symbol {\n",
+        *(
+            f"            {json.dumps(name + suffix)} => Self::{variants[name]},\n"
+            for name in compiled
+        ),
+        "            _ => return None,\n        })\n    }\n}\n",
         "\n/// Calling convention selected by the canonical runtime-call manifest.\n",
         "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
         "pub enum RuntimeExecutionContext { Attached, Boundary }\n\n",
@@ -123,6 +151,11 @@ def render_rust_context_abi(data: dict) -> str:
         "pub fn compiled_execution_symbol(logical: &str) -> String {\n",
         "    let mut physical = String::with_capacity(logical.len() + ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX.len());\n",
         "    physical.push_str(logical);\n    physical.push_str(ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX);\n    physical\n}\n\n",
+        "/// Admit only the current physical identity of a registered execution ABI.\n",
+        "pub fn runtime_execution_abi_for_symbol(physical: &str) -> Option<RuntimeExecutionAbi> {\n",
+        "    let logical = physical.strip_suffix(ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX).unwrap_or(physical);\n",
+        "    let abi = runtime_execution_abi(logical)?;\n",
+        "    (abi.physical_symbol == physical).then_some(abi)\n}\n\n",
         "pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {\n",
         "    Some(match logical {\n",
     ]

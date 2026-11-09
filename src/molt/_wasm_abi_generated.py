@@ -9731,8 +9731,8 @@ WASM_IMPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]
 
 WASM_RUNTIME_HOST_EXPORT_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     ("molt_attached_context", (), ("i64",)),
-    ("molt_compiled_execution_enter", (), ("i64",)),
-    ("molt_compiled_execution_leave", ("i64",), ()),
+    ("molt_compiled_execution_enter", ("i64",), ("i64",)),
+    ("molt_compiled_execution_leave", ("i64", "i64"), ()),
     ("molt_attached_context_abi_fingerprint", (), ("i64",)),
     ("molt_exception_pending_detached", (), ("i64",)),
     ("molt_alloc", ("i64",), ("i64",)),
@@ -28840,8 +28840,8 @@ WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES: dict[tuple[str, str], dict[st
     ("env", "molt_compileall_compile_dir__molt_context_a8c6010e2cbb56a1"): {"params": ['i64', 'i64', 'i64'], "result": 'i64'},
     ("env", "molt_compileall_compile_file__molt_context_a8c6010e2cbb56a1"): {"params": ['i64', 'i64'], "result": 'i64'},
     ("env", "molt_compileall_compile_path__molt_context_a8c6010e2cbb56a1"): {"params": ['i64', 'i64', 'i64', 'i64'], "result": 'i64'},
-    ("env", "molt_compiled_execution_enter"): {"params": [], "result": 'i64'},
-    ("env", "molt_compiled_execution_leave"): {"params": ['i64'], "result": 'nil'},
+    ("env", "molt_compiled_execution_enter"): {"params": ['i64'], "result": 'i64'},
+    ("env", "molt_compiled_execution_leave"): {"params": ['i64', 'i64'], "result": 'nil'},
     ("env", "molt_complex_from_obj__molt_context_a8c6010e2cbb56a1"): {"params": ['i64', 'i64', 'i64', 'i64'], "result": 'i64'},
     ("env", "molt_compression_streams_buffer_size__molt_context_a8c6010e2cbb56a1"): {"params": ['i64'], "result": 'i64'},
     ("env", "molt_concurrent_as_completed__molt_context_a8c6010e2cbb56a1"): {"params": ['i64', 'i64', 'i64'], "result": 'i64'},

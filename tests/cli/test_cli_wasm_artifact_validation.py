@@ -1262,6 +1262,7 @@ def test_shared_allowlist_is_response_content_not_compile_rustflags(
     text = path.read_text(encoding="utf-8")
     for required in (
         "--import-memory",
+        "--export-memory",
         "--import-table",
         "--growable-table",
         "--export-if-defined=molt_add",

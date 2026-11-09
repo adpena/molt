@@ -1740,6 +1740,11 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
         "params": ["i64"],
         "results": ["i32"],
     }
+    assert host_export_signatures["molt_compiled_execution_enter"]["params"] == ["i64"]
+    assert host_export_signatures["molt_compiled_execution_leave"]["params"] == [
+        "i64",
+        "i64",
+    ]
     assert {"molt_gpu_matmul_contiguous", "molt_gpu_tensor__zeros"} <= host_exports
     assert "gpu_intrinsic_manifest_name" not in data
 
@@ -2758,6 +2763,33 @@ def test_reserved_python_callable_rejects_native_only_void(
         manifest.WasmAbiManifestError, match="reserved runtime callable 'molt_type_new'"
     ):
         manifest.validate_loaded_manifest(_raw_manifest())
+
+
+@pytest.mark.parametrize(
+    "parameter", ["__context", "__molt_context", "context", "context_bits"]
+)
+def test_only_typed_attached_bodies_remove_the_context_parameter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, parameter: str
+) -> None:
+    provider = tmp_path / "boundary.rs"
+    provider.write_text(
+        "#[unsafe(no_mangle)]\n"
+        f'pub extern "C" fn molt_boundary_probe({parameter}: u64, value: u64) -> u64 {{ value }}\n'
+        "pub(crate) fn molt_attached_probe_attached_body(\n"
+        "    _py: &crate::PyToken<'_>, context: u64\n"
+        ") -> u64 { context }\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(manifest, "_runtime_rust_files", lambda: [provider])
+    monkeypatch.setattr(manifest, "_rust_type_aliases", lambda: {})
+    manifest._rust_export_signatures.cache_clear()
+    try:
+        assert manifest._rust_export_signatures() == {
+            "molt_boundary_probe": {(("i64", "i64"), "i64")},
+            "molt_attached_probe": {(("i64",), "i64")},
+        }
+    finally:
+        manifest._rust_export_signatures.cache_clear()
 
 
 def test_python_callable_abi_and_cache_include_native_only_providers(

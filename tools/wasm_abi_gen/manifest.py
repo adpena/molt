@@ -1369,13 +1369,6 @@ def _rust_export_signatures(
                         f"attached body {name} lacks its typed context"
                     )
                 params = params[1:]
-            elif params and params[0].split(":", 1)[0].strip() in {
-                "__context",
-                "__molt_context",
-                "context",
-                "context_bits",
-            }:
-                params = params[1:]
             normalized = tuple(
                 _normalize_rust_wasm_scalar(p.rsplit(":", 1)[-1].strip(), aliases)
                 for p in params

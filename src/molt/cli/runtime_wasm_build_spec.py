@@ -478,6 +478,8 @@ def _compute_runtime_wasm_build_spec(
             "-C",
             "link-arg=--import-memory",
             "-C",
+            "link-arg=--export-memory",
+            "-C",
             "link-arg=--import-table",
             "-C",
             "link-arg=--growable-table",

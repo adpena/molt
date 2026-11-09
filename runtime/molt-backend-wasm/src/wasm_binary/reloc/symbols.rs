@@ -48,10 +48,13 @@ impl SymbolMaps {
     }
 }
 
-pub(super) fn is_manifest_call_indirect_import_name(name: &str) -> bool {
-    CALL_INDIRECT_IMPORTS
-        .iter()
-        .any(|spec| spec.import_name == name)
+pub(super) fn is_manifest_call_indirect_export_symbol(name: &str) -> bool {
+    CALL_INDIRECT_IMPORTS.iter().any(|spec| {
+        molt_ir::runtime_callable_abi_generated::runtime_execution_abi(spec.import_name)
+            .expect("generated indirect-call execution ABI is registered")
+            .physical_symbol
+            == name
+    })
 }
 
 fn linker_symbol_name_for_function_import(import: &FunctionImport) -> String {
@@ -111,17 +114,17 @@ pub(super) fn build_symbol_maps(scan: &RelocScan, data_segments: &[DataSegmentIn
         let export_name = scan.func_exports.get(&func_index).cloned();
         // Keep linker symbol names module-scoped so linked output/runtime objects
         // cannot accidentally alias local function symbols with identical names.
-        // Preserve explicit call_indirect export symbols because wasm_link.py
-        // resolves/aliases those by name for runtime ABI wiring.
+        // An attached calling convention does not give a Python function a
+        // runtime linker identity. Only the compiled entry points and explicit
+        // call_indirect exports have that identity; ordinary exports remain
+        // object-scoped even when their public name matches a runtime import.
         let name = match export_name.as_deref() {
             Some(exported)
-                if exported.ends_with(
-                    molt_ir::runtime_callable_abi_generated::ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX,
-                ) =>
+                if molt_ir::runtime_callable_abi_generated::CompiledExecutionEntry::from_symbol(exported).is_some() =>
             {
                 exported.to_string()
             }
-            Some(exported) if is_manifest_call_indirect_import_name(exported) => {
+            Some(exported) if is_manifest_call_indirect_export_symbol(exported) => {
                 exported.to_string()
             }
             Some(_) => format!("__molt_output_export_{func_index}"),
