@@ -10,10 +10,15 @@ observations.
 Corrupt stores are unavailable to this process. Their files are never unlinked:
 SQLite peers may still own the database and WAL. Busy/full/read-only stores
 remain optional cache misses or failed writes, with no alternate cache lane.
+
+Inside a frontend operation, publication is queued and saved in chunked
+transactions that never wait for SQLite's one writer; the operation's explicit
+exit saves the rest once (``save_pending``). Outside one, a put is saved at once.
 """
 
 from __future__ import annotations
 
+import enum
 import hashlib
 import os
 import re
@@ -47,6 +52,15 @@ RecordKind = Literal[
 ]
 SOURCE_RECORD_BATCH_MAX_RECORDS = 256
 SOURCE_RECORD_BATCH_MAX_BYTES = 1 << 20
+# Records queued inside a frontend operation are saved in chunks of the batch
+# bounds above. A chunk is due at either bound or once its oldest record waited
+# this long, so concurrent builds still see each other's work within seconds.
+_PENDING_MAX_AGE_NS = 2_000_000_000
+# Queued payload bytes one process holds before it drops the largest records. A
+# module lowering can be several MiB; import scans are a few KiB.
+_PENDING_BYTES_LIMIT = 64 << 20
+# The WAL file SQLite keeps after a checkpoint resets it.
+_JOURNAL_SIZE_LIMIT_BYTES = 64 << 20
 
 # DDL identity does not encode the write protocol. Users sharing a namespace
 # must retain the stamp CAS and lifetime-lease protocol; incompatible changes
@@ -162,6 +176,12 @@ _Renewals = dict[tuple[str, str, str, bytes, int], int]
 # SQLite connection's C finalizer in that child.
 _INHERITED_CONNECTIONS: list[sqlite3.Connection] = []
 _ConnectionResources = tuple[sqlite3.Connection, _FileLockHandle]
+# A record's address: one row per (kind, key).
+_RecordAddress = tuple[RecordKind, str]
+# Failures a later save can cure; every other failure drops the queue.
+_RETRYABLE_SAVE_FAILURES = frozenset(
+    {SqliteFailure.CONTENTION, SqliteFailure.STALE_SNAPSHOT}
+)
 _DEFERRED_LIFETIME_RELEASES: deque[_FileLockHandle] = deque()
 
 
@@ -208,6 +228,67 @@ def _close_connection(
             _release_file_lock(lifetime)
 
 
+def _save_pending_chunk(
+    connection: sqlite3.Connection,
+    chunk: Sequence[tuple[_RecordAddress, _PendingRecord]],
+    now: int,
+) -> None:
+    """Write one chunk of queued records in one transaction.
+
+    Each row gets a fresh revision and its recency stamp at save time, as an
+    immediate put does; a queued time would look old to the eviction fence.
+    """
+    connection.execute("BEGIN IMMEDIATE").close()
+    try:
+        connection.executemany(
+            "INSERT OR REPLACE INTO records"
+            " (kind, key, generation, payload, revision)"
+            " VALUES (?, ?, ?, ?, randomblob(16))",
+            [
+                (kind, key, record.generation, record.payload)
+                for (kind, key), record in chunk
+            ],
+        )
+        connection.executemany(
+            "INSERT OR REPLACE INTO recency (kind, key, used_ns) VALUES (?, ?, ?)",
+            [(kind, key, now) for (kind, key), _record in chunk],
+        )
+        connection.execute("COMMIT").close()
+    except BaseException:
+        if connection.in_transaction:
+            connection.execute("ROLLBACK").close()
+        raise
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingRecord:
+    """A record queued inside a frontend operation, not yet in the database."""
+
+    generation: str
+    payload: bytes
+    queued_ns: int
+
+
+class SaveOutcome(enum.Enum):
+    """How one save of queued records ended."""
+
+    # Nothing was queued.
+    NOTHING = enum.auto()
+    # Every queued record is in the database.
+    SAVED = enum.auto()
+    # Another writer held the database; unsaved records stay queued.
+    BUSY = enum.auto()
+    # The database failed or is unavailable; unsaved records were dropped.
+    FAILED = enum.auto()
+
+
+@dataclass(frozen=True, slots=True)
+class SaveResult:
+    outcome: SaveOutcome
+    saved: int
+    dropped: int
+
+
 def _save_renewals(connection: sqlite3.Connection, renewals: _Renewals) -> int:
     """Write the queued renewals in one transaction; return the renewed rows.
 
@@ -247,7 +328,9 @@ class SourceRecord:
     kind: RecordKind
     key: str
     generation: str
-    revision: bytes
+    # None for a record this process queued and has not saved: it has no row
+    # revision yet, and it is newer than any recency stamp.
+    revision: bytes | None
     used_ns: int
     _store: SourceRecordStore = field(repr=False, compare=False)
 
@@ -525,6 +608,11 @@ class SourceRecordStore:
         self._connection_resources: _ConnectionResources | None = None
         self._connection_finalizer: finalize | None = None
         self._renewals: _Renewals = {}
+        # Records put inside a frontend operation, saved in chunks (Cargo's
+        # deferred last-use save, applied to payloads). Insertion order is the
+        # save order.
+        self._pending: dict[_RecordAddress, _PendingRecord] = {}
+        self._pending_bytes = 0
         self._unavailable = False
 
     def close(self) -> None:
@@ -533,6 +621,7 @@ class SourceRecordStore:
             return
         with self._lock:
             try:
+                self._save_pending_locked(wait_s=_BUSY_TIMEOUT_SECONDS)
                 self._save_renewals_locked()
             finally:
                 self._release_connection()
@@ -540,6 +629,7 @@ class SourceRecordStore:
 
     def _release_connection(self) -> None:
         self._renewals.clear()
+        self._clear_pending()
         finalizer, self._connection_finalizer = self._connection_finalizer, None
         resources, self._connection_resources = self._connection_resources, None
         if finalizer is not None and finalizer.detach() is not None:
@@ -558,6 +648,19 @@ class SourceRecordStore:
             raise ValueError("source record size bound must be nonnegative or None")
         if self._pid != os.getpid():
             return None
+        with self._lock:
+            pending = self._pending.get((kind, key))
+        if pending is not None:
+            # A queued record shadows the database row for its address: a
+            # different generation or an oversized payload is a miss, never a
+            # fall-through to an older row.
+            if pending.generation != generation or (
+                max_bytes is not None and len(pending.payload) > max_bytes
+            ):
+                return None
+            return SourceRecord(
+                pending.payload, kind, key, generation, None, pending.queued_ns, self
+            )
         query = (
             "SELECT r.payload, r.revision, u.used_ns FROM records AS r"
             " JOIN recency AS u ON u.kind = r.kind AND u.key = r.key"
@@ -590,6 +693,8 @@ class SourceRecordStore:
             raise TypeError("source record payload must be bytes")
         if self._pid != os.getpid():
             return False
+        if self._pinned_by_operation():
+            return self._queue(kind, key, payload, generation=generation)
         now = time.time_ns()
 
         def store(connection: sqlite3.Connection) -> None:
@@ -617,7 +722,7 @@ class SourceRecordStore:
         return stored
 
     def _refresh_record(self, record: SourceRecord) -> bool:
-        if self._pid != os.getpid():
+        if self._pid != os.getpid() or record.revision is None:
             return False
         now = time.time_ns()
         if now - record.used_ns < _RECORD_REFRESH_NS:
@@ -660,6 +765,137 @@ class SourceRecordStore:
             return self._save_renewals_locked()
         finally:
             self._lock.release()
+
+    def pending_count(self) -> int:
+        """Records this process queued and has not saved."""
+        return len(self._pending)
+
+    def _pinned_by_operation(self) -> bool:
+        """Whether a frontend operation owns this store and will save its queue."""
+        from molt.cli.cache_fingerprints import _SOURCE_TREE_FINGERPRINT_TRANSACTION
+
+        transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
+        return transaction is not None and transaction.source_records is self
+
+    def _queue(
+        self, kind: RecordKind, key: str, payload: bytes, *, generation: str
+    ) -> bool:
+        """Queue one record; True means queued, not persisted.
+
+        False means the store is unusable now (as an immediate put reports).
+        """
+        with self._lock:
+            if self._connect() is None:
+                return False
+            address = (kind, key)
+            previous = self._pending.pop(address, None)
+            if previous is not None:
+                self._pending_bytes -= len(previous.payload)
+            self._pending[address] = _PendingRecord(generation, payload, time.time_ns())
+            self._pending_bytes += len(payload)
+            self._bound_pending_locked()
+            if self._pending_due_locked():
+                self._save_pending_locked(wait_s=0.0)
+            return True
+
+    def _pending_due_locked(self) -> bool:
+        if not self._pending:
+            return False
+        if (
+            len(self._pending) >= SOURCE_RECORD_BATCH_MAX_RECORDS
+            or self._pending_bytes >= SOURCE_RECORD_BATCH_MAX_BYTES
+        ):
+            return True
+        oldest = next(iter(self._pending.values()))
+        return time.time_ns() - oldest.queued_ns >= _PENDING_MAX_AGE_NS
+
+    def _bound_pending_locked(self) -> None:
+        """Drop the largest queued records until the queue fits its byte limit.
+
+        A dropped record is a later cache miss, never a wrong answer. Largest
+        first keeps the many small, often reused import scans.
+        """
+        while self._pending_bytes > _PENDING_BYTES_LIMIT and self._pending:
+            address = max(
+                self._pending, key=lambda item: len(self._pending[item].payload)
+            )
+            self._pending_bytes -= len(self._pending.pop(address).payload)
+
+    def _clear_pending(self) -> int:
+        dropped = len(self._pending)
+        self._pending.clear()
+        self._pending_bytes = 0
+        return dropped
+
+    def save_pending(self, *, final: bool) -> SaveResult:
+        """Save queued records in chunked transactions.
+
+        ``final`` waits for this process's lock and up to the busy timeout for
+        the database writer, once per operation. Otherwise it waits for neither
+        and keeps the queue on contention.
+        """
+        if self._pid != os.getpid():
+            return SaveResult(SaveOutcome.NOTHING, 0, 0)
+        if not self._lock.acquire(blocking=final):
+            return SaveResult(SaveOutcome.BUSY, 0, 0)
+        try:
+            return self._save_pending_locked(
+                wait_s=_BUSY_TIMEOUT_SECONDS if final else 0.0
+            )
+        finally:
+            self._lock.release()
+
+    def _next_pending_chunk(self) -> list[tuple[_RecordAddress, _PendingRecord]]:
+        chunk: list[tuple[_RecordAddress, _PendingRecord]] = []
+        size = 0
+        for address, record in self._pending.items():
+            if chunk and (
+                len(chunk) >= SOURCE_RECORD_BATCH_MAX_RECORDS
+                or size + len(record.payload) > SOURCE_RECORD_BATCH_MAX_BYTES
+            ):
+                break
+            chunk.append((address, record))
+            size += len(record.payload)
+        return chunk
+
+    def _save_pending_locked(self, *, wait_s: float) -> SaveResult:
+        if not self._pending:
+            return SaveResult(SaveOutcome.NOTHING, 0, 0)
+        if self._connection_resources is None:
+            return SaveResult(SaveOutcome.FAILED, 0, self._clear_pending())
+        connection = self._connection_resources[0]
+        saved = 0
+        try:
+            with closing(connection.execute("PRAGMA busy_timeout")) as cursor:
+                previous_timeout = cursor.fetchone()[0]
+            connection.execute(f"PRAGMA busy_timeout = {int(wait_s * 1000)}").close()
+            try:
+                while self._pending:
+                    chunk = self._next_pending_chunk()
+                    _save_pending_chunk(connection, chunk, time.time_ns())
+                    # Cleared only after COMMIT: an interrupted save keeps them.
+                    for address, record in chunk:
+                        del self._pending[address]
+                        self._pending_bytes -= len(record.payload)
+                    saved += len(chunk)
+            finally:
+                try:
+                    connection.execute(
+                        f"PRAGMA busy_timeout = {previous_timeout}"
+                    ).close()
+                except sqlite3.Error:
+                    # Never reuse a connection with an unqualified policy.
+                    self._disable()
+                    raise
+        except sqlite3.OperationalError as error:
+            if classify_sqlite_failure(error) in _RETRYABLE_SAVE_FAILURES:
+                return SaveResult(SaveOutcome.BUSY, saved, 0)
+            return SaveResult(SaveOutcome.FAILED, saved, self._clear_pending())
+        except sqlite3.DatabaseError:
+            dropped = len(self._pending)
+            self._disable()
+            return SaveResult(SaveOutcome.FAILED, saved, dropped)
+        return SaveResult(SaveOutcome.SAVED, saved, 0)
 
     def _save_renewals_locked(self) -> int:
         if not self._renewals or self._connection_resources is None:
@@ -741,6 +977,11 @@ class SourceRecordStore:
 
     def _initialize(self, connection: sqlite3.Connection, *, wait: bool = True) -> None:
         connection.execute("PRAGMA synchronous = NORMAL").close()
+        # Per connection: the size SQLite truncates the WAL to when a checkpoint
+        # resets it, so one burst does not leave a gigabyte file behind.
+        connection.execute(
+            f"PRAGMA journal_size_limit = {_JOURNAL_SIZE_LIMIT_BYTES}"
+        ).close()
         if self._schema_ready(connection):
             return
         # WAL conversion needs an exclusive database lock outside a transaction.

@@ -97,6 +97,13 @@ fresh output directory, without Cargo).
    main-thread samples of one such build sat in SQLite `readDbPage` → `pread`.
    A fresh cache for this witness holds 110 MB. Retention of that store belongs
    to its owners (HF-513, HF-582); a single user's store stays small.
+   2026-11-09: the store reached 48 GB, 65% of it free pages, and its WAL passed
+   1.2 GB. Builds timed out at 300 s in import resolution: each record was its
+   own write transaction behind SQLite's one writer, with a 60 s busy timeout,
+   and one build at a time ran the commit-path checkpoint into the fragmented
+   file. HF-773 now queues records per frontend operation and saves them in
+   chunks ([OPERATIONS.md](../OPERATIONS.md), source records). Reads on the
+   fragmented file and its compaction remain open.
 
 ## Discriminating experiment
 
