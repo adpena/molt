@@ -1143,10 +1143,18 @@ impl RuntimeClassRetirement {
         );
         // Managed views and all incoming projection aliases were retired in
         // the callback-capable fixed point, before reaching this sealed tail.
-        assert!(
-            !self.has_native_owners(py),
-            "native owners survived the last callback drain before class retirement"
-        );
+        if self.has_native_owners(py) {
+            let state = crate::runtime_state(py);
+            let scope =
+                (!crate::state::runtime_state::owns_process_cpython_state(state)).then_some(state);
+            // The survivors go on their own line: the lifecycle failure line
+            // below is a stable contract (runtime descendant receipts).
+            eprintln!(
+                "molt runtime retirement survivors: {}",
+                crate::object::gc::gc_live_native_node_summary(scope, 16)
+            );
+            panic!("native owners survived the last callback drain before class retirement");
+        }
         assert_eq!(
             self.retained_thread_states(py),
             0,
