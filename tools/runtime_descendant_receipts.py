@@ -127,7 +127,80 @@ ABI_MALFORMED_HOOKS = (
 ABI_MISSING_TEXT = (
     "missing_string_and_bytes_allocators_select_refusal_over_an_incoming_error"
 )
+IO_CUSTODY = (
+    "async_rt::channels::stream::stream_tests::"
+    "io_hooks_validate_return_custody_before_boxing_and_owner_cleanup"
+)
+FOREIGN_CUSTODY = (
+    "cpython_abi_hooks::gil_scope_tests::"
+    "foreign_return_rejects_missing_restore_before_packed_operand_cleanup"
+)
+ROOT_CUSTODY = (
+    "cpython_abi_hooks::gil_scope_tests::"
+    "root_foreign_callouts_reject_missing_restore_before_return_cleanup"
+)
+EXIT_CUSTODY = (
+    "state::runtime_state::tests::process_exit_retains_compiled_callback_custody"
+)
 OWNERS: Mapping[str, Owner] = {
+    IO_CUSTODY: Owner(
+        "io-hook-return-custody",
+        "async_rt::channels::stream::stream_tests::io_hook_return_custody_child",
+        {
+            f"{transport}:{operation}:{custody}": Outcome(
+                0 if custody == "restore" else None,
+                custody == "restore",
+                stderr_markers=(
+                    (
+                        "native IO callback restored\n",
+                        "native IO callback public return reached\n",
+                        "native IO callback owners retired\n",
+                    )
+                    if custody == "restore"
+                    else ("foreign callback returned with invalid execution custody",)
+                ),
+            )
+            for transport in ("stream", "websocket")
+            for operation in ("send", "recv")
+            for custody in ("restore", "detached")
+        },
+        stderr_markers=("native IO callback suspended\n",),
+    ),
+    FOREIGN_CUSTODY: Owner(
+        "foreign-execution-custody",
+        FOREIGN_CUSTODY,
+        {"missing-restore": Outcome(None)},
+        stderr_markers=("foreign callback returned with invalid execution custody",),
+    ),
+    ROOT_CUSTODY: Owner(
+        "root-foreign-callout-custody",
+        ROOT_CUSTODY,
+        {
+            mode: Outcome(None)
+            for mode in (
+                "pyinit",
+                "module-traverse",
+                "module-clear",
+                "module-free",
+                "heap-export",
+                "heap-release",
+                "heap-invalid-view-release",
+            )
+        },
+        stderr_markers=(
+            "root foreign callout executed",
+            "foreign callback returned with invalid execution custody",
+        ),
+    ),
+    EXIT_CUSTODY: Owner(
+        "process-exit",
+        EXIT_CUSTODY,
+        {
+            "compiled-callback": Outcome(
+                stdout_markers=("process-exit compiled callback completed\n",),
+            )
+        },
+    ),
     "env_var_init_installs_tracker": Owner(
         "resource-startup",
         "env_var_init_installs_tracker_child",
