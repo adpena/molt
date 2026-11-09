@@ -69,6 +69,49 @@ pub(super) fn wasm_test_op(kind: molt_ir::OpKind, out: Option<&str>, args: Vec<&
     }
 }
 
+/// The executed-statement oracle of guests that mark statements with `line`.
+/// A `line` op is a zero-cost statement marker (call-anatomy phase 1a), so
+/// each statement prints its line; the host's `print_obj` records it, decoded
+/// with [`executed_line_int_base`]. `print` may raise, so it follows the
+/// statement's own `check_exception` when one comes right after the `line`: a
+/// checked statement prints only after its check passes. The `line` ops stay,
+/// so statement boundaries (megafunction split) are unchanged.
+pub(super) fn print_after_each_line(ops: Vec<OpIR>) -> Vec<OpIR> {
+    let mut printed = Vec::with_capacity(ops.len() * 3);
+    let mut ops = ops.into_iter().enumerate().peekable();
+    while let Some((index, op)) = ops.next() {
+        let line = (op.kind == molt_ir::OpKind::Line).then(|| op.value.expect("line value"));
+        printed.push(op);
+        let Some(line) = line else {
+            continue;
+        };
+        if let Some((_, check)) =
+            ops.next_if(|(_, next)| next.kind == molt_ir::OpKind::CheckException)
+        {
+            printed.push(check);
+        }
+        printed.extend(print_line(line, &format!("executed_line_{index}")));
+    }
+    printed
+}
+
+/// `print(<line>)` through the fresh variable `name`.
+pub(super) fn print_line(line: i64, name: &str) -> [OpIR; 2] {
+    [
+        OpIR {
+            value: Some(line),
+            ..wasm_test_op(molt_ir::OpKind::Const, Some(name), vec![])
+        },
+        wasm_test_op(molt_ir::OpKind::Print, None, vec![name]),
+    ]
+}
+
+/// `print_obj` receives a boxed inline integer; subtracting this base gives
+/// the printed line.
+pub(super) fn executed_line_int_base() -> String {
+    molt_codegen_abi::box_int_bits(0).to_string()
+}
+
 pub(super) fn wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
     ir: SimpleIR,
     code_slots: molt_ir::code_slots::CodeSlotBindings,

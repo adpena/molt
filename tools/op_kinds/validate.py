@@ -783,6 +783,7 @@ def load_table(table_path: Path = TABLE) -> dict:
         _SCCP_CONSTANT_EVAL_RULES,
         "SCCP constant eval rule",
     )
+    _validate_negated_predicates(data, opcodes)
     _validate_opcode_rule_rows(
         data,
         "value_range_transfer_rules",
@@ -1577,6 +1578,40 @@ def _validate_gvn_numberable_attr_key_facts(
             raise OpKindTableError(
                 f"gvn_numberable_attr_key_opcodes {opcode}: duplicate attrs"
             )
+
+
+def _validate_negated_predicates(data: dict, opcodes: list[dict]) -> None:
+    """Each row pairs a predicate with the one it negates, at equal arity.
+
+    A negating opcode never negates another negation, so one lookup gives the
+    canonical predicate and its polarity.
+    """
+    rows = data.get("negated_predicates", [])
+    if not isinstance(rows, list):
+        raise OpKindTableError("negated_predicates must be an array of tables")
+    arity = {row["name"]: row.get("operand_arity") for row in opcodes}
+    negating: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"opcode", "negates"}:
+            raise OpKindTableError(
+                f"negated_predicates rows need exactly opcode and negates: {row}"
+            )
+        opcode, negates = row["opcode"], row["negates"]
+        for name in (opcode, negates):
+            if name not in arity:
+                raise OpKindTableError(
+                    f"negated_predicates names unknown OpCode {name!r}"
+                )
+        if opcode == negates or opcode in negating:
+            raise OpKindTableError(f"negated_predicates {opcode}: invalid or duplicate")
+        if arity[opcode] != arity[negates]:
+            raise OpKindTableError(
+                f"negated_predicates {opcode}: operand_arity differs from {negates}"
+            )
+        negating[opcode] = negates
+    chained = sorted(set(negating) & set(negating.values()))
+    if chained:
+        raise OpKindTableError(f"negated_predicates chain through {chained}")
 
 
 def _validate_opcode_rule_rows(

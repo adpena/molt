@@ -9,6 +9,9 @@
 use std::collections::HashMap;
 
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::{
+    PredicateSemantics, opcode_negated_predicate_table, opcode_predicate_semantics,
+};
 use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::values::ValueId;
 
@@ -159,4 +162,61 @@ fn flatten_copy_map(copy_of: &mut HashMap<ValueId, ValueId>) {
 /// Resolve `value` through a copy map to its root source.
 pub(crate) fn resolve_copy(copy_of: &HashMap<ValueId, ValueId>, value: ValueId) -> ValueId {
     copy_of.get(&value).copied().unwrap_or(value)
+}
+
+/// `opcode` as the predicate it states and whether it negates it: `IsNot`
+/// is `Is` negated, `Not` is `Bool` negated (registry `negated_predicates`).
+pub fn canonical_predicate(opcode: OpCode) -> (OpCode, bool) {
+    match opcode_negated_predicate_table(opcode) {
+        Some(positive) => (positive, true),
+        None => (opcode, false),
+    }
+}
+
+/// A truth test with its truth wrappers removed.
+///
+/// `Bool(x)` is true exactly when `x` is truthy and `Not(x)` exactly when it
+/// is not; a value-forwarding copy keeps the value. Peeling follows these to
+/// the first other producer: the original value is truthy on every execution
+/// exactly when `core` is truthy, or exactly when it is not if `negated`. The
+/// wrappers still execute (`Bool` may call `__bool__`); this is a fact about
+/// their results, not permission to erase them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TruthTest {
+    pub core: ValueId,
+    pub negated: bool,
+}
+
+/// Peel `value`'s truth wrappers. `producer` names each value's defining op;
+/// the walk is bounded by `limit` steps so a malformed cycle stays finite.
+pub fn peel_truth_wrappers<'f>(
+    value: ValueId,
+    limit: usize,
+    producer: impl Fn(ValueId) -> Option<&'f TirOp>,
+) -> TruthTest {
+    let mut test = TruthTest {
+        core: value,
+        negated: false,
+    };
+    for _ in 0..=limit {
+        let Some(op) = producer(test.core) else {
+            break;
+        };
+        if let Some(source) = copy_value_source(op) {
+            test.core = source;
+            continue;
+        }
+        if opcode_predicate_semantics(op.opcode) != Some(PredicateSemantics::Truth) {
+            break;
+        }
+        let (_, flips) = canonical_predicate(op.opcode);
+        let [operand] = op.operands[..] else {
+            break;
+        };
+        test = TruthTest {
+            core: operand,
+            negated: test.negated != flips,
+        };
+    }
+    test
 }

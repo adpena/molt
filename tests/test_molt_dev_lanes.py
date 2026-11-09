@@ -2262,7 +2262,7 @@ def _commit_candidate_controller_source(worktree: Path) -> str:
 
     for relative in controller_source.CONTROLLER_PATHS:
         path = worktree / relative
-        if relative in {"tools", "src/molt", "config"}:
+        if relative in {"tools", "src/molt", "config", "tests/findings"}:
             path /= "candidate-source.txt"
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)

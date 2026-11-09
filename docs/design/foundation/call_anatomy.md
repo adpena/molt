@@ -1121,6 +1121,16 @@ plain stores into the record. Frame objects materialize on observation.
    same record type: the generic entry pushes a record for the native body it calls, so one chain
    holds both.
 
+**Settled phasing (2026-11-09).** Phase 1a: the `line` op stops costing a runtime call on native,
+LLVM and WASM and stays a zero-cost statement marker. It keeps its other roles until a typed
+statement-start payload replaces it: the megafunction split boundary
+(`molt-tir/src/passes/megafunction_split.rs`), the native RC cleanup point (`fc/funcobj.rs`), the
+SSA source-site fallback (`molt-ir/src/tir/ssa.rs`) and the markers the rewrites preserve. Phase
+1b deletes `molt_trace_set_line`, its `MOLT_TRACE_LINE*` flags and its WASM manifest row after
+HF-699 E2 releases the WASM ABI. Phase 2 makes the frame-home stores exception-free: the TIR
+representation facts decide where a raw integer's view must be boxed, and a TIR pass inserts
+`frame_home_box` with its exception check there.
+
 **Measurable target.** Call loop (p8) from 3,623 to at most 1,900 instructions per iteration;
 `fib` from 4,346 to at most 2,300 per call; method loop from 4,697 to at most 3,000. These budgets
 remove the measured frame and location shares (51% of the call loop's samples, 48% of `fib`'s,

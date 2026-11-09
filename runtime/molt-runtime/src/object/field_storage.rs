@@ -18,6 +18,11 @@ pub(crate) struct InstanceFields<'rows> {
     fields: super::class_layout::ClassFields<'rows>,
     base: *mut u8,
     extent: usize,
+    /// A dictionary-backed instance owns its inferred attributes in the
+    /// dictionary. Its inferred rows are not physical: after a `__class__`
+    /// assignment they may describe words past its allocation.
+    skip_inferred: bool,
+    remaining: usize,
 }
 
 impl InstanceFields<'_> {
@@ -26,6 +31,31 @@ impl InstanceFields<'_> {
             fields: super::class_layout::ClassFields::empty(),
             base: std::ptr::null_mut(),
             extent: 0,
+            skip_inferred: false,
+            remaining: 0,
+        }
+    }
+
+    fn new<'rows>(
+        fields: super::class_layout::ClassFields<'rows>,
+        base: *mut u8,
+        extent: usize,
+        skip_inferred: bool,
+    ) -> InstanceFields<'rows> {
+        let remaining = if skip_inferred {
+            fields
+                .clone()
+                .filter(|field| !field.kind.is_inferred())
+                .count()
+        } else {
+            fields.len()
+        };
+        InstanceFields {
+            fields,
+            base,
+            extent,
+            skip_inferred,
+            remaining,
         }
     }
 }
@@ -35,7 +65,13 @@ impl Iterator for InstanceFields<'_> {
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        let field = self.fields.next()?;
+        let field = loop {
+            let field = self.fields.next()?;
+            if !(self.skip_inferred && field.kind.is_inferred()) {
+                break field;
+            }
+        };
+        self.remaining -= 1;
         assert!(
             field.offset % size_of::<u64>() == 0
                 && field
@@ -48,14 +84,14 @@ impl Iterator for InstanceFields<'_> {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        self.fields.size_hint()
+        (self.remaining, Some(self.remaining))
     }
 }
 
 impl ExactSizeIterator for InstanceFields<'_> {
     #[inline]
     fn len(&self) -> usize {
-        self.fields.len()
+        self.remaining
     }
 }
 
@@ -85,11 +121,8 @@ pub(crate) unsafe fn with_instance_fields<R>(
             let extent =
                 super::native_instance::field_payload_size(object).saturating_sub(size_of::<u64>());
             let base = super::native_instance::field_base(object);
-            read(InstanceFields {
-                fields,
-                base,
-                extent,
-            })
+            let skip_inferred = super::instance_dict_bits(object) != 0;
+            read(InstanceFields::new(fields, base, extent, skip_inferred))
         })
     }
 }
@@ -115,11 +148,7 @@ pub(crate) unsafe fn initialize_fields(
             }
             let extent = payload_bytes.saturating_sub(size_of::<u64>());
             let base = super::native_instance::field_base_for_class(object, class);
-            for (_, slot) in (InstanceFields {
-                fields,
-                base,
-                extent,
-            }) {
+            for (_, slot) in InstanceFields::new(fields, base, extent, false) {
                 *slot = missing;
             }
             Ok(())
@@ -141,6 +170,10 @@ pub(crate) unsafe fn field_at_offset(
             return None;
         }
         let field = super::class_layout::field_at_offset(class, offset)?;
+        if field.kind.is_inferred() && super::instance_dict_bits(object) != 0 {
+            // A dictionary-backed instance resolves this row by name only.
+            return Some(field);
+        }
         let extent =
             super::native_instance::field_payload_size(object).saturating_sub(size_of::<u64>());
         assert!(
@@ -516,6 +549,7 @@ pub(crate) unsafe fn class_allows_dictionary(py: &PyToken<'_>, object: *mut u8) 
 /// Reset every physical owner and dictionary in one callback-free publication.
 /// Pickle reconstruction must not consult mutable namespace offset maps or
 /// release any old value while sibling slots still expose the previous state.
+/// A dictionary-backed instance ends with a fresh empty dictionary.
 pub(crate) unsafe fn reset(py: &PyToken<'_>, object: *mut u8) {
     unsafe {
         if super::instance_dict_bits_ptr(object).is_null() {
@@ -544,11 +578,23 @@ pub(crate) unsafe fn reset(py: &PyToken<'_>, object: *mut u8) {
             }
         });
         let old_dict = instance_dict_bits(object);
+        // Dictionary backing is one-way: after `__class__` assignment the
+        // inferred rows of a dictionary-backed instance may lie past its
+        // allocation, so it keeps an empty dictionary instead of inline rows.
+        let new_dict = if old_dict == 0 {
+            0
+        } else {
+            let dict = alloc_dict_with_pairs(py, &[]);
+            if dict.is_null() {
+                return;
+            }
+            MoltObject::from_ptr(dict).bits()
+        };
         debug::dictionary(py, "instance_reset", object, old_dict, None, None);
         for &(slot, _) in detached.iter() {
             *slot = missing;
         }
-        instance_set_dict_bits(py, object, 0);
+        instance_set_dict_bits(py, object, new_dict);
         object_mark_has_ptrs(py, object);
         for &(_, bits) in detached.iter() {
             dec_ref_bits(py, bits);

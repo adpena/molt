@@ -1201,25 +1201,13 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             emit_frame_location_store(builder, address, op.value.expect("admitted location index"));
         }
         OpKind::Line => {
-            // Inside active loops, skip line tracking entirely.
-            // These are debug-info calls (~3ns each) that dominate
-            // inner-loop cost when inlining arithmetic and stores.
-            // Exception tracebacks still get correct line info from
-            // the last line op before the loop or at loop entry.
+            // A statement marker: it emits no code. Tracebacks read the
+            // location that `frame_set_location` publishes before each
+            // raising op. Outside active loops the marker is a cleanup point
+            // that releases tracked values whose last use lies behind it.
             if in_loop {
                 return OpFlow::Continue;
             }
-            let line = op.value.unwrap_or(0);
-            let line_val = builder.ins().iconst(types::I64, line);
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_trace_set_line",
-                &[types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let _ = builder.ins().call(local_callee, &[line_val]);
             if !is_block_filled && let Some(block) = builder.current_block() {
                 for tracked in [
                     block_tracked_obj.get_mut(&block),

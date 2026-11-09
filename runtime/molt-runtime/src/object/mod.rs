@@ -2786,30 +2786,45 @@ unsafe fn class_edge_target(
     }
 }
 
-unsafe fn replace_published_class_edge(
-    _py: &PyToken<'_>,
-    ptr: *mut u8,
-    bits: u64,
-    ownership: ClassEdgeOwnership,
-) -> bool {
+/// The class edge an admitted replacement publishes, or `None` when the
+/// object refuses `bits`. A caller with fallible preparation asks first, so a
+/// refusal leaves the object unchanged.
+unsafe fn admitted_class_edge(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) -> Option<u64> {
     crate::gil_assert();
     let flags = unsafe { (*header_from_obj_ptr(ptr)).load_synchronized_flags() };
     if flags & HEADER_FLAG_DEALLOCATING != 0 {
-        return false;
+        return None;
     }
-    let Some(new_bits) = (unsafe { validated_class_edge_bits(bits) }) else {
-        return false;
-    };
+    let new_bits = unsafe { validated_class_edge_bits(bits) }?;
     if !unsafe { native_instance::class_edge_fits(ptr, new_bits) } {
-        return false;
+        return None;
     }
     if flags & HEADER_FLAG_SCOPED != 0
         && !obj_from_bits(new_bits)
             .as_ptr()
             .is_some_and(|class| unsafe { class_has_stable_nonfinalizing_mro(_py, class) })
     {
-        return false;
+        return None;
     }
+    let snapshot = unsafe { object_aux_snapshot(ptr) };
+    unsafe { class_edge_target(ptr, snapshot) }?;
+    Some(new_bits)
+}
+
+/// Whether `object_replace_class_edge` would publish `bits` on `ptr`.
+pub(crate) unsafe fn object_admits_class_edge(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) -> bool {
+    unsafe { admitted_class_edge(_py, ptr, bits).is_some() }
+}
+
+unsafe fn replace_published_class_edge(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    bits: u64,
+    ownership: ClassEdgeOwnership,
+) -> bool {
+    let Some(new_bits) = (unsafe { admitted_class_edge(_py, ptr, bits) }) else {
+        return false;
+    };
     let snapshot = unsafe { object_aux_snapshot(ptr) };
     let Some(target) = (unsafe { class_edge_target(ptr, snapshot) }) else {
         return false;

@@ -145,10 +145,10 @@ checkout = "/home/adpena/Molt/molt-src"
 remote_dir = "/home/adpena/Molt/tmp/trunk-loop"
 # The worker's own wsl.exe client holds the distro instance for its lifetime.
 launcher = "wsl-session"
-proof_cells = ["portability.cargo-custody.linux", "portability.queue.linux"]
+proof_cells = ["portability.cargo-custody.linux", "portability.queue.linux", "rust.test.runtime-cold-lifecycle", "rust.clippy.wasi32"]
 wsl_distribution = "molt-gate"
 wsl_vhdx = 'C:\Molt\wsl\molt-gate\ext4.vhdx'
-wsl_disk_gb = 80
+wsl_disk_gb = 120
 wsl_memory_gb = 24
 wsl_swap_gb = 4
 wsl_engine_version = "3.0.3"

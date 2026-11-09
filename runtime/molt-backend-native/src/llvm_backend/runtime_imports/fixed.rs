@@ -310,7 +310,6 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
     // namespace callbacks or displaced owners' finalizers.
     i64_ret("molt_trace_enter_slot", 1, ATTR_NONE),
     i64_ret("molt_frame_locals_set", 1, ATTR_NONE),
-    i64_ret("molt_trace_set_line", 1, ATTR_WILLRETURN),
     i64_ret("molt_trace_exit", 0, ATTR_NONE),
     // Lends the raw homes address, or 0 with an exception pending; runs no
     // Python code.

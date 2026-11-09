@@ -16,6 +16,7 @@ const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
 const boxedNone = BigInt(config.boxed_none);
 const boxedFalse = BigInt(config.boxed_false);
 const boxedTrue = BigInt(config.boxed_true);
+const intBase = BigInt(config.int_base);
 let state;
 function reset(label, inherited = false, exceptionAt = 0, failEntry = false) {
   state = {label, depth: inherited ? 1 : 0, enters: 0, exits: 0,
@@ -235,10 +236,10 @@ function instantiate(path) {
       }
       state.exits++; return boxedNone;
     },
-    trace_set_line(line) {
+    print_obj(value) {
       ensure(!state.failEntry && state.depth === state.initialDepth + Number(state.enters !== 0),
-             'line update outside the executing frame');
-      state.lines.push(Number(line)); return boxedNone;
+             'statement executed outside the executing frame');
+      state.lines.push(Number(value - intBase));
     },
     exception_pending() {
       if (state.mixedCase && state.enters===0) {
@@ -342,9 +343,10 @@ function instantiate(path) {
   initializeExecutionRecord(imports.env.memory, hooks.initialize_record());
   return new WebAssembly.Instance(module, attachedImports(imports)).exports;
 }
-function verifyOwner(exports, owner, lines, polls, exceptionAt = 0, failEntry = false) {
+function verifyOwner(exports, owner, polls, exceptionAt = 0, failEntry = false) {
   // Failed capture must consume only its false attempt marker, even when a
-  // caller frame already exists and would otherwise accept line mutations.
+  // caller frame already exists. Split statements are effect-free `line`
+  // markers, so exception checks are the owner's observable progress.
   reset(owner + ' exceptionAt=' + exceptionAt + ' failEntry=' + failEntry,
         failEntry, exceptionAt, failEntry);
   const result = exports[compiledSymbol(owner)](executionContext);
@@ -352,7 +354,6 @@ function verifyOwner(exports, owner, lines, polls, exceptionAt = 0, failEntry = 
          && state.attempts.length === 0,
          'owner return must enter/pop exactly once');
   assert.equal(result, boxedNone, state.label + ': void payload returns boxed None');
-  assert.deepEqual(state.lines, lines, state.label + ': executed chunk lines');
   assert.equal(state.polls, polls, state.label + ': executed entry/chunk exception checks');
   assert.equal(state.pending, exceptionAt !== 0 || failEntry,
                state.label + ': exception remains pending');
@@ -367,24 +368,21 @@ for (const chunk of baseline.chunks) {
   assert.equal(status, chunk.continues ? boxedTrue : boxedFalse, state.label);
   ensure(state.depth === 1 && state.enters === 0 && state.exits === 0,
          'inherited chunk changed caller frame ownership');
-  assert.deepEqual(state.lines, chunk.lines, state.label);
   assert.equal(state.polls, 0, state.label);
 }
 // Actual owner/chunks: normal return and pending exception at each boundary.
-verifyOwner(app, baseline.owner, baseline.chunks.flatMap(c => c.lines), baseline.chunks.length + 1);
-verifyOwner(app, baseline.owner, [], 1, 1);
-verifyOwner(app, baseline.owner, [], 1, 0, true);
+verifyOwner(app, baseline.owner, baseline.chunks.length + 1);
+verifyOwner(app, baseline.owner, 1, 1);
+verifyOwner(app, baseline.owner, 1, 0, true);
 for (let boundary = 1; boundary <= baseline.chunks.length; boundary++) {
-  verifyOwner(app, baseline.owner,
-    baseline.chunks.slice(0, boundary).flatMap(c => c.lines), boundary + 1, boundary + 1);
+  verifyOwner(app, baseline.owner, boundary + 1, boundary + 1);
 }
 // Separate status-injection fixtures cover each owner stop and fallthrough;
 // they are not evidence for unmodified chunk return behavior.
 for (const test of config.cases.slice(1)) {
   reset('instantiate status module ' + test.owner);
   const statusApp = instantiate(test.module);
-  verifyOwner(statusApp, test.owner,
-    test.chunks.slice(0, test.executed).flatMap(c => c.lines), test.executed + 1);
+  verifyOwner(statusApp, test.owner, test.executed + 1);
 }
 // The same observer rejects executable malformed frame lifecycles.
 reset('instantiate malformed-frame controls');
@@ -395,7 +393,7 @@ for (const [name, message] of [
   ['reentry', /unexpected frame entry/],
   ['missing_exit', /owner return must enter\/pop exactly once/],
 ]) {
-  assert.throws(() => verifyOwner(malformed, name, [], 0), message, name);
+  assert.throws(() => verifyOwner(malformed, name, 0), message, name);
 }
 for (const test of config.return_modules) {
   reset('boxed user-ABI return ' + test.lane);
@@ -566,8 +564,6 @@ fn chunk_case(chunk: &FunctionIR) -> serde_json::Value {
     json!({
         "name": chunk.name,
         "continues": producer.value == Some(1),
-        "lines": chunk.ops.iter().filter(|op| op.kind == molt_ir::OpKind::Line)
-            .map(|op| op.value.unwrap()).collect::<Vec<_>>(),
     })
 }
 
@@ -1089,7 +1085,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
             "molt_main",
             if stateful { vec!["task"] } else { vec![] },
             None,
-            ops,
+            print_after_each_line(ops),
         );
         function.execution_context = ExecutionContextPolicy::Local;
         let ir = SimpleIR {
@@ -1185,7 +1181,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
             "molt_main",
             if stateful { vec!["task"] } else { vec![] },
             None,
-            ops,
+            print_after_each_line(ops),
         );
         function.execution_context = ExecutionContextPolicy::Local;
         let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
@@ -1305,6 +1301,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
             "boxed_false": molt_codegen_abi::box_bool_bits(0).to_string(),
             "boxed_true": molt_codegen_abi::box_bool_bits(1).to_string(),
             "boxed_pending": molt_codegen_abi::box_pending_bits().to_string(),
+            "int_base": executed_line_int_base(),
             "anchor_payload": "home-anchor-β\0雪",
             "cases": cases,
             "return_modules": return_modules,

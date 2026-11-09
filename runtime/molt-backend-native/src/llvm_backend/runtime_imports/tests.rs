@@ -566,7 +566,6 @@ fn function_and_code_runtime_functions_are_declared() {
         ("molt_code_new", 9),
         ("molt_code_slot_set", 3),
         ("molt_code_slots_init", 1),
-        ("molt_trace_set_line", 1),
         ("molt_function_defaults_version", 1),
     ] {
         let func = module

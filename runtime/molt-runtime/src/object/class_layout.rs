@@ -591,6 +591,7 @@ pub(crate) unsafe fn decode_row(row: &[u64]) -> ClassField {
 }
 
 /// Scoped physical rows; count and traversal consume the same immutable view.
+#[derive(Clone)]
 pub(crate) struct ClassFields<'rows> {
     rows: std::slice::Iter<'rows, [u64; 3]>,
 }
@@ -684,17 +685,44 @@ pub(crate) unsafe fn with_fields<R>(
     }
 }
 
+/// Two rows describe the same physical storage owner.
+///
+/// # Safety
+/// Both rows come from records pinned by `with_fields`, so their names are live.
+unsafe fn same_row(left: ClassField, right: ClassField) -> bool {
+    left.offset == right.offset
+        && left.kind == right.kind
+        && (left.kind.is_intrinsic() || unsafe { string_storage_equal(left.name, right.name) })
+}
+
 pub(crate) unsafe fn fields_match(py: &PyToken<'_>, left: *mut u8, right: *mut u8) -> bool {
     unsafe {
         with_fields(py, left, |left| {
             with_fields(py, right, |right| {
                 left.len() == right.len()
-                    && left.zip(right).all(|(left, right)| {
-                        left.offset == right.offset
-                            && left.kind == right.kind
-                            && (left.kind.is_intrinsic()
-                                || string_storage_equal(left.name, right.name))
-                    })
+                    && left.zip(right).all(|(left, right)| same_row(left, right))
+            })
+        })
+    }
+}
+
+/// The Python-visible rows match: declared slots and intrinsic storage, in
+/// offset order. Inferred rows hold instance-dictionary entries inline, so
+/// they are a representation, not part of the layout `__class__` assignment
+/// compares (CPython's `compatible_for_assignment`).
+pub(crate) unsafe fn visible_fields_match(py: &PyToken<'_>, left: *mut u8, right: *mut u8) -> bool {
+    unsafe {
+        with_fields(py, left, |left| {
+            with_fields(py, right, |right| {
+                let mut left = left.filter(|field| !field.kind.is_inferred());
+                let mut right = right.filter(|field| !field.kind.is_inferred());
+                loop {
+                    match (left.next(), right.next()) {
+                        (None, None) => return true,
+                        (Some(left), Some(right)) if same_row(left, right) => {}
+                        _ => return false,
+                    }
+                }
             })
         })
     }

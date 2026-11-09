@@ -4855,7 +4855,7 @@ audience = "user"
 kind = "bool"
 default = "0"
 owner = "runtime/molt-runtime/src/object/ops_builtins.rs"
-summary = "Set to 1 to print MOLT_TRACE_LINE <line> on stderr every time the compiled program records a new source line in its frame; read once per process, and unset or any other value prints nothing."
+summary = "Set to 1 to print MOLT_TRACE_LINE <line> on stderr when molt_trace_set_line runs; compiled code no longer calls it (call-anatomy phase 1a), so only a direct runtime call prints, and phase 1b deletes the flag; read once per process, and unset or any other value prints nothing."
 
 [[variable]]
 name = "MOLT_TRACE_LINE_PENDING"
@@ -4863,7 +4863,7 @@ audience = "user"
 kind = "bool"
 default = "0"
 owner = "runtime/molt-runtime/src/object/ops_builtins.rs"
-summary = "Set to 1 to print MOLT_TRACE_LINE_PENDING <line> <kind> <detail> on stderr when a source line is recorded while an exception is pending; read once per process, and unset or any other value prints nothing."
+summary = "Set to 1 to print MOLT_TRACE_LINE_PENDING <line> <kind> <detail> on stderr when molt_trace_set_line runs while an exception is pending; compiled code no longer calls it (call-anatomy phase 1a), and phase 1b deletes the flag; read once per process, and unset or any other value prints nothing."
 
 [[variable]]
 name = "MOLT_TRACE_LOWERING_CTX"

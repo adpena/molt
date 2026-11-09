@@ -147,12 +147,9 @@ pub(super) fn emit_code_metadata_call_op(
                 WasmRuntimeImport::LocalsBuiltin,
             );
         }
-        molt_ir::OpKind::Line => emit_value_drop_call(
-            call_ctx,
-            func,
-            op.value.unwrap_or(0),
-            WasmRuntimeImport::TraceSetLine,
-        ),
+        // A statement marker: it emits no code. Tracebacks read the location
+        // that `frame_set_location` publishes before each raising op.
+        molt_ir::OpKind::Line => {}
         molt_ir::OpKind::FrameLocalsSet => {
             emit_one_local_drop_call(call_ctx, func, op, WasmRuntimeImport::FrameLocalsSet)
         }
