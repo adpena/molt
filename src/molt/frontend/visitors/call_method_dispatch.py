@@ -18,6 +18,7 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
     ScratchCell,
+    class_namespace_closed,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -28,7 +29,7 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
     def _class_resolves_default_object_new(
         self, class_id: ClassId, class_info: ClassInfo
     ) -> bool:
-        if class_info.get("dynamic"):
+        if not class_namespace_closed(class_info):
             return False
         for base in self._class_mro(class_id):
             if base == OBJECT_CLASS:
@@ -36,7 +37,7 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
             if isinstance(base, BuiltinClass):
                 return False
             base_info = self.classes.get(base)
-            if base_info is None or base_info.get("dynamic"):
+            if base_info is None or not class_namespace_closed(base_info):
                 return False
             methods = base_info.get("methods", {})
             class_attrs = base_info.get("class_attrs", {})
@@ -54,7 +55,7 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
     ) -> tuple[bool, bool]:
         if self._class_resolves_default_object_new(class_id, class_info):
             return False, False
-        if class_info.get("dynamic"):
+        if not class_namespace_closed(class_info):
             return True, True
         for base in self._class_mro(class_id):
             if base == OBJECT_CLASS:
@@ -239,7 +240,7 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
         if class_info is None:
             return False
         if (
-            class_info.get("dynamic")
+            not class_namespace_closed(class_info)
             or class_info.get("dataclass")
             or class_info.get("custom_metaclass")
             or class_info.get("decorated")
@@ -249,7 +250,7 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
             if owner == OBJECT_CLASS:
                 continue
             owner_info = self.classes.get(owner) if isinstance(owner, ClassId) else None
-            if owner_info is None or owner_info.get("dynamic"):
+            if owner_info is None or not class_namespace_closed(owner_info):
                 return False
             if (
                 "__setattr__" in owner_info.get("methods", {})
@@ -311,7 +312,7 @@ class CallMethodDispatchMixin(GeneratorMixinBase):
         # Conservative bail-outs: anything that touches the descriptor /
         # attribute-resolution machinery other than a vanilla bound-method
         # binding.
-        if class_info.get("dynamic") or not class_info.get(
+        if not class_namespace_closed(class_info) or not class_info.get(
             "constructor_binding_proven"
         ):
             return None

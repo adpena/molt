@@ -306,6 +306,7 @@ pub(crate) fn class_set_base(_py: &PyToken<'_>, class_bits: u64, base_bits: u64)
         // replacing the dictionary projections may otherwise trigger a
         // finalizer observing a half-published hierarchy.
         let old_bases = ClassReferenceSlot::Bases.exchange_owned(class_ptr, bases_bits);
+        crate::object::class_subclasses::rebase(class_ptr, old_bases, bases_bits);
         bases_owner.release();
         let old_mro = ClassReferenceSlot::Mro.exchange_owned(class_ptr, mro_bits);
         let bases_updated = old_bases != bases_bits;

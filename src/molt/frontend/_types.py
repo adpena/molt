@@ -26,6 +26,7 @@ from typing import (
     Iterable,
     Literal,
     NotRequired,
+    Required,
     SupportsIndex,
     TypedDict,
     cast,
@@ -902,7 +903,15 @@ class ClassInfo(TypedDict, total=False):
     possible_data_descriptor_attrs: frozenset[str]
     bases: tuple[ClassRef, ...]
     mro: tuple[ClassRef, ...]
-    dynamic: bool
+    # The layout fact: True when the statement has no static instance layout
+    # (a metaclass call, several bases, ``__slots__``, attribute hooks, a
+    # visible class mutation) or a base is not namespace-closed. A static
+    # statement publishes inferred field offsets with ``CLASS_DEF``.
+    dynamic: Required[bool]
+    # The identity fact (family B): code the program cannot see may hold the
+    # class statement's value or one of its methods. It never changes the
+    # layout; see :func:`class_namespace_closed`.
+    definition_exposed: Required[bool]
     static: bool
     dataclass: bool
     dataclass_params: dict[str, bool]
@@ -929,6 +938,21 @@ def layout_definition_symbol(class_id: ClassId, info: ClassInfo) -> str | None:
     guard in any module may name.
     """
     return None if info.get("dynamic") else class_id.definition_symbol
+
+
+def class_namespace_closed(info: ClassInfo) -> bool:
+    """Whether unguarded facts about the class namespace hold (HF-812).
+
+    A layout guard checks the receiver's own class at its layout version, and
+    every mutation of the class or of any base advances that version (the
+    runtime's subclass edges, as CPython's ``PyType_Modified``), so guarded
+    field access needs only a static layout. Unguarded facts also need an
+    unexposed definition: the allocation protocol, method binding, method
+    bodies and unguarded field access all assume that no unseen code rebinds a
+    member or replaces a method body. A subclass inherits members from its
+    bases, so a base that is not closed makes its subclasses ``dynamic``.
+    """
+    return not info["dynamic"] and not info["definition_exposed"]
 
 
 class FuncInfo(TypedDict):
@@ -1066,6 +1090,7 @@ __all__ = [
     "MethodInfo",
     "ClassInfo",
     "layout_definition_symbol",
+    "class_namespace_closed",
     "FuncInfo",
     "_TrackedOpsList",
     "CanonicalizationState",

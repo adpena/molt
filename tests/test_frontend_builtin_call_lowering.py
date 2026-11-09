@@ -2966,6 +2966,7 @@ def test_imported_class_ctor_avoids_cross_module_name_collision(local: bool) -> 
             "fields": {},
             "size": 24,
             "dynamic": False,
+            "definition_exposed": False,
             "static": True,
             "methods": {
                 "__init__": {
@@ -3049,6 +3050,7 @@ def test_imported_exception_class_ctor_uses_imported_class_value() -> None:
             "fields": {},
             "size": 0,
             "dynamic": False,
+            "definition_exposed": False,
             "static": True,
             "methods": {},
             "mro": (

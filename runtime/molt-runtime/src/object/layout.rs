@@ -2880,6 +2880,8 @@ pub(crate) unsafe fn class_bases_bits(ptr: *mut u8) -> u64 {
 
 pub(crate) unsafe fn class_set_bases_bits(py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
     unsafe {
+        let old = ClassReferenceSlot::Bases.load(ptr);
+        super::class_subclasses::rebase(ptr, old, bits);
         ClassReferenceSlot::Bases.replace_borrowed(py, ptr, bits);
     }
 }
@@ -3157,7 +3159,7 @@ pub(crate) unsafe fn class_set_qualname_bits(_py: &PyToken<'_>, ptr: *mut u8, bi
     }
 }
 
-pub(crate) unsafe fn class_bump_layout_version(ptr: *mut u8) {
+unsafe fn advance_class_layout_version(ptr: *mut u8) {
     unsafe {
         (*(ptr.add(4 * std::mem::size_of::<u64>()) as *const std::sync::atomic::AtomicU64))
             .try_update(
@@ -3166,6 +3168,18 @@ pub(crate) unsafe fn class_bump_layout_version(ptr: *mut u8) {
                 |version| version.checked_add(1),
             )
             .expect("class layout generation exhausted");
+    }
+}
+
+/// A class mutation: the class and every subclass leave their layout version,
+/// as CPython's `PyType_Modified` does, because a subclass's field facts
+/// depend on its whole MRO and its guard reads only its own version (HF-812).
+pub(crate) unsafe fn class_bump_layout_version(ptr: *mut u8) {
+    unsafe {
+        advance_class_layout_version(ptr);
+        super::class_subclasses::for_each_descendant(ptr, |subclass| {
+            advance_class_layout_version(subclass)
+        });
     }
     // Also bump the global type version so inline caches are invalidated.
     super::bump_type_version();

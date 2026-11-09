@@ -686,9 +686,9 @@ impl TrackedRegistryShard {
 /// multiply (the foldhash and aHash mixing step) spreads every address bit
 /// into both ends in one `mul`/`umulh` pair.
 #[derive(Default)]
-struct RegistryAddressHasher(u64);
+pub(crate) struct RegistryAddressHasher(u64);
 
-type RegistryAddressHash = std::hash::BuildHasherDefault<RegistryAddressHasher>;
+pub(crate) type RegistryAddressHash = std::hash::BuildHasherDefault<RegistryAddressHasher>;
 
 impl std::hash::Hasher for RegistryAddressHasher {
     #[inline(always)]
@@ -698,7 +698,7 @@ impl std::hash::Hasher for RegistryAddressHasher {
 
     fn write(&mut self, _bytes: &[u8]) {
         // `PtrSlot` and native addresses each hash as one `write_usize`.
-        unreachable!("GC registry keys hash as one address word");
+        unreachable!("address registry keys hash as one address word");
     }
 
     #[inline(always)]

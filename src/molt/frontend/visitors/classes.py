@@ -50,6 +50,7 @@ from molt.frontend._types import (
     TypeHint,
     _ClassNsScope,
     _function_is_instance_method,
+    class_namespace_closed,
     layout_definition_symbol,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
@@ -105,7 +106,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         if binding_name in self.module_global_mutations:
             return False
         if (
-            class_info.get("dynamic")
+            not class_namespace_closed(class_info)
             or class_info.get("dataclass")
             or class_info.get("custom_metaclass")
             or class_info.get("decorated")
@@ -704,13 +705,17 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             and opaque is not None
             and not definition_exposed
         )
-        if definition_exposed:
-            dynamic = True
+        # Exposure is an identity fact, not a layout fact (HF-812): a mutation of
+        # the class or of a base advances the class's layout version, so an
+        # exposed statement keeps its inferred field offsets behind its guard.
+        # Consumers of unguarded facts check ``class_namespace_closed``. A
+        # subclass inherits its bases' members, so a base that is not closed
+        # makes the subclass dynamic.
         for base_ref in bases:
             if isinstance(base_ref, BuiltinClass):
                 continue
             base_info = self.classes.get(base_ref)
-            if base_info is None or base_info.get("dynamic"):
+            if base_info is None or not class_namespace_closed(base_info):
                 dynamic = True
         if class_id in self.mutated_classes:
             dynamic = True
@@ -814,6 +819,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 "bases": tuple(bases),
                 "mro": mro,
                 "dynamic": dynamic,
+                "definition_exposed": definition_exposed,
                 "static": is_static,
                 "size": size,
                 "dataclass": True,
@@ -992,6 +998,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 bases=tuple(bases),
                 mro=mro,
                 dynamic=dynamic,
+                definition_exposed=definition_exposed,
                 static=is_static,
                 needs_classcell=needs_classcell,
                 custom_metaclass=has_metaclass_kw

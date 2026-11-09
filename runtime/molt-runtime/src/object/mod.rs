@@ -49,6 +49,7 @@ pub(crate) mod class_layout;
 #[cfg(test)]
 mod class_shape_tests;
 pub(crate) mod class_storage;
+pub(crate) mod class_subclasses;
 pub(crate) mod code_layout;
 pub(crate) mod field_storage;
 #[cfg(test)]

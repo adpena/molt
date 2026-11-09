@@ -2443,6 +2443,41 @@ pub(crate) unsafe fn dict_get_str_bytes_borrowed(
     }
 }
 
+/// [`dict_get_str_bytes_borrowed`] keyed by a string object. An exact `str`
+/// key probes with its cached hash, so a hot metadata lookup does not rehash
+/// the name; the probe decides only when every same-hash candidate is an
+/// exact `str`. Any other string key or candidate takes the byte probe, so the
+/// answer is the byte probe's answer.
+pub(crate) unsafe fn dict_get_str_borrowed(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    key_bits: u64,
+) -> Option<u64> {
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_DICT {
+            return None;
+        }
+        if let Some(bytes) = exact_string_bytes(py, key_bits) {
+            let key = obj_from_bits(key_bits).as_ptr()?;
+            let hash = crate::object::ops_hash::hash_string(py, key) as u64;
+            match dict_exact_string_lookup(py, ptr, bytes, hash) {
+                ExactStringLookup::Found(index) => return Some(dict_entries(ptr)[index].value),
+                ExactStringLookup::Absent => return None,
+                ExactStringLookup::Undecided => {}
+            }
+        }
+        let key = obj_from_bits(key_bits).as_ptr()?;
+        if object_type_id(key) != TYPE_ID_STRING {
+            return None;
+        }
+        dict_get_str_bytes_borrowed(
+            py,
+            ptr,
+            std::slice::from_raw_parts(string_bytes(key), string_len(key)),
+        )
+    }
+}
+
 /// Borrow the actual entry key and value after the canonical callback-safe
 /// probe. No backing view is returned; callers retain values before callbacks.
 pub(crate) unsafe fn dict_find_entry_kv_with_hash(

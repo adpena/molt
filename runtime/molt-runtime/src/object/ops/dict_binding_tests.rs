@@ -2165,3 +2165,178 @@ fn dictionary_fromkeys_nonempty_exact_constructor_preserves_live_capacity() {
         }
     });
 }
+
+static SUBCLASS_EQ_CALLS: AtomicU64 = AtomicU64::new(0);
+
+/// `__eq__` of the str subclass below: never equal, and counted, so a probe
+/// that ran ordinary equality is visible.
+extern "C" fn counted_unequal(_left: u64, _right: u64) -> u64 {
+    SUBCLASS_EQ_CALLS.fetch_add(1, Ordering::SeqCst);
+    MoltObject::from_bool(false).bits()
+}
+
+/// A str subclass with a counting, never-equal `__eq__`, and one instance of
+/// it whose storage spells `text`.
+fn str_subclass_key(py: &PyToken<'_>, text: &[u8]) -> (u64, u64) {
+    let name = dynamic_attr_name_bits(py, b"PhysicalProbeText").unwrap();
+    let class = crate::molt_class_new(name);
+    dec_ref_bits(py, name);
+    let result = crate::molt_class_set_base(class, builtin_classes(py).str);
+    dec_ref_bits(py, result);
+    unsafe { crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap()) }
+        .expect("valid str subclass");
+    let eq_name = dynamic_attr_name_bits(py, b"__eq__").unwrap();
+    let function = MoltObject::from_ptr(alloc_runtime_function_obj(
+        py,
+        runtime_fn_addr("counted_unequal", counted_unequal as *const ()),
+        2,
+    ))
+    .bits();
+    let result = crate::molt_set_attr_name(class, eq_name, function);
+    dec_ref_bits(py, result);
+    dec_ref_bits(py, eq_name);
+    dec_ref_bits(py, function);
+    let storage = string_key(py, text);
+    let instance = unsafe { crate::call_callable1(py, class, storage) };
+    dec_ref_bits(py, storage);
+    assert!(!exception_pending(py));
+    (instance, class)
+}
+
+/// `dict_get_str_borrowed` is a physical lookup: the first string-storage row
+/// whose hash and bytes match, without ordinary equality. Each expected value
+/// is written out from the table the case builds.
+#[test]
+fn physical_string_reads_select_the_first_matching_string_row_without_equality() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let hash = hash_string_bytes(py, b"selected") as u64;
+            let (subclass_key, subclass) = str_subclass_key(py, b"selected");
+            let (probe, probe_class, probe_function) = same_hash_probe_key(py);
+            let int = |value: i64| MoltObject::from_int(value).bits();
+            let query = string_key(py, b"selected");
+            let missing = string_key(py, b"missing");
+            // Stored with an explicit hash, so the key object caches none.
+            let stored = string_key(py, b"selected");
+            let other = string_key(py, b"other");
+
+            let plain = alloc_dict_with_pairs(py, &[]);
+            assert!(dict_set_with_hash_in_place(
+                py,
+                plain,
+                stored,
+                int(42),
+                hash
+            ));
+            // A tombstone in the probe chain: the colliding row that preceded
+            // the exact key is deleted.
+            let tombstoned = alloc_dict_with_pairs(py, &[]);
+            assert!(dict_set_with_hash_in_place(
+                py,
+                tombstoned,
+                probe,
+                int(7),
+                hash
+            ));
+            assert!(dict_set_with_hash_in_place(
+                py,
+                tombstoned,
+                stored,
+                int(42),
+                hash
+            ));
+            drop(dict_del_with_hash_deferred(py, tombstoned, probe, hash).unwrap());
+            // A same-hash str-subclass row precedes the exact row.
+            let shadowed = alloc_dict_with_pairs(py, &[]);
+            assert!(dict_set_with_hash_in_place(
+                py,
+                shadowed,
+                subclass_key,
+                int(5),
+                hash
+            ));
+            assert!(dict_set_with_hash_in_place(
+                py,
+                shadowed,
+                stored,
+                int(42),
+                hash
+            ));
+            // An exact row with the same stored hash but other bytes comes
+            // first, then the str-subclass row: the exact probe passes the
+            // mismatch, meets the subclass row and defers to the byte probe.
+            let mismatched = alloc_dict_with_pairs(py, &[]);
+            assert!(dict_set_with_hash_in_place(
+                py,
+                mismatched,
+                other,
+                int(3),
+                hash
+            ));
+            assert!(dict_set_with_hash_in_place(
+                py,
+                mismatched,
+                subclass_key,
+                int(5),
+                hash
+            ));
+            assert!(dict_set_with_hash_in_place(
+                py,
+                mismatched,
+                stored,
+                int(42),
+                hash
+            ));
+            assert!(!exception_pending(py));
+
+            PROBE_MODE.store(PROBE_EQUAL, Ordering::SeqCst);
+            PROBE_CALLS.store(0, Ordering::SeqCst);
+            SUBCLASS_EQ_CALLS.store(0, Ordering::SeqCst);
+            let cases = [
+                (plain, query, Some(int(42))),
+                (plain, subclass_key, Some(int(42))),
+                (plain, missing, None),
+                (plain, int(1), None),
+                (tombstoned, query, Some(int(42))),
+                (tombstoned, missing, None),
+                (shadowed, query, Some(int(5))),
+                (shadowed, subclass_key, Some(int(5))),
+                (mismatched, query, Some(int(5))),
+                // The row stores another string's hash: its own bytes,
+                // probed under their real hash, never reach it.
+                (mismatched, other, None),
+                (mismatched, missing, None),
+            ];
+            for (index, (dict, key, expected)) in cases.into_iter().enumerate() {
+                assert_eq!(
+                    dict_get_str_borrowed(py, dict, key),
+                    expected,
+                    "case {index}"
+                );
+            }
+            assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 0);
+            assert_eq!(SUBCLASS_EQ_CALLS.load(Ordering::SeqCst), 0);
+            assert!(!exception_pending(py));
+            PROBE_MODE.store(PROBE_UNEQUAL, Ordering::SeqCst);
+            for bits in [
+                MoltObject::from_ptr(plain).bits(),
+                MoltObject::from_ptr(tombstoned).bits(),
+                MoltObject::from_ptr(shadowed).bits(),
+                MoltObject::from_ptr(mismatched).bits(),
+                query,
+                missing,
+                stored,
+                other,
+                subclass_key,
+                subclass,
+                probe,
+                probe_class,
+                probe_function,
+            ] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        }
+    });
+}

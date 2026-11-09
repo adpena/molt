@@ -4793,6 +4793,8 @@ def test_guarded_setattr_uses_the_sole_guarded_store_spelling() -> None:
         "binding_name": "Point",
         "fields": {"x": 24},
         "layout_version": 7,
+        "dynamic": False,
+        "definition_exposed": False,
     }
 
     lowered = gen.map_ops_to_json(
