@@ -1432,9 +1432,11 @@ macro_rules! attached_symbol {
     ("molt_exception_pop") => { "molt_exception_pop__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_prepare_raise") => { "molt_exception_prepare_raise__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_push") => { "molt_exception_push__molt_context_a8c6010e2cbb56a1" };
+    ("molt_exception_reduce") => { "molt_exception_reduce__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_resolve_captured") => { "molt_exception_resolve_captured__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_set_last") => { "molt_exception_set_last__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_set_value") => { "molt_exception_set_value__molt_context_a8c6010e2cbb56a1" };
+    ("molt_exception_setstate") => { "molt_exception_setstate__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_stack_clear") => { "molt_exception_stack_clear__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_stack_depth") => { "molt_exception_stack_depth__molt_context_a8c6010e2cbb56a1" };
     ("molt_exception_stack_enter") => { "molt_exception_stack_enter__molt_context_a8c6010e2cbb56a1" };
@@ -2007,6 +2009,7 @@ macro_rules! attached_symbol {
     ("molt_int_ceil_method") => { "molt_int_ceil_method__molt_context_a8c6010e2cbb56a1" };
     ("molt_int_conjugate") => { "molt_int_conjugate__molt_context_a8c6010e2cbb56a1" };
     ("molt_int_divmod_method") => { "molt_int_divmod_method__molt_context_a8c6010e2cbb56a1" };
+    ("molt_int_floor_method") => { "molt_int_floor_method__molt_context_a8c6010e2cbb56a1" };
     ("molt_int_from_bytes") => { "molt_int_from_bytes__molt_context_a8c6010e2cbb56a1" };
     ("molt_int_from_i64") => { "molt_int_from_i64__molt_context_a8c6010e2cbb56a1" };
     ("molt_int_from_obj") => { "molt_int_from_obj__molt_context_a8c6010e2cbb56a1" };
@@ -2018,6 +2021,7 @@ macro_rules! attached_symbol {
     ("molt_int_is_integer") => { "molt_int_is_integer__molt_context_a8c6010e2cbb56a1" };
     ("molt_int_new") => { "molt_int_new__molt_context_a8c6010e2cbb56a1" };
     ("molt_int_to_bytes") => { "molt_int_to_bytes__molt_context_a8c6010e2cbb56a1" };
+    ("molt_int_trunc_method") => { "molt_int_trunc_method__molt_context_a8c6010e2cbb56a1" };
     ("molt_intern_static_name") => { "molt_intern_static_name__molt_context_a8c6010e2cbb56a1" };
     ("molt_intrinsic_resolve") => { "molt_intrinsic_resolve__molt_context_a8c6010e2cbb56a1" };
     ("molt_invert") => { "molt_invert__molt_context_a8c6010e2cbb56a1" };
@@ -2487,6 +2491,7 @@ macro_rules! attached_symbol {
     ("molt_object_setattr") => { "molt_object_setattr__molt_context_a8c6010e2cbb56a1" };
     ("molt_object_setattr_bytes") => { "molt_object_setattr_bytes__molt_context_a8c6010e2cbb56a1" };
     ("molt_object_str") => { "molt_object_str__molt_context_a8c6010e2cbb56a1" };
+    ("molt_object_subclasshook") => { "molt_object_subclasshook__molt_context_a8c6010e2cbb56a1" };
     ("molt_object_truthy") => { "molt_object_truthy__molt_context_a8c6010e2cbb56a1" };
     ("molt_oct_builtin") => { "molt_oct_builtin__molt_context_a8c6010e2cbb56a1" };
     ("molt_opcode_get_specialization_stats") => { "molt_opcode_get_specialization_stats__molt_context_a8c6010e2cbb56a1" };

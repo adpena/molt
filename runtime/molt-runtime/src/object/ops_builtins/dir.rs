@@ -96,7 +96,7 @@ unsafe fn dir_merge_class(py: &PyToken<'_>, target: *mut u8, class: u64) -> Resu
         return Ok(());
     };
     let merged = (|| {
-        let count_bits = crate::molt_len(bases);
+        let count_bits = crate::molt_len_attached_body(py, bases);
         if exception_pending(py) {
             return Err(());
         }
@@ -105,7 +105,8 @@ unsafe fn dir_merge_class(py: &PyToken<'_>, target: *mut u8, class: u64) -> Resu
             return Err(());
         };
         for index in 0..count {
-            let base = crate::molt_index(bases, MoltObject::from_int(index).bits());
+            let base =
+                crate::molt_index_attached_body(py, bases, MoltObject::from_int(index).bits());
             if exception_pending(py) {
                 dec_ref_bits(py, base);
                 return Err(());

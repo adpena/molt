@@ -2297,10 +2297,35 @@ pub(crate) fn molt_int_bool_method_attached_body(_py: &crate::PyToken<'_>, self_
     crate::object::ops_arith::native_slots::int_bool_slot(_py.attached_context(), self_bits)
 }
 
+/// `int.__ceil__`, `__floor__` and `__trunc__` return the exact int value, as
+/// CPython's `int_int` does: a bool or int-subclass receiver yields a plain int.
+fn int_exact_value_method(py: &crate::PyToken<'_>, self_bits: u64, method: &str) -> u64 {
+    if let Some(value) = crate::builtins::numbers::exact_integer_from_storage(py, self_bits) {
+        return value;
+    }
+    let type_label = class_name_for_error(type_of_bits(py, self_bits));
+    raise_exception::<_>(
+        py,
+        BuiltinExc::TypeError,
+        &format!("descriptor '{method}' requires a 'int' object but received '{type_label}'"),
+    )
+}
+
 pub(crate) fn molt_int_ceil_method_attached_body(_py: &crate::PyToken<'_>, self_bits: u64) -> u64 {
-    crate::with_attached_entry_nopanic!(_py, _py, {
-        inc_ref_bits(_py, self_bits);
-        self_bits
+    crate::with_attached_entry_nopanic!(_py, py, {
+        int_exact_value_method(py, self_bits, "__ceil__")
+    })
+}
+
+pub(crate) fn molt_int_floor_method_attached_body(_py: &crate::PyToken<'_>, self_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        int_exact_value_method(py, self_bits, "__floor__")
+    })
+}
+
+pub(crate) fn molt_int_trunc_method_attached_body(_py: &crate::PyToken<'_>, self_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        int_exact_value_method(py, self_bits, "__trunc__")
     })
 }
 
@@ -2363,6 +2388,16 @@ pub(crate) fn molt_object_init_subclass_attached_body(
     _cls_bits: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, { MoltObject::none().bits() })
+}
+
+/// `object.__subclasshook__`: abstract base classes override it; the default
+/// defers to the normal subclass algorithm.
+pub(crate) fn molt_object_subclasshook_attached_body(
+    _py: &crate::PyToken<'_>,
+    _cls_bits: u64,
+    _subclass_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { not_implemented_bits(py) })
 }
 
 pub(crate) fn molt_object_getattribute_attached_body(

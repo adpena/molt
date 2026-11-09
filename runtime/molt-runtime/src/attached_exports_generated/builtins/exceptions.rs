@@ -144,6 +144,24 @@ pub unsafe extern "C" fn molt_exception_init_owned(
         keyword_values_bits,
     )
 }
+#[unsafe(export_name = "molt_exception_setstate__molt_context_a8c6010e2cbb56a1")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_exception_setstate(
+    __context: u64,
+    self_bits: u64,
+    state_bits: u64,
+) -> u64 {
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_exception_setstate_attached_body(_py, self_bits, state_bits)
+}
+#[unsafe(export_name = "molt_exception_reduce__molt_context_a8c6010e2cbb56a1")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_exception_reduce(__context: u64, self_bits: u64) -> u64 {
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_exception_reduce_attached_body(_py, self_bits)
+}
 #[unsafe(export_name = "molt_exception_add_note__molt_context_a8c6010e2cbb56a1")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_exception_add_note(

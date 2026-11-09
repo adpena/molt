@@ -18231,6 +18231,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_exception_push__molt_context_a8c6010e2cbb56a1",
         },
+        "molt_exception_reduce" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_exception_reduce__molt_context_a8c6010e2cbb56a1",
+        },
         "molt_exception_resolve_captured" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_exception_resolve_captured__molt_context_a8c6010e2cbb56a1",
@@ -18242,6 +18246,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_exception_set_value" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_exception_set_value__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_exception_setstate" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_exception_setstate__molt_context_a8c6010e2cbb56a1",
         },
         "molt_exception_stack_clear" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
@@ -20655,6 +20663,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_int_divmod_method__molt_context_a8c6010e2cbb56a1",
         },
+        "molt_int_floor_method" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_int_floor_method__molt_context_a8c6010e2cbb56a1",
+        },
         "molt_int_from_bytes" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_int_from_bytes__molt_context_a8c6010e2cbb56a1",
@@ -20698,6 +20710,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_int_to_bytes" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_int_to_bytes__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_int_trunc_method" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_int_trunc_method__molt_context_a8c6010e2cbb56a1",
         },
         "molt_intern_static_name" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
@@ -22610,6 +22626,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_object_str" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_object_str__molt_context_a8c6010e2cbb56a1",
+        },
+        "molt_object_subclasshook" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_object_subclasshook__molt_context_a8c6010e2cbb56a1",
         },
         "molt_object_truthy" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,

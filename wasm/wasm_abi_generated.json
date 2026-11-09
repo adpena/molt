@@ -7656,6 +7656,10 @@
       "context": "Attached",
       "physical_symbol": "molt_exception_push__molt_context_a8c6010e2cbb56a1"
     },
+    "molt_exception_reduce": {
+      "context": "Attached",
+      "physical_symbol": "molt_exception_reduce__molt_context_a8c6010e2cbb56a1"
+    },
     "molt_exception_resolve_captured": {
       "context": "Attached",
       "physical_symbol": "molt_exception_resolve_captured__molt_context_a8c6010e2cbb56a1"
@@ -7667,6 +7671,10 @@
     "molt_exception_set_value": {
       "context": "Attached",
       "physical_symbol": "molt_exception_set_value__molt_context_a8c6010e2cbb56a1"
+    },
+    "molt_exception_setstate": {
+      "context": "Attached",
+      "physical_symbol": "molt_exception_setstate__molt_context_a8c6010e2cbb56a1"
     },
     "molt_exception_stack_clear": {
       "context": "Attached",
@@ -10080,6 +10088,10 @@
       "context": "Attached",
       "physical_symbol": "molt_int_divmod_method__molt_context_a8c6010e2cbb56a1"
     },
+    "molt_int_floor_method": {
+      "context": "Attached",
+      "physical_symbol": "molt_int_floor_method__molt_context_a8c6010e2cbb56a1"
+    },
     "molt_int_from_bytes": {
       "context": "Attached",
       "physical_symbol": "molt_int_from_bytes__molt_context_a8c6010e2cbb56a1"
@@ -10123,6 +10135,10 @@
     "molt_int_to_bytes": {
       "context": "Attached",
       "physical_symbol": "molt_int_to_bytes__molt_context_a8c6010e2cbb56a1"
+    },
+    "molt_int_trunc_method": {
+      "context": "Attached",
+      "physical_symbol": "molt_int_trunc_method__molt_context_a8c6010e2cbb56a1"
     },
     "molt_intern_static_name": {
       "context": "Attached",
@@ -12035,6 +12051,10 @@
     "molt_object_str": {
       "context": "Attached",
       "physical_symbol": "molt_object_str__molt_context_a8c6010e2cbb56a1"
+    },
+    "molt_object_subclasshook": {
+      "context": "Attached",
+      "physical_symbol": "molt_object_subclasshook__molt_context_a8c6010e2cbb56a1"
     },
     "molt_object_truthy": {
       "context": "Attached",
@@ -22103,9 +22123,11 @@
     "molt_exception_pop__molt_context_a8c6010e2cbb56a1": "molt_exception_pop__molt_context_a8c6010e2cbb56a1",
     "molt_exception_prepare_raise__molt_context_a8c6010e2cbb56a1": "molt_exception_prepare_raise__molt_context_a8c6010e2cbb56a1",
     "molt_exception_push__molt_context_a8c6010e2cbb56a1": "molt_exception_push__molt_context_a8c6010e2cbb56a1",
+    "molt_exception_reduce__molt_context_a8c6010e2cbb56a1": "molt_exception_reduce__molt_context_a8c6010e2cbb56a1",
     "molt_exception_resolve_captured__molt_context_a8c6010e2cbb56a1": "molt_exception_resolve_captured__molt_context_a8c6010e2cbb56a1",
     "molt_exception_set_last__molt_context_a8c6010e2cbb56a1": "molt_exception_set_last__molt_context_a8c6010e2cbb56a1",
     "molt_exception_set_value__molt_context_a8c6010e2cbb56a1": "molt_exception_set_value__molt_context_a8c6010e2cbb56a1",
+    "molt_exception_setstate__molt_context_a8c6010e2cbb56a1": "molt_exception_setstate__molt_context_a8c6010e2cbb56a1",
     "molt_exception_stack_clear__molt_context_a8c6010e2cbb56a1": "molt_exception_stack_clear__molt_context_a8c6010e2cbb56a1",
     "molt_exception_stack_depth__molt_context_a8c6010e2cbb56a1": "molt_exception_stack_depth__molt_context_a8c6010e2cbb56a1",
     "molt_exception_stack_enter__molt_context_a8c6010e2cbb56a1": "molt_exception_stack_enter__molt_context_a8c6010e2cbb56a1",
@@ -22736,6 +22758,7 @@
     "molt_int_ceil_method__molt_context_a8c6010e2cbb56a1": "molt_int_ceil_method__molt_context_a8c6010e2cbb56a1",
     "molt_int_conjugate__molt_context_a8c6010e2cbb56a1": "molt_int_conjugate__molt_context_a8c6010e2cbb56a1",
     "molt_int_divmod_method__molt_context_a8c6010e2cbb56a1": "molt_int_divmod_method__molt_context_a8c6010e2cbb56a1",
+    "molt_int_floor_method__molt_context_a8c6010e2cbb56a1": "molt_int_floor_method__molt_context_a8c6010e2cbb56a1",
     "molt_int_from_bytes__molt_context_a8c6010e2cbb56a1": "molt_int_from_bytes__molt_context_a8c6010e2cbb56a1",
     "molt_int_from_i64": "molt_int_from_i64",
     "molt_int_from_i64__molt_context_a8c6010e2cbb56a1": "molt_int_from_i64__molt_context_a8c6010e2cbb56a1",
@@ -22748,6 +22771,7 @@
     "molt_int_is_integer__molt_context_a8c6010e2cbb56a1": "molt_int_is_integer__molt_context_a8c6010e2cbb56a1",
     "molt_int_new__molt_context_a8c6010e2cbb56a1": "molt_int_new__molt_context_a8c6010e2cbb56a1",
     "molt_int_to_bytes__molt_context_a8c6010e2cbb56a1": "molt_int_to_bytes__molt_context_a8c6010e2cbb56a1",
+    "molt_int_trunc_method__molt_context_a8c6010e2cbb56a1": "molt_int_trunc_method__molt_context_a8c6010e2cbb56a1",
     "molt_intern_static_name__molt_context_a8c6010e2cbb56a1": "molt_intern_static_name__molt_context_a8c6010e2cbb56a1",
     "molt_intrinsic_resolve__molt_context_a8c6010e2cbb56a1": "molt_intrinsic_resolve__molt_context_a8c6010e2cbb56a1",
     "molt_invert__molt_context_a8c6010e2cbb56a1": "molt_invert__molt_context_a8c6010e2cbb56a1",
@@ -23274,6 +23298,7 @@
     "molt_object_setattr_bytes__molt_context_a8c6010e2cbb56a1": "molt_object_setattr_bytes__molt_context_a8c6010e2cbb56a1",
     "molt_object_str": "molt_object_str",
     "molt_object_str__molt_context_a8c6010e2cbb56a1": "molt_object_str__molt_context_a8c6010e2cbb56a1",
+    "molt_object_subclasshook__molt_context_a8c6010e2cbb56a1": "molt_object_subclasshook__molt_context_a8c6010e2cbb56a1",
     "molt_object_truthy": "molt_object_truthy",
     "molt_object_truthy__molt_context_a8c6010e2cbb56a1": "molt_object_truthy__molt_context_a8c6010e2cbb56a1",
     "molt_object_type_id": "molt_object_type_id",

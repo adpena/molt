@@ -350,6 +350,20 @@ pub unsafe extern "C" fn molt_int_ceil_method(__context: u64, self_bits: u64) ->
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_int_ceil_method_attached_body(_py, self_bits)
 }
+#[unsafe(export_name = "molt_int_floor_method__molt_context_a8c6010e2cbb56a1")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_int_floor_method(__context: u64, self_bits: u64) -> u64 {
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_int_floor_method_attached_body(_py, self_bits)
+}
+#[unsafe(export_name = "molt_int_trunc_method__molt_context_a8c6010e2cbb56a1")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_int_trunc_method(__context: u64, self_bits: u64) -> u64 {
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_int_trunc_method_attached_body(_py, self_bits)
+}
 #[unsafe(export_name = "molt_int_abs_method__molt_context_a8c6010e2cbb56a1")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_int_abs_method(__context: u64, self_bits: u64) -> u64 {
@@ -414,6 +428,17 @@ pub unsafe extern "C" fn molt_object_init_subclass(__context: u64, _cls_bits: u6
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_object_init_subclass_attached_body(_py, _cls_bits)
+}
+#[unsafe(export_name = "molt_object_subclasshook__molt_context_a8c6010e2cbb56a1")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_object_subclasshook(
+    __context: u64,
+    _cls_bits: u64,
+    _subclass_bits: u64,
+) -> u64 {
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_object_subclasshook_attached_body(_py, _cls_bits, _subclass_bits)
 }
 #[unsafe(export_name = "molt_object_getattribute__molt_context_a8c6010e2cbb56a1")]
 #[allow(clippy::missing_safety_doc)]

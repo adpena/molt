@@ -168,6 +168,18 @@ crate::builtins::methods::native_method_table!(int_method_bits, publish_int_meth
             fn_addr!(molt_int_ceil_method),
             1,
         )),
+        crate::NameId::DunderFloor => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).int, crate::NameId::DunderFloor),
+            fn_addr!(molt_int_floor_method),
+            1,
+        )),
+        crate::NameId::DunderTrunc => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).int, crate::NameId::DunderTrunc),
+            fn_addr!(molt_int_trunc_method),
+            1,
+        )),
         crate::NameId::DunderNew => Some(crate::builtins::methods::builtin_variadic_func_bits(
             _py, NativeCallableSpec::constructor(builtin_classes(_py).int).with_text_signature("($type, *args, **kwargs)"),
             fn_addr!(crate::builtins::types::native_constructors::int_new),
