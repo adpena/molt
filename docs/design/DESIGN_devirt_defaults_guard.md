@@ -139,6 +139,7 @@ class SingletonDefault(Enum):
     TRUE = 1
     FALSE = 2
 
+
 class ParameterKind(Enum):
     POSITIONAL_ONLY = 0
     POSITIONAL_OR_KEYWORD = 1
@@ -147,43 +148,52 @@ class ParameterKind(Enum):
     VARKW = 4
     CLOSURE_ENV = 5
 
+
 @dataclass(frozen=True, slots=True)
 class NoDefault:
     pass
 
+
 @dataclass(frozen=True, slots=True)
 class SingletonSpec:
     value: SingletonDefault
+
 
 @dataclass(frozen=True, slots=True)
 class OtherLiteralSpec:
     # Literal data are open values, not names or fact keys.
     value: int | float | complex | str | bytes | EllipsisType
 
+
 @dataclass(frozen=True, slots=True)
 class DynamicSpec:
     expression: PythonSourceKey
 
+
 DefaultSpec = NoDefault | SingletonSpec | OtherLiteralSpec | DynamicSpec
+
 
 @dataclass(frozen=True, slots=True)
 class ParameterSpec:
     index: ParamIndex
-    source: PythonSourceKey | None        # None only for the implicit env
+    source: PythonSourceKey | None  # None only for the implicit env
     kind: ParameterKind
     default: DefaultSpec
 
+
 @dataclass(frozen=True, slots=True)
 class FunctionBindingSpec:
-    callable: CallableId                 # reuse the existing source identity
+    callable: CallableId  # reuse the existing source identity
     parameters: tuple[ParameterSpec, ...]
     kind: FunctionKind
+
 
 @dataclass(frozen=True, slots=True)
 class DefaultPadPlan:
     target: CallableId
     supplied: int
     omitted: tuple[tuple[ParamIndex, SingletonDefault], ...]
+
 
 def default_pad_plan(spec: FunctionBindingSpec, supplied: int) -> DefaultPadPlan | None:
     """Requires a complete source-to-ABI map (I1, I8). Ensures only the
