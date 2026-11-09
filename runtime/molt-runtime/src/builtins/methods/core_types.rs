@@ -1,4 +1,7 @@
-use super::common::{builtin_func_bits, builtin_func_bits_with_bind_kind, runtime_python_at_least};
+use super::common::{
+    builtin_func_bits, builtin_func_bits_with_bind_kind, builtin_func_bits_with_defaults_tuple,
+    runtime_python_at_least,
+};
 use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
 use crate::*;
 
@@ -162,6 +165,15 @@ crate::builtins::methods::native_method_table!(object_method_bits, publish_objec
             NativeCallableSpec::declared(NativeCallableKind::ClassMethodDescriptor, builtin_classes(_py).object, crate::NameId::DunderInitSubclass),
             fn_addr!(molt_object_init_subclass),
             1,
+        )),
+        // CPython accepts any arguments (METH_VARARGS); a missing subclass is
+        // the case real code reaches.
+        crate::NameId::DunderSubclasshook => Some(builtin_func_bits_with_defaults_tuple(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::ClassMethodDescriptor, builtin_classes(_py).object, crate::NameId::DunderSubclasshook),
+            fn_addr!(molt_object_subclasshook),
+            2,
+            &[missing_bits(_py)],
         )),
         crate::NameId::DunderSetattr => Some(builtin_func_bits(
             _py,
