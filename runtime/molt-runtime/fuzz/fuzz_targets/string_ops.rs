@@ -9,7 +9,6 @@ use molt_runtime::{
 
 unsafe extern "C" {
     fn molt_attached_context() -> u64;
-    fn molt_exception_clear(context: u64);
 }
 
 molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavailable(
@@ -20,8 +19,10 @@ fuzz_target!(|data: &[u8]| {
     assert_eq!(lifecycle::init(), 1);
     lifecycle::with_ready_execution(|| unsafe {
         let context = molt_attached_context();
+        // The ready execution lease owns this thread's context for the closure.
+        let py = molt_runtime_core::PyToken::from_attached_context(context);
         let mut owners = [MoltObject::none().bits(); 8];
-        molt_exception_clear(context);
+        molt_runtime_core::rt_exception_clear(py);
         (|| {
             if molt_string_from_bytes(context, data.as_ptr(), data.len() as u64, &mut owners[0])
                 != 0
@@ -56,7 +57,7 @@ fuzz_target!(|data: &[u8]| {
                 molt_dec_ref(context, ptr);
             }
         }
-        molt_exception_clear(context);
+        molt_runtime_core::rt_exception_clear(py);
     })
     .expect("fuzz input requires ready runtime execution");
 });

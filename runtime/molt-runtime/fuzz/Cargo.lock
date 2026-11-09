@@ -977,6 +977,7 @@ dependencies = [
  "libfuzzer-sys",
  "molt-lang-obj-model",
  "molt-runtime",
+ "molt-runtime-core",
 ]
 
 [[package]]
