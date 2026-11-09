@@ -2,9 +2,45 @@
 
 Status: accepted design, 2026-10-29, for ledger family J (runtime execution context), with I
 (frames and exceptions), A (runtime-call ABI) and P (mid-end facts). Ledger rows: HF-185 (frame
-cost, staged here), HF-561 (raise and catch) and the exception `__init__` descriptor row. Stage 1
-is the next implementation step. Section 9 holds the programs and the method to reproduce every
-number.
+cost, staged here), HF-561 (raise and catch) and the exception `__init__` descriptor row. Section 9
+holds the programs and the method to reproduce every number.
+
+This document is Molt's performance anchor. Read the stage status below before any performance
+analysis, benchmark interpretation, work ordering or speed claim; the session digest prints its
+summary line. A change that lands a stage or moves a measurement updates this table in the same
+change.
+
+## Stage status
+
+Summary: 2026-11-09, release native, macOS arm64, user time against the managed CPython 3.12.16 (-I): Molt runs at 0.26x CPython (geomean of 27 benchmarks measurable on both sides); stages 1, 2, 3 and 5 are partial, 4, 6 and 7 not started.
+
+| stage | state | landed | in flight | rows |
+|---|---|---|---|---|
+| 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8) | native-stack frame records (lane call-anatomy-phase2) | HF-185, HF-261 |
+| 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2) | attached execution context (lane hf198-attached-context) | HF-198, HF-205 |
+| 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a) | guarded call promotion design (HF-773 slice D) | HF-507, HF-79, HF-200 |
+| 4 inline caches | not started | - | - | HF-202, HF-206 |
+| 5 exceptions | partial | faster raise path (2c9c0c1493); normal try completion split from dispatch (87036f1ea6) | - | HF-561, HF-207 |
+| 6 unboxed loop carriers | not started | - | - | HF-229 |
+| 7 TIR inlining | not started | - | - | HF-773 |
+
+Outside the call path, three contained runtime-library costs dominate the worst cells (measured
+2026-11-09 against the same baseline, symbolized `sample` profiles):
+
+- The cycle collector tracks containers in sharded, address-keyed `HashMap`s behind mutexes
+  (`object/gc.rs`). Every container allocation and free takes a shard lock and a hash insert or
+  remove (`gc_admit_membership`, `gc_untrack`: top frames of `struct`), and every young collection
+  copies the whole registry to filter by generation (`snapshot_registry`: most of `gc_pressure`,
+  0.03x; quadratic in live containers). CPython keeps one intrusive list per generation.
+- Weak references live in one global `Mutex<HashMap>` registry (`state/runtime_state.rs`;
+  `weakref_native` 0.05x); CPython keeps a list head in each object (`tp_weaklistoffset`).
+- `struct` re-parses its format and converts integers through the C-API bridge on every call
+  (`molt-runtime-serial/src/structs.rs`; `struct` 0.09x); CPython caches compiled formats.
+
+Each needs its own fix; none waits for a stage. Inside the call path the same profiles show frame
+push and release (`take_invocation_namespace`, `FrameEntry::release`) at the top of method-heavy
+code (stage 1) and traceback location decoding (`LocationRows`) at the top of `exception_heavy`
+(stage 5).
 
 ## 0. Summary
 

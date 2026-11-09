@@ -1542,7 +1542,6 @@ pub unsafe extern "C" fn molt_set_attr_object_ic(
                 site_id,
                 obj_bits,
                 name,
-                bytes,
             )
             .is_ok()
             {

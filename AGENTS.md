@@ -206,6 +206,9 @@ over stale prose or precedent.
 - Runtime and ABI manifests: `runtime/molt-runtime/src/intrinsics/manifest.pyi`,
   `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml`
 - CI or JUnit failure triage (NEW versus main, owners): `tools/ci_triage.py RUN_ID|--junit FILE`
+- Why Molt is slow and the staged plan (read its stage status before any performance analysis,
+  ordering or speed claim; time CPython with the managed interpreter, never the dev env):
+  `docs/design/foundation/call_anatomy.md`
 - Loop anatomy and cost buckets: `tools/opt_explorer.py`, `tools/PERF_AUTHORITY.md`
 
 Load only the authority the task needs, and update it when its facts change.

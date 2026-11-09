@@ -292,39 +292,24 @@ pub(crate) fn class_set_base(_py: &PyToken<'_>, class_bits: u64, base_bits: u64)
     unsafe {
         use crate::object::class_storage::ClassReferenceSlot;
         let bases_name = crate::NameId::DunderBases.bits(_py);
-        let mro_name = crate::NameId::DunderMro.bits(_py);
         let Some(mut publication) =
             crate::builtins::attributes::TypeMutation::prepare(_py, class_ptr, bases_name)
         else {
             dec_ref_bits(_py, mro_bits);
             return Err(());
         };
-        let mut retired = Vec::with_capacity(2);
-        let mut updated = true;
-        // Adopt both new edges before releasing either old one. Keep the
-        // displaced owners through namespace and layout publication too:
-        // replacing the dictionary projections may otherwise trigger a
-        // finalizer observing a half-published hierarchy.
+        // The typed slots are the only home of `__bases__` and `__mro__`;
+        // `type`'s data descriptors serve them, as CPython's type getsets do,
+        // so the class namespace never mirrors them. Adopt both new edges
+        // before releasing either old one, and keep the displaced owners
+        // through layout publication: an earlier release could run a
+        // finalizer that observes a half-published hierarchy.
         let old_bases = ClassReferenceSlot::Bases.exchange_owned(class_ptr, bases_bits);
         crate::object::class_subclasses::rebase(class_ptr, old_bases, bases_bits);
         bases_owner.release();
         let old_mro = ClassReferenceSlot::Mro.exchange_owned(class_ptr, mro_bits);
         let bases_updated = old_bases != bases_bits;
         let mro_updated = old_mro != mro_bits;
-        let dict_bits = class_dict_bits(class_ptr);
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-            && object_type_id(dict_ptr) == TYPE_ID_DICT
-        {
-            for (name, value) in [(bases_name, bases_bits), (mro_name, mro_bits)] {
-                match crate::object::ops::dict_set_deferred(_py, dict_ptr, name, value) {
-                    Ok(previous) => retired.push(previous),
-                    Err(()) => {
-                        updated = false;
-                        break;
-                    }
-                }
-            }
-        }
         if bases_updated || mro_updated {
             let published = crate::object::class_inherit_instance_type_id(
                 class_ptr,
@@ -349,13 +334,12 @@ pub(crate) fn class_set_base(_py: &PyToken<'_>, class_bits: u64, base_bits: u64)
                 "validated exception-layout publication must succeed"
             );
         }
-        // Even a failed later projection write must invalidate a committed
-        // hierarchy before the first displaced owner can reenter Python.
+        // Invalidate the committed hierarchy before the first displaced owner
+        // can reenter Python.
         let published = publication.publish();
-        drop(retired);
         dec_ref_bits(_py, old_bases);
         dec_ref_bits(_py, old_mro);
-        if !updated || !published {
+        if !published {
             return Err(());
         }
     }

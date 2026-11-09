@@ -1321,7 +1321,6 @@ pub(crate) unsafe fn get_attr_object_ic_with_mode(
                 site_id,
                 obj_bits,
                 name_bits,
-                name,
             )
             .is_err()
         {

@@ -3485,6 +3485,9 @@ pub(crate) enum NativeDescriptorFlavor {
     CallableGetSet = 5,
     RootMetadata = 6,
     CallableMember = 7,
+    /// `__weakref__` of a class that adds weakref support: reads the first
+    /// registered weak reference; never writable.
+    InstanceWeakref = 8,
 }
 
 impl NativeDescriptorFlavor {
@@ -3498,6 +3501,7 @@ impl NativeDescriptorFlavor {
             5 => Some(Self::CallableGetSet),
             6 => Some(Self::RootMetadata),
             7 => Some(Self::CallableMember),
+            8 => Some(Self::InstanceWeakref),
             _ => None,
         }
     }

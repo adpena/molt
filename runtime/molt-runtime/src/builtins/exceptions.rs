@@ -3142,12 +3142,7 @@ fn construct_builtin_exception_class(py: &PyToken<'_>, kind: BuiltinExc) -> u64 
             }
             let class_bits = MoltObject::from_ptr(class_ptr).bits();
             let _ = molt_class_set_base(class_bits, tuple_bits);
-            let stored = set_exception_text_signature_none(py, class_bits);
             dec_ref_bits(py, tuple_bits);
-            if !stored {
-                dec_ref_bits(py, class_bits);
-                return 0;
-            }
             return publish_builtin_exception_class(py, kind, class_bits);
         }
     };
@@ -3164,10 +3159,6 @@ fn construct_builtin_exception_class(py: &PyToken<'_>, kind: BuiltinExc) -> u64 
     }
     let class_bits = MoltObject::from_ptr(class_ptr).bits();
     let _ = molt_class_set_base(class_bits, base_bits);
-    if !set_exception_text_signature_none(py, class_bits) {
-        dec_ref_bits(py, class_bits);
-        return 0;
-    }
     publish_builtin_exception_class(py, kind, class_bits)
 }
 
@@ -3387,32 +3378,6 @@ fn alloc_class_obj_from_name(_py: &PyToken<'_>, name: &str) -> *mut u8 {
         }
     }
     class_ptr
-}
-
-fn set_exception_text_signature_none(_py: &PyToken<'_>, class_bits: u64) -> bool {
-    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-        return false;
-    };
-    unsafe {
-        if object_type_id(class_ptr) != TYPE_ID_TYPE {
-            return false;
-        }
-    }
-    let dict_bits = unsafe { class_dict_bits(class_ptr) };
-    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-        return false;
-    };
-    unsafe {
-        if object_type_id(dict_ptr) != TYPE_ID_DICT {
-            return false;
-        }
-    }
-    let Some(name_bits) = crate::NameId::DunderTextSignature.owned_bits(_py) else {
-        return false;
-    };
-    let stored = unsafe { dict_set_in_place(_py, dict_ptr, name_bits, MoltObject::none().bits()) };
-    dec_ref_bits(_py, name_bits);
-    stored
 }
 
 fn publish_builtin_exception_class(py: &PyToken<'_>, kind: BuiltinExc, class_bits: u64) -> u64 {
