@@ -143,12 +143,13 @@ collection, under the same guarded SSH owner. Its worker runs under its own
 `wsl.exe` client ([WSL instance lifetime](#wsl-instance-lifetime)); the declared
 `vmIdleTimeout=-1` must already match before provisioning.
 
-The inventory declares the WSL VHDX's C: identity, 80 GiB disk budget, 24 GiB
+The inventory declares the WSL VHDX's C: identity, 120 GiB disk budget, 24 GiB
 memory, 4 GiB swap and a minimum 20 GiB proof-build headroom. Admission verifies
 the distribution's registered VHDX path and reads free space through `/mnt/c`,
 never the virtual ext4 free-space report. A mismatched Windows profile stops
 before installation. Under the owner's 2026-11-02 approval, `provision` caps
-`molt-gate` at 80 GiB, trims its filesystem and compacts its VHDX. Root used bytes
+`molt-gate` at 120 GiB (raised from 80 GiB on 2026-11-09 for the runtime release-output
+cell, under the owner's HF-706 approval), trims its filesystem and compacts its VHDX. Root used bytes
 (including Cargo/uv caches) plus 20 GiB build headroom must fit the cap. Only
 `molt-gate` is stopped. With the correct block-device size a subsequent run
 performs no disk mutation; `run` admits but never changes the cap. The declared

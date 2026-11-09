@@ -905,27 +905,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.store_frame_location(*location);
                 true
             }
-            OpKind::Line => {
-                let line = op
-                    .attrs
-                    .get("value")
-                    .and_then(|v| match v {
-                        AttrValue::Int(v) => Some(*v),
-                        _ => None,
-                    })
-                    .unwrap_or(0);
-                let line_fn = self.ensure_runtime_i64_fn("molt_trace_set_line", 1);
-                let _ = self
-                    .backend
-                    .builder
-                    .build_call(
-                        line_fn,
-                        &[i64_ty.const_int(line as u64, true).into()],
-                        "trace_set_line",
-                    )
-                    .unwrap();
-                true
-            }
+            // A statement marker: it emits no code. Tracebacks read the
+            // location that `frame_set_location` publishes before each
+            // raising op.
+            OpKind::Line => true,
             OpKind::CallargsNew => {
                 // The source call form picks the builder: a CALL_FUNCTION_EX
                 // call site's arguments are its own tuple and mapping.
