@@ -1,6 +1,7 @@
 """Render sole attached extern entries next to their typed Rust body owners."""
 
 from __future__ import annotations
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from functools import lru_cache
@@ -137,7 +138,7 @@ def split_params(text: str) -> list[str]:
     return _split_rust_top_level_commas(text)
 
 
-def typed_bodies(root: Path):
+def typed_bodies(root: Path) -> Iterator[tuple[Path, str, RustFunction]]:
     for path in sorted(root.glob("runtime/*/src/**/*.rs")):
         if (
             "attached_exports_generated" in path.parts

@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 from tools import check_runtime_bridge_test_stubs
 
 
@@ -114,7 +116,9 @@ def test_live_stub_file_is_in_sync():
         assert execution.physical_symbol in symbols
 
 
-def test_bridge_stubs_use_actual_link_identities(tmp_path, monkeypatch) -> None:
+def test_bridge_stubs_use_actual_link_identities(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from molt._wasm_abi_generated import runtime_execution_abi
 
     source = tmp_path / "bridge.rs"

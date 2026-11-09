@@ -391,7 +391,7 @@ def test_real_darwin_link_drops_unused_dylibs_and_keeps_referenced_framework(
     )
     executable = tmp_path / "security"
 
-    def run(command, *, timeout=60):
+    def run(command: list[str], *, timeout: float = 60) -> str:
         if linker_name == "lld" and command[0] == tools.clang:
             command = [
                 tools.clang,

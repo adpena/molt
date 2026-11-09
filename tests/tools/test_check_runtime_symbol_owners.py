@@ -253,7 +253,7 @@ def test_attached_symbol_macro_rejects_unclassified_and_boundary_exports(
 
 
 def test_attached_macro_observation_reads_fresh_rust_projection(
-    tmp_path, monkeypatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tool = check_runtime_symbol_owners
     source = tmp_path / "runtime/molt-codegen-abi/src/attached_context_generated.rs"

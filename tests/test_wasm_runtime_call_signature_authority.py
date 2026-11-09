@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -11,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.mark.parametrize("family", ["dispatch", "isolate"])
 def test_app_resolved_runtime_declarations_have_physical_linker_identities(
-    tmp_path: Path, family: str
+    tmp_path: Path, family: Literal["dispatch", "isolate"]
 ) -> None:
     import json
     import shutil

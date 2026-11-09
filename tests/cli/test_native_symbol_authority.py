@@ -306,7 +306,9 @@ def test_callable_projection_reuses_one_owned_archive_admission_per_call(
     assert len(inspected) == 1
 
 
-def test_callable_projection_rejects_legacy_attached_runtime_export(tmp_path):
+def test_callable_projection_rejects_legacy_attached_runtime_export(
+    tmp_path: Path,
+) -> None:
     from molt.cli import runtime_callable_symbols
 
     artifact = tmp_path / "runtime.a"
@@ -324,8 +326,8 @@ def test_callable_projection_rejects_legacy_attached_runtime_export(tmp_path):
 
 @pytest.mark.parametrize("attached", [False, True])
 def test_public_c_boundary_does_not_substitute_for_attached_callable(
-    tmp_path, attached
-):
+    tmp_path: Path, attached: bool
+) -> None:
     from molt.cli import runtime_callable_symbols
 
     name = "molt_builtin_class_lookup"
@@ -368,8 +370,8 @@ def _archive(*functions: str, **kwargs) -> bytes:
 @pytest.mark.parametrize("legacy", [False, True])
 @pytest.mark.parametrize("physical", [False, True])
 def test_partition_admission_projects_logical_functions_to_physical_abi(
-    tmp_path, legacy, physical
-):
+    tmp_path: Path, legacy: bool, physical: bool
+) -> None:
     logical = "molt_init_sys"
     symbols = ([logical] if legacy else []) + (
         [compiled_execution_symbol(logical)] if physical else []

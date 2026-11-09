@@ -303,7 +303,9 @@ def test_test_item_mask_keeps_mixed_line_production_and_coordinates():
         ("not(all(test, unix))", False),
     ],
 )
-def test_composite_cfg_test_scope_preserves_production_alternatives(cfg, test_only):
+def test_composite_cfg_test_scope_preserves_production_alternatives(
+    cfg: str, test_only: bool
+) -> None:
     from molt.rust_source_scan import mask_rust_test_items
 
     scoped = f'#[cfg({cfg})]\nmod scope {{ extern "C" fn provider() {{}} }}\n'
