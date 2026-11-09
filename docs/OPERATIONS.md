@@ -1312,6 +1312,20 @@ fail closed; the inventory itself makes no claim about current file bytes.
   builds across a whole differential run.
 - `MOLT_CLI_PROFILE=<dir>/{pid}.prof` writes a cProfile of each `molt` command;
   `{pid}` keeps parallel builds apart. Read it with `python -m pstats`.
+- `TIR_OPT_STATS=1` (or `MOLT_EMIT_PASS_DELTA=1`) also appends SCCP's call
+  census to `<MOLT_DEBUG_ARTIFACT_DIR>/tir/call_census.jsonl`. Use a fresh
+  debug directory per measured compilation. Each solve records supplied
+  positional argument facts, guarded candidate symbols, consumed-builder
+  calls, and conservative parameter-to-undecided-branch dependencies.
+  Annotation effects are read-only nullness counterfactuals; the separate
+  `entry_tag_guard` field records tag hints in the entry block, not an admission
+  proof: the current runtime returns the original value on a tag mismatch.
+  Class/range decisions and unresolved binding remain unknown. Join exact emitted symbols
+  and declared parameter indices to frontend signatures to count omitted
+  defaults; neither an arity gap nor a candidate symbol proves a default or
+  callable identity. Repeated solves are observations, not additional sites.
+  This observer changes no IR and leaves the existing pass-delta JSONL schema
+  and its readers unchanged.
 - Import scans, intrinsic source facts, module analyses and binary module
   lowerings share `<schema digest>/records.sqlite`, named by the DDL digest,
   under `<Molt cache>/toolchain_source_records`
