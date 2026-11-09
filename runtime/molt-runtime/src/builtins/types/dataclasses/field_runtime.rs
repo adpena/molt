@@ -6,16 +6,19 @@ use crate::object::seq_access::PinnedSequenceSnapshot;
 
 /// An attribute or comparison result transfers one owned reference. Keep that
 /// ownership explicit across every later descriptor, truth or equality callback.
-pub(super) struct DcValue {
+pub(super) struct DcValue<'guard> {
     pub(super) bits: u64,
-    guard: PtrDropGuard,
+    guard: PtrDropGuard<'guard>,
 }
 
-impl DcValue {
-    pub(super) fn owned(bits: u64) -> Self {
+impl<'guard> DcValue<'guard> {
+    pub(super) fn owned(py: &'guard PyToken<'guard>, bits: u64) -> Self {
         Self {
             bits,
-            guard: PtrDropGuard::new(obj_from_bits(bits).as_ptr().unwrap_or(std::ptr::null_mut())),
+            guard: PtrDropGuard::new(
+                py,
+                obj_from_bits(bits).as_ptr().unwrap_or(std::ptr::null_mut()),
+            ),
         }
     }
 
@@ -34,8 +37,11 @@ macro_rules! dc_try {
     };
 }
 
-pub(super) fn dc_result(py: &PyToken<'_>, bits: u64) -> Result<DcValue, ()> {
-    let value = DcValue::owned(bits);
+pub(super) fn dc_result<'guard>(
+    py: &'guard PyToken<'guard>,
+    bits: u64,
+) -> Result<DcValue<'guard>, ()> {
+    let value = DcValue::owned(py, bits);
     if exception_pending(py) {
         Err(())
     } else {
@@ -43,11 +49,15 @@ pub(super) fn dc_result(py: &PyToken<'_>, bits: u64) -> Result<DcValue, ()> {
     }
 }
 
-pub(super) fn dc_attr(py: &PyToken<'_>, object: u64, name: crate::NameId) -> Result<DcValue, ()> {
-    let name = DcValue::owned(name.owned_bits(py).ok_or(())?);
+pub(super) fn dc_attr<'guard>(
+    py: &'guard PyToken<'guard>,
+    object: u64,
+    name: crate::NameId,
+) -> Result<DcValue<'guard>, ()> {
+    let name = DcValue::owned(py, name.owned_bits(py).ok_or(())?);
     dc_result(
         py,
-        crate::builtins::attributes::molt_get_attr_name(object, name.bits),
+        crate::builtins::attributes::molt_get_attr_name_attached_body(py, object, name.bits),
     )
 }
 
@@ -57,7 +67,7 @@ pub(in crate::builtins::types::dataclasses) fn dc_getattr_default_bits(
     name: crate::NameId,
     default: u64,
 ) -> Option<u64> {
-    let name = DcValue::owned(name.owned_bits(py)?);
+    let name = DcValue::owned(py, name.owned_bits(py)?);
     match crate::lookup_attribute(py, object, name.bits) {
         crate::AttributeLookup::Found(bits) => Some(bits),
         crate::AttributeLookup::Missing => {
@@ -78,7 +88,7 @@ pub(super) fn dc_truth(py: &PyToken<'_>, bits: u64) -> Result<bool, ()> {
 }
 
 pub(super) fn dc_repr_str(py: &PyToken<'_>, bits: u64) -> Result<String, ()> {
-    let repr = dc_result(py, molt_repr_from_obj(bits))?;
+    let repr = dc_result(py, molt_repr_from_obj_attached_body(py, bits))?;
     string_obj_to_owned(obj_from_bits(repr.bits)).ok_or(())
 }
 
@@ -162,9 +172,8 @@ fn dc_field_hash_flag(py: &PyToken<'_>, field: u64, compare: bool) -> Result<boo
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dataclasses_repr(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_dataclasses_repr_attached_body(_py: &crate::PyToken<'_>, self_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let fields = dc_try!(dc_fields_ordered(py, self_bits));
         let class = dc_try!(dc_attr(py, self_bits, crate::NameId::DunderClass));
         let name = dc_try!(dc_attr(py, class.bits, crate::NameId::DunderQualname));
@@ -179,11 +188,15 @@ pub extern "C" fn molt_dataclasses_repr(self_bits: u64) -> u64 {
             }
             let field_name = dc_try!(dc_field_name_str(py, field));
             let value = dc_try!((|| {
-                let key =
-                    DcValue::owned(dynamic_attr_name_bits(py, field_name.as_bytes()).ok_or(())?);
+                let key = DcValue::owned(
+                    py,
+                    dynamic_attr_name_bits(py, field_name.as_bytes()).ok_or(())?,
+                );
                 dc_result(
                     py,
-                    crate::builtins::attributes::molt_get_attr_name(self_bits, key.bits),
+                    crate::builtins::attributes::molt_get_attr_name_attached_body(
+                        py, self_bits, key.bits,
+                    ),
                 )
             })());
             let repr = dc_try!(dc_repr_str(py, value.bits));
@@ -201,12 +214,16 @@ pub extern "C" fn molt_dataclasses_repr(self_bits: u64) -> u64 {
 
 /// Match the target's generated dataclass expression: 3.12 compares two fully
 /// evaluated tuples, while 3.13+ returns a short-circuit chain of rich results.
-fn dc_value_tuple(py: &PyToken<'_>, object: u64, names: &[u64]) -> Result<DcValue, ()> {
+fn dc_value_tuple<'guard>(
+    py: &'guard PyToken<'guard>,
+    object: u64,
+    names: &[u64],
+) -> Result<DcValue<'guard>, ()> {
     let mut values = Vec::with_capacity(names.len());
     for &name in names {
         match dc_result(
             py,
-            crate::builtins::attributes::molt_get_attr_name(object, name),
+            crate::builtins::attributes::molt_get_attr_name_attached_body(py, object, name),
         ) {
             Ok(value) => values.push(value),
             Err(()) => {
@@ -227,12 +244,16 @@ fn dc_value_tuple(py: &PyToken<'_>, object: u64, names: &[u64]) -> Result<DcValu
         }
         return Err(());
     }
-    Ok(DcValue::owned(MoltObject::from_ptr(ptr).bits()))
+    Ok(DcValue::owned(py, MoltObject::from_ptr(ptr).bits()))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dataclasses_eq(self_bits: u64, other_bits: u64, compare_names: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_dataclasses_eq_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    other_bits: u64,
+    compare_names: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let direct = crate::object::ops_sys::runtime_target_at_least(py, 3, 13);
         if direct && self_bits == other_bits {
             return MoltObject::from_bool(true).bits();
@@ -270,13 +291,17 @@ pub extern "C" fn molt_dataclasses_eq(self_bits: u64, other_bits: u64, compare_n
             for (index, &name) in names.iter().enumerate() {
                 let left = dc_try!(dc_result(
                     py,
-                    crate::builtins::attributes::molt_get_attr_name(self_bits, name)
+                    crate::builtins::attributes::molt_get_attr_name_attached_body(
+                        py, self_bits, name
+                    )
                 ));
                 let right = dc_try!(dc_result(
                     py,
-                    crate::builtins::attributes::molt_get_attr_name(other_bits, name)
+                    crate::builtins::attributes::molt_get_attr_name_attached_body(
+                        py, other_bits, name
+                    )
                 ));
-                let result = dc_result(py, molt_eq(left.bits, right.bits));
+                let result = dc_result(py, molt_eq_attached_body(py, left.bits, right.bits));
                 drop(left);
                 drop(right);
                 let result = dc_try!(result);
@@ -303,9 +328,11 @@ pub extern "C" fn molt_dataclasses_eq(self_bits: u64, other_bits: u64, compare_n
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dataclasses_hash_fn(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_dataclasses_hash_fn_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let fields = dc_try!(dc_fields_ordered(py, self_bits));
         let mut values = Vec::new();
         for pair in fields.as_chunks::<2>().0 {
@@ -319,10 +346,13 @@ pub extern "C" fn molt_dataclasses_hash_fn(self_bits: u64) -> u64 {
             }
             let name = dc_try!(dc_field_name_str(py, field));
             values.push(dc_try!((|| {
-                let key = DcValue::owned(dynamic_attr_name_bits(py, name.as_bytes()).ok_or(())?);
+                let key =
+                    DcValue::owned(py, dynamic_attr_name_bits(py, name.as_bytes()).ok_or(())?);
                 dc_result(
                     py,
-                    crate::builtins::attributes::molt_get_attr_name(self_bits, key.bits),
+                    crate::builtins::attributes::molt_get_attr_name_attached_body(
+                        py, self_bits, key.bits,
+                    ),
                 )
             })()));
         }
@@ -331,7 +361,9 @@ pub extern "C" fn molt_dataclasses_hash_fn(self_bits: u64) -> u64 {
         if ptr.is_null() {
             return MoltObject::none().bits();
         }
-        let tuple = DcValue::owned(MoltObject::from_ptr(ptr).bits());
-        molt_hash_builtin(tuple.bits)
+        let tuple = DcValue::owned(py, MoltObject::from_ptr(ptr).bits());
+        molt_hash_builtin_attached_body(py, tuple.bits)
     })
 }
+
+include!("../../../attached_exports_generated/builtins/types/dataclasses/field_runtime.rs");

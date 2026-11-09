@@ -482,8 +482,7 @@ impl SimpleBackend {
             if signature.returns_value {
                 cranelift_signature.returns.push(AbiParam::new(types::I64));
             }
-            self.module
-                .declare_function(name, Linkage::Import, &cranelift_signature)
+            declare_python_execution_function(&mut self.module, name, Linkage::Import, &cranelift_signature)
                 .unwrap_or_else(|error| {
                     panic!(
                         "Cranelift extern declaration mismatch for `{name}`: expected {} parameter(s), returns_value={}: {error}",
@@ -689,8 +688,9 @@ impl SimpleBackend {
         for (name, sig) in declared {
             // In batched compilation, functions that exist in another batch
             // are valid imports for the linker to resolve at merge time.
-            if !self.external_function_names.is_empty()
-                && self.external_function_names.contains(&name)
+            if name
+                .strip_suffix(ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX)
+                .is_some_and(|logical| self.external_function_names.contains(logical))
             {
                 self.module
                     .declare_function(&name, cranelift_module::Linkage::Import, &sig)

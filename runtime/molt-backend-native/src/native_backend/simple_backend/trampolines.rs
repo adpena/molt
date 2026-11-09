@@ -69,6 +69,7 @@ impl SimpleBackend {
         ctx.func.signature.params.push(AbiParam::new(types::I64));
         ctx.func.signature.params.push(AbiParam::new(types::I64));
         ctx.func.signature.params.push(AbiParam::new(types::I64));
+        ctx.func.signature.params.push(AbiParam::new(types::I64));
         ctx.func.signature.returns.push(AbiParam::new(types::I64));
 
         let mut builder_ctx = FunctionBuilderContext::new();
@@ -77,9 +78,10 @@ impl SimpleBackend {
         builder.append_block_params_for_function_params(entry_block);
         builder.switch_to_block(entry_block);
         builder.seal_block(entry_block);
-        let closure_bits = builder.block_params(entry_block)[0];
-        let args_ptr = builder.block_params(entry_block)[1];
-        let args_len = builder.block_params(entry_block)[2];
+        let execution_context = builder.block_params(entry_block)[0];
+        let closure_bits = builder.block_params(entry_block)[1];
+        let args_ptr = builder.block_params(entry_block)[2];
+        let args_len = builder.block_params(entry_block)[3];
         let behavior = kind.behavior();
         let admission = builder.ins().iconst(types::I64, 0);
 
@@ -229,9 +231,13 @@ impl SimpleBackend {
                 if target_has_ret {
                     target_sig.returns.push(AbiParam::new(types::I64));
                 }
-                let target_id = module
-                    .declare_function(func_name, Linkage::Import, &target_sig)
-                    .unwrap();
+                let target_id = declare_python_execution_function(
+                    module,
+                    func_name,
+                    Linkage::Import,
+                    &target_sig,
+                )
+                .unwrap();
                 let target_ref = module.declare_func_in_func(target_id, builder.func);
                 let call = builder
                     .ins()
@@ -272,9 +278,13 @@ impl SimpleBackend {
                 // trampolines: the target is defined by its own
                 // compile_func call (Export), and in batched compilation
                 // the target may be in a different batch .o file.
-                let target_id = module
-                    .declare_function(func_name, Linkage::Import, &target_sig)
-                    .unwrap();
+                let target_id = declare_python_execution_function(
+                    module,
+                    func_name,
+                    Linkage::Import,
+                    &target_sig,
+                )
+                .unwrap();
                 let target_ref = module.declare_func_in_func(target_id, builder.func);
                 let call = builder.ins().call(target_ref, &call_args);
                 if target_has_ret {
@@ -294,10 +304,15 @@ impl SimpleBackend {
         });
         builder.seal_all_blocks();
         builder.finalize(module.target_config());
+        complete_attached_calls(module, &mut ctx.func, execution_context);
         inspect(&ctx);
 
         let trampoline_id = module
-            .declare_function(&trampoline_name, Linkage::Local, &ctx.func.signature)
+            .declare_function(
+                &compiled_execution_symbol(&trampoline_name),
+                Linkage::Local,
+                &ctx.func.signature,
+            )
             .unwrap();
         if let Err(err) = module.define_function(trampoline_id, &mut ctx) {
             panic!("Failed to define trampoline {trampoline_name}: {err:?}");

@@ -30,8 +30,11 @@ schema = "molt-perf-methodology-v1"
 # v34: HF-561 adds caught user and runtime raise primitives to the instruction
 # scoreboard, and class ancestry is borrowed on the raise path, so raise and
 # isinstance counts can move; earlier reports retain their recorded class.
-version = 34
-content_sha256 = "10d04a11ede50677f47aa2be48ea999a526c28d011fc48d1de795875865b041e"
+# v35: HF-198 carries the attached execution context through WASM host calls
+# and admits schema-qualified exports, so invocation costs can move; earlier
+# reports retain their recorded comparison class.
+version = 35
+content_sha256 = "0f446f4fa364d4c4b0e323098a75063d1ddc81f619273d731e5a8151f7360078"
 
 [[methodology]]
 path = "tools/safe_run.py"

@@ -20,8 +20,8 @@ use crate::{
     TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET,
     TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE, alloc_class_obj, alloc_string, alloc_tuple,
     class_bump_layout_version, class_dict_bits, dec_ref_bits, dict_set_in_place, inc_ref_bits,
-    molt_class_set_base, obj_from_bits, object_type_id, raise_exception, runtime_state,
-    runtime_state_for_gil, string_obj_to_owned,
+    molt_class_set_base_attached_body, obj_from_bits, object_type_id, raise_exception,
+    runtime_state, runtime_state_for_gil, string_obj_to_owned,
 };
 
 static BUILTIN_CLASSES_INIT_LOCK: Mutex<()> = Mutex::new(());
@@ -868,24 +868,24 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         }
     }
 
-    let _ = molt_class_set_base(object, MoltObject::none().bits());
-    let _ = molt_class_set_base(type_obj, object);
-    let _ = molt_class_set_base(none_type, object);
-    let _ = molt_class_set_base(not_implemented_type, object);
-    let _ = molt_class_set_base(ellipsis_type, object);
-    let _ = molt_class_set_base(base_exception, object);
-    let _ = molt_class_set_base(exception, base_exception);
-    let _ = molt_class_set_base(base_exception_group, base_exception);
+    let _ = molt_class_set_base_attached_body(_py, object, MoltObject::none().bits());
+    let _ = molt_class_set_base_attached_body(_py, type_obj, object);
+    let _ = molt_class_set_base_attached_body(_py, none_type, object);
+    let _ = molt_class_set_base_attached_body(_py, not_implemented_type, object);
+    let _ = molt_class_set_base_attached_body(_py, ellipsis_type, object);
+    let _ = molt_class_set_base_attached_body(_py, base_exception, object);
+    let _ = molt_class_set_base_attached_body(_py, exception, base_exception);
+    let _ = molt_class_set_base_attached_body(_py, base_exception_group, base_exception);
     let exception_group_bases = alloc_tuple(_py, &[base_exception_group, exception]);
     if !exception_group_bases.is_null() {
         let bases_bits = MoltObject::from_ptr(exception_group_bases).bits();
-        let _ = molt_class_set_base(exception_group, bases_bits);
+        let _ = molt_class_set_base_attached_body(_py, exception_group, bases_bits);
         dec_ref_bits(_py, bases_bits);
     }
-    let _ = molt_class_set_base(int, object);
-    let _ = molt_class_set_base(float, object);
-    let _ = molt_class_set_base(complex, object);
-    let _ = molt_class_set_base(bool, int);
+    let _ = molt_class_set_base_attached_body(_py, int, object);
+    let _ = molt_class_set_base_attached_body(_py, float, object);
+    let _ = molt_class_set_base_attached_body(_py, complex, object);
+    let _ = molt_class_set_base_attached_body(_py, bool, int);
     init_scalar_subclass_layout(
         int,
         crate::object::class_storage::ClassDeclaration::IntValue,
@@ -894,12 +894,12 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         float,
         crate::object::class_storage::ClassDeclaration::FloatValue,
     );
-    let _ = molt_class_set_base(str, object);
-    let _ = molt_class_set_base(bytes, object);
-    let _ = molt_class_set_base(bytearray, object);
-    let _ = molt_class_set_base(list, object);
-    let _ = molt_class_set_base(tuple, object);
-    let _ = molt_class_set_base(dict, object);
+    let _ = molt_class_set_base_attached_body(_py, str, object);
+    let _ = molt_class_set_base_attached_body(_py, bytes, object);
+    let _ = molt_class_set_base_attached_body(_py, bytearray, object);
+    let _ = molt_class_set_base_attached_body(_py, list, object);
+    let _ = molt_class_set_base_attached_body(_py, tuple, object);
+    let _ = molt_class_set_base_attached_body(_py, dict, object);
     if let Some(dict_class_ptr) = obj_from_bits(dict).as_ptr() {
         let shaped = unsafe {
             crate::object::class_set_instance_shape_id(
@@ -909,77 +909,77 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         };
         assert!(shaped, "dict class shape selected twice");
     }
-    let _ = molt_class_set_base(dict_keys, object);
-    let _ = molt_class_set_base(dict_items, object);
-    let _ = molt_class_set_base(dict_values, object);
-    let _ = molt_class_set_base(set, object);
-    let _ = molt_class_set_base(frozenset, object);
-    let _ = molt_class_set_base(range, object);
-    let _ = molt_class_set_base(slice, object);
-    let _ = molt_class_set_base(memoryview, object);
-    let _ = molt_class_set_base(io_base, object);
-    let _ = molt_class_set_base(raw_io_base, io_base);
-    let _ = molt_class_set_base(buffered_io_base, io_base);
-    let _ = molt_class_set_base(text_io_base, io_base);
-    let _ = molt_class_set_base(file, io_base);
-    let _ = molt_class_set_base(file_io, raw_io_base);
-    let _ = molt_class_set_base(buffered_reader, buffered_io_base);
-    let _ = molt_class_set_base(buffered_writer, buffered_io_base);
-    let _ = molt_class_set_base(buffered_random, buffered_io_base);
-    let _ = molt_class_set_base(text_io_wrapper, text_io_base);
-    let _ = molt_class_set_base(bytes_io, buffered_io_base);
-    let _ = molt_class_set_base(string_io, text_io_base);
-    let _ = molt_class_set_base(function, object);
-    let _ = molt_class_set_base(coroutine, object);
-    let _ = molt_class_set_base(coroutine_wrapper, object);
-    let _ = molt_class_set_base(generator, object);
-    let _ = molt_class_set_base(async_generator, object);
-    let _ = molt_class_set_base(async_generator_asend, object);
-    let _ = molt_class_set_base(async_generator_athrow, object);
-    let _ = molt_class_set_base(iterator, object);
-    let _ = molt_class_set_base(callable_iterator, object);
-    let _ = molt_class_set_base(bytes_iterator, object);
-    let _ = molt_class_set_base(bytearray_iterator, object);
-    let _ = molt_class_set_base(dict_keyiterator, object);
-    let _ = molt_class_set_base(dict_valueiterator, object);
-    let _ = molt_class_set_base(dict_itemiterator, object);
-    let _ = molt_class_set_base(dict_reversekeyiterator, object);
-    let _ = molt_class_set_base(dict_reversevalueiterator, object);
-    let _ = molt_class_set_base(dict_reverseitemiterator, object);
-    let _ = molt_class_set_base(list_iterator, object);
-    let _ = molt_class_set_base(list_reverseiterator, object);
-    let _ = molt_class_set_base(range_iterator, object);
-    let _ = molt_class_set_base(longrange_iterator, object);
-    let _ = molt_class_set_base(set_iterator, object);
-    let _ = molt_class_set_base(str_iterator, object);
-    let _ = molt_class_set_base(str_ascii_iterator, object);
-    let _ = molt_class_set_base(tuple_iterator, object);
-    let _ = molt_class_set_base(enumerate, object);
-    let _ = molt_class_set_base(reversed, object);
-    let _ = molt_class_set_base(zip, object);
-    let _ = molt_class_set_base(map, object);
-    let _ = molt_class_set_base(filter, object);
-    let _ = molt_class_set_base(builtin_function_or_method, object);
-    let _ = molt_class_set_base(builtin_method, builtin_function_or_method);
-    let _ = molt_class_set_base(method_descriptor, object);
-    let _ = molt_class_set_base(wrapper_descriptor, object);
-    let _ = molt_class_set_base(classmethod_descriptor, object);
-    let _ = molt_class_set_base(method_wrapper, object);
-    let _ = molt_class_set_base(code, object);
-    let _ = molt_class_set_base(frame, object);
+    let _ = molt_class_set_base_attached_body(_py, dict_keys, object);
+    let _ = molt_class_set_base_attached_body(_py, dict_items, object);
+    let _ = molt_class_set_base_attached_body(_py, dict_values, object);
+    let _ = molt_class_set_base_attached_body(_py, set, object);
+    let _ = molt_class_set_base_attached_body(_py, frozenset, object);
+    let _ = molt_class_set_base_attached_body(_py, range, object);
+    let _ = molt_class_set_base_attached_body(_py, slice, object);
+    let _ = molt_class_set_base_attached_body(_py, memoryview, object);
+    let _ = molt_class_set_base_attached_body(_py, io_base, object);
+    let _ = molt_class_set_base_attached_body(_py, raw_io_base, io_base);
+    let _ = molt_class_set_base_attached_body(_py, buffered_io_base, io_base);
+    let _ = molt_class_set_base_attached_body(_py, text_io_base, io_base);
+    let _ = molt_class_set_base_attached_body(_py, file, io_base);
+    let _ = molt_class_set_base_attached_body(_py, file_io, raw_io_base);
+    let _ = molt_class_set_base_attached_body(_py, buffered_reader, buffered_io_base);
+    let _ = molt_class_set_base_attached_body(_py, buffered_writer, buffered_io_base);
+    let _ = molt_class_set_base_attached_body(_py, buffered_random, buffered_io_base);
+    let _ = molt_class_set_base_attached_body(_py, text_io_wrapper, text_io_base);
+    let _ = molt_class_set_base_attached_body(_py, bytes_io, buffered_io_base);
+    let _ = molt_class_set_base_attached_body(_py, string_io, text_io_base);
+    let _ = molt_class_set_base_attached_body(_py, function, object);
+    let _ = molt_class_set_base_attached_body(_py, coroutine, object);
+    let _ = molt_class_set_base_attached_body(_py, coroutine_wrapper, object);
+    let _ = molt_class_set_base_attached_body(_py, generator, object);
+    let _ = molt_class_set_base_attached_body(_py, async_generator, object);
+    let _ = molt_class_set_base_attached_body(_py, async_generator_asend, object);
+    let _ = molt_class_set_base_attached_body(_py, async_generator_athrow, object);
+    let _ = molt_class_set_base_attached_body(_py, iterator, object);
+    let _ = molt_class_set_base_attached_body(_py, callable_iterator, object);
+    let _ = molt_class_set_base_attached_body(_py, bytes_iterator, object);
+    let _ = molt_class_set_base_attached_body(_py, bytearray_iterator, object);
+    let _ = molt_class_set_base_attached_body(_py, dict_keyiterator, object);
+    let _ = molt_class_set_base_attached_body(_py, dict_valueiterator, object);
+    let _ = molt_class_set_base_attached_body(_py, dict_itemiterator, object);
+    let _ = molt_class_set_base_attached_body(_py, dict_reversekeyiterator, object);
+    let _ = molt_class_set_base_attached_body(_py, dict_reversevalueiterator, object);
+    let _ = molt_class_set_base_attached_body(_py, dict_reverseitemiterator, object);
+    let _ = molt_class_set_base_attached_body(_py, list_iterator, object);
+    let _ = molt_class_set_base_attached_body(_py, list_reverseiterator, object);
+    let _ = molt_class_set_base_attached_body(_py, range_iterator, object);
+    let _ = molt_class_set_base_attached_body(_py, longrange_iterator, object);
+    let _ = molt_class_set_base_attached_body(_py, set_iterator, object);
+    let _ = molt_class_set_base_attached_body(_py, str_iterator, object);
+    let _ = molt_class_set_base_attached_body(_py, str_ascii_iterator, object);
+    let _ = molt_class_set_base_attached_body(_py, tuple_iterator, object);
+    let _ = molt_class_set_base_attached_body(_py, enumerate, object);
+    let _ = molt_class_set_base_attached_body(_py, reversed, object);
+    let _ = molt_class_set_base_attached_body(_py, zip, object);
+    let _ = molt_class_set_base_attached_body(_py, map, object);
+    let _ = molt_class_set_base_attached_body(_py, filter, object);
+    let _ = molt_class_set_base_attached_body(_py, builtin_function_or_method, object);
+    let _ = molt_class_set_base_attached_body(_py, builtin_method, builtin_function_or_method);
+    let _ = molt_class_set_base_attached_body(_py, method_descriptor, object);
+    let _ = molt_class_set_base_attached_body(_py, wrapper_descriptor, object);
+    let _ = molt_class_set_base_attached_body(_py, classmethod_descriptor, object);
+    let _ = molt_class_set_base_attached_body(_py, method_wrapper, object);
+    let _ = molt_class_set_base_attached_body(_py, code, object);
+    let _ = molt_class_set_base_attached_body(_py, frame, object);
     if init_frame_layout(_py, frame).is_none() {
         release_failed_builtin_classes(_py, &all_classes);
         return None;
     }
-    let _ = molt_class_set_base(traceback, object);
-    let _ = molt_class_set_base(module, object);
-    let _ = molt_class_set_base(super_type, object);
-    let _ = molt_class_set_base(classmethod, object);
-    let _ = molt_class_set_base(staticmethod, object);
-    let _ = molt_class_set_base(property, object);
-    let _ = molt_class_set_base(generic_alias, object);
-    let _ = molt_class_set_base(union_type, object);
-    let _ = molt_class_set_base(reference_type, object);
+    let _ = molt_class_set_base_attached_body(_py, traceback, object);
+    let _ = molt_class_set_base_attached_body(_py, module, object);
+    let _ = molt_class_set_base_attached_body(_py, super_type, object);
+    let _ = molt_class_set_base_attached_body(_py, classmethod, object);
+    let _ = molt_class_set_base_attached_body(_py, staticmethod, object);
+    let _ = molt_class_set_base_attached_body(_py, property, object);
+    let _ = molt_class_set_base_attached_body(_py, generic_alias, object);
+    let _ = molt_class_set_base_attached_body(_py, union_type, object);
+    let _ = molt_class_set_base_attached_body(_py, reference_type, object);
     for (class_bits, type_id) in [
         (list, TYPE_ID_LIST),
         (tuple, TYPE_ID_TUPLE),
@@ -1401,12 +1401,12 @@ fn init_builtin_classes() -> &'static BuiltinClasses {
     let gil = GilGuard::new();
     let py = gil.token();
     let _guard = BUILTIN_CLASSES_INIT_LOCK.lock().unwrap();
-    let state = runtime_state(&py);
+    let state = runtime_state(py);
     let ptr = state.builtin_classes.load(AtomicOrdering::Acquire);
     if !ptr.is_null() {
         return unsafe { &*ptr };
     }
-    let builtins = build_builtin_classes(&py)
+    let builtins = build_builtin_classes(py)
         .expect("builtin class bootstrap failed after rolling back fresh class objects");
     let boxed = Box::new(builtins);
     let ptr = Box::into_raw(boxed);
@@ -1434,7 +1434,7 @@ fn init_builtin_classes() -> &'static BuiltinClasses {
         let class_ptr = obj_from_bits(bits)
             .as_ptr()
             .expect("published builtin class anchor is not a pointer");
-        unsafe { crate::object::class_finish_definition(&py, class_ptr) }
+        unsafe { crate::object::class_finish_definition(py, class_ptr) }
             .unwrap_or_else(|()| panic!("builtin class layout sealing failed"));
         assert_ne!(
             unsafe { crate::object::layout::class_field_offsets_bits(class_ptr) },
@@ -1443,45 +1443,45 @@ fn init_builtin_classes() -> &'static BuiltinClasses {
         );
     }
     assert!(
-        crate::builtins::io::io_publish_members(&py),
+        crate::builtins::io::io_publish_members(py),
         "builtin IO member descriptor publication failed"
     );
     assert!(
-        crate::builtins::attributes::wrapper_publish_members(&py),
+        crate::builtins::attributes::wrapper_publish_members(py),
         "builtin wrapper member descriptor publication failed"
     );
     assert!(
-        crate::builtins::attributes::numeric_publish_members(&py),
+        crate::builtins::attributes::numeric_publish_members(py),
         "builtin numeric descriptor publication failed"
     );
     assert!(
-        crate::builtins::attr::install_weakref_callback_descriptor(&py),
+        crate::builtins::attr::install_weakref_callback_descriptor(py),
         "builtin ReferenceType.__callback__ descriptor publication failed"
     );
     assert!(
-        unsafe { crate::builtins::attributes::type_metadata::publish(&py) },
+        unsafe { crate::builtins::attributes::type_metadata::publish(py) },
         "builtin object/type metadata publication failed"
     );
     assert!(
-        unsafe { crate::builtins::attributes::callable_metadata::publish(&py) },
+        unsafe { crate::builtins::attributes::callable_metadata::publish(py) },
         "builtin callable metadata publication failed"
     );
     // Finalizer discovery consults declarations without materializing methods.
     // Publish the one IOBase declaration before any stream can be retired.
     assert!(
-        crate::builtins::methods::publish_builtin_class_methods(&py, published.io_base),
+        crate::builtins::methods::publish_builtin_class_methods(py, published.io_base),
         "builtin IOBase namespace publication failed"
     );
     // Every class's MRO ends at `object`. While its namespace is unpublished, a
     // name absent from user classes stays "unknown" there, so no attribute
     // lookup through a plain class could ever be cached.
     assert!(
-        crate::builtins::methods::publish_builtin_class_methods(&py, published.object),
+        crate::builtins::methods::publish_builtin_class_methods(py, published.object),
         "builtin object namespace publication failed"
     );
     unsafe {
         crate::object::class_refresh_declared_finalizer_flag(
-            &py,
+            py,
             obj_from_bits(published.io_base).as_ptr().unwrap(),
         );
     }
@@ -1492,7 +1492,7 @@ fn init_builtin_classes() -> &'static BuiltinClasses {
         published.exception_group,
     ] {
         assert!(
-            crate::builtins::methods::publish_builtin_class_methods(&py, class),
+            crate::builtins::methods::publish_builtin_class_methods(py, class),
             "builtin exception namespace publication failed"
         );
     }
@@ -1692,9 +1692,11 @@ builtin_class_names! {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_builtin_class_lookup(name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_builtin_class_lookup_attached_body(
+    _py: &crate::PyToken<'_>,
+    name_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -1714,6 +1716,8 @@ pub extern "C" fn molt_builtin_class_lookup(name_bits: u64) -> u64 {
         raise_exception::<_>(_py, BuiltinExc::RuntimeError, &msg)
     })
 }
+
+include!("../attached_exports_generated/builtins/classes.rs");
 
 #[cfg(test)]
 mod tests {
@@ -1765,11 +1769,11 @@ mod tests {
             let name = crate::NameId::DunderTextSignature;
             let key = name.owned_bits(py).unwrap();
             let key_ptr = obj_from_bits(key).as_ptr().unwrap();
-            let _key_owner = PtrDropGuard::new(key_ptr);
+            let _key_owner = PtrDropGuard::new(py, key_ptr);
             for value in [Some("(runtime metadata)"), None] {
                 let class = super::make_builtin_class(py, "MetadataFailureProbe");
                 let class_ptr = obj_from_bits(class).as_ptr().unwrap();
-                let class_owner = PtrDropGuard::new(class_ptr);
+                let class_owner = PtrDropGuard::new(py, class_ptr);
                 let dict = obj_from_bits(unsafe { class_dict_bits(class_ptr) })
                     .as_ptr()
                     .unwrap();
@@ -1827,7 +1831,7 @@ mod tests {
                     let pointer = obj_from_bits(stored).as_ptr().unwrap();
                     assert_eq!(refs(pointer), 1, "the namespace owns the prepared text");
                     inc_ref_bits(py, stored);
-                    (pointer, PtrDropGuard::new(pointer))
+                    (pointer, PtrDropGuard::new(py, pointer))
                 });
                 drop(class_owner);
                 assert_eq!(refs(key_ptr), baseline.2);

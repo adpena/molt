@@ -83,7 +83,7 @@ fn both_c_headers_share_allocation_initialization_and_custom_alloc_dispatch() {
                 assert_eq!(ty.ob_base.ob_base.ob_refcnt, 16);
             }
             assert!(errors::PyErr_Occurred().is_null());
-            assert!(!crate::exception_pending(&py));
+            assert!(!crate::exception_pending(py));
         }
     });
 }

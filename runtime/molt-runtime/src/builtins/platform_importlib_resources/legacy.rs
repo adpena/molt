@@ -1,9 +1,11 @@
 use super::*;
 use crate::BuiltinExc;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_validate_resource_name(resource_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_importlib_validate_resource_name_attached_body(
+    _py: &crate::PyToken<'_>,
+    resource_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let resource = match string_arg_from_bits(_py, resource_bits, "resource name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -18,9 +20,11 @@ pub extern "C" fn molt_importlib_validate_resource_name(resource_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_resources_normalize_path(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_importlib_resources_normalize_path_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let text_bits = unsafe { call_callable1(_py, builtin_classes(_py).str, path_bits) };
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -44,14 +48,14 @@ pub extern "C" fn molt_importlib_resources_normalize_path(path_bits: u64) -> u64
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_resources_only(
+pub(crate) fn molt_importlib_resources_only_attached_body(
+    _py: &crate::PyToken<'_>,
     iterable_bits: u64,
     default_bits: u64,
     too_long_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let iter_bits = molt_iter(iterable_bits);
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let iter_bits = molt_iter_attached_body(_py, iterable_bits);
         let iterator = unsafe {
             molt_runtime_core::OwnedRuntimeValue::from_owned_bits(_py.core_token(), iter_bits)
         };
@@ -74,7 +78,7 @@ pub extern "C" fn molt_importlib_resources_only(
         if !obj_from_bits(too_long_bits).is_none() {
             // `raise too_long or ValueError(msg)`: the caller's exception
             // object or class is raised as given, never re-spelled by name.
-            return crate::molt_raise(too_long_bits);
+            return crate::molt_raise_attached_body(_py, too_long_bits);
         }
         let first_text = importlib_best_effort_str(_py, first.bits());
         let second_text = importlib_best_effort_str(_py, second.bits());
@@ -88,12 +92,12 @@ pub extern "C" fn molt_importlib_resources_only(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_resources_reader_resource_path_from_roots(
+pub(crate) fn molt_importlib_resources_reader_resource_path_from_roots_attached_body(
+    _py: &crate::PyToken<'_>,
     roots_bits: u64,
     resource_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.resources.reader.resource_path_from_roots",
@@ -129,12 +133,12 @@ pub extern "C" fn molt_importlib_resources_reader_resource_path_from_roots(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_resources_reader_open_resource_bytes_from_roots(
+pub(crate) fn molt_importlib_resources_reader_open_resource_bytes_from_roots_attached_body(
+    _py: &crate::PyToken<'_>,
     roots_bits: u64,
     resource_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.resources.reader.open_resource_bytes_from_roots",
@@ -175,12 +179,12 @@ pub extern "C" fn molt_importlib_resources_reader_open_resource_bytes_from_roots
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_resources_reader_is_resource_from_roots(
+pub(crate) fn molt_importlib_resources_reader_is_resource_from_roots_attached_body(
+    _py: &crate::PyToken<'_>,
     roots_bits: u64,
     resource_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.resources.reader.is_resource_from_roots",
@@ -211,9 +215,11 @@ pub extern "C" fn molt_importlib_resources_reader_is_resource_from_roots(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_resources_reader_contents_from_roots(roots_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_importlib_resources_reader_contents_from_roots_attached_body(
+    _py: &crate::PyToken<'_>,
+    roots_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.resources.reader.contents_from_roots",
@@ -247,12 +253,16 @@ pub extern "C" fn molt_importlib_resources_reader_contents_from_roots(roots_bits
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_resources_joinpath(traversable_bits: u64, child_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_importlib_resources_joinpath_attached_body(
+    _py: &crate::PyToken<'_>,
+    traversable_bits: u64,
+    child_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let joinpath_name = crate::NameId::Joinpath.bits(_py);
         let missing = missing_bits(_py);
-        let call_bits = molt_getattr_builtin(traversable_bits, joinpath_name, missing);
+        let call_bits =
+            molt_getattr_builtin_attached_body(_py, traversable_bits, joinpath_name, missing);
         if exception_pending(_py) {
             if !obj_from_bits(call_bits).is_none() {
                 dec_ref_bits(_py, call_bits);
@@ -283,9 +293,11 @@ pub extern "C" fn molt_importlib_resources_joinpath(traversable_bits: u64, child
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_resources_open_mode_is_text(mode_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_importlib_resources_open_mode_is_text_attached_body(
+    _py: &crate::PyToken<'_>,
+    mode_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let mode = match string_arg_from_bits(_py, mode_bits, "mode") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -304,9 +316,11 @@ pub extern "C" fn molt_importlib_resources_open_mode_is_text(mode_bits: u64) -> 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_resources_package_leaf_name(package_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_importlib_resources_package_leaf_name_attached_body(
+    _py: &crate::PyToken<'_>,
+    package_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let package = match string_arg_from_bits(_py, package_bits, "package") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -326,3 +340,5 @@ pub extern "C" fn molt_importlib_resources_package_leaf_name(package_bits: u64) 
         }
     })
 }
+
+include!("../../attached_exports_generated/builtins/platform_importlib_resources/legacy.rs");

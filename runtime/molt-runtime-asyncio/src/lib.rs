@@ -21,9 +21,3 @@ pub(crate) use bridge::{
     dec_ref_bits, inc_ref_bits, int_bits_from_i64, is_truthy, raise_exception, to_i64,
 };
 pub(crate) use molt_runtime_core::prelude::*;
-
-macro_rules! with_gil_entry_nopanic {
-    ($py:ident, $body:block) => {{ molt_runtime_core::with_core_gil!($py, $body) }};
-}
-
-pub(crate) use with_gil_entry_nopanic;

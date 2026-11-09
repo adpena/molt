@@ -27,9 +27,11 @@ pub(super) fn register_function(
     } else if needs_entry_wrapper && func_ir.name == "molt_host_init" {
         backend.molt_host_init_index = Some(func_index);
     } else {
-        backend
-            .exports
-            .export(&func_ir.name, ExportKind::Func, backend.func_count);
+        backend.exports.export(
+            &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(&func_ir.name),
+            ExportKind::Func,
+            backend.func_count,
+        );
     }
     backend.func_count += 1;
     func_index

@@ -9,7 +9,7 @@ use crate::BuiltinExc;
 // deep GIL re-entry accumulation across tests.
 
 use super::*;
-use crate::builtins::exceptions::molt_exception_class;
+use crate::builtins::exceptions::molt_exception_class_attached_body;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 struct CApiTestGuard {
@@ -19,7 +19,9 @@ struct CApiTestGuard {
 impl CApiTestGuard {
     fn new() -> Self {
         let transaction = crate::test_support::RuntimeTestTransaction::new();
-        let _ = molt_err_clear();
+        crate::with_gil_entry_nopanic!(py, {
+            let _ = molt_err_clear_attached_body(py);
+        });
         Self {
             _transaction: transaction,
         }
@@ -32,10 +34,10 @@ impl Drop for CApiTestGuard {
 
 fn assert_pending_exception_class(_py: &PyToken<'_>, expected: crate::BuiltinExc) {
     assert!(exception_pending(_py));
-    let exc_bits = molt_err_fetch();
+    let exc_bits = molt_err_fetch_attached_body(_py);
     assert!(!obj_from_bits(exc_bits).is_none());
-    let kind_bits = molt_exception_kind(exc_bits);
-    let class_bits = molt_exception_class(kind_bits);
+    let kind_bits = molt_exception_kind_attached_body(_py, exc_bits);
+    let class_bits = molt_exception_class_attached_body(_py, kind_bits);
     let expected_bits = crate::builtins::exceptions::exception_class_bits(_py, expected);
     assert!(
         issubclass_bits(class_bits, expected_bits),
@@ -82,18 +84,21 @@ fn alloc_shaped_memoryview_for_test(
     crate::object::builders::alloc_memoryview_from_storage(_py, storage)
 }
 
-struct CApiModuleCacheRestore {
+struct CApiModuleCacheRestore<'a, 'py> {
+    py: &'a PyToken<'py>,
     name_bits: u64,
     previous_bits: u64,
 }
 
-impl CApiModuleCacheRestore {
-    fn new(name_bits: u64) -> Self {
-        let previous_bits = crate::builtins::modules::molt_module_cache_get(name_bits);
-        let _ = molt_err_clear();
-        let _ = crate::builtins::modules::molt_module_cache_del(name_bits);
-        let _ = molt_err_clear();
+impl<'a, 'py> CApiModuleCacheRestore<'a, 'py> {
+    fn new(py: &'a PyToken<'py>, name_bits: u64) -> Self {
+        let previous_bits =
+            crate::builtins::modules::molt_module_cache_get_attached_body(py, name_bits);
+        let _ = molt_err_clear_attached_body(py);
+        let _ = crate::builtins::modules::molt_module_cache_del_attached_body(py, name_bits);
+        let _ = molt_err_clear_attached_body(py);
         Self {
+            py,
             name_bits,
             previous_bits,
         }
@@ -104,25 +109,25 @@ impl CApiModuleCacheRestore {
     }
 }
 
-impl Drop for CApiModuleCacheRestore {
+impl Drop for CApiModuleCacheRestore<'_, '_> {
     fn drop(&mut self) {
-        crate::with_gil_entry_nopanic!(_py, {
-            let _ = molt_err_clear();
-            let _ = crate::builtins::modules::molt_module_cache_del(self.name_bits);
-            let _ = molt_err_clear();
-            if !obj_from_bits(self.previous_bits).is_none() {
-                let restore_bits = crate::builtins::modules::molt_module_cache_set(
-                    self.name_bits,
-                    self.previous_bits,
-                );
-                if !obj_from_bits(restore_bits).is_none() {
-                    dec_ref_bits(_py, restore_bits);
-                }
-                let _ = molt_err_clear();
-                dec_ref_bits(_py, self.previous_bits);
+        let _py = self.py;
+        let _ = molt_err_clear_attached_body(_py);
+        let _ = crate::builtins::modules::molt_module_cache_del_attached_body(_py, self.name_bits);
+        let _ = molt_err_clear_attached_body(_py);
+        if !obj_from_bits(self.previous_bits).is_none() {
+            let restore_bits = crate::builtins::modules::molt_module_cache_set_attached_body(
+                _py,
+                self.name_bits,
+                self.previous_bits,
+            );
+            if !obj_from_bits(restore_bits).is_none() {
+                dec_ref_bits(_py, restore_bits);
             }
-            dec_ref_bits(_py, self.name_bits);
-        });
+            let _ = molt_err_clear_attached_body(_py);
+            dec_ref_bits(_py, self.previous_bits);
+        }
+        dec_ref_bits(_py, self.name_bits);
     }
 }
 
@@ -131,7 +136,7 @@ extern "C" fn c_api_test_meth_varargs(self_bits: u64, args_bits: u64) -> u64 {
         if obj_from_bits(self_bits).is_none() {
             return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "missing module self");
         }
-        let len = molt_sequence_length(args_bits);
+        let len = molt_sequence_length_attached_body(_py, args_bits);
         if len < 0 {
             return MoltObject::none().bits();
         }
@@ -148,7 +153,7 @@ extern "C" fn c_api_test_meth_varargs_keywords(
         if obj_from_bits(self_bits).is_none() {
             return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "missing module self");
         }
-        let pos_len = molt_sequence_length(args_bits);
+        let pos_len = molt_sequence_length_attached_body(_py, args_bits);
         if pos_len < 0 {
             return MoltObject::none().bits();
         }
@@ -214,7 +219,7 @@ extern "C" fn c_api_test_dynamic_varargs(self_bits: u64, args_bits: u64) -> u64 
                 "dynamic self must be an int for this probe",
             );
         };
-        let len = molt_sequence_length(args_bits);
+        let len = molt_sequence_length_attached_body(_py, args_bits);
         if len < 0 {
             return MoltObject::none().bits();
         }
@@ -282,8 +287,16 @@ extern "C" fn c_api_test_static_noargs(self_bits: u64, arg_bits: u64) -> u64 {
     })
 }
 
-extern "C" fn c_api_test_bound_identity(self_bits: u64, arg_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn c_api_test_bound_identity(__context: u64, self_bits: u64, arg_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         if obj_from_bits(self_bits).is_none() {
             return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "bound self missing");
         }
@@ -292,7 +305,7 @@ extern "C" fn c_api_test_bound_identity(self_bits: u64, arg_bits: u64) -> u64 {
         }
         inc_ref_bits(_py, arg_bits);
         arg_bits
-    })
+    }
 }
 
 static FINALIZER_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -310,22 +323,39 @@ static CUSTOM_METACLASS_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 static MUTATED_METACLASS_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 static INHERITED_CALL_REPLACEMENT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-extern "C" fn c_api_test_identity(arg_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn c_api_test_identity(__context: u64, arg_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         if arg_bits == 0 || obj_from_bits(arg_bits).is_none() {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "identity arg missing");
         }
         inc_ref_bits(_py, arg_bits);
         arg_bits
-    })
+    }
 }
 
 extern "C" fn c_api_test_call_descriptor_get_once(
+    __context: u64,
     self_bits: u64,
     instance_bits: u64,
     owner_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         if obj_from_bits(self_bits).is_none()
             || obj_from_bits(instance_bits).is_none()
             || obj_from_bits(owner_bits).is_none()
@@ -350,11 +380,23 @@ extern "C" fn c_api_test_call_descriptor_get_once(
         }
         inc_ref_bits(_py, target_bits);
         target_bits
-    })
+    }
 }
 
-extern "C" fn c_api_test_custom_metaclass_call(self_bits: u64, arg_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn c_api_test_custom_metaclass_call(
+    __context: u64,
+    self_bits: u64,
+    arg_bits: u64,
+) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         if obj_from_bits(self_bits).is_none() {
             return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "metaclass self missing");
         }
@@ -364,42 +406,78 @@ extern "C" fn c_api_test_custom_metaclass_call(self_bits: u64, arg_bits: u64) ->
         CUSTOM_METACLASS_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
         inc_ref_bits(_py, arg_bits);
         arg_bits
-    })
+    }
 }
 
-extern "C" fn c_api_test_mutated_metaclass_call(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn c_api_test_mutated_metaclass_call(__context: u64, self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         if obj_from_bits(self_bits).is_none() {
             return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "metaclass self missing");
         }
         MUTATED_METACLASS_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
         MoltObject::from_int(97).bits()
-    })
+    }
 }
 
-extern "C" fn c_api_test_replaced_inherited_call(self_bits: u64, arg_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn c_api_test_replaced_inherited_call(
+    __context: u64,
+    self_bits: u64,
+    arg_bits: u64,
+) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         if obj_from_bits(self_bits).is_none() {
             return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "call self missing");
         }
         INHERITED_CALL_REPLACEMENT_COUNT.fetch_add(1, Ordering::SeqCst);
         inc_ref_bits(_py, arg_bits);
         arg_bits
-    })
+    }
 }
 
-extern "C" fn c_api_test_finalizer_records(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn c_api_test_finalizer_records(__context: u64, self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         if obj_from_bits(self_bits).is_none() {
             return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "__del__ self missing");
         }
         FINALIZER_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
         none_bits()
-    })
+    }
 }
 
-extern "C" fn c_api_test_finalizing_pin_probe(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn c_api_test_finalizing_pin_probe(__context: u64, self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         const HAS_VIEW: u32 = 1 << 0;
         const HAS_FINALIZING_PIN: u32 = 1 << 1;
         const MATCHED_C_BIAS: u32 = 1 << 2;
@@ -455,7 +533,10 @@ extern "C" fn c_api_test_finalizing_pin_probe(self_bits: u64) -> u64 {
             status |= BALANCED_RUNTIME_CUSTODY;
         }
 
-        let _ = crate::molt_gc_collect(MoltObject::from_int(2).bits());
+        let _ = crate::object::ops_sys::molt_gc_collect_attached_body(
+            _py,
+            MoltObject::from_int(2).bits(),
+        );
         if !exception_pending(_py)
             && unsafe { (*crate::object::header_from_obj_ptr(self_ptr)).type_id }
                 == crate::TYPE_ID_OBJECT
@@ -468,11 +549,19 @@ extern "C" fn c_api_test_finalizing_pin_probe(self_bits: u64) -> u64 {
         }
         FINALIZER_PIN_PROBE_STATUS.store(status, Ordering::SeqCst);
         none_bits()
-    })
+    }
 }
 
-extern "C" fn c_api_test_gc_clear_observes_published_empty(_self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn c_api_test_gc_clear_observes_published_empty(__context: u64, _self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         GC_CLEAR_PROBE_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
         let bits = GC_CLEAR_PROBE_CONTAINER_BITS.load(Ordering::SeqCst);
         let Some(ptr) = obj_from_bits(bits).as_ptr() else {
@@ -497,7 +586,7 @@ extern "C" fn c_api_test_gc_clear_observes_published_empty(_self_bits: u64) -> u
         };
         GC_CLEAR_PROBE_OBSERVED_EMPTY.store(u32::from(empty), Ordering::SeqCst);
         none_bits()
-    })
+    }
 }
 
 fn exercise_finalizing_pin_terminal_entry(c_last: bool) {
@@ -687,7 +776,10 @@ static WEAKREF_CB_GC_OBSERVATION: std::sync::Mutex<Option<WeakrefGcObservation>>
 // runtime pointer or exception owner escapes into the observation.
 fn observe_weakref_gc_collect(py: &crate::PyToken<'_>, generation: usize) -> WeakrefGcObservation {
     let collections_before = crate::runtime_state(py).gc.generation_stats()[generation].collections;
-    let result = crate::molt_gc_collect(MoltObject::from_int(generation as i64).bits());
+    let result = crate::object::ops_sys::molt_gc_collect_attached_body(
+        py,
+        MoltObject::from_int(generation as i64).bits(),
+    );
     let collections_after = crate::runtime_state(py).gc.generation_stats()[generation].collections;
     let collected = obj_from_bits(result).as_int();
     let error = crate::exception_last_bits_noinc(py)
@@ -781,8 +873,16 @@ fn weakref_target_rc(bits: u64) -> u32 {
     }
 }
 
-extern "C" fn c_api_test_weakref_callback_probe(weak_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn c_api_test_weakref_callback_probe(__context: u64, weak_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         // CPython contract: the weakref is already dead during its own callback.
         if weak_bits == 0 || obj_from_bits(weak_bits).is_none() {
             return raise_exception::<u64>(
@@ -821,19 +921,36 @@ extern "C" fn c_api_test_weakref_callback_probe(weak_bits: u64) -> u64 {
             // the existing registration boundary must reject that publication.
             let new_weak_bits = WEAKREF_CB_REREGISTER_WEAK_BITS.load(Ordering::SeqCst);
             if new_weak_bits != 0 && !obj_from_bits(new_weak_bits).is_none() {
-                let registered =
-                    crate::molt_weakref_register(new_weak_bits, target_bits, none_bits());
+                let registered = crate::molt_weakref_register_attached_body(
+                    _py,
+                    new_weak_bits,
+                    target_bits,
+                    none_bits(),
+                );
                 // Capture the expected None failure sentinel for the Rust test;
                 // the enclosing unraisable boundary consumes the raised error.
                 WEAKREF_CB_REREGISTER_NEW_WEAK_OUT.store(registered, Ordering::SeqCst);
             }
         }
         none_bits()
-    })
+    }
 }
 
-extern "C" fn c_api_test_set_name_records(self_bits: u64, owner_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn c_api_test_set_name_records(
+    __context: u64,
+    self_bits: u64,
+    owner_bits: u64,
+    name_bits: u64,
+) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         if obj_from_bits(self_bits).is_none() {
             return raise_exception::<u64>(
                 _py,
@@ -857,15 +974,24 @@ extern "C" fn c_api_test_set_name_records(self_bits: u64, owner_bits: u64, name_
         }
         SET_NAME_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
         none_bits()
-    })
+    }
 }
 
 extern "C" fn c_api_test_set_name_deletes_owner_attr(
+    __context: u64,
     self_bits: u64,
     owner_bits: u64,
     name_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         if obj_from_bits(self_bits).is_none() {
             return raise_exception::<u64>(
                 _py,
@@ -888,7 +1014,7 @@ extern "C" fn c_api_test_set_name_deletes_owner_attr(
             );
         }
         SET_NAME_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
-        let _ = crate::molt_del_attr_name(owner_bits, name_bits);
+        let _ = crate::molt_del_attr_name_attached_body(_py, owner_bits, name_bits);
         if exception_pending(_py) {
             return none_bits();
         }
@@ -901,24 +1027,33 @@ extern "C" fn c_api_test_set_name_deletes_owner_attr(
         inc_ref_bits(_py, name_bits);
         dec_ref_bits(_py, name_bits);
         none_bits()
-    })
+    }
 }
 
 extern "C" fn c_api_test_descriptor_get_deletes_owner_attr(
+    __context: u64,
     self_bits: u64,
     _instance_bits: u64,
     owner_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         if obj_from_bits(self_bits).is_none() {
             return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "__get__ self missing");
         }
         if obj_from_bits(owner_bits).is_none() {
             return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "__get__ owner missing");
         }
-        let name_bits = unsafe { molt_string_from(b"marker".as_ptr(), 6) };
+        let name_bits = unsafe { molt_string_from_attached_body(_py, b"marker".as_ptr(), 6) };
         assert!(!obj_from_bits(name_bits).is_none());
-        let _ = crate::molt_del_attr_name(owner_bits, name_bits);
+        let _ = crate::molt_del_attr_name_attached_body(_py, owner_bits, name_bits);
         dec_ref_bits(_py, name_bits);
         if exception_pending(_py) {
             return none_bits();
@@ -930,45 +1065,61 @@ extern "C" fn c_api_test_descriptor_get_deletes_owner_attr(
         inc_ref_bits(_py, self_bits);
         dec_ref_bits(_py, self_bits);
 
-        unsafe { molt_string_from(b"descriptor-value".as_ptr(), 16) }
-    })
+        unsafe { molt_string_from_attached_body(_py, b"descriptor-value".as_ptr(), 16) }
+    }
 }
 
-extern "C" fn c_api_test_init_stores_tag_and_borrows_self(self_bits: u64, tag_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn c_api_test_init_stores_tag_and_borrows_self(
+    __context: u64,
+    self_bits: u64,
+    tag_bits: u64,
+) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         if obj_from_bits(self_bits).is_none() {
             return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "__init__ self missing");
         }
         if tag_bits == 0 || obj_from_bits(tag_bits).is_none() {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "__init__ tag missing");
         }
-        let name_bits = unsafe { molt_string_from(b"tag".as_ptr(), 3) };
+        let name_bits = unsafe { molt_string_from_attached_body(_py, b"tag".as_ptr(), 3) };
         assert!(!obj_from_bits(name_bits).is_none());
-        let result = crate::molt_set_attr_name(self_bits, name_bits, tag_bits);
+        let result = crate::molt_set_attr_name_attached_body(_py, self_bits, name_bits, tag_bits);
         dec_ref_bits(_py, name_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
         result
-    })
+    }
 }
 
 fn create_test_heap_class(_py: &PyToken<'_>, name: &[u8], attrs: &[(&[u8], u64)]) -> u64 {
     let builtins = crate::builtins::classes::builtin_classes(_py);
-    let name_bits = unsafe { molt_string_from(name.as_ptr(), name.len() as u64) };
+    let name_bits =
+        unsafe { molt_string_from_attached_body(_py, name.as_ptr(), name.len() as u64) };
     assert!(!obj_from_bits(name_bits).is_none());
-    let namespace_bits = molt_dict_new(attrs.len() as u64);
+    let namespace_bits = molt_dict_new_attached_body(_py, attrs.len() as u64);
     assert!(!obj_from_bits(namespace_bits).is_none());
     for &(attr_name, value_bits) in attrs {
-        let attr_bits = unsafe { molt_string_from(attr_name.as_ptr(), attr_name.len() as u64) };
+        let attr_bits = unsafe {
+            molt_string_from_attached_body(_py, attr_name.as_ptr(), attr_name.len() as u64)
+        };
         assert!(!obj_from_bits(attr_bits).is_none());
         assert_eq!(
-            molt_mapping_setitem(namespace_bits, attr_bits, value_bits),
+            molt_mapping_setitem_attached_body(_py, namespace_bits, attr_bits, value_bits),
             0
         );
         dec_ref_bits(_py, attr_bits);
     }
-    let class_bits = crate::builtins::types::molt_type_new(
+    let class_bits = crate::builtins::types::molt_type_new_attached_body(
+        _py,
         builtins.type_obj,
         name_bits,
         none_bits(),
@@ -988,20 +1139,24 @@ fn create_test_type(
     base_bits: u64,
     attrs: &[(&[u8], u64)],
 ) -> u64 {
-    let name_bits = unsafe { molt_string_from(name.as_ptr(), name.len() as u64) };
+    let name_bits =
+        unsafe { molt_string_from_attached_body(_py, name.as_ptr(), name.len() as u64) };
     assert!(!obj_from_bits(name_bits).is_none());
-    let namespace_bits = molt_dict_new(attrs.len() as u64);
+    let namespace_bits = molt_dict_new_attached_body(_py, attrs.len() as u64);
     assert!(!obj_from_bits(namespace_bits).is_none());
     for &(attr_name, value_bits) in attrs {
-        let attr_bits = unsafe { molt_string_from(attr_name.as_ptr(), attr_name.len() as u64) };
+        let attr_bits = unsafe {
+            molt_string_from_attached_body(_py, attr_name.as_ptr(), attr_name.len() as u64)
+        };
         assert!(!obj_from_bits(attr_bits).is_none());
         assert_eq!(
-            molt_mapping_setitem(namespace_bits, attr_bits, value_bits),
+            molt_mapping_setitem_attached_body(_py, namespace_bits, attr_bits, value_bits),
             0
         );
         dec_ref_bits(_py, attr_bits);
     }
-    let class_bits = crate::builtins::types::molt_type_new(
+    let class_bits = crate::builtins::types::molt_type_new_attached_body(
+        _py,
         metaclass_bits,
         name_bits,
         base_bits,
@@ -1021,18 +1176,22 @@ fn create_guarded_test_class(
     attrs: &[(&[u8], u64)],
 ) -> (u64, Vec<u64>) {
     let builtins = crate::builtins::classes::builtin_classes(_py);
-    let name_bits = unsafe { molt_string_from(name.as_ptr(), name.len() as u64) };
+    let name_bits =
+        unsafe { molt_string_from_attached_body(_py, name.as_ptr(), name.len() as u64) };
     assert!(!obj_from_bits(name_bits).is_none());
     let mut attr_storage = Vec::with_capacity(attrs.len() * 2);
     for &(attr_name, value_bits) in attrs {
-        let attr_bits = unsafe { molt_string_from(attr_name.as_ptr(), attr_name.len() as u64) };
+        let attr_bits = unsafe {
+            molt_string_from_attached_body(_py, attr_name.as_ptr(), attr_name.len() as u64)
+        };
         assert!(!obj_from_bits(attr_bits).is_none());
         attr_storage.push(attr_bits);
         attr_storage.push(value_bits);
     }
     let bases = [builtins.object];
     let class_bits = unsafe {
-        crate::object::ops::molt_guarded_class_def(
+        crate::object::ops::molt_guarded_class_def_attached_body(
+            _py,
             name_bits,
             crate::provenance::abi::expose_address(bases.as_ptr()),
             bases.len() as u64,
@@ -1082,7 +1241,8 @@ fn alloc_test_weakref(_py: &PyToken<'_>) -> u64 {
 fn guarded_class_def_retains_attr_values_after_source_drop() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let value_bits = unsafe { molt_string_from(b"owned-class-attr".as_ptr(), 16) };
+        let value_bits =
+            unsafe { molt_string_from_attached_body(_py, b"owned-class-attr".as_ptr(), 16) };
         assert!(!obj_from_bits(value_bits).is_none());
         let source_refcount = heap_refcount(value_bits);
         let (class_bits, attr_storage) =
@@ -1096,7 +1256,7 @@ fn guarded_class_def_retains_attr_values_after_source_drop() {
         dec_ref_bits(_py, value_bits);
 
         let attr_bits = attr_storage[0];
-        let got_bits = molt_object_getattr(class_bits, attr_bits);
+        let got_bits = molt_object_getattr_attached_body(_py, class_bits, attr_bits);
         assert_eq!(got_bits, value_bits);
         dec_ref_bits(_py, got_bits);
 
@@ -1111,11 +1271,12 @@ fn guarded_class_def_retains_attr_values_after_source_drop() {
 fn guarded_class_def_keeps_structural_type_names_out_of_descriptor_shadowing() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let shadow_bits = unsafe { molt_string_from(b"ShadowName".as_ptr(), 10) };
+        let shadow_bits =
+            unsafe { molt_string_from_attached_body(_py, b"ShadowName".as_ptr(), 10) };
         let (class_bits, attr_storage) =
             create_guarded_test_class(_py, b"ActualName", &[(b"__name__", shadow_bits)]);
 
-        let resolved = molt_object_getattr(class_bits, attr_storage[0]);
+        let resolved = molt_object_getattr_attached_body(_py, class_bits, attr_storage[0]);
         assert_eq!(
             crate::string_obj_to_owned(obj_from_bits(resolved)).as_deref(),
             Some("ActualName")
@@ -1150,7 +1311,7 @@ fn guarded_class_def_set_name_keeps_descriptor_attr_value_owner() {
             b"DescriptorWithSetName",
             &[(b"__set_name__", set_name_bits)],
         );
-        let _ = crate::molt_class_apply_set_name(descriptor_class_bits);
+        let _ = crate::molt_class_apply_set_name_attached_body(_py, descriptor_class_bits);
         let descriptor_class_ptr = obj_from_bits(descriptor_class_bits)
             .as_ptr()
             .expect("descriptor class ptr");
@@ -1171,7 +1332,7 @@ fn guarded_class_def_set_name_keeps_descriptor_attr_value_owner() {
         dec_ref_bits(_py, descriptor_bits);
 
         let attr_bits = attr_storage[0];
-        let got_bits = molt_object_getattr(owner_class_bits, attr_bits);
+        let got_bits = molt_object_getattr_attached_body(_py, owner_class_bits, attr_bits);
         assert_eq!(got_bits, descriptor_bits);
         dec_ref_bits(_py, got_bits);
 
@@ -1204,7 +1365,7 @@ fn class_apply_set_name_retains_entries_across_hook_mutation() {
             b"DescriptorDeletingOwnerAttr",
             &[(b"__set_name__", set_name_bits)],
         );
-        let _ = crate::molt_class_apply_set_name(descriptor_class_bits);
+        let _ = crate::molt_class_apply_set_name_attached_body(_py, descriptor_class_bits);
         let descriptor_class_ptr = obj_from_bits(descriptor_class_bits)
             .as_ptr()
             .expect("descriptor class ptr");
@@ -1218,7 +1379,7 @@ fn class_apply_set_name_retains_entries_across_hook_mutation() {
         );
         dec_ref_bits(_py, descriptor_bits);
 
-        let res_bits = crate::molt_class_apply_set_name(owner_class_bits);
+        let res_bits = crate::molt_class_apply_set_name_attached_body(_py, owner_class_bits);
         assert!(obj_from_bits(res_bits).is_none());
         assert!(!exception_pending(_py));
         assert_eq!(SET_NAME_CALL_COUNT.load(Ordering::SeqCst), 1);
@@ -1261,9 +1422,9 @@ fn descriptor_bind_retains_descriptor_across_get_mutation() {
         assert!(!obj_from_bits(inst_bits).is_none());
         dec_ref_bits(_py, descriptor_bits);
 
-        let attr_bits = unsafe { molt_string_from(b"marker".as_ptr(), 6) };
+        let attr_bits = unsafe { molt_string_from_attached_body(_py, b"marker".as_ptr(), 6) };
         assert!(!obj_from_bits(attr_bits).is_none());
-        let got_bits = molt_object_getattr(inst_bits, attr_bits);
+        let got_bits = molt_object_getattr_attached_body(_py, inst_bits, attr_bits);
         assert_eq!(
             string_obj_to_owned(obj_from_bits(got_bits)).as_deref(),
             Some("descriptor-value")
@@ -1367,7 +1528,8 @@ fn weakref_callback_runs_with_live_target_not_rc0() {
         let cb_bits = MoltObject::from_ptr(cb_ptr).bits();
 
         WEAKREF_CB_TARGET_BITS.store(inst_bits, Ordering::SeqCst);
-        let registered = crate::molt_weakref_register(weak_bits, inst_bits, cb_bits);
+        let registered =
+            crate::molt_weakref_register_attached_body(_py, weak_bits, inst_bits, cb_bits);
         assert!(is_truthy(_py, obj_from_bits(registered)));
 
         assert_ne!(
@@ -1415,13 +1577,14 @@ fn explicit_gc_collect_preserves_strongly_reachable_weakref_target() {
         let target_ptr = obj_from_bits(target_bits).as_ptr().expect("target ptr");
         let weak_bits = alloc_test_weakref(_py);
 
-        let registered = crate::molt_weakref_register(weak_bits, target_bits, none_bits());
+        let registered =
+            crate::molt_weakref_register_attached_body(_py, weak_bits, target_bits, none_bits());
         assert!(is_truthy(_py, obj_from_bits(registered)));
 
         let collected = observe_weakref_gc_collect(_py, 2);
         assert_weakref_gc_observation(&collected);
 
-        let resolved = crate::molt_weakref_get(weak_bits);
+        let resolved = crate::object::weakref::molt_weakref_get_attached_body(_py, weak_bits);
         assert_eq!(
             obj_from_bits(resolved).as_ptr(),
             Some(target_ptr),
@@ -1430,7 +1593,12 @@ fn explicit_gc_collect_preserves_strongly_reachable_weakref_target() {
         dec_ref_bits(_py, resolved);
 
         dec_ref_bits(_py, target_bits);
-        assert!(obj_from_bits(crate::molt_weakref_get(weak_bits)).is_none());
+        assert!(
+            obj_from_bits(crate::object::weakref::molt_weakref_get_attached_body(
+                _py, weak_bits
+            ))
+            .is_none()
+        );
         dec_ref_bits(_py, weak_bits);
         for attr_bits in attr_storage.into_iter().step_by(2) {
             dec_ref_bits(_py, attr_bits);
@@ -1465,7 +1633,8 @@ fn repeated_weakref_callbacks_transfer_registration_custody_without_leak() {
             let target_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
             let weak_bits = alloc_test_weakref(_py);
             WEAKREF_CB_TARGET_BITS.store(target_bits, Ordering::SeqCst);
-            let registered = crate::molt_weakref_register(weak_bits, target_bits, cb_bits);
+            let registered =
+                crate::molt_weakref_register_attached_body(_py, weak_bits, target_bits, cb_bits);
             assert!(is_truthy(_py, obj_from_bits(registered)));
             assert_eq!(
                 weakref_target_rc(cb_bits),
@@ -1521,7 +1690,8 @@ fn weakref_callback_calling_gc_collect_keeps_target_live() {
         let cb_bits = MoltObject::from_ptr(cb_ptr).bits();
 
         WEAKREF_CB_TARGET_BITS.store(inst_bits, Ordering::SeqCst);
-        let registered = crate::molt_weakref_register(weak_bits, inst_bits, cb_bits);
+        let registered =
+            crate::molt_weakref_register_attached_body(_py, weak_bits, inst_bits, cb_bits);
         assert!(is_truthy(_py, obj_from_bits(registered)));
 
         // Drop the sole strong ref: the callback fires inside the window and calls
@@ -1601,7 +1771,8 @@ fn weakref_callback_reregistering_on_dying_target_leaves_no_orphan() {
         let cb_bits = MoltObject::from_ptr(cb_ptr).bits();
 
         WEAKREF_CB_TARGET_BITS.store(inst_bits, Ordering::SeqCst);
-        let registered = crate::molt_weakref_register(weak_bits, inst_bits, cb_bits);
+        let registered =
+            crate::molt_weakref_register_attached_body(_py, weak_bits, inst_bits, cb_bits);
         assert!(is_truthy(_py, obj_from_bits(registered)));
 
         // Drop the sole strong ref. The callback's attempted registration must
@@ -1625,7 +1796,7 @@ fn weakref_callback_reregistering_on_dying_target_leaves_no_orphan() {
 
         // The rejected weakref remains unattached and cannot resolve to the
         // dead target or to an object later allocated at the same address.
-        let resolved = crate::molt_weakref_get(new_weak_bits);
+        let resolved = crate::object::weakref::molt_weakref_get_attached_body(_py, new_weak_bits);
         assert!(
             obj_from_bits(resolved).is_none(),
             "weakref registered against a dying target must resolve to None after the \
@@ -1673,26 +1844,41 @@ fn owned_list_builder_drop_runs_remaining_element_finalizer() {
         assert!(!obj_from_bits(first_bits).is_none());
         assert!(!obj_from_bits(second_bits).is_none());
 
-        let builder_bits =
-            crate::object::builders::molt_list_builder_new(MoltObject::from_int(2).bits());
+        let builder_bits = crate::object::builders::molt_list_builder_new_attached_body(
+            _py,
+            MoltObject::from_int(2).bits(),
+        );
         assert!(!obj_from_bits(builder_bits).is_none());
         unsafe {
             assert_eq!(
-                crate::object::builders::molt_list_builder_append(builder_bits, first_bits),
+                crate::object::builders::molt_list_builder_append_attached_body(
+                    _py,
+                    builder_bits,
+                    first_bits
+                ),
                 0
             );
             assert_eq!(
-                crate::object::builders::molt_list_builder_append(builder_bits, second_bits),
+                crate::object::builders::molt_list_builder_append_attached_body(
+                    _py,
+                    builder_bits,
+                    second_bits
+                ),
                 0
             );
         }
         dec_ref_bits(_py, first_bits);
         dec_ref_bits(_py, second_bits);
-        let list_bits = unsafe { crate::object::builders::molt_list_builder_finish(builder_bits) };
+        let list_bits = unsafe {
+            crate::object::builders::molt_list_builder_finish_attached_body(_py, builder_bits)
+        };
         assert!(!obj_from_bits(list_bits).is_none());
 
-        let popped_bits =
-            crate::object::ops_list::molt_list_pop(list_bits, MoltObject::from_int(-1).bits());
+        let popped_bits = crate::object::ops_list::molt_list_pop_attached_body(
+            _py,
+            list_bits,
+            MoltObject::from_int(-1).bits(),
+        );
         assert_eq!(popped_bits, second_bits);
         dec_ref_bits(_py, popped_bits);
         assert_eq!(
@@ -1735,14 +1921,23 @@ fn list_append_retains_finalizer_element_until_clear() {
             create_guarded_test_class(_py, b"FinalizerAppendItem", &[(b"__del__", func_bits)]);
         let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
 
-        let list_bits =
-            crate::object::builders::molt_list_builder_new(MoltObject::from_int(0).bits());
-        let list_bits = unsafe { crate::object::builders::molt_list_builder_finish(list_bits) };
+        let list_bits = crate::object::builders::molt_list_builder_new_attached_body(
+            _py,
+            MoltObject::from_int(0).bits(),
+        );
+        let list_bits = unsafe {
+            crate::object::builders::molt_list_builder_finish_attached_body(_py, list_bits)
+        };
         assert!(!obj_from_bits(list_bits).is_none());
 
         let item_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
         assert!(!obj_from_bits(item_bits).is_none());
-        assert!(obj_from_bits(crate::molt_list_append(list_bits, item_bits)).is_none());
+        assert!(
+            obj_from_bits(crate::molt_list_append_attached_body(
+                _py, list_bits, item_bits
+            ))
+            .is_none()
+        );
         dec_ref_bits(_py, item_bits);
         assert_eq!(
             FINALIZER_CALL_COUNT.load(Ordering::SeqCst),
@@ -1750,7 +1945,12 @@ fn list_append_retains_finalizer_element_until_clear() {
             "list_append must retain an appended heap element beyond the caller temporary"
         );
 
-        assert!(obj_from_bits(crate::object::ops_list::molt_list_clear(list_bits)).is_none());
+        assert!(
+            obj_from_bits(crate::object::ops_list::molt_list_clear_attached_body(
+                _py, list_bits
+            ))
+            .is_none()
+        );
         assert_eq!(
             FINALIZER_CALL_COUNT.load(Ordering::SeqCst),
             1,
@@ -1802,19 +2002,33 @@ fn call_bind_constructed_finalizer_element_survives_append_temp_drop_until_clear
             &[(b"__del__", del_func_bits), (b"__init__", init_func_bits)],
         );
 
-        let builder_bits = crate::call::bind::molt_callargs_new(1, 0);
+        let builder_bits = crate::call::bind::molt_callargs_new_attached_body(_py, 1, 0);
         assert!(!obj_from_bits(builder_bits).is_none());
-        let _ =
-            unsafe { crate::molt_callargs_push_pos(builder_bits, MoltObject::from_int(1).bits()) };
-        let item_bits = crate::molt_call_bind(class_bits, builder_bits);
+        let _ = unsafe {
+            crate::molt_callargs_push_pos_attached_body(
+                _py,
+                builder_bits,
+                MoltObject::from_int(1).bits(),
+            )
+        };
+        let item_bits = crate::molt_call_bind_attached_body(_py, class_bits, builder_bits);
         assert!(!exception_pending(_py));
         assert!(!obj_from_bits(item_bits).is_none());
 
-        let list_bits =
-            crate::object::builders::molt_list_builder_new(MoltObject::from_int(0).bits());
-        let list_bits = unsafe { crate::object::builders::molt_list_builder_finish(list_bits) };
+        let list_bits = crate::object::builders::molt_list_builder_new_attached_body(
+            _py,
+            MoltObject::from_int(0).bits(),
+        );
+        let list_bits = unsafe {
+            crate::object::builders::molt_list_builder_finish_attached_body(_py, list_bits)
+        };
         assert!(!obj_from_bits(list_bits).is_none());
-        assert!(obj_from_bits(crate::molt_list_append(list_bits, item_bits)).is_none());
+        assert!(
+            obj_from_bits(crate::molt_list_append_attached_body(
+                _py, list_bits, item_bits
+            ))
+            .is_none()
+        );
         dec_ref_bits(_py, item_bits);
         assert_eq!(
             FINALIZER_CALL_COUNT.load(Ordering::SeqCst),
@@ -1822,7 +2036,12 @@ fn call_bind_constructed_finalizer_element_survives_append_temp_drop_until_clear
             "constructed object must remain alive after append retains it and caller drops the call result"
         );
 
-        assert!(obj_from_bits(crate::object::ops_list::molt_list_clear(list_bits)).is_none());
+        assert!(
+            obj_from_bits(crate::object::ops_list::molt_list_clear_attached_body(
+                _py, list_bits
+            ))
+            .is_none()
+        );
         assert_eq!(
             FINALIZER_CALL_COUNT.load(Ordering::SeqCst),
             1,

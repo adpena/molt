@@ -51,14 +51,15 @@ const ASYNCIO_SOCK_SENDTO_SLOT_WAIT: usize = 4;
 
 /// # Safety
 /// - `reader_bits` must be a valid socket-reader handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_socket_reader_read_new(
+pub(crate) fn molt_asyncio_socket_reader_read_new_attached_body(
+    _py: &crate::PyToken<'_>,
     reader_bits: u64,
     n_bits: u64,
     fd_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj_bits = molt_future_new(
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let obj_bits = molt_future_new_attached_body(
+            _py,
             asyncio_socket_reader_read_poll_fn_addr(),
             (4 * std::mem::size_of::<u64>()) as u64,
         );
@@ -84,10 +85,12 @@ pub extern "C" fn molt_asyncio_socket_reader_read_new(
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a socket-reader read wrapper future.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_socket_reader_read_poll(obj_bits: u64) -> i64 {
+pub(crate) unsafe fn molt_asyncio_socket_reader_read_poll_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> i64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -104,7 +107,7 @@ pub unsafe extern "C" fn molt_asyncio_socket_reader_read_poll(obj_bits: u64) -> 
             let payload_ptr = obj_ptr as *mut u64;
             let reader_bits = *payload_ptr.add(ASYNCIO_SOCKET_READER_READ_SLOT_READER);
             let n_bits = *payload_ptr.add(ASYNCIO_SOCKET_READER_READ_SLOT_N);
-            let out_bits = molt_socket_reader_read(reader_bits, n_bits);
+            let out_bits = molt_socket_reader_read_attached_body(_py, reader_bits, n_bits);
             if out_bits as i64 != pending_bits_i64() {
                 asyncio_drop_payload_slots::<4>(_py, payload_ptr);
                 return out_bits as i64;
@@ -123,10 +126,14 @@ pub unsafe extern "C" fn molt_asyncio_socket_reader_read_poll(obj_bits: u64) -> 
 
 /// # Safety
 /// - `reader_bits` must be a valid socket-reader handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_socket_reader_readline_new(reader_bits: u64, fd_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj_bits = molt_future_new(
+pub(crate) fn molt_asyncio_socket_reader_readline_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    reader_bits: u64,
+    fd_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let obj_bits = molt_future_new_attached_body(
+            _py,
             asyncio_socket_reader_readline_poll_fn_addr(),
             (3 * std::mem::size_of::<u64>()) as u64,
         );
@@ -150,10 +157,12 @@ pub extern "C" fn molt_asyncio_socket_reader_readline_new(reader_bits: u64, fd_b
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a socket-reader readline wrapper future.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_socket_reader_readline_poll(obj_bits: u64) -> i64 {
+pub(crate) unsafe fn molt_asyncio_socket_reader_readline_poll_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> i64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -169,7 +178,7 @@ pub unsafe extern "C" fn molt_asyncio_socket_reader_readline_poll(obj_bits: u64)
             }
             let payload_ptr = obj_ptr as *mut u64;
             let reader_bits = *payload_ptr.add(ASYNCIO_SOCKET_READER_READLINE_SLOT_READER);
-            let out_bits = molt_socket_reader_readline(reader_bits);
+            let out_bits = molt_socket_reader_readline_attached_body(_py, reader_bits);
             if out_bits as i64 != pending_bits_i64() {
                 asyncio_drop_payload_slots::<3>(_py, payload_ptr);
                 return out_bits as i64;
@@ -188,10 +197,15 @@ pub unsafe extern "C" fn molt_asyncio_socket_reader_readline_poll(obj_bits: u64)
 
 /// # Safety
 /// - `sock_bits` must be a valid socket object.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_sock_recv_new(sock_bits: u64, size_bits: u64, fd_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj_bits = molt_future_new(
+pub(crate) fn molt_asyncio_sock_recv_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    sock_bits: u64,
+    size_bits: u64,
+    fd_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let obj_bits = molt_future_new_attached_body(
+            _py,
             asyncio_sock_recv_poll_fn_addr(),
             (4 * std::mem::size_of::<u64>()) as u64,
         );
@@ -217,10 +231,12 @@ pub extern "C" fn molt_asyncio_sock_recv_new(sock_bits: u64, size_bits: u64, fd_
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a socket recv wrapper future.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_sock_recv_poll(obj_bits: u64) -> i64 {
+pub(crate) unsafe fn molt_asyncio_sock_recv_poll_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> i64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -254,7 +270,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recv_poll(obj_bits: u64) -> i64 {
                         ASYNCIO_SOCKET_IO_EVENT_READ,
                     );
                 }
-                let raised = molt_raise(exc_bits);
+                let raised = molt_raise_attached_body(_py, exc_bits);
                 dec_ref_bits(_py, exc_bits);
                 return raised as i64;
             }
@@ -266,15 +282,16 @@ pub unsafe extern "C" fn molt_asyncio_sock_recv_poll(obj_bits: u64) -> i64 {
 
 /// # Safety
 /// - `sock_bits` must be a valid socket object.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_sock_recv_into_new(
+pub(crate) fn molt_asyncio_sock_recv_into_new_attached_body(
+    _py: &crate::PyToken<'_>,
     sock_bits: u64,
     buf_bits: u64,
     nbytes_bits: u64,
     fd_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj_bits = molt_future_new(
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let obj_bits = molt_future_new_attached_body(
+            _py,
             asyncio_sock_recv_into_poll_fn_addr(),
             (5 * std::mem::size_of::<u64>()) as u64,
         );
@@ -302,10 +319,12 @@ pub extern "C" fn molt_asyncio_sock_recv_into_new(
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a socket recv_into wrapper future.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_sock_recv_into_poll(obj_bits: u64) -> i64 {
+pub(crate) unsafe fn molt_asyncio_sock_recv_into_poll_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> i64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -346,7 +365,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recv_into_poll(obj_bits: u64) -> i64 
                         ASYNCIO_SOCKET_IO_EVENT_READ,
                     );
                 }
-                let raised = molt_raise(exc_bits);
+                let raised = molt_raise_attached_body(_py, exc_bits);
                 dec_ref_bits(_py, exc_bits);
                 return raised as i64;
             }
@@ -358,14 +377,14 @@ pub unsafe extern "C" fn molt_asyncio_sock_recv_into_poll(obj_bits: u64) -> i64 
 
 /// # Safety
 /// - `sock_bits` must be a valid socket object.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_sock_sendall_new(
+pub(crate) fn molt_asyncio_sock_sendall_new_attached_body(
+    _py: &crate::PyToken<'_>,
     sock_bits: u64,
     data_bits: u64,
     fd_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let data_len_bits = molt_len(data_bits);
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let data_len_bits = molt_len_attached_body(_py, data_bits);
         if exception_pending(_py) {
             return data_len_bits;
         }
@@ -376,7 +395,8 @@ pub extern "C" fn molt_asyncio_sock_sendall_new(
             }
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid sendall payload");
         }
-        let obj_bits = molt_future_new(
+        let obj_bits = molt_future_new_attached_body(
+            _py,
             asyncio_sock_sendall_poll_fn_addr(),
             (6 * std::mem::size_of::<u64>()) as u64,
         );
@@ -414,10 +434,12 @@ pub extern "C" fn molt_asyncio_sock_sendall_new(
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a socket sendall wrapper future.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_sock_sendall_poll(obj_bits: u64) -> i64 {
+pub(crate) unsafe fn molt_asyncio_sock_sendall_poll_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> i64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -447,7 +469,8 @@ pub unsafe extern "C" fn molt_asyncio_sock_sendall_poll(obj_bits: u64) -> i64 {
                     return MoltObject::none().bits() as i64;
                 }
 
-                let slice_bits = molt_slice_new(
+                let slice_bits = molt_slice_new_attached_body(
+                    _py,
                     total_bits,
                     MoltObject::none().bits(),
                     MoltObject::none().bits(),
@@ -455,7 +478,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_sendall_poll(obj_bits: u64) -> i64 {
                 if obj_from_bits(slice_bits).is_none() {
                     return slice_bits as i64;
                 }
-                let tail_bits = molt_getitem_method(data_bits, slice_bits);
+                let tail_bits = molt_getitem_method_attached_body(_py, data_bits, slice_bits);
                 dec_ref_bits(_py, slice_bits);
                 if exception_pending(_py) {
                     if !obj_from_bits(tail_bits).is_none() {
@@ -488,7 +511,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_sendall_poll(obj_bits: u64) -> i64 {
                             ASYNCIO_SOCKET_IO_EVENT_WRITE,
                         );
                     }
-                    let raised = molt_raise(exc_bits);
+                    let raised = molt_raise_attached_body(_py, exc_bits);
                     dec_ref_bits(_py, exc_bits);
                     return raised as i64;
                 }
@@ -533,14 +556,15 @@ pub unsafe extern "C" fn molt_asyncio_sock_sendall_poll(obj_bits: u64) -> i64 {
 
 /// # Safety
 /// - `sock_bits` must be a valid socket object.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_sock_recvfrom_new(
+pub(crate) fn molt_asyncio_sock_recvfrom_new_attached_body(
+    _py: &crate::PyToken<'_>,
     sock_bits: u64,
     size_bits: u64,
     fd_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj_bits = molt_future_new(
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let obj_bits = molt_future_new_attached_body(
+            _py,
             asyncio_sock_recvfrom_poll_fn_addr(),
             (4 * std::mem::size_of::<u64>()) as u64,
         );
@@ -566,10 +590,12 @@ pub extern "C" fn molt_asyncio_sock_recvfrom_new(
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a socket recvfrom wrapper future.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_sock_recvfrom_poll(obj_bits: u64) -> i64 {
+pub(crate) unsafe fn molt_asyncio_sock_recvfrom_poll_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> i64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -608,7 +634,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recvfrom_poll(obj_bits: u64) -> i64 {
                         ASYNCIO_SOCKET_IO_EVENT_READ,
                     );
                 }
-                let raised = molt_raise(exc_bits);
+                let raised = molt_raise_attached_body(_py, exc_bits);
                 dec_ref_bits(_py, exc_bits);
                 return raised as i64;
             }
@@ -620,15 +646,16 @@ pub unsafe extern "C" fn molt_asyncio_sock_recvfrom_poll(obj_bits: u64) -> i64 {
 
 /// # Safety
 /// - `sock_bits` must be a valid socket object.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_sock_recvfrom_into_new(
+pub(crate) fn molt_asyncio_sock_recvfrom_into_new_attached_body(
+    _py: &crate::PyToken<'_>,
     sock_bits: u64,
     buf_bits: u64,
     nbytes_bits: u64,
     fd_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj_bits = molt_future_new(
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let obj_bits = molt_future_new_attached_body(
+            _py,
             asyncio_sock_recvfrom_into_poll_fn_addr(),
             (5 * std::mem::size_of::<u64>()) as u64,
         );
@@ -656,10 +683,12 @@ pub extern "C" fn molt_asyncio_sock_recvfrom_into_new(
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a socket recvfrom_into wrapper future.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_sock_recvfrom_into_poll(obj_bits: u64) -> i64 {
+pub(crate) unsafe fn molt_asyncio_sock_recvfrom_into_poll_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> i64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -700,7 +729,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recvfrom_into_poll(obj_bits: u64) -> 
                         ASYNCIO_SOCKET_IO_EVENT_READ,
                     );
                 }
-                let raised = molt_raise(exc_bits);
+                let raised = molt_raise_attached_body(_py, exc_bits);
                 dec_ref_bits(_py, exc_bits);
                 return raised as i64;
             }
@@ -712,15 +741,16 @@ pub unsafe extern "C" fn molt_asyncio_sock_recvfrom_into_poll(obj_bits: u64) -> 
 
 /// # Safety
 /// - `sock_bits` must be a valid socket object.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_sock_sendto_new(
+pub(crate) fn molt_asyncio_sock_sendto_new_attached_body(
+    _py: &crate::PyToken<'_>,
     sock_bits: u64,
     data_bits: u64,
     addr_bits: u64,
     fd_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj_bits = molt_future_new(
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let obj_bits = molt_future_new_attached_body(
+            _py,
             asyncio_sock_sendto_poll_fn_addr(),
             (5 * std::mem::size_of::<u64>()) as u64,
         );
@@ -748,10 +778,12 @@ pub extern "C" fn molt_asyncio_sock_sendto_new(
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a socket sendto wrapper future.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_sock_sendto_poll(obj_bits: u64) -> i64 {
+pub(crate) unsafe fn molt_asyncio_sock_sendto_poll_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> i64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -792,7 +824,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_sendto_poll(obj_bits: u64) -> i64 {
                         ASYNCIO_SOCKET_IO_EVENT_WRITE,
                     );
                 }
-                let raised = molt_raise(exc_bits);
+                let raised = molt_raise_attached_body(_py, exc_bits);
                 dec_ref_bits(_py, exc_bits);
                 return raised as i64;
             }
@@ -816,14 +848,15 @@ pub unsafe extern "C" fn molt_asyncio_sock_sendto_poll(obj_bits: u64) -> i64 {
 
 /// # Safety
 /// - `sock_bits` must be a valid socket object.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_sock_connect_new(
+pub(crate) fn molt_asyncio_sock_connect_new_attached_body(
+    _py: &crate::PyToken<'_>,
     sock_bits: u64,
     addr_bits: u64,
     fd_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj_bits = molt_future_new(
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let obj_bits = molt_future_new_attached_body(
+            _py,
             asyncio_sock_connect_poll_fn_addr(),
             (4 * std::mem::size_of::<u64>()) as u64,
         );
@@ -849,10 +882,12 @@ pub extern "C" fn molt_asyncio_sock_connect_new(
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a socket connect wrapper future.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_sock_connect_poll(obj_bits: u64) -> i64 {
+pub(crate) unsafe fn molt_asyncio_sock_connect_poll_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> i64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -919,7 +954,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_connect_poll(obj_bits: u64) -> i64 {
                         }
                         return pending;
                     }
-                    let raised = molt_raise(exc_bits);
+                    let raised = molt_raise_attached_body(_py, exc_bits);
                     dec_ref_bits(_py, exc_bits);
                     return raised as i64;
                 }
@@ -975,10 +1010,14 @@ pub unsafe extern "C" fn molt_asyncio_sock_connect_poll(obj_bits: u64) -> i64 {
 
 /// # Safety
 /// - `sock_bits` must be a valid socket object.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_sock_accept_new(sock_bits: u64, fd_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj_bits = molt_future_new(
+pub(crate) fn molt_asyncio_sock_accept_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    sock_bits: u64,
+    fd_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let obj_bits = molt_future_new_attached_body(
+            _py,
             asyncio_sock_accept_poll_fn_addr(),
             (3 * std::mem::size_of::<u64>()) as u64,
         );
@@ -1002,10 +1041,12 @@ pub extern "C" fn molt_asyncio_sock_accept_new(sock_bits: u64, fd_bits: u64) -> 
 
 /// # Safety
 /// - `obj_bits` must be a valid pointer to a socket accept wrapper future.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_asyncio_sock_accept_poll(obj_bits: u64) -> i64 {
+pub(crate) unsafe fn molt_asyncio_sock_accept_poll_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> i64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let obj_ptr = ptr_from_bits(obj_bits);
             if obj_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
@@ -1036,7 +1077,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_accept_poll(obj_bits: u64) -> i64 {
                         ASYNCIO_SOCKET_IO_EVENT_READ,
                     );
                 }
-                let raised = molt_raise(exc_bits);
+                let raised = molt_raise_attached_body(_py, exc_bits);
                 dec_ref_bits(_py, exc_bits);
                 return raised as i64;
             }
@@ -1045,3 +1086,5 @@ pub unsafe extern "C" fn molt_asyncio_sock_accept_poll(obj_bits: u64) -> i64 {
         })
     }
 }
+
+include!("../attached_exports_generated/async_rt/generators_async_socket.rs");

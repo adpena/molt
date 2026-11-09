@@ -55,7 +55,7 @@ fn import_transaction_callable_wrapper_matches_runtime_import_abi() {
         .expect("import transaction runtime import must be registered");
     assert_eq!(
         sigs[import_type as usize],
-        (5, 1),
+        (6, 1),
         "importlib_import_transaction import ABI must consume the five values emitted by its callable wrapper"
     );
 }
@@ -96,7 +96,7 @@ fn none_returning_runtime_callable_uses_boxed_result_type() {
         .expect("socket_drop runtime import must be registered");
     assert_eq!(
         sigs[import_type as usize],
-        (1, 1),
+        (2, 1),
         "socket_drop must return boxed None, including through app-resolved raw imports"
     );
 }
@@ -135,7 +135,7 @@ fn intrinsic_runtime_callables_are_manifest_backed() {
     let import_type = *imports
         .get("load_intrinsic_runtime")
         .expect("load_intrinsic_runtime import must be manifest-backed");
-    assert_eq!(sigs[import_type as usize], (2, 1));
+    assert_eq!(sigs[import_type as usize], (3, 1));
 }
 
 #[test]
@@ -201,7 +201,7 @@ fn gpu_context_runtime_ops_are_manifest_backed() {
             .unwrap_or_else(|| panic!("{import_name} import must be manifest-backed"));
         assert_eq!(
             sigs[import_type as usize],
-            (0, 1),
+            (1, 1),
             "{import_name} must use the manifest [] -> i64 ABI"
         );
         let import_index = *import_indices

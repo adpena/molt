@@ -69,22 +69,23 @@ pub(crate) enum StaticmethodCallTarget<'guard, 'py> {
     Raised,
 }
 
-struct StaticmethodResolutionDepth {
+struct StaticmethodResolutionDepth<'guard, 'py> {
+    py: &'guard PyToken<'py>,
     entered: usize,
 }
 
-impl StaticmethodResolutionDepth {
-    fn new() -> Self {
-        Self { entered: 0 }
+impl<'guard, 'py> StaticmethodResolutionDepth<'guard, 'py> {
+    fn new(py: &'guard PyToken<'py>) -> Self {
+        Self { py, entered: 0 }
     }
 
-    fn enter(&mut self, py: &PyToken<'_>) -> bool {
-        if crate::state::recursion::recursion_guard_enter() {
+    fn enter(&mut self) -> bool {
+        if crate::state::recursion::recursion_guard_enter(self.py) {
             self.entered += 1;
             true
         } else {
             let _ = raise_exception::<u64>(
-                py,
+                self.py,
                 BuiltinExc::RecursionError,
                 "maximum recursion depth exceeded while resolving staticmethod call target",
             );
@@ -93,10 +94,10 @@ impl StaticmethodResolutionDepth {
     }
 }
 
-impl Drop for StaticmethodResolutionDepth {
+impl Drop for StaticmethodResolutionDepth<'_, '_> {
     fn drop(&mut self) {
         for _ in 0..self.entered {
-            crate::state::recursion::recursion_guard_exit();
+            crate::state::recursion::recursion_guard_exit(self.py);
         }
     }
 }
@@ -104,7 +105,7 @@ impl Drop for StaticmethodResolutionDepth {
 pub(crate) struct OwnedStaticmethodCallTarget<'guard, 'py> {
     py: &'guard PyToken<'py>,
     bits: u64,
-    _depth: StaticmethodResolutionDepth,
+    _depth: StaticmethodResolutionDepth<'guard, 'py>,
 }
 
 impl OwnedStaticmethodCallTarget<'_, '_> {
@@ -162,7 +163,7 @@ pub(crate) unsafe fn resolve_staticmethod_call_target<'guard, 'py>(
             Err(()) => return StaticmethodCallTarget::Raised,
         }
 
-        let mut depth = StaticmethodResolutionDepth::new();
+        let mut depth = StaticmethodResolutionDepth::new(py);
         let mut current_bits = call_bits;
         let mut current_owned = None;
         loop {
@@ -189,7 +190,7 @@ pub(crate) unsafe fn resolve_staticmethod_call_target<'guard, 'py>(
                     return StaticmethodCallTarget::Raised;
                 }
             }
-            if !depth.enter(py) {
+            if !depth.enter() {
                 if let Some(bits) = current_owned {
                     dec_ref_bits(py, bits);
                 }

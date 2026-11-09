@@ -1,8 +1,9 @@
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_abi_generated::{WasmRuntimeImport, WasmRuntimeReturn};
+use crate::wasm_binary::Function;
 use crate::wasm_import_tracking::TrackedImportIds;
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 /// Consume the owned boxed value on the machine stack, not just its bits.
 pub(super) fn store_owned_result_or_release(

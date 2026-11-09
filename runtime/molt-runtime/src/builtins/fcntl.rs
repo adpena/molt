@@ -46,34 +46,28 @@ const O_NONBLOCK_VALUE: i64 = 0;
 
 // ── Constants ─────────────────────────────────────────────────────────────
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_fcntl_f_getfl() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, F_GETFL_VALUE) })
+pub(crate) fn molt_fcntl_f_getfl_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { int_bits_from_i64(_py, F_GETFL_VALUE) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_fcntl_f_setfl() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, F_SETFL_VALUE) })
+pub(crate) fn molt_fcntl_f_setfl_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { int_bits_from_i64(_py, F_SETFL_VALUE) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_fcntl_f_getfd() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, F_GETFD_VALUE) })
+pub(crate) fn molt_fcntl_f_getfd_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { int_bits_from_i64(_py, F_GETFD_VALUE) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_fcntl_f_setfd() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, F_SETFD_VALUE) })
+pub(crate) fn molt_fcntl_f_setfd_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { int_bits_from_i64(_py, F_SETFD_VALUE) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_fcntl_fd_cloexec() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, FD_CLOEXEC_VALUE) })
+pub(crate) fn molt_fcntl_fd_cloexec_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { int_bits_from_i64(_py, FD_CLOEXEC_VALUE) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_fcntl_o_nonblock() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, O_NONBLOCK_VALUE) })
+pub(crate) fn molt_fcntl_o_nonblock_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { int_bits_from_i64(_py, O_NONBLOCK_VALUE) })
 }
 
 // ── fcntl(fd, cmd[, arg]) ─────────────────────────────────────────────────
@@ -86,9 +80,13 @@ pub extern "C" fn molt_fcntl_o_nonblock() -> u64 {
 /// On native: delegates to libc::fcntl.
 /// On WASM: F_GETFL returns 0, F_SETFL/F_SETFD return 0 (success),
 ///           F_GETFD returns FD_CLOEXEC (pretend all fds have CLOEXEC).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_fcntl(fd_bits: u64, cmd_bits: u64, arg_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_fcntl_attached_body(
+    _py: &crate::PyToken<'_>,
+    fd_bits: u64,
+    cmd_bits: u64,
+    arg_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(err) =
             crate::require_operation(_py, crate::OperationId::FcntlFcntl, AuditArgs::None)
         {
@@ -140,3 +138,5 @@ pub extern "C" fn molt_fcntl(fd_bits: u64, cmd_bits: u64, arg_bits: u64) -> u64 
         }
     })
 }
+
+include!("../attached_exports_generated/builtins/fcntl.rs");

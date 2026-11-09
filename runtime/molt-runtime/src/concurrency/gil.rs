@@ -1,7 +1,13 @@
 #[cfg(not(target_arch = "wasm32"))]
 use parking_lot::{Mutex, MutexGuard};
 #[cfg(not(target_arch = "wasm32"))]
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+#[cfg(not(target_arch = "wasm32"))]
+use std::mem::ManuallyDrop;
+#[cfg(not(target_arch = "wasm32"))]
+use std::num::NonZeroU64;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::state::{ExecutionTls, execution_tls};
@@ -37,39 +43,47 @@ impl Drop for GilGuard {
 /// Proof that this thread holds the GIL for `'gil`, carrying its execution
 /// record. A GIL guard or a runtime execution entry produces it; a nested
 /// entry that borrows its caller's custody produces the same type.
+#[repr(transparent)]
 pub(crate) struct PyToken<'gil> {
-    /// This thread's execution facts. `ExecutionTls` holds `Cell`s, so the
-    /// reference, and the token, cannot leave this thread.
-    record: &'static crate::state::ExecutionTls,
     core: molt_runtime_core::PyToken,
     _custody: std::marker::PhantomData<&'gil ()>,
 }
 
-impl PyToken<'_> {
+impl<'gil> PyToken<'gil> {
     /// # Safety
-    ///
-    /// The calling thread holds the GIL for the token's lifetime, and
-    /// `record` is its own execution record.
+    /// This is the caller's permanent execution record and its GIL custody
+    /// remains live for the complete returned borrow.
     #[inline(always)]
-    pub(crate) unsafe fn with_custody(record: &'static crate::state::ExecutionTls) -> Self {
-        Self {
-            record,
-            // The caller's custody is the runtime's actual GIL boundary.
-            core: unsafe { molt_runtime_core::PyToken::assume_gil_held() },
-            _custody: std::marker::PhantomData,
-        }
+    pub(crate) unsafe fn with_custody(record: &'static crate::state::ExecutionTls) -> &'gil Self {
+        record
+            .attached_context
+            .bind_thread_record(std::ptr::from_ref(record) as u64);
+        let context = std::ptr::from_ref(&record.attached_context) as u64;
+        unsafe { Self::from_attached_context(context) }
     }
 
-    /// Borrow the shared-runtime proof from this live GIL guard's token.
+    /// # Safety
+    /// The generated ABI's caller retains this exact attached context through
+    /// return, including balanced suspension/callback scopes.
+    #[inline(always)]
+    pub(crate) unsafe fn from_attached_context(context: u64) -> &'gil Self {
+        let core = unsafe { molt_runtime_core::PyToken::from_attached_context(context) };
+        unsafe { &*std::ptr::from_ref(core).cast::<Self>() }
+    }
+
     #[inline(always)]
     pub(crate) fn core_token(&self) -> &molt_runtime_core::PyToken {
         &self.core
     }
 
-    /// This thread's execution facts, as its custody read them at entry.
+    #[inline(always)]
+    pub(crate) fn attached_context(&self) -> u64 {
+        self.core.attached_context()
+    }
+
     #[inline(always)]
     pub(crate) fn execution_tls(&self) -> &'static crate::state::ExecutionTls {
-        self.record
+        unsafe { &*std::ptr::with_exposed_provenance(self.core.thread_record_address() as usize) }
     }
 }
 
@@ -89,7 +103,7 @@ impl GilGuard {
     }
 
     #[inline(always)]
-    pub(crate) fn token(&self) -> PyToken<'_> {
+    pub(crate) fn token(&self) -> &PyToken<'_> {
         // SAFETY: this guard is the runtime's actual GIL custody boundary.
         unsafe { PyToken::with_custody(crate::state::execution_tls()) }
     }
@@ -181,9 +195,9 @@ pub(crate) fn touch_gil_tls_lifetime() {
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn with_gil<F, R>(f: F) -> R
 where
-    F: for<'gil> FnOnce(PyToken<'gil>) -> R,
+    F: for<'gil> FnOnce(&'gil PyToken<'gil>) -> R,
 {
-    let guard = GilGuard::new();
+    let guard = crate::concurrency::RuntimeExecutionGuard::enter();
     let token = guard.token();
     f(token)
 }
@@ -217,24 +231,94 @@ fn molt_gil() -> &'static Mutex<()> {
     &GLOBAL_GIL
 }
 
-/// Which of the three structurally-distinct acquisition lanes produced a
-/// [`GilGuard`].  The lane determines what `Drop` must undo, so encoding it as
-/// an explicit enum makes the three states mutually exclusive (no contradictory
-/// `bool` combinations) and keeps every release obligation explicit.
+/// Whether this guard still owns its normal depth unit or transferred it.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy)]
 #[repr(u8)]
 enum GilGuardLane {
-    /// Normal TLS-backed custody. Every live guard owns one depth unit, while
-    /// the mutex guard itself lives in `GIL_GUARD`. Guards may be dropped in
+    /// Every live guard owns one depth unit, while the mutex acquisition lives
+    /// in the destructor-free execution record. Guards may be dropped in
     /// any order; the mutex remains locked until the final 1->0 transition.
     Main = 1,
     /// The guard's depth unit was transferred into a `GilReleaseGuard` while
     /// custody is suspended. Drop has no remaining release obligation.
     Transferred = 2,
-    /// TLS-destruction custody: exact owner and nesting live in synchronized
-    /// process state because thread-local storage is no longer reachable.
-    TlsDestruction = 3,
+}
+
+/// One unmatched suspend/restore transition, unique across native threads.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GilSuspensionId(NonZeroU64);
+
+#[cfg(not(target_arch = "wasm32"))]
+static NEXT_GIL_SUSPENSION: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl GilSuspensionId {
+    fn new() -> Self {
+        let value = NEXT_GIL_SUSPENSION
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(1)
+            })
+            .expect("GIL suspension identity space exhausted");
+        Self(NonZeroU64::new(value).expect("GIL suspension identity is nonzero"))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy)]
+struct SavedGilCustody {
+    id: GilSuspensionId,
+    depth: usize,
+    persistent: bool,
+    runtime: *const crate::state::runtime_state::RuntimeState,
+}
+
+/// Initialized, explicitly consumed ownership in the thread's permanent record.
+/// ManuallyDrop suppresses only automatic TLS destruction: the RefCells remain
+/// valid, and Option::take/Vec::pop move their owned values safely. No borrow
+/// survives an unlock, callback or destructor of a mutex acquisition.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct GilMutexCustody {
+    acquisition: ManuallyDrop<RefCell<Option<MutexGuard<'static, ()>>>>,
+    saved: ManuallyDrop<RefCell<Vec<SavedGilCustody>>>,
+    persistent: Cell<bool>,
+    lifetime_retired: Cell<bool>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl GilMutexCustody {
+    pub(crate) const fn new() -> Self {
+        Self {
+            acquisition: ManuallyDrop::new(RefCell::new(None)),
+            saved: ManuallyDrop::new(RefCell::new(Vec::new())),
+            persistent: Cell::new(false),
+            lifetime_retired: Cell::new(false),
+        }
+    }
+
+    fn install(&self, acquisition: MutexGuard<'static, ()>) {
+        let mut slot = self.acquisition.borrow_mut();
+        assert!(
+            slot.is_none(),
+            "GIL acquisition overwrote live mutex custody"
+        );
+        *slot = Some(acquisition);
+    }
+
+    fn take(&self) -> MutexGuard<'static, ()> {
+        self.acquisition
+            .borrow_mut()
+            .take()
+            .expect("positive GIL depth had no mutex custody")
+    }
+
+    pub(crate) fn suspension_identity(&self) -> u64 {
+        self.saved
+            .borrow()
+            .last()
+            .map_or(0, |saved| saved.id.0.get())
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -242,7 +326,7 @@ pub(crate) struct GilGuard {
     lane: GilGuardLane,
     /// This thread's execution facts, read once at entry and reused on drop.
     tls: &'static ExecutionTls,
-    // GIL depth and raw TLS-destruction custody are thread-affine. Encoding that in
+    // GIL depth and mutex custody are thread-affine. Encoding that in
     // the type prevents a live guard (and its PyToken) from crossing threads.
     _not_send_sync: std::marker::PhantomData<std::rc::Rc<()>>,
 }
@@ -263,13 +347,7 @@ impl GilGuard {
                 _not_send_sync: std::marker::PhantomData,
             });
         }
-        Self::nested_in_tls_destruction()
-    }
-
-    #[cold]
-    #[inline(never)]
-    fn nested_in_tls_destruction() -> Option<Self> {
-        tls_destruction_gil_held().then(Self::tls_destruction_new)
+        None
     }
 
     pub(crate) fn new() -> Self {
@@ -279,16 +357,8 @@ impl GilGuard {
         }
 
         let guard = molt_gil().lock();
+        tls.native_gil.install(guard);
         tls.gil_depth.set(1);
-        let stored = GIL_GUARD
-            .try_with(|slot| {
-                *slot.borrow_mut() = Some(guard);
-            })
-            .is_ok();
-        if !stored {
-            tls.gil_depth.set(0);
-            return Self::tls_destruction_new();
-        }
         Self {
             lane: GilGuardLane::Main,
             tls,
@@ -297,7 +367,7 @@ impl GilGuard {
     }
 
     #[inline(always)]
-    pub(crate) fn token(&self) -> PyToken<'_> {
+    pub(crate) fn token(&self) -> &PyToken<'_> {
         // SAFETY: this guard is the runtime's actual GIL custody boundary.
         unsafe { PyToken::with_custody(self.tls) }
     }
@@ -321,46 +391,10 @@ impl GilGuard {
     pub(crate) unsafe fn from_encoded_lane(token: u64) -> Self {
         let lane = match token {
             value if value == GilGuardLane::Main as u64 => GilGuardLane::Main,
-            value if value == GilGuardLane::TlsDestruction as u64 => GilGuardLane::TlsDestruction,
             _ => panic!("invalid encoded GIL custody lane {token}"),
         };
         Self {
             lane,
-            tls: execution_tls(),
-            _not_send_sync: std::marker::PhantomData,
-        }
-    }
-
-    fn tls_destruction_new() -> Self {
-        let owner = std::thread::current().id();
-        {
-            let mut state = TLS_DESTRUCTION_GIL_STATE.lock().unwrap();
-            if state.owner == Some(owner) {
-                state.depth = state
-                    .depth
-                    .checked_add(1)
-                    .expect("TLS-destruction GIL nesting depth overflow");
-                return Self {
-                    lane: GilGuardLane::TlsDestruction,
-                    tls: execution_tls(),
-                    _not_send_sync: std::marker::PhantomData,
-                };
-            }
-        }
-
-        // TLS is unavailable, so the process state retains the actual mutex
-        // acquisition. Keep local RAII custody until publication succeeds: an
-        // assertion or poisoned state lock must release on this acquiring thread.
-        let acquisition = molt_gil().lock();
-        let mut state = TLS_DESTRUCTION_GIL_STATE.lock().unwrap();
-        assert!(state.owner.is_none());
-        assert_eq!(state.depth, 0);
-        assert!(state.acquisition.is_none());
-        state.owner = Some(owner);
-        state.depth = 1;
-        state.acquisition = Some(acquisition);
-        Self {
-            lane: GilGuardLane::TlsDestruction,
             tls: execution_tls(),
             _not_send_sync: std::marker::PhantomData,
         }
@@ -390,36 +424,12 @@ impl GilGuard {
     fn drop_cold(&mut self) {
         match self.lane {
             GilGuardLane::Transferred => {}
-            GilGuardLane::TlsDestruction => {
-                let acquisition = {
-                    let mut state = TLS_DESTRUCTION_GIL_STATE.lock().unwrap();
-                    assert_eq!(state.owner, Some(std::thread::current().id()));
-                    assert!(state.depth > 0);
-                    state.depth -= 1;
-                    if state.depth == 0 {
-                        let acquisition = state
-                            .acquisition
-                            .take()
-                            .expect("final TLS-destruction depth had no mutex custody");
-                        state.owner = None;
-                        Some(acquisition)
-                    } else {
-                        None
-                    }
-                };
-                // Consume the acquired guard on its owning thread, after
-                // releasing the state lock so the next owner can publish.
-                drop(acquisition);
-            }
             GilGuardLane::Main => {
                 let current = self.tls.gil_depth.get();
                 assert!(current > 0, "live GIL guard lost its custody depth");
                 self.tls.gil_depth.set(current - 1);
                 if current == 1 {
-                    let guard = GIL_GUARD
-                        .try_with(|slot| slot.borrow_mut().take())
-                        .expect("GIL mutex custody TLS disappeared before final release")
-                        .expect("final GIL depth unit had no mutex custody");
+                    let guard = self.tls.native_gil.take();
                     MutexGuard::unlock_fair(guard);
                 }
             }
@@ -429,8 +439,8 @@ impl GilGuard {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct GilReleaseGuard {
-    depth: usize,
-    had_runtime_guard: bool,
+    tls: &'static ExecutionTls,
+    id: Option<GilSuspensionId>,
     _not_send_sync: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
@@ -440,37 +450,34 @@ impl GilReleaseGuard {
         let tls = execution_tls();
         let depth = tls.gil_depth.get();
         assert!(depth > 0, "cannot release a GIL this thread does not hold");
-        tls.gil_depth.set(0);
-        let released = GIL_GUARD
-            .try_with(|slot| slot.borrow_mut().take())
-            .expect("GIL mutex custody TLS disappeared during release")
-            .expect("positive GIL depth had no mutex custody");
-        MutexGuard::unlock_fair(released);
-        let runtime_guard = RUNTIME_GIL_GUARD
-            .try_with(|slot| slot.borrow_mut().take())
-            .expect("runtime GIL custody TLS disappeared during release");
-        let had_runtime_guard = runtime_guard.is_some();
-        // Its custody unit is included in `depth`; transfer that obligation to
-        // this release guard, which creates the replacement token on restore.
-        if let Some(guard) = runtime_guard {
-            guard.transfer_custody_unit();
-        }
-        Self {
+        let id = GilSuspensionId::new();
+        // Reserve before changing custody: allocation failure cannot strand an
+        // acquired GIL. The stack is an ownership protocol, not a lookup cache.
+        let mut saved = tls.native_gil.saved.borrow_mut();
+        saved.reserve(1);
+        saved.push(SavedGilCustody {
+            id,
             depth,
-            had_runtime_guard,
+            persistent: tls.native_gil.persistent.replace(false),
+            runtime: tls.bound_state.get(),
+        });
+        drop(saved);
+        tls.gil_depth.set(0);
+        let released = tls.native_gil.take();
+        MutexGuard::unlock_fair(released);
+        Self {
+            tls,
+            id: Some(id),
             _not_send_sync: std::marker::PhantomData,
         }
     }
 
     pub(crate) fn into_encoded_state(mut self) -> u64 {
-        let depth = u64::try_from(self.depth).expect("GIL release depth exceeds ABI width");
-        let token = depth
-            .checked_mul(2)
-            .expect("GIL release depth cannot be encoded")
-            | u64::from(self.had_runtime_guard);
-        self.depth = 0;
-        self.had_runtime_guard = false;
-        token
+        self.id
+            .take()
+            .expect("GIL suspension transferred twice")
+            .0
+            .get()
     }
 
     /// # Safety
@@ -478,15 +485,16 @@ impl GilReleaseGuard {
     /// `token` must come from an unmatched `into_encoded_state` call on this
     /// thread and must be reconstructed exactly once.
     pub(crate) unsafe fn from_encoded_state(token: u64) -> Self {
-        let depth = usize::try_from(token >> 1).expect("GIL release depth exceeds target width");
-        let had_runtime_guard = (token & 1) != 0;
-        assert!(
-            depth > 0,
-            "encoded GIL release state cannot represent absent custody"
+        let id = GilSuspensionId(NonZeroU64::new(token).expect("missing GIL suspension identity"));
+        let tls = execution_tls();
+        assert_eq!(
+            tls.native_gil.suspension_identity(),
+            token,
+            "GIL restore crossed suspension ownership"
         );
         Self {
-            depth,
-            had_runtime_guard,
+            tls,
+            id: Some(id),
             _not_send_sync: std::marker::PhantomData,
         }
     }
@@ -495,104 +503,126 @@ impl GilReleaseGuard {
 #[cfg(not(target_arch = "wasm32"))]
 impl Drop for GilReleaseGuard {
     fn drop(&mut self) {
-        if self.depth == 0 {
+        let Some(id) = self.id else {
             return;
-        }
-        if self.had_runtime_guard {
-            hold_runtime_gil(GilGuard::new());
-            execution_tls().gil_depth.set(self.depth);
-            return;
-        }
+        };
+        let tls = self.tls;
+        let saved = *tls
+            .native_gil
+            .saved
+            .borrow()
+            .last()
+            .expect("GIL restore lost its saved frame");
+        assert_eq!(
+            saved.id, id,
+            "GIL restoration must close the innermost suspension"
+        );
+        assert_eq!(
+            tls.gil_depth.get(),
+            0,
+            "GIL restore crossed live callback custody"
+        );
+        assert_eq!(
+            tls.bound_state.get(),
+            saved.runtime,
+            "GIL restore crossed runtime identity"
+        );
+        assert!(
+            !tls.native_gil.persistent.get(),
+            "GIL restore found another persistent owner"
+        );
         let guard = molt_gil().lock();
-        GIL_GUARD
-            .try_with(|slot| {
-                let mut slot = slot.borrow_mut();
-                assert!(slot.is_none(), "GIL restore found live mutex custody");
-                *slot = Some(guard);
-            })
-            .expect("GIL mutex custody TLS disappeared during restore");
-        execution_tls().gil_depth.set(self.depth);
+        tls.native_gil.install(guard);
+        tls.gil_depth.set(saved.depth);
+        tls.native_gil.persistent.set(saved.persistent);
+        let retired_storage = {
+            let mut stack = tls.native_gil.saved.borrow_mut();
+            let popped = stack.pop().expect("GIL restore lost its saved frame");
+            assert_eq!(popped.id, id);
+            (stack.is_empty() && tls.native_gil.lifetime_retired.get())
+                .then(|| std::mem::take(&mut *stack))
+        };
+        // Late TLS finalizers can suspend after the lifetime sentinel retired.
+        // Release their empty stack capacity explicitly on their last restore.
+        drop(retired_storage);
+        self.id = None;
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn gil_held() -> bool {
-    execution_tls().gil_depth.get() > 0 || tls_destruction_gil_held()
+    execution_tls().gil_depth.get() > 0
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn gil_owned_by_current_thread() -> bool {
-    execution_tls().gil_depth.get() > 0 || tls_destruction_gil_held()
+    execution_tls().gil_depth.get() > 0
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 thread_local! {
-    static GIL_GUARD: RefCell<Option<MutexGuard<'static, ()>>> = const { RefCell::new(None) };
-    static RUNTIME_GIL_GUARD: RefCell<Option<GilGuard>> = const { RefCell::new(None) };
+    static GIL_LIFETIME: GilLifetime = const { GilLifetime };
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn hold_runtime_gil(guard: GilGuard) {
-    RUNTIME_GIL_GUARD.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        assert!(slot.is_none(), "runtime GIL custody already installed");
-        *slot = Some(guard);
-    });
+    touch_gil_tls_lifetime();
+    assert!(
+        !guard.tls.native_gil.persistent.replace(true),
+        "runtime GIL custody already installed"
+    );
+    guard.transfer_custody_unit();
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn release_runtime_gil() {
-    RUNTIME_GIL_GUARD.with(|slot| {
-        drop(
-            slot.borrow_mut()
-                .take()
-                .expect("runtime GIL release without installed custody"),
-        );
-    });
+    let tls = execution_tls();
+    assert!(
+        tls.native_gil.persistent.replace(false),
+        "runtime GIL release without installed custody"
+    );
+    // SAFETY: persistent owns exactly one transferred, same-thread depth unit.
+    drop(unsafe { GilGuard::from_encoded_lane(GilGuardLane::Main as u64) });
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn touch_gil_tls_lifetime() {
-    let _ = GIL_GUARD.try_with(|_| {});
-    let _ = RUNTIME_GIL_GUARD.try_with(|_| {});
+    let _ = GIL_LIFETIME.try_with(|_| {});
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-struct TlsDestructionGilState {
-    owner: Option<std::thread::ThreadId>,
-    depth: usize,
-    acquisition: Option<MutexGuard<'static, ()>>,
-}
-
-// SAFETY: This private state lives only in the static mutex below, which is
-// never destroyed, including during runtime shutdown. Its acquisition is
-// published by the acquiring thread and taken only after checking that same
-// ThreadId on the final depth transition. Other threads may inspect the owner
-// and depth but never access or drop the acquisition. Poisoning refuses access;
-// it does not transfer custody. The exposed GilGuard tokens remain !Send.
-#[cfg(not(target_arch = "wasm32"))]
-unsafe impl Send for TlsDestructionGilState {}
+struct GilLifetime;
 
 #[cfg(not(target_arch = "wasm32"))]
-static TLS_DESTRUCTION_GIL_STATE: std::sync::Mutex<TlsDestructionGilState> =
-    std::sync::Mutex::new(TlsDestructionGilState {
-        owner: None,
-        depth: 0,
-        acquisition: None,
-    });
-
-#[cfg(not(target_arch = "wasm32"))]
-fn tls_destruction_gil_held() -> bool {
-    let state = TLS_DESTRUCTION_GIL_STATE.lock().unwrap();
-    state.owner == Some(std::thread::current().id()) && state.depth > 0
+impl Drop for GilLifetime {
+    fn drop(&mut self) {
+        let tls = execution_tls();
+        assert!(
+            tls.native_gil.saved.borrow().is_empty(),
+            "thread exit crossed suspended GIL custody"
+        );
+        if tls.native_gil.persistent.get() {
+            release_runtime_gil();
+        }
+        assert_eq!(
+            tls.gil_depth.get(),
+            0,
+            "thread exit crossed live GIL custody"
+        );
+        assert!(tls.native_gil.acquisition.borrow().is_none());
+        tls.native_gil.lifetime_retired.set(true);
+        crate::cpython_abi_hooks::clear_abi_gil_tls_storage();
+        let storage = std::mem::take(&mut *tls.native_gil.saved.borrow_mut());
+        drop(storage);
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn with_gil<F, R>(f: F) -> R
 where
-    F: for<'gil> FnOnce(PyToken<'gil>) -> R,
+    F: for<'gil> FnOnce(&'gil PyToken<'gil>) -> R,
 {
-    let guard = GilGuard::new();
+    let guard = crate::concurrency::RuntimeExecutionGuard::enter();
     let token = guard.token();
     f(token)
 }
@@ -610,210 +640,5 @@ pub(crate) fn gil_assert() {
 // ---------------------------------------------------------------------------
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
-mod tests {
-    use super::{GilGuard, gil_held};
-    use crate::state::execution_tls;
-    use std::sync::mpsc;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-    use std::time::{Duration, Instant};
-
-    /// Every live guard owns one compositional depth unit; the final 1->0
-    /// transition releases the mutex regardless of drop order.
-    #[test]
-    fn gil_nested_guards_are_compositional() {
-        let start = execution_tls().gil_depth.get();
-        {
-            // Outermost guard performs the 0->1 transition and takes the mutex.
-            let _g1 = GilGuard::new();
-            let depth1 = execution_tls().gil_depth.get();
-            assert_eq!(depth1, start + 1, "outer guard owns the depth gate");
-            assert!(gil_held());
-            {
-                // Re-entry increments custody without relocking the mutex.
-                let _g2 = GilGuard::new();
-                let depth2 = execution_tls().gil_depth.get();
-                assert_eq!(depth2, depth1 + 1);
-                assert!(gil_held());
-                {
-                    // Deeper nesting adds another independent custody unit.
-                    let _g3 = GilGuard::new();
-                    let depth3 = execution_tls().gil_depth.get();
-                    assert_eq!(depth3, depth2 + 1);
-                    assert!(gil_held());
-                }
-                // Dropping the deepest guard leaves the other two live.
-                assert_eq!(execution_tls().gil_depth.get(), depth2);
-                assert!(gil_held());
-            }
-            // Dropping inner guards leaves the outer gate untouched.
-            let depth1_after = execution_tls().gil_depth.get();
-            assert_eq!(depth1_after, start + 1);
-            assert!(gil_held());
-        }
-
-        // The outer guard's drop performed the 1->0 transition and released the
-        // mutex exactly once.
-        let final_depth = execution_tls().gil_depth.get();
-        assert_eq!(final_depth, start, "depth restored after all guards drop");
-        assert!(
-            !gil_held(),
-            "outer guard must release current-thread custody"
-        );
-    }
-
-    #[test]
-    fn dropping_outer_guard_first_preserves_custody_until_last_guard() {
-        let (ready_tx, ready_rx) = mpsc::channel();
-        let (proceed_tx, proceed_rx) = mpsc::channel();
-        let (acquired_tx, acquired_rx) = mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            ready_tx.send(()).unwrap();
-            proceed_rx.recv().unwrap();
-            let _guard = GilGuard::new();
-            acquired_tx.send(()).unwrap();
-        });
-        ready_rx.recv().unwrap();
-        let outer = GilGuard::new();
-        let inner = GilGuard::new();
-        assert_eq!(execution_tls().gil_depth.get(), 2);
-        proceed_tx.send(()).unwrap();
-        drop(outer);
-        assert_eq!(execution_tls().gil_depth.get(), 1);
-        assert!(gil_held());
-        assert!(acquired_rx.recv_timeout(Duration::from_millis(50)).is_err());
-        drop(inner);
-        assert_eq!(execution_tls().gil_depth.get(), 0);
-        assert!(!gil_held());
-        acquired_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        worker.join().unwrap();
-    }
-
-    #[test]
-    fn releasing_persistent_custody_preserves_live_shutdown_guard() {
-        super::hold_runtime_gil(GilGuard::new());
-        let shutdown_guard = GilGuard::new();
-        assert_eq!(execution_tls().gil_depth.get(), 2);
-
-        super::release_runtime_gil();
-        assert_eq!(execution_tls().gil_depth.get(), 1);
-        assert!(gil_held());
-        assert!(
-            super::molt_gil().try_lock().is_none(),
-            "dropping persistent custody must not unlock beneath shutdown"
-        );
-
-        drop(shutdown_guard);
-        assert!(!gil_held());
-    }
-
-    #[test]
-    fn tls_destruction_outer_drop_preserves_custody_until_last_guard() {
-        let (ready_tx, ready_rx) = mpsc::channel();
-        let (proceed_tx, proceed_rx) = mpsc::channel();
-        let (acquired_tx, acquired_rx) = mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            ready_tx.send(()).unwrap();
-            proceed_rx.recv().unwrap();
-            let _guard = GilGuard::new();
-            acquired_tx.send(()).unwrap();
-        });
-        ready_rx.recv().unwrap();
-
-        let outer = GilGuard::tls_destruction_new();
-        // Ordinary nested runtime work (for example Py_DECREF -> dec_ref hook)
-        // must detect and join the already-owned TLS-destruction lane.
-        let inner = GilGuard::new();
-        assert!(super::tls_destruction_gil_held());
-        proceed_tx.send(()).unwrap();
-        drop(outer);
-        assert!(super::tls_destruction_gil_held());
-        assert!(acquired_rx.recv_timeout(Duration::from_millis(50)).is_err());
-        drop(inner);
-        assert!(!super::tls_destruction_gil_held());
-        acquired_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        worker.join().unwrap();
-
-        // Unwinding nested destruction tokens must retire their actual mutex
-        // acquisition exactly once and permit a fresh owner afterwards.
-        let unwind = std::panic::catch_unwind(|| {
-            let _outer = GilGuard::tls_destruction_new();
-            let _inner = GilGuard::new();
-            panic!("TLS destruction unwind witness");
-        });
-        assert!(unwind.is_err());
-        assert!(!super::tls_destruction_gil_held());
-        // A fresh owner gets the lock, so the unwind left no acquisition
-        // behind. Other tests share the process-wide GIL: asserting that it
-        // is free at this instant raced them (a landing gate, 2026-10-22).
-        let (fresh_tx, fresh_rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            drop(GilGuard::new());
-            fresh_tx.send(()).unwrap();
-        });
-        fresh_rx.recv_timeout(Duration::from_secs(10)).unwrap();
-    }
-
-    #[test]
-    fn gil_release_guard_drops_runtime_lock_temporarily() {
-        super::hold_runtime_gil(GilGuard::new());
-        let release = super::GilReleaseGuard::suspend();
-
-        let acquired = Arc::new(AtomicBool::new(false));
-        let acquired_flag = Arc::clone(&acquired);
-        let worker = std::thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while Instant::now() < deadline {
-                if let Some(lock) = super::molt_gil().try_lock() {
-                    acquired_flag.store(true, Ordering::SeqCst);
-                    drop(lock);
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(1));
-            }
-        });
-        worker.join().expect("worker should not panic");
-        assert!(
-            acquired.load(Ordering::SeqCst),
-            "runtime GIL lock should be available while GilReleaseGuard is active",
-        );
-
-        let encoded = release.into_encoded_state();
-        // SAFETY: this is the unmatched token produced above, consumed on the
-        // same thread exactly once.
-        drop(unsafe { super::GilReleaseGuard::from_encoded_state(encoded) });
-        super::release_runtime_gil();
-    }
-
-    #[test]
-    fn gil_release_without_current_thread_custody_fails_closed() {
-        assert!(!gil_held());
-        assert!(
-            crate::test_support::catch_expected_unwind(super::GilReleaseGuard::suspend).is_err(),
-            "release without current-thread GIL custody must not encode a no-op"
-        );
-        assert!(!gil_held());
-    }
-
-    #[test]
-    fn gil_ownership_is_thread_local_and_released() {
-        let (tx, rx) = mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            let before = super::gil_owned_by_current_thread();
-            let during = {
-                let _gil = GilGuard::new();
-                super::gil_owned_by_current_thread()
-            };
-            let after = super::gil_owned_by_current_thread();
-            tx.send((before, during, after))
-                .expect("worker should report ownership transitions");
-        });
-        let (before, during, after) = rx.recv().expect("main should receive ownership state");
-        assert!(!before, "new worker must not inherit GIL ownership");
-        assert!(during, "worker guard must establish GIL ownership");
-        assert!(!after, "dropping the outer guard must release ownership");
-        worker.join().expect("worker should not panic");
-    }
-}
+#[path = "gil/tests.rs"]
+mod tests;

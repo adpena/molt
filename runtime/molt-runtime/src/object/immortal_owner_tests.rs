@@ -70,7 +70,7 @@ fn canonical_abi_views_preserve_runtime_immortality_on_both_crossings() {
         RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
             crate::with_gil(|py| unsafe {
                 let fresh = MoltObject::from_ptr(crate::alloc_string(
-                    &py,
+                    py,
                     b"canonical_abi_first_publication_fixture",
                 ))
                 .bits();
@@ -79,11 +79,11 @@ fn canonical_abi_views_preserve_runtime_immortality_on_both_crossings() {
                         .has_flag(HEADER_FLAG_HAS_ABI_VIEW)
                 );
                 let values = [
-                    MoltObject::from_ptr(crate::alloc_tuple(&py, &[])).bits(),
-                    MoltObject::from_ptr(crate::alloc_string(&py, b"")).bits(),
-                    MoltObject::from_ptr(crate::alloc_bytes(&py, b"")).bits(),
-                    MoltObject::from_ptr(crate::alloc_string(&py, b"x")).bits(),
-                    crate::missing_bits(&py),
+                    MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits(),
+                    MoltObject::from_ptr(crate::alloc_string(py, b"")).bits(),
+                    MoltObject::from_ptr(crate::alloc_bytes(py, b"")).bits(),
+                    MoltObject::from_ptr(crate::alloc_string(py, b"x")).bits(),
+                    crate::missing_bits(py),
                     fresh,
                 ];
                 for bits in values {
@@ -98,13 +98,13 @@ fn canonical_abi_views_preserve_runtime_immortality_on_both_crossings() {
                     assert!(molt_cpython_abi::abi_types::is_immortal_refcnt(refs));
                     Py_INCREF(view);
                     Py_DECREF(view);
-                    crate::dec_ref_bits(&py, bits);
+                    crate::dec_ref_bits(py, bits);
                     assert_eq!((*view).ob_refcnt, refs);
                     assert_canonical(bits);
                     assert_eq!(GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits), view);
                 }
                 assert_eq!(
-                    crate::object::gc::collect_cycles(&py).status,
+                    crate::object::gc::collect_cycles(py).status,
                     crate::object::gc::GcCollectStatus::Completed
                 );
             })
@@ -152,7 +152,7 @@ impl LiteralFixture {
         }
     }
 
-    fn construct_from_intrinsic(self) -> u64 {
+    fn construct_from_intrinsic(self, py: &crate::PyToken<'_>) -> u64 {
         let bytes: &[u8] = match self {
             Self::String => b"literal ownership: non-interned string!",
             Self::Bytes => b"literal ownership bytes",
@@ -168,14 +168,26 @@ impl LiteralFixture {
         unsafe {
             match self {
                 Self::String => assert_eq!(
-                    crate::molt_string_from_bytes(bytes.as_ptr(), len, &mut bits),
+                    crate::builtins::strings::molt_string_from_bytes_attached_body(
+                        py,
+                        bytes.as_ptr(),
+                        len,
+                        &mut bits
+                    ),
                     0
                 ),
                 Self::Bytes => assert_eq!(
-                    crate::molt_bytes_from_bytes(bytes.as_ptr(), len, &mut bits),
+                    crate::builtins::strings::molt_bytes_from_bytes_attached_body(
+                        py,
+                        bytes.as_ptr(),
+                        len,
+                        &mut bits
+                    ),
                     0
                 ),
-                Self::BigInt => bits = crate::molt_bigint_from_bytes(bytes.as_ptr(), len),
+                Self::BigInt => {
+                    bits = crate::molt_bigint_from_bytes_attached_body(py, bytes.as_ptr(), len)
+                }
             }
         }
         bits
@@ -207,14 +219,14 @@ fn literal_intrinsics_keep_cache_and_returned_owners_mortal() {
             LiteralFixture::Bytes,
             LiteralFixture::BigInt,
         ] {
-            let first = fixture.construct_from_intrinsic();
+            let first = fixture.construct_from_intrinsic(py);
             assert!(!crate::exception_pending(py));
             assert_eq!(
                 header_for_owned(first).metadata_flags & HEADER_FLAG_IMMORTAL,
                 0
             );
             assert_eq!(header_for_owned(first).ref_count, 2, "creator plus cache");
-            let second = fixture.construct_from_intrinsic();
+            let second = fixture.construct_from_intrinsic(py);
             assert_eq!(second, first);
             assert_eq!(
                 header_for_owned(first).ref_count,
@@ -318,7 +330,7 @@ fn module_roots_and_literal_caches_survive_repeated_runtime_retirement() {
                 .into_iter()
                 .enumerate()
                 {
-                    let bits = fixture.construct_from_intrinsic();
+                    let bits = fixture.construct_from_intrinsic(py);
                     assert_eq!(
                         header_for_owned(bits).metadata_flags & HEADER_FLAG_IMMORTAL,
                         0
@@ -500,12 +512,16 @@ fn reused_host_buffers_never_return_a_stale_literal() {
                 let mut bits = 0;
                 let status = unsafe {
                     match kind {
-                        ConstDataLiteralKind::String => crate::molt_string_from_bytes(
-                            buffer.as_ptr(),
-                            buffer.len() as u64,
-                            &mut bits,
-                        ),
-                        _ => crate::molt_bytes_from_bytes(
+                        ConstDataLiteralKind::String => {
+                            crate::builtins::strings::molt_string_from_bytes_attached_body(
+                                py,
+                                buffer.as_ptr(),
+                                buffer.len() as u64,
+                                &mut bits,
+                            )
+                        }
+                        _ => crate::builtins::strings::molt_bytes_from_bytes_attached_body(
+                            py,
                             buffer.as_ptr(),
                             buffer.len() as u64,
                             &mut bits,

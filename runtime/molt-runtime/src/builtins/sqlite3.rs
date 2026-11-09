@@ -142,7 +142,9 @@ unsafe extern "C" fn sqlite_runtime_state_init() -> *mut u8 {
     Box::into_raw(Box::new(SqliteRuntimeState::new())) as *mut u8
 }
 
-unsafe extern "C" fn sqlite_runtime_state_clear(ptr: *mut u8) {
+unsafe extern "C" fn sqlite_runtime_state_clear(__context: u64, ptr: *mut u8) {
+    let _py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     if ptr.is_null() {
         return;
     }
@@ -523,9 +525,11 @@ fn execute_statement(
 // Connection intrinsics
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_connect(database_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sqlite3_connect_attached_body(
+    _py: &crate::PyToken<'_>,
+    database_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let path_str = match extract_text(database_bits) {
             Some(s) => s,
             None => {
@@ -565,9 +569,8 @@ pub extern "C" fn molt_sqlite3_connect(database_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_close(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sqlite3_close_attached_body(_py: &crate::PyToken<'_>, handle_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -600,9 +603,8 @@ pub extern "C" fn molt_sqlite3_close(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_commit(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sqlite3_commit_attached_body(_py: &crate::PyToken<'_>, handle_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -626,9 +628,11 @@ pub extern "C" fn molt_sqlite3_commit(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_rollback(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sqlite3_rollback_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -652,9 +656,11 @@ pub extern "C" fn molt_sqlite3_rollback(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_in_transaction(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sqlite3_in_transaction_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -676,9 +682,11 @@ pub extern "C" fn molt_sqlite3_in_transaction(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_total_changes(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sqlite3_total_changes_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -706,9 +714,8 @@ pub extern "C" fn molt_sqlite3_total_changes(handle_bits: u64) -> u64 {
 // Cursor intrinsics
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_cursor(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sqlite3_cursor_attached_body(_py: &crate::PyToken<'_>, handle_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let conn_id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -752,9 +759,11 @@ pub extern "C" fn molt_sqlite3_cursor(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_cursor_close(cursor_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sqlite3_cursor_close_attached_body(
+    _py: &crate::PyToken<'_>,
+    cursor_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
             None => {
@@ -770,9 +779,11 @@ pub extern "C" fn molt_sqlite3_cursor_close(cursor_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_cursor_drop(cursor_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sqlite3_cursor_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    cursor_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
             None => return MoltObject::none().bits(),
@@ -782,9 +793,13 @@ pub extern "C" fn molt_sqlite3_cursor_drop(cursor_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_execute(cursor_bits: u64, sql_bits: u64, params_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sqlite3_execute_attached_body(
+    _py: &crate::PyToken<'_>,
+    cursor_bits: u64,
+    sql_bits: u64,
+    params_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
             None => {
@@ -854,13 +869,13 @@ pub extern "C" fn molt_sqlite3_execute(cursor_bits: u64, sql_bits: u64, params_b
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_executemany(
+pub(crate) fn molt_sqlite3_executemany_attached_body(
+    _py: &crate::PyToken<'_>,
     cursor_bits: u64,
     sql_bits: u64,
     seq_of_params_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
             None => {
@@ -969,9 +984,12 @@ pub extern "C" fn molt_sqlite3_executemany(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_executescript(cursor_bits: u64, script_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sqlite3_executescript_attached_body(
+    _py: &crate::PyToken<'_>,
+    cursor_bits: u64,
+    script_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
             None => {
@@ -1069,9 +1087,11 @@ fn row_to_tuple_bits(_py: &PyToken<'_>, row: &MaterializedRow) -> u64 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_fetchone(cursor_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sqlite3_fetchone_attached_body(
+    _py: &crate::PyToken<'_>,
+    cursor_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
             None => {
@@ -1097,9 +1117,11 @@ pub extern "C" fn molt_sqlite3_fetchone(cursor_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_fetchall(cursor_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sqlite3_fetchall_attached_body(
+    _py: &crate::PyToken<'_>,
+    cursor_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
             None => {
@@ -1131,9 +1153,12 @@ pub extern "C" fn molt_sqlite3_fetchall(cursor_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_fetchmany(cursor_bits: u64, size_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sqlite3_fetchmany_attached_body(
+    _py: &crate::PyToken<'_>,
+    cursor_bits: u64,
+    size_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
             None => {
@@ -1183,9 +1208,11 @@ pub extern "C" fn molt_sqlite3_fetchmany(cursor_bits: u64, size_bits: u64) -> u6
 // Cursor metadata
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_lastrowid(cursor_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sqlite3_lastrowid_attached_body(
+    _py: &crate::PyToken<'_>,
+    cursor_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
             None => {
@@ -1205,9 +1232,11 @@ pub extern "C" fn molt_sqlite3_lastrowid(cursor_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_rowcount(cursor_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sqlite3_rowcount_attached_body(
+    _py: &crate::PyToken<'_>,
+    cursor_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
             None => {
@@ -1225,9 +1254,12 @@ pub extern "C" fn molt_sqlite3_rowcount(cursor_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_arraysize_set(cursor_bits: u64, size_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sqlite3_arraysize_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    cursor_bits: u64,
+    size_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
             None => {
@@ -1256,9 +1288,11 @@ pub extern "C" fn molt_sqlite3_arraysize_set(cursor_bits: u64, size_bits: u64) -
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_description(cursor_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sqlite3_description_attached_body(
+    _py: &crate::PyToken<'_>,
+    cursor_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
             None => {
@@ -1313,9 +1347,8 @@ pub extern "C" fn molt_sqlite3_description(cursor_bits: u64) -> u64 {
 // Module-level helpers
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_library_version() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sqlite3_library_version_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let v = rusqlite::version();
         let ptr = alloc_string(_py, v.as_bytes());
         if ptr.is_null() {
@@ -1326,9 +1359,11 @@ pub extern "C" fn molt_sqlite3_library_version() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_complete_statement(sql_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sqlite3_complete_statement_attached_body(
+    _py: &crate::PyToken<'_>,
+    sql_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let sql = match extract_text(sql_bits) {
             Some(s) => s,
             None => {
@@ -1345,3 +1380,5 @@ pub extern "C" fn molt_sqlite3_complete_statement(sql_bits: u64) -> u64 {
         MoltObject::from_bool(rc != 0).bits()
     })
 }
+
+include!("../attached_exports_generated/builtins/sqlite3.rs");

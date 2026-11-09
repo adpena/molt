@@ -480,13 +480,14 @@ mod tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             use crate::{dec_ref_bits, inc_ref_bits};
-            let child = crate::molt_task_new(1, 0, crate::TASK_KIND_FUTURE);
+            let child = crate::molt_task_new_attached_body(py, 1, 0, crate::TASK_KIND_FUTURE);
             let child_ptr = crate::obj_from_bits(child).as_ptr().unwrap();
             let refcount =
                 || unsafe { (*crate::header_from_obj_ptr(child_ptr)).ref_count_snapshot() };
             let baseline = refcount();
             for clear_first in [false, true] {
-                let parent = crate::molt_task_new(1, 0, crate::TASK_KIND_COROUTINE);
+                let parent =
+                    crate::molt_task_new_attached_body(py, 1, 0, crate::TASK_KIND_COROUTINE);
                 let parent_ptr = crate::obj_from_bits(parent).as_ptr().unwrap();
                 inc_ref_bits(py, child);
                 unsafe { super::object_replace_frame_awaited_owned(py, parent_ptr, child) };
@@ -558,7 +559,12 @@ mod tests {
                 crate::TASK_KIND_FUTURE,
             ] {
                 for clear_first in [false, true] {
-                    let task = crate::molt_task_new(1, crate::GEN_CONTROL_SIZE as u64, kind);
+                    let task = crate::molt_task_new_attached_body(
+                        py,
+                        1,
+                        crate::GEN_CONTROL_SIZE as u64,
+                        kind,
+                    );
                     let ptr = crate::obj_from_bits(task).as_ptr().unwrap();
                     assert_eq!(super::object_frame_context_bits(ptr), [0; 3]);
                     assert!(unsafe {

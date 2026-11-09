@@ -95,20 +95,20 @@ impl<'a> NativeKeywords<'a> {
 /// Pins admitted values through later keyword callbacks and the native body.
 /// A dictionary callback can retire an earlier match or insert a new value;
 /// the original call snapshot alone cannot own those admitted edges.
-pub(crate) struct NamedBinding<T> {
+pub(crate) struct NamedBinding<'guard, T> {
     slots: T,
-    owners: Vec<PtrDropGuard>,
+    owners: Vec<PtrDropGuard<'guard>>,
 }
 
-impl<T> std::ops::Deref for NamedBinding<T> {
+impl<T> std::ops::Deref for NamedBinding<'_, T> {
     type Target = T;
     fn deref(&self) -> &T {
         &self.slots
     }
 }
 
-impl<T> NamedBinding<T> {
-    pub(crate) fn into_parts(self) -> (T, Vec<PtrDropGuard>) {
+impl<'guard, T> NamedBinding<'guard, T> {
+    pub(crate) fn into_parts(self) -> (T, Vec<PtrDropGuard<'guard>>) {
         (self.slots, self.owners)
     }
 }
@@ -117,7 +117,7 @@ pub(crate) struct NativeArguments<'a, 'py> {
     pub(crate) positional: PinnedTuple<'a, 'py>,
     keyword_entries: PinnedSequenceSnapshot<'a, 'py>,
     dictionary: u64,
-    _dictionary_owner: PtrDropGuard,
+    _dictionary_owner: PtrDropGuard<'a>,
 }
 
 impl<'a, 'py> NativeArguments<'a, 'py> {
@@ -146,7 +146,7 @@ impl<'a, 'py> NativeArguments<'a, 'py> {
             );
         };
         inc_ref_bits(py, kwargs);
-        let dictionary_owner = PtrDropGuard::new(kwargs_ptr);
+        let dictionary_owner = PtrDropGuard::new(py, kwargs_ptr);
         use crate::object::ops_dict::{DictSnapshotKind, dict_snapshot};
         // One retained, resource-accounted dictionary observation supplies both
         // keys and values; no projection or independent epoch can split them.
@@ -203,13 +203,13 @@ impl<'a, 'py> NativeArguments<'a, 'py> {
         &self.positional[1..]
     }
 
-    pub(crate) fn named<const N: usize>(
+    pub(crate) fn named<'guard, const N: usize>(
         &self,
-        py: &PyToken<'_>,
+        py: &'guard PyToken<'guard>,
         label: &str,
         names: [&str; N],
         required: usize,
-    ) -> Option<NamedBinding<[Option<u64>; N]>> {
+    ) -> Option<NamedBinding<'guard, [Option<u64>; N]>> {
         bind_named(
             py,
             label,
@@ -254,14 +254,14 @@ impl<'a, 'py> NativeArguments<'a, 'py> {
 
 /// Constructor declarations supply names here; published callable declarations
 /// supply their already-owned typed parameter tuple directly to bind_named_slots.
-pub(crate) fn bind_named<const N: usize>(
-    py: &PyToken<'_>,
+pub(crate) fn bind_named<'guard, const N: usize>(
+    py: &'guard PyToken<'guard>,
     label: &str,
     values: &[u64],
     keywords: NativeKeywords<'_>,
     names: [&str; N],
     required: usize,
-) -> Option<NamedBinding<[Option<u64>; N]>> {
+) -> Option<NamedBinding<'guard, [Option<u64>; N]>> {
     let mut parameter_bits = [0; N];
     let mut owners = Vec::new();
     if owners.try_reserve_exact(N).is_err() {
@@ -275,7 +275,7 @@ pub(crate) fn bind_named<const N: usize>(
         let bits = dynamic_attr_name_bits(py, name.as_bytes())?;
         *slot = bits;
         if let Some(ptr) = obj_from_bits(bits).as_ptr() {
-            owners.push(PtrDropGuard::preserving(ptr));
+            owners.push(PtrDropGuard::preserving(py, ptr));
         }
     }
     bind_named_slots(
@@ -289,15 +289,15 @@ pub(crate) fn bind_named<const N: usize>(
     )
 }
 
-pub(crate) fn bind_named_slots<T: AsRef<[Option<u64>]> + AsMut<[Option<u64>]>>(
-    py: &PyToken<'_>,
+pub(crate) fn bind_named_slots<'guard, T: AsRef<[Option<u64>]> + AsMut<[Option<u64>]>>(
+    py: &'guard PyToken<'guard>,
     label: &str,
     values: &[u64],
     keywords: NativeKeywords<'_>,
     names: &[u64],
     required: usize,
     slots: T,
-) -> Option<NamedBinding<T>> {
+) -> Option<NamedBinding<'guard, T>> {
     let count = names.len();
     if slots.as_ref().len() != count || required > count {
         return raise_exception(
@@ -347,7 +347,7 @@ pub(crate) fn bind_named_slots<T: AsRef<[Option<u64>]> + AsMut<[Option<u64>]>>(
         if let Some(bits) = value {
             if let Some(ptr) = obj_from_bits(bits).as_ptr() {
                 inc_ref_bits(py, bits);
-                bound.owners.push(PtrDropGuard::new(ptr));
+                bound.owners.push(PtrDropGuard::new(py, ptr));
             }
             bound.slots.as_mut()[index] = Some(bits);
         } else if index < required {

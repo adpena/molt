@@ -79,9 +79,12 @@ fn string_strip_impl(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_strip(hay_bits: u64, chars_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_strip_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    chars_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         string_strip_impl(_py, hay_bits, chars_bits, true, true)
     })
 }
@@ -192,16 +195,22 @@ pub(super) fn ascii_upper_into(src: &[u8], dst: &mut [u8]) {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_lstrip(hay_bits: u64, chars_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_lstrip_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    chars_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         string_strip_impl(_py, hay_bits, chars_bits, true, false)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_rstrip(hay_bits: u64, chars_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_rstrip_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    chars_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         string_strip_impl(_py, hay_bits, chars_bits, false, true)
     })
 }
@@ -289,9 +298,12 @@ fn exception_is_lookup_error(_py: &PyToken<'_>, exc_bits: u64) -> bool {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_removeprefix(hay_bits: u64, prefix_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_removeprefix_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    prefix_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let prefix = obj_from_bits(prefix_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
@@ -341,9 +353,12 @@ pub extern "C" fn molt_string_removeprefix(hay_bits: u64, prefix_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_removesuffix(hay_bits: u64, suffix_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_removesuffix_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    suffix_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let suffix = obj_from_bits(suffix_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
@@ -389,9 +404,12 @@ pub extern "C" fn molt_string_removesuffix(hay_bits: u64, suffix_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_zfill(hay_bits: u64, width_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_zfill_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    width_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let width_err = format!(
             "'{}' object cannot be interpreted as an integer",
@@ -442,9 +460,13 @@ pub extern "C" fn molt_string_zfill(hay_bits: u64, width_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_center(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_center_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    width_bits: u64,
+    fill_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let width_err = format!(
             "'{}' object cannot be interpreted as an integer",
@@ -495,9 +517,13 @@ pub extern "C" fn molt_string_center(hay_bits: u64, width_bits: u64, fill_bits: 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_ljust(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_ljust_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    width_bits: u64,
+    fill_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let width_err = format!(
             "'{}' object cannot be interpreted as an integer",
@@ -542,9 +568,13 @@ pub extern "C" fn molt_string_ljust(hay_bits: u64, width_bits: u64, fill_bits: u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_rjust(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_rjust_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    width_bits: u64,
+    fill_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let width_err = format!(
             "'{}' object cannot be interpreted as an integer",
@@ -589,9 +619,12 @@ pub extern "C" fn molt_string_rjust(hay_bits: u64, width_bits: u64, fill_bits: u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_expandtabs(hay_bits: u64, tabsize_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_expandtabs_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    tabsize_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let tabsize = if tabsize_bits == missing_bits(_py) {
             8
@@ -650,9 +683,12 @@ pub extern "C" fn molt_string_expandtabs(hay_bits: u64, tabsize_bits: u64) -> u6
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_translate(hay_bits: u64, table_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_translate_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    table_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let table = obj_from_bits(table_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
@@ -685,9 +721,9 @@ pub extern "C" fn molt_string_translate(hay_bits: u64, table_bits: u64) -> u64 {
                         false,
                     )
                 } else {
-                    let mapped_bits = molt_getitem_method(table_bits, key_bits);
+                    let mapped_bits = molt_getitem_method_attached_body(_py, table_bits, key_bits);
                     if exception_pending(_py) {
-                        let exc_bits = molt_exception_last_pending();
+                        let exc_bits = molt_exception_last_pending_attached_body(_py);
                         let is_lookup = exception_is_lookup_error(_py, exc_bits);
                         dec_ref_bits(_py, exc_bits);
                         if is_lookup {
@@ -814,9 +850,13 @@ pub extern "C" fn molt_string_translate(hay_bits: u64, table_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_maketrans(x_bits: u64, y_bits: u64, z_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_maketrans_attached_body(
+    _py: &crate::PyToken<'_>,
+    x_bits: u64,
+    y_bits: u64,
+    z_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let x_obj = obj_from_bits(x_bits);
         let y_obj = obj_from_bits(y_bits);
         let z_obj = obj_from_bits(z_bits);
@@ -1022,6 +1062,8 @@ pub extern "C" fn molt_string_maketrans(x_bits: u64, y_bits: u64, z_bits: u64) -
     })
 }
 
+include!("../attached_exports_generated/object/ops_string_affix.rs");
+
 #[cfg(test)]
 mod whitespace_contract_tests {
     use super::*;
@@ -1070,14 +1112,14 @@ mod whitespace_contract_tests {
                 assert!(!space.is_null());
                 let space = MoltObject::from_ptr(space).bits();
                 assert_eq!(
-                    molt_string_isspace(space),
+                    crate::object::ops_string::molt_string_isspace_attached_body(py, space),
                     MoltObject::from_bool(true).bits()
                 );
                 assert_eq!(
-                    molt_string_isspace(hay),
+                    crate::object::ops_string::molt_string_isspace_attached_body(py, hay),
                     MoltObject::from_bool(false).bits()
                 );
-                let methods: [(extern "C" fn(u64, u64) -> u64, Vec<u8>); 3] = [
+                let methods: [(unsafe extern "C" fn(u64, u64, u64) -> u64, Vec<u8>); 3] = [
                     (molt_string_strip, b"\xed\xa0\x80x".to_vec()),
                     (
                         molt_string_lstrip,
@@ -1086,7 +1128,7 @@ mod whitespace_contract_tests {
                     (molt_string_rstrip, [whitespace, b"\xed\xa0\x80x"].concat()),
                 ];
                 for (trim, expected) in methods {
-                    let result = trim(hay, none);
+                    let result = unsafe { trim(py.attached_context(), hay, none) };
                     assert!(!exception_pending(py));
                     let ptr = obj_from_bits(result).as_ptr().unwrap();
                     unsafe {
@@ -1105,7 +1147,7 @@ mod whitespace_contract_tests {
             assert!(!chars.is_null() && !hay.is_null());
             let chars = MoltObject::from_ptr(chars).bits();
             let hay = MoltObject::from_ptr(hay).bits();
-            let result = molt_string_strip(hay, chars);
+            let result = molt_string_strip_attached_body(py, hay, chars);
             assert!(!exception_pending(py));
             let ptr = obj_from_bits(result).as_ptr().unwrap();
             unsafe {

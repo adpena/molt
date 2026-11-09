@@ -59,6 +59,12 @@ from tools import (
     wasm_link_validation,
 )
 from molt import wasm_artifact
+from molt._wasm_abi_generated import (
+    compiled_execution_symbol,
+    runtime_execution_abi,
+    WASM_PUBLIC_C_API_FUNCTION_SIGNATURES,
+)
+
 from molt._wasm_runtime_exports import (
     wasm_split_runtime_export_name_for_import,
     wasm_split_runtime_import_signature,
@@ -81,6 +87,32 @@ from molt.wasm_linking_symbols import (
 )
 from molt.toolchain_identity import stable_regular_file_identity
 from molt.temporary_artifacts import OwnedTemporaryDirectory
+
+
+COMPILED_MAIN = compiled_execution_symbol("molt_main")
+COMPILED_HOST_INIT = compiled_execution_symbol("molt_host_init")
+COMPILED_ISOLATE_IMPORT = compiled_execution_symbol("molt_isolate_import")
+COMPILED_INDIRECT3 = compiled_execution_symbol("molt_call_indirect3")
+UNKNOWN_COMPILED_INDIRECT99 = compiled_execution_symbol("molt_call_indirect99")
+COMPILED_F0 = compiled_execution_symbol("probe__f0")
+COMPILED_F1 = compiled_execution_symbol("probe__f1")
+COMPILED_F2 = compiled_execution_symbol("probe__f2")
+APP_INIT = compiled_execution_symbol("main_molt__init")
+APP_OCR = compiled_execution_symbol("main_molt__ocr_tokens")
+APP_PRIVATE = compiled_execution_symbol("main_molt___private_helper")
+
+
+def _runtime_symbol(logical: str) -> str:
+    execution = runtime_execution_abi(logical)
+    if execution is None:
+        raise ValueError(f"unregistered runtime fixture export {logical}")
+    return execution.physical_symbol
+
+
+def _fixture_export_symbol(declared: str) -> str:
+    """Bind a declared runtime callable; synthetic linker symbols remain literal."""
+    execution = runtime_execution_abi(declared)
+    return execution.physical_symbol if execution is not None else declared
 
 
 def _compiler_rt_sdk_fixture(tmp_path: Path, *, libc: bytes | None = None):
@@ -461,7 +493,10 @@ def _write_app_export_contract(
         function_metadata=document["function_metadata"],
         registry_digest="b" * 64,
     )
-    actual = {binding["name"]: binding["symbol"] for binding in payload["bindings"]}
+    actual = {
+        binding["name"]: compiled_execution_symbol(binding["symbol"])
+        for binding in payload["bindings"]
+    }
     assert actual == dict(symbols)
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
@@ -1899,7 +1934,7 @@ def test_split_contract_rejects_missing_app_owned_molt_main() -> None:
 
     with pytest.raises(
         ValueError,
-        match="missing app-owned function export molt_main after symbol restoration at unspecified",
+        match=f"missing app-owned function export {COMPILED_MAIN} after symbol restoration at unspecified",
     ):
         wasm_link_export_contract._restore_split_runtime_contract_exports(
             module,
@@ -1909,12 +1944,12 @@ def test_split_contract_rejects_missing_app_owned_molt_main() -> None:
 
 
 def test_output_export_symbol_map_rejects_ambiguous_alias_authority() -> None:
-    module = _build_exported_runtime_module("molt_main")
+    module = _build_exported_runtime_module(COMPILED_MAIN)
     module = wasm_link_format._append_linking_function_symbols(
         module,
         [
             (
-                "molt_main",
+                COMPILED_MAIN,
                 0,
                 FLAG_BINDING_GLOBAL
                 | wasm_link_format.FLAG_EXPLICIT_NAME
@@ -2021,8 +2056,8 @@ def _build_app_adapter_input(
     type_payload = bytearray(write_varuint(len(arities)))
     for arity in arities:
         type_payload.append(0x60)
-        type_payload.extend(write_varuint(arity))
-        type_payload.extend(bytes([0x7E]) * arity)
+        type_payload.extend(write_varuint(arity + 1))
+        type_payload.extend(bytes([0x7E]) * (arity + 1))
         type_payload.extend(write_varuint(1))
         type_payload.append(target_result_type)
     sections.append((1, bytes(type_payload)))
@@ -2034,7 +2069,11 @@ def _build_app_adapter_input(
 
     export_payload = bytearray(write_varuint(len(arities)))
     for index in range(len(arities)):
-        export_payload.extend(wasm_link_format._write_string(f"probe__f{index}"))
+        export_payload.extend(
+            wasm_link_format._write_string(
+                compiled_execution_symbol(f"probe__f{index}")
+            )
+        )
         export_payload.append(0x00)
         export_payload.extend(write_varuint(index))
     sections.append((7, bytes(export_payload)))
@@ -2151,7 +2190,7 @@ def test_app_export_adapters_sweep_arity_and_forward_owned_result_boundary(
         adapted_path, adapter_map = wasm_link_edit._inject_app_export_adapters(
             _rewrite_input(output),
             temp_dir,
-            public_export_names=("probe__f0", "probe__f1", "probe__f2"),
+            public_export_names=(COMPILED_F0, COMPILED_F1, COMPILED_F2),
             call_abi=_app_adapter_call_abi(),
             facts_provider=_facts_provider,
         )
@@ -2161,14 +2200,14 @@ def test_app_export_adapters_sweep_arity_and_forward_owned_result_boundary(
 
     prefix = wasm_link_format._OUTPUT_EXPORT_ALIAS_PREFIX
     assert adapter_map == {
-        "probe__f0": f"{prefix}probe__f0",
-        "probe__f1": f"{prefix}probe__f1",
-        "probe__f2": f"{prefix}probe__f2",
+        COMPILED_F0: f"{prefix}{COMPILED_F0}",
+        COMPILED_F1: f"{prefix}{COMPILED_F1}",
+        COMPILED_F2: f"{prefix}{COMPILED_F2}",
     }
     exports = wasm_link_format._collect_function_exports(adapted)
-    assert exports[f"{prefix}probe__f0"] == 3
-    assert exports[f"{prefix}probe__f1"] == 4
-    assert exports[f"{prefix}probe__f2"] == 5
+    assert exports[f"{prefix}{COMPILED_F0}"] == 3
+    assert exports[f"{prefix}{COMPILED_F1}"] == 4
+    assert exports[f"{prefix}{COMPILED_F2}"] == 5
     assert set(adapter_map.values()).issubset(
         parse_wasm_linking_symbols(adapted).defined_names
     )
@@ -2184,9 +2223,9 @@ def test_app_export_adapters_sweep_arity_and_forward_owned_result_boundary(
         for symbol in adapter_symbols.values()
     )
     assert _defined_function_bodies(adapted)[-3:] == [
-        bytes.fromhex("001080808080000b"),
-        bytes.fromhex("0020001081808080000b"),
-        bytes.fromhex("002000200120021082808080000b"),
+        bytes.fromhex("0020001080808080000b"),
+        bytes.fromhex("00200020011081808080000b"),
+        bytes.fromhex("0020002001200220031082808080000b"),
     ]
     relocations = _code_relocations(adapted)
     assert [entry[0] for entry in relocations] == [0] * 3
@@ -2203,7 +2242,7 @@ def test_app_export_adapter_validator_replaces_raw_target_identity(
         adapted_path, adapter_map = wasm_link_edit._inject_app_export_adapters(
             _rewrite_input(output),
             temp_dir,
-            public_export_names=("probe__f0", "probe__f1"),
+            public_export_names=(COMPILED_F0, COMPILED_F1),
             call_abi=_app_adapter_call_abi(),
             facts_provider=_facts_provider,
         )
@@ -2212,13 +2251,13 @@ def test_app_export_adapter_validator_replaces_raw_target_identity(
         temp_dir.cleanup()
 
     target_map = {
-        "probe__f0": "__molt_output_export_0",
-        "probe__f1": "__molt_output_export_1",
+        COMPILED_F0: "__molt_output_export_0",
+        COMPILED_F1: "__molt_output_export_1",
     }
     with pytest.raises(ValueError, match="points to raw target"):
         wasm_link_edit._validate_app_export_adapters(
             adapted,
-            ("probe__f0", "probe__f1"),
+            (COMPILED_F0, COMPILED_F1),
             adapter_symbol_map=adapter_map,
             target_symbol_map=target_map,
             facts_provider=_facts_provider,
@@ -2231,13 +2270,13 @@ def test_app_export_adapter_validator_replaces_raw_target_identity(
     )
     wasm_link_edit._validate_app_export_adapters(
         restored,
-        ("probe__f0", "probe__f1"),
+        (COMPILED_F0, COMPILED_F1),
         adapter_symbol_map=adapter_map,
         target_symbol_map=target_map,
         facts_provider=_facts_provider,
     )
     wasm_link_edit._validate_app_export_adapters(
-        restored, ("probe__f0", "probe__f1"), facts_provider=_facts_provider
+        restored, (COMPILED_F0, COMPILED_F1), facts_provider=_facts_provider
     )
     exports = wasm_link_format._collect_function_exports(restored)
     symbols = {
@@ -2245,8 +2284,8 @@ def test_app_export_adapter_validator_replaces_raw_target_identity(
         for symbol in parse_wasm_linking_symbols(restored).function_symbols
         if symbol.name and symbol.index is not None
     }
-    assert exports["probe__f0"] == symbols[adapter_map["probe__f0"]]
-    assert exports["probe__f0"] != symbols[target_map["probe__f0"]]
+    assert exports[COMPILED_F0] == symbols[adapter_map[COMPILED_F0]]
+    assert exports[COMPILED_F0] != symbols[target_map[COMPILED_F0]]
 
 
 def test_app_export_adapter_identity_survives_metadata_strip_and_rejects_wrong_call(
@@ -2259,7 +2298,7 @@ def test_app_export_adapter_identity_survives_metadata_strip_and_rejects_wrong_c
         adapted_path, adapter_map = wasm_link_edit._inject_app_export_adapters(
             _rewrite_input(output),
             temp_dir,
-            public_export_names=("probe__f0", "probe__f1"),
+            public_export_names=(COMPILED_F0, COMPILED_F1),
             call_abi=_app_adapter_call_abi(),
             facts_provider=_facts_provider,
         )
@@ -2272,8 +2311,8 @@ def test_app_export_adapter_identity_survives_metadata_strip_and_rejects_wrong_c
         temp_dir.cleanup()
 
     target_map = {
-        "probe__f0": "__molt_output_export_0",
-        "probe__f1": "__molt_output_export_1",
+        COMPILED_F0: "__molt_output_export_0",
+        COMPILED_F1: "__molt_output_export_1",
     }
     (
         adapter_identity,
@@ -2285,7 +2324,7 @@ def test_app_export_adapter_identity_survives_metadata_strip_and_rejects_wrong_c
     )
     with_identity = wasm_link_export_contract._publish_app_export_identity_markers(
         adapted,
-        public_export_names=("probe__f0", "probe__f1"),
+        public_export_names=(COMPILED_F0, COMPILED_F1),
         adapter_symbol_map=adapter_map,
         target_symbol_map=target_map,
         identity_exports=identity_exports,
@@ -2298,7 +2337,7 @@ def test_app_export_adapter_identity_survives_metadata_strip_and_rejects_wrong_c
     )
     wasm_link_edit._validate_app_export_adapters(
         metadata_free,
-        ("probe__f0", "probe__f1"),
+        (COMPILED_F0, COMPILED_F1),
         adapter_symbol_map=adapter_identity,
         target_symbol_map=target_identity,
         facts_provider=_facts_provider,
@@ -2307,15 +2346,15 @@ def test_app_export_adapter_identity_survives_metadata_strip_and_rejects_wrong_c
     # Keep the canonical forwarding shape but redirect f0 from raw target f0
     # to raw target f1. Shape-only validation cannot identify that semantic
     # corruption; optimizer-stable identity exports must reject it.
-    wrong_target = bytes.fromhex("0020001081808080000b")
+    wrong_target = bytes.fromhex("00200020011081808080000b")
     corrupted = _replace_defined_function_body(metadata_free, 2, wrong_target)
     wasm_link_edit._validate_app_export_adapters(
-        corrupted, ("probe__f0",), facts_provider=_facts_provider
+        corrupted, (COMPILED_F0,), facts_provider=_facts_provider
     )
     with pytest.raises(ValueError, match="does not call"):
         wasm_link_edit._validate_app_export_adapters(
             corrupted,
-            ("probe__f0", "probe__f1"),
+            (COMPILED_F0, COMPILED_F1),
             adapter_symbol_map=adapter_identity,
             target_symbol_map=target_identity,
             facts_provider=_facts_provider,
@@ -2331,12 +2370,12 @@ def test_app_export_adapter_identity_survives_metadata_strip_and_rejects_wrong_c
         wasm_link_export_contract._strip_app_export_identity_markers(
             edit,
             identity_exports=identity_exports,
-            preserve_exports={"probe__f0", "probe__f1", *keep},
+            preserve_exports={COMPILED_F0, COMPILED_F1, *keep},
         )
         assert edit.commit(validate_facts=True)
         exports = wasm_link_format._collect_function_exports(artifact.data).keys()
         assert not set(identity_exports) & exports
-        assert {"probe__f0", "probe__f1"} <= exports
+        assert {COMPILED_F0, COMPILED_F1} <= exports
 
 
 def test_app_export_adapters_have_no_ownership_import_dependency(
@@ -2349,7 +2388,7 @@ def test_app_export_adapters_have_no_ownership_import_dependency(
         adapted_path, _adapter_map = wasm_link_edit._inject_app_export_adapters(
             _rewrite_input(output),
             temp_dir,
-            public_export_names=("probe__f0",),
+            public_export_names=(COMPILED_F0,),
             call_abi=_app_adapter_call_abi(),
             facts_provider=_facts_provider,
         )
@@ -2372,7 +2411,7 @@ def test_app_export_adapters_fail_closed_on_noncanonical_target_signature(
             wasm_link_edit._inject_app_export_adapters(
                 _rewrite_input(output),
                 temp_dir,
-                public_export_names=("probe__f0",),
+                public_export_names=(COMPILED_F0,),
                 call_abi=_app_adapter_call_abi(),
                 facts_provider=_facts_provider,
             )
@@ -2382,12 +2421,12 @@ def test_app_export_adapters_fail_closed_on_noncanonical_target_signature(
 
 def test_deduplicated_export_flags_preserve_first_contract_order() -> None:
     assert wasm_link_command._deduplicated_export_flags(
-        ("--export-if-defined=molt_Py_None", "--export=molt_main"),
+        ("--export-if-defined=molt_Py_None", f"--export={COMPILED_MAIN}"),
         ("--export-if-defined=molt_Py_None", "--export=PyInit_numpy"),
-        ("--export=molt_main",),
+        (f"--export={COMPILED_MAIN}",),
     ) == [
         "--export-if-defined=molt_Py_None",
-        "--export=molt_main",
+        f"--export={COMPILED_MAIN}",
         "--export=PyInit_numpy",
     ]
 
@@ -2611,8 +2650,9 @@ def _build_split_link_fixture(
     runtime_names: list[str],
     *,
     app_imports: tuple[str, ...] = (),
+    public_c_exports: tuple[str, ...] = (),
     native_imports: tuple[str, ...] = (),
-    app_names: tuple[str, ...] = ("molt_main",),
+    app_names: tuple[str, ...] = (COMPILED_MAIN,),
     native_names: tuple[str, ...] = (),
     symbol_names: dict[str, str] | None = None,
     memory_min: int = 1,
@@ -2626,6 +2666,11 @@ def _build_split_link_fixture(
     Layouts are encoded in the artifacts. No dispatch wrapper replaces layout
     admission or rewrites an arbitrary input into a purported runtime object.
     """
+    assert set(public_c_exports).issubset(WASM_PUBLIC_C_API_FUNCTION_SIGNATURES)
+
+    def wire(name: str) -> str:
+        return name if name in public_c_exports else _fixture_export_symbol(name)
+
     u32 = wasm_link_format._write_varuint
     string = wasm_link_format._write_string
     reserved = wasm_link_callable_table.WASM_RESERVED_RUNTIME_CALLABLES
@@ -2667,7 +2712,16 @@ def _build_split_link_fixture(
                     ("i32",) if name in {*native_imports, *native_names} else ("i64",),
                 ),
             )
-            for name in [*imported_names, *functions]
+            for name in imported_names
+        ] + [
+            _test_wasm_function_signature(
+                wire(name),
+                default=(
+                    (),
+                    ("i32",) if name in {*native_imports, *native_names} else ("i64",),
+                ),
+            )
+            for name in functions
         ]
         types = bytearray(u32(len(signatures)))
         for signature in signatures:
@@ -2700,7 +2754,7 @@ def _build_split_link_fixture(
         if defined_memory:
             sections.append((5, b"\x01\x00" + u32(pages)))
         indices = {name: import_count + index for index, name in enumerate(functions)}
-        exports = [(name, 0, indices[name]) for name in functions]
+        exports = [(wire(name), 0, indices[name]) for name in functions]
         exports.extend(
             (f"molt.callable_table.layout.entry.{slot}", 0, indices[name])
             for slot, name in enumerate(slot_names)
@@ -2747,7 +2801,7 @@ def _build_split_link_fixture(
         if linking:
             entries = [
                 _function_symbol_entry(
-                    name=(bindings or {}).get(name, name),
+                    name=(bindings or {}).get(name, wire(name)),
                     index=indices[name],
                     flags=FLAG_BINDING_GLOBAL | wasm_link_format.FLAG_EXPLICIT_NAME,
                 )
@@ -2755,7 +2809,7 @@ def _build_split_link_fixture(
             ]
             entries.extend(
                 _function_symbol_entry(
-                    name=name,
+                    name=wasm_split_runtime_export_name_for_import(name) or name,
                     index=index,
                     flags=wasm_link_format.FLAG_UNDEFINED
                     | wasm_link_format.FLAG_EXPLICIT_NAME,
@@ -2793,13 +2847,17 @@ def _build_split_link_fixture(
             )
         return wasm_link_operations.build_sections(sections)
 
-    shared_names = list(dict.fromkeys([*runtime_names, *reserved_names, *slot_names]))
+    shared_names = {
+        wire(name) for name in [*runtime_names, *reserved_names, *slot_names]
+    }
     shared = module(runtime_names, defined_memory=True, active_prefix=True)
     if data_symbols:
         shared = _add_data_address_global_exports(
             shared, {name: 4096 for name in data_symbols}
         )
-    reloc = _build_reloc_runtime_module_many(runtime_names, data_symbols=data_symbols)
+    reloc = _build_reloc_runtime_module_many(
+        runtime_names, data_symbols=data_symbols, public_c_exports=public_c_exports
+    )
     all_app_names = list(dict.fromkeys([*app_names, *native_names]))
     app = module(
         list(app_names),
@@ -2825,6 +2883,10 @@ def _build_split_link_fixture(
         for name in registry.wasm_runtime_import_names()
         if registry.wasm_split_runtime_export_name_for_import(name) in shared_names
     )
+    if public_c_exports:
+        deploy_imports = tuple(
+            sorted({*deploy_imports, *(wire(name) for name in runtime_names)})
+        )
     return _SplitLinkFixture(reloc, shared, app, linked, split_app, deploy_imports)
 
 
@@ -2853,15 +2915,20 @@ def _write_split_fixture_output(command: list[str], fixture: _SplitLinkFixture) 
 
 
 def _build_reloc_runtime_module_many(
-    export_names: list[str], *, data_symbols: dict[str, int] | None = None
+    export_names: list[str],
+    *,
+    data_symbols: dict[str, int] | None = None,
+    public_c_exports: tuple[str, ...] = (),
 ) -> bytes:
     """Object producer: declared constant bodies and explicit definition indices."""
-    module = _build_exported_runtime_module_many(export_names)
+    module = _build_exported_runtime_module_many(
+        export_names, public_c_exports=public_c_exports
+    )
     definitions = [
         _function_symbol_entry(
             flags=FLAG_BINDING_GLOBAL | wasm_link_format.FLAG_EXPLICIT_NAME,
             index=index,
-            name=name,
+            name=name if name in public_c_exports else _fixture_export_symbol(name),
         )
         for index, name in enumerate(export_names)
     ]
@@ -2925,7 +2992,14 @@ def _test_wasm_function_signature(
     *,
     default: tuple[tuple[str, ...], tuple[str, ...]],
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    return wasm_split_runtime_import_signature(name) or default
+    signature = wasm_split_runtime_import_signature(name)
+    if signature is not None:
+        return signature
+    if name in {COMPILED_MAIN, COMPILED_HOST_INIT}:
+        return (("i64",), default[1])
+    if name == COMPILED_ISOLATE_IMPORT:
+        return (("i64", "i64"), ("i64",))
+    return default
 
 
 def _append_test_wasm_function_type(
@@ -2958,14 +3032,21 @@ def _test_wasm_zero_result_body(results: tuple[str, ...]) -> bytes:
     return bytes(body)
 
 
-def _build_exported_runtime_module_many(export_names: list[str]) -> bytes:
+def _build_exported_runtime_module_many(
+    export_names: list[str], *, public_c_exports: tuple[str, ...] = ()
+) -> bytes:
+    assert set(public_c_exports).issubset(WASM_PUBLIC_C_API_FUNCTION_SIGNATURES)
+
+    def wire(name: str) -> str:
+        return name if name in public_c_exports else _fixture_export_symbol(name)
+
     write_varuint = wasm_link_format._write_varuint
     sections: list[tuple[int, bytes]] = []
 
     type_payload = bytearray()
     type_payload.extend(write_varuint(len(export_names)))
     signatures = [
-        _test_wasm_function_signature(name, default=((), ("i64",)))
+        _test_wasm_function_signature(wire(name), default=((), ("i64",)))
         for name in export_names
     ]
     for signature in signatures:
@@ -2981,7 +3062,7 @@ def _build_exported_runtime_module_many(export_names: list[str]) -> bytes:
     export_payload = bytearray()
     export_payload.extend(write_varuint(len(export_names)))
     for index, export_name in enumerate(export_names):
-        export_payload.extend(wasm_link_format._write_string(export_name))
+        export_payload.extend(wasm_link_format._write_string(wire(export_name)))
         export_payload.append(0x00)
         export_payload.extend(write_varuint(index))
     sections.append((7, bytes(export_payload)))
@@ -3001,7 +3082,7 @@ def test_link_pipeline_requires_frontend_app_export_contract(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    module = _build_exported_runtime_module("molt_main")
+    module = _build_exported_runtime_module(COMPILED_MAIN)
     runtime = tmp_path / "runtime.wasm"
     output = tmp_path / "output.wasm"
     linked = tmp_path / "linked.wasm"
@@ -3482,7 +3563,7 @@ def test_split_callable_merge_owns_only_app_region() -> None:
 
 
 def _build_host_call_indirect_module(
-    import_name: str = "molt_call_indirect3",
+    import_name: str = COMPILED_INDIRECT3,
 ) -> bytes:
     write_varuint = wasm_link_format._write_varuint
     sections: list[tuple[int, bytes]] = []
@@ -3490,8 +3571,8 @@ def _build_host_call_indirect_module(
     type_payload = bytearray()
     type_payload.extend(write_varuint(2))
     type_payload.append(0x60)
-    type_payload.extend(write_varuint(3))
-    type_payload.extend(b"\x7e\x7e\x7e")
+    type_payload.extend(write_varuint(5))
+    type_payload.extend(b"\x7e" * 5)
     type_payload.extend(write_varuint(1))
     type_payload.append(0x7E)
     type_payload.append(0x60)
@@ -3543,8 +3624,8 @@ def _build_tag_then_host_call_indirect_import_module() -> bytes:
     type_payload = bytearray()
     type_payload.extend(write_varuint(2))
     type_payload.append(0x60)
-    type_payload.extend(write_varuint(3))
-    type_payload.extend(b"\x7e\x7e\x7e")
+    type_payload.extend(write_varuint(5))
+    type_payload.extend(b"\x7e" * 5)
     type_payload.extend(write_varuint(1))
     type_payload.append(0x7E)
     type_payload.append(0x60)
@@ -3560,7 +3641,7 @@ def _build_tag_then_host_call_indirect_import_module() -> bytes:
     import_payload.append(0x00)  # exception attribute
     import_payload.extend(write_varuint(0))
     import_payload.extend(wasm_link_format._write_string("env"))
-    import_payload.extend(wasm_link_format._write_string("molt_call_indirect3"))
+    import_payload.extend(wasm_link_format._write_string(COMPILED_INDIRECT3))
     import_payload.append(0x00)  # function import
     import_payload.extend(write_varuint(0))
     sections.append((2, bytes(import_payload)))
@@ -3652,10 +3733,11 @@ def _build_runtime_import_strip_module() -> bytes:
     sections: list[tuple[int, bytes]] = []
 
     type_payload = bytearray()
-    type_payload.extend(write_varuint(1))
+    type_payload.extend(write_varuint(2))
     type_payload.append(0x60)
     type_payload.extend(write_varuint(0))
     type_payload.extend(write_varuint(0))
+    _append_test_wasm_function_type(type_payload, (("i64",), ()))
     sections.append((1, bytes(type_payload)))
 
     import_payload = bytearray()
@@ -3667,12 +3749,12 @@ def _build_runtime_import_strip_module() -> bytes:
         import_payload.extend(write_varuint(0))
     sections.append((2, bytes(import_payload)))
 
-    func_payload = write_varuint(1) + write_varuint(0)
+    func_payload = write_varuint(1) + write_varuint(1)
     sections.append((3, bytes(func_payload)))
 
     export_payload = bytearray()
     export_payload.extend(write_varuint(1))
-    export_payload.extend(wasm_link_format._write_string("molt_main"))
+    export_payload.extend(wasm_link_format._write_string(COMPILED_MAIN))
     export_payload.append(0x00)
     export_payload.extend(write_varuint(2))
     sections.append((7, bytes(export_payload)))
@@ -3739,7 +3821,7 @@ def _build_split_runtime_app_module(
             type_payload,
             _test_wasm_function_signature(name, default=(("i64",), ())),
         )
-    _append_test_wasm_function_type(type_payload, ((), ()))
+    _append_test_wasm_function_type(type_payload, (("i64",), ()))
     sections.append((1, bytes(type_payload)))
 
     import_payload = bytearray()
@@ -3766,7 +3848,7 @@ def _build_split_runtime_app_module(
     export_payload = bytearray()
     export_payload.extend(write_varuint(3))
     for name, kind, index in (
-        ("molt_main", 0x00, len(import_names)),
+        (COMPILED_MAIN, 0x00, len(import_names)),
         ("molt_table", 0x01, 0),
         ("molt_memory", 0x02, 0),
     ):
@@ -3920,82 +4002,33 @@ def _build_exported_function_module(
     write_varuint = wasm_link_format._write_varuint
     sections: list[tuple[int, bytes]] = []
 
-    type_payload = bytearray()
-    type_payload.extend(write_varuint(1))
-    type_payload.append(0x60)
-    type_payload.extend(write_varuint(0))
-    type_payload.extend(write_varuint(1))
-    type_payload.append(0x7F)
+    signature = _test_wasm_function_signature(
+        _fixture_export_symbol(export_name), default=((), ("i32",))
+    )
+    type_payload = bytearray(write_varuint(1))
+    _append_test_wasm_function_type(type_payload, signature)
     sections.append((1, bytes(type_payload)))
 
     sections.append((3, write_varuint(1) + write_varuint(0)))
 
     export_payload = bytearray()
     export_payload.extend(write_varuint(1))
-    export_payload.extend(wasm_link_format._write_string(export_name))
+    export_payload.extend(
+        wasm_link_format._write_string(_fixture_export_symbol(export_name))
+    )
     export_payload.append(0x00)
     export_payload.extend(write_varuint(0))
     sections.append((7, bytes(export_payload)))
 
-    body = bytes([0x00, 0x00, 0x0B]) if trap_body else bytes([0x00, 0x41, 0x01, 0x0B])
+    body = (
+        b"\x00\x00\x0b"
+        if trap_body
+        else b"\x00\x41\x01\x0b"
+        if signature[1] == ("i32",)
+        else _test_wasm_zero_result_body(signature[1])
+    )
     code_payload = write_varuint(1) + write_varuint(len(body)) + body
     sections.append((10, code_payload))
-
-    return wasm_link_operations.build_sections(sections)
-
-
-def _build_runtime_import_data_module(
-    import_names: list[str],
-    *,
-    memory_min: int,
-    data_offset: int,
-    table_min: int | None = None,
-) -> bytes:
-    write_varuint = wasm_link_format._write_varuint
-    sections: list[tuple[int, bytes]] = []
-
-    type_payload = bytearray()
-    type_payload.extend(write_varuint(1))
-    type_payload.append(0x60)
-    type_payload.extend(write_varuint(1))
-    type_payload.append(0x7E)
-    type_payload.extend(write_varuint(0))
-    sections.append((1, bytes(type_payload)))
-
-    import_payload = bytearray()
-    import_payload.extend(
-        write_varuint(len(import_names) + 1 + (1 if table_min is not None else 0))
-    )
-    for name in import_names:
-        import_payload.extend(wasm_link_format._write_string("molt_runtime"))
-        import_payload.extend(wasm_link_format._write_string(name))
-        import_payload.append(0x00)
-        import_payload.extend(write_varuint(0))
-    import_payload.extend(wasm_link_format._write_string("env"))
-    import_payload.extend(wasm_link_format._write_string("memory"))
-    import_payload.append(0x02)
-    import_payload.append(0x00)
-    import_payload.extend(write_varuint(memory_min))
-    if table_min is not None:
-        import_payload.extend(wasm_link_format._write_string("env"))
-        import_payload.extend(
-            wasm_link_format._write_string("__indirect_function_table")
-        )
-        import_payload.append(0x01)
-        import_payload.append(0x70)
-        import_payload.extend(write_varuint(0))
-        import_payload.extend(write_varuint(table_min))
-    sections.append((2, bytes(import_payload)))
-
-    data_payload = bytearray()
-    data_payload.extend(write_varuint(1))
-    data_payload.extend(write_varuint(0))
-    data_payload.append(0x41)
-    data_payload.extend(write_varuint(data_offset))
-    data_payload.append(0x0B)
-    data_payload.extend(write_varuint(1))
-    data_payload.extend(b"x")
-    sections.append((11, bytes(data_payload)))
 
     return wasm_link_operations.build_sections(sections)
 
@@ -4136,21 +4169,20 @@ def _build_env_function_import_module(import_names: list[str]) -> bytes:
     write_varuint = wasm_link_format._write_varuint
     sections: list[tuple[int, bytes]] = []
 
-    type_payload = bytearray()
-    type_payload.extend(write_varuint(1))
-    type_payload.append(0x60)
-    type_payload.extend(write_varuint(1))
-    type_payload.append(0x7E)
-    type_payload.extend(write_varuint(0))
+    type_payload = bytearray(write_varuint(len(import_names)))
+    for name in import_names:
+        _append_test_wasm_function_type(
+            type_payload, _test_wasm_function_signature(name, default=(("i64",), ()))
+        )
     sections.append((1, bytes(type_payload)))
 
     import_payload = bytearray()
     import_payload.extend(write_varuint(len(import_names)))
-    for name in import_names:
+    for type_index, name in enumerate(import_names):
         import_payload.extend(wasm_link_format._write_string("env"))
         import_payload.extend(wasm_link_format._write_string(name))
         import_payload.append(0x00)
-        import_payload.extend(write_varuint(0))
+        import_payload.extend(write_varuint(type_index))
     sections.append((2, bytes(import_payload)))
 
     return wasm_link_operations.build_sections(sections)
@@ -4395,13 +4427,13 @@ def test_canonicalize_standard_section_order_places_tag_after_memory() -> None:
 def test_canonicalize_standard_section_order_merges_duplicate_export_sections() -> None:
     first_export = (
         wasm_link_format._write_varuint(1)
-        + wasm_link_format._write_string("molt_main")
+        + wasm_link_format._write_string(COMPILED_MAIN)
         + bytes([0])
         + wasm_link_format._write_varuint(0)
     )
     second_export = (
         wasm_link_format._write_varuint(2)
-        + wasm_link_format._write_string("molt_main")
+        + wasm_link_format._write_string(COMPILED_MAIN)
         + bytes([0])
         + wasm_link_format._write_varuint(2)
         + wasm_link_format._write_string("PyInit__multiarray_umath")
@@ -4419,7 +4451,7 @@ def test_canonicalize_standard_section_order_merges_duplicate_export_sections() 
     assert [section_id for section_id, _payload in sections].count(7) == 1
     assert wasm_link_edit._standard_section_order_error(canonical) is None
     assert _fixture_export_kinds(canonical) == {
-        "molt_main": (0, 0),
+        COMPILED_MAIN: (0, 0),
         "PyInit__multiarray_umath": (0, 1),
     }
 
@@ -4438,7 +4470,8 @@ def _build_linked_host_table_module(table_import_name: str) -> bytes:
     type_payload = bytearray()
     type_payload.extend(write_varuint(1))
     type_payload.append(0x60)
-    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
     type_payload.extend(write_varuint(0))
     sections.append((1, bytes(type_payload)))
 
@@ -4464,7 +4497,7 @@ def _build_linked_host_table_module(table_import_name: str) -> bytes:
     export_payload = bytearray()
     export_payload.extend(write_varuint(3))
     for name, kind, index in (
-        ("molt_main", 0x00, 0),
+        (COMPILED_MAIN, 0x00, 0),
         ("molt_table", 0x01, 0),
         ("molt_memory", 0x02, 0),
     ):
@@ -4569,7 +4602,11 @@ def test_validate_split_runtime_outputs_scans_each_artifact_once(
     runtime = tmp_path / "molt_runtime.wasm"
     app = tmp_path / "app.wasm"
     runtime.write_bytes(_build_exported_runtime_module_many(["molt_err_pending"]))
-    app.write_bytes(_build_split_runtime_app_module(["molt_err_pending"], memory_min=1))
+    app.write_bytes(
+        _build_split_runtime_app_module(
+            [_runtime_symbol("molt_err_pending")], memory_min=1
+        )
+    )
     calls: list[int] = []
 
     def facts_once(data: bytes):  # type: ignore[no-untyped-def]
@@ -4619,23 +4656,23 @@ def test_validate_linked_rejects_only_manifest_call_indirect_imports(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     linked = tmp_path / "linked.wasm"
-    linked.write_bytes(_build_host_call_indirect_module("molt_call_indirect3"))
+    linked.write_bytes(_build_host_call_indirect_module(COMPILED_INDIRECT3))
 
     assert not wasm_link_validation._validate_linked(
         linked,
         facts_provider=_facts_provider,
     )
     captured = capsys.readouterr()
-    assert "molt_call_indirect3" in captured.err
+    assert COMPILED_INDIRECT3 in captured.err
 
-    linked.write_bytes(_build_host_call_indirect_module("molt_call_indirect99"))
+    linked.write_bytes(_build_host_call_indirect_module(UNKNOWN_COMPILED_INDIRECT99))
 
     assert not wasm_link_validation._validate_linked(
         linked,
         facts_provider=_facts_provider,
     )
     captured = capsys.readouterr()
-    assert "molt_call_indirect99" not in captured.err
+    assert UNKNOWN_COMPILED_INDIRECT99 not in captured.err
     assert "missing exported memory" in captured.err
 
 
@@ -4673,7 +4710,7 @@ def test_tree_shake_runtime_preserves_required_function_exports() -> None:
         facts_provider=_facts_provider,
     )
     exports = wasm_link_format._collect_function_exports(shaken)
-    assert "molt_exception_pending" in exports
+    assert _runtime_symbol("molt_exception_pending") in exports
 
 
 def test_tree_shake_runtime_preserves_direct_runner_exception_debug_exports() -> None:
@@ -4706,24 +4743,24 @@ def test_tree_shake_runtime_preserves_direct_runner_exception_debug_exports() ->
         facts_provider=_facts_provider,
     )
     exports = wasm_link_format._collect_function_exports(shaken)
-    assert "molt_alloc" in exports
-    assert "molt_handle_resolve" in exports
-    assert "molt_header_size" in exports
-    assert "molt_scratch_alloc" in exports
-    assert "molt_scratch_free" in exports
-    assert "molt_bytes_from_bytes" in exports
-    assert "molt_string_from_bytes" in exports
-    assert "molt_string_as_ptr" in exports
-    assert "molt_exception_kind" in exports
-    assert "molt_exception_message" in exports
-    assert "molt_exception_last_pending" in exports
-    assert "molt_exception_last" not in exports
-    assert "molt_traceback_format_exc" in exports
-    assert "molt_type_tag_of_bits" in exports
-    assert "molt_len" in exports
-    assert "molt_index" in exports
-    assert "molt_profile_dump" in exports
-    assert "molt_dec_ref_obj" in exports
+    assert _runtime_symbol("molt_alloc") in exports
+    assert _runtime_symbol("molt_handle_resolve") in exports
+    assert _runtime_symbol("molt_header_size") in exports
+    assert _runtime_symbol("molt_scratch_alloc") in exports
+    assert _runtime_symbol("molt_scratch_free") in exports
+    assert _runtime_symbol("molt_bytes_from_bytes") in exports
+    assert _runtime_symbol("molt_string_from_bytes") in exports
+    assert _runtime_symbol("molt_string_as_ptr") in exports
+    assert _runtime_symbol("molt_exception_kind") in exports
+    assert _runtime_symbol("molt_exception_message") in exports
+    assert _runtime_symbol("molt_exception_last_pending") in exports
+    assert _runtime_symbol("molt_exception_last") not in exports
+    assert _runtime_symbol("molt_traceback_format_exc") in exports
+    assert _runtime_symbol("molt_type_tag_of_bits") in exports
+    assert _runtime_symbol("molt_len") in exports
+    assert _runtime_symbol("molt_index") in exports
+    assert _runtime_symbol("molt_profile_dump") in exports
+    assert _runtime_symbol("molt_dec_ref_obj") in exports
 
 
 def test_validate_split_runtime_outputs_rejects_stripped_contract_memory_export(
@@ -4735,7 +4772,7 @@ def test_validate_split_runtime_outputs_rejects_stripped_contract_memory_export(
     runtime.write_bytes(_build_exported_runtime_module_many(["molt_err_pending"]))
     app.write_bytes(
         _strip_export(
-            _build_split_runtime_app_module(["molt_err_pending"]),
+            _build_split_runtime_app_module([_runtime_symbol("molt_err_pending")]),
             "molt_memory",
         )
     )
@@ -4759,7 +4796,7 @@ def test_restore_split_runtime_contract_exports_reemits_memory_and_table() -> No
     )
 
     assert _fixture_export_kinds(restored) == {
-        "molt_main": (0, 0),
+        COMPILED_MAIN: (0, 0),
         "molt_memory": (2, 0),
         "molt_table": (1, 0),
     }
@@ -4800,7 +4837,7 @@ def test_restore_split_runtime_contract_exports_scans_contract_once(
 
     assert parse_calls == 1
     assert _fixture_export_kinds(restored) == {
-        "molt_main": (0, 0),
+        COMPILED_MAIN: (0, 0),
         "molt_memory": (2, 0),
         "molt_table": (1, 0),
     }
@@ -4810,7 +4847,7 @@ def test_split_runtime_contract_keep_set_includes_all_external_kinds() -> None:
     assert wasm_link_export_contract._split_runtime_contract_export_names("app") == {
         "__indirect_function_table",
         "memory",
-        "molt_main",
+        COMPILED_MAIN,
         "molt_memory",
         "molt_table",
     }
@@ -4822,7 +4859,7 @@ def test_split_runtime_contract_keep_set_includes_all_external_kinds() -> None:
     ) == {
         "__indirect_function_table",
         "memory",
-        "molt_main",
+        COMPILED_MAIN,
         "molt_memory",
         "molt_table",
         "PyInit__demo",
@@ -4832,12 +4869,12 @@ def test_split_runtime_contract_keep_set_includes_all_external_kinds() -> None:
 
 def test_split_app_post_link_preserves_and_restores_contract_exports() -> None:
     app = _build_split_runtime_app_module([])
-    molt_main_index = wasm_link_format._collect_function_exports(app)["molt_main"]
+    molt_main_index = wasm_link_format._collect_function_exports(app)[COMPILED_MAIN]
     app = wasm_link_format._append_linking_function_symbols(
         app,
         [
             (
-                "molt_main",
+                COMPILED_MAIN,
                 molt_main_index,
                 FLAG_BINDING_GLOBAL | wasm_link_format.FLAG_EXPLICIT_NAME,
             )
@@ -4856,13 +4893,13 @@ def test_split_app_post_link_preserves_and_restores_contract_exports() -> None:
     )
 
     assert _fixture_export_kinds(optimized) == {
-        "molt_main": (0, molt_main_index),
+        COMPILED_MAIN: (0, molt_main_index),
         "molt_memory": (2, 0),
         "molt_table": (1, 0),
     }
 
     masked = _strip_export(
-        _strip_export(_strip_export(app, "molt_main"), "molt_memory"),
+        _strip_export(_strip_export(app, COMPILED_MAIN), "molt_memory"),
         "molt_table",
     )
     restored = wasm_link_export_contract._restore_split_runtime_contract_exports(
@@ -4873,7 +4910,7 @@ def test_split_app_post_link_preserves_and_restores_contract_exports() -> None:
     )
 
     assert _fixture_export_kinds(restored) == {
-        "molt_main": (0, molt_main_index),
+        COMPILED_MAIN: (0, molt_main_index),
         "molt_memory": (2, 0),
         "molt_table": (1, 0),
     }
@@ -4939,7 +4976,7 @@ def test_split_app_optimization_cache_eliminates_repeat_wasm_opt(
         reference_data=None,
         optimize=True,
         optimize_level="Oz",
-        contract_keep_set={"molt_main"},
+        contract_keep_set={COMPILED_MAIN},
         attestation=cold_attestation,
         telemetry=cold_telemetry,
         operation_counts=cold_counts,
@@ -4958,7 +4995,7 @@ def test_split_app_optimization_cache_eliminates_repeat_wasm_opt(
         reference_data=None,
         optimize=True,
         optimize_level="Oz",
-        contract_keep_set={"molt_main"},
+        contract_keep_set={COMPILED_MAIN},
         attestation=warm_attestation,
         telemetry=warm_telemetry,
         operation_counts=warm_counts,
@@ -5026,7 +5063,7 @@ def test_split_app_optimizer_failure_is_fail_closed_and_not_cached(
             reference_data=None,
             optimize=True,
             optimize_level="Oz",
-            contract_keep_set={"molt_main"},
+            contract_keep_set={COMPILED_MAIN},
             facts_provider=_facts_provider,
             optimizer_identity=optimizer_identity,
         )
@@ -5075,7 +5112,7 @@ def test_split_app_optimization_cache_rejects_corrupt_provenance_or_artifact(
         reference_data=None,
         optimize=True,
         optimize_level="Oz",
-        contract_keep_set={"molt_main"},
+        contract_keep_set={COMPILED_MAIN},
         facts_provider=_facts_provider,
         optimizer_identity=optimizer_identity,
     )
@@ -5101,7 +5138,7 @@ def test_split_app_optimization_cache_rejects_corrupt_provenance_or_artifact(
         reference_data=None,
         optimize=True,
         optimize_level="Oz",
-        contract_keep_set={"molt_main"},
+        contract_keep_set={COMPILED_MAIN},
         operation_counts=counts,
         facts_provider=_facts_provider,
         optimizer_identity=optimizer_identity,
@@ -5155,7 +5192,7 @@ def test_split_app_optimization_cache_serializes_concurrent_producers(
             reference_data=None,
             optimize=True,
             optimize_level="Oz",
-            contract_keep_set={"molt_main"},
+            contract_keep_set={COMPILED_MAIN},
             facts_provider=_facts_provider,
             optimizer_identity=optimizer_identity,
         )
@@ -5186,7 +5223,7 @@ def test_split_contract_restoration_keeps_function_exports_when_adding_memory_an
 ):
     required_native = ("PyInit__demo",)
     app = _build_split_runtime_app_module([])
-    main_index = wasm_link_format._collect_function_exports(app)["molt_main"]
+    main_index = wasm_link_format._collect_function_exports(app)[COMPILED_MAIN]
     app = wasm_link_export_contract._ensure_export_by_index(
         app, name=required_native[0], kind=0, index=main_index
     )
@@ -5203,7 +5240,7 @@ def test_split_contract_restoration_keeps_function_exports_when_adding_memory_an
 
     export_kinds = _fixture_export_kinds(restored)
     assert export_kinds[required_native[0]][0] == 0
-    assert export_kinds["molt_main"][0] == 0
+    assert export_kinds[COMPILED_MAIN][0] == 0
     assert export_kinds["molt_memory"][0] == 2
     assert export_kinds["molt_table"][0] == 1
 
@@ -5300,7 +5337,11 @@ def test_validate_split_runtime_outputs_requires_shared_app_memory(
     app = tmp_path / "app.wasm"
     runtime.write_bytes(_build_exported_runtime_module_many(["molt_err_pending"]))
 
-    app.write_bytes(_build_split_runtime_app_module(["molt_err_pending"], memory_min=1))
+    app.write_bytes(
+        _build_split_runtime_app_module(
+            [_runtime_symbol("molt_err_pending")], memory_min=1
+        )
+    )
     assert wasm_link_validation._validate_split_runtime_outputs(
         app,
         runtime,
@@ -5323,13 +5364,15 @@ def test_validate_split_runtime_outputs_rejects_same_name_wrong_signature(
 ) -> None:
     app = tmp_path / "app.wasm"
     runtime = tmp_path / "runtime.wasm"
-    app.write_bytes(_build_split_runtime_app_module(["molt_err_pending"]))
+    app.write_bytes(
+        _build_split_runtime_app_module([_runtime_symbol("molt_err_pending")])
+    )
     sections = wasm_link_operations.parse_sections(
         _build_exported_runtime_module("unknown_probe")
     )
     export_payload = (
         wasm_link_format._write_varuint(1)
-        + wasm_link_format._write_string("molt_err_pending")
+        + wasm_link_format._write_string(_runtime_symbol("molt_err_pending"))
         + b"\x00"
         + wasm_link_format._write_varuint(0)
     )
@@ -5357,7 +5400,11 @@ def test_validate_split_runtime_outputs_rejects_structurally_invalid_app(
     runtime = tmp_path / "molt_runtime.wasm"
     app = tmp_path / "app.wasm"
     runtime.write_bytes(_build_exported_runtime_module_many(["molt_err_pending"]))
-    app.write_bytes(_build_split_runtime_app_module(["molt_err_pending"], memory_min=1))
+    app.write_bytes(
+        _build_split_runtime_app_module(
+            [_runtime_symbol("molt_err_pending")], memory_min=1
+        )
+    )
 
     seen: list[str] = []
 
@@ -5382,7 +5429,11 @@ def test_validate_split_runtime_outputs_rejects_structurally_invalid_runtime(
     runtime = tmp_path / "molt_runtime.wasm"
     app = tmp_path / "app.wasm"
     runtime.write_bytes(_build_exported_runtime_module_many(["molt_err_pending"]))
-    app.write_bytes(_build_split_runtime_app_module(["molt_err_pending"], memory_min=1))
+    app.write_bytes(
+        _build_split_runtime_app_module(
+            [_runtime_symbol("molt_err_pending")], memory_min=1
+        )
+    )
 
     seen: list[str] = []
 
@@ -5415,7 +5466,14 @@ def test_tree_shake_runtime_preserves_dynamic_required_exports(monkeypatch) -> N
     )
     monkeypatch.setenv(
         "MOLT_WASM_DYNAMIC_REQUIRED_EXPORTS",
-        "molt_gpu_linear_contiguous,molt_gpu_tensor__tensor_scaled_dot_product_attention,molt_gpu_turboquant_attention_packed",
+        ",".join(
+            _runtime_symbol(name)
+            for name in (
+                "molt_gpu_linear_contiguous",
+                "molt_gpu_tensor__tensor_scaled_dot_product_attention",
+                "molt_gpu_turboquant_attention_packed",
+            )
+        ),
     )
     shaken = wasm_link_optimizer_policy._tree_shake_runtime(
         module,
@@ -5423,9 +5481,12 @@ def test_tree_shake_runtime_preserves_dynamic_required_exports(monkeypatch) -> N
         facts_provider=_facts_provider,
     )
     exports = wasm_link_format._collect_function_exports(shaken)
-    assert "molt_gpu_linear_contiguous" in exports
-    assert "molt_gpu_tensor__tensor_scaled_dot_product_attention" in exports
-    assert "molt_gpu_turboquant_attention_packed" in exports
+    assert _runtime_symbol("molt_gpu_linear_contiguous") in exports
+    assert (
+        _runtime_symbol("molt_gpu_tensor__tensor_scaled_dot_product_attention")
+        in exports
+    )
+    assert _runtime_symbol("molt_gpu_turboquant_attention_packed") in exports
 
 
 def test_tree_shake_runtime_reuses_cached_result(
@@ -5493,7 +5554,7 @@ def test_split_app_cache_key_keeps_every_component_boundary() -> None:
             reference_data=reference,
             optimize=False,
             optimize_level="Oz",
-            contract_keep_set={"molt_main"},
+            contract_keep_set={COMPILED_MAIN},
             facts_authority_digest="0" * 64,
         )
 
@@ -5690,12 +5751,12 @@ def test_each_wasm_link_cache_source_authority_invalidates_both_cache_keys(
             reference_data=b"reference",
             optimize=False,
             optimize_level="Oz",
-            contract_keep_set={"molt_main"},
+            contract_keep_set={COMPILED_MAIN},
             facts_authority_digest="facts",
         )
         tree = wasm_link_optimizer_policy._tree_shake_runtime_cache_key(
             runtime_data=b"runtime",
-            normalized_required_exports={"molt_main"},
+            normalized_required_exports={COMPILED_MAIN},
             facts_authority_digest="facts",
         )
         return split, tree
@@ -5734,12 +5795,12 @@ def test_scanner_authority_invalidates_both_cache_keys_without_scanning(
                 reference_data=None,
                 optimize=False,
                 optimize_level="O1",
-                contract_keep_set={"molt_main"},
+                contract_keep_set={COMPILED_MAIN},
                 facts_authority_digest=facts_digest,
             ),
             wasm_link_optimizer_policy._tree_shake_runtime_cache_key(
                 runtime_data=b"runtime",
-                normalized_required_exports={"molt_main"},
+                normalized_required_exports={COMPILED_MAIN},
                 facts_authority_digest=facts_digest,
             ),
         )
@@ -5775,12 +5836,12 @@ def test_debug_preservation_policy_invalidates_both_optimizer_cache_keys(
         reference_data=None,
         optimize=False,
         optimize_level="Oz",
-        contract_keep_set={"molt_main"},
+        contract_keep_set={COMPILED_MAIN},
         **common,
     )
     runtime_without_debug = wasm_link_optimizer_policy._tree_shake_runtime_cache_key(
         runtime_data=b"runtime",
-        normalized_required_exports={"molt_main"},
+        normalized_required_exports={COMPILED_MAIN},
         **common,
     )
     common["preserve_debug"] = True
@@ -5791,14 +5852,14 @@ def test_debug_preservation_policy_invalidates_both_optimizer_cache_keys(
             reference_data=None,
             optimize=False,
             optimize_level="Oz",
-            contract_keep_set={"molt_main"},
+            contract_keep_set={COMPILED_MAIN},
             **common,
         )
     )
     assert runtime_without_debug != (
         wasm_link_optimizer_policy._tree_shake_runtime_cache_key(
             runtime_data=b"runtime",
-            normalized_required_exports={"molt_main"},
+            normalized_required_exports={COMPILED_MAIN},
             **common,
         )
     )
@@ -5915,13 +5976,13 @@ def test_wasm_opt_binary_content_invalidates_only_optimizer_cache(
             reference_data=b"reference",
             optimize=True,
             optimize_level="Oz",
-            contract_keep_set={"molt_main"},
+            contract_keep_set={COMPILED_MAIN},
             facts_authority_digest="facts",
             optimizer_identity=identity,
         )
         tree = wasm_link_optimizer_policy._tree_shake_runtime_cache_key(
             runtime_data=b"runtime",
-            normalized_required_exports={"molt_main"},
+            normalized_required_exports={COMPILED_MAIN},
             facts_authority_digest="facts",
         )
         return split, tree
@@ -5945,7 +6006,7 @@ def test_wasm_opt_version_invalidates_optimizer_cache_with_same_binary(
         "reference_data": b"reference",
         "optimize": True,
         "optimize_level": "Oz",
-        "contract_keep_set": {"molt_main"},
+        "contract_keep_set": {COMPILED_MAIN},
         "facts_authority_digest": "facts",
     }
     version_129 = wasm_link_optimizer_policy._split_app_optimize_cache_key(
@@ -6003,7 +6064,7 @@ def test_split_app_optimization_fails_closed_without_invocation_identity(
             reference_data=None,
             optimize=True,
             optimize_level="Oz",
-            contract_keep_set={"molt_main"},
+            contract_keep_set={COMPILED_MAIN},
             facts_authority_digest="facts",
             optimizer_identity=None,
         )
@@ -6017,7 +6078,7 @@ def test_split_app_optimization_fails_closed_without_invocation_identity(
             reference_data=None,
             optimize=True,
             optimize_level="Oz",
-            contract_keep_set={"molt_main"},
+            contract_keep_set={COMPILED_MAIN},
             operation_counts=counts,
             facts_provider=_facts_provider,
         )
@@ -6047,7 +6108,7 @@ def test_link_transaction_cleans_owned_resources_when_command_planning_fails(
     real_staged_output_path = wasm_link_pipeline.artifact_publish.staged_output_path
     loaded = wasm_link_pipeline._LoadedLinkContract(
         runtime_data=b"\0asm\x01\0\0\0",
-        runtime_exports=frozenset({"molt_main"}),
+        runtime_exports=frozenset({COMPILED_MAIN}),
         output_data=b"\0asm\x01\0\0\0",
         app_export_contract={},
         app_call_abi={},
@@ -6337,7 +6398,7 @@ def test_run_wasm_ld_admits_relocatable_member_independent_of_filename(
         _build_exported_runtime_module("molt_exception_pending"),
         [
             (
-                "molt_exception_pending",
+                _runtime_symbol("molt_exception_pending"),
                 0,
                 FLAG_BINDING_GLOBAL | wasm_link_format.FLAG_EXPLICIT_NAME,
             )
@@ -6737,7 +6798,7 @@ def test_run_wasm_ld_links_rewritten_native_runtime_imports(
     assert libc_snapshots[0][1] == libc_bytes
     assert rewritten_native_imports == [
         [
-            ("molt_runtime", "molt_add"),
+            ("molt_runtime", _runtime_symbol("molt_add")),
             ("env", "malloc"),
         ]
     ]
@@ -6794,7 +6855,7 @@ def test_split_native_app_uses_unique_molt_main_restoration_alias(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fixture = _build_split_link_fixture(
-        ["molt_main"], symbol_names={"molt_main": "__molt_output_export_0"}
+        [COMPILED_MAIN], symbol_names={COMPILED_MAIN: "__molt_output_export_0"}
     )
     runtime_bytes = fixture.shared
     output_bytes = fixture.app
@@ -6840,7 +6901,7 @@ def test_split_native_app_uses_unique_molt_main_restoration_alias(
         == 0
     )
     split_cmd = commands[1]
-    assert "--export=molt_main" not in split_cmd
+    assert f"--export={COMPILED_MAIN}" not in split_cmd
     assert "--export=__molt_output_export_0" in split_cmd
 
 
@@ -6952,7 +7013,7 @@ def test_run_wasm_ld_split_runtime_forces_native_direct_symbols(
     symbol = "PyInit__demo"
     sealed_symbol = "PyInit__sealed_only"
     fixture = _build_split_link_fixture(
-        ["molt_main"], native_imports=(symbol,), native_names=(symbol, sealed_symbol)
+        [COMPILED_MAIN], native_imports=(symbol,), native_names=(symbol, sealed_symbol)
     )
     runtime_bytes = fixture.shared
     output_bytes = fixture.app
@@ -7161,8 +7222,9 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
     monkeypatch,
 ) -> None:
     fixture = _build_split_link_fixture(
-        ["molt_err_pending"],
-        app_imports=("molt_err_pending",),
+        ["molt_err_pending", _runtime_symbol("molt_err_pending")],
+        app_imports=(_runtime_symbol("molt_err_pending"),),
+        public_c_exports=("molt_err_pending",),
         data_offset=64 * 1024 * 1024 - 1,
         data_symbols={"PyLong_Type": 208},
     )
@@ -7351,7 +7413,7 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
     assert any(
         Path(part).name == "split_runtime_data_aliases.wasm" for part in split_app_cmd
     )
-    assert linked_app_imports == [[("env", "molt_err_pending")]]
+    assert linked_app_imports == [[("env", _runtime_symbol("molt_err_pending"))]]
     assert deployed_native_imports == [
         [
             ("molt_runtime", "molt_err_pending"),
@@ -7364,6 +7426,8 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
     ]
     assert "molt_err_pending" not in allowlists[0]
     assert "molt_err_pending" in allowlists[1]
+    assert _runtime_symbol("molt_err_pending") not in allowlists[0]
+    assert _runtime_symbol("molt_err_pending") in allowlists[1]
     assert "malloc" in allowlists[1]
     assert "__trunctfdf2" not in allowlists[0]
     assert "__trunctfdf2" not in allowlists[1]
@@ -7390,9 +7454,9 @@ def test_canonical_split_runtime_required_exports_uses_generated_authority() -> 
     )
 
     assert exports == {
-        "molt_object_field_get",
-        "molt_object_field_set",
-        "molt_guarded_field_get",
+        _runtime_symbol("molt_object_field_get"),
+        _runtime_symbol("molt_object_field_set"),
+        _runtime_symbol("molt_guarded_field_get"),
     }
 
 
@@ -7415,7 +7479,7 @@ def test_run_wasm_opt_via_optimize_enforces_current_export_contract(
 ) -> None:
     linked = tmp_path / "linked.wasm"
     linked.write_bytes(
-        _build_exported_runtime_module_many(["molt_main", "molt_host_init"])
+        _build_exported_runtime_module_many([COMPILED_MAIN, COMPILED_HOST_INIT])
     )
     optimizer_identity = _wasm_optimizer_identity(tmp_path / "wasm-opt")
     seen: dict[str, object] = {}
@@ -7473,7 +7537,7 @@ def test_run_wasm_opt_via_optimize_enforces_current_export_contract(
         telemetry=telemetry,
         optimizer_identity=optimizer_identity,
     )
-    assert seen["required_exports"] == {"molt_main", "molt_host_init"}
+    assert seen["required_exports"] == {COMPILED_MAIN, COMPILED_HOST_INIT}
     assert seen["apply_level"] is True
     assert seen["optimizer_identity"] is optimizer_identity
     assert "wasm_opt_path" not in attestation
@@ -7663,7 +7727,7 @@ def test_strip_unused_module_function_imports_remaps_indices() -> None:
     name_map = (
         wasm_link_format._write_varuint(1)
         + wasm_link_format._write_varuint(2)
-        + wasm_link_format._write_string("molt_main")
+        + wasm_link_format._write_string(COMPILED_MAIN)
     )
     module = wasm_link_operations.build_sections(
         [
@@ -7699,7 +7763,7 @@ def test_strip_unused_module_function_imports_remaps_indices() -> None:
     assert imports_after == [("molt_runtime", "live_runtime_fn")]
 
     exports_after = _function_export_pairs(stripped)
-    assert exports_after == [("molt_main", 1)]
+    assert exports_after == [(COMPILED_MAIN, 1)]
 
     call_targets = _parse_code_section_call_targets(stripped)
     assert call_targets == [[0]]
@@ -7716,7 +7780,7 @@ def test_rewrite_output_imports_uses_generated_runtime_export_names(
     owned_temp_dir = OwnedTemporaryDirectory()
     rewritten = wasm_link_edit._rewrite_output_imports(
         _rewrite_input(output),
-        {"molt_socket_drop", "molt_alloc"},
+        {_runtime_symbol("molt_socket_drop"), _runtime_symbol("molt_alloc")},
         owned_temp_dir,
     )
 
@@ -7725,8 +7789,8 @@ def test_rewrite_output_imports_uses_generated_runtime_export_names(
     try:
         assert force_exports == []
         assert _function_import_pairs(rewritten_path.path.read_bytes()) == [
-            ("molt_runtime", "molt_socket_drop"),
-            ("molt_runtime", "molt_alloc"),
+            ("molt_runtime", _runtime_symbol("molt_socket_drop")),
+            ("molt_runtime", _runtime_symbol("molt_alloc")),
         ]
     finally:
         temp_dir.cleanup()
@@ -7743,7 +7807,7 @@ def test_rewrite_native_runtime_imports_canonicalizes_env_molt_abi_only(
 
         rewritten_paths, force_exports = wasm_link_edit._rewrite_native_runtime_imports(
             (native,),
-            {"molt_add"},
+            {_runtime_symbol("molt_add")},
             temp_dir,
         )
 
@@ -7751,7 +7815,7 @@ def test_rewrite_native_runtime_imports_canonicalizes_env_molt_abi_only(
         assert len(rewritten_paths) == 1
         assert rewritten_paths[0] != native
         assert _function_import_pairs(rewritten_paths[0].read_bytes()) == [
-            ("molt_runtime", "molt_add"),
+            ("molt_runtime", _runtime_symbol("molt_add")),
             ("env", "malloc"),
         ]
         assert _function_import_pairs(native.read_bytes()) == [
@@ -8222,9 +8286,9 @@ def test_rewrite_native_runtime_imports_forces_generated_runtime_exports(
             temp_dir,
         )
 
-        assert force_exports == ["molt_add"]
+        assert force_exports == [_runtime_symbol("molt_add")]
         assert _function_import_pairs(rewritten_paths[0].read_bytes()) == [
-            ("molt_runtime", "molt_add"),
+            ("molt_runtime", _runtime_symbol("molt_add")),
         ]
 
 
@@ -8319,7 +8383,7 @@ def test_split_app_finalization_routes_archive_runtime_imports() -> None:
     )
 
     assert _function_import_pairs(artifact.data) == [
-        ("molt_runtime", "molt_add"),
+        ("molt_runtime", _runtime_symbol("molt_add")),
         ("env", "__trunctfdf2"),
     ]
 
@@ -8379,7 +8443,7 @@ def test_split_runtime_validation_uses_generated_runtime_export_names(
 def test_post_link_optimize_split_app_drops_numeric_table_aliases() -> None:
     table_ref = "__molt_table_ref_7"
     module = _build_exported_runtime_module_many(
-        ["dead_user_export", "molt_main", table_ref]
+        ["dead_user_export", COMPILED_MAIN, table_ref]
     )
 
     default_optimized = wasm_link_optimize._post_link_optimize(
@@ -8392,13 +8456,13 @@ def test_post_link_optimize_split_app_drops_numeric_table_aliases() -> None:
     split_app_optimized = wasm_link_optimize._post_link_optimize(
         module,
         reference_data=module,
-        preserve_exports={"molt_main"},
+        preserve_exports={COMPILED_MAIN},
         preserve_reference_exports=False,
         facts_provider=_facts_provider,
     )
     split_exports = wasm_link_format._collect_exports(split_app_optimized)
     assert "dead_user_export" not in split_exports
-    assert "molt_main" in split_exports
+    assert COMPILED_MAIN in split_exports
     assert table_ref not in split_exports
 
 
@@ -8415,13 +8479,13 @@ def test_linking_symbol_authority_parses_defined_and_undefined_functions() -> No
             _function_symbol_entry(
                 flags=FLAG_BINDING_GLOBAL | wasm_link_format.FLAG_EXPLICIT_NAME,
                 index=7,
-                name="molt_call_indirect0",
+                name=compiled_execution_symbol("molt_call_indirect0"),
             ),
             _function_symbol_entry(
                 flags=wasm_link_format.FLAG_UNDEFINED
                 | wasm_link_format.FLAG_EXPLICIT_NAME,
                 index=11,
-                name="molt_call_indirect13",
+                name=compiled_execution_symbol("molt_call_indirect13"),
             ),
         ]
     )
@@ -8432,12 +8496,12 @@ def test_linking_symbol_authority_parses_defined_and_undefined_functions() -> No
         (
             FLAG_BINDING_GLOBAL | wasm_link_format.FLAG_EXPLICIT_NAME,
             7,
-            "molt_call_indirect0",
+            compiled_execution_symbol("molt_call_indirect0"),
         ),
         (
             wasm_link_format.FLAG_UNDEFINED | wasm_link_format.FLAG_EXPLICIT_NAME,
             11,
-            "molt_call_indirect13",
+            compiled_execution_symbol("molt_call_indirect13"),
         ),
     ]
 
@@ -8461,7 +8525,7 @@ def test_restore_output_export_aliases_renames_user_exports() -> None:
     export_payload.extend(write_varuint(1))
     export_payload.extend(
         wasm_link_format._write_string(
-            f"{wasm_link_format._OUTPUT_EXPORT_ALIAS_PREFIX}main_molt__ocr_tokens"
+            f"{wasm_link_format._OUTPUT_EXPORT_ALIAS_PREFIX}{APP_OCR}"
         )
     )
     export_payload.append(0x00)
@@ -8480,11 +8544,8 @@ def test_restore_output_export_aliases_renames_user_exports() -> None:
     )
     assert restored is not None
     exports = wasm_link_format._collect_exports(restored)
-    assert "main_molt__ocr_tokens" in exports
-    assert (
-        f"{wasm_link_format._OUTPUT_EXPORT_ALIAS_PREFIX}main_molt__ocr_tokens"
-        not in exports
-    )
+    assert APP_OCR in exports
+    assert f"{wasm_link_format._OUTPUT_EXPORT_ALIAS_PREFIX}{APP_OCR}" not in exports
 
 
 def test_run_wasm_ld_preserves_runtime_entrypoint_without_prelink_alias_object(
@@ -8497,8 +8558,8 @@ def test_run_wasm_ld_preserves_runtime_entrypoint_without_prelink_alias_object(
     type_payload = bytearray()
     type_payload.extend(write_varuint(1))
     type_payload.append(0x60)
-    type_payload.extend(write_varuint(1))
-    type_payload.append(0x7E)
+    type_payload.extend(write_varuint(2))
+    type_payload.extend(b"\x7e\x7e")
     type_payload.extend(write_varuint(1))
     type_payload.append(0x7E)
     sections.append((1, bytes(type_payload)))
@@ -8508,7 +8569,7 @@ def test_run_wasm_ld_preserves_runtime_entrypoint_without_prelink_alias_object(
 
     export_payload = bytearray()
     export_payload.extend(write_varuint(1))
-    export_payload.extend(wasm_link_format._write_string("molt_isolate_import"))
+    export_payload.extend(wasm_link_format._write_string(COMPILED_ISOLATE_IMPORT))
     export_payload.append(0x00)
     export_payload.extend(write_varuint(0))
     sections.append((7, bytes(export_payload)))
@@ -8518,7 +8579,7 @@ def test_run_wasm_ld_preserves_runtime_entrypoint_without_prelink_alias_object(
     code_payload.extend(write_varuint(4))
     code_payload.append(0x00)
     code_payload.append(0x20)
-    code_payload.append(0x00)
+    code_payload.append(0x01)
     code_payload.append(0x0B)
     sections.append((10, bytes(code_payload)))
 
@@ -8547,7 +8608,7 @@ def test_run_wasm_ld_preserves_runtime_entrypoint_without_prelink_alias_object(
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
     runtime.write_bytes(
-        _build_reloc_runtime_module_many(["molt_main", "molt_isolate_import"])
+        _build_reloc_runtime_module_many([COMPILED_MAIN, COMPILED_ISOLATE_IMPORT])
     )
     output.write_bytes(wasm_link_operations.build_sections(sections))
 
@@ -8584,23 +8645,25 @@ def test_run_wasm_ld_preserves_runtime_entrypoint_without_prelink_alias_object(
     assert rc == 0
     cmd = next(cmd for cmd in captured_cmds if cmd and cmd[0] == "wasm-ld")
     assert not any("output_runtime_aliases.wasm" in part for part in cmd)
-    assert "molt_isolate_import" in wasm_link_format._collect_function_exports(
+    assert COMPILED_ISOLATE_IMPORT in wasm_link_format._collect_function_exports(
         linked.read_bytes()
     )
 
 
 def test_restore_public_output_exports_renames_native_split_alias_exports() -> None:
-    alias_name = f"{wasm_link_format._OUTPUT_EXPORT_ALIAS_PREFIX}molt_isolate_import"
+    alias_name = (
+        f"{wasm_link_format._OUTPUT_EXPORT_ALIAS_PREFIX}{COMPILED_ISOLATE_IMPORT}"
+    )
     module = _build_exported_runtime_module(alias_name)
 
     restored = wasm_link_export_contract._restore_public_output_exports(
         module,
-        {"molt_isolate_import": alias_name},
+        {COMPILED_ISOLATE_IMPORT: alias_name},
         facts_provider=_facts_provider,
     )
 
     exports = wasm_link_format._collect_function_exports(restored)
-    assert exports["molt_isolate_import"] == 0
+    assert exports[COMPILED_ISOLATE_IMPORT] == 0
     assert alias_name not in exports
 
 
@@ -8613,7 +8676,8 @@ def test_run_wasm_ld_force_exports_user_module_exports(
     type_payload = bytearray()
     type_payload.extend(write_varuint(1))
     type_payload.append(0x60)
-    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
     type_payload.extend(write_varuint(1))
     type_payload.append(0x7E)
     sections.append((1, bytes(type_payload)))
@@ -8622,10 +8686,10 @@ def test_run_wasm_ld_force_exports_user_module_exports(
     export_payload = bytearray()
     export_payload.extend(write_varuint(4))
     for name, index in (
-        ("main_molt__init", 0),
-        ("main_molt__ocr_tokens", 1),
-        ("main_molt___private_helper", 2),
-        ("molt_main", 3),
+        (APP_INIT, 0),
+        (APP_OCR, 1),
+        (APP_PRIVATE, 2),
+        (COMPILED_MAIN, 3),
     ):
         export_payload.extend(wasm_link_format._write_string(name))
         export_payload.append(0x00)
@@ -8634,9 +8698,8 @@ def test_run_wasm_ld_force_exports_user_module_exports(
     code_payload = bytearray()
     code_payload.extend(write_varuint(4))
     for _ in range(4):
-        code_payload.extend(write_varuint(2))
-        code_payload.append(0x00)
-        code_payload.append(0x0B)
+        code_payload.extend(write_varuint(4))
+        code_payload.extend(b"\x00\x42\x00\x0b")
     sections.append((10, bytes(code_payload)))
     sections.append(
         (
@@ -8683,7 +8746,7 @@ def test_run_wasm_ld_force_exports_user_module_exports(
                             | FLAG_EXPORTED
                             | FLAG_NO_STRIP,
                             index=3,
-                            name="molt_main",
+                            name=COMPILED_MAIN,
                         ),
                     ]
                 ),
@@ -8709,9 +8772,9 @@ def test_run_wasm_ld_force_exports_user_module_exports(
             "def _private_helper():\n    return 3\n"
         ),
         symbols=[
-            ("init", "main_molt__init"),
-            ("ocr_tokens", "main_molt__ocr_tokens"),
-            ("_private_helper", "main_molt___private_helper"),
+            ("init", APP_INIT),
+            ("ocr_tokens", APP_OCR),
+            ("_private_helper", APP_PRIVATE),
         ],
     )
 
@@ -8751,20 +8814,13 @@ def test_run_wasm_ld_force_exports_user_module_exports(
     )
     assert rc == 0
     cmd = next(cmd for cmd in captured_cmds if cmd and cmd[0] == "wasm-ld")
+    assert f"--export={wasm_link_format._OUTPUT_EXPORT_ALIAS_PREFIX}{APP_INIT}" in cmd
+    assert f"--export={wasm_link_format._OUTPUT_EXPORT_ALIAS_PREFIX}{APP_OCR}" in cmd
     assert (
-        f"--export={wasm_link_format._OUTPUT_EXPORT_ALIAS_PREFIX}main_molt__init" in cmd
-    )
-    assert (
-        f"--export={wasm_link_format._OUTPUT_EXPORT_ALIAS_PREFIX}main_molt__ocr_tokens"
-        in cmd
-    )
-    assert (
-        f"--export={wasm_link_format._OUTPUT_EXPORT_ALIAS_PREFIX}main_molt___private_helper"
+        f"--export={wasm_link_format._OUTPUT_EXPORT_ALIAS_PREFIX}{APP_PRIVATE}"
         not in cmd
     )
-    assert "main_molt___private_helper" not in wasm_link_format._collect_exports(
-        linked.read_bytes()
-    )
+    assert APP_PRIVATE not in wasm_link_format._collect_exports(linked.read_bytes())
 
 
 def test_run_wasm_ld_repairs_linked_host_init_export(
@@ -8777,16 +8833,17 @@ def test_run_wasm_ld_repairs_linked_host_init_export(
         type_payload = bytearray()
         type_payload.extend(write_varuint(1))
         type_payload.append(0x60)
-        type_payload.extend(write_varuint(0))
+        type_payload.extend(write_varuint(1))
+        type_payload.append(0x7E)
         type_payload.extend(write_varuint(0))
         sections.append((1, bytes(type_payload)))
 
         func_payload = write_varuint(2) + write_varuint(0) + write_varuint(0)
         sections.append((3, bytes(func_payload)))
 
-        exports: list[tuple[str, int]] = [("molt_main", 1)]
+        exports: list[tuple[str, int]] = [(COMPILED_MAIN, 1)]
         if include_host_init_export:
-            exports.insert(0, ("molt_host_init", 0))
+            exports.insert(0, (COMPILED_HOST_INIT, 0))
         export_payload = bytearray()
         export_payload.extend(write_varuint(len(exports)))
         for name, index in exports:
@@ -8816,7 +8873,7 @@ def test_run_wasm_ld_repairs_linked_host_init_export(
                                 | FLAG_EXPORTED
                                 | FLAG_NO_STRIP,
                                 index=0,
-                                name="molt_host_init",
+                                name=COMPILED_HOST_INIT,
                             ),
                             _function_symbol_entry(
                                 flags=FLAG_BINDING_GLOBAL
@@ -8824,7 +8881,7 @@ def test_run_wasm_ld_repairs_linked_host_init_export(
                                 | FLAG_EXPORTED
                                 | FLAG_NO_STRIP,
                                 index=1,
-                                name="molt_main",
+                                name=COMPILED_MAIN,
                             ),
                         ]
                     ),
@@ -8871,7 +8928,7 @@ def test_run_wasm_ld_repairs_linked_host_init_export(
 
     assert rc == 0
     exports = wasm_link_format._collect_function_exports(linked.read_bytes())
-    assert "molt_host_init" in exports
+    assert COMPILED_HOST_INIT in exports
 
 
 def test_run_wasm_ld_split_runtime_preserves_old_outputs_if_linked_validation_fails(
@@ -9348,7 +9405,8 @@ def test_strip_internal_exports_preserves_user_module_exports() -> None:
     type_payload = bytearray()
     type_payload.extend(write_varuint(1))
     type_payload.append(0x60)
-    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
     type_payload.extend(write_varuint(0))
     sections.append((1, bytes(type_payload)))
 
@@ -9361,10 +9419,10 @@ def test_strip_internal_exports_preserves_user_module_exports() -> None:
     export_payload.extend(wasm_link_format._write_string(table_ref))
     export_payload.append(0x00)
     export_payload.extend(write_varuint(0))
-    export_payload.extend(wasm_link_format._write_string("molt_main"))
+    export_payload.extend(wasm_link_format._write_string(COMPILED_MAIN))
     export_payload.append(0x00)
     export_payload.extend(write_varuint(0))
-    export_payload.extend(wasm_link_format._write_string("main_molt__ocr_tokens"))
+    export_payload.extend(wasm_link_format._write_string(APP_OCR))
     export_payload.append(0x00)
     export_payload.extend(write_varuint(1))
     sections.append((7, bytes(export_payload)))
@@ -9378,19 +9436,17 @@ def test_strip_internal_exports_preserves_user_module_exports() -> None:
     sections.append((10, bytes(code_payload)))
 
     data = wasm_link_operations.build_sections(sections)
-    updated = wasm_link_edit._strip_internal_exports(
-        data, preserve_exports={"main_molt__ocr_tokens"}
-    )
+    updated = wasm_link_edit._strip_internal_exports(data, preserve_exports={APP_OCR})
     exports = wasm_link_format._collect_function_exports(updated or data)
     assert table_ref not in exports
-    assert "molt_main" in exports
-    assert "main_molt__ocr_tokens" in exports
+    assert COMPILED_MAIN in exports
+    assert APP_OCR in exports
 
 
 def test_strip_internal_exports_keeps_linked_host_call_helpers() -> None:
     data = _build_exported_runtime_module_many(
         [
-            "molt_main",
+            COMPILED_MAIN,
             "molt_scratch_alloc",
             "molt_scratch_free",
             "molt_bytes_from_bytes",
@@ -9407,17 +9463,17 @@ def test_strip_internal_exports_keeps_linked_host_call_helpers() -> None:
     )
     updated = wasm_link_edit._strip_internal_exports(data)
     exports = wasm_link_format._collect_function_exports(updated or data)
-    assert "molt_scratch_alloc" in exports
-    assert "molt_scratch_free" in exports
-    assert "molt_bytes_from_bytes" in exports
-    assert "molt_string_from_bytes" in exports
-    assert "molt_list_builder_new" in exports
-    assert "molt_list_builder_append" in exports
-    assert "molt_list_builder_finish" in exports
-    assert "molt_object_repr" in exports
-    assert "molt_len" in exports
-    assert "molt_index" in exports
-    assert "molt_profile_dump" in exports
+    assert _runtime_symbol("molt_scratch_alloc") in exports
+    assert _runtime_symbol("molt_scratch_free") in exports
+    assert _runtime_symbol("molt_bytes_from_bytes") in exports
+    assert _runtime_symbol("molt_string_from_bytes") in exports
+    assert _runtime_symbol("molt_list_builder_new") in exports
+    assert _runtime_symbol("molt_list_builder_append") in exports
+    assert _runtime_symbol("molt_list_builder_finish") in exports
+    assert _runtime_symbol("molt_object_repr") in exports
+    assert _runtime_symbol("molt_len") in exports
+    assert _runtime_symbol("molt_index") in exports
+    assert _runtime_symbol("molt_profile_dump") in exports
     assert "dead_internal_export" not in exports
 
 
@@ -9429,7 +9485,8 @@ def test_strip_internal_exports_dedupes_duplicate_export_names() -> None:
     type_payload = bytearray()
     type_payload.extend(write_varuint(1))
     type_payload.append(0x60)
-    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
     type_payload.extend(write_varuint(0))
     sections.append((1, bytes(type_payload)))
 
@@ -9442,8 +9499,8 @@ def test_strip_internal_exports_dedupes_duplicate_export_names() -> None:
     for name, index in (
         (table_ref, 0),
         (table_ref, 1),
-        ("molt_main", 0),
-        ("molt_main", 1),
+        (COMPILED_MAIN, 0),
+        (COMPILED_MAIN, 1),
     ):
         export_payload.extend(wasm_link_format._write_string(name))
         export_payload.append(0x00)
@@ -9462,7 +9519,7 @@ def test_strip_internal_exports_dedupes_duplicate_export_names() -> None:
     updated = wasm_link_edit._strip_internal_exports(data)
     exports = wasm_link_format._collect_function_exports(updated or data)
     assert table_ref not in exports
-    assert list(name for name in exports if name == "molt_main") == ["molt_main"]
+    assert list(name for name in exports if name == COMPILED_MAIN) == [COMPILED_MAIN]
 
 
 def test_required_linked_table_min_respects_final_active_elements(
@@ -9660,7 +9717,9 @@ def test_allowlist_file_exists():
     assert "proc_exit" in symbols
     assert "__indirect_function_table" in symbols
     # Must contain indirect call trampolines
-    assert set(WASM_CALL_INDIRECT_IMPORTS) <= symbols
+    assert {
+        compiled_execution_symbol(name) for name in WASM_CALL_INDIRECT_IMPORTS
+    } <= symbols
     # Must NOT contain molt_runtime namespace symbols (those are resolved by linking),
     # except for serialization/compression builtins that are direct WASM imports.
     _ALLOWED_MOLT_PREFIXES = (
@@ -10107,7 +10166,7 @@ def test_runtime_export_validation_rejects_function_impersonating_data(
 
 @pytest.mark.parametrize(
     ("split", "export_name"),
-    [(False, "molt_add"), (True, "molt_add")],
+    [(False, _runtime_symbol("molt_add")), (True, _runtime_symbol("molt_add"))],
 )
 def test_runtime_export_validation_rejects_global_impersonating_function(
     tmp_path: Path, split: bool, export_name: str
@@ -10398,7 +10457,13 @@ def test_relocatable_input_has_one_admission_and_retains_failure_timings(
     timings = tmp_path / "timings.json"
     runtime_data = wasm_link_format._append_linking_function_symbols(
         _build_exported_function_module("molt_exception_pending"),
-        [("molt_exception_pending", 0, wasm_link_format.FLAG_EXPLICIT_NAME)],
+        [
+            (
+                _runtime_symbol("molt_exception_pending"),
+                0,
+                wasm_link_format.FLAG_EXPLICIT_NAME,
+            )
+        ],
         facts_provider=_facts_provider,
     )
     assert runtime_data is not None
@@ -10683,11 +10748,11 @@ def test_section_canonicalization_merges_duplicates_around_customs() -> None:
     module = wasm_link_operations.build_sections(
         [
             type_section,
-            _function_export_section(("molt_main", 0)),
+            _function_export_section((COMPILED_MAIN, 0)),
             after_export,
             (10, b"code"),
             after_code,
-            _function_export_section(("molt_main", 2), ("PyInit__demo", 1)),
+            _function_export_section((COMPILED_MAIN, 2), ("PyInit__demo", 1)),
             trailing,
         ]
     )
@@ -10698,7 +10763,7 @@ def test_section_canonicalization_merges_duplicates_around_customs() -> None:
     # Strict parsing proves one export section; the first export of a name wins.
     assert wasm_link_operations.parse_sections(canonical) == [
         type_section,
-        _function_export_section(("molt_main", 0), ("PyInit__demo", 1)),
+        _function_export_section((COMPILED_MAIN, 0), ("PyInit__demo", 1)),
         after_export,
         (10, b"code"),
         after_code,
@@ -10816,7 +10881,7 @@ def test_split_app_size_attestation_excludes_optimizer_execution_telemetry(
             optimize=True,
             optimize_level="Oz",
             optimizer_identity=identity,
-            contract_keep_set={"molt_main"},
+            contract_keep_set={COMPILED_MAIN},
             attestation=attestation,
             operation_counts=counts,
             facts_provider=_facts_provider,
@@ -10879,7 +10944,7 @@ def test_split_app_size_attestation_without_wasm_opt_is_cache_independent(
                 reference_data=None,
                 optimize=False,
                 optimize_level="Oz",
-                contract_keep_set={"molt_main"},
+                contract_keep_set={COMPILED_MAIN},
                 attestation=attestation,
                 operation_counts=operation_counts,
                 facts_provider=_facts_provider,
@@ -10899,7 +10964,7 @@ def test_debug_policy_partitions_split_app_and_runtime_cache_keys() -> None:
         "reference_data": None,
         "optimize": False,
         "optimize_level": "O1",
-        "contract_keep_set": {"molt_main"},
+        "contract_keep_set": {COMPILED_MAIN},
         "facts_authority_digest": "facts",
     }
     assert wasm_link_optimizer_policy._split_app_optimize_cache_key(
@@ -10909,7 +10974,7 @@ def test_debug_policy_partitions_split_app_and_runtime_cache_keys() -> None:
     )
     runtime_kwargs = {
         "runtime_data": b"runtime",
-        "normalized_required_exports": {"molt_main"},
+        "normalized_required_exports": {COMPILED_MAIN},
         "facts_authority_digest": "facts",
     }
     assert wasm_link_optimizer_policy._tree_shake_runtime_cache_key(
@@ -10946,12 +11011,12 @@ def test_transform_authority_digest_invalidates_both_cache_keys(
             reference_data=b"reference",
             optimize=False,
             optimize_level="Oz",
-            contract_keep_set={"molt_main"},
+            contract_keep_set={COMPILED_MAIN},
             facts_authority_digest="facts",
         )
         tree = wasm_link_optimizer_policy._tree_shake_runtime_cache_key(
             runtime_data=b"runtime",
-            normalized_required_exports={"molt_main"},
+            normalized_required_exports={COMPILED_MAIN},
             facts_authority_digest="facts",
         )
         return split, tree
@@ -11221,13 +11286,20 @@ def test_split_runtime_native_allowlist_is_the_split_runtime_export_surface(
         composed = wasm_link_native_inputs._compose_split_runtime_native_allowlist(
             base_allowlist=base,
             native_link_requirements=_native_link_requirements(native_object),
-            split_runtime_exports={"molt_PyType_Ready", "molt_err_pending"},
+            split_runtime_exports={
+                "molt_PyType_Ready",
+                _runtime_symbol("molt_err_pending"),
+            },
             temp_dir=temp_dir,
         )
         symbols = _parse_allowlist(composed)
     finally:
         temp_dir.cleanup()
-    assert {"host_only", "molt_PyType_Ready", "molt_err_pending"} <= symbols
+    assert {
+        "host_only",
+        "molt_PyType_Ready",
+        _runtime_symbol("molt_err_pending"),
+    } <= symbols
     assert "PyType_Ready" not in symbols
     assert (
         wasm_link_native_inputs._compose_split_runtime_native_allowlist(
@@ -11247,7 +11319,8 @@ def test_ensure_function_exports_by_symbol_names_adds_public_exports() -> None:
     type_payload = bytearray()
     type_payload.extend(write_varuint(1))
     type_payload.append(0x60)
-    type_payload.extend(write_varuint(0))
+    type_payload.extend(write_varuint(1))
+    type_payload.append(0x7E)
     type_payload.extend(write_varuint(1))
     type_payload.append(0x7E)
     sections.append((1, bytes(type_payload)))
@@ -11260,7 +11333,7 @@ def test_ensure_function_exports_by_symbol_names_adds_public_exports() -> None:
 
     export_payload = bytearray()
     export_payload.extend(write_varuint(1))
-    export_payload.extend(wasm_link_format._write_string("molt_main"))
+    export_payload.extend(wasm_link_format._write_string(COMPILED_MAIN))
     export_payload.append(0x00)
     export_payload.extend(write_varuint(1))
     sections.append((7, bytes(export_payload)))
@@ -11268,9 +11341,8 @@ def test_ensure_function_exports_by_symbol_names_adds_public_exports() -> None:
     code_payload = bytearray()
     code_payload.extend(write_varuint(2))
     for _ in range(2):
-        code_payload.extend(write_varuint(2))
-        code_payload.append(0x00)
-        code_payload.append(0x0B)
+        code_payload.extend(write_varuint(4))
+        code_payload.extend(b"\x00\x42\x00\x0b")
     sections.append((10, bytes(code_payload)))
 
     linking_payload = wasm_link_format._build_linking_payload(
@@ -11294,7 +11366,7 @@ def test_ensure_function_exports_by_symbol_names_adds_public_exports() -> None:
                             | FLAG_EXPORTED
                             | FLAG_NO_STRIP,
                             index=1,
-                            name="molt_main",
+                            name=COMPILED_MAIN,
                         ),
                     ]
                 ),
@@ -11307,13 +11379,13 @@ def test_ensure_function_exports_by_symbol_names_adds_public_exports() -> None:
 
     updated = wasm_link_edit._ensure_function_exports_by_symbol_names(
         wasm_link_operations.build_sections(sections),
-        {"main_molt__init": "__molt_output_export_0"},
+        {APP_INIT: "__molt_output_export_0"},
         facts_provider=_facts_provider,
     )
     assert updated is not None
     exports = wasm_link_format._collect_exports(updated)
-    assert "main_molt__init" in exports
-    assert "molt_main" in exports
+    assert APP_INIT in exports
+    assert COMPILED_MAIN in exports
 
 
 def test_ensure_function_exports_by_symbol_names_uses_name_section_fallback() -> None:
@@ -11356,12 +11428,12 @@ def test_ensure_function_exports_by_symbol_names_uses_name_section_fallback() ->
 
     updated = wasm_link_edit._ensure_function_exports_by_symbol_names(
         wasm_link_operations.build_sections(sections),
-        {"main_molt__init": "__molt_output_export_1900"},
+        {APP_INIT: "__molt_output_export_1900"},
         facts_provider=_facts_provider,
     )
     assert updated is not None
     exports = wasm_link_format._collect_exports(updated)
-    assert "main_molt__init" in exports
+    assert APP_INIT in exports
 
 
 def _module_with_tag_section(
@@ -11411,13 +11483,13 @@ def test_ensure_function_exports_inserts_the_export_section_after_a_tag_section(
 ):
     updated = wasm_link_edit._ensure_function_exports_by_symbol_names(
         _module_with_tag_section(export_section=None),
-        {"main_molt__init": "__molt_output_export_7"},
+        {APP_INIT: "__molt_output_export_7"},
         facts_provider=_facts_provider,
     )
     assert updated is not None
     assert wasm_link_edit._standard_section_order_error(updated) is None
     assert _standard_section_ids(updated) == [1, 3, 5, 13, 6, 7, 10]
-    assert "main_molt__init" in wasm_link_format._collect_exports(updated)
+    assert APP_INIT in wasm_link_format._collect_exports(updated)
 
 
 def test_ensure_function_exports_rewrites_an_export_section_after_a_tag_section() -> (
@@ -11425,20 +11497,20 @@ def test_ensure_function_exports_rewrites_an_export_section_after_a_tag_section(
 ):
     existing = (
         wasm_link_format._write_varuint(1)
-        + wasm_link_format._write_string("molt_main")
+        + wasm_link_format._write_string(COMPILED_MAIN)
         + bytes([0x00])
         + wasm_link_format._write_varuint(0)
     )
     updated = wasm_link_edit._ensure_function_exports_by_symbol_names(
         _module_with_tag_section(export_section=existing),
-        {"main_molt__init": "__molt_output_export_7"},
+        {APP_INIT: "__molt_output_export_7"},
         facts_provider=_facts_provider,
     )
     assert updated is not None
     assert wasm_link_edit._standard_section_order_error(updated) is None
     assert _standard_section_ids(updated) == [1, 3, 5, 13, 6, 7, 10]
     exports = wasm_link_format._collect_exports(updated)
-    assert set(exports) == {"molt_main", "main_molt__init"}
+    assert set(exports) == {COMPILED_MAIN, APP_INIT}
 
 
 def test_ensure_table_export_inserts_the_export_section_after_a_tag_section(
@@ -11462,7 +11534,7 @@ def test_ensure_export_by_index_inserts_export_without_moving_customs() -> None:
     module = _module_with_tag_section(export_section=None)
 
     updated = wasm_link_export_contract._ensure_export_by_index(
-        module, name="molt_main", kind=0, index=0
+        module, name=COMPILED_MAIN, kind=0, index=0
     )
 
     assert updated is not None
@@ -11480,7 +11552,7 @@ def test_ensure_export_by_index_inserts_export_without_moving_customs() -> None:
     assert [section for section in sections if section[0] != 7] == (
         wasm_link_operations.parse_sections(module)
     )
-    assert _fixture_export_kinds(updated) == {"molt_main": (0, 0)}
+    assert _fixture_export_kinds(updated) == {COMPILED_MAIN: (0, 0)}
 
 
 def test_insert_standard_section_refuses_a_duplicate_standard_section() -> None:
@@ -11922,7 +11994,7 @@ def test_complete_generated_runtime_registry_is_validated_before_root_filtering(
         facts_provider=_facts_provider,
     )
     assert roots == generated - wasm_link_format._ESSENTIAL_EXPORTS - {
-        "molt_exception_pending"
+        _runtime_symbol("molt_exception_pending")
     }
     omitted = next(iter(generated & wasm_link_format._ESSENTIAL_EXPORTS))
     with pytest.raises(ValueError, match=omitted):
@@ -11982,8 +12054,8 @@ def test_post_link_transform_consumes_link_metadata_before_rescanning() -> None:
     # A populated symbol table and code relocation must never survive into a
     # phase that can change function bodies or indices.
     source = wasm_link_format._append_linking_function_symbols(
-        _build_exported_runtime_module("molt_main"),
-        [("molt_main", 0, wasm_link_format.FLAG_EXPLICIT_NAME)],
+        _build_exported_runtime_module(COMPILED_MAIN),
+        [(COMPILED_MAIN, 0, wasm_link_format.FLAG_EXPLICIT_NAME)],
         facts_provider=_facts_provider,
     )
     assert source is not None
@@ -12014,7 +12086,7 @@ def test_post_link_transform_consumes_link_metadata_before_rescanning() -> None:
         source, facts_provider=provider, preserve_debug=True
     )
     assert observed
-    assert _facts_provider(result).function_exports == {"molt_main": 0}
+    assert _facts_provider(result).function_exports == {COMPILED_MAIN: 0}
     assert _fixture_custom_names(result) == [".debug_info"]
 
 
@@ -12215,27 +12287,35 @@ def test_discovered_provider_is_captured_before_symbol_inspection(
     assert selected.provider_symbols == frozenset({"__trunctfdf2"})
 
 
-def _indirect_alias_module(
+def _indirect_binding_module(
     *,
     imported: bool,
     symbols: list[tuple[str, int, int]],
     namespace: str = "env",
     param_delta: int = 0,
+    obsolete_imports: bool = False,
 ) -> bytes:
     """Independent object fixture: fourteen i64 trampolines, with index offsets."""
     u32 = wasm_link_format._write_varuint
     string = wasm_link_format._write_string
     types = bytearray(u32(14))
     for arity in range(14):
-        types.extend(b"\x60" + u32(arity + 1 + param_delta))
-        types.extend(b"\x7e" * (arity + 1 + param_delta) + b"\x01\x7e")
+        types.extend(b"\x60" + u32(arity + 2 + param_delta))
+        types.extend(b"\x7e" * (arity + 2 + param_delta) + b"\x01\x7e")
     prefix_count = 3 if imported else 1
     imports = bytearray(u32(prefix_count + (14 if imported else 0)))
     for index in range(prefix_count):
         imports.extend(string("foreign") + string(f"prefix_{index}") + b"\x00\x00")
     if imported:
         for arity in range(14):
-            imports.extend(string(namespace) + string(f"molt_call_indirect{arity}"))
+            imports.extend(
+                string(namespace)
+                + string(
+                    f"molt_call_indirect{arity}"
+                    if obsolete_imports
+                    else compiled_execution_symbol(f"molt_call_indirect{arity}")
+                )
+            )
             imports.extend(b"\x00" + u32(arity))
     sections = [(1, bytes(types)), (2, bytes(imports))]
     if not imported:
@@ -12243,7 +12323,9 @@ def _indirect_alias_module(
         exports = bytearray(u32(14))
         for arity in range(14):
             exports.extend(
-                string(f"molt_call_indirect{arity}") + b"\x00" + u32(arity + 1)
+                string(compiled_execution_symbol(f"molt_call_indirect{arity}"))
+                + b"\x00"
+                + u32(arity + 1)
             )
         sections.append((7, bytes(exports)))
         sections.append((10, u32(14) + b"\x04\x00\x42\x00\x0b" * 14))
@@ -12273,294 +12355,147 @@ def _indirect_alias_module(
 
 
 def _indirect_app_symbols() -> list[tuple[str, int, int]]:
-    # Independent literal ABI and original production definition flags (0xa0).
-    return [(f"molt_call_indirect{i}", i + 1, 0xA0) for i in range(14)]
+    return [
+        (compiled_execution_symbol(f"molt_call_indirect{i}"), i + 1, 0xA0)
+        for i in range(14)
+    ]
 
 
-@pytest.mark.parametrize("spelling", ["canonical", "legacy", "v0", "opaque"])
-def test_call_indirect_aliases_join_indices_and_batch_all_names(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str
-) -> None:
-    def alias(arity: int) -> str:
-        return {
-            "canonical": f"molt_call_indirect{arity}",
-            "legacy": f"_ZN4molt19molt_call_indirect{arity}17hfeedfaceE",
-            "v0": f"_RNvCsgrakSpcflzr_12molt_runtime{19 if arity < 10 else 20}molt_call_indirect{arity}",
-            "opaque": f"opaque.runtime.{arity}",
-        }[spelling]
+def _indirect_runtime_symbols() -> list[tuple[str, int, int]]:
+    return [
+        (compiled_execution_symbol(f"molt_call_indirect{i}"), i + 3, 0x50)
+        for i in range(14)
+    ]
 
-    runtime_symbols = [(alias(i), i + 3, 0x50) for i in range(14)]
-    runtime_symbols.extend([("another.runtime.alias", 6, 0x50), (alias(3), 6, 0x50)])
-    app_bytes = _indirect_alias_module(imported=False, symbols=_indirect_app_symbols())
-    output = tmp_path / "output.wasm"
-    runtime = tmp_path / "runtime.wasm"
-    output.write_bytes(app_bytes)
-    original_symbols = parse_wasm_linking_symbols(app_bytes).symbols
-    original_sections = wasm_link_operations.parse_sections(app_bytes)
-    publications: list[bytes] = []
-    real_append = wasm_link_format._append_linking_function_symbols
-    calls: list[list[tuple[str, int, int]]] = []
 
-    def batch(data, entries, **kwargs):
-        calls.append(list(entries))
-        return real_append(data, entries, **kwargs)
-
-    monkeypatch.setattr(wasm_link_command, "_append_linking_function_symbols", batch)
-    for ordered in (runtime_symbols, list(reversed(runtime_symbols))):
-        runtime.write_bytes(_indirect_alias_module(imported=True, symbols=ordered))
-        temporary = OwnedTemporaryDirectory(prefix="molt-alias-test-")
-        with temporary:
-            result = wasm_link_command._inject_call_indirect_alias(
-                _rewrite_input(output),
-                runtime,
-                temporary,
-                facts_provider=_facts_provider,
-            )
-            publications.append(result.path.read_bytes())
-    assert publications[0] == publications[1]
+def test_call_indirect_bindings_validate_without_rewriting_producers() -> None:
+    app = _indirect_binding_module(imported=False, symbols=_indirect_app_symbols())
+    runtime = _indirect_binding_module(
+        imported=True, symbols=_indirect_runtime_symbols()
+    )
+    original_app = bytes(app)
+    original_runtime = bytes(runtime)
     assert (
-        wasm_link_command._call_indirect_alias_entries(
-            _facts_provider(publications[0]), _facts_provider(runtime.read_bytes())
+        wasm_link_command._validate_call_indirect_bindings(
+            _facts_provider(app), _facts_provider(runtime)
         )
-        == []
+        is None
     )
-    expected = sorted(
-        {
-            (name, index - 2, 0xC0)
-            for name, index, _ in runtime_symbols
-            if name not in {name for name, _, _ in _indirect_app_symbols()}
-        },
-        key=lambda item: (item[1], item[0]),
-    )
-    assert calls == [expected, expected]  # One edit for each complete alias set.
-    updated_symbols = parse_wasm_linking_symbols(publications[0]).symbols
-    assert updated_symbols[: len(original_symbols)] == original_symbols
+    assert app == original_app
+    assert runtime == original_runtime
     assert [
-        (s.name, s.index, s.flags) for s in updated_symbols[len(original_symbols) :]
-    ] == expected
-    for before, after in zip(
-        original_sections,
-        wasm_link_operations.parse_sections(publications[0]),
-        strict=True,
-    ):
-        if (
-            before[0] == 0
-            and wasm_link_format._parse_custom_section(before[1])[0] == "linking"
-        ):
-            continue
-        assert before == after
-    assert output.read_bytes() == app_bytes
+        (symbol.name, symbol.index, symbol.flags)
+        for symbol in parse_wasm_linking_symbols(app).function_symbols
+    ] == _indirect_app_symbols()
 
 
 @pytest.mark.parametrize(
     "defect, message",
     [
-        ("missing-runtime-symbol", "no undefined linker symbol"),
+        ("old-runtime-name", "obsolete execution ABI identity"),
+        ("missing-runtime-symbol", "exact physical linker binding"),
+        ("legacy-runtime-symbol", "exact physical linker binding"),
+        ("opaque-runtime-symbol", "exact physical linker binding"),
+        ("wrong-runtime-symbol-index", "exact physical linker binding"),
+        ("defined-runtime-symbol", "exact physical linker binding"),
+        ("local-runtime-symbol", "exact physical linker binding"),
+        ("weak-runtime-symbol", "exact physical linker binding"),
+        ("duplicate-runtime-symbol", "exact physical linker binding"),
         ("missing-app-definition", "no unambiguous linkable definition"),
         ("local-app-definition", "no unambiguous linkable definition"),
         ("wrong-app-definition-index", "no unambiguous linkable definition"),
+        ("duplicate-app-definition", "no unambiguous linkable definition"),
+        ("weak-app-definition", "must have global binding"),
         ("runtime-type", "runtime call_indirect ABI type mismatch"),
+        ("old-runtime-type", "runtime call_indirect ABI type mismatch"),
         ("app-type", "app/runtime call_indirect type mismatch"),
-        ("alias-wrong-index", "conflicts with app symbol"),
-        ("alias-undefined", "conflicts with app symbol"),
-        ("alias-local", "conflicts with app symbol"),
-        ("alias-weak-canonical-strong", "conflicts with app symbol"),
-        ("alias-strong-canonical-weak", "must have global binding"),
-        ("alias-weak-canonical-weak", "must have global binding"),
-        ("conflicting-runtime-alias", "conflicting targets"),
     ],
 )
-def test_call_indirect_aliases_refuse_incomplete_or_conflicting_edges(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, defect: str, message: str
+def test_call_indirect_bindings_refuse_noncanonical_edges(
+    defect: str, message: str
 ) -> None:
-    runtime_symbols = [(f"opaque.{i}", i + 3, 0x50) for i in range(14)]
+    runtime_symbols = _indirect_runtime_symbols()
     app_symbols = _indirect_app_symbols()
+    canonical = compiled_execution_symbol("molt_call_indirect0")
     if defect == "missing-runtime-symbol":
         runtime_symbols.pop(0)
+    elif defect == "legacy-runtime-symbol":
+        runtime_symbols[0] = ("_ZN4molt19molt_call_indirect017hfeedfaceE", 3, 0x50)
+    elif defect == "opaque-runtime-symbol":
+        runtime_symbols[0] = ("opaque.runtime.0", 3, 0x50)
+    elif defect == "wrong-runtime-symbol-index":
+        runtime_symbols[0] = (canonical, 4, 0x50)
+    elif defect == "defined-runtime-symbol":
+        runtime_symbols[0] = (canonical, 3, 0x40)
+    elif defect == "local-runtime-symbol":
+        runtime_symbols[0] = (canonical, 3, 0x52)
+    elif defect == "weak-runtime-symbol":
+        runtime_symbols[0] = (canonical, 3, 0x51)
+    elif defect == "duplicate-runtime-symbol":
+        runtime_symbols.append(runtime_symbols[0])
     elif defect == "missing-app-definition":
         app_symbols.pop(0)
     elif defect == "local-app-definition":
-        app_symbols[0] = (app_symbols[0][0], 1, 0x82)
+        app_symbols[0] = (canonical, 1, 0x82)
     elif defect == "wrong-app-definition-index":
-        app_symbols[0] = (app_symbols[0][0], 2, 0xA0)
-    elif defect == "alias-wrong-index":
-        app_symbols.append(("opaque.0", 2, 0xC0))
-    elif defect == "alias-undefined":
-        app_symbols.append(("opaque.0", 0, 0x50))
-    elif defect == "alias-local":
-        app_symbols.append(("opaque.0", 1, 0xC2))
-    elif defect == "alias-weak-canonical-strong":
-        app_symbols.append(("opaque.0", 1, 0xC1))
-    elif defect == "alias-strong-canonical-weak":
-        app_symbols[0] = (app_symbols[0][0], 1, 0xA1)
-        app_symbols.append(("opaque.0", 1, 0xC0))
-    elif defect == "alias-weak-canonical-weak":
-        app_symbols[0] = (app_symbols[0][0], 1, 0xA1)
-        app_symbols.append(("opaque.0", 1, 0xC1))
-    elif defect == "conflicting-runtime-alias":
-        runtime_symbols[1] = ("opaque.0", 4, 0x50)
-    output = tmp_path / "output.wasm"
-    runtime = tmp_path / "runtime.wasm"
-    app_bytes = _indirect_alias_module(
+        app_symbols[0] = (canonical, 2, 0xA0)
+    elif defect == "duplicate-app-definition":
+        app_symbols.append(app_symbols[0])
+    elif defect == "weak-app-definition":
+        app_symbols[0] = (canonical, 1, 0xA1)
+    app = _indirect_binding_module(
         imported=False, symbols=app_symbols, param_delta=int(defect == "app-type")
     )
-    output.write_bytes(app_bytes)
-    runtime.write_bytes(
-        _indirect_alias_module(
-            imported=True,
-            symbols=runtime_symbols,
-            param_delta=int(defect == "runtime-type"),
+    runtime = _indirect_binding_module(
+        imported=True,
+        symbols=runtime_symbols,
+        param_delta=1
+        if defect == "runtime-type"
+        else -1
+        if defect == "old-runtime-type"
+        else 0,
+        obsolete_imports=defect == "old-runtime-name",
+    )
+    with pytest.raises(ValueError, match=message):
+        wasm_link_command._validate_call_indirect_bindings(
+            _facts_provider(app), _facts_provider(runtime)
         )
-    )
-
-    def unexpected_edit(*_args, **_kwargs):
-        raise AssertionError("alias admission must complete before any edit")
-
-    monkeypatch.setattr(
-        wasm_link_command, "_append_linking_function_symbols", unexpected_edit
-    )
-    temporary = OwnedTemporaryDirectory(prefix="molt-alias-refusal-")
-    with temporary:
-        with pytest.raises(ValueError, match=message):
-            wasm_link_command._inject_call_indirect_alias(
-                _rewrite_input(output),
-                runtime,
-                temporary,
-                facts_provider=_facts_provider,
-            )
-        assert not list(Path(temporary.name).iterdir())
-    assert output.read_bytes() == app_bytes
 
 
-@pytest.mark.parametrize("canonical_name", [False, True], ids=["opaque", "canonical"])
-def test_call_indirect_aliases_accept_matching_existing_binding(
-    canonical_name: bool,
-) -> None:
-    # Only the binding bits agree: canonical definitions retain EXPORTED, while
-    # opaque aliases carry EXPLICIT_NAME. Full flag equality would be incorrect.
-    app_symbols = [(f"molt_call_indirect{i}", i + 1, 0xA0) for i in range(14)]
-    names = [
-        f"molt_call_indirect{i}" if canonical_name else f"opaque.{i}" for i in range(14)
-    ]
-    if not canonical_name:
-        app_symbols.extend((name, i + 1, 0xC0) for i, name in enumerate(names))
-    app = _facts_provider(_indirect_alias_module(imported=False, symbols=app_symbols))
-    runtime = _facts_provider(
-        _indirect_alias_module(
-            imported=True,
-            symbols=[(name, i + 3, 0x50) for i, name in enumerate(names)],
-        )
-    )
-    assert wasm_link_command._call_indirect_alias_entries(app, runtime) == []
-
-
-@pytest.mark.slow
-@pytest.mark.parametrize(
-    ("canonical_binding", "alias_binding"),
-    [(0, 0), (0, 1), (1, 1)],
-    ids=["global-global", "global-weak", "weak-weak"],
-)
-def test_existing_alias_binding_controls_actual_llvm_resolution(
-    tmp_path: Path, canonical_binding: int, alias_binding: int
-) -> None:
-    """A pre-link index join cannot substitute for agreeing symbol bindings."""
-    from molt.cli import wasm_toolchain
-
-    linker = wasm_toolchain.resolve_wasm_linker().path
-    app = tmp_path / "app.o"
-    competitor = tmp_path / "competing-definition.o"
-    linked = tmp_path / "linked.wasm"
-    app_bytes = wasm_link_format._append_linking_function_symbols(
-        _build_exported_function_module("canonical_trampoline"),
-        [
-            ("canonical_trampoline", 0, 0x40 | canonical_binding),
-            ("opaque_alias", 0, 0x40 | alias_binding),
-        ],
-        facts_provider=_facts_provider,
-    )
-    competitor_bytes = wasm_link_format._append_linking_function_symbols(
-        _build_exported_function_module("opaque_alias", trap_body=True),
-        [("opaque_alias", 0, 0x40)],
-        facts_provider=_facts_provider,
-    )
-    assert app_bytes is not None and competitor_bytes is not None
-    app.write_bytes(app_bytes)
-    competitor.write_bytes(competitor_bytes)
-    result = wasm_link_command._run_external_tool(
-        [
-            str(linker),
-            "--no-entry",
-            "--export=canonical_trampoline",
-            "--export=opaque_alias",
-            "-o",
-            str(linked),
-            str(app),
-            str(competitor),
-        ],
-        capture_output=True,
-        text=True,
-    )
-    assert app.read_bytes() == app_bytes
-    assert competitor.read_bytes() == competitor_bytes
-    if alias_binding == 0:
-        assert result.returncode != 0
-        assert "duplicate symbol: opaque_alias" in result.stderr
-        assert not linked.exists()
-        return
-
-    assert result.returncode == 0, result.stderr
-    data = linked.read_bytes()
-    assert parse_wasm_imports(data) == []
-    exports = {item.name: item for item in parse_wasm_exports(data)}
-    canonical_kind = exports["canonical_trampoline"].kind
-    canonical_index = exports["canonical_trampoline"].index
-    alias_kind = exports["opaque_alias"].kind
-    alias_index = exports["opaque_alias"].index
-    assert canonical_kind == alias_kind == 0
-    assert canonical_index != alias_index
-    bodies = _defined_function_bodies(data)
-    # Independent raw Wasm oracles: canonical returns i32.const 1; the selected
-    # competing alias traps. Both names shared app function index0 before link.
-    assert bodies[canonical_index] == b"\x00\x41\x01\x0b"
-    assert bodies[alias_index] == b"\x00\x00\x0b"
-
-
-def test_call_indirect_aliases_leave_foreign_namespace_and_unrelated_symbols_alone() -> (
-    None
-):
+def test_call_indirect_binding_validation_leaves_foreign_namespaces_alone() -> None:
     app = _facts_provider(
-        _indirect_alias_module(imported=False, symbols=_indirect_app_symbols())
+        _indirect_binding_module(imported=False, symbols=_indirect_app_symbols())
     )
-    runtime = _facts_provider(
-        _indirect_alias_module(
-            imported=True,
-            namespace="foreign_runtime",
-            symbols=[
-                ("_RNvCsgrakSpcflzr_12molt_runtime19molt_call_indirect0", 3, 0x50)
-            ],
+    foreign = _facts_provider(
+        _indirect_binding_module(
+            imported=True, namespace="foreign_runtime", symbols=[("unrelated", 3, 0x50)]
         )
     )
-    assert wasm_link_command._call_indirect_alias_entries(app, runtime) == []
+    assert wasm_link_command._validate_call_indirect_bindings(app, foreign) is None
     assert (
-        wasm_link_command._call_indirect_alias_entries(
+        wasm_link_command._validate_call_indirect_bindings(
             app, _facts_provider(b"\0asm\x01\0\0\0")
         )
-        == []
+        is None
     )
 
 
-def test_call_indirect_aliases_do_not_infer_unsupported_arity_from_symbols() -> None:
+def test_call_indirect_bindings_do_not_infer_unsupported_arity_from_symbols() -> None:
     app = _facts_provider(
-        _indirect_alias_module(imported=False, symbols=_indirect_app_symbols()[:-1])
+        _indirect_binding_module(imported=False, symbols=_indirect_app_symbols()[:-1])
     )
-    runtime_bytes = _indirect_alias_module(
-        imported=True,
-        symbols=[(f"opaque.{i}", i + 3, 0x50) for i in range(14)],
-    ).replace(b"molt_call_indirect13", b"molt_call_indirect99")
-    entries = wasm_link_command._call_indirect_alias_entries(
-        app, _facts_provider(runtime_bytes)
+    runtime = _indirect_binding_module(
+        imported=True, symbols=_indirect_runtime_symbols()
+    ).replace(
+        compiled_execution_symbol("molt_call_indirect13").encode(),
+        compiled_execution_symbol("molt_call_indirect99").encode(),
     )
-    assert entries == [(f"opaque.{i}", i + 1, 0xC0) for i in range(13)]
+    assert (
+        wasm_link_command._validate_call_indirect_bindings(
+            app, _facts_provider(runtime)
+        )
+        is None
+    )
 
 
 def test_linker_tool_and_sdk_generation_share_request_cwd(tmp_path, monkeypatch):
@@ -12704,7 +12639,7 @@ def _resource_normalization_module(*, normalized: bool = False) -> bytes:
     w = wasm_link_format._write_varuint
     name = wasm_link_format._write_string
     limits = bytes([1, 9, 9] if normalized else [1, 1, 2])
-    exports = [("molt_main", 0, 0)]
+    exports = [(COMPILED_MAIN, 0, 0)]
     exports += (
         [("molt_table", 1, 0), ("molt_memory", 2, 0)]
         if normalized
@@ -12713,7 +12648,7 @@ def _resource_normalization_module(*, normalized: bool = False) -> bytes:
     return wasm_link_operations.build_sections(
         [
             (0, name("before") + b"metadata"),
-            (1, b"\x01\x60\x00\x00"),
+            (1, b"\x01\x60\x01\x7e\x00"),
             (
                 2,
                 w(1)
@@ -12758,7 +12693,7 @@ def test_linked_resource_normalization_has_one_atomic_section_edit(
             output_memory_min=9,
             split_runtime=False,
             app_identity_exports=("internal.identity",),
-            preserved_output_exports=("molt_main", "internal.identity"),
+            preserved_output_exports=(COMPILED_MAIN, "internal.identity"),
         )
     assert artifact.data == expected
     assert artifact.revision == 1
@@ -12782,7 +12717,7 @@ def test_linked_resource_normalization_has_one_atomic_section_edit(
             output_memory_min=9,
             split_runtime=False,
             app_identity_exports=("internal.identity",),
-            preserved_output_exports=("molt_main",),
+            preserved_output_exports=(COMPILED_MAIN,),
         )
     assert artifact.data is not initial
     assert artifact.data == expected
@@ -12838,7 +12773,7 @@ def test_wasm_section_edit_validation_failure_preserves_owner_and_disk(
         output_memory_min=9,
         split_runtime=False,
         app_identity_exports=("internal.identity",),
-        preserved_output_exports=("molt_main",),
+        preserved_output_exports=(COMPILED_MAIN,),
     )
     assert artifact.data is initial
     assert artifact.facts() is initial_facts
@@ -12986,3 +12921,36 @@ def test_admission_link_capture_uses_retained_rewrite_buffers(
         with pytest.raises(ValueError, match="did not consume the admitted"):
             run()
         assert observations == {}
+
+
+def test_split_runtime_typed_edges_distinguish_public_c_and_compiled_entries() -> None:
+    public = "molt_int_from_i64"
+    physical = _runtime_symbol(public)
+    u32, text = wasm_link_format._write_varuint, wasm_link_format._write_string
+    # Two real producers have distinct physical signatures; neither is an alias.
+    types = bytearray(u32(2))
+    _append_test_wasm_function_type(types, (("i64",), ("i64",)))
+    _append_test_wasm_function_type(types, (("i64", "i64"), ("i64",)))
+    runtime = wasm_link_operations.build_sections(
+        [
+            (1, bytes(types)),
+            (3, b"\x02\x00\x01"),
+            (7, u32(2) + text(public) + b"\x00\x00" + text(physical) + b"\x00\x01"),
+            (10, b"\x02\x04\x00\x42\x00\x0b\x04\x00\x42\x00\x0b"),
+        ]
+    )
+    app = _build_split_runtime_app_module([public, physical])
+    facts = _facts_provider(app)
+    assert (
+        wasm_link_validation._validate_split_runtime_typed_edges(
+            facts, _facts_provider(runtime)
+        )
+        is None
+    )
+    edges = [edge for edge in facts.imports if edge.module == "molt_runtime"]
+    assert [len(edge.extern_type["params"]) for edge in edges] == [1, 2]
+    # A plausible field rewrite to the compiled body cannot satisfy the C entry.
+    wrong_c_provider = _strip_export(runtime, public)
+    assert "absent" in wasm_link_validation._validate_split_runtime_typed_edges(
+        facts, _facts_provider(wrong_c_provider)
+    )

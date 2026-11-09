@@ -56,12 +56,12 @@ impl NativeProcessStdio {
         }
     }
 
-    pub(super) fn drop_streams(&mut self) {
-        drop_stream(&mut self.stdin_stream);
-        drop_stream(&mut self.stdout_stream);
-        drop_stream(&mut self.stderr_stream);
-        drop_stream(&mut self.ipc_recv_stream);
-        drop_stream(&mut self.ipc_send_stream);
+    pub(super) fn drop_streams(&mut self, py: &PyToken<'_>) {
+        drop_stream(py, &mut self.stdin_stream);
+        drop_stream(py, &mut self.stdout_stream);
+        drop_stream(py, &mut self.stderr_stream);
+        drop_stream(py, &mut self.ipc_recv_stream);
+        drop_stream(py, &mut self.ipc_send_stream);
     }
 
     pub(super) fn set_ipc(&mut self, ipc: super::ipc::PreparedIpc, max_queued_bytes: usize) {
@@ -72,12 +72,12 @@ impl NativeProcessStdio {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn drop_stream(stream_bits: &mut u64) {
+fn drop_stream(py: &PyToken<'_>, stream_bits: &mut u64) {
     if *stream_bits == 0 {
         return;
     }
     unsafe {
-        molt_stream_drop(*stream_bits);
+        molt_stream_drop_attached_body(py, *stream_bits);
     }
     *stream_bits = 0;
 }
@@ -265,7 +265,7 @@ pub(super) fn configure_native_stdio(
     match result {
         Ok(()) => Ok(plan),
         Err(err) => {
-            plan.drop_streams();
+            plan.drop_streams(_py);
             Err(err)
         }
     }
@@ -306,8 +306,12 @@ pub(super) fn process_stdio_mode(_py: &PyToken<'_>, bits: u64, name: &str) -> i3
 
 /// # Safety
 /// - All arguments must be valid runtime objects.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_subprocess_stdio_normalize(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
+pub(crate) fn molt_asyncio_subprocess_stdio_normalize_attached_body(
+    _py: &crate::PyToken<'_>,
     value_bits: u64,
     allow_stdout_bits: u64,
     pipe_const_bits: u64,
@@ -320,7 +324,7 @@ pub extern "C" fn molt_asyncio_subprocess_stdio_normalize(
     fd_base_bits: u64,
     fd_max_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(inherit_mode) = to_i64(obj_from_bits(inherit_mode_bits)) else {
             return raise_exception::<u64>(
                 _py,
@@ -412,7 +416,10 @@ pub extern "C" fn molt_asyncio_subprocess_stdio_normalize(
                     );
                 }
             };
-            if !is_truthy(_py, obj_from_bits(molt_is_callable(fileno_bits))) {
+            if !is_truthy(
+                _py,
+                obj_from_bits(molt_is_callable_attached_body(_py, fileno_bits)),
+            ) {
                 if !obj_from_bits(fileno_bits).is_none() {
                     dec_ref_bits(_py, fileno_bits);
                 }
@@ -471,3 +478,5 @@ pub extern "C" fn molt_asyncio_subprocess_stdio_normalize(
         }
     })
 }
+
+include!("../../attached_exports_generated/async_rt/process/stdio.rs");

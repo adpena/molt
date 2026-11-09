@@ -51,7 +51,8 @@ pub(crate) fn declared_array_buffer_instance(py: &crate::PyToken<'_>, handle: u6
     assert!(!namespace.is_null());
     let namespace = MoltObject::from_ptr(namespace).bits();
     let builtins = crate::builtin_classes(py);
-    let class = crate::builtins::types::molt_type_new(
+    let class = crate::builtins::types::molt_type_new_attached_body(
+        py,
         builtins.type_obj,
         name,
         builtins.object,
@@ -62,13 +63,13 @@ pub(crate) fn declared_array_buffer_instance(py: &crate::PyToken<'_>, handle: u6
     assert!(!obj_from_bits(class).is_none());
     dec_ref_bits(py, namespace);
     dec_ref_bits(py, name);
-    crate::builtins::array_mod::molt_array_declare_buffer(class);
+    crate::builtins::array_mod::molt_array_declare_buffer_attached_body(py, class);
     assert!(!exception_pending(py));
     let instance =
         unsafe { crate::alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap()) };
     assert!(!obj_from_bits(instance).is_none());
     let name = crate::dynamic_attr_name_bits(py, b"_handle").unwrap();
-    let result = crate::molt_set_attr_name(instance, name, handle);
+    let result = crate::molt_set_attr_name_attached_body(py, instance, name, handle);
     assert!(!exception_pending(py));
     dec_ref_bits(py, result);
     dec_ref_bits(py, name);
@@ -309,8 +310,8 @@ pub(crate) fn publish_test_code_slot(
         slot < TEST_CODE_SLOT_CAPACITY,
         "test code slots exhausted; raise TEST_CODE_SLOT_CAPACITY"
     );
-    crate::molt_code_slots_init(TEST_CODE_SLOT_CAPACITY);
-    crate::molt_code_slot_set(slot, code_bits, globals_bits);
+    crate::molt_code_slots_init_attached_body(py, TEST_CODE_SLOT_CAPACITY);
+    crate::molt_code_slot_set_attached_body(py, slot, code_bits, globals_bits);
     assert!(
         !crate::exception_pending(py),
         "test code slot {slot} publication failed"
@@ -710,7 +711,9 @@ impl RuntimeTestTransaction {
             1,
             "runtime test transaction requires successful production bootstrap"
         );
-        crate::molt_code_slots_init(TEST_CODE_SLOT_CAPACITY);
+        crate::with_gil_entry_nopanic!(py, {
+            crate::molt_code_slots_init_attached_body(py, TEST_CODE_SLOT_CAPACITY);
+        });
         // Failed bootstrap must not reopen the process-static pending queue.
         let pending_calls = PendingCallTestCustody::enter();
         let execution_thread_attached =
@@ -1054,7 +1057,14 @@ pub(crate) struct EmptyImportResolver {
 
 impl EmptyImportResolver {
     pub(crate) fn new(py: &crate::PyToken<'_>) -> Self {
-        extern "C" fn find_spec(_name: u64, _path: u64, _target: u64) -> u64 {
+        extern "C" fn find_spec(__context: u64, _name: u64, _path: u64, _target: u64) -> u64 {
+            assert_eq!(
+                __context,
+                crate::state::molt_attached_context(),
+                "Python callback context identity"
+            );
+            let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
             crate::MoltObject::none().bits()
         }
         use crate::{MoltObject, dec_ref_bits, inc_ref_bits};
@@ -1096,11 +1106,11 @@ impl EmptyImportResolver {
         assert!(!function.is_null());
         let function = MoltObject::from_ptr(function).bits();
         let key = crate::dynamic_attr_name_bits(py, b"find_spec").unwrap();
-        crate::builtins::modules::molt_module_set_attr(finder, key, function);
+        crate::builtins::modules::molt_module_set_attr_attached_body(py, finder, key, function);
         let meta_path = crate::alloc_list(py, &[finder]);
         assert!(!meta_path.is_null());
         let meta_path = MoltObject::from_ptr(meta_path).bits();
-        crate::builtins::modules::molt_module_set_attr(sys, meta_key, meta_path);
+        crate::builtins::modules::molt_module_set_attr_attached_body(py, sys, meta_key, meta_path);
         assert!(!crate::exception_pending(py));
         for bits in [name, key, function, finder, meta_key, meta_path] {
             dec_ref_bits(py, bits);
@@ -1152,14 +1162,14 @@ pub(crate) struct NativeProviderTestNamespace {
 impl NativeProviderTestNamespace {
     pub(crate) fn new(py: &crate::PyToken<'_>, provider: &str) -> Self {
         let name = crate::dynamic_attr_name_bits(py, provider.as_bytes()).unwrap();
-        let previous = crate::molt_module_cache_get(name);
+        let previous = crate::molt_module_cache_get_attached_body(py, name);
         crate::clear_exception(py);
-        crate::molt_module_cache_del(name);
+        crate::molt_module_cache_del_attached_body(py, name);
         crate::clear_exception(py);
-        let module = crate::molt_module_new(name);
+        let module = crate::molt_module_new_attached_body(py, name);
         assert!(!crate::obj_from_bits(module).is_none());
         assert!(crate::intrinsics::registry::publish_python_native_namespace(py, provider, module));
-        crate::molt_module_cache_set(name, module);
+        crate::molt_module_cache_set_attached_body(py, name, module);
         assert!(!crate::exception_pending(py));
         if provider == "builtins" {
             crate::builtins::module_table::publish_interpreter_builtins_for_test(py, module);
@@ -1180,10 +1190,10 @@ impl Drop for NativeProviderTestNamespace {
     fn drop(&mut self) {
         crate::with_gil_entry_nopanic!(py, {
             crate::clear_exception(py);
-            crate::molt_module_cache_del(self.name);
+            crate::molt_module_cache_del_attached_body(py, self.name);
             crate::clear_exception(py);
             if !crate::obj_from_bits(self.previous).is_none() {
-                crate::molt_module_cache_set(self.name, self.previous);
+                crate::molt_module_cache_set_attached_body(py, self.name, self.previous);
             }
             for bits in [self.name, self.previous, self.module] {
                 crate::dec_ref_bits(py, bits);
@@ -1463,11 +1473,11 @@ fn runtime_test_transactions_preserve_terminal_failures() {
 
 /// Own the actual public class while a low-level constructor ownership proof runs.
 pub(crate) fn with_public_type_class(
-    getter: extern "C" fn() -> u64,
+    getter: unsafe extern "C" fn(u64) -> u64,
     body: impl FnOnce(u64) -> u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        let class = getter();
+        let class = unsafe { getter(py.attached_context()) };
         let owner = unsafe {
             molt_runtime_core::ProtectedRuntimeValue::from_owned_bits(py.core_token(), class)
         };

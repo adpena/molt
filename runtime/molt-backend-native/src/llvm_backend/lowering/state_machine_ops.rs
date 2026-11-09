@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use molt_ir::OpKind;
 use molt_tir::trampolines::TaskConstructorLayout;
 
@@ -149,7 +151,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let result = self
             .backend
             .builder
-            .build_call(
+            .build_execution_call(
                 load_fn,
                 &[
                     owner_bits.into(),
@@ -233,7 +235,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let set_state_fn = self.ensure_runtime_void_fn("molt_obj_set_state", 2);
         self.backend
             .builder
-            .build_call(set_state_fn, &[self_bits.into(), state_bits.into()], "")
+            .build_execution_call(set_state_fn, &[self_bits.into(), state_bits.into()], "")
             .unwrap();
     }
 
@@ -305,7 +307,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             "molt_sleep_register",
         )
         .unwrap_or_else(|| panic!("molt_sleep_register must be a fixed LLVM runtime import"));
-        let sleep_fn = require_llvm_function_type("molt_sleep_register", sleep_fn, fn_ty);
+        let sleep_fn = require_llvm_function_type(
+            "molt_sleep_register",
+            sleep_fn,
+            runtime_execution_type("molt_sleep_register", fn_ty),
+        );
         let frame_ptr = self
             .backend
             .builder
@@ -319,7 +325,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap();
         self.backend
             .builder
-            .build_call(
+            .build_execution_call(
                 sleep_fn,
                 &[frame_ptr.into(), future_ptr.into()],
                 "task_wait",

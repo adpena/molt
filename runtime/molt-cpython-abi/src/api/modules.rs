@@ -791,7 +791,13 @@ unsafe fn module_from_def_and_slots(
                     def: *mut PyModuleDef,
                 ) -> *mut PyObject;
                 let create: CreateFn = std::mem::transmute(slot.value);
-                module = validate_module_pointer_result(create(spec, def), "Py_mod_create slot");
+                let result = {
+                    let custody = hooks::ForeignExecutionGuard::capture();
+                    let result = create(spec, def);
+                    custody.validate();
+                    result
+                };
+                module = validate_module_pointer_result(result, "Py_mod_create slot");
                 if module.is_null() {
                     crate::api::refcount::Py_XDECREF(name);
                     return ptr::null_mut();
@@ -877,7 +883,13 @@ pub unsafe extern "C" fn PyModule_ExecDef(module: *mut PyObject, def: *mut PyMod
                     type ExecFn = unsafe extern "C" fn(module: *mut PyObject) -> c_int;
                     let exec: ExecFn = std::mem::transmute(slot.value);
                     crate::capi_trace::clear_last_silent_failure();
-                    if validate_module_status_result(exec(module), "Py_mod_exec slot") != 0 {
+                    let result = {
+                        let custody = hooks::ForeignExecutionGuard::capture();
+                        let result = exec(module);
+                        custody.validate();
+                        result
+                    };
+                    if validate_module_status_result(result, "Py_mod_exec slot") != 0 {
                         return -1;
                     }
                 }

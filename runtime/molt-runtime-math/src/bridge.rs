@@ -15,11 +15,13 @@ use std::borrow::Cow;
 // ---------------------------------------------------------------------------
 
 pub type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
-pub type RuntimeExtensionStateClear = unsafe extern "C" fn(*mut u8);
+pub type RuntimeExtensionStateClear = unsafe extern "C" fn(u64, *mut u8);
 pub type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
 
 unsafe extern "C" {
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_runtime_state_get_or_init")]
     fn __molt_math_runtime_state_get_or_init(
+        __molt_context: u64,
         key_ptr: *const u8,
         key_len: usize,
         init: RuntimeExtensionStateInit,
@@ -29,12 +31,22 @@ unsafe extern "C" {
 }
 
 pub fn runtime_state_get_or_init(
+    _py: &PyToken,
     key: &[u8],
     init: RuntimeExtensionStateInit,
     clear: RuntimeExtensionStateClear,
     drop: RuntimeExtensionStateDrop,
 ) -> *mut u8 {
-    unsafe { __molt_math_runtime_state_get_or_init(key.as_ptr(), key.len(), init, clear, drop) }
+    unsafe {
+        __molt_math_runtime_state_get_or_init(
+            _py.attached_context(),
+            key.as_ptr(),
+            key.len(),
+            init,
+            clear,
+            drop,
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -42,9 +54,16 @@ pub fn runtime_state_get_or_init(
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_math_raise_exception(kind_code: u16, msg_ptr: *const u8, msg_len: usize) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_raise_exception")]
+    fn __molt_math_raise_exception(
+        __molt_context: u64,
+        kind_code: u16,
+        msg_ptr: *const u8,
+        msg_len: usize,
+    ) -> u64;
 
-    fn __molt_math_exception_pending() -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_exception_pending")]
+    fn __molt_math_exception_pending(__molt_context: u64) -> i32;
 }
 
 pub fn raise_exception<T: ExceptionSentinel>(
@@ -52,13 +71,19 @@ pub fn raise_exception<T: ExceptionSentinel>(
     type_name: impl Into<ExcKind>,
     msg: &str,
 ) -> T {
-    let bits =
-        unsafe { __molt_math_raise_exception(type_name.into().code(), msg.as_ptr(), msg.len()) };
+    let bits = unsafe {
+        __molt_math_raise_exception(
+            _py.attached_context(),
+            type_name.into().code(),
+            msg.as_ptr(),
+            msg.len(),
+        )
+    };
     T::from_bits(bits)
 }
 
 pub fn exception_pending(_py: &PyToken) -> bool {
-    unsafe { __molt_math_exception_pending() != 0 }
+    unsafe { __molt_math_exception_pending(_py.attached_context()) != 0 }
 }
 
 /// Trait for exception return sentinels.
@@ -90,21 +115,36 @@ impl ExceptionSentinel for () {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_math_alloc_tuple(elems_ptr: *const u64, elems_len: usize) -> *mut u8;
-    fn __molt_math_alloc_list(elems_ptr: *const u64, elems_len: usize) -> *mut u8;
-    fn __molt_math_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_alloc_tuple")]
+    fn __molt_math_alloc_tuple(
+        __molt_context: u64,
+        elems_ptr: *const u64,
+        elems_len: usize,
+    ) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_alloc_list")]
+    fn __molt_math_alloc_list(
+        __molt_context: u64,
+        elems_ptr: *const u64,
+        elems_len: usize,
+    ) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_alloc_string")]
+    fn __molt_math_alloc_string(
+        __molt_context: u64,
+        data_ptr: *const u8,
+        data_len: usize,
+    ) -> *mut u8;
 }
 
 pub fn alloc_tuple(_py: &PyToken, elems: &[u64]) -> *mut u8 {
-    unsafe { __molt_math_alloc_tuple(elems.as_ptr(), elems.len()) }
+    unsafe { __molt_math_alloc_tuple(_py.attached_context(), elems.as_ptr(), elems.len()) }
 }
 
 pub fn alloc_list(_py: &PyToken, elems: &[u64]) -> *mut u8 {
-    unsafe { __molt_math_alloc_list(elems.as_ptr(), elems.len()) }
+    unsafe { __molt_math_alloc_list(_py.attached_context(), elems.as_ptr(), elems.len()) }
 }
 
 pub fn alloc_string(_py: &PyToken, data: &[u8]) -> *mut u8 {
-    unsafe { __molt_math_alloc_string(data.as_ptr(), data.len()) }
+    unsafe { __molt_math_alloc_string(_py.attached_context(), data.as_ptr(), data.len()) }
 }
 
 // ---------------------------------------------------------------------------
@@ -118,8 +158,15 @@ unsafe extern "C" {
         out_ptr: *mut *const u8,
         out_len: *mut usize,
     ) -> i32;
-    fn __molt_math_type_name(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
-    fn __molt_math_is_truthy(bits: u64) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_type_name")]
+    fn __molt_math_type_name(
+        __molt_context: u64,
+        bits: u64,
+        out_ptr: *mut *const u8,
+        out_len: *mut usize,
+    ) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_is_truthy")]
+    fn __molt_math_is_truthy(__molt_context: u64, bits: u64) -> i32;
     fn __molt_math_bytes_like_slice(
         ptr: *mut u8,
         out_ptr: *mut *const u8,
@@ -128,7 +175,8 @@ unsafe extern "C" {
     fn __molt_math_string_bytes(ptr: *mut u8, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
     fn __molt_math_string_len(ptr: *mut u8) -> usize;
     fn __molt_math_as_float_extended(bits: u64, out: *mut f64) -> i32;
-    fn __molt_math_float_result_bits(val: f64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_float_result_bits")]
+    fn __molt_math_float_result_bits(__molt_context: u64, val: f64) -> u64;
 }
 
 /// # Safety
@@ -154,7 +202,14 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
 pub fn type_name(_py: &PyToken, obj: MoltObject) -> Cow<'static, str> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_math_type_name(obj.bits(), &mut out_ptr, &mut out_len) };
+    let ok = unsafe {
+        __molt_math_type_name(
+            _py.attached_context(),
+            obj.bits(),
+            &mut out_ptr,
+            &mut out_len,
+        )
+    };
     if ok != 0 && !out_ptr.is_null() {
         let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
         Cow::Owned(String::from_utf8_lossy(&boxed).into_owned())
@@ -164,7 +219,7 @@ pub fn type_name(_py: &PyToken, obj: MoltObject) -> Cow<'static, str> {
 }
 
 pub fn is_truthy(_py: &PyToken, obj: MoltObject) -> bool {
-    unsafe { __molt_math_is_truthy(obj.bits()) != 0 }
+    unsafe { __molt_math_is_truthy(_py.attached_context(), obj.bits()) != 0 }
 }
 
 /// # Safety
@@ -222,7 +277,7 @@ pub fn as_float_extended(obj: MoltObject) -> Option<f64> {
 /// Produce NaN-boxed bits for a float result.  Non-NaN values are stored
 /// inline; NaN values are heap-allocated.
 pub fn float_result_bits(_py: &PyToken, val: f64) -> u64 {
-    unsafe { __molt_math_float_result_bits(val) }
+    unsafe { __molt_math_float_result_bits(_py.attached_context(), val) }
 }
 
 // ---------------------------------------------------------------------------
@@ -231,8 +286,10 @@ pub fn float_result_bits(_py: &PyToken, val: f64) -> u64 {
 
 unsafe extern "C" {
     fn __molt_math_release_ptr(ptr: *mut u8);
-    fn __molt_math_dec_ref_bits(bits: u64);
-    fn __molt_math_inc_ref_bits(bits: u64);
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_dec_ref_bits")]
+    fn __molt_math_dec_ref_bits(__molt_context: u64, bits: u64);
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_inc_ref_bits")]
+    fn __molt_math_inc_ref_bits(__molt_context: u64, bits: u64);
 }
 
 /// # Safety
@@ -244,11 +301,11 @@ pub unsafe fn release_ptr(ptr: *mut u8) {
 }
 
 pub fn dec_ref_bits(_py: &PyToken, bits: u64) {
-    unsafe { __molt_math_dec_ref_bits(bits) }
+    unsafe { __molt_math_dec_ref_bits(_py.attached_context(), bits) }
 }
 
 pub fn inc_ref_bits(_py: &PyToken, bits: u64) {
-    unsafe { __molt_math_inc_ref_bits(bits) }
+    unsafe { __molt_math_inc_ref_bits(_py.attached_context(), bits) }
 }
 
 // ---------------------------------------------------------------------------
@@ -264,8 +321,15 @@ unsafe extern "C" {
         out_ptr: *mut *const u8,
         out_len: *mut usize,
     ) -> i32;
-    fn __molt_math_int_bits_from_i64(val: i64) -> u64;
-    fn __molt_math_int_bits_from_bigint(sign: i32, data_ptr: *const u8, data_len: usize) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_int_bits_from_i64")]
+    fn __molt_math_int_bits_from_i64(__molt_context: u64, val: i64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_int_bits_from_bigint")]
+    fn __molt_math_int_bits_from_bigint(
+        __molt_context: u64,
+        sign: i32,
+        data_ptr: *const u8,
+        data_len: usize,
+    ) -> u64;
     fn __molt_math_py_numeric_hash(
         num_sign: i32,
         num_ptr: *const u8,
@@ -287,8 +351,16 @@ unsafe extern "C" {
         out_ptr: *mut *const u8,
         out_len: *mut usize,
     ) -> i32;
-    fn __molt_math_index_i64_from_obj(obj_bits: u64, err_ptr: *const u8, err_len: usize) -> i64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_index_i64_from_obj")]
+    fn __molt_math_index_i64_from_obj(
+        __molt_context: u64,
+        obj_bits: u64,
+        err_ptr: *const u8,
+        err_len: usize,
+    ) -> i64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_index_bigint_from_obj")]
     fn __molt_math_index_bigint_from_obj(
+        __molt_context: u64,
         obj_bits: u64,
         err_ptr: *const u8,
         err_len: usize,
@@ -305,15 +377,20 @@ pub fn to_i64(obj: MoltObject) -> Option<i64> {
 }
 
 unsafe extern "C" {
-    fn __molt_math_float_as_double(bits: u64, out: *mut f64) -> i32;
-    fn __molt_math_exact_float_value(bits: u64, out: *mut f64) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_float_as_double")]
+    fn __molt_math_float_as_double(__molt_context: u64, bits: u64, out: *mut f64) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_exact_float_value")]
+    fn __molt_math_exact_float_value(__molt_context: u64, bits: u64, out: *mut f64) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_integer_storage")]
     fn __molt_math_integer_storage(
+        __molt_context: u64,
         bits: u64,
         sign: *mut i32,
         ptr: *mut *const u8,
         len: *mut usize,
     ) -> i32;
-    fn __molt_math_target_minor() -> i64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_target_minor")]
+    fn __molt_math_target_minor(__molt_context: u64) -> i64;
 }
 
 /// PyFloat_AsDouble semantics; immediate carriers avoid a bridge entry entirely.
@@ -330,7 +407,8 @@ pub fn float_as_double(_py: &PyToken, bits: u64) -> Option<f64> {
         return Some(u8::from(value) as f64);
     }
     let mut value = 0.0;
-    (unsafe { __molt_math_float_as_double(bits, &mut value) } == 1).then_some(value)
+    (unsafe { __molt_math_float_as_double(_py.attached_context(), bits, &mut value) } == 1)
+        .then_some(value)
 }
 
 /// Exact floats only. Subclasses must reach the rounding special-method lookup.
@@ -340,7 +418,7 @@ pub fn exact_float_value(_py: &PyToken, bits: u64) -> Result<Option<f64>, ErrorI
         return Ok(Some(value));
     }
     let mut value = 0.0;
-    match unsafe { __molt_math_exact_float_value(bits, &mut value) } {
+    match unsafe { __molt_math_exact_float_value(_py.attached_context(), bits, &mut value) } {
         1 => Ok(Some(value)),
         0 => Ok(None),
         _ => Err(ErrorIndicatorSet),
@@ -357,7 +435,9 @@ pub fn integer_storage(
     let mut sign = 0;
     let mut ptr = std::ptr::null();
     let mut len = 0;
-    match unsafe { __molt_math_integer_storage(bits, &mut sign, &mut ptr, &mut len) } {
+    match unsafe {
+        __molt_math_integer_storage(_py.attached_context(), bits, &mut sign, &mut ptr, &mut len)
+    } {
         0 => Ok(None),
         1 => {
             let bytes = unsafe { bridge_owned_u8_buffer(ptr, len) };
@@ -372,8 +452,8 @@ pub fn integer_storage(
     }
 }
 
-pub fn target_minor() -> i64 {
-    unsafe { __molt_math_target_minor() }
+pub fn target_minor(_py: &PyToken) -> i64 {
+    unsafe { __molt_math_target_minor(_py.attached_context()) }
 }
 
 pub fn to_f64(obj: MoltObject) -> Option<f64> {
@@ -412,7 +492,7 @@ pub fn to_bigint(obj: MoltObject) -> Option<num_bigint::BigInt> {
 }
 
 pub fn int_bits_from_i64(_py: &PyToken, val: i64) -> u64 {
-    unsafe { __molt_math_int_bits_from_i64(val) }
+    unsafe { __molt_math_int_bits_from_i64(_py.attached_context(), val) }
 }
 
 pub fn int_bits_from_bigint(_py: &PyToken, value: num_bigint::BigInt) -> u64 {
@@ -423,7 +503,14 @@ pub fn int_bits_from_bigint(_py: &PyToken, value: num_bigint::BigInt) -> u64 {
         Sign::NoSign => 0i32,
         Sign::Plus => 1i32,
     };
-    unsafe { __molt_math_int_bits_from_bigint(sign_i32, bytes.as_ptr(), bytes.len()) }
+    unsafe {
+        __molt_math_int_bits_from_bigint(
+            _py.attached_context(),
+            sign_i32,
+            bytes.as_ptr(),
+            bytes.len(),
+        )
+    }
 }
 
 /// CPython's exact modular numeric hash over a rational `numerator/denominator`,
@@ -502,7 +589,9 @@ pub fn bigint_from_f64_trunc(val: f64) -> num_bigint::BigInt {
 }
 
 pub fn index_i64_from_obj(_py: &PyToken, obj_bits: u64, err: &str) -> i64 {
-    unsafe { __molt_math_index_i64_from_obj(obj_bits, err.as_ptr(), err.len()) }
+    unsafe {
+        __molt_math_index_i64_from_obj(_py.attached_context(), obj_bits, err.as_ptr(), err.len())
+    }
 }
 
 pub fn index_bigint_from_obj(
@@ -516,6 +605,7 @@ pub fn index_bigint_from_obj(
     let mut out_len: usize = 0;
     let ok = unsafe {
         __molt_math_index_bigint_from_obj(
+            _py.attached_context(),
             obj_bits,
             err.as_ptr(),
             err.len(),
@@ -544,29 +634,58 @@ pub fn index_bigint_from_obj(
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_math_call_callable0(call_bits: u64) -> u64;
-    fn __molt_math_call_callable2(call_bits: u64, arg0: u64, arg1: u64) -> u64;
-    fn __molt_math_lookup_special_method(ptr: *mut u8, name_bits: u64, out: *mut u64) -> i32;
-    fn __molt_math_intern_static_name(key_ptr: *const u8, key_len: usize) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_call_callable0")]
+    fn __molt_math_call_callable0(__molt_context: u64, call_bits: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_call_callable2")]
+    fn __molt_math_call_callable2(__molt_context: u64, call_bits: u64, arg0: u64, arg1: u64)
+    -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_lookup_special_method")]
+    fn __molt_math_lookup_special_method(
+        __molt_context: u64,
+        ptr: *mut u8,
+        name_bits: u64,
+        out: *mut u64,
+    ) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_intern_static_name")]
+    fn __molt_math_intern_static_name(
+        __molt_context: u64,
+        key_ptr: *const u8,
+        key_len: usize,
+    ) -> u64;
     fn __molt_math_class_name_for_error(
         type_bits: u64,
         out_ptr: *mut *const u8,
         out_len: *mut usize,
     ) -> i32;
-    fn __molt_math_type_of_bits(val_bits: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_type_of_bits")]
+    fn __molt_math_type_of_bits(__molt_context: u64, val_bits: u64) -> u64;
     fn __molt_math_maybe_ptr_from_bits(bits: u64) -> *mut u8;
-    fn __molt_math_molt_is_callable(bits: u64) -> i32;
-    fn __molt_math_current_int_max_str_digits() -> usize;
-    fn __molt_math_format_obj(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
-    fn __molt_math_format_obj_str(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_molt_is_callable")]
+    fn __molt_math_molt_is_callable(__molt_context: u64, bits: u64) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_current_int_max_str_digits")]
+    fn __molt_math_current_int_max_str_digits(__molt_context: u64) -> usize;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_format_obj")]
+    fn __molt_math_format_obj(
+        __molt_context: u64,
+        bits: u64,
+        out_ptr: *mut *const u8,
+        out_len: *mut usize,
+    ) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_format_obj_str")]
+    fn __molt_math_format_obj_str(
+        __molt_context: u64,
+        bits: u64,
+        out_ptr: *mut *const u8,
+        out_len: *mut usize,
+    ) -> i32;
 }
 
 pub fn call_callable0(_py: &PyToken, call_bits: u64) -> u64 {
-    unsafe { __molt_math_call_callable0(call_bits) }
+    unsafe { __molt_math_call_callable0(_py.attached_context(), call_bits) }
 }
 
 pub fn call_callable2(_py: &PyToken, call_bits: u64, arg0: u64, arg1: u64) -> u64 {
-    unsafe { __molt_math_call_callable2(call_bits, arg0, arg1) }
+    unsafe { __molt_math_call_callable2(_py.attached_context(), call_bits, arg0, arg1) }
 }
 
 /// # Safety
@@ -579,7 +698,9 @@ pub unsafe fn lookup_special_method(
     name_bits: u64,
 ) -> Result<Option<u64>, ErrorIndicatorSet> {
     let mut result = 0;
-    match unsafe { __molt_math_lookup_special_method(ptr, name_bits, &mut result) } {
+    match unsafe {
+        __molt_math_lookup_special_method(_py.attached_context(), ptr, name_bits, &mut result)
+    } {
         1 => Ok(Some(result)),
         0 => Ok(None),
         _ => Err(ErrorIndicatorSet),
@@ -587,7 +708,7 @@ pub unsafe fn lookup_special_method(
 }
 
 pub fn intern_static_name(_py: &PyToken, key: &[u8]) -> u64 {
-    unsafe { __molt_math_intern_static_name(key.as_ptr(), key.len()) }
+    unsafe { __molt_math_intern_static_name(_py.attached_context(), key.as_ptr(), key.len()) }
 }
 
 pub fn class_name_for_error(type_bits: u64) -> String {
@@ -603,7 +724,7 @@ pub fn class_name_for_error(type_bits: u64) -> String {
 }
 
 pub fn type_of_bits(_py: &PyToken, val_bits: u64) -> u64 {
-    unsafe { __molt_math_type_of_bits(val_bits) }
+    unsafe { __molt_math_type_of_bits(_py.attached_context(), val_bits) }
 }
 
 pub fn maybe_ptr_from_bits(bits: u64) -> Option<*mut u8> {
@@ -612,17 +733,24 @@ pub fn maybe_ptr_from_bits(bits: u64) -> Option<*mut u8> {
 }
 
 pub fn molt_is_callable(_py: &PyToken, bits: u64) -> bool {
-    unsafe { __molt_math_molt_is_callable(bits) != 0 }
+    unsafe { __molt_math_molt_is_callable(_py.attached_context(), bits) != 0 }
 }
 
 pub fn current_int_max_str_digits(_py: &PyToken) -> usize {
-    unsafe { __molt_math_current_int_max_str_digits() }
+    unsafe { __molt_math_current_int_max_str_digits(_py.attached_context()) }
 }
 
 pub fn format_obj(_py: &PyToken, obj: MoltObject) -> Option<String> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_math_format_obj(obj.bits(), &mut out_ptr, &mut out_len) };
+    let ok = unsafe {
+        __molt_math_format_obj(
+            _py.attached_context(),
+            obj.bits(),
+            &mut out_ptr,
+            &mut out_len,
+        )
+    };
     if ok != 0 && !out_ptr.is_null() {
         let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
         Some(String::from_utf8_lossy(&boxed).into_owned())
@@ -634,7 +762,14 @@ pub fn format_obj(_py: &PyToken, obj: MoltObject) -> Option<String> {
 pub fn format_obj_str(_py: &PyToken, obj: MoltObject) -> Option<String> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_math_format_obj_str(obj.bits(), &mut out_ptr, &mut out_len) };
+    let ok = unsafe {
+        __molt_math_format_obj_str(
+            _py.attached_context(),
+            obj.bits(),
+            &mut out_ptr,
+            &mut out_len,
+        )
+    };
     if ok != 0 && !out_ptr.is_null() {
         let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
         Some(String::from_utf8_lossy(&boxed).into_owned())
@@ -649,12 +784,31 @@ pub fn format_obj_str(_py: &PyToken, obj: MoltObject) -> Option<String> {
 
 #[allow(improper_ctypes)]
 unsafe extern "C" {
-    fn __molt_math_dict_get_in_place(dict_ptr: *mut u8, key_bits: u64, out: *mut u64) -> i32;
-    fn __molt_math_dict_set_in_place(dict_ptr: *mut u8, key_bits: u64, val_bits: u64) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_dict_get_in_place")]
+    fn __molt_math_dict_get_in_place(
+        __molt_context: u64,
+        dict_ptr: *mut u8,
+        key_bits: u64,
+        out: *mut u64,
+    ) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_dict_set_in_place")]
+    fn __molt_math_dict_set_in_place(
+        __molt_context: u64,
+        dict_ptr: *mut u8,
+        key_bits: u64,
+        val_bits: u64,
+    ) -> i32;
     fn __molt_math_list_len(ptr: *mut u8) -> usize;
-    fn __molt_math_seq_snapshot(ptr: *mut u8, out_ptr: *mut *const u64, out_len: *mut usize)
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_seq_snapshot")]
+    fn __molt_math_seq_snapshot(
+        __molt_context: u64,
+        ptr: *mut u8,
+        out_ptr: *mut *const u64,
+        out_len: *mut usize,
+    ) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_list_swap")]
+    fn __molt_math_list_swap(__molt_context: u64, list_bits: u64, left: usize, right: usize)
     -> i32;
-    fn __molt_math_list_swap(list_bits: u64, left: usize, right: usize) -> i32;
 }
 
 /// # Safety
@@ -667,7 +821,9 @@ pub unsafe fn dict_get_in_place(
     key_bits: u64,
 ) -> Result<Option<u64>, ErrorIndicatorSet> {
     let mut out: u64 = 0;
-    let ok = unsafe { __molt_math_dict_get_in_place(dict_ptr, key_bits, &mut out) };
+    let ok = unsafe {
+        __molt_math_dict_get_in_place(_py.attached_context(), dict_ptr, key_bits, &mut out)
+    };
     match ok {
         1 => Ok(Some(out)),
         0 => Ok(None),
@@ -687,7 +843,9 @@ pub unsafe fn dict_set_in_place(
     key_bits: u64,
     val_bits: u64,
 ) -> bool {
-    match unsafe { __molt_math_dict_set_in_place(dict_ptr, key_bits, val_bits) } {
+    match unsafe {
+        __molt_math_dict_set_in_place(_py.attached_context(), dict_ptr, key_bits, val_bits)
+    } {
         1 => true,
         0 => false,
         _ => unreachable!("invalid dictionary mutation status"),
@@ -704,18 +862,20 @@ pub unsafe fn list_len(ptr: *mut u8) -> usize {
 /// # Safety
 ///
 /// `ptr` must refer to a live Molt list or tuple for the duration of this call.
-pub unsafe fn seq_snapshot(ptr: *mut u8) -> Option<OwnedBridgeHandleSnapshot> {
+pub unsafe fn seq_snapshot(_py: &PyToken, ptr: *mut u8) -> Option<OwnedBridgeHandleSnapshot<'_>> {
     let mut out_ptr: *const u64 = std::ptr::null();
     let mut out_len = 0usize;
-    let ok = unsafe { __molt_math_seq_snapshot(ptr, &mut out_ptr, &mut out_len) };
+    let ok = unsafe {
+        __molt_math_seq_snapshot(_py.attached_context(), ptr, &mut out_ptr, &mut out_len)
+    };
     if ok == 0 {
         return None;
     }
-    Some(unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) })
+    Some(unsafe { bridge_owned_handle_snapshot(_py, out_ptr, out_len) })
 }
 
-pub fn list_swap(list_bits: u64, left: usize, right: usize) -> bool {
-    unsafe { __molt_math_list_swap(list_bits, left, right) != 0 }
+pub fn list_swap(_py: &PyToken, list_bits: u64, left: usize, right: usize) -> bool {
+    unsafe { __molt_math_list_swap(_py.attached_context(), list_bits, left, right) != 0 }
 }
 
 // ---------------------------------------------------------------------------
@@ -723,26 +883,30 @@ pub fn list_swap(list_bits: u64, left: usize, right: usize) -> bool {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_math_molt_iter(bits: u64) -> u64;
-    fn __molt_math_raise_not_iterable(bits: u64) -> u64;
-    fn __molt_math_molt_sorted_builtin(bits: u64) -> u64;
-    fn __molt_math_molt_mul(a: u64, b: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_molt_iter")]
+    fn __molt_math_molt_iter(__molt_context: u64, bits: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_raise_not_iterable")]
+    fn __molt_math_raise_not_iterable(__molt_context: u64, bits: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_molt_sorted_builtin")]
+    fn __molt_math_molt_sorted_builtin(__molt_context: u64, bits: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_molt_mul")]
+    fn __molt_math_molt_mul(__molt_context: u64, a: u64, b: u64) -> u64;
 }
 
 pub fn molt_iter(_py: &PyToken, bits: u64) -> u64 {
-    unsafe { __molt_math_molt_iter(bits) }
+    unsafe { __molt_math_molt_iter(_py.attached_context(), bits) }
 }
 
 pub fn raise_not_iterable(_py: &PyToken, bits: u64) -> u64 {
-    unsafe { __molt_math_raise_not_iterable(bits) }
+    unsafe { __molt_math_raise_not_iterable(_py.attached_context(), bits) }
 }
 
 pub fn molt_sorted_builtin(_py: &PyToken, bits: u64) -> u64 {
-    unsafe { __molt_math_molt_sorted_builtin(bits) }
+    unsafe { __molt_math_molt_sorted_builtin(_py.attached_context(), bits) }
 }
 
 pub fn molt_mul(_py: &PyToken, a: u64, b: u64) -> u64 {
-    unsafe { __molt_math_molt_mul(a, b) }
+    unsafe { __molt_math_molt_mul(_py.attached_context(), a, b) }
 }
 
 // ---------------------------------------------------------------------------
@@ -750,7 +914,8 @@ pub fn molt_mul(_py: &PyToken, a: u64, b: u64) -> u64 {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_math_require_random_entropy() -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_require_random_entropy")]
+    fn __molt_math_require_random_entropy(__molt_context: u64) -> i32;
     fn __molt_math_fill_os_random(buf_ptr: *mut u8, buf_len: usize) -> i32;
 }
 
@@ -758,7 +923,7 @@ unsafe extern "C" {
 pub struct FillOsRandomError;
 
 pub fn require_random_entropy(_py: &PyToken) -> bool {
-    unsafe { __molt_math_require_random_entropy() != 0 }
+    unsafe { __molt_math_require_random_entropy(_py.attached_context()) != 0 }
 }
 
 pub fn fill_os_random(buf: &mut [u8]) -> Result<(), FillOsRandomError> {
@@ -775,44 +940,63 @@ pub fn fill_os_random(buf: &mut [u8]) -> Result<(), FillOsRandomError> {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_math_dict_new(capacity_bits: u64) -> u64;
-    fn __molt_math_hash_builtin(val_bits: u64) -> u64;
-    fn __molt_math_slice_new(start_bits: u64, stop_bits: u64, step_bits: u64) -> u64;
-    fn __molt_math_index(obj_bits: u64, key_bits: u64) -> u64;
-    fn __molt_math_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_dict_new")]
+    fn __molt_math_dict_new(__molt_context: u64, capacity_bits: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_hash_builtin")]
+    fn __molt_math_hash_builtin(__molt_context: u64, val_bits: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_slice_new")]
+    fn __molt_math_slice_new(
+        __molt_context: u64,
+        start_bits: u64,
+        stop_bits: u64,
+        step_bits: u64,
+    ) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_index")]
+    fn __molt_math_index(__molt_context: u64, obj_bits: u64, key_bits: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_alloc_bytes")]
+    fn __molt_math_alloc_bytes(
+        __molt_context: u64,
+        data_ptr: *const u8,
+        data_len: usize,
+    ) -> *mut u8;
 }
 
-pub fn molt_dict_new(capacity_bits: u64) -> u64 {
-    unsafe { __molt_math_dict_new(capacity_bits) }
+pub fn molt_dict_new(_py: &PyToken, capacity_bits: u64) -> u64 {
+    unsafe { __molt_math_dict_new(_py.attached_context(), capacity_bits) }
 }
 
-pub fn molt_hash_builtin(val_bits: u64) -> u64 {
-    unsafe { __molt_math_hash_builtin(val_bits) }
+pub fn molt_hash_builtin(_py: &PyToken, val_bits: u64) -> u64 {
+    unsafe { __molt_math_hash_builtin(_py.attached_context(), val_bits) }
 }
 
-pub fn molt_slice_new(start_bits: u64, stop_bits: u64, step_bits: u64) -> u64 {
-    unsafe { __molt_math_slice_new(start_bits, stop_bits, step_bits) }
+pub fn molt_slice_new(_py: &PyToken, start_bits: u64, stop_bits: u64, step_bits: u64) -> u64 {
+    unsafe { __molt_math_slice_new(_py.attached_context(), start_bits, stop_bits, step_bits) }
 }
 
-pub fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
-    unsafe { __molt_math_index(obj_bits, key_bits) }
+pub fn molt_index(_py: &PyToken, obj_bits: u64, key_bits: u64) -> u64 {
+    unsafe { __molt_math_index(_py.attached_context(), obj_bits, key_bits) }
 }
 
 pub fn alloc_bytes(_py: &PyToken, data: &[u8]) -> *mut u8 {
-    unsafe { __molt_math_alloc_bytes(data.as_ptr(), data.len()) }
+    unsafe { __molt_math_alloc_bytes(_py.attached_context(), data.as_ptr(), data.len()) }
 }
 
 // Guarded statistics kernels only inspect exact builtin storage. These predicates
 // use canonical runtime classes and never execute a user protocol.
 unsafe extern "C" {
-    fn __molt_math_exact_builtin_sequence(bits: u64) -> bool;
-    fn __molt_math_exact_builtin_real(bits: u64) -> bool;
-    fn __molt_math_not_implemented_bits() -> u64;
-    fn __molt_math_molt_add(a: u64, b: u64) -> u64;
-    fn __molt_math_molt_div(a: u64, b: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_exact_builtin_sequence")]
+    fn __molt_math_exact_builtin_sequence(__molt_context: u64, bits: u64) -> bool;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_exact_builtin_real")]
+    fn __molt_math_exact_builtin_real(__molt_context: u64, bits: u64) -> bool;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_not_implemented_bits")]
+    fn __molt_math_not_implemented_bits(__molt_context: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_molt_add")]
+    fn __molt_math_molt_add(__molt_context: u64, a: u64, b: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_math_molt_div")]
+    fn __molt_math_molt_div(__molt_context: u64, a: u64, b: u64) -> u64;
 }
 pub fn exact_builtin_sequence(_py: &PyToken, bits: u64) -> bool {
-    unsafe { __molt_math_exact_builtin_sequence(bits) }
+    unsafe { __molt_math_exact_builtin_sequence(_py.attached_context(), bits) }
 }
 #[inline]
 pub fn exact_builtin_real(_py: &PyToken, bits: u64) -> bool {
@@ -820,14 +1004,14 @@ pub fn exact_builtin_real(_py: &PyToken, bits: u64) -> bool {
     if value.is_int() || value.is_bool() || value.as_float().is_some() {
         return true;
     }
-    unsafe { __molt_math_exact_builtin_real(bits) }
+    unsafe { __molt_math_exact_builtin_real(_py.attached_context(), bits) }
 }
 pub fn not_implemented_bits(_py: &PyToken) -> u64 {
-    unsafe { __molt_math_not_implemented_bits() }
+    unsafe { __molt_math_not_implemented_bits(_py.attached_context()) }
 }
 pub fn molt_add(_py: &PyToken, a: u64, b: u64) -> u64 {
-    unsafe { __molt_math_molt_add(a, b) }
+    unsafe { __molt_math_molt_add(_py.attached_context(), a, b) }
 }
 pub fn molt_div(_py: &PyToken, a: u64, b: u64) -> u64 {
-    unsafe { __molt_math_molt_div(a, b) }
+    unsafe { __molt_math_molt_div(_py.attached_context(), a, b) }
 }

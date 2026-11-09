@@ -6,12 +6,12 @@ fn class_with_field(py: &PyToken<'_>) -> u64 {
     let field = dynamic_attr_name_bits(py, b"field").unwrap();
     let offsets_key = dynamic_attr_name_bits(py, b"__molt_field_offsets__").unwrap();
     let size_key = dynamic_attr_name_bits(py, b"__molt_layout_size__").unwrap();
-    let class = crate::molt_class_new(name);
+    let class = crate::molt_class_new_attached_body(py, name);
     let offsets = crate::alloc_dict_with_pairs(py, &[field, MoltObject::from_int(0).bits()]);
     assert!(!offsets.is_null());
     let offsets = MoltObject::from_ptr(offsets).bits();
-    crate::molt_set_attr_name(class, offsets_key, offsets);
-    crate::molt_set_attr_name(class, size_key, MoltObject::from_int(16).bits());
+    crate::molt_set_attr_name_attached_body(py, class, offsets_key, offsets);
+    crate::molt_set_attr_name_attached_body(py, class, size_key, MoltObject::from_int(16).bits());
     assert!(!exception_pending(py));
     unsafe { class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap()) }
         .expect("seal field layout");
@@ -128,7 +128,7 @@ fn task_construction_without_poll_address_still_owns_capture_storage() {
             let owner_ptr = obj_from_bits(owner).as_ptr().unwrap();
             let baseline = (*header_from_obj_ptr(owner_ptr)).ref_count_snapshot();
             for kind in [crate::TASK_KIND_FUTURE, crate::TASK_KIND_COROUTINE] {
-                let task = crate::molt_task_new(0, 8, kind);
+                let task = crate::molt_task_new_attached_body(py, 0, 8, kind);
                 let ptr = obj_from_bits(task).as_ptr().unwrap();
                 assert_eq!(object_shape_id(ptr), ObjectShapeId::GenericTaskPayload);
                 inc_ref_bits(py, owner);
@@ -166,20 +166,28 @@ fn native_iterator_cursor_is_not_managed_field_or_dictionary_storage() {
             let source = crate::test_support::with_public_type_class(
                 crate::molt_itertools_repeat_type,
                 |public_class| {
-                    crate::molt_itertools_repeat_new(
+                    crate::molt_itertools_repeat_new_attached_body(
+                        py.core_token(),
                         public_class,
                         value,
                         MoltObject::from_int(4).bits(),
                     )
                 },
             );
-            let readers = crate::molt_itertools_tee(source, MoltObject::from_int(1).bits());
+            let readers = crate::molt_itertools_tee_attached_body(
+                py.core_token(),
+                source,
+                MoltObject::from_int(1).bits(),
+            );
             assert!(!exception_pending(py));
             let reader = seq_access::item(obj_from_bits(readers).as_ptr().unwrap(), 0).unwrap();
             inc_ref_bits(py, reader);
             dec_ref_bits(py, readers);
             assert!(!exception_pending(py));
-            assert_eq!(crate::molt_itertools_tee_next(reader), value);
+            assert_eq!(
+                crate::molt_itertools_tee_next_attached_body(py.core_token(), reader),
+                value
+            );
             let ptr = obj_from_bits(reader).as_ptr().unwrap();
             let cursor = ptr
                 .cast::<molt_runtime_core::itertools_tee::TeeCursor>()
@@ -213,7 +221,7 @@ fn native_iterator_cursor_is_not_managed_field_or_dictionary_storage() {
             // Normal attribute lookup must pass the native payload untouched
             // before binding the public copy descriptor.
             let key = dynamic_attr_name_bits(py, b"__copy__").unwrap();
-            let bound = crate::molt_get_attr_name(reader, key);
+            let bound = crate::molt_get_attr_name_attached_body(py, reader, key);
             assert!(!exception_pending(py));
             let copied = call_callable0(py, bound);
             assert!(!exception_pending(py));
@@ -223,9 +231,18 @@ fn native_iterator_cursor_is_not_managed_field_or_dictionary_storage() {
             let constructed = call_callable1(py, class, reader);
             assert!(!exception_pending(py), "tee class constructor failed");
             assert_ne!(constructed, reader);
-            assert_eq!(crate::molt_itertools_tee_next(constructed), value);
-            assert_eq!(crate::molt_itertools_tee_next(copied), value);
-            assert_eq!(crate::molt_itertools_tee_next(reader), value);
+            assert_eq!(
+                crate::molt_itertools_tee_next_attached_body(py.core_token(), constructed),
+                value
+            );
+            assert_eq!(
+                crate::molt_itertools_tee_next_attached_body(py.core_token(), copied),
+                value
+            );
+            assert_eq!(
+                crate::molt_itertools_tee_next_attached_body(py.core_token(), reader),
+                value
+            );
             for bits in [constructed, copied, bound, key, reader, source] {
                 dec_ref_bits(py, bits);
             }

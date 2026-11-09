@@ -12251,9 +12251,9 @@ pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec]
     },
     ReservedRuntimeCallableSpec {
         index: 22,
-        runtime_name: "molt_cpython_abi_cext_call_trampoline",
-        import_name: "cpython_abi_cext_call_trampoline",
-        import: WasmRuntimeImport::CpythonAbiCextCallTrampoline,
+        runtime_name: "molt_cpython_abi_cext_call_trampoline_admitted",
+        import_name: "cpython_abi_cext_call_trampoline_admitted",
+        import: WasmRuntimeImport::CpythonAbiCextCallTrampolineAdmitted,
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
         trampoline_abi: RuntimeCallableTrampolineAbi::CallFrame,
@@ -15571,8 +15571,8 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_types_prepare_class" => Some(WasmRuntimeImport::TypesPrepareClass),
         "molt_types_resolve_bases" => Some(WasmRuntimeImport::TypesResolveBases),
         "molt_types_new_class" => Some(WasmRuntimeImport::TypesNewClass),
-        "molt_cpython_abi_cext_call_trampoline" => {
-            Some(WasmRuntimeImport::CpythonAbiCextCallTrampoline)
+        "molt_cpython_abi_cext_call_trampoline_admitted" => {
+            Some(WasmRuntimeImport::CpythonAbiCextCallTrampolineAdmitted)
         }
         "molt_importlib_import_transaction" => Some(WasmRuntimeImport::ImportlibImportTransaction),
         "molt_importlib_module_spec_init" => Some(WasmRuntimeImport::ImportlibModuleSpecInit),

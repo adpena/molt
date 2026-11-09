@@ -67,7 +67,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
     defined_functions: &BTreeSet<String>,
     output_is_ptr: &mut bool,
     stateful: bool,
-    entry_block: Block,
+    _entry_block: Block,
     local_profile_struct: Option<FuncRef>,
     profile_enabled_val: Option<Value>,
     guard_profile_only: bool,
@@ -490,7 +490,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let offset = builder.ins().iconst(types::I64, op.value.unwrap_or(0));
             let obj_ptr = if stateful && args.first().map(String::as_str) == Some("self") {
-                builder.block_params(entry_block)[0]
+                compiled_argument(builder, 0)
             } else {
                 let obj = var_get_boxed_overflow_safe(
                     &mut *module,
@@ -535,7 +535,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             .expect("Value not found");
             let offset = builder.ins().iconst(types::I64, op.value.unwrap_or(0));
             let obj_ptr = if stateful && args.first().map(String::as_str) == Some("self") {
-                builder.block_params(entry_block)[0]
+                compiled_argument(builder, 0)
             } else {
                 let obj = var_get_boxed_overflow_safe(
                     &mut *module,

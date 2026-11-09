@@ -46,7 +46,7 @@ pub(in crate::tk) fn handle_listbox_widget_path_command(
                 ));
             }
             let Some(mut insert_index) =
-                parse_listbox_index_bits(args[2], widget.list_items.len(), true)
+                parse_listbox_index_bits(py, args[2], widget.list_items.len(), true)
             else {
                 return Err(app_tcl_error_locked(
                     py,
@@ -74,7 +74,7 @@ pub(in crate::tk) fn handle_listbox_widget_path_command(
                     "listbox delete expects first index and optional last index",
                 ));
             }
-            let Some(first) = parse_listbox_index_bits(args[2], widget.list_items.len(), false)
+            let Some(first) = parse_listbox_index_bits(py, args[2], widget.list_items.len(), false)
             else {
                 return Err(app_tcl_error_locked(
                     py,
@@ -83,7 +83,8 @@ pub(in crate::tk) fn handle_listbox_widget_path_command(
                 ));
             };
             let last = if args.len() == 4 {
-                let Some(last) = parse_listbox_index_bits(args[3], widget.list_items.len(), false)
+                let Some(last) =
+                    parse_listbox_index_bits(py, args[3], widget.list_items.len(), false)
                 else {
                     return Err(app_tcl_error_locked(
                         py,
@@ -117,7 +118,7 @@ pub(in crate::tk) fn handle_listbox_widget_path_command(
                     "listbox get expects first index and optional last index",
                 ));
             }
-            let Some(first) = parse_listbox_index_bits(args[2], widget.list_items.len(), false)
+            let Some(first) = parse_listbox_index_bits(py, args[2], widget.list_items.len(), false)
             else {
                 return Err(app_tcl_error_locked(
                     py,
@@ -126,7 +127,8 @@ pub(in crate::tk) fn handle_listbox_widget_path_command(
                 ));
             };
             if args.len() == 4 {
-                let Some(last) = parse_listbox_index_bits(args[3], widget.list_items.len(), false)
+                let Some(last) =
+                    parse_listbox_index_bits(py, args[3], widget.list_items.len(), false)
                 else {
                     return Err(app_tcl_error_locked(
                         py,
@@ -174,7 +176,7 @@ pub(in crate::tk) fn handle_listbox_widget_path_command(
                     "index expects exactly one index argument",
                 ));
             }
-            let Some(index) = parse_listbox_index_bits(args[2], widget.list_items.len(), false)
+            let Some(index) = parse_listbox_index_bits(py, args[2], widget.list_items.len(), false)
             else {
                 return Err(app_tcl_error_locked(
                     py,
@@ -207,7 +209,7 @@ pub(in crate::tk) fn handle_listbox_widget_path_command(
                 ));
             }
             let op = get_string_arg(py, handle, args[3], "compare operator")?;
-            let Some(left) = parse_listbox_index_bits(args[2], widget.list_items.len(), false)
+            let Some(left) = parse_listbox_index_bits(py, args[2], widget.list_items.len(), false)
             else {
                 return Err(app_tcl_error_locked(
                     py,
@@ -215,7 +217,7 @@ pub(in crate::tk) fn handle_listbox_widget_path_command(
                     "listbox compare index1 must be an integer or end",
                 ));
             };
-            let Some(right) = parse_listbox_index_bits(args[4], widget.list_items.len(), false)
+            let Some(right) = parse_listbox_index_bits(py, args[4], widget.list_items.len(), false)
             else {
                 return Err(app_tcl_error_locked(
                     py,
@@ -261,7 +263,7 @@ pub(in crate::tk) fn handle_listbox_widget_path_command(
                         ));
                     }
                     let Some(index) =
-                        parse_listbox_index_bits(args[3], widget.list_items.len(), false)
+                        parse_listbox_index_bits(py, args[3], widget.list_items.len(), false)
                     else {
                         return Err(app_tcl_error_locked(
                             py,
@@ -282,7 +284,7 @@ pub(in crate::tk) fn handle_listbox_widget_path_command(
                         ));
                     }
                     let Some(first) =
-                        parse_listbox_index_bits(args[3], widget.list_items.len(), false)
+                        parse_listbox_index_bits(py, args[3], widget.list_items.len(), false)
                     else {
                         return Err(app_tcl_error_locked(
                             py,
@@ -292,7 +294,7 @@ pub(in crate::tk) fn handle_listbox_widget_path_command(
                     };
                     let last = if args.len() == 5 {
                         let Some(last) =
-                            parse_listbox_index_bits(args[4], widget.list_items.len(), false)
+                            parse_listbox_index_bits(py, args[4], widget.list_items.len(), false)
                         else {
                             return Err(app_tcl_error_locked(
                                 py,
@@ -317,7 +319,7 @@ pub(in crate::tk) fn handle_listbox_widget_path_command(
                         ));
                     }
                     let Some(first) =
-                        parse_listbox_index_bits(args[3], widget.list_items.len(), false)
+                        parse_listbox_index_bits(py, args[3], widget.list_items.len(), false)
                     else {
                         return Err(app_tcl_error_locked(
                             py,
@@ -327,7 +329,7 @@ pub(in crate::tk) fn handle_listbox_widget_path_command(
                     };
                     let last = if args.len() == 5 {
                         let Some(last) =
-                            parse_listbox_index_bits(args[4], widget.list_items.len(), false)
+                            parse_listbox_index_bits(py, args[4], widget.list_items.len(), false)
                         else {
                             return Err(app_tcl_error_locked(
                                 py,
@@ -352,7 +354,7 @@ pub(in crate::tk) fn handle_listbox_widget_path_command(
                         ));
                     }
                     let Some(index) =
-                        parse_listbox_index_bits(args[3], widget.list_items.len(), false)
+                        parse_listbox_index_bits(py, args[3], widget.list_items.len(), false)
                     else {
                         return Err(app_tcl_error_locked(
                             py,
@@ -401,7 +403,7 @@ pub(in crate::tk) fn handle_listbox_widget_path_command(
                     "listbox itemcget expects index and option",
                 ));
             }
-            let Some(index) = parse_listbox_index_bits(args[2], widget.list_items.len(), false)
+            let Some(index) = parse_listbox_index_bits(py, args[2], widget.list_items.len(), false)
             else {
                 return Err(app_tcl_error_locked(
                     py,
@@ -432,7 +434,7 @@ pub(in crate::tk) fn handle_listbox_widget_path_command(
                     "listbox itemconfigure expects index and optional key/value options",
                 ));
             }
-            let Some(index) = parse_listbox_index_bits(args[2], widget.list_items.len(), false)
+            let Some(index) = parse_listbox_index_bits(py, args[2], widget.list_items.len(), false)
             else {
                 return Err(app_tcl_error_locked(
                     py,
@@ -494,7 +496,7 @@ pub(in crate::tk) fn handle_listbox_widget_path_command(
                     "listbox activate expects exactly one index argument",
                 ));
             }
-            let Some(index) = parse_listbox_index_bits(args[2], widget.list_items.len(), false)
+            let Some(index) = parse_listbox_index_bits(py, args[2], widget.list_items.len(), false)
             else {
                 return Err(app_tcl_error_locked(
                     py,

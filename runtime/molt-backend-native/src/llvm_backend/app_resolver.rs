@@ -6,6 +6,8 @@ use crate::app_resolver_abi::{
     APP_RESOLVER_TABLE_SYMBOL, dump_app_callable_manifest,
 };
 #[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
+#[cfg(feature = "llvm")]
 use inkwell::{
     AddressSpace, IntPredicate,
     builder::Builder,
@@ -78,9 +80,22 @@ impl<'ctx> LlvmBackend<'ctx> {
             // Address-take the callable. Declare it `External` if a prior
             // runtime-import declaration did not already create it; with opaque
             // pointers the declared signature is irrelevant for address use.
-            let callable_fn = module.get_function(name).unwrap_or_else(|| {
+            let callable_fn = module.get_execution_function(name).unwrap_or_else(|| {
                 let placeholder_ty = i64_ty.fn_type(&[i64_ty.into()], false);
-                module.add_function(name, placeholder_ty, Some(Linkage::External))
+                if molt_ir::runtime_callable_abi_generated::runtime_execution_abi(name).is_some() {
+                    module.add_function(
+                        &crate::llvm_backend::execution_abi::execution_symbol(name),
+                        crate::llvm_backend::execution_abi::runtime_execution_type(
+                            name,
+                            placeholder_ty,
+                        ),
+                        Some(Linkage::External),
+                    )
+                } else if self.function_linkage_abis.contains_key(name) {
+                    module.add_compiled_function(name, placeholder_ty, Some(Linkage::External))
+                } else {
+                    panic!("LLVM resolver target `{name}` has no runtime or compiled execution ABI")
+                }
             });
             let func_addr = callable_fn.as_global_value().as_pointer_value();
 

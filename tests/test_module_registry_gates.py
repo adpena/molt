@@ -1154,13 +1154,15 @@ def test_module_ensure_is_the_only_state_transition_owner() -> None:
         r'#\[cfg\(test\)\]\s*#\[path\s*=\s*"module_table/tests.rs"\]\s*pub\(crate\)\s+mod tests;',
         owner_source,
     )
+    # Generated ABI wrappers forward to this one state-transition body.
+    assert owner_source.count("fn molt_module_ensure_attached_body(") == 1
     offenders: list[str] = []
     for path in RUNTIME_SRC.rglob("*.rs"):
         if path in (owner, owner_tests):
             continue
         text = _strip_line_comments(path.read_text(encoding="utf-8", errors="replace"))
-        if "fn molt_module_ensure" in text:
-            offenders.append(f"{path}: defines molt_module_ensure")
+        if "fn molt_module_ensure_attached_body(" in text:
+            offenders.append(f"{path}: defines molt_module_ensure_attached_body")
         if "fn molt_module_registry_install" in text:
             offenders.append(f"{path}: defines molt_module_registry_install")
         # The table state bytes and slots may only be touched inside the
@@ -1205,8 +1207,15 @@ def test_isolate_import_is_only_the_wasm_module_id_projection() -> None:
             continue
         if path == RUNTIME_SRC / "builtins" / "module_table.rs":
             assert '#[cfg(target_arch = "wasm32")]' in code
-            assert '#[link(wasm_import_module = "env")]' in code
-            assert "fn molt_isolate_import(module_id: u64) -> u64;" in code
+            assert '#[link(wasm_import_module = "env")]' not in code
+            assert (
+                '#[link_name = molt_codegen_abi::attached_symbol!("molt_isolate_import")]'
+                in code
+            )
+            assert (
+                "fn molt_isolate_import(context: u64, module_id: u64) -> u64;" in code
+            )
+            assert "molt_isolate_import(_py.attached_context(), u64::from(id))" in code
             call_sites = [
                 idx
                 for idx in range(len(code))

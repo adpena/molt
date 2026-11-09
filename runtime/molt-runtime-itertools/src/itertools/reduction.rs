@@ -155,7 +155,11 @@ pub fn itertools_reduce(py: &PyToken, shape: ObjectShapeId, instance: u64) -> u6
                         let Some(iterables) = reduction_tuple(py, &[initial.bits(), source]) else {
                             return none;
                         };
-                        let chain = molt_itertools_chain_new(chain_class(py), iterables.bits());
+                        let chain = molt_itertools_chain_new_attached_body(
+                            py,
+                            chain_class(py),
+                            iterables.bits(),
+                        );
                         if exception_pending(py) {
                             return none;
                         }
@@ -171,13 +175,22 @@ pub fn itertools_reduce(py: &PyToken, shape: ObjectShapeId, instance: u64) -> u6
                         let Some(iterables) = reduction_tuple(py, &[initial.bits(), source]) else {
                             return none;
                         };
-                        let chain = molt_itertools_chain_new(chain_class(py), iterables.bits());
+                        let chain = molt_itertools_chain_new_attached_body(
+                            py,
+                            chain_class(py),
+                            iterables.bits(),
+                        );
                         if exception_pending(py) {
                             return none;
                         }
                         let chain = OwnedRuntimeValue::from_owned_bits(py, chain);
-                        let accumulated =
-                            molt_itertools_accumulate_new(class, chain.bits(), function, none);
+                        let accumulated = molt_itertools_accumulate_new_attached_body(
+                            py,
+                            class,
+                            chain.bits(),
+                            function,
+                            none,
+                        );
                         if exception_pending(py) {
                             return none;
                         }
@@ -384,7 +397,7 @@ fn state_items(
     state: u64,
     length: Option<usize>,
     value_error: bool,
-) -> Option<molt_runtime_core::OwnedBridgeHandleSnapshot> {
+) -> Option<molt_runtime_core::OwnedBridgeHandleSnapshot<'_>> {
     let kind = if value_error {
         BuiltinExc::ValueError
     } else {
@@ -405,7 +418,7 @@ fn state_items(
         );
         return None;
     };
-    let items = unsafe { seq_snapshot(pointer) };
+    let items = unsafe { seq_snapshot(py, pointer) };
     if length.is_some_and(|length| length != items.len()) {
         raise_exception::<u64>(py, kind, "invalid arguments");
         return None;

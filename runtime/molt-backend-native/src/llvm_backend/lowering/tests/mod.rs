@@ -11,6 +11,82 @@ use inkwell::context::Context;
 use inkwell::values::AnyValue;
 use molt_ir::OpKind;
 
+/// Expected IR spells logical names; project those expectations through the
+/// generated execution ABI. The emitted IR is inspected without rewriting it.
+/// Naming the hidden formal preserves LLVM's existing logical `%0` numbering.
+fn execution_ir_pattern(pattern: &str) -> String {
+    use molt_ir::runtime_callable_abi_generated::{RuntimeExecutionContext, runtime_execution_abi};
+    let mut result = String::with_capacity(pattern.len());
+    let bytes = pattern.as_bytes();
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        let start = cursor;
+        if bytes[cursor] == b'@' {
+            result.push('@');
+            cursor += 1;
+        }
+        let identifier = cursor;
+        while cursor < bytes.len()
+            && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_')
+        {
+            cursor += 1;
+        }
+        let name = &pattern[identifier..cursor];
+        let callable = cursor < bytes.len()
+            && bytes[cursor] == b'('
+            && (identifier != start || name.starts_with("molt_") || name.starts_with("__molt_"));
+        if callable {
+            let abi = runtime_execution_abi(name);
+            let attached = abi.is_none_or(|abi| abi.context == RuntimeExecutionContext::Attached);
+            result.push_str(&crate::llvm_backend::execution_abi::execution_symbol(name));
+            result.push('(');
+            cursor += 1;
+            if attached {
+                result.push_str("i64 %execution_context");
+                if cursor < bytes.len() && bytes[cursor] != b')' {
+                    result.push_str(", ");
+                }
+            }
+        } else {
+            result.push_str(name);
+        }
+        if (cursor == start || cursor == identifier) && cursor < bytes.len() {
+            let character = pattern[cursor..].chars().next().unwrap();
+            result.push(character);
+            cursor += character.len_utf8();
+        }
+    }
+    result
+}
+
+trait ExecutionIrAssertions {
+    fn contains_execution(&self, pattern: &str) -> bool;
+    fn matches_execution(&self, pattern: &str) -> std::vec::IntoIter<&str>;
+    fn find_execution(&self, pattern: &str) -> Option<usize>;
+    fn match_indices_execution(&self, pattern: &str) -> std::vec::IntoIter<(usize, &str)>;
+}
+
+impl ExecutionIrAssertions for str {
+    fn contains_execution(&self, pattern: &str) -> bool {
+        self.contains(&execution_ir_pattern(pattern))
+    }
+    fn matches_execution(&self, pattern: &str) -> std::vec::IntoIter<&str> {
+        self.matches(&execution_ir_pattern(pattern))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+    fn find_execution(&self, pattern: &str) -> Option<usize> {
+        self.find(&execution_ir_pattern(pattern))
+    }
+    fn match_indices_execution(&self, pattern: &str) -> std::vec::IntoIter<(usize, &str)> {
+        let expanded = execution_ir_pattern(pattern);
+        self.match_indices(&expanded)
+            .map(|(index, matched)| (index, &self[index..index + matched.len()]))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+}
+
 fn make_backend(ctx: &Context) -> LlvmBackend<'_> {
     let backend = LlvmBackend::new(ctx, "test");
     declare_runtime_functions(ctx, &backend.module);

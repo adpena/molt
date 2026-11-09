@@ -12,9 +12,16 @@ use molt_runtime_core::prelude::*;
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_graphlib_raise_exception(kind_code: u16, msg_ptr: *const u8, msg_len: usize) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_graphlib_raise_exception")]
+    fn __molt_graphlib_raise_exception(
+        __molt_context: u64,
+        kind_code: u16,
+        msg_ptr: *const u8,
+        msg_len: usize,
+    ) -> u64;
 
-    fn __molt_graphlib_exception_pending() -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_graphlib_exception_pending")]
+    fn __molt_graphlib_exception_pending(__molt_context: u64) -> i32;
 }
 
 pub fn raise_exception<T: ExceptionSentinel>(
@@ -23,13 +30,18 @@ pub fn raise_exception<T: ExceptionSentinel>(
     msg: &str,
 ) -> T {
     let bits = unsafe {
-        __molt_graphlib_raise_exception(type_name.into().code(), msg.as_ptr(), msg.len())
+        __molt_graphlib_raise_exception(
+            _py.attached_context(),
+            type_name.into().code(),
+            msg.as_ptr(),
+            msg.len(),
+        )
     };
     T::from_bits(bits)
 }
 
 pub fn exception_pending(_py: &CoreGilToken) -> bool {
-    unsafe { __molt_graphlib_exception_pending() != 0 }
+    unsafe { __molt_graphlib_exception_pending(_py.attached_context()) != 0 }
 }
 
 /// Trait for exception return sentinels.
@@ -61,21 +73,38 @@ impl ExceptionSentinel for () {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_graphlib_alloc_tuple(elems_ptr: *const u64, elems_len: usize) -> *mut u8;
-    fn __molt_graphlib_alloc_list(elems_ptr: *const u64, elems_len: usize) -> *mut u8;
-    fn __molt_graphlib_alloc_dict_with_pairs(pairs_ptr: *const u64, pairs_len: usize) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_graphlib_alloc_tuple")]
+    fn __molt_graphlib_alloc_tuple(
+        __molt_context: u64,
+        elems_ptr: *const u64,
+        elems_len: usize,
+    ) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_graphlib_alloc_list")]
+    fn __molt_graphlib_alloc_list(
+        __molt_context: u64,
+        elems_ptr: *const u64,
+        elems_len: usize,
+    ) -> *mut u8;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_graphlib_alloc_dict_with_pairs")]
+    fn __molt_graphlib_alloc_dict_with_pairs(
+        __molt_context: u64,
+        pairs_ptr: *const u64,
+        pairs_len: usize,
+    ) -> *mut u8;
 }
 
 pub fn alloc_tuple(_py: &CoreGilToken, elems: &[u64]) -> *mut u8 {
-    unsafe { __molt_graphlib_alloc_tuple(elems.as_ptr(), elems.len()) }
+    unsafe { __molt_graphlib_alloc_tuple(_py.attached_context(), elems.as_ptr(), elems.len()) }
 }
 
 pub fn alloc_list(_py: &CoreGilToken, elems: &[u64]) -> *mut u8 {
-    unsafe { __molt_graphlib_alloc_list(elems.as_ptr(), elems.len()) }
+    unsafe { __molt_graphlib_alloc_list(_py.attached_context(), elems.as_ptr(), elems.len()) }
 }
 
 pub fn alloc_dict_with_pairs(_py: &CoreGilToken, pairs: &[u64]) -> *mut u8 {
-    unsafe { __molt_graphlib_alloc_dict_with_pairs(pairs.as_ptr(), pairs.len()) }
+    unsafe {
+        __molt_graphlib_alloc_dict_with_pairs(_py.attached_context(), pairs.as_ptr(), pairs.len())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -116,16 +145,18 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_graphlib_dec_ref_bits(bits: u64);
-    fn __molt_graphlib_inc_ref_bits(bits: u64);
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_graphlib_dec_ref_bits")]
+    fn __molt_graphlib_dec_ref_bits(__molt_context: u64, bits: u64);
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_graphlib_inc_ref_bits")]
+    fn __molt_graphlib_inc_ref_bits(__molt_context: u64, bits: u64);
 }
 
 pub fn dec_ref_bits(_py: &CoreGilToken, bits: u64) {
-    unsafe { __molt_graphlib_dec_ref_bits(bits) }
+    unsafe { __molt_graphlib_dec_ref_bits(_py.attached_context(), bits) }
 }
 
 pub fn inc_ref_bits(_py: &CoreGilToken, bits: u64) {
-    unsafe { __molt_graphlib_inc_ref_bits(bits) }
+    unsafe { __molt_graphlib_inc_ref_bits(_py.attached_context(), bits) }
 }
 
 // ---------------------------------------------------------------------------
@@ -148,9 +179,23 @@ pub fn to_i64(obj: MoltObject) -> Option<i64> {
 
 #[allow(improper_ctypes)]
 unsafe extern "C" {
-    fn __molt_graphlib_dict_get_in_place(dict_ptr: *mut u8, key_bits: u64, out: *mut u64) -> i32;
-    fn __molt_graphlib_dict_set_in_place(dict_ptr: *mut u8, key_bits: u64, val_bits: u64) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_graphlib_dict_get_in_place")]
+    fn __molt_graphlib_dict_get_in_place(
+        __molt_context: u64,
+        dict_ptr: *mut u8,
+        key_bits: u64,
+        out: *mut u64,
+    ) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_graphlib_dict_set_in_place")]
+    fn __molt_graphlib_dict_set_in_place(
+        __molt_context: u64,
+        dict_ptr: *mut u8,
+        key_bits: u64,
+        val_bits: u64,
+    ) -> i32;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_graphlib_seq_snapshot")]
     fn __molt_graphlib_seq_snapshot(
+        __molt_context: u64,
         ptr: *mut u8,
         out_ptr: *mut *const u64,
         out_len: *mut usize,
@@ -167,7 +212,9 @@ pub unsafe fn dict_get_in_place(
     key_bits: u64,
 ) -> Result<Option<u64>, molt_runtime_core::ErrorIndicatorSet> {
     let mut out: u64 = 0;
-    let ok = unsafe { __molt_graphlib_dict_get_in_place(dict_ptr, key_bits, &mut out) };
+    let ok = unsafe {
+        __molt_graphlib_dict_get_in_place(_py.attached_context(), dict_ptr, key_bits, &mut out)
+    };
     match ok {
         1 => Ok(Some(out)),
         0 => Ok(None),
@@ -187,7 +234,9 @@ pub unsafe fn dict_set_in_place(
     key_bits: u64,
     val_bits: u64,
 ) -> bool {
-    match unsafe { __molt_graphlib_dict_set_in_place(dict_ptr, key_bits, val_bits) } {
+    match unsafe {
+        __molt_graphlib_dict_set_in_place(_py.attached_context(), dict_ptr, key_bits, val_bits)
+    } {
         1 => true,
         0 => false,
         _ => unreachable!("invalid dictionary mutation status"),
@@ -197,13 +246,15 @@ pub unsafe fn dict_set_in_place(
 /// # Safety
 ///
 /// `ptr` must refer to a live Molt list or tuple for the duration of this call.
-pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
+pub unsafe fn seq_snapshot(_py: &PyToken, ptr: *mut u8) -> OwnedBridgeHandleSnapshot<'_> {
     let mut out_ptr: *const u64 = std::ptr::null();
     let mut out_len = 0usize;
-    let ok = unsafe { __molt_graphlib_seq_snapshot(ptr, &mut out_ptr, &mut out_len) };
+    let ok = unsafe {
+        __molt_graphlib_seq_snapshot(_py.attached_context(), ptr, &mut out_ptr, &mut out_len)
+    };
     if ok == 0 {
         out_ptr = std::ptr::null();
         out_len = 0;
     }
-    unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) }
+    unsafe { bridge_owned_handle_snapshot(_py, out_ptr, out_len) }
 }

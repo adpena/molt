@@ -8,9 +8,10 @@ use super::common::{
 use crate::OpIR;
 use crate::wasm::WasmFrameSyntheticLocal;
 use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_data::DataSegmentRef;
-use wasm_encoder::{BlockType, Function, Instruction};
+use wasm_encoder::{BlockType, Instruction};
 
 pub(super) fn emit_guarded_field_op(
     context: &mut LocalStateOpContext<'_>,

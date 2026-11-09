@@ -17,6 +17,7 @@ from tools.wasm_abi_gen.manifest import (
     resolver_error_table,
     wasm_socket_constant_table,
     wasi_errno_table,
+    _public_c_api_signatures,
 )
 
 
@@ -30,6 +31,19 @@ def render_py(
     _shared_runtime_callables: Callable[[dict], list[dict]],
     _split_runtime_external_export_name: Callable[[str], str],
 ) -> str:
+    from tools.wasm_abi_gen.execution_context import runtime_execution_specs
+
+    physical = {
+        row["symbol"]: row["physical_symbol"] for row in runtime_execution_specs(data)
+    }
+    physical_imports = {
+        physical.get(_runtime_export_name(entry), _runtime_export_name(entry)): entry[
+            "name"
+        ]
+        for entry in data["import"]
+    }
+    for name in data["runtime_export_policy"]["host_exports"]:
+        physical_imports.setdefault(physical.get(name, name), name)
     lines: list[str] = [_header("#")]
     lines.append(
         "from collections.abc import Mapping\nfrom types import MappingProxyType\nfrom typing import Literal\n\n"
@@ -209,9 +223,7 @@ def render_py(
         ]
     )
     for entry in data["import"]:
-        runtime_name = entry.get("runtime_name")
-        if runtime_name is None:
-            continue
+        runtime_name = _runtime_export_name(entry)
         lines.append(f'        "{runtime_name}": "{entry["name"]}",\n')
     lines.extend(
         [
@@ -223,7 +235,8 @@ def render_py(
         ]
     )
     for entry in data["import"]:
-        lines.append(f'    ("{entry["name"]}", "{_runtime_export_name(entry)}"),\n')
+        logical = _runtime_export_name(entry)
+        lines.append(f'    ("{entry["name"]}", "{logical}"),\n')
     lines.extend(
         [
             ")\n\n",
@@ -232,8 +245,11 @@ def render_py(
             "    for import_name, export_name in WASM_RUNTIME_IMPORT_EXPORT_NAMES\n",
             "}\n\n",
             "WASM_RUNTIME_IMPORT_BY_EXPORT: dict[str, str] = {\n",
-            "    export_name: import_name\n",
-            "    for import_name, export_name in WASM_RUNTIME_IMPORT_EXPORT_NAMES\n",
+            "    **{export_name: import_name for import_name, export_name in WASM_RUNTIME_IMPORT_EXPORT_NAMES},\n",
+            *[
+                f"    {name!r}: {semantic!r},\n"
+                for name, semantic in sorted(physical_imports.items())
+            ],
             "}\n\n",
             "def wasm_runtime_import_name(name: str) -> str | None:\n",
             "    import_name = wasm_import_name(name)\n",
@@ -402,6 +418,12 @@ def render_py(
     )
     for name, module, kind in generator_external_native_artifact_import_shapes(data):
         lines.append(f'    "{name}": ("{module}", "{kind}"),\n')
+    lines.append("}\n\n")
+    lines.append(
+        "WASM_PUBLIC_C_API_FUNCTION_SIGNATURES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {\n"
+    )
+    for name, (params, results) in _public_c_api_signatures().items():
+        lines.append(f"    {name!r}: ({params!r}, {results!r}),\n")
     lines.append("}\n\n")
     lines.append(
         "WASM_CPYTHON_ABI_LINK_IMPORT_FUNCTION_SIGNATURES: "

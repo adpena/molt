@@ -3,9 +3,9 @@ use super::call_emit::{OpLoopRuntimeCallContext, emit_op_loop_runtime_call};
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_abi_generated::op_loop_runtime_call;
+use crate::wasm_binary::Function;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_table::WasmTableRelocations;
-use wasm_encoder::Function;
 
 mod async_task_ops;
 mod exception_ops;

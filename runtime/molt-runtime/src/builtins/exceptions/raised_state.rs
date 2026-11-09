@@ -200,7 +200,7 @@ mod tests {
                 false
             }));
             assert_ne!(exception_last_bits_noinc(py), Some(original));
-            let raised = molt_exception_last_pending();
+            let raised = molt_exception_last_pending_attached_body(py);
             assert!(exception_matches_kind(
                 py,
                 raised,

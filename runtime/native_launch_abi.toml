@@ -25,7 +25,7 @@ probe_flag = "--probe"
 start_receipt_flag = "--start-receipt"
 allocator_restart_flag = "--allocator-restarted"
 start_receipt = "{\"schema\":\"molt.jit-start.v1\"}\n"
-image_marker = "#molt.jit-image.v3"
+image_marker = "#molt.jit-image.v4"
 
 # Called in this order, after the launch environment is installed and before
 # the program's entry (`molt_main`).
@@ -71,3 +71,19 @@ params = []
 name = "molt_runtime_exit"
 returns = "u64"
 params = ["u64"]
+
+# The compiled scope surrounds the entry, after start and before finish.
+[[execution]]
+name = "molt_attached_context"
+returns = "u64"
+params = []
+
+[[execution]]
+name = "molt_compiled_execution_enter"
+returns = "u64"
+params = ["u64"]
+
+[[execution]]
+name = "molt_compiled_execution_leave"
+returns = "void"
+params = ["u64", "u64"]

@@ -32,7 +32,8 @@ unsafe fn socket_reader_pull(
         if reader.eof {
             return Ok(SocketReaderPull::Eof);
         }
-        let recv_bits = molt_socket_recv(
+        let recv_bits = molt_socket_recv_attached_body(
+            _py,
             reader.socket_bits,
             MoltObject::from_int(4096).bits(),
             MoltObject::from_int(0).bits(),
@@ -159,12 +160,14 @@ fn socket_reader_take(_py: &PyToken<'_>, reader: &mut MoltSocketReader, count: u
 }
 
 #[cfg(molt_net)]
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid socket handle from `molt_socket_new`/`molt_socket_clone`.
-pub unsafe extern "C" fn molt_socket_reader_new(sock_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let clone_bits = unsafe { molt_socket_clone(sock_bits) };
+pub(crate) unsafe fn molt_socket_reader_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    sock_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let clone_bits = unsafe { molt_socket_clone_attached_body(_py, sock_bits) };
         if obj_from_bits(clone_bits).is_none() {
             return MoltObject::none().bits();
         }
@@ -180,30 +183,34 @@ pub unsafe extern "C" fn molt_socket_reader_new(sock_bits: u64) -> u64 {
 }
 
 #[cfg(molt_net)]
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
-pub unsafe extern "C" fn molt_socket_reader_drop(reader_bits: u64) -> u64 {
+pub(crate) unsafe fn molt_socket_reader_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    reader_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let reader_ptr = ptr_from_bits(reader_bits);
             if reader_ptr.is_null() {
                 return MoltObject::none().bits();
             }
             let reader = Box::from_raw(reader_ptr as *mut MoltSocketReader);
-            molt_socket_drop(reader.socket_bits);
+            molt_socket_drop_attached_body(_py, reader.socket_bits);
             MoltObject::none().bits()
         })
     }
 }
 
 #[cfg(molt_net)]
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
-pub unsafe extern "C" fn molt_socket_reader_at_eof(reader_bits: u64) -> u64 {
+pub(crate) unsafe fn molt_socket_reader_at_eof_attached_body(
+    _py: &crate::PyToken<'_>,
+    reader_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let reader_ptr = ptr_from_bits(reader_bits);
             if reader_ptr.is_null() {
                 return MoltObject::from_bool(true).bits();
@@ -215,12 +222,15 @@ pub unsafe extern "C" fn molt_socket_reader_at_eof(reader_bits: u64) -> u64 {
 }
 
 #[cfg(molt_net)]
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
-pub unsafe extern "C" fn molt_socket_reader_read(reader_bits: u64, n_bits: u64) -> u64 {
+pub(crate) unsafe fn molt_socket_reader_read_attached_body(
+    _py: &crate::PyToken<'_>,
+    reader_bits: u64,
+    n_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let reader_ptr = ptr_from_bits(reader_bits);
             if reader_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -280,12 +290,14 @@ pub unsafe extern "C" fn molt_socket_reader_read(reader_bits: u64, n_bits: u64) 
 }
 
 #[cfg(molt_net)]
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
-pub unsafe extern "C" fn molt_socket_reader_readline(reader_bits: u64) -> u64 {
+pub(crate) unsafe fn molt_socket_reader_readline_attached_body(
+    _py: &crate::PyToken<'_>,
+    reader_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let reader_ptr = ptr_from_bits(reader_bits);
             if reader_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -308,15 +320,15 @@ pub unsafe extern "C" fn molt_socket_reader_readline(reader_bits: u64) -> u64 {
 }
 
 #[cfg(molt_net)]
-#[unsafe(no_mangle)]
 /// # Safety
 /// Caller must pass a valid socket reader handle from `molt_socket_reader_new`.
-pub unsafe extern "C" fn molt_socket_reader_readline_limit(
+pub(crate) unsafe fn molt_socket_reader_readline_limit_attached_body(
+    _py: &crate::PyToken<'_>,
     reader_bits: u64,
     limit_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let reader_ptr = ptr_from_bits(reader_bits);
             if reader_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -373,3 +385,5 @@ pub unsafe extern "C" fn molt_socket_reader_readline_limit(
         })
     }
 }
+
+include!("../../attached_exports_generated/async_rt/sockets/reader.rs");

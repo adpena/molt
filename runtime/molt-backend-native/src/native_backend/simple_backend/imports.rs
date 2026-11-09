@@ -34,10 +34,9 @@ impl SimpleBackend {
         let mut signature = module.make_signature();
         signature.params.push(AbiParam::new(types::I64));
         signature.returns.push(AbiParam::new(types::I64));
-        let function = module
-            .declare_function(name, linkage, &signature)
+        let function = declare_python_execution_function(module, name, linkage, &signature)
             .unwrap_or_else(|error| {
-                panic!("task poll target `{name}` must have ABI (i64) -> i64: {error}")
+                panic!("task poll target `{name}` must have ABI (context, task) -> i64: {error}")
             });
         let local = module.declare_func_in_func(function, builder.func);
         builder.ins().func_addr(types::I64, local)
@@ -95,9 +94,8 @@ impl SimpleBackend {
         for ret in returns {
             sig.returns.push(AbiParam::new(*ret));
         }
-        let func_id = module
-            .declare_function(name, Linkage::Import, &sig)
-            .unwrap_or_else(|err| {
+        let func_id =
+            declare_runtime_execution_function(module, name, &sig).unwrap_or_else(|err| {
                 panic!("import declaration mismatch for `{name}`: expected {shape:?}: {err}")
             });
         import_ids.insert(name, (func_id, shape));

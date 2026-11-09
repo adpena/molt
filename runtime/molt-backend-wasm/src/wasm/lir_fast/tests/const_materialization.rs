@@ -30,7 +30,7 @@ fn trivial_const_return() {
     let func = make_const_return_func(42);
     let output = lower_tir_to_wasm(&func).test_view();
 
-    assert_eq!(output.param_types, vec![]);
+    assert_eq!(output.param_types, vec![ValType::I64]);
     assert_eq!(output.result_types, vec![ValType::I64]);
 
     // Should contain i64.const 42 somewhere.

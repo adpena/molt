@@ -12,6 +12,8 @@
 #[cfg(feature = "llvm")]
 use super::LlvmBackend;
 #[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
+#[cfg(feature = "llvm")]
 use inkwell::{AddressSpace, module::Linkage, types::BasicTypeEnum, values::BasicValueEnum};
 #[cfg(feature = "llvm")]
 use molt_ir::ModuleRegistryIR;
@@ -67,12 +69,12 @@ impl<'ctx> LlvmBackend<'ctx> {
                 "module registry reloc offset {offset} is not 8-aligned"
             );
             push_bytes(&blob[cursor..offset], &mut field_types, &mut field_values);
-            let init_fn = module.get_function(symbol).unwrap_or_else(|| {
+            let init_fn = module.get_execution_function(symbol).unwrap_or_else(|| {
                 // Address-taken only: with opaque pointers the declared
                 // signature is irrelevant; declare External so relocations
                 // resolve against the sibling batch object or staticlib.
                 let placeholder_ty = i64_ty.fn_type(&[], false);
-                module.add_function(symbol, placeholder_ty, Some(Linkage::External))
+                module.add_compiled_function(symbol, placeholder_ty, Some(Linkage::External))
             });
             field_types.push(ptr_ty.into());
             field_values.push(init_fn.as_global_value().as_pointer_value().into());

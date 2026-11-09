@@ -40,16 +40,17 @@ def test_native_main_stub_leaves_the_exit_debug_switch_to_the_runtime() -> None:
     assert "MOLT_DEBUG_MAIN_EXCEPTION" not in rendered
 
 
-def test_native_main_stub_attribute_result_preserves_boxed_width_on_windows() -> None:
+def test_native_main_stub_context_preserves_pointer_width_on_windows() -> None:
     rendered = native_main_stub._render_native_main_stub(
         resolved_capability_policy=CapabilityManifest().resolve(),
     )
 
     assert (
-        "extern unsigned long long molt_get_attr_generic("
-        "void* obj, const char* attr, unsigned long long len);"
+        f"extern void {native_main_stub.compiled_execution_symbol('molt_main')}("
+        "unsigned long long context);"
     ) in rendered
-    assert "extern long molt_get_attr_generic(" not in rendered
+    assert "unsigned long long context = molt_attached_context();" in rendered
+    assert "molt_get_attr_generic" not in rendered
 
 
 def test_native_main_stub_explicit_grants_disable_ambient_tier() -> None:
@@ -124,7 +125,7 @@ def test_rendered_native_main_hands_the_runtime_status_to_its_exit(
     )
     # Compile the actual entrypoint, including its refused-exit fallback.
     runtime = r"""
-static int mode, ran, reported, exited;
+static int mode, ran, reported, exited, entered, left;
 static void require(int condition) {
     if (!condition) { fputs("exit-contract-failed\n", stderr); _Exit(91); }
 }
@@ -145,12 +146,21 @@ void molt_register_compiled_sources(
 }
 unsigned long long molt_runtime_init(void) { return 1; }
 void molt_runtime_ensure_gil(void) {}
+unsigned long long molt_attached_context(void) { return 0x198; }
+unsigned long long molt_compiled_execution_enter(unsigned long long context) {
+    require(context == 0x198 && entered == 0 && left == 0); ++entered; return 0x670;
+}
+void molt_compiled_execution_leave(unsigned long long context, unsigned long long scope) {
+    require(context == 0x198 && scope == 0x670 && entered == 1 && ran == 1 && left == 0); ++left;
+}
 void molt_set_argv(int argc, const char** argv) {
     require(argc == 2); mode = atoi(argv[1]);
 }
-void molt_main(void) { require(ran == 0); ++ran; }
+void MOLT_COMPILED_MAIN(unsigned long long context) {
+    require(context == 0x198 && entered == 1 && left == 0 && ran == 0); ++ran;
+}
 unsigned long long molt_main_exit_status(void) {
-    require(ran == 1 && reported == 0); ++reported; return mode ? 23 : 0;
+    require(ran == 1 && left == 1 && reported == 0); ++reported; return mode ? 23 : 0;
 }
 unsigned long long molt_runtime_exit(unsigned long long code) {
     require(reported == 1 && exited == 0 && code == (mode ? 23u : 0u));
@@ -160,7 +170,9 @@ unsigned long long molt_runtime_exit(unsigned long long code) {
     if (mode == 2) return 0;
     _Exit((int)code);
 }
-"""
+""".replace(
+        "MOLT_COMPILED_MAIN", native_main_stub.compiled_execution_symbol("molt_main")
+    )
     source = tmp_path / "main.c"
     binary = source.with_suffix("")
     source.write_text(rendered + runtime, encoding="utf-8")
@@ -186,7 +198,8 @@ unsigned long long molt_runtime_exit(unsigned long long code) {
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=10,
+            # Include cold native-image admission in this functional oracle;
+            # the standard process guard supplies the execution budget.
         )
         assert result.returncode == exit_code, result.stdout + result.stderr
         assert result.stdout == "1 1 1\n"

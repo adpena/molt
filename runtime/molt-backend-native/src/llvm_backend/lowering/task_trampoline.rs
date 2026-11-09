@@ -1,5 +1,7 @@
 use super::task_construction::TaskConstruction;
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use molt_tir::trampolines::TrampolineTaskKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
@@ -42,11 +44,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             usize::from(has_closure),
             kind.trampoline_kind().symbol_suffix(),
         );
-        if let Some(trampoline) = self.backend.module.get_function(&trampoline_name) {
+        if let Some(trampoline) = self.backend.module.get_execution_function(&trampoline_name) {
             return (poll, trampoline);
         }
         let i64_ty = self.backend.context.i64_type();
-        let trampoline = self.backend.module.add_function(
+        let trampoline = self.backend.module.add_compiled_function(
             &trampoline_name,
             i64_ty.fn_type(&[i64_ty.into(), i64_ty.into(), i64_ty.into()], false),
             Some(inkwell::module::Linkage::Internal),
@@ -66,7 +68,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             ("task_new", "task_init", "task_ready"),
             refcount_admission,
         );
-        let arguments = trampoline.get_nth_param(1).unwrap().into_int_value();
+        let arguments = trampoline.get_nth_param(2).unwrap().into_int_value();
         let arguments = builder
             .build_int_to_ptr(
                 arguments,
@@ -85,7 +87,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let base = layout.payload_base_offset(crate::GENERATOR_CONTROL_BYTES) as u64 / 8;
         for index in 0..arity + usize::from(has_closure) {
             let word = if has_closure && index == 0 {
-                trampoline.get_nth_param(0).unwrap().into_int_value()
+                trampoline.get_nth_param(1).unwrap().into_int_value()
             } else {
                 let argument = index - usize::from(has_closure);
                 let address = unsafe {

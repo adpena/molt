@@ -102,14 +102,12 @@ pub(in crate::native_backend::function_compiler) fn declare_function_object_targ
 ) -> cranelift_module::FuncId {
     let expected_params = sig.params.len();
     let returns_value = !sig.returns.is_empty();
-    module
-        .declare_function(func_name, linkage, sig)
-        .unwrap_or_else(|err| {
-            panic!(
-                "{op_kind} declaration mismatch for `{func_name}`: expected \
+    declare_python_execution_function(module, func_name, linkage, sig).unwrap_or_else(|err| {
+        panic!(
+            "{op_kind} declaration mismatch for `{func_name}`: expected \
                  {expected_params} parameter(s), returns={returns_value}: {err}"
-            )
-        })
+        )
+    })
 }
 
 #[cfg(feature = "native-backend")]

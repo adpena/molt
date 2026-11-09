@@ -107,7 +107,8 @@ fn exercise_descriptors(py: &PyToken<'_>, bits: u64) {
     for expected in [1, 2, 1] {
         let mut value = MoltObject::none().bits();
         let done = unsafe {
-            crate::object::ops_iter::molt_iter_next_unboxed(
+            crate::object::ops_iter::molt_iter_next_unboxed_attached_body(
+                py,
                 iterator,
                 (&raw mut value) as usize as u64,
             )
@@ -119,7 +120,8 @@ fn exercise_descriptors(py: &PyToken<'_>, bits: u64) {
     let mut value = MoltObject::none().bits();
     assert_eq!(
         obj_from_bits(unsafe {
-            crate::object::ops_iter::molt_iter_next_unboxed(
+            crate::object::ops_iter::molt_iter_next_unboxed_attached_body(
+                py,
                 iterator,
                 (&raw mut value) as usize as u64,
             )
@@ -231,7 +233,8 @@ fn exercise_descriptors(py: &PyToken<'_>, bits: u64) {
         );
         assert_values(py, result.bits(), &[1, 2, 1, 1, 2, 1]);
     }
-    let slice_bits = crate::object::ops_slice::molt_slice_new(
+    let slice_bits = crate::object::ops_slice::molt_slice_new_attached_body(
+        py,
         one,
         MoltObject::none().bits(),
         MoltObject::none().bits(),
@@ -256,24 +259,37 @@ fn native_tuple_descriptor_family_reads_real_storage_and_owned_results() {
     crate::with_gil(|py| unsafe {
         let native = native_tuple_of(&raw mut PyTuple_Type, &[1, 2, 1]);
         let bits = GLOBAL_BRIDGE.molt_value_for_pyobj(native.as_ptr()).unwrap();
-        let _bits_owner = ExceptionValue::adopt(&py, bits);
+        let _bits_owner = ExceptionValue::adopt(py, bits);
         assert_eq!(
             object_type_id(obj_from_bits(bits).as_ptr().unwrap()),
             TYPE_ID_FOREIGN
         );
-        exercise_descriptors(&py, bits);
-        assert_eq!(obj_from_bits(crate::molt_len(bits)).as_int(), Some(3));
+        exercise_descriptors(py, bits);
         assert_eq!(
-            obj_from_bits(crate::molt_index(bits, MoltObject::from_int(1).bits())).as_int(),
+            obj_from_bits(crate::molt_len_attached_body(py, bits)).as_int(),
+            Some(3)
+        );
+        assert_eq!(
+            obj_from_bits(crate::molt_index_attached_body(
+                py,
+                bits,
+                MoltObject::from_int(1).bits()
+            ))
+            .as_int(),
             Some(2)
         );
         assert_eq!(
-            obj_from_bits(crate::molt_contains(bits, MoltObject::from_int(2).bits())).as_bool(),
+            obj_from_bits(crate::molt_contains_attached_body(
+                py,
+                bits,
+                MoltObject::from_int(2).bits()
+            ))
+            .as_bool(),
             Some(true)
         );
-        let iterator = crate::molt_iter(bits);
-        assert!(!exception_pending(&py));
-        dec_ref_bits(&py, iterator);
+        let iterator = crate::molt_iter_attached_body(py, bits);
+        assert!(!exception_pending(py));
+        dec_ref_bits(py, iterator);
     });
 }
 
@@ -324,16 +340,21 @@ fn exercise_native_tuple_overrides(unwind_after_item: bool, retired: &Cell<[usiz
                 native.as_ptr().addr()
             ));
             let bits = GLOBAL_BRIDGE.molt_value_for_pyobj(native.as_ptr()).unwrap();
-            let _bits_owner = ExceptionValue::adopt(&py, bits);
-            exercise_descriptors(&py, bits);
+            let _bits_owner = ExceptionValue::adopt(py, bits);
+            exercise_descriptors(py, bits);
             assert_eq!(OVERRIDES.load(Ordering::SeqCst), 0);
-            assert_eq!(obj_from_bits(crate::molt_len(bits)).as_int(), Some(99));
-            let item =
-                ExceptionValue::adopt(&py, crate::molt_index(bits, MoltObject::from_int(1).bits()));
-            assert!(!exception_pending(&py));
             assert_eq!(
-                crate::type_of_bits(&py, item.bits()),
-                crate::builtin_classes(&py).int
+                obj_from_bits(crate::molt_len_attached_body(py, bits)).as_int(),
+                Some(99)
+            );
+            let item = ExceptionValue::adopt(
+                py,
+                crate::molt_index_attached_body(py, bits, MoltObject::from_int(1).bits()),
+            );
+            assert!(!exception_pending(py));
+            assert_eq!(
+                crate::type_of_bits(py, item.bits()),
+                crate::builtin_classes(py).int
             );
             assert_eq!(crate::to_i64(obj_from_bits(item.bits())), Some(999));
             if unwind_after_item {
@@ -343,12 +364,17 @@ fn exercise_native_tuple_overrides(unwind_after_item: bool, retired: &Cell<[usiz
             }
             drop(item);
             assert_eq!(
-                obj_from_bits(crate::molt_contains(bits, MoltObject::from_int(1).bits())).as_bool(),
+                obj_from_bits(crate::molt_contains_attached_body(
+                    py,
+                    bits,
+                    MoltObject::from_int(1).bits()
+                ))
+                .as_bool(),
                 Some(false)
             );
-            let result = ExceptionValue::adopt(&py, crate::molt_iter(bits));
-            assert!(exception_pending(&py));
-            crate::clear_exception(&py);
+            let result = ExceptionValue::adopt(py, crate::molt_iter_attached_body(py, bits));
+            assert!(exception_pending(py));
+            crate::clear_exception(py);
             errors::PyErr_Clear();
             drop(result);
             assert_eq!(OVERRIDES.load(Ordering::SeqCst), 4);
@@ -407,12 +433,12 @@ fn native_tuple_rejection_and_pending_error_do_not_become_success() {
             .molt_value_for_pyobj(foreign.as_ptr())
             .unwrap();
         assert!(native_tuple(wrong).is_none());
-        let result = descriptor(&py, crate::NameId::DunderLen, &[wrong]);
-        assert!(exception_pending(&py));
-        crate::clear_exception(&py);
+        let result = descriptor(py, crate::NameId::DunderLen, &[wrong]);
+        assert!(exception_pending(py));
+        crate::clear_exception(py);
         errors::PyErr_Clear();
-        dec_ref_bits(&py, result);
-        dec_ref_bits(&py, wrong);
+        dec_ref_bits(py, result);
+        dec_ref_bits(py, wrong);
 
         let native = native_tuple_of(&raw mut PyTuple_Type, &[1]);
         let bits = GLOBAL_BRIDGE.molt_value_for_pyobj(native.as_ptr()).unwrap();
@@ -420,26 +446,26 @@ fn native_tuple_rejection_and_pending_error_do_not_become_success() {
             (&raw mut PyExc_ValueError).cast(),
             c"tuple pending sentinel".as_ptr(),
         );
-        let tuple = TupleStorage::from_bits(&py, bits).unwrap();
+        let tuple = TupleStorage::from_bits(py, bits).unwrap();
         assert_eq!(tuple.len(), None);
-        assert!(exception_pending(&py));
-        crate::clear_exception(&py);
+        assert!(exception_pending(py));
+        crate::clear_exception(py);
         errors::PyErr_Clear();
         drop(tuple);
-        dec_ref_bits(&py, bits);
+        dec_ref_bits(py, bits);
 
         let uninitialized =
             OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(&raw mut PyTuple_Type, 1));
         let bits = GLOBAL_BRIDGE
             .molt_value_for_pyobj(uninitialized.as_ptr())
             .unwrap();
-        let tuple = TupleStorage::from_bits(&py, bits).unwrap();
+        let tuple = TupleStorage::from_bits(py, bits).unwrap();
         assert_eq!(tuple.item(0), None);
-        assert!(exception_pending(&py));
-        crate::clear_exception(&py);
+        assert!(exception_pending(py));
+        crate::clear_exception(py);
         errors::PyErr_Clear();
         drop(tuple);
-        dec_ref_bits(&py, bits);
+        dec_ref_bits(py, bits);
     });
 }
 
@@ -464,21 +490,21 @@ fn native_tuple_item_keeps_its_identity_after_source_retirement() {
         );
         let bits = GLOBAL_BRIDGE.molt_value_for_pyobj(tuple.as_ptr()).unwrap();
         let value = descriptor(
-            &py,
+            py,
             crate::NameId::DunderGetitem,
             &[bits, MoltObject::from_int(0).bits()],
         );
-        assert!(!exception_pending(&py));
+        assert!(!exception_pending(py));
         drop(tuple);
-        dec_ref_bits(&py, bits);
+        dec_ref_bits(py, bits);
         assert_eq!(
             GLOBAL_BRIDGE.handle_to_borrowed_pyobj(value),
             element.as_ptr()
         );
         assert!((*element.as_ptr()).ob_refcnt > baseline);
-        dec_ref_bits(&py, value);
+        dec_ref_bits(py, value);
         assert_eq!((*element.as_ptr()).ob_refcnt, baseline);
-        assert!(!exception_pending(&py));
+        assert!(!exception_pending(py));
         assert!(errors::PyErr_Occurred().is_null());
     });
 }

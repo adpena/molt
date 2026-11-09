@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 from tools import check_runtime_bridge_test_stubs
 
 
@@ -106,5 +108,40 @@ def test_live_stub_file_is_in_sync():
 
     assert tool.main(["--check"]) == 0
     symbols = tool.declared_bridge_symbols()
-    assert "molt_bridge_alloc_bytes" in symbols
-    assert "molt_bridge_runtime_state_get_or_init" in symbols
+    from molt._wasm_abi_generated import runtime_execution_abi
+
+    for logical in ("molt_bytes_from", "__molt_runtime_release_protected_value"):
+        execution = runtime_execution_abi(logical)
+        assert execution is not None
+        assert execution.physical_symbol in symbols
+
+
+def test_bridge_stubs_use_actual_link_identities(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt._wasm_abi_generated import runtime_execution_abi
+
+    source = tmp_path / "bridge.rs"
+    source.write_text(
+        """unsafe extern "C" {
+    #[link_name = molt_runtime_core::attached_symbol!("molt_add")]
+    fn local_add(context: u64, a: u64, b: u64) -> u64;
+    #[link_name = "raw_link"]
+    fn local_raw() -> u64;
+    fn unchanged_raw() -> u64;
+}
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        check_runtime_bridge_test_stubs, "bridge_sources", lambda: [source]
+    )
+    execution = runtime_execution_abi("molt_add")
+    assert execution is not None
+    assert check_runtime_bridge_test_stubs.declared_bridge_symbols() == sorted(
+        [
+            execution.physical_symbol,
+            "raw_link",
+            "unchanged_raw",
+        ]
+    )

@@ -472,7 +472,10 @@ pub unsafe extern "C" fn PyObject_GetBuffer(
         return -1;
     }
     if let Some(getbuffer) = unsafe { type_bf_getbuffer(tp) } {
-        return unsafe { getbuffer(obj, view, flags) };
+        let custody = crate::hooks::ForeignExecutionGuard::capture();
+        let result = unsafe { getbuffer(obj, view, flags) };
+        custody.validate();
+        return result;
     }
     unsafe { raise_bytes_like_type_error(tp) };
     -1
@@ -644,7 +647,9 @@ pub unsafe extern "C" fn PyBuffer_Release(view: *mut Py_buffer) {
         if !tp.is_null()
             && let Some(releasebuffer) = type_bf_releasebuffer(tp)
         {
+            let custody = crate::hooks::ForeignExecutionGuard::capture();
             releasebuffer(obj, view);
+            custody.validate();
         }
         (*view).internal = ptr::null_mut();
         // bf_releasebuffer observes the original descriptor. Retire it before

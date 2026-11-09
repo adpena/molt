@@ -3,6 +3,8 @@
 //! owning caller: SSA values may need boxing; trampoline words are borrowed.
 
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use crate::runtime_import_abi::{
     MOLT_ASYNCGEN_NEW, MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_TASK_NEW, MOLT_TASK_REGISTER_EXECUTION,
 };
@@ -78,7 +80,7 @@ impl<'ctx> TaskConstruction<'ctx> {
     ) -> Self {
         let i64_ty = backend.context.i64_type();
         let object = builder
-            .build_call(
+            .build_execution_call(
                 imports.allocate,
                 &[
                     poll.into(),
@@ -141,12 +143,12 @@ impl<'ctx> TaskConstruction<'ctx> {
             CompletionImports::ReturnTask => self.object,
             CompletionImports::Register { token, register } => {
                 let token = builder
-                    .build_call(token, &[], "task_current_token")
+                    .build_execution_call(token, &[], "task_current_token")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
                 builder
-                    .build_call(
+                    .build_execution_call(
                         register,
                         &[
                             self.object.into(),
@@ -164,13 +166,13 @@ impl<'ctx> TaskConstruction<'ctx> {
             }
             CompletionImports::Wrap { wrap, release } => {
                 let wrapped = builder
-                    .build_call(wrap, &[self.object.into()], "task_asyncgen")
+                    .build_execution_call(wrap, &[self.object.into()], "task_asyncgen")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic()
                     .into_int_value();
                 builder
-                    .build_call(
+                    .build_execution_call(
                         release,
                         &[self.object.into(), self.refcount_admission.into()],
                         "",

@@ -39,9 +39,12 @@ pub(crate) fn host_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<Option<Stri
     Err(format!("host must be str, bytes, or None, not {obj_type}"))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socket_inet_pton(family_bits: u64, address_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_socket_inet_pton_attached_body(
+    _py: &crate::PyToken<'_>,
+    family_bits: u64,
+    address_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let family = to_i64(obj_from_bits(family_bits)).unwrap_or(0) as i32;
         let addr = match host_from_bits(_py, address_bits) {
             Ok(Some(val)) => val,
@@ -88,9 +91,12 @@ pub extern "C" fn molt_socket_inet_pton(family_bits: u64, address_bits: u64) -> 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socket_inet_ntop(family_bits: u64, packed_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_socket_inet_ntop_attached_body(
+    _py: &crate::PyToken<'_>,
+    family_bits: u64,
+    packed_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let family = to_i64(obj_from_bits(family_bits)).unwrap_or(0) as i32;
         let obj = obj_from_bits(packed_bits);
         let data = if let Some(ptr) = obj.as_ptr() {
@@ -225,9 +231,8 @@ fn socket_u32_from_int_only(_py: &PyToken<'_>, value_bits: u64) -> Option<u32> {
     Some(out)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socket_htons(value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_socket_htons_attached_body(_py: &crate::PyToken<'_>, value_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(value) = socket_u16_from_index(_py, value_bits, "htons") else {
             return MoltObject::none().bits();
         };
@@ -235,9 +240,8 @@ pub extern "C" fn molt_socket_htons(value_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socket_ntohs(value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_socket_ntohs_attached_body(_py: &crate::PyToken<'_>, value_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(value) = socket_u16_from_index(_py, value_bits, "ntohs") else {
             return MoltObject::none().bits();
         };
@@ -245,9 +249,8 @@ pub extern "C" fn molt_socket_ntohs(value_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socket_htonl(value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_socket_htonl_attached_body(_py: &crate::PyToken<'_>, value_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(value) = socket_u32_from_int_only(_py, value_bits) else {
             return MoltObject::none().bits();
         };
@@ -255,9 +258,8 @@ pub extern "C" fn molt_socket_htonl(value_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socket_ntohl(value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_socket_ntohl_attached_body(_py: &crate::PyToken<'_>, value_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(value) = socket_u32_from_int_only(_py, value_bits) else {
             return MoltObject::none().bits();
         };
@@ -265,9 +267,11 @@ pub extern "C" fn molt_socket_ntohl(value_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socket_cmsg_len(datalen_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_socket_cmsg_len_attached_body(
+    _py: &crate::PyToken<'_>,
+    datalen_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let datalen = match to_i64(obj_from_bits(datalen_bits)) {
             Some(v) => v,
             None => {
@@ -306,9 +310,11 @@ pub extern "C" fn molt_socket_cmsg_len(datalen_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_socket_cmsg_space(datalen_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_socket_cmsg_space_attached_body(
+    _py: &crate::PyToken<'_>,
+    datalen_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let datalen = match to_i64(obj_from_bits(datalen_bits)) {
             Some(v) => v,
             None => {
@@ -348,3 +354,5 @@ pub extern "C" fn molt_socket_cmsg_space(datalen_bits: u64) -> u64 {
         }
     })
 }
+
+include!("../attached_exports_generated/async_rt/socket_pure.rs");

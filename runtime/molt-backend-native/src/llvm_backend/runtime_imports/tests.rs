@@ -1,5 +1,7 @@
 use super::attributes::MEMORY_READ;
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use crate::runtime_import_abi::{
     RuntimeImportSignature, RuntimeReturnAbi, TRAMPOLINE_RUNTIME_IMPORTS,
 };
@@ -21,6 +23,29 @@ fn runtime_function_type<'ctx>(
     }
 }
 
+/// Check the hidden physical context independently, then inspect the logical
+/// signature owned by the boxed/raw runtime ABI tables.
+fn logical_parameter_types(function: FunctionValue<'_>) -> Vec<inkwell::types::BasicTypeEnum<'_>> {
+    let mut params = function.get_type().get_param_types();
+    if function
+        .get_name()
+        .to_str()
+        .unwrap()
+        .ends_with(molt_ir::runtime_callable_abi_generated::ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX)
+    {
+        assert!(params[0].is_int_type());
+        assert_eq!(params[0].into_int_type().get_bit_width(), 64);
+        params.remove(0);
+    }
+    params
+        .into_iter()
+        .map(|param| {
+            inkwell::types::BasicTypeEnum::try_from(param)
+                .expect("logical runtime parameters must be value types, not metadata")
+        })
+        .collect()
+}
+
 /// Check that a function has an enum attribute with the given name.
 fn has_fn_attr(func: FunctionValue<'_>, attr_name: &str) -> bool {
     let kind_id = Attribute::get_named_enum_kind_id(attr_name);
@@ -37,33 +62,66 @@ fn runtime_functions_are_declared() {
     let ctx = Context::create();
     let module = ctx.create_module("test_rt");
     declare_runtime_functions(&ctx, &module);
+    for spec in fixed::FIXED_RUNTIME_IMPORTS {
+        let abi = molt_ir::runtime_callable_abi_generated::runtime_execution_abi(spec.name)
+            .expect("every fixed import has a generated execution ABI");
+        let function = module
+            .get_function(abi.physical_symbol)
+            .expect("the declared import uses its schema-bound physical symbol");
+        if abi.context == molt_ir::runtime_callable_abi_generated::RuntimeExecutionContext::Attached
+        {
+            assert!(
+                module.get_function(spec.name).is_none(),
+                "{} must have no old-signature alias",
+                spec.name
+            );
+            assert_eq!(
+                function.get_first_param().unwrap().get_type(),
+                ctx.i64_type().into(),
+                "{} requires one leading context word",
+                spec.name
+            );
+        }
+    }
 
     // Spot-check a few key functions exist
-    assert!(module.get_function("molt_add").is_some());
-    assert!(module.get_function("molt_sub").is_some());
-    assert!(module.get_function("molt_eq").is_some());
-    assert!(module.get_function("molt_inc_ref_obj").is_some());
-    assert!(module.get_function("molt_dec_ref_obj").is_some());
-    assert!(module.get_function("molt_alloc").is_some());
-    assert!(module.get_function("molt_get_attr_name").is_some());
-    assert!(module.get_function("molt_raise").is_some());
-    assert!(module.get_function("molt_is_truthy").is_some());
-    assert!(module.get_function("molt_code_new").is_some());
-    assert!(module.get_function("molt_print_newline").is_some());
-    assert!(module.get_function("molt_print_obj").is_some());
-    assert!(module.get_function("molt_bigint_from_bytes").is_some());
+    assert!(module.get_execution_function("molt_add").is_some());
+    assert!(module.get_execution_function("molt_sub").is_some());
+    assert!(module.get_execution_function("molt_eq").is_some());
+    assert!(module.get_execution_function("molt_inc_ref_obj").is_some());
+    assert!(module.get_execution_function("molt_dec_ref_obj").is_some());
+    assert!(module.get_execution_function("molt_alloc").is_some());
     assert!(
         module
-            .get_function("molt_function_defaults_version")
+            .get_execution_function("molt_get_attr_name")
+            .is_some()
+    );
+    assert!(module.get_execution_function("molt_raise").is_some());
+    assert!(module.get_execution_function("molt_is_truthy").is_some());
+    assert!(module.get_execution_function("molt_code_new").is_some());
+    assert!(
+        module
+            .get_execution_function("molt_print_newline")
+            .is_some()
+    );
+    assert!(module.get_execution_function("molt_print_obj").is_some());
+    assert!(
+        module
+            .get_execution_function("molt_bigint_from_bytes")
+            .is_some()
+    );
+    assert!(
+        module
+            .get_execution_function("molt_function_defaults_version")
             .is_some()
     );
     // The augmented-assignment entries the boxed `emit_binary_arith` fallback
     // calls are fixed declarations. A
     // TIR→LLVM-lowered function carrying `+=`/`-=`/`*=` (an inlined or
     // generator-fused caller) panics without these.
-    assert!(module.get_function("molt_inplace_add").is_some());
-    assert!(module.get_function("molt_inplace_sub").is_some());
-    assert!(module.get_function("molt_inplace_mul").is_some());
+    assert!(module.get_execution_function("molt_inplace_add").is_some());
+    assert!(module.get_execution_function("molt_inplace_sub").is_some());
+    assert!(module.get_execution_function("molt_inplace_mul").is_some());
 }
 
 #[test]
@@ -73,21 +131,23 @@ fn shared_runtime_helper_imports_have_llvm_abi_authority() {
     declare_runtime_functions(&ctx, &module);
 
     for signature in TRAMPOLINE_RUNTIME_IMPORTS {
-        let func = module.get_function(signature.name).unwrap_or_else(|| {
-            assert_eq!(
-                runtime_import_return_abi(signature.name, signature.param_count),
-                Some(signature.return_abi),
-                "{} should be declared or classified",
-                signature.name
-            );
-            declare_conservative_runtime_function(
-                &ctx,
-                &module,
-                signature.name,
-                runtime_function_type(&ctx, *signature),
-            )
-        });
-        assert_eq!(func.count_params() as usize, signature.param_count);
+        let func = module
+            .get_execution_function(signature.name)
+            .unwrap_or_else(|| {
+                assert_eq!(
+                    runtime_import_return_abi(signature.name, signature.param_count),
+                    Some(signature.return_abi),
+                    "{} should be declared or classified",
+                    signature.name
+                );
+                declare_conservative_runtime_function(
+                    &ctx,
+                    &module,
+                    signature.name,
+                    runtime_function_type(&ctx, *signature),
+                )
+            });
+        assert_eq!(logical_parameter_types(func).len(), signature.param_count);
         match signature.return_abi {
             RuntimeReturnAbi::I64 => {
                 let ret_ty = func
@@ -166,7 +226,7 @@ fn buffer_shape_accessors_return_boxed_integers() {
             name,
             runtime_function_type(&ctx, signature),
         );
-        assert_eq!(function.count_params(), 1);
+        assert_eq!(logical_parameter_types(function).len(), 1);
         assert_eq!(
             function
                 .get_type()
@@ -259,7 +319,9 @@ fn generated_callable_contracts_supply_machine_abis_without_native_whitelists() 
         );
         assert_eq!(
             function.get_type().print_to_string().to_string(),
-            expected.print_to_string().to_string(),
+            crate::llvm_backend::execution_abi::runtime_execution_type(abi.symbol, expected)
+                .print_to_string()
+                .to_string(),
             "{} fixed declaration disagrees with the callable ABI",
             abi.symbol
         );
@@ -356,8 +418,8 @@ fn fused_async_work_observers_have_callback_safe_runtime_declarations() {
         "molt_async_work_poll_and_exception_pending",
         "molt_async_work_poll_and_exception_last_pending",
     ] {
-        let function = module.get_function(name).expect(name);
-        assert_eq!(function.count_params(), 0);
+        let function = module.get_execution_function(name).expect(name);
+        assert_eq!(logical_parameter_types(function).len(), 0);
         assert_eq!(
             function.get_type().get_return_type(),
             Some(ctx.i64_type().into())
@@ -384,10 +446,10 @@ fn custom_fixed_runtime_import_signatures_are_typed() {
     declare_runtime_functions(&ctx, &module);
 
     let string_from_bytes = module
-        .get_function("molt_string_from_bytes")
+        .get_execution_function("molt_string_from_bytes")
         .expect("molt_string_from_bytes should be fixed-declared");
-    assert_eq!(string_from_bytes.count_params(), 3);
-    let params = string_from_bytes.get_type().get_param_types();
+    assert_eq!(logical_parameter_types(string_from_bytes).len(), 3);
+    let params = logical_parameter_types(string_from_bytes);
     assert!(params[0].is_pointer_type());
     assert_eq!(params[1].into_int_type().get_bit_width(), 64);
     assert!(params[2].is_pointer_type());
@@ -401,10 +463,10 @@ fn custom_fixed_runtime_import_signatures_are_typed() {
     assert!(has_fn_attr(string_from_bytes, "willreturn"));
 
     let bigint_from_bytes = module
-        .get_function("molt_bigint_from_bytes")
+        .get_execution_function("molt_bigint_from_bytes")
         .expect("molt_bigint_from_bytes should be fixed-declared");
-    assert_eq!(bigint_from_bytes.count_params(), 2);
-    let params = bigint_from_bytes.get_type().get_param_types();
+    assert_eq!(logical_parameter_types(bigint_from_bytes).len(), 2);
+    let params = logical_parameter_types(bigint_from_bytes);
     assert!(params[0].is_pointer_type());
     assert_eq!(params[1].into_int_type().get_bit_width(), 64);
     let ret_ty = bigint_from_bytes
@@ -417,10 +479,10 @@ fn custom_fixed_runtime_import_signatures_are_typed() {
     assert!(has_fn_attr(bigint_from_bytes, "willreturn"));
 
     let get_attr_object_ic = module
-        .get_function("molt_get_attr_object_ic")
+        .get_execution_function("molt_get_attr_object_ic")
         .expect("molt_get_attr_object_ic should be fixed-declared");
-    assert_eq!(get_attr_object_ic.count_params(), 4);
-    let params = get_attr_object_ic.get_type().get_param_types();
+    assert_eq!(logical_parameter_types(get_attr_object_ic).len(), 4);
+    let params = logical_parameter_types(get_attr_object_ic);
     assert_eq!(params[0].into_int_type().get_bit_width(), 64);
     assert!(params[1].is_pointer_type());
     assert_eq!(params[2].into_int_type().get_bit_width(), 64);
@@ -458,14 +520,14 @@ fn method_load_runtime_functions_are_declared() {
         ("molt_call_loaded_method_spilled", 4, None),
     ] {
         let func = module
-            .get_function(name)
+            .get_execution_function(name)
             .unwrap_or_else(|| panic!("{name} should be declared"));
         assert_eq!(
-            func.count_params() as usize,
+            logical_parameter_types(func).len(),
             *arity,
             "{name} should have {arity} i64 parameters"
         );
-        let params = func.get_type().get_param_types();
+        let params = logical_parameter_types(func);
         for (idx, param) in params.iter().enumerate() {
             if Some(idx) == *ptr_index {
                 assert!(param.is_pointer_type(), "{name} param {idx} should be ptr");
@@ -507,10 +569,10 @@ fn function_and_code_runtime_functions_are_declared() {
         ("molt_function_defaults_version", 1),
     ] {
         let func = module
-            .get_function(name)
+            .get_execution_function(name)
             .unwrap_or_else(|| panic!("{name} should be declared"));
         assert_eq!(
-            func.count_params() as usize,
+            logical_parameter_types(func).len(),
             *arity,
             "{name} should have {arity} i64 parameters"
         );
@@ -542,9 +604,9 @@ fn diagnostics_and_constant_runtime_functions_are_declared() {
     declare_runtime_functions(&ctx, &module);
 
     let print_newline = module
-        .get_function("molt_print_newline")
+        .get_execution_function("molt_print_newline")
         .expect("molt_print_newline should be declared");
-    assert_eq!(print_newline.count_params(), 0);
+    assert_eq!(logical_parameter_types(print_newline).len(), 0);
     assert!(
         print_newline.get_type().get_return_type().is_none(),
         "molt_print_newline should return void"
@@ -553,9 +615,9 @@ fn diagnostics_and_constant_runtime_functions_are_declared() {
     assert!(has_fn_attr(print_newline, "willreturn"));
 
     let print_obj = module
-        .get_function("molt_print_obj")
+        .get_execution_function("molt_print_obj")
         .expect("molt_print_obj should be declared");
-    assert_eq!(print_obj.count_params(), 1);
+    assert_eq!(logical_parameter_types(print_obj).len(), 1);
     assert!(
         print_obj.get_type().get_return_type().is_none(),
         "molt_print_obj should return void"
@@ -564,9 +626,9 @@ fn diagnostics_and_constant_runtime_functions_are_declared() {
     assert!(has_fn_attr(print_obj, "willreturn"));
 
     let bigint_from_bytes = module
-        .get_function("molt_bigint_from_bytes")
+        .get_execution_function("molt_bigint_from_bytes")
         .expect("molt_bigint_from_bytes should be declared");
-    assert_eq!(bigint_from_bytes.count_params(), 2);
+    assert_eq!(logical_parameter_types(bigint_from_bytes).len(), 2);
     let ret_ty = bigint_from_bytes
         .get_type()
         .get_return_type()
@@ -594,10 +656,10 @@ fn dynamic_call_runtime_functions_are_declared_without_willreturn() {
         ("molt_call_func_fast3", 4),
     ] {
         let func = module
-            .get_function(name)
+            .get_execution_function(name)
             .unwrap_or_else(|| panic!("{name} should be declared"));
         assert_eq!(
-            func.count_params() as usize,
+            logical_parameter_types(func).len(),
             *arity,
             "{name} should have {arity} i64 parameters"
         );
@@ -687,9 +749,9 @@ fn lowering_literal_runtime_imports_are_declared_or_classified() {
         "the audit must cover split lowering modules"
     );
     for (name, param_count, return_abi) in calls {
-        if let Some(func) = module.get_function(&name) {
+        if let Some(func) = module.get_execution_function(&name) {
             assert_eq!(
-                func.count_params() as usize,
+                logical_parameter_types(func).len(),
                 param_count,
                 "{name} central declaration arity must match lowering call"
             );
@@ -748,10 +810,10 @@ fn module_namespace_and_named_acquisition_have_callback_safe_declarations() {
         ("molt_module_set_attr", 3),
     ] {
         let func = module
-            .get_function(name)
+            .get_execution_function(name)
             .unwrap_or_else(|| panic!("{name} should be declared"));
         assert_eq!(
-            func.count_params() as usize,
+            logical_parameter_types(func).len(),
             *arity,
             "{name} should have {arity} i64 parameters"
         );
@@ -835,7 +897,7 @@ fn willreturn_on_simple_functions() {
         "molt_slice_new",
         "molt_exception_pending",
     ] {
-        let f = module.get_function(name).expect(name);
+        let f = module.get_execution_function(name).expect(name);
         assert!(
             has_fn_attr(f, "willreturn"),
             "Function {} is missing willreturn attribute",
@@ -913,7 +975,7 @@ fn no_willreturn_on_control_flow_functions() {
         "molt_call_func_fast3",
         "molt_module_import",
     ] {
-        let f = module.get_function(name).expect(name);
+        let f = module.get_execution_function(name).expect(name);
         assert!(
             f.get_enum_attribute(AttributeLoc::Function, willreturn_kind)
                 .is_none(),
@@ -942,7 +1004,7 @@ fn memory_read_on_pure_readers() {
         "molt_is_truthy_bool_nogil",
         "molt_exception_pending",
     ] {
-        let f = module.get_function(name).expect(name);
+        let f = module.get_execution_function(name).expect(name);
         let attr = f
             .get_enum_attribute(AttributeLoc::Function, memory_kind)
             .unwrap_or_else(|| panic!("{} missing memory attribute", name));

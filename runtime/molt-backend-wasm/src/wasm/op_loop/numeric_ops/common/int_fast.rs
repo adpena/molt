@@ -1,6 +1,7 @@
 use super::boxed::emit_boxed_binary_call;
 use super::operands::{BinaryOperands, IntBinaryTemps};
 use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::{
     ConstantCache, IntFastLane, emit_box_int_from_local_opt, emit_inline_int_range_check,
@@ -8,7 +9,7 @@ use crate::wasm_values::{
     emit_unbox_int_local_trusted_tee_opt,
 };
 use std::collections::BTreeMap;
-use wasm_encoder::{BlockType, Function, Instruction, ValType};
+use wasm_encoder::{BlockType, Instruction, ValType};
 
 pub(in crate::wasm::op_loop::numeric_ops) fn emit_trusted_int_binary_operand_tees(
     func: &mut Function,

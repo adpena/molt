@@ -14,12 +14,7 @@ from molt._wasm_runtime_exports import (
     wasm_runtime_required_export_symbol_kinds,
     wasm_split_runtime_missing_required_exports,
     wasm_split_runtime_required_export_symbol_kinds,
-    wasm_split_runtime_import_name_for_export,
-)
-from molt._wasm_abi_generated import (
-    WASM_CPYTHON_ABI_LINK_IMPORT_FUNCTION_SIGNATURES,
-    wasm_import_signature,
-    wasm_runtime_import_name,
+    wasm_split_runtime_import_signature,
 )
 from molt.cli.command_runtime import _run_completed_command
 from molt.tool_releases import (
@@ -243,22 +238,17 @@ def _runtime_wasm_typed_export_names(
             continue
         kind, index = identity
         if expected_kind == "function":
-            canonical_name = (
-                wasm_split_runtime_import_name_for_export(name)
-                or wasm_runtime_import_name(name)
-                or name
-            )
-            expected_signature = WASM_CPYTHON_ABI_LINK_IMPORT_FUNCTION_SIGNATURES.get(
-                canonical_name
-            )
-            if expected_signature is None:
-                generated = wasm_import_signature(canonical_name)
-                if generated is not None:
-                    params, results = generated
-                    expected_signature = {
-                        "params": list(params),
-                        "result": "nil" if not results else ", ".join(results),
-                    }
+            # This edge admits physical functions, including the leading
+            # execution context on attached entries. The split ABI authority
+            # also preserves raw public C and CPython publication signatures.
+            signature = wasm_split_runtime_import_signature(name)
+            expected_signature = None
+            if signature is not None:
+                params, results = signature
+                expected_signature = {
+                    "params": list(params),
+                    "result": "nil" if not results else ", ".join(results),
+                }
             if (
                 kind == WASM_EXTERN_KIND_FUNCTION
                 and expected_signature is not None

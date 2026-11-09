@@ -24,30 +24,48 @@ use num_bigint::{BigInt, Sign};
 // Exception / error handling
 // ---------------------------------------------------------------------------
 
-extern "C" fn bridge_raise_exception(kind_code: u16, msg_ptr: *const u8, msg_len: usize) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn bridge_raise_exception(
+    __molt_context: u64,
+    kind_code: u16,
+    msg_ptr: *const u8,
+    msg_len: usize,
+) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let msg = unsafe { std::slice::from_raw_parts(msg_ptr, msg_len) };
         crate::builtins::exceptions::raise_exception_code_bytes(_py, kind_code, msg)
-    })
+    }
 }
 
-extern "C" fn bridge_exception_pending() -> i32 {
-    crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
+extern "C" fn bridge_exception_pending(__molt_context: u64) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        if exception_pending(_py) { 1 } else { 0 }
+    }
 }
 
-extern "C" fn bridge_replace_exception(kind_code: u16, msg_ptr: *const u8, msg_len: usize) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn bridge_replace_exception(
+    __molt_context: u64,
+    kind_code: u16,
+    msg_ptr: *const u8,
+    msg_len: usize,
+) -> u64 {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let message = unsafe { std::slice::from_raw_parts(msg_ptr, msg_len) };
         crate::builtins::exceptions::with_saved_raised_exception(py, || {
             crate::builtins::exceptions::raise_exception_code_bytes(py, kind_code, message);
             false
         });
         MoltObject::none().bits()
-    })
+    }
 }
 
-extern "C" fn bridge_decode_ascii_input(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn bridge_decode_ascii_input(__molt_context: u64, bits: u64) -> u64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let Some(ptr) = obj_from_bits(bits).as_ptr() else {
             return MoltObject::none().bits();
         };
@@ -66,14 +84,15 @@ extern "C" fn bridge_decode_ascii_input(bits: u64) -> u64 {
                 error.raise::<()>(py, bits);
                 use crate::builtins::exceptions::{
                     ExceptionStackScope, ExceptionValue, exception_class_bits,
-                    exception_context_set, molt_exception_last_pending,
+                    exception_context_set, molt_exception_last_pending_attached_body,
                     pending_exception_matches_type, with_saved_raised_exception,
                 };
                 let target = exception_class_bits(py, BuiltinExc::UnicodeEncodeError);
                 if target == 0 || !pending_exception_matches_type(py, target) {
                     return MoltObject::none().bits();
                 }
-                let pending = ExceptionValue::adopt(py, molt_exception_last_pending());
+                let pending =
+                    ExceptionValue::adopt(py, molt_exception_last_pending_attached_body(_py));
                 with_saved_raised_exception(py, || {
                     let handler = ExceptionStackScope::push(py);
                     exception_context_set(py, pending.bits());
@@ -88,39 +107,59 @@ extern "C" fn bridge_decode_ascii_input(bits: u64) -> u64 {
                 MoltObject::none().bits()
             }
         }
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Object allocation
 // ---------------------------------------------------------------------------
 
-extern "C" fn bridge_alloc_tuple(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn bridge_alloc_tuple(
+    __molt_context: u64,
+    elems_ptr: *const u64,
+    elems_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_tuple(_py, elems)
-    })
+    }
 }
 
-extern "C" fn bridge_alloc_list(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn bridge_alloc_list(
+    __molt_context: u64,
+    elems_ptr: *const u64,
+    elems_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_list(_py, elems)
-    })
+    }
 }
 
-extern "C" fn bridge_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn bridge_alloc_string(
+    __molt_context: u64,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_string(_py, data)
-    })
+    }
 }
 
-extern "C" fn bridge_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn bridge_alloc_bytes(
+    __molt_context: u64,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_bytes(_py, data)
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -146,24 +185,32 @@ extern "C" fn bridge_string_obj_to_owned(
     }
 }
 
-extern "C" fn bridge_type_name(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn bridge_type_name(
+    __molt_context: u64,
+    bits: u64,
+    out_ptr: *mut *const u8,
+    out_len: *mut usize,
+) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let obj = obj_from_bits(bits);
         let name = _type_name(_py, obj);
         let bytes = name.into_owned().into_bytes().into_boxed_slice();
         unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
-    })
+    }
 }
 
-extern "C" fn bridge_is_truthy(bits: u64) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn bridge_is_truthy(__molt_context: u64, bits: u64) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let obj = obj_from_bits(bits);
         if is_truthy(_py, obj) { 1 } else { 0 }
-    })
+    }
 }
 
-extern "C" fn bridge_ensure_hashable(bits: u64, ctx: i32) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn bridge_ensure_hashable(__molt_context: u64, bits: u64, ctx: i32) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let ctx = match ctx {
             x if x == molt_runtime_core::HashContextCode::SetElement as i32 => {
                 HashContext::SetElement
@@ -176,7 +223,7 @@ extern "C" fn bridge_ensure_hashable(bits: u64, ctx: i32) -> i32 {
         } else {
             0
         }
-    })
+    }
 }
 
 extern "C" fn bridge_bytes_like_slice(
@@ -287,16 +334,18 @@ extern "C" fn bridge_release_ptr(ptr: *mut u8) {
     release_ptr(ptr);
 }
 
-extern "C" fn bridge_dec_ref_bits(bits: u64) {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn bridge_dec_ref_bits(__molt_context: u64, bits: u64) {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         dec_ref_bits(_py, bits);
-    })
+    }
 }
 
-extern "C" fn bridge_inc_ref_bits(bits: u64) {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn bridge_inc_ref_bits(__molt_context: u64, bits: u64) {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         inc_ref_bits(_py, bits);
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -359,19 +408,29 @@ extern "C" fn bridge_to_bigint(
     }
 }
 
-extern "C" fn bridge_int_bits_from_i64(val: i64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, val) })
+extern "C" fn bridge_int_bits_from_i64(__molt_context: u64, val: i64) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        int_bits_from_i64(_py, val)
+    }
 }
 
-extern "C" fn bridge_int_bits_from_i128(val_lo: u64, val_hi: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn bridge_int_bits_from_i128(__molt_context: u64, val_lo: u64, val_hi: u64) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let val = (val_hi as i128) << 64 | (val_lo as u128 as i128);
         crate::builtins::numbers::int_bits_from_i128(_py, val)
-    })
+    }
 }
 
-extern "C" fn bridge_int_bits_from_bigint(sign: i32, data_ptr: *const u8, data_len: usize) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn bridge_int_bits_from_bigint(
+    __molt_context: u64,
+    sign: i32,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let bytes = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         let sign = match sign {
             -1 => Sign::Minus,
@@ -380,7 +439,7 @@ extern "C" fn bridge_int_bits_from_bigint(sign: i32, data_ptr: *const u8, data_l
         };
         let value = BigInt::from_bytes_be(sign, bytes);
         int_bits_from_bigint(_py, value)
-    })
+    }
 }
 
 extern "C" fn bridge_bigint_ptr_from_bits(bits: u64) -> *mut u8 {
@@ -479,8 +538,14 @@ extern "C" fn bridge_bigint_from_f64_trunc(
     1
 }
 
-extern "C" fn bridge_bigint_bits(sign: i32, data_ptr: *const u8, data_len: usize) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn bridge_bigint_bits(
+    __molt_context: u64,
+    sign: i32,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let bytes = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         let sign = match sign {
             -1 => Sign::Minus,
@@ -489,7 +554,7 @@ extern "C" fn bridge_bigint_bits(sign: i32, data_ptr: *const u8, data_len: usize
         };
         let value = BigInt::from_bytes_be(sign, bytes);
         _bigint_bits(_py, value)
-    })
+    }
 }
 
 extern "C" fn bridge_bigint_to_inline(sign: i32, data_ptr: *const u8, data_len: usize) -> u64 {
@@ -506,15 +571,22 @@ extern "C" fn bridge_bigint_to_inline(sign: i32, data_ptr: *const u8, data_len: 
     }
 }
 
-extern "C" fn bridge_index_i64_from_obj(obj_bits: u64, err_ptr: *const u8, err_len: usize) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn bridge_index_i64_from_obj(
+    __molt_context: u64,
+    obj_bits: u64,
+    err_ptr: *const u8,
+    err_len: usize,
+) -> i64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let err =
             unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
         _index_i64_from_obj(_py, obj_bits, err)
-    })
+    }
 }
 
 extern "C" fn bridge_index_bigint_from_obj(
+    __molt_context: u64,
     obj_bits: u64,
     err_ptr: *const u8,
     err_len: usize,
@@ -522,7 +594,8 @@ extern "C" fn bridge_index_bigint_from_obj(
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let err =
             unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
         match _index_bigint_from_obj(_py, obj_bits, err) {
@@ -547,21 +620,30 @@ extern "C" fn bridge_index_bigint_from_obj(
             }
             None => 0,
         }
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Callable / protocol helpers
 // ---------------------------------------------------------------------------
 
-extern "C" fn bridge_call_callable0(call_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { unsafe { call_callable0(_py, call_bits) } })
+extern "C" fn bridge_call_callable0(__molt_context: u64, call_bits: u64) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        unsafe { call_callable0(_py, call_bits) }
+    }
 }
 
-extern "C" fn bridge_call_callable2(call_bits: u64, arg0: u64, arg1: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn bridge_call_callable2(
+    __molt_context: u64,
+    call_bits: u64,
+    arg0: u64,
+    arg1: u64,
+) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         unsafe { call_callable2(_py, call_bits, arg0, arg1) }
-    })
+    }
 }
 
 fn unsupported_serial_intern_name(_py: &PyToken<'_>, key: &[u8]) -> u64 {
@@ -573,15 +655,20 @@ fn unsupported_serial_intern_name(_py: &PyToken<'_>, key: &[u8]) -> u64 {
     )
 }
 
-extern "C" fn bridge_intern_static_name(key_ptr: *const u8, key_len: usize) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn bridge_intern_static_name(
+    __molt_context: u64,
+    key_ptr: *const u8,
+    key_len: usize,
+) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
         match crate::state::cache::intern_bridge_protocol_name(_py, key) {
             Ok(Some(bits)) => bits,
             Ok(None) => unsupported_serial_intern_name(_py, key),
             Err(()) => MoltObject::none().bits(),
         }
-    })
+    }
 }
 
 extern "C" fn bridge_class_name_for_error(
@@ -594,8 +681,11 @@ extern "C" fn bridge_class_name_for_error(
     unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
 }
 
-extern "C" fn bridge_type_of_bits(val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { _type_of_bits(_py, val_bits) })
+extern "C" fn bridge_type_of_bits(__molt_context: u64, val_bits: u64) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        _type_of_bits(_py, val_bits)
+    }
 }
 
 extern "C" fn bridge_maybe_ptr_from_bits(bits: u64) -> *mut u8 {
@@ -605,14 +695,22 @@ extern "C" fn bridge_maybe_ptr_from_bits(bits: u64) -> *mut u8 {
     }
 }
 
-extern "C" fn bridge_molt_is_callable(bits: u64) -> i32 {
-    let result = builtins::callable::molt_is_callable(bits);
+extern "C" fn bridge_molt_is_callable(__molt_context: u64, bits: u64) -> i32 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    let result = builtins::callable::molt_is_callable_attached_body(_py, bits);
     let obj = MoltObject::from_bits(result);
     if obj.as_bool() == Some(true) { 1 } else { 0 }
 }
 
-extern "C" fn bridge_format_obj(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn bridge_format_obj(
+    __molt_context: u64,
+    bits: u64,
+    out_ptr: *mut *const u8,
+    out_len: *mut usize,
+) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let obj = obj_from_bits(bits);
         let bytes = match _format_obj(_py, obj).into_bytes_result(_py) {
             Ok(bytes) => bytes.into_boxed_slice(),
@@ -622,15 +720,17 @@ extern "C" fn bridge_format_obj(bits: u64, out_ptr: *mut *const u8, out_len: *mu
             }
         };
         unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
-    })
+    }
 }
 
 extern "C" fn bridge_format_obj_str(
+    __molt_context: u64,
     bits: u64,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let obj = obj_from_bits(bits);
         let bytes = match _format_obj_str(_py, obj).into_bytes_result(_py) {
             Ok(bytes) => bytes.into_boxed_slice(),
@@ -640,7 +740,7 @@ extern "C" fn bridge_format_obj_str(
             }
         };
         unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -656,8 +756,14 @@ extern "C" fn bridge_bytearray_vec(ptr: *mut u8) -> *mut Vec<u8> {
 // Container helpers
 // ---------------------------------------------------------------------------
 
-extern "C" fn bridge_dict_get_in_place(dict_ptr: *mut u8, key_bits: u64, out: *mut u64) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn bridge_dict_get_in_place(
+    __molt_context: u64,
+    dict_ptr: *mut u8,
+    key_bits: u64,
+    out: *mut u64,
+) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         match unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
             Ok(Some(bits)) => {
                 unsafe {
@@ -668,13 +774,19 @@ extern "C" fn bridge_dict_get_in_place(dict_ptr: *mut u8, key_bits: u64, out: *m
             Ok(None) => 0,
             Err(()) => -1,
         }
-    })
+    }
 }
 
-extern "C" fn bridge_dict_set_in_place(dict_ptr: *mut u8, key_bits: u64, val_bits: u64) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn bridge_dict_set_in_place(
+    __molt_context: u64,
+    dict_ptr: *mut u8,
+    key_bits: u64,
+    val_bits: u64,
+) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         i32::from(unsafe { dict_set_in_place(_py, dict_ptr, key_bits, val_bits) })
-    })
+    }
 }
 
 extern "C" fn bridge_list_len(ptr: *mut u8) -> usize {
@@ -682,35 +794,46 @@ extern "C" fn bridge_list_len(ptr: *mut u8) -> usize {
 }
 
 extern "C" fn bridge_seq_snapshot(
+    __molt_context: u64,
     ptr: *mut u8,
     out_ptr: *mut *const u64,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         unsafe { crate::seq_snapshot_bridge::export(_py, ptr, out_ptr, out_len) }
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Iteration helpers
 // ---------------------------------------------------------------------------
 
-extern "C" fn bridge_molt_iter(bits: u64) -> u64 {
-    crate::object::ops_iter::molt_iter(bits)
+extern "C" fn bridge_molt_iter(__molt_context: u64, bits: u64) -> u64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    crate::object::ops_iter::molt_iter_attached_body(_py, bits)
 }
 
-extern "C" fn bridge_raise_not_iterable(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { raise_not_iterable::<u64>(_py, bits) })
+extern "C" fn bridge_raise_not_iterable(__molt_context: u64, bits: u64) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        raise_not_iterable::<u64>(_py, bits)
+    }
 }
 
-extern "C" fn bridge_molt_sorted_builtin(bits: u64) -> u64 {
+extern "C" fn bridge_molt_sorted_builtin(__molt_context: u64, bits: u64) -> u64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
     let none = MoltObject::none().bits();
     let false_bits = MoltObject::from_bool(false).bits();
-    crate::molt_sorted_builtin(bits, none, false_bits)
+    crate::molt_sorted_builtin_attached_body(_py, bits, none, false_bits)
 }
 
-extern "C" fn bridge_molt_mul(a: u64, b: u64) -> u64 {
-    crate::object::ops_arith::molt_mul(a, b)
+extern "C" fn bridge_molt_mul(__molt_context: u64, a: u64, b: u64) -> u64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    crate::object::ops_arith::molt_mul_attached_body(_py, a, b)
 }
 
 // ---------------------------------------------------------------------------
@@ -726,12 +849,14 @@ extern "C" fn bridge_fill_os_random(buf_ptr: *mut u8, buf_len: usize) -> i32 {
 }
 
 #[cfg(target_arch = "wasm32")]
-extern "C" fn bridge_time_local_offset_host(secs: i64) -> i64 {
+extern "C" fn bridge_time_local_offset_host(__molt_context: u64, secs: i64) -> i64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
     unsafe { crate::molt_time_local_offset_host(secs) }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-extern "C" fn bridge_time_local_offset_host(_secs: i64) -> i64 {
+extern "C" fn bridge_time_local_offset_host(__molt_context: u64, _secs: i64) -> i64 {
     0
 }
 
@@ -739,21 +864,28 @@ extern "C" fn bridge_time_local_offset_host(_secs: i64) -> i64 {
 // Dict helpers (configparser-specific)
 // ---------------------------------------------------------------------------
 
-extern "C" fn bridge_alloc_dict_with_pairs(pairs_ptr: *const u64, pairs_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn bridge_alloc_dict_with_pairs(
+    __molt_context: u64,
+    pairs_ptr: *const u64,
+    pairs_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let pairs = unsafe { std::slice::from_raw_parts(pairs_ptr, pairs_len) };
         alloc_dict_with_pairs(_py, pairs)
-    })
+    }
 }
 
 extern "C" fn bridge_dict_snapshot(
+    __molt_context: u64,
     ptr: *mut u8,
     out_ptr: *mut *const u64,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         unsafe { crate::seq_snapshot_bridge::export_dict(_py, ptr, out_ptr, out_len) }
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -761,22 +893,26 @@ extern "C" fn bridge_dict_snapshot(
 // ---------------------------------------------------------------------------
 
 extern "C" fn bridge_alloc_list_with_capacity(
+    __molt_context: u64,
     elems_ptr: *const u64,
     elems_len: usize,
     capacity: usize,
 ) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         crate::object::builders::alloc_list_with_capacity(_py, elems, capacity)
-    })
+    }
 }
 
 extern "C" fn bridge_dynamic_attr_name_bits(
+    __molt_context: u64,
     name_ptr: *const u8,
     name_len: usize,
     out: *mut u64,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let name = unsafe { std::slice::from_raw_parts(name_ptr, name_len) };
         match crate::builtins::attr::dynamic_attr_name_bits(_py, name) {
             Some(bits) => {
@@ -787,30 +923,49 @@ extern "C" fn bridge_dynamic_attr_name_bits(
             }
             None => 0,
         }
-    })
+    }
 }
 
 extern "C" fn bridge_call_class_init_with_args(
+    __molt_context: u64,
     class_ptr: *mut u8,
     args_ptr: *const u64,
     args_len: usize,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let args = unsafe { std::slice::from_raw_parts(args_ptr, args_len) };
         unsafe { crate::call::class_init::call_class_init_with_args(_py, class_ptr, args) }
-    })
+    }
 }
 
-extern "C" fn bridge_missing_bits() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { crate::builtins::methods::missing_bits(_py) })
+extern "C" fn bridge_missing_bits(__molt_context: u64) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        crate::builtins::methods::missing_bits(_py)
+    }
 }
 
-extern "C" fn bridge_molt_getattr_builtin(obj_bits: u64, name_bits: u64, default_bits: u64) -> u64 {
-    crate::object::ops_builtins::molt_getattr_builtin(obj_bits, name_bits, default_bits)
+extern "C" fn bridge_molt_getattr_builtin(
+    __molt_context: u64,
+    obj_bits: u64,
+    name_bits: u64,
+    default_bits: u64,
+) -> u64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    crate::object::ops_builtins::molt_getattr_builtin_attached_body(
+        _py,
+        obj_bits,
+        name_bits,
+        default_bits,
+    )
 }
 
-extern "C" fn bridge_molt_module_import(name_bits: u64) -> u64 {
-    crate::builtins::modules::molt_module_import(name_bits)
+extern "C" fn bridge_molt_module_import(__molt_context: u64, name_bits: u64) -> u64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    crate::builtins::modules::molt_module_import_attached_body(_py, name_bits)
 }
 
 // ---------------------------------------------------------------------------
@@ -823,13 +978,15 @@ use molt_runtime_core::{
 };
 
 extern "C" fn bridge_runtime_state_get_or_init(
+    __molt_context: u64,
     key_ptr: *const u8,
     key_len: usize,
     init: RuntimeExtensionStateInit,
     clear: RuntimeExtensionStateClear,
     drop: RuntimeExtensionStateDrop,
 ) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let key = unsafe { std::slice::from_raw_parts(key_ptr, key_len) };
         crate::state::runtime_extension_state_get_or_init(
             crate::state::runtime_state::runtime_state(_py),
@@ -838,7 +995,7 @@ extern "C" fn bridge_runtime_state_get_or_init(
             clear,
             drop,
         )
-    })
+    }
 }
 
 /// The global vtable populated with pointers to the private bridge functions.

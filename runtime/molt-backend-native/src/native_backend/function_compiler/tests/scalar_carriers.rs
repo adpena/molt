@@ -124,6 +124,7 @@ fn native_representation_results_keep_discarded_box_effects_and_independent_owne
                         &crate::NanBoxConsts::new(),
                     );
                     builder.ins().return_(&[]);
+                    complete_unit_fixture_abi(&backend.module, builder.func);
                     builder.finalize(crate::test_support::host_frontend_config());
                 }
                 verify_function(&func, &settings::Flags::new(settings::builder())).unwrap();
@@ -326,6 +327,7 @@ fn captured_scalar_transport_preserves_raw_outputs_and_shares_one_box() {
                     );
                 }
                 builder.ins().return_(&values);
+                complete_unit_fixture_abi(&backend.module, builder.func);
                 builder.finalize(crate::test_support::host_frontend_config());
             }
             verify_function(&func, &settings::Flags::new(settings::builder())).unwrap();
@@ -471,6 +473,7 @@ fn lower_unary_numeric_carrier_with_plan(
         }
         let result = builder.use_var(vars[out]);
         builder.ins().return_(&[result]);
+        complete_unit_fixture_abi(&backend.module, builder.func);
         builder.finalize(crate::test_support::host_frontend_config());
     }
     verify_function(&func, &settings::Flags::new(settings::builder()))
@@ -918,6 +921,7 @@ fn native_int_boxing_constants_materialized_at_site() {
             raw_zero,
         );
         builder.ins().return_(&[boxed]);
+        complete_unit_fixture_abi(&backend.module, builder.func);
         builder.finalize(crate::test_support::host_frontend_config());
     }
 
@@ -1002,6 +1006,7 @@ fn boxed_transport_defines_scalar_primary_homes() {
 
         let raw_int = builder.use_var(int_var);
         builder.ins().return_(&[raw_int]);
+        complete_unit_fixture_abi(&backend.module, builder.func);
         builder.finalize(crate::test_support::host_frontend_config());
     }
 
@@ -1046,6 +1051,7 @@ fn numeric_result_binding_converts_boxed_call_result_for_float_primary_home() {
 
         let raw_f64 = builder.use_var(float_var);
         builder.ins().return_(&[raw_f64]);
+        complete_unit_fixture_abi(&backend.module, builder.func);
         builder.finalize(crate::test_support::host_frontend_config());
     }
 

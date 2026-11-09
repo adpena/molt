@@ -1,4 +1,5 @@
-use wasm_encoder::{ConstExpr, Function, Instruction};
+use super::Function;
+use wasm_encoder::{ConstExpr, Instruction};
 
 pub(crate) fn encode_u32_leb128_padded(mut value: u32, out: &mut Vec<u8>) {
     for i in 0..5 {
@@ -29,6 +30,7 @@ pub(crate) fn emit_call(func: &mut Function, reloc_enabled: bool, func_index: u3
         func.instruction(&Instruction::Unreachable);
         return;
     }
+    func.emit_call_context(func_index);
     if reloc_enabled {
         let mut bytes = Vec::with_capacity(6);
         bytes.push(0x10);
@@ -47,6 +49,7 @@ pub(crate) fn emit_return_call(func: &mut Function, reloc_enabled: bool, func_in
         func.instruction(&Instruction::Unreachable);
         return;
     }
+    func.emit_call_context(func_index);
     if reloc_enabled {
         let mut bytes = Vec::with_capacity(6);
         bytes.push(0x12); // return_call opcode

@@ -31,7 +31,7 @@ pub(super) fn admit<'py>(
         }
     }
 
-    if !descriptor_is_current(callable, descriptor_bits) {
+    if !descriptor_is_current(py, callable, descriptor_bits) {
         return Err(fail(
             "GPU descriptor no longer describes the current callable code/shape",
         ));
@@ -47,13 +47,13 @@ pub(super) fn admit<'py>(
             .next()
             .ok_or_else(|| fail("GPU query has an empty binding path"))?;
         let mut selected =
-            unsafe { OwnedRuntimeValue::from_owned_bits(py, kernel_global(callable, root)) };
+            unsafe { OwnedRuntimeValue::from_owned_bits(py, kernel_global(py, callable, root)) };
         if exception_pending(py) {
             return Err(MoltObject::none().bits());
         }
         for name in path {
             let next = unsafe {
-                OwnedRuntimeValue::from_owned_bits(py, module_binding(selected.bits(), name))
+                OwnedRuntimeValue::from_owned_bits(py, module_binding(py, selected.bits(), name))
             };
             if exception_pending(py) {
                 return Err(MoltObject::none().bits());
@@ -69,7 +69,7 @@ pub(super) fn admit<'py>(
             "gpu_barrier",
         ]
         .into_iter()
-        .find(|kind| intrinsic_matches(selected.bits(), &format!("molt_{kind}")))
+        .find(|kind| intrinsic_matches(py, selected.bits(), &format!("molt_{kind}")))
         .ok_or_else(|| fail("GPU query binding is not a canonical native primitive"))?;
         if kind == "gpu_barrier" && binding.conditional {
             return Err(fail(
@@ -240,16 +240,16 @@ fn refresh_buffer_fields<'py>(
     pins: &mut Vec<OwnedRuntimeValue<'py>>,
 ) -> Result<(), u64> {
     let object = MoltObject::from_ptr(buffer.object_ptr).bits();
-    let data = owned_lookup(py, default_field(object, "_data"))?;
-    let format = owned_lookup(py, default_field(object, "_format_char"))?;
-    let size = owned_lookup(py, default_field(object, "_size"))?;
-    let itemsize = owned_lookup(py, default_field(object, "_itemsize"))?;
-    let element = owned_lookup(py, default_field(object, "_element_type"))?;
+    let data = owned_lookup(py, default_field(py, object, "_data"))?;
+    let format = owned_lookup(py, default_field(py, object, "_format_char"))?;
+    let size = owned_lookup(py, default_field(py, object, "_size"))?;
+    let itemsize = owned_lookup(py, default_field(py, object, "_itemsize"))?;
+    let element = owned_lookup(py, default_field(py, object, "_element_type"))?;
     let fail = |message: &str| raise_exception::<u64>(py, BuiltinExc::RuntimeError, message);
     let format_ptr = obj_from_bits(format.bits())
         .as_ptr()
         .ok_or_else(|| fail("GPU buffer format must be an exact string"))?;
-    if !builtin_matches(unsafe { object_class_bits(format_ptr) }, "str") {
+    if !builtin_matches(py, unsafe { object_class_bits(py, format_ptr) }, "str") {
         return Err(fail("GPU buffer format must be an exact string"));
     }
     let format_text = format
@@ -263,7 +263,7 @@ fn refresh_buffer_fields<'py>(
         && !size_object.is_bool()
         && !size_object
             .as_ptr()
-            .is_some_and(|ptr| builtin_matches(unsafe { object_class_bits(ptr) }, "int"))
+            .is_some_and(|ptr| builtin_matches(py, unsafe { object_class_bits(py, ptr) }, "int"))
     {
         return Err(fail(
             "GPU buffer size needs exact integer comparison semantics",
@@ -278,13 +278,13 @@ fn refresh_buffer_fields<'py>(
     let data_ptr = obj_from_bits(data.bits())
         .as_ptr()
         .ok_or_else(|| fail("GPU buffer storage must be exact bytes or bytearray"))?;
-    let data_class = unsafe { object_class_bits(data_ptr) };
-    if !builtin_matches(data_class, "bytes") && !builtin_matches(data_class, "bytearray") {
+    let data_class = unsafe { object_class_bits(py, data_ptr) };
+    if !builtin_matches(py, data_class, "bytes") && !builtin_matches(py, data_class, "bytearray") {
         return Err(fail("GPU buffer storage must be exact bytes or bytearray"));
     }
     // Retain the public setter conversion branch. The strict numeric admission
     // below additionally proves that its int/float conversion is exact.
-    buffer.float_elements = builtin_matches(element.bits(), "float");
+    buffer.float_elements = builtin_matches(py, element.bits(), "float");
     // A prior extracted owner can have been detached by a later callback.
     // Retain it through dispatch; dropping it during final admission could run
     // a destructor and invalidate already-checked siblings.
@@ -304,7 +304,7 @@ fn require_body<'py>(
     if !desc
         .python_bodies
         .get(role)
-        .is_some_and(|body| compiled_body_matches(value.bits(), body))
+        .is_some_and(|body| compiled_body_matches(py, value.bits(), body))
     {
         return Err(raise_exception::<u64>(
             py,
@@ -320,8 +320,8 @@ fn require_builtin<'py>(
     function: u64,
     name: &str,
 ) -> Result<OwnedRuntimeValue<'py>, u64> {
-    let value = owned_lookup(py, function_binding(function, name))?;
-    if !builtin_matches(value.bits(), name) {
+    let value = owned_lookup(py, function_binding(py, function, name))?;
+    if !builtin_matches(py, value.bits(), name) {
         return Err(raise_exception::<u64>(
             py,
             BuiltinExc::RuntimeError,
@@ -338,8 +338,18 @@ fn admit_buffer_methods<'py>(
     pins: &mut Vec<OwnedRuntimeValue<'py>>,
 ) -> Result<(), u64> {
     let object = MoltObject::from_ptr(buffer.object_ptr).bits();
-    let get = require_body(py, desc, "buffer_get", class_binding(object, "__getitem__"))?;
-    let set = require_body(py, desc, "buffer_set", class_binding(object, "__setitem__"))?;
+    let get = require_body(
+        py,
+        desc,
+        "buffer_get",
+        class_binding(py, object, "__getitem__"),
+    )?;
+    let set = require_body(
+        py,
+        desc,
+        "buffer_set",
+        class_binding(py, object, "__setitem__"),
+    )?;
     for name in ["isinstance", "bytes", "bytearray", "float", "int"] {
         pins.push(require_builtin(py, set.bits(), name)?);
     }
@@ -347,13 +357,13 @@ fn admit_buffer_methods<'py>(
         (get.bits(), "struct_unpack_from", "unpack_from"),
         (set.bits(), "struct_pack_into", "pack_into"),
     ] {
-        let module = owned_lookup(py, function_binding(method, "struct"))?;
-        let body = require_body(py, desc, role, module_binding(module.bits(), export))?;
+        let module = owned_lookup(py, function_binding(py, method, "struct"))?;
+        let body = require_body(py, desc, role, module_binding(py, module.bits(), export))?;
         let normalize = require_body(
             py,
             desc,
             "struct_normalize_format",
-            function_binding(body.bits(), "_normalize_format"),
+            function_binding(py, body.bits(), "_normalize_format"),
         )?;
         pins.push(require_builtin(py, normalize.bits(), "isinstance")?);
         pins.push(require_builtin(py, normalize.bits(), "str")?);
@@ -363,8 +373,8 @@ fn admit_buffer_methods<'py>(
             &[("_MOLT_STRUCT_UNPACK_FROM", "molt_struct_unpack_from")]
         };
         for &(binding, symbol) in dependencies {
-            let intrinsic = owned_lookup(py, function_binding(body.bits(), binding))?;
-            if !intrinsic_matches(intrinsic.bits(), symbol) {
+            let intrinsic = owned_lookup(py, function_binding(py, body.bits(), binding))?;
+            if !intrinsic_matches(py, intrinsic.bits(), symbol) {
                 return Err(raise_exception::<u64>(
                     py,
                     BuiltinExc::RuntimeError,
@@ -376,8 +386,8 @@ fn admit_buffer_methods<'py>(
         // The native primitive receives the module-owned exception class as an
         // ordinary argument. Retain the actual body binding through dispatch;
         // descriptor bounds/numeric admission proves its failure path unreachable.
-        let error = owned_lookup(py, function_binding(body.bits(), "_STRUCT_ERROR"))?;
-        let declared_error = owned_lookup(py, module_binding(module.bits(), "_STRUCT_ERROR"))?;
+        let error = owned_lookup(py, function_binding(py, body.bits(), "_STRUCT_ERROR"))?;
+        let declared_error = owned_lookup(py, module_binding(py, module.bits(), "_STRUCT_ERROR"))?;
         if error.bits() != declared_error.bits() {
             return Err(raise_exception::<u64>(
                 py,

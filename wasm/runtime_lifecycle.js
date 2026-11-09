@@ -1,8 +1,30 @@
 (function installRuntimeLifecycle(root, factory) {
-  const api = factory();
+  const generatedAbi = root.MoltCallableTableAbiGenerated ||
+    (typeof module === 'object' && module && module.exports
+      ? require('./callable_table_abi_generated.js') : null);
+  const api = factory(generatedAbi);
   if (typeof module === 'object' && module && module.exports) module.exports = api;
   root.MoltRuntimeLifecycle = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, () => {
+})(typeof globalThis !== 'undefined' ? globalThis : this, (generatedAbi) => {
+  const lifetimesByExports = new WeakMap();
+  const runtimeLifetimeRoles = ['runtime_execution_enter', 'runtime_execution_leave', 'runtime_shutdown',
+    'attached_context', 'compiled_execution_enter', 'compiled_execution_leave'];
+  const runtimeLifetimeExportNames = () => Object.fromEntries(runtimeLifetimeRoles.map(role => {
+    const logical = `molt_${role}`;
+    const execution = generatedAbi?.runtime_execution_abis?.[logical];
+    if (execution?.context !== 'Boundary' || typeof execution.physical_symbol !== 'string') {
+      throw new Error(`missing canonical lifetime boundary ${logical}`);
+    }
+    return [role, execution.physical_symbol];
+  }));
+
+  const runtimeExport = (owner, logical) => {
+    const exports = owner?.exports || owner;
+    if (!exports) return undefined;
+    const lifetime = exports && lifetimesByExports.get(exports);
+    if (!lifetime) throw new Error(`runtime execution ABI not admitted for ${logical}`);
+    return lifetime.runtimeFunction(logical);
+  };
   // Thrown JavaScript values need not be Errors, or even safely inspectable.
   // Diagnostics must never replace the original failure with a getter, proxy,
   // JSON or string-conversion failure. Keep the raw value in errors/cause.
@@ -32,7 +54,7 @@
   const requireExports = (instance, names) => {
     const exports = instance?.exports;
     for (const name of names) {
-      if (typeof exports?.[name] !== 'function') {
+      if (typeof runtimeExport(instance, name) !== 'function') {
         throw new Error(`runtime missing ownership export ${name}`);
       }
     }
@@ -62,17 +84,17 @@
     const integer = exactHostInt(value);
     const exports = requireExports(instance,
       ['molt_int_from_i64', 'molt_exception_pending_fast', 'molt_dec_ref_obj']);
-    if (Number(exports.molt_exception_pending_fast()) !== 0) {
+    if (Number(runtimeExport(instance, 'molt_exception_pending_fast')()) !== 0) {
       throw new Error('pending runtime exception before integer allocation');
     }
-    const result = exports.molt_int_from_i64(integer);
+    const result = runtimeExport(instance, 'molt_int_from_i64')(integer);
     try {
-      if (Number(exports.molt_exception_pending_fast()) !== 0) {
+      if (Number(runtimeExport(instance, 'molt_exception_pending_fast')()) !== 0) {
         throw new Error('integer allocation failed');
       }
     } catch (error) {
       const errors = [error];
-      try { exports.molt_dec_ref_obj(result); } catch (cleanup) { errors.push(cleanup); }
+      try { runtimeExport(instance, 'molt_dec_ref_obj')(result); } catch (cleanup) { errors.push(cleanup); }
       throw combinedError(errors);
     }
     return result;
@@ -94,10 +116,10 @@
       completed = true;
     } catch (error) { errors.push(error); }
     for (let i = owned.length - 1; i >= 0; i--) {
-      try { exports.molt_dec_ref_obj(owned[i]); } catch (error) { errors.push(error); }
+      try { runtimeExport(instance, 'molt_dec_ref_obj')(owned[i]); } catch (error) { errors.push(error); }
     }
     if (completed && resultIsOwned && errors.length) {
-      try { exports.molt_dec_ref_obj(result); } catch (error) { errors.push(error); }
+      try { runtimeExport(instance, 'molt_dec_ref_obj')(result); } catch (error) { errors.push(error); }
     }
     if (errors.length) throw combinedError(errors);
     return result;
@@ -116,11 +138,11 @@
     } catch (error) {
       const errors = [error];
       for (let i = args.length - 1; i >= 0; i--) {
-        try { exports.molt_dec_ref_obj(args[i]); } catch (cleanup) { errors.push(cleanup); }
+        try { runtimeExport(instance, 'molt_dec_ref_obj')(args[i]); } catch (cleanup) { errors.push(cleanup); }
       }
       throw combinedError(errors);
     }
-    return fn(...args);
+    return lifetimesByExports.get(instance.exports).callCompiled(fn, args);
   };
 
   // The constructor takes a borrowed Python integer. Its result is an opaque
@@ -133,8 +155,8 @@
     try {
       return withRuntimeOwnedValues(instance, [capacity],
         value => boxRuntimeInt(instance, value), ([capacityBits]) => {
-          stream = exports.molt_stream_new(capacityBits);
-          if (Number(exports.molt_exception_pending_fast()) !== 0) {
+          stream = runtimeExport(instance, 'molt_stream_new')(capacityBits);
+          if (Number(runtimeExport(instance, 'molt_exception_pending_fast')()) !== 0) {
             throw new Error('stream allocation failed');
           }
           created = true;
@@ -143,7 +165,7 @@
     } catch (error) {
       if (!created) throw error;
       const errors = [error];
-      try { exports.molt_stream_drop(stream); } catch (cleanup) { errors.push(cleanup); }
+      try { runtimeExport(instance, 'molt_stream_drop')(stream); } catch (cleanup) { errors.push(cleanup); }
       throw combinedError(errors);
     }
   };
@@ -163,32 +185,32 @@
     const errors = [];
     try {
       withRuntimeOwnedValues(instance, [integers.length], value => boxRuntimeInt(instance, value), ([capacity]) => {
-        builder = exports.molt_list_builder_new(capacity);
+        builder = runtimeExport(instance, 'molt_list_builder_new')(capacity);
         created = true;
-        if (Number(exports.molt_exception_pending_fast()) !== 0) {
+        if (Number(runtimeExport(instance, 'molt_exception_pending_fast')()) !== 0) {
           throw new Error('list builder allocation failed');
         }
       });
       for (const value of integers) {
         withRuntimeOwnedValues(instance, [value], item => boxRuntimeInt(instance, item), ([item]) => {
-          if (Number(exports.molt_list_builder_append(builder, item)) !== 0 ||
-              Number(exports.molt_exception_pending_fast()) !== 0) {
+          if (Number(runtimeExport(instance, 'molt_list_builder_append')(builder, item)) !== 0 ||
+              Number(runtimeExport(instance, 'molt_exception_pending_fast')()) !== 0) {
             throw new Error('list builder append failed');
           }
         });
       }
       consumed = true;
-      result = exports.molt_list_builder_finish(builder);
+      result = runtimeExport(instance, 'molt_list_builder_finish')(builder);
       finished = true;
-      if (Number(exports.molt_exception_pending_fast()) !== 0) {
+      if (Number(runtimeExport(instance, 'molt_exception_pending_fast')()) !== 0) {
         throw new Error('list builder finish failed');
       }
     } catch (error) { errors.push(error); }
     if (created && !consumed) {
-      try { exports.molt_dec_ref_obj(builder); } catch (error) { errors.push(error); }
+      try { runtimeExport(instance, 'molt_dec_ref_obj')(builder); } catch (error) { errors.push(error); }
     }
     if (finished && errors.length) {
-      try { exports.molt_dec_ref_obj(result); } catch (error) { errors.push(error); }
+      try { runtimeExport(instance, 'molt_dec_ref_obj')(result); } catch (error) { errors.push(error); }
     }
     if (errors.length) throw combinedError(errors);
     return result;
@@ -226,7 +248,18 @@
     };
   };
 
-  const createRuntimeLifetime = (instance, exportNames, checkPending) => {
+  const createRuntimeLifetime = (instance, exportNames, checkPending, executionAbi = generatedAbi) => {
+    const contextAbi = executionAbi?.execution_context_abi;
+    const executionAbis = generatedAbi?.runtime_execution_abis;
+    if (!contextAbi || typeof contextAbi.suffix !== 'string' || !executionAbis) {
+      throw new Error('missing generated attached execution ABI metadata');
+    }
+    for (const key of ['fingerprint', 'section', 'suffix', 'thread_record_offset']) {
+      if (contextAbi[key] !== generatedAbi.execution_context_abi[key]) {
+        throw new Error('attached execution ABI mismatch between manifest and generated host');
+      }
+    }
+    const contexts = [];
     let state = 'live';
     let active = 0;
     let executionEntered = false;
@@ -242,8 +275,10 @@
       if (bindings) return bindings;
       if (admissionFailed) throw admissionError;
       const result = {};
-      for (const key of ['runtime_execution_enter', 'runtime_execution_leave', 'runtime_shutdown']) {
+      for (const key of runtimeLifetimeRoles) {
+        const abi = executionAbis[`molt_${key}`];
         const name = exportNames?.[key];
+        if (abi?.context !== 'Boundary') throw new Error(`invalid execution boundary classification ${key}`);
         if (typeof name !== 'string' || typeof instance?.exports?.[name] !== 'function') {
           admissionFailed = true;
           admissionError = new Error(`runtime missing canonical lifetime export ${key}`);
@@ -254,8 +289,8 @@
       bindings = result;
       return bindings;
     };
-    const execute = (operation) => {
-      assertLive();
+    const executeWithPolicy = (operation, checkStatus) => {
+      if (checkStatus || state !== 'disposing') assertLive();
       const exports = resolve();
       const token = exports.runtime_execution_enter();
       if (typeof token !== 'bigint' || token === 0n) {
@@ -265,21 +300,34 @@
       active++;
       const errors = [];
       let value;
+      let context;
+      let compiledScope;
+      let contextPublished = false;
       try {
-        checkPending();
-        value = operation();
+        context = exports.attached_context();
+        if (typeof context !== 'bigint' || context === 0n) throw new Error('invalid attached execution context');
+        compiledScope = exports.compiled_execution_enter(context);
+        if (typeof compiledScope !== 'bigint' || compiledScope === 0n) throw new Error('invalid compiled execution scope');
+        contexts.push(context);
+        contextPublished = true;
+        if (checkStatus) checkPending();
+        value = operation(context);
         if (value && typeof value.then === 'function') {
           throw new Error('guest execution boundary must be synchronous');
         }
-        checkPending();
+        if (checkStatus) checkPending();
       } catch (error) {
         errors.push(error);
       } finally {
+        if (contextPublished) {
+          try { exports.compiled_execution_leave(context, compiledScope); } catch (error) { errors.push(error); }
+          contexts.pop();
+        }
         try { exports.runtime_execution_leave(token); } catch (error) { errors.push(error); }
         active--;
       }
       // A successful leave may itself publish a deferred runtime failure.
-      if (!errors.length) {
+      if (checkStatus && !errors.length) {
         try { checkPending(); } catch (error) { errors.push(error); }
       }
       if (errors.length) throw combinedError(errors);
@@ -346,8 +394,26 @@
         throw disposalError;
       }
     };
-    return { execute, initialize, dispose, assertLive, admit: resolve };
+    const execute = operation => executeWithPolicy(operation, true);
+    const callAttached = (operation) => contexts.length
+      ? operation(contexts[contexts.length - 1]) : executeWithPolicy(operation, false);
+    const runtimeFunction = (logical) => {
+      if (state === 'disposed') throw new Error('Molt runtime has been disposed');
+      const abi = executionAbis[logical];
+      if (!abi || !['Attached', 'Boundary'].includes(abi.context)) {
+        throw new Error(`missing generated runtime execution ABI for ${logical}`);
+      }
+      const fn = instance.exports[abi.physical_symbol];
+      if (typeof fn !== 'function') return undefined;
+      if (abi.context === 'Boundary') return fn;
+      return (...args) => callAttached(context => fn(context, ...args));
+    };
+    const lifetime = { execute, initialize, dispose, assertLive, admit: resolve,
+      runtimeFunction, callCompiled: (fn, args) => contexts.length
+        ? fn(contexts[contexts.length - 1], ...args) : execute(context => fn(context, ...args)) };
+    lifetimesByExports.set(instance.exports, lifetime);
+    return lifetime;
   };
-  return { createRuntimeLifetime, createRuntimeDisposer, boxRuntimeInt, createRuntimeStream,
-    withRuntimeOwnedValues, invokeAppExport, makeRuntimeIntList, combinedError, formatTraceError };
+  return { createRuntimeLifetime, runtimeLifetimeExportNames, createRuntimeDisposer, boxRuntimeInt, createRuntimeStream,
+    withRuntimeOwnedValues, invokeAppExport, makeRuntimeIntList, combinedError, formatTraceError, runtimeExport };
 });

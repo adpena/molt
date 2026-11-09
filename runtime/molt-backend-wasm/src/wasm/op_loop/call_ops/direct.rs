@@ -13,10 +13,11 @@ use crate::wasm::task_runtime::{
     WasmTaskRuntimeLayout, emit_store_task_payload_local, emit_task_payload_base,
 };
 use crate::wasm_abi_generated::wasm_runtime_import;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::{emit_call, emit_return_call};
 use crate::wasm_values::emit_boxed_none;
 use molt_tir::trampolines::TaskConstructorLayout;
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 pub(super) fn emit_direct_call_op(
     call_ctx: &mut CallOpContext<'_, '_, '_>,

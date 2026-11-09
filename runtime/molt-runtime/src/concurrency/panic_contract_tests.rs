@@ -30,10 +30,11 @@
 
 use crate::BuiltinExc;
 use crate::builtins::exceptions::{
-    molt_exception_class, molt_exception_clear, molt_exception_kind,
-    molt_exception_new_builtin_one, molt_exception_pending, raise_exception,
+    molt_exception_class_attached_body, molt_exception_clear_attached_body,
+    molt_exception_kind_attached_body, molt_exception_new_builtin_one_attached_body,
+    molt_exception_pending_attached_body, raise_exception,
 };
-use crate::c_api::molt_err_matches;
+use crate::c_api::molt_err_matches_attached_body;
 use crate::state::runtime_state::molt_runtime_init;
 use molt_obj_model::MoltObject;
 
@@ -55,7 +56,7 @@ impl ContractGuard {
     fn new() -> Self {
         let transaction = crate::test_support::RuntimeTestTransaction::new();
         molt_runtime_init();
-        let _ = molt_exception_clear();
+        let _ = crate::with_gil_entry_nopanic!(py, { molt_exception_clear_attached_body(py) });
         Self {
             _transaction: transaction,
         }
@@ -64,22 +65,25 @@ impl ContractGuard {
 
 impl Drop for ContractGuard {
     fn drop(&mut self) {
-        let _ = molt_exception_clear();
+        let _ = crate::with_gil_entry_nopanic!(py, { molt_exception_clear_attached_body(py) });
     }
 }
 
 /// Resolve the class object (a `type`) for a builtin exception tag so the test
 /// can assert the pending exception's class via `molt_err_matches`.
 fn builtin_exc_type_bits(tag: u64) -> u64 {
-    let exc_bits = molt_exception_new_builtin_one(tag, MoltObject::from_int(0).bits());
-    assert_ne!(
-        exc_bits, 0,
-        "failed to construct builtin exception (tag {tag})"
-    );
-    let kind_bits = molt_exception_kind(exc_bits);
-    let class_bits = molt_exception_class(kind_bits);
-    assert_ne!(class_bits, 0, "no class for builtin exception (tag {tag})");
-    class_bits
+    crate::with_gil_entry_nopanic!(py, {
+        let exc_bits =
+            molt_exception_new_builtin_one_attached_body(py, tag, MoltObject::from_int(0).bits());
+        assert_ne!(
+            exc_bits, 0,
+            "failed to construct builtin exception (tag {tag})"
+        );
+        let kind_bits = molt_exception_kind_attached_body(py, exc_bits);
+        let class_bits = molt_exception_class_attached_body(py, kind_bits);
+        assert_ne!(class_bits, 0, "no class for builtin exception (tag {tag})");
+        class_bits
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -143,18 +147,23 @@ fn python_level_error_is_catchable() {
         "raising FFI entry point should return the None sentinel"
     );
     assert_eq!(
-        molt_exception_pending(),
+        crate::with_gil_entry_nopanic!(py, { molt_exception_pending_attached_body(py) }),
         1,
         "a Python-level error in a with_gil_entry! body must leave a pending \
          exception (catchable), not abort"
     );
     assert_eq!(
-        molt_err_matches(value_error_type),
+        crate::with_gil_entry_nopanic!(py, {
+            molt_err_matches_attached_body(py, value_error_type)
+        }),
         1,
         "pending exception must be the ValueError the body raised"
     );
-    let _ = molt_exception_clear();
-    assert_eq!(molt_exception_pending(), 0);
+    let _ = crate::with_gil_entry_nopanic!(py, { molt_exception_clear_attached_body(py) });
+    assert_eq!(
+        crate::with_gil_entry_nopanic!(py, { molt_exception_pending_attached_body(py) }),
+        0
+    );
 }
 
 #[test]
@@ -164,7 +173,7 @@ fn pending_exceptions_are_isolated_between_native_threads() {
     // Worker execution borrows production custody without taking this mutex.
     let _test = crate::test_support::RuntimeTestTransaction::new();
     assert_eq!(molt_runtime_init(), 1);
-    let _ = molt_exception_clear();
+    let _ = crate::with_gil_entry_nopanic!(py, { molt_exception_clear_attached_body(py) });
     // Runtime initialization no longer leaves a hidden process-lifetime GIL
     // owner. Hold one explicit custody unit and suspend exactly that unit while
     // the worker threads exercise their independent exception channels.
@@ -179,9 +188,15 @@ fn pending_exceptions_are_isolated_between_native_threads() {
         b_done_rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("thread B must clear its independent exception");
-        assert_eq!(molt_exception_pending(), 1);
-        assert_eq!(molt_err_matches(expected), 1);
-        let _ = molt_exception_clear();
+        assert_eq!(
+            crate::with_gil_entry_nopanic!(py, { molt_exception_pending_attached_body(py) }),
+            1
+        );
+        assert_eq!(
+            crate::with_gil_entry_nopanic!(py, { molt_err_matches_attached_body(py, expected) }),
+            1
+        );
+        let _ = crate::with_gil_entry_nopanic!(py, { molt_exception_clear_attached_body(py) });
     });
 
     a_ready_rx
@@ -190,10 +205,19 @@ fn pending_exceptions_are_isolated_between_native_threads() {
     let thread_b = std::thread::spawn(move || {
         let expected = builtin_exc_type_bits(TAG_TYPE_ERROR);
         let _ = ffi_raises_type_error();
-        assert_eq!(molt_exception_pending(), 1);
-        assert_eq!(molt_err_matches(expected), 1);
-        let _ = molt_exception_clear();
-        assert_eq!(molt_exception_pending(), 0);
+        assert_eq!(
+            crate::with_gil_entry_nopanic!(py, { molt_exception_pending_attached_body(py) }),
+            1
+        );
+        assert_eq!(
+            crate::with_gil_entry_nopanic!(py, { molt_err_matches_attached_body(py, expected) }),
+            1
+        );
+        let _ = crate::with_gil_entry_nopanic!(py, { molt_exception_clear_attached_body(py) });
+        assert_eq!(
+            crate::with_gil_entry_nopanic!(py, { molt_exception_pending_attached_body(py) }),
+            0
+        );
         b_done_tx.send(()).expect("thread B must report completion");
     });
 
@@ -220,17 +244,19 @@ fn invariant_panic_becomes_runtime_error_under_unwind() {
     // canonical None handle).
     assert_eq!(ret, 0, "caught panic should return the zero sentinel");
     assert_eq!(
-        molt_exception_pending(),
+        crate::with_gil_entry_nopanic!(py, { molt_exception_pending_attached_body(py) }),
         1,
         "an invariant panic under panic=unwind must be caught into a pending \
          RuntimeError (defense in depth)"
     );
     assert_eq!(
-        molt_err_matches(runtime_error_type),
+        crate::with_gil_entry_nopanic!(py, {
+            molt_err_matches_attached_body(py, runtime_error_type)
+        }),
         1,
         "the caught panic must surface as RuntimeError"
     );
-    let _ = molt_exception_clear();
+    let _ = crate::with_gil_entry_nopanic!(py, { molt_exception_clear_attached_body(py) });
 }
 
 /// Compile-time contract: the macro dispatch must agree with the active panic
@@ -252,10 +278,10 @@ fn macro_dispatch_matches_panic_strategy() {
         let _guard = ContractGuard::new();
         let _ = ffi_raises_value_error();
         assert_eq!(
-            molt_exception_pending(),
+            crate::with_gil_entry_nopanic!(py, { molt_exception_pending_attached_body(py) }),
             1,
             "under panic=abort, a Python-level error must still be catchable"
         );
-        let _ = molt_exception_clear();
+        let _ = crate::with_gil_entry_nopanic!(py, { molt_exception_clear_attached_body(py) });
     }
 }

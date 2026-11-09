@@ -483,13 +483,13 @@ fn native_runtime_guards_check_expected_tags_and_define_used_results() {
         assert!(
             native_object_symbols(&object.bytes)
                 .undefined
-                .contains("molt_guard_type"),
+                .contains(physical_runtime_symbol("molt_guard_type")),
             "{kind}: two raw integers and a misleading hint must not erase the check"
         );
         assert!(
             native_object_symbols(&object.bytes)
                 .undefined
-                .contains("molt_profile_enabled"),
+                .contains(physical_runtime_symbol("molt_profile_enabled")),
             "{kind}: admitted tag checks must be gated by the runtime profile flag"
         );
     }

@@ -1,6 +1,9 @@
 #[cfg(feature = "llvm")]
 use super::attributes::{add_memory_read, add_nounwind, add_willreturn};
 #[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
+use crate::llvm_backend::execution_abi::{execution_symbol, runtime_execution_type};
+#[cfg(feature = "llvm")]
 use crate::runtime_import_abi::{MOLT_DEC_REF_OBJ, MOLT_INC_REF_OBJ, RuntimeReturnAbi};
 #[cfg(feature = "llvm")]
 use inkwell::AddressSpace;
@@ -255,7 +258,6 @@ pub(super) const FIXED_RUNTIME_IMPORTS: &[FixedRuntimeImportSpec] = &[
     i64_ret("molt_exception_clear", 0, ATTR_WILLRETURN),
     i64_ret("molt_exception_last", 0, ATTR_WILLRETURN),
     i64_ret("molt_exception_last_pending", 0, ATTR_WILLRETURN),
-    i64_ret("molt_thread_record", 0, ATTR_WILLRETURN),
     // Polling services GC and arbitrary pending Python callbacks; unlike a
     // passive observer, neither projection promises termination or read-only memory.
     i64_ret("molt_async_work_poll_and_exception_pending", 0, ATTR_NONE),
@@ -422,7 +424,7 @@ pub(super) fn fixed_runtime_function_type<'ctx>(
 ) -> FunctionType<'ctx> {
     let i64_ty = ctx.i64_type();
     let i32_ty = ctx.i32_type();
-    match spec.signature {
+    let logical = match spec.signature {
         FixedRuntimeSignature::Boxed {
             param_count,
             return_abi,
@@ -448,7 +450,8 @@ pub(super) fn fixed_runtime_function_type<'ctx>(
                 FixedRuntimeReturnAbi::I32 => i32_ty.fn_type(&param_types, false),
             }
         }
-    }
+    };
+    runtime_execution_type(spec.name, logical)
 }
 
 #[cfg(feature = "llvm")]
@@ -457,11 +460,11 @@ pub(super) fn declare_fixed_runtime_import<'ctx>(
     module: &Module<'ctx>,
     spec: FixedRuntimeImportSpec,
 ) -> FunctionValue<'ctx> {
-    if let Some(func) = module.get_function(spec.name) {
+    if let Some(func) = module.get_execution_function(spec.name) {
         return func;
     }
     let func = module.add_function(
-        spec.name,
+        &execution_symbol(spec.name),
         fixed_runtime_function_type(ctx, spec),
         Some(inkwell::module::Linkage::External),
     );

@@ -1,4 +1,8 @@
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use molt_ir::OpKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
@@ -83,11 +87,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         )
                         .unwrap(),
                     _ => {
-                        let truthy_fn = self.backend.module.get_function("molt_is_truthy").unwrap();
+                        let truthy_fn = self
+                            .backend
+                            .module
+                            .get_execution_function("molt_is_truthy")
+                            .unwrap();
                         let truthy = self
                             .backend
                             .builder
-                            .build_call(
+                            .build_execution_call(
                                 truthy_fn,
                                 &[self.ensure_i64(operand).into()],
                                 "truthy_bool",
@@ -319,23 +327,27 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result_id = op.results[0];
                 let size = self.resolve(op.operands[0]);
                 let size_i64 = self.ensure_i64(size);
-                let alloc_fn = self.backend.module.get_function("molt_alloc").unwrap();
+                let alloc_fn = self
+                    .backend
+                    .module
+                    .get_execution_function("molt_alloc")
+                    .unwrap();
                 let unpublished = self
                     .backend
                     .builder
-                    .build_call(alloc_fn, &[size_i64.into()], "alloc")
+                    .build_execution_call(alloc_fn, &[size_i64.into()], "alloc")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
                 let publish_fn = self
                     .backend
                     .module
-                    .get_function("molt_object_publish_initialized")
+                    .get_execution_function("molt_object_publish_initialized")
                     .unwrap();
                 let result = self
                     .backend
                     .builder
-                    .build_call(publish_fn, &[unpublished.into()], "publish_initialized")
+                    .build_execution_call(publish_fn, &[unpublished.into()], "publish_initialized")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -594,7 +606,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         let service = self.ensure_runtime_i64_fn("molt_exception_frame_origin", 1);
                         self.backend
                             .builder
-                            .build_call(service, &[homes.into()], "origin_capture")
+                            .build_execution_call(service, &[homes.into()], "origin_capture")
                             .unwrap();
                         self.record_branch_args(
                             source_block,
@@ -659,7 +671,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     self.with_owned_name(module_name, |this, name_i64| {
                         this.backend
                             .builder
-                            .build_call(import_fn, &[name_i64.into()], "import")
+                            .build_execution_call(import_fn, &[name_i64.into()], "import")
                             .unwrap()
                             .try_as_basic_value()
                             .unwrap_basic()

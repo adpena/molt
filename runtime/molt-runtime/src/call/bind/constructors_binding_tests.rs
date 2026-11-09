@@ -11,7 +11,11 @@ fn resolve_construct_after_init_no_pending_returns_instance_unchanged() {
         let inst_bits = MoltObject::from_ptr(list_ptr).bits();
         let before =
             unsafe { (*crate::object::header_from_obj_ptr(list_ptr)).ref_count_snapshot() };
-        assert_eq!(crate::molt_exception_pending(), 0, "no exception expected");
+        assert_eq!(
+            crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+            0,
+            "no exception expected"
+        );
         // No pending exception: the owning reference is handed back as-is.
         let out = unsafe {
             crate::call::class_init::resolve_construct_after_init(
@@ -49,7 +53,7 @@ fn resolve_construct_after_init_pending_drops_instance_and_returns_none() {
             "task60 init raise",
         );
         assert_eq!(
-            crate::molt_exception_pending(),
+            crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
             1,
             "exception must be pending"
         );
@@ -66,7 +70,7 @@ fn resolve_construct_after_init_pending_drops_instance_and_returns_none() {
             "a pending __init__ exception must yield the None sentinel, not the instance"
         );
         assert_eq!(
-            crate::molt_exception_pending(),
+            crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
             1,
             "the helper must not clear the pending exception — the caller propagates it"
         );
@@ -77,8 +81,11 @@ fn resolve_construct_after_init_pending_drops_instance_and_returns_none() {
             "the exception path must drop exactly one (the instance's) owning reference"
         );
 
-        let _ = crate::molt_exception_clear();
-        assert_eq!(crate::molt_exception_pending(), 0);
+        let _ = crate::molt_exception_clear_attached_body(_py);
+        assert_eq!(
+            crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+            0
+        );
         // Release the extra reference taken above.
         dec_ref_bits(_py, inst_bits);
     });
@@ -105,7 +112,10 @@ fn resolve_construct_after_init_rejects_and_consumes_non_none_result() {
             crate::call::class_init::resolve_construct_after_init(_py, inst_bits, result_bits)
         };
         assert!(MoltObject::from_bits(out).is_none());
-        assert_eq!(crate::molt_exception_pending(), 1);
+        assert_eq!(
+            crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+            1
+        );
         assert_eq!(
             unsafe { (*crate::object::header_from_obj_ptr(inst_ptr)).ref_count_snapshot() },
             inst_before - 1,
@@ -117,7 +127,7 @@ fn resolve_construct_after_init_rejects_and_consumes_non_none_result() {
             "invalid __init__ return must consume its owned call result"
         );
 
-        let _ = crate::molt_exception_clear();
+        let _ = crate::molt_exception_clear_attached_body(_py);
         dec_ref_bits(_py, inst_bits);
         dec_ref_bits(_py, result_bits);
     });

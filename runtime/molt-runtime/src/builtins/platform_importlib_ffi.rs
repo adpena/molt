@@ -1,4 +1,20 @@
 use super::*;
+#[cfg(test)]
+pub(crate) use bootstrap_loader::{
+    molt_importlib_extension_loader_create_module_attached_body,
+    molt_importlib_extension_loader_payload_attached_body,
+};
+#[cfg(test)]
+pub(crate) use import_transaction::{
+    molt_importlib_import_module_attached_body, molt_importlib_import_transaction_attached_body,
+};
+#[cfg(test)]
+pub(crate) use payloads::molt_importlib_frozen_payload_attached_body;
+#[cfg(test)]
+pub(crate) use reload_bootstrap::{
+    molt_imp_acquire_lock_attached_body, molt_imp_lock_held_attached_body,
+    molt_imp_release_lock_attached_body,
+};
 
 #[path = "platform_importlib_ffi/bootstrap_loader.rs"]
 pub(super) mod bootstrap_loader;
@@ -93,3 +109,10 @@ pub(super) use find_spec::importlib_find_spec_impl;
 pub(super) use reload_bootstrap::importlib_acquire_import_lock;
 #[cfg(test)]
 pub(super) use reload_bootstrap::importlib_retire_import_state;
+
+pub(crate) use bootstrap_loader::{
+    molt_importlib_cache_from_source_attached_body, molt_importlib_coerce_module_name_attached_body,
+};
+
+#[cfg(test)]
+pub(crate) use path_finder::molt_importlib_file_loader_types_declare_attached_body;

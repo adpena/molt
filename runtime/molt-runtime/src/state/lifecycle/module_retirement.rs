@@ -199,15 +199,23 @@ mod tests {
 
     fn marker(py: &PyToken<'_>, module: u64, expected: i64) {
         let key = crate::dynamic_attr_name_bits(py, b"sentinel").unwrap();
-        let result = crate::builtins::modules::molt_module_get_attr(module, key);
+        let result = crate::builtins::modules::molt_module_get_attr_attached_body(py, module, key);
         assert!(!exception_pending(py));
         assert_eq!(obj_from_bits(result).as_int(), Some(expected));
         dec_ref_bits(py, key);
         dec_ref_bits(py, result);
     }
 
-    extern "C" fn finalizer(_self: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn finalizer(__context: u64, _self: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             marker(py, BUILTINS.load(Ordering::SeqCst), 42);
             marker(py, SYS.load(Ordering::SeqCst), 43);
             // Reentrant aliases must inherit the same protected dictionary,
@@ -215,7 +223,7 @@ mod tests {
             publish(py, "late_builtin_alias", BUILTINS.load(Ordering::SeqCst));
             FINALIZED.fetch_add(1, Ordering::SeqCst);
             MoltObject::none().bits()
-        })
+        }
     }
 
     #[test]
@@ -229,12 +237,14 @@ mod tests {
                 SYS.store(sys, Ordering::SeqCst);
                 FINALIZED.store(0, Ordering::SeqCst);
                 let key = crate::dynamic_attr_name_bits(py, b"sentinel").unwrap();
-                crate::builtins::modules::molt_module_set_attr(
+                crate::builtins::modules::molt_module_set_attr_attached_body(
+                    py,
                     builtin,
                     key,
                     MoltObject::from_int(42).bits(),
                 );
-                crate::builtins::modules::molt_module_set_attr(
+                crate::builtins::modules::molt_module_set_attr_attached_body(
+                    py,
                     sys,
                     key,
                     MoltObject::from_int(43).bits(),
@@ -249,9 +259,13 @@ mod tests {
                     publish(py, name, bits);
                 }
                 let name = crate::dynamic_attr_name_bits(py, b"NamespaceFinalizer").unwrap();
-                let class = crate::molt_class_new(name);
+                let class = crate::molt_class_new_attached_body(py, name);
                 dec_ref_bits(py, name);
-                crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+                crate::molt_class_set_base_attached_body(
+                    py,
+                    class,
+                    crate::builtin_classes(py).object,
+                );
                 let class_ptr = obj_from_bits(class).as_ptr().unwrap();
                 unsafe { crate::object::class_finish_definition(py, class_ptr) }.unwrap();
                 let method = crate::builtins::functions::alloc_runtime_function_obj(
@@ -261,7 +275,7 @@ mod tests {
                 );
                 let method = MoltObject::from_ptr(method).bits();
                 let key = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
-                crate::molt_set_attr_name(class, key, method);
+                crate::molt_set_attr_name_attached_body(py, class, key, method);
                 dec_ref_bits(py, key);
                 dec_ref_bits(py, method);
                 let mut retirement = ModuleRetirement::new(py);
@@ -270,7 +284,9 @@ mod tests {
                     let owner = module(py, b"owner");
                     let value = unsafe { crate::alloc_instance_for_class(py, class_ptr) };
                     let key = crate::dynamic_attr_name_bits(py, b"value").unwrap();
-                    crate::builtins::modules::molt_module_set_attr(owner, key, value);
+                    crate::builtins::modules::molt_module_set_attr_attached_body(
+                        py, owner, key, value,
+                    );
                     dec_ref_bits(py, key);
                     dec_ref_bits(py, value);
                     publish(py, "owner", owner);

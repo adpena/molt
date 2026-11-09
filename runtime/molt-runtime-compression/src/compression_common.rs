@@ -4,9 +4,9 @@ use molt_runtime_capi::{NativeObjectOwner, retire_native_reference};
 use molt_runtime_core::prelude::*;
 
 const COMPRESSION_STREAMS_BUFFER_SIZE: i64 = 8192;
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_compression_streams_buffer_size() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+
+pub fn molt_compression_streams_buffer_size_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         int_bits_from_i64(_py, COMPRESSION_STREAMS_BUFFER_SIZE)
     })
 }
@@ -21,7 +21,7 @@ pub(crate) fn validate_clinic_buffer(
     function: &str,
     argument: &str,
 ) -> bool {
-    if molt_runtime_core::rt_target_at_least(3, 13) || input.is_c_contiguous() {
+    if molt_runtime_core::rt_target_at_least(py, 3, 13) || input.is_c_contiguous() {
         return true;
     }
     let name = type_name(py, obj_from_bits(bits));
@@ -87,7 +87,7 @@ pub(crate) fn codec_uint64(py: &PyToken, bits: u64) -> Result<u64, u64> {
         if object.as_ptr().is_null() {
             return Err(MoltObject::none().bits());
         }
-        let value = if molt_runtime_core::rt_target_at_least(3, 14) {
+        let value = if molt_runtime_core::rt_target_at_least(py, 3, 14) {
             let mut value = 0u64;
             // Native endian | unsigned buffer | reject negative | allow index.
             let size = retire_native_reference(|| {
@@ -118,3 +118,5 @@ pub(crate) fn codec_uint64(py: &PyToken, bits: u64) -> Result<u64, u64> {
         }
     }
 }
+
+include!("attached_exports_generated/compression_common.rs");

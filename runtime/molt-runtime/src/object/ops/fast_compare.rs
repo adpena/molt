@@ -8,8 +8,12 @@ use super::*;
 /// If either operand is not a NaN-boxed int the call falls through to the
 /// appropriate generic comparison function.  Both booleans and int subclasses
 /// are handled by the slow path.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_compare_int_fast(a: u64, b: u64, op: u32) -> u64 {
+pub(crate) fn molt_compare_int_fast_attached_body(
+    _py: &crate::PyToken<'_>,
+    a: u64,
+    b: u64,
+    op: u32,
+) -> u64 {
     let lhs = obj_from_bits(a);
     let rhs = obj_from_bits(b);
     // Both operands must be plain NaN-boxed ints (not bools, not subclasses).
@@ -23,19 +27,19 @@ pub extern "C" fn molt_compare_int_fast(a: u64, b: u64, op: u32) -> u64 {
             3 => li != ri,
             4 => li > ri,
             5 => li >= ri,
-            _ => return molt_eq(a, b), // unknown op: safe fallback
+            _ => return molt_eq_attached_body(_py, a, b), // unknown op: safe fallback
         };
         return MoltObject::from_bool(result).bits();
     }
     // Slow path: delegate to the full generic comparison.
     match op {
-        0 => molt_lt(a, b),
-        1 => molt_le(a, b),
-        2 => molt_eq(a, b),
-        3 => molt_ne(a, b),
-        4 => molt_gt(a, b),
-        5 => molt_ge(a, b),
-        _ => molt_eq(a, b),
+        0 => molt_lt_attached_body(_py, a, b),
+        1 => molt_le_attached_body(_py, a, b),
+        2 => molt_eq_attached_body(_py, a, b),
+        3 => molt_ne_attached_body(_py, a, b),
+        4 => molt_gt_attached_body(_py, a, b),
+        5 => molt_ge_attached_body(_py, a, b),
+        _ => molt_eq_attached_body(_py, a, b),
     }
 }
 
@@ -81,10 +85,11 @@ fn string_eq_fast(a: u64, b: u64) -> Option<bool> {
 ///
 /// Uses `string_eq_fast` for the pointer/length checks, then delegates to
 /// `molt_string_eq` for byte comparison when needed.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_eq_fast(a: u64, b: u64) -> u64 {
+pub(crate) fn molt_string_eq_fast_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
     match string_eq_fast(a, b) {
         Some(result) => MoltObject::from_bool(result).bits(),
-        None => molt_string_eq(a, b),
+        None => molt_string_eq_attached_body(_py, a, b),
     }
 }
+
+include!("../../attached_exports_generated/object/ops/fast_compare.rs");

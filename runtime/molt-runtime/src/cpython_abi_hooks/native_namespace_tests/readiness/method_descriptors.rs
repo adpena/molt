@@ -535,9 +535,9 @@ fn native_alias_of_managed_type_completes_its_own_declarations() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let name = crate::dynamic_attr_name_bits(py, b"NativeAliasProjection").unwrap();
-            let class = crate::molt_class_new(name);
+            let class = crate::molt_class_new_attached_body(py, name);
             crate::dec_ref_bits(py, name);
-            crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+            crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).object);
             crate::object::class_finish_definition(
                 py,
                 crate::MoltObject::from_bits(class).as_ptr().unwrap(),

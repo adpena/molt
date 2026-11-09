@@ -82,21 +82,41 @@ mod tensor_runtime;
 mod bridge_test_stubs;
 
 pub use tensor_runtime::{
-    molt_gpu_broadcast_binary_contiguous, molt_gpu_buffer_to_list,
-    molt_gpu_interop__load_safetensors, molt_gpu_linear_contiguous,
+    molt_gpu_broadcast_binary_contiguous, molt_gpu_broadcast_binary_contiguous_attached_body,
+    molt_gpu_buffer_to_list, molt_gpu_buffer_to_list_attached_body,
+    molt_gpu_interop__load_safetensors, molt_gpu_interop__load_safetensors_attached_body,
+    molt_gpu_linear_contiguous, molt_gpu_linear_contiguous_attached_body,
     molt_gpu_linear_split_last_dim_contiguous,
-    molt_gpu_linear_squared_relu_gate_interleaved_contiguous, molt_gpu_matmul_contiguous,
-    molt_gpu_permute_contiguous, molt_gpu_repeat_axis_contiguous,
-    molt_gpu_rms_norm_last_axis_contiguous, molt_gpu_rope_apply_contiguous,
-    molt_gpu_softmax_last_axis_contiguous, molt_gpu_squared_relu_gate_interleaved_contiguous,
-    molt_gpu_tensor__tensor_concat_first_dim, molt_gpu_tensor__tensor_data_list,
-    molt_gpu_tensor__tensor_linear, molt_gpu_tensor__tensor_linear_split_last_dim,
+    molt_gpu_linear_split_last_dim_contiguous_attached_body,
+    molt_gpu_linear_squared_relu_gate_interleaved_contiguous,
+    molt_gpu_linear_squared_relu_gate_interleaved_contiguous_attached_body,
+    molt_gpu_matmul_contiguous, molt_gpu_matmul_contiguous_attached_body,
+    molt_gpu_permute_contiguous, molt_gpu_permute_contiguous_attached_body,
+    molt_gpu_repeat_axis_contiguous, molt_gpu_repeat_axis_contiguous_attached_body,
+    molt_gpu_rms_norm_last_axis_contiguous, molt_gpu_rms_norm_last_axis_contiguous_attached_body,
+    molt_gpu_rope_apply_contiguous, molt_gpu_rope_apply_contiguous_attached_body,
+    molt_gpu_softmax_last_axis_contiguous, molt_gpu_softmax_last_axis_contiguous_attached_body,
+    molt_gpu_squared_relu_gate_interleaved_contiguous,
+    molt_gpu_squared_relu_gate_interleaved_contiguous_attached_body,
+    molt_gpu_tensor__tensor_concat_first_dim,
+    molt_gpu_tensor__tensor_concat_first_dim_attached_body, molt_gpu_tensor__tensor_data_list,
+    molt_gpu_tensor__tensor_data_list_attached_body, molt_gpu_tensor__tensor_linear,
+    molt_gpu_tensor__tensor_linear_attached_body, molt_gpu_tensor__tensor_linear_split_last_dim,
+    molt_gpu_tensor__tensor_linear_split_last_dim_attached_body,
     molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved,
-    molt_gpu_tensor__tensor_permute_dims, molt_gpu_tensor__tensor_reshape_view,
-    molt_gpu_tensor__tensor_scaled_dot_product_attention, molt_gpu_tensor__tensor_scatter_rows,
-    molt_gpu_tensor__tensor_softmax_last_axis, molt_gpu_tensor__tensor_take_rows,
-    molt_gpu_tensor__zeros, molt_gpu_tensor_from_buffer, molt_gpu_tensor_from_parts,
-    molt_gpu_turboquant_attention_packed,
+    molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved_attached_body,
+    molt_gpu_tensor__tensor_permute_dims, molt_gpu_tensor__tensor_permute_dims_attached_body,
+    molt_gpu_tensor__tensor_reshape_view, molt_gpu_tensor__tensor_reshape_view_attached_body,
+    molt_gpu_tensor__tensor_scaled_dot_product_attention,
+    molt_gpu_tensor__tensor_scaled_dot_product_attention_attached_body,
+    molt_gpu_tensor__tensor_scatter_rows, molt_gpu_tensor__tensor_scatter_rows_attached_body,
+    molt_gpu_tensor__tensor_softmax_last_axis,
+    molt_gpu_tensor__tensor_softmax_last_axis_attached_body, molt_gpu_tensor__tensor_take_rows,
+    molt_gpu_tensor__tensor_take_rows_attached_body, molt_gpu_tensor__zeros,
+    molt_gpu_tensor__zeros_attached_body, molt_gpu_tensor_from_buffer,
+    molt_gpu_tensor_from_buffer_attached_body, molt_gpu_tensor_from_parts,
+    molt_gpu_tensor_from_parts_attached_body, molt_gpu_turboquant_attention_packed,
+    molt_gpu_turboquant_attention_packed_attached_body,
 };
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -270,11 +290,11 @@ fn decode_half_bytes_to_f32_object(
         return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected bytes-like object");
     };
     unsafe {
-        let type_id = object_type_id(ptr);
+        let type_id = object_type_id(_py, ptr);
         if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected bytes-like object");
         }
-        let raw = std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr));
+        let raw = std::slice::from_raw_parts(bytes_data(_py, ptr), bytes_len(_py, ptr));
         let Ok(decoded) = decode(raw) else {
             return raise_exception::<_>(
                 _py,
@@ -294,16 +314,20 @@ fn decode_half_bytes_to_f32_object(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_interop_decode_f16_bytes_to_f32(data_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_gpu_interop_decode_f16_bytes_to_f32_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         decode_half_bytes_to_f32_object(_py, data_bits, decode_f16_payload_to_f32_bytes)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_interop_decode_bf16_bytes_to_f32(data_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_gpu_interop_decode_bf16_bytes_to_f32_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         decode_half_bytes_to_f32_object(_py, data_bits, decode_bf16_payload_to_f32_bytes)
     })
 }
@@ -316,7 +340,7 @@ fn parse_i64_launch_arg(_py: &PyToken, bits: u64, role: &str) -> Result<i64, u64
             &format!("GPU launch {role} must be a positive integer"),
         ));
     }
-    let Some(value) = to_i64(obj_from_bits(bits)) else {
+    let Some(value) = to_i64(_py, obj_from_bits(bits)) else {
         return Err(raise_exception::<_>(
             _py,
             BuiltinExc::TypeError,
@@ -346,7 +370,7 @@ unsafe fn try_object_attr_bits(
     let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
         return Err(MoltObject::none().bits());
     };
-    let result = lookup_attribute(obj_bits, name_bits);
+    let result = lookup_attribute(_py, obj_bits, name_bits);
     dec_ref_bits(_py, name_bits);
     match result {
         molt_obj_model::AttributeLookup::Found(out) if obj_from_bits(out).is_none() => Ok(None),
@@ -365,7 +389,7 @@ unsafe fn gpu_kernel_descriptor_bits(
     _py: &PyToken,
     callable_bits: u64,
 ) -> Result<Option<u64>, u64> {
-    let bits = kernel_descriptor(callable_bits);
+    let bits = kernel_descriptor(_py, callable_bits);
     if exception_pending(_py) {
         return Err(bits);
     }
@@ -887,7 +911,7 @@ fn parse_kernel_descriptor_json(text: &str) -> Result<RuntimeKernelDescriptor, S
 fn parse_format(_py: &PyToken, bits: u64, role: &str) -> Result<ScalarFormat, u64> {
     // SAFETY: the caller's argument owner and execution custody remain live;
     // decoding and scalar admission finish before raising can reenter Python.
-    let Some(bytes) = (unsafe { molt_runtime_core::rt_string_as_bytes(bits) }) else {
+    let Some(bytes) = (unsafe { molt_runtime_core::rt_string_as_bytes(_py, bits) }) else {
         return Err(raise_exception::<_>(
             _py,
             BuiltinExc::TypeError,
@@ -906,7 +930,7 @@ fn parse_format(_py: &PyToken, bits: u64, role: &str) -> Result<ScalarFormat, u6
 }
 
 fn parse_usize_arg(_py: &PyToken, bits: u64, role: &str) -> Result<usize, u64> {
-    let Some(value) = to_i64(obj_from_bits(bits)) else {
+    let Some(value) = to_i64(_py, obj_from_bits(bits)) else {
         return Err(raise_exception::<_>(
             _py,
             BuiltinExc::TypeError,
@@ -940,14 +964,14 @@ fn kernel_arg_from_bits<'py>(
             &format!("GPU scalar parameter {name:?} requires an exact builtin numeric protocol"),
         )
     };
-    match exact_scalar_kind(bits) {
+    match exact_scalar_kind(_py, bits) {
         1 => {
-            return to_i64(obj)
+            return to_i64(_py, obj)
                 .map(RuntimeKernelArg::Int)
                 .ok_or_else(unsupported);
         }
         2 => {
-            return to_f64(obj)
+            return to_f64(_py, obj)
                 .map(RuntimeKernelArg::Float)
                 .ok_or_else(unsupported);
         }
@@ -956,7 +980,7 @@ fn kernel_arg_from_bits<'py>(
         _ => {}
     }
     if let Some(ptr) = obj.as_ptr() {
-        let type_id = unsafe { object_type_id(ptr) };
+        let type_id = unsafe { object_type_id(_py, ptr) };
         if type_id == TYPE_ID_TYPE {
             return Err(raise_exception::<_>(
                 _py,
@@ -2240,7 +2264,7 @@ fn bytes_like_view(_py: &PyToken, bits: u64, role: &str) -> Result<ByteView, u64
             &format!("{role} must be bytes-like"),
         ));
     };
-    let type_id = unsafe { object_type_id(ptr) };
+    let type_id = unsafe { object_type_id(_py, ptr) };
     if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
         return Err(raise_exception::<_>(
             _py,
@@ -2249,8 +2273,8 @@ fn bytes_like_view(_py: &PyToken, bits: u64, role: &str) -> Result<ByteView, u64
         ));
     }
     Ok(ByteView {
-        ptr: unsafe { bytes_data(ptr) },
-        len: unsafe { bytes_len(ptr) },
+        ptr: unsafe { bytes_data(_py, ptr) },
+        len: unsafe { bytes_len(_py, ptr) },
     })
 }
 
@@ -2262,7 +2286,7 @@ unsafe fn require_class_ptr(_py: &PyToken, bits: u64, role: &str) -> Result<*mut
             &format!("{role} must be a class object"),
         ));
     };
-    if unsafe { object_type_id(ptr) } != TYPE_ID_TYPE {
+    if unsafe { object_type_id(_py, ptr) } != TYPE_ID_TYPE {
         return Err(raise_exception::<_>(
             _py,
             BuiltinExc::TypeError,
@@ -2275,7 +2299,7 @@ unsafe fn require_class_ptr(_py: &PyToken, bits: u64, role: &str) -> Result<*mut
 fn normalize_shape_bits(_py: &PyToken, bits: u64) -> Result<(u64, bool), u64> {
     let obj = obj_from_bits(bits);
     if let Some(ptr) = obj.as_ptr() {
-        return match unsafe { object_type_id(ptr) } {
+        return match unsafe { object_type_id(_py, ptr) } {
             TYPE_ID_TUPLE => Ok((bits, false)),
             TYPE_ID_LIST => {
                 let Some(shape) = (unsafe {
@@ -2291,7 +2315,7 @@ fn normalize_shape_bits(_py: &PyToken, bits: u64) -> Result<(u64, bool), u64> {
                 }
             }
             _ => {
-                if to_i64(obj).is_some() {
+                if to_i64(_py, obj).is_some() {
                     let tuple_ptr = alloc_tuple(_py, &[bits]);
                     if tuple_ptr.is_null() {
                         Err(MoltObject::none().bits())
@@ -2308,7 +2332,7 @@ fn normalize_shape_bits(_py: &PyToken, bits: u64) -> Result<(u64, bool), u64> {
             }
         };
     }
-    if to_i64(obj).is_some() {
+    if to_i64(_py, obj).is_some() {
         let tuple_ptr = alloc_tuple(_py, &[bits]);
         if tuple_ptr.is_null() {
             Err(MoltObject::none().bits())
@@ -2348,7 +2372,7 @@ unsafe fn object_attr_bits(
     let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
         return Err(MoltObject::none().bits());
     };
-    let out = molt_get_attr_name(obj_bits, name_bits);
+    let out = molt_get_attr_name(_py, obj_bits, name_bits);
     dec_ref_bits(_py, name_bits);
     if exception_pending(_py) {
         return Err(out);
@@ -2436,43 +2460,38 @@ unsafe fn build_tensor_instance(
     Ok(tensor_bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_thread_id() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_gpu_thread_id_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let tid = current_gpu_launch_context().thread_id;
         if trace_gpu_thread_id_enabled() {
             eprintln!("[molt gpu thread_id] tid={tid}");
         }
-        molt_runtime_core::rt_int(tid)
+        molt_runtime_core::rt_int(_py, tid)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_block_id() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        molt_runtime_core::rt_int(current_gpu_launch_context().block_id)
+pub fn molt_gpu_block_id_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        molt_runtime_core::rt_int(_py, current_gpu_launch_context().block_id)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_block_dim() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        molt_runtime_core::rt_int(current_gpu_launch_context().block_dim)
+pub fn molt_gpu_block_dim_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        molt_runtime_core::rt_int(_py, current_gpu_launch_context().block_dim)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_grid_dim() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        molt_runtime_core::rt_int(current_gpu_launch_context().grid_dim)
+pub fn molt_gpu_grid_dim_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
+        molt_runtime_core::rt_int(_py, current_gpu_launch_context().grid_dim)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_barrier() -> u64 {
+pub fn molt_gpu_barrier_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
     // This callable runs on the sequential host executor. Admitted hardware
     // descriptors lower gpu_barrier to the device's real collective operation.
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         raise_exception::<u64>(
             _py,
             BuiltinExc::RuntimeError,
@@ -2481,14 +2500,14 @@ pub extern "C" fn molt_gpu_barrier() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_kernel_launch(
+pub fn molt_gpu_kernel_launch_attached_body(
+    _py: &molt_runtime_core::PyToken,
     callable_bits: u64,
     grid_bits: u64,
     threads_bits: u64,
     builder_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let trace_launch = trace_gpu_kernel_launch_enabled();
         let grid = match parse_i64_launch_arg(_py, grid_bits, "grid") {
             Ok(value) => value,
@@ -2553,7 +2572,7 @@ pub extern "C" fn molt_gpu_kernel_launch(
                     grid_dim: grid,
                 },
                 // molt_call_bind consumes the builder on every path.
-                || molt_call_bind(callable_bits, call_builder_bits),
+                || molt_call_bind(_py, callable_bits, call_builder_bits),
             );
             if exception_pending(_py) {
                 if trace_launch {
@@ -2569,6 +2588,8 @@ pub extern "C" fn molt_gpu_kernel_launch(
         MoltObject::none().bits()
     })
 }
+
+include!("attached_exports_generated/lib.rs");
 
 #[cfg(test)]
 mod launch_context_tests {

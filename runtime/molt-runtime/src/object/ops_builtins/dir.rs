@@ -338,30 +338,29 @@ unsafe fn dir_default_collect_foreign(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_object_dir_method(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_object_dir_method_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe { dir_default_collect(_py, self_bits, false) }
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_type_dir_method(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_type_dir_method_attached_body(_py: &crate::PyToken<'_>, self_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe { dir_default_collect(_py, self_bits, true) }
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dir_builtin_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let missing = missing_bits(_py);
         if obj_bits == missing {
             // CPython: dir() (no args) lists the caller's local scope.
             unsafe {
-                // Note: `molt_locals_builtin` is safe to call here; `with_gil_entry` is
-                // re-entrant and many runtime helpers rely on nested calls.
-                let locals_bits = crate::molt_locals_builtin();
+                // Observe the caller's namespace under the current attachment.
+                let locals_bits = crate::molt_locals_builtin_attached_body(_py);
                 if exception_pending(_py) {
                     if !obj_from_bits(locals_bits).is_none() {
                         dec_ref_bits(_py, locals_bits);
@@ -374,7 +373,8 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
                     // PyMapping_Keys consults keys(), not __iter__. Prepared
                     // class namespaces need not implement the iterator protocol.
                     let name = crate::NameId::Keys.bits(_py);
-                    let method = molt_getattr_builtin(locals_bits, name, missing);
+                    let method =
+                        molt_getattr_builtin_attached_body(_py, locals_bits, name, missing);
                     if exception_pending(_py) {
                         dec_ref_bits(_py, method);
                         None
@@ -401,7 +401,7 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
                 }
                 let none_bits = MoltObject::none().bits();
                 let reverse_bits = MoltObject::from_int(0).bits();
-                let _ = molt_list_sort(list_bits, none_bits, reverse_bits);
+                let _ = molt_list_sort_attached_body(_py, list_bits, none_bits, reverse_bits);
                 if exception_pending(_py) {
                     dec_ref_bits(_py, list_bits);
                     return MoltObject::none().bits();
@@ -440,7 +440,7 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
                     dec_ref_bits(_py, res_bits);
                     let none_bits = MoltObject::none().bits();
                     let reverse_bits = MoltObject::from_int(0).bits();
-                    let _ = molt_list_sort(list_bits, none_bits, reverse_bits);
+                    let _ = molt_list_sort_attached_body(_py, list_bits, none_bits, reverse_bits);
                     if exception_pending(_py) {
                         dec_ref_bits(_py, list_bits);
                         return MoltObject::none().bits();
@@ -454,7 +454,8 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
         if exception_pending(_py) {
             return result;
         }
-        let _ = molt_list_sort(
+        let _ = molt_list_sort_attached_body(
+            _py,
             result,
             MoltObject::none().bits(),
             MoltObject::from_bool(false).bits(),
@@ -467,3 +468,5 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
         }
     })
 }
+
+include!("../../attached_exports_generated/object/ops_builtins/dir.rs");

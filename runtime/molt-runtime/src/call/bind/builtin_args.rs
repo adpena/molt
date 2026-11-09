@@ -8,11 +8,11 @@ use crate::{dict_update_apply, dict_update_set_in_place};
 
 /// Builtin binders read a borrowed view of the call's argument vector; the
 /// vector keeps ownership and releases after the call.
-type BuiltinArgumentBinder = unsafe fn(
-    &PyToken<'_>,
+type BuiltinArgumentBinder = for<'guard> unsafe fn(
+    &'guard PyToken<'guard>,
     *mut u8,
     &CallArgumentView<'_>,
-    &mut BuiltinArgumentStorage,
+    &mut BuiltinArgumentStorage<'guard>,
 ) -> Option<Vec<u64>>;
 
 /// Owns materialized arguments borrowed by a builtin ABI. The caller's
@@ -20,13 +20,13 @@ type BuiltinArgumentBinder = unsafe fn(
 /// vector, on binding failure and on either outcome of the call, so temporary
 /// packing cannot leak arguments or change their finalizer order.
 #[derive(Default)]
-pub(super) struct BuiltinArgumentStorage {
-    owners: Vec<PtrDropGuard>,
+pub(super) struct BuiltinArgumentStorage<'guard> {
+    owners: Vec<PtrDropGuard<'guard>>,
 }
 
-impl BuiltinArgumentStorage {
-    fn own(&mut self, py: &PyToken<'_>, ptr: *mut u8) -> Option<u64> {
-        let owner = PtrDropGuard::new(ptr);
+impl<'guard> BuiltinArgumentStorage<'guard> {
+    fn own(&mut self, py: &'guard PyToken<'guard>, ptr: *mut u8) -> Option<u64> {
+        let owner = PtrDropGuard::new(py, ptr);
         if ptr.is_null() {
             if !exception_pending(py) {
                 raise_exception::<()>(
@@ -80,7 +80,8 @@ impl BuiltinCallBinding {
                     let Some(bound) = bind_builtin_exception_init_owned(py, args) else {
                         return MoltObject::none().bits();
                     };
-                    crate::builtins::exceptions::molt_exception_init_owned(
+                    crate::builtins::exceptions::molt_exception_init_owned_attached_body(
+                        py,
                         function_execution_closure_bits(func_ptr),
                         bound[0],
                         bound[1],
@@ -1001,11 +1002,11 @@ enum IntBytesCodec {
 /// # Safety
 /// `function` is the live function retained by the enclosing call, and `py`
 /// holds the runtime GIL while its owned binding metadata is inspected.
-unsafe fn bind_builtin_int_bytes_codec(
-    py: &PyToken<'_>,
+unsafe fn bind_builtin_int_bytes_codec<'guard>(
+    py: &'guard PyToken<'guard>,
     function: *mut u8,
     args: &CallArgumentView<'_>,
-    storage: &mut BuiltinArgumentStorage,
+    storage: &mut BuiltinArgumentStorage<'guard>,
     codec: IntBytesCodec,
 ) -> Option<Vec<u64>> {
     use crate::builtins::native_arguments::{NativeKeywords, bind_named};
@@ -1135,10 +1136,10 @@ unsafe fn bind_builtin_int_bytes_codec(
 /// `molt_print_builtin` takes 5 positional C params:
 ///   (args_tuple, sep, end, file, flush)
 /// The first param is a tuple of the `*args` vararg.
-unsafe fn bind_builtin_print(
-    _py: &PyToken<'_>,
+unsafe fn bind_builtin_print<'guard>(
+    _py: &'guard PyToken<'guard>,
     args: &CallArgumentView<'_>,
-    storage: &mut BuiltinArgumentStorage,
+    storage: &mut BuiltinArgumentStorage<'guard>,
 ) -> Option<Vec<u64>> {
     // Build the *args tuple from positional arguments.
     let args_ptr = crate::object::builders::alloc_tuple(_py, args.pos);
@@ -1178,11 +1179,11 @@ unsafe fn bind_builtin_print(
 
 /// The sealed protocol tag chooses binding; names and defaults remain owned by
 /// the published callable's typed metadata. No public spelling is executable.
-unsafe fn bind_builtin_named(
-    py: &PyToken<'_>,
+unsafe fn bind_builtin_named<'guard>(
+    py: &'guard PyToken<'guard>,
     func_ptr: *mut u8,
     args: &CallArgumentView<'_>,
-    storage: &mut BuiltinArgumentStorage,
+    storage: &mut BuiltinArgumentStorage<'guard>,
 ) -> Option<Vec<u64>> {
     use crate::builtins::native_arguments::{NativeKeywords, bind_named_slots};
     unsafe {
@@ -1288,10 +1289,10 @@ unsafe fn bind_builtin_named(
     }
 }
 
-unsafe fn bind_builtin_type_new_init(
-    _py: &PyToken<'_>,
+unsafe fn bind_builtin_type_new_init<'guard>(
+    _py: &'guard PyToken<'guard>,
     args: &CallArgumentView<'_>,
-    storage: &mut BuiltinArgumentStorage,
+    storage: &mut BuiltinArgumentStorage<'guard>,
 ) -> Option<Vec<u64>> {
     unsafe {
         if args.pos.is_empty() {
@@ -1796,10 +1797,10 @@ unsafe fn bind_builtin_splitlines(
     Some(vec![args.pos[0], keepends_bits])
 }
 
-unsafe fn bind_builtin_set_multi(
-    _py: &PyToken<'_>,
+unsafe fn bind_builtin_set_multi<'guard>(
+    _py: &'guard PyToken<'guard>,
     args: &CallArgumentView<'_>,
-    storage: &mut BuiltinArgumentStorage,
+    storage: &mut BuiltinArgumentStorage<'guard>,
     method: &str,
     owner_name: &str,
     owner_type_id: u32,
@@ -1968,10 +1969,10 @@ unsafe fn bind_builtin_prefix_check(
     ])
 }
 
-unsafe fn bind_builtin_string_format(
-    _py: &PyToken<'_>,
+unsafe fn bind_builtin_string_format<'guard>(
+    _py: &'guard PyToken<'guard>,
     args: &CallArgumentView<'_>,
-    storage: &mut BuiltinArgumentStorage,
+    storage: &mut BuiltinArgumentStorage<'guard>,
 ) -> Option<Vec<u64>> {
     unsafe {
         if args.pos.is_empty() {

@@ -332,18 +332,18 @@ mod tests {
     };
     use crate::{alloc_exception, dec_ref_bits, inc_ref_bits};
 
-    fn activation(kind: u64, size: usize) -> (u64, *mut u8) {
-        let bits = crate::molt_task_new(0, size as u64, kind);
+    fn activation(py: &crate::PyToken<'_>, kind: u64, size: usize) -> (u64, *mut u8) {
+        let bits = crate::molt_task_new_attached_body(py, 0, size as u64, kind);
         let ptr = obj_from_bits(bits).as_ptr().expect("activation allocation");
         (bits, ptr)
     }
 
-    fn generator() -> (u64, *mut u8) {
-        activation(crate::TASK_KIND_GENERATOR, crate::GEN_CONTROL_SIZE)
+    fn generator(py: &crate::PyToken<'_>) -> (u64, *mut u8) {
+        activation(py, crate::TASK_KIND_GENERATOR, crate::GEN_CONTROL_SIZE)
     }
 
-    fn coroutine() -> (u64, *mut u8) {
-        activation(crate::TASK_KIND_COROUTINE, 0)
+    fn coroutine(py: &crate::PyToken<'_>) -> (u64, *mut u8) {
+        activation(py, crate::TASK_KIND_COROUTINE, 0)
     }
 
     fn exception(py: &PyToken<'_>, name: crate::BuiltinExc) -> u64 {
@@ -370,15 +370,15 @@ mod tests {
             assert_eq!(exception_context_active_bits(), Some(handled));
             for (bits, ptr, kind) in [
                 {
-                    let (bits, ptr) = generator();
+                    let (bits, ptr) = generator(py);
                     (bits, ptr, ActivationKind::Generator)
                 },
                 {
-                    let (bits, ptr) = coroutine();
+                    let (bits, ptr) = coroutine(py);
                     (bits, ptr, ActivationKind::Task { own_baseline: true })
                 },
                 {
-                    let (bits, ptr) = coroutine();
+                    let (bits, ptr) = coroutine(py);
                     (
                         bits,
                         ptr,
@@ -408,7 +408,7 @@ mod tests {
     fn suspended_handler_state_round_trips_through_its_one_owner() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let (bits, ptr) = generator();
+            let (bits, ptr) = generator(py);
             let own = exception(py, crate::BuiltinExc::KeyError);
             let baseline = refcount(own);
             let scope = ActivationExceptionScope::enter(py, ptr, ActivationKind::Generator);
@@ -449,7 +449,7 @@ mod tests {
     fn handlerless_suspension_allocates_no_state() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let (bits, ptr) = coroutine();
+            let (bits, ptr) = coroutine(py);
             let scope = ActivationExceptionScope::enter(
                 py,
                 ptr,
@@ -472,11 +472,11 @@ mod tests {
         crate::with_gil_entry_nopanic!(py, {
             for (bits, ptr, kind) in [
                 {
-                    let (bits, ptr) = generator();
+                    let (bits, ptr) = generator(py);
                     (bits, ptr, ActivationKind::Generator)
                 },
                 {
-                    let (bits, ptr) = coroutine();
+                    let (bits, ptr) = coroutine(py);
                     (bits, ptr, ActivationKind::Task { own_baseline: true })
                 },
             ] {
@@ -501,7 +501,7 @@ mod tests {
     fn detachment_moves_saved_references_into_the_sink() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let (bits, ptr) = coroutine();
+            let (bits, ptr) = coroutine(py);
             let own = exception(py, crate::BuiltinExc::ValueError);
             inc_ref_bits(py, own);
             let scope = ActivationExceptionScope::enter(

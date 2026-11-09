@@ -139,9 +139,12 @@ pub(crate) fn initialize_module_namespace(
     none
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_module_type_new(args_bits: u64, kwargs_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_module_type_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    args_bits: u64,
+    kwargs_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(args) = call_vararg_args(py, "__new__", args_bits) else {
             return MoltObject::none().bits();
         };
@@ -162,9 +165,12 @@ pub extern "C" fn molt_module_type_new(args_bits: u64, kwargs_bits: u64) -> u64 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_module_init(args_bits: u64, kwargs_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_module_init_attached_body(
+    _py: &crate::PyToken<'_>,
+    args_bits: u64,
+    kwargs_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(call) = crate::builtins::native_arguments::NativeArguments::read(
             py,
             "__init__",
@@ -206,3 +212,5 @@ pub extern "C" fn molt_module_init(args_bits: u64, kwargs_bits: u64) -> u64 {
         )
     })
 }
+
+include!("../../attached_exports_generated/builtins/modules/type_protocol.rs");

@@ -5,6 +5,9 @@
 {{RUNTIME_LIFECYCLE}}
 const { createRuntimeLifetime, combinedError } = globalThis.MoltRuntimeLifecycle;
 const lifetimeExports = {{RUNTIME_LIFETIME_EXPORTS}};
+const executionAbi = {{RUNTIME_EXECUTION_ABI}};
+const {compiledExecutionSymbol, requireAppExecutionAbi, requireAttachedExecutionAbi,
+       runtimeExceptionPending} = globalThis.MoltWasmLoaderBridge;
 const deploymentManifest = globalThis.MoltWasmLoaderBridge.requireMoltDeploymentManifest({{DEPLOYMENT_MANIFEST}});
 class ProcExit { constructor(code) { this.code = code; } }
 
@@ -379,6 +382,7 @@ export default {
                     throw new Error('worker requires its compiler-owned fixed lexical Wasm Module');
                 }
             }
+            requireAppExecutionAbi(module, executionAbi);
             const tableAdmission = globalThis.MoltWasmLoaderBridge.prepareWasmTableAdmission({
                 module, manifest: deploymentManifest, runtimeExportNames: lifetimeExports,
                 label: 'linked wasm',
@@ -386,6 +390,7 @@ export default {
             const instance = await WebAssembly.instantiate(
                 module, { env: hostEnv, wasi_snapshot_preview1: wasiImports }
             );
+            requireAttachedExecutionAbi(module, instance, executionAbi);
 
             // Bind memory/table from the instance exports so host imports can
             // use them (the WASM module owns memory in Molt builds).
@@ -394,22 +399,19 @@ export default {
             globalThis.MoltWasmLoaderBridge.publishWasmTableAdmission(tableAdmission, instance);
 
             const lifetime = createRuntimeLifetime(instance, lifetimeExports, () => {
-                const pending = instance.exports.molt_exception_pending;
-                if (typeof pending !== 'function' || pending.length !== 0) {
-                    throw new Error('missing or malformed molt_exception_pending startup status export');
-                }
-                if (pending() !== 0n) {
+                if (runtimeExceptionPending(instance)) {
                     throw new Error('MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception');
                 }
-            });
+            }, executionAbi);
             const errors = [];
             let exitStatus = 0;
             try {
-                lifetime.execute(() => {
-                    if (typeof instance.exports.molt_main !== 'function') {
+                lifetime.execute((context) => {
+                    const main = instance.exports[compiledExecutionSymbol('molt_main')];
+                    if (typeof main !== 'function') {
                         throw new Error('missing application startup export');
                     }
-                    instance.exports.molt_main();
+                    main(context);
                     // The runtime reports an exception the entry left pending
                     // (CPython's PyErr_Print, through sys.excepthook into
                     // stderr) and returns the program's exit status, as the

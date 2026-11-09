@@ -12,8 +12,8 @@ build = "build.rs"
 # cargo:rerun-if-changed paths are. Every source closure that reaches the
 # crate keys them, and Cargo's own reads verify the list after each build.
 # build.rs compiles build_support (which embeds the WASI C ABI protocol) and
-# reads molt.h; sitebuiltins embeds LICENSE; builtins compiles four sibling-crate
-# files through #[path] in every lane, even where their crates are not dependencies;
+# reads molt.h; sitebuiltins embeds LICENSE; builtins compiles shared sibling-crate
+# modules and their generated attached bodies even where their crates are not dependencies;
 # build.rs reads molt-cpython-abi's variadic export list.
 build-inputs = [
   "../build_support",
@@ -21,11 +21,16 @@ build-inputs = [
   "../../include/molt",
   "../../LICENSE",
   "../molt-runtime-http/src/functions_logging.rs",
+  "../molt-runtime-http/src/attached_exports_generated/functions_logging.rs",
   "../molt-runtime-itertools/src/itertools.rs",
+  "../molt-runtime-itertools/src/attached_exports_generated/itertools.rs",
   "../molt-runtime-itertools/src/itertools",
   "../molt-runtime-itertools/src/public_types_generated.rs",
+  "../molt-runtime-itertools/src/attached_exports_generated/public_types_generated.rs",
   "../molt-runtime-path/src/os_ext.rs",
+  "../molt-runtime-path/src/attached_exports_generated/os_ext.rs",
   "../molt-runtime-path/src/pathlib.rs",
+  "../molt-runtime-path/src/attached_exports_generated/pathlib.rs",
   "../molt-cpython-abi/shims/pyarg_variadic.exports",
 ]
 

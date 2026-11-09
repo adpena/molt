@@ -2,8 +2,9 @@ use super::super::result_sink::{discard_runtime_result, store_runtime_result};
 use super::RuntimeServiceOpContext;
 use crate::OpIR;
 use crate::wasm_abi::TAG_EXCEPTION_INDEX;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 pub(super) fn emit_exception_runtime_op(
     context: &RuntimeServiceOpContext<'_>,

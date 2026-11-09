@@ -62,12 +62,22 @@ fn vt() -> &'static RuntimeVtable {
 // ---------------------------------------------------------------------------
 
 pub fn runtime_state_get_or_init(
+    _py: &PyToken,
     key: &[u8],
     init: RuntimeExtensionStateInit,
     clear: RuntimeExtensionStateClear,
     drop: RuntimeExtensionStateDrop,
 ) -> *mut u8 {
-    unsafe { (vt().runtime_state_get_or_init)(key.as_ptr(), key.len(), init, clear, drop) }
+    unsafe {
+        (vt().runtime_state_get_or_init)(
+            _py.attached_context(),
+            key.as_ptr(),
+            key.len(),
+            init,
+            clear,
+            drop,
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -79,22 +89,36 @@ pub fn raise_exception<T: ExceptionSentinel>(
     kind: impl Into<ExcKind>,
     msg: &str,
 ) -> T {
-    let bits = unsafe { (vt().raise_exception)(kind.into().code(), msg.as_ptr(), msg.len()) };
+    let bits = unsafe {
+        (vt().raise_exception)(
+            _py.attached_context(),
+            kind.into().code(),
+            msg.as_ptr(),
+            msg.len(),
+        )
+    };
     T::from_bits(bits)
 }
 
 pub fn exception_pending(_py: &PyToken) -> bool {
-    unsafe { (vt().exception_pending)() != 0 }
+    unsafe { (vt().exception_pending)(_py.attached_context()) != 0 }
 }
 
 /// Replace a failed converter's raised owner without handling it. The current
 /// handled exception still supplies the new error's implicit context.
 pub fn replace_exception(_py: &PyToken, kind: impl Into<ExcKind>, message: &str) -> u64 {
-    unsafe { (vt().replace_exception)(kind.into().code(), message.as_ptr(), message.len()) }
+    unsafe {
+        (vt().replace_exception)(
+            _py.attached_context(),
+            kind.into().code(),
+            message.as_ptr(),
+            message.len(),
+        )
+    }
 }
 
 pub fn decode_ascii_input(_py: &PyToken, bits: u64) -> u64 {
-    unsafe { (vt().decode_ascii_input)(bits) }
+    unsafe { (vt().decode_ascii_input)(_py.attached_context(), bits) }
 }
 
 pub fn raise_binascii_error(py: &PyToken, message: &str) -> u64 {
@@ -103,7 +127,7 @@ pub fn raise_binascii_error(py: &PyToken, message: &str) -> u64 {
 
 /// Borrow the class and argument tuple; return an independently owned exception.
 pub fn exception_new_from_class(_py: &PyToken, class_bits: u64, args_bits: u64) -> u64 {
-    unsafe { (vt().exception_new_from_class)(class_bits, args_bits) }
+    unsafe { (vt().exception_new_from_class)(_py.attached_context(), class_bits, args_bits) }
 }
 
 /// Trait for exception return sentinels.
@@ -135,19 +159,19 @@ impl ExceptionSentinel for () {
 // ---------------------------------------------------------------------------
 
 pub fn alloc_tuple(_py: &PyToken, elems: &[u64]) -> *mut u8 {
-    unsafe { (vt().alloc_tuple)(elems.as_ptr(), elems.len()) }
+    unsafe { (vt().alloc_tuple)(_py.attached_context(), elems.as_ptr(), elems.len()) }
 }
 
 pub fn alloc_list(_py: &PyToken, elems: &[u64]) -> *mut u8 {
-    unsafe { (vt().alloc_list)(elems.as_ptr(), elems.len()) }
+    unsafe { (vt().alloc_list)(_py.attached_context(), elems.as_ptr(), elems.len()) }
 }
 
 pub fn alloc_string(_py: &PyToken, data: &[u8]) -> *mut u8 {
-    unsafe { (vt().alloc_string)(data.as_ptr(), data.len()) }
+    unsafe { (vt().alloc_string)(_py.attached_context(), data.as_ptr(), data.len()) }
 }
 
 pub fn alloc_bytes(_py: &PyToken, data: &[u8]) -> *mut u8 {
-    unsafe { (vt().alloc_bytes)(data.as_ptr(), data.len()) }
+    unsafe { (vt().alloc_bytes)(_py.attached_context(), data.as_ptr(), data.len()) }
 }
 
 // ---------------------------------------------------------------------------
@@ -177,7 +201,14 @@ pub fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
 pub fn type_name(_py: &PyToken, obj: MoltObject) -> Cow<'static, str> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { (vt().type_name)(obj.bits(), &mut out_ptr, &mut out_len) };
+    let ok = unsafe {
+        (vt().type_name)(
+            _py.attached_context(),
+            obj.bits(),
+            &mut out_ptr,
+            &mut out_len,
+        )
+    };
     if ok != 0 && !out_ptr.is_null() {
         let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
         Cow::Owned(String::from_utf8_lossy(&boxed).into_owned())
@@ -187,7 +218,7 @@ pub fn type_name(_py: &PyToken, obj: MoltObject) -> Cow<'static, str> {
 }
 
 pub fn is_truthy(_py: &PyToken, obj: MoltObject) -> bool {
-    unsafe { (vt().is_truthy)(obj.bits()) != 0 }
+    unsafe { (vt().is_truthy)(_py.attached_context(), obj.bits()) != 0 }
 }
 
 /// General unhashable-key check, delegating to the in-tree `ensure_hashable`
@@ -198,7 +229,7 @@ pub fn is_truthy(_py: &PyToken, obj: MoltObject) -> bool {
 /// hardcoded list/dict/set type check (it misses bytearray and is not
 /// version-gated).
 pub fn ensure_hashable(_py: &PyToken, key_bits: u64, ctx: HashContextCode) -> bool {
-    unsafe { (vt().ensure_hashable)(key_bits, ctx as i32) != 0 }
+    unsafe { (vt().ensure_hashable)(_py.attached_context(), key_bits, ctx as i32) != 0 }
 }
 
 /// # Safety
@@ -319,11 +350,11 @@ pub unsafe fn release_ptr(ptr: *mut u8) {
 }
 
 pub fn dec_ref_bits(_py: &PyToken, bits: u64) {
-    unsafe { (vt().dec_ref_bits)(bits) }
+    unsafe { (vt().dec_ref_bits)(_py.attached_context(), bits) }
 }
 
 pub fn inc_ref_bits(_py: &PyToken, bits: u64) {
-    unsafe { (vt().inc_ref_bits)(bits) }
+    unsafe { (vt().inc_ref_bits)(_py.attached_context(), bits) }
 }
 
 // ---------------------------------------------------------------------------
@@ -364,13 +395,13 @@ pub fn to_bigint(obj: MoltObject) -> Option<num_bigint::BigInt> {
 }
 
 pub fn int_bits_from_i64(_py: &PyToken, val: i64) -> u64 {
-    unsafe { (vt().int_bits_from_i64)(val) }
+    unsafe { (vt().int_bits_from_i64)(_py.attached_context(), val) }
 }
 
 pub fn int_bits_from_i128(_py: &PyToken, val: i128) -> u64 {
     let lo = val as u64;
     let hi = (val >> 64) as u64;
-    unsafe { (vt().int_bits_from_i128)(lo, hi) }
+    unsafe { (vt().int_bits_from_i128)(_py.attached_context(), lo, hi) }
 }
 
 pub fn int_bits_from_bigint(_py: &PyToken, value: num_bigint::BigInt) -> u64 {
@@ -381,7 +412,14 @@ pub fn int_bits_from_bigint(_py: &PyToken, value: num_bigint::BigInt) -> u64 {
         Sign::NoSign => 0i32,
         Sign::Plus => 1i32,
     };
-    unsafe { (vt().int_bits_from_bigint)(sign_i32, bytes.as_ptr(), bytes.len()) }
+    unsafe {
+        (vt().int_bits_from_bigint)(
+            _py.attached_context(),
+            sign_i32,
+            bytes.as_ptr(),
+            bytes.len(),
+        )
+    }
 }
 
 pub fn bigint_ptr_from_bits(bits: u64) -> Option<*mut u8> {
@@ -495,7 +533,14 @@ pub fn bigint_bits(_py: &PyToken, value: &num_bigint::BigInt) -> u64 {
         Sign::NoSign => 0i32,
         Sign::Plus => 1i32,
     };
-    unsafe { (vt().bigint_bits)(sign_i32, bytes.as_ptr(), bytes.len()) }
+    unsafe {
+        (vt().bigint_bits)(
+            _py.attached_context(),
+            sign_i32,
+            bytes.as_ptr(),
+            bytes.len(),
+        )
+    }
 }
 
 pub fn bigint_to_inline(_py: &PyToken, value: &num_bigint::BigInt) -> u64 {
@@ -510,7 +555,7 @@ pub fn bigint_to_inline(_py: &PyToken, value: &num_bigint::BigInt) -> u64 {
 }
 
 pub fn index_i64_from_obj(_py: &PyToken, obj_bits: u64, err: &str) -> i64 {
-    unsafe { (vt().index_i64_from_obj)(obj_bits, err.as_ptr(), err.len()) }
+    unsafe { (vt().index_i64_from_obj)(_py.attached_context(), obj_bits, err.as_ptr(), err.len()) }
 }
 
 pub fn index_bigint_from_obj(
@@ -524,6 +569,7 @@ pub fn index_bigint_from_obj(
     let mut out_len: usize = 0;
     let ok = unsafe {
         (vt().index_bigint_from_obj)(
+            _py.attached_context(),
             obj_bits,
             err.as_ptr(),
             err.len(),
@@ -552,15 +598,15 @@ pub fn index_bigint_from_obj(
 // ---------------------------------------------------------------------------
 
 pub fn call_callable0(_py: &PyToken, call_bits: u64) -> u64 {
-    unsafe { (vt().call_callable0)(call_bits) }
+    unsafe { (vt().call_callable0)(_py.attached_context(), call_bits) }
 }
 
 pub fn call_callable2(_py: &PyToken, call_bits: u64, arg0: u64, arg1: u64) -> u64 {
-    unsafe { (vt().call_callable2)(call_bits, arg0, arg1) }
+    unsafe { (vt().call_callable2)(_py.attached_context(), call_bits, arg0, arg1) }
 }
 
 pub fn intern_static_name(_py: &PyToken, key: &[u8]) -> u64 {
-    unsafe { (vt().intern_static_name)(key.as_ptr(), key.len()) }
+    unsafe { (vt().intern_static_name)(_py.attached_context(), key.as_ptr(), key.len()) }
 }
 
 pub fn class_name_for_error(type_bits: u64) -> String {
@@ -576,7 +622,7 @@ pub fn class_name_for_error(type_bits: u64) -> String {
 }
 
 pub fn type_of_bits(_py: &PyToken, val_bits: u64) -> u64 {
-    unsafe { (vt().type_of_bits)(val_bits) }
+    unsafe { (vt().type_of_bits)(_py.attached_context(), val_bits) }
 }
 
 pub fn maybe_ptr_from_bits(bits: u64) -> Option<*mut u8> {
@@ -585,13 +631,20 @@ pub fn maybe_ptr_from_bits(bits: u64) -> Option<*mut u8> {
 }
 
 pub fn molt_is_callable(_py: &PyToken, bits: u64) -> bool {
-    unsafe { (vt().molt_is_callable)(bits) != 0 }
+    unsafe { (vt().molt_is_callable)(_py.attached_context(), bits) != 0 }
 }
 
 pub fn format_obj(_py: &PyToken, obj: MoltObject) -> Option<String> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { (vt().format_obj)(obj.bits(), &mut out_ptr, &mut out_len) };
+    let ok = unsafe {
+        (vt().format_obj)(
+            _py.attached_context(),
+            obj.bits(),
+            &mut out_ptr,
+            &mut out_len,
+        )
+    };
     if ok != 0 && !out_ptr.is_null() {
         let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
         Some(String::from_utf8_lossy(&boxed).into_owned())
@@ -603,7 +656,14 @@ pub fn format_obj(_py: &PyToken, obj: MoltObject) -> Option<String> {
 pub fn format_obj_str(_py: &PyToken, obj: MoltObject) -> Option<String> {
     let mut out_ptr: *const u8 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { (vt().format_obj_str)(obj.bits(), &mut out_ptr, &mut out_len) };
+    let ok = unsafe {
+        (vt().format_obj_str)(
+            _py.attached_context(),
+            obj.bits(),
+            &mut out_ptr,
+            &mut out_len,
+        )
+    };
     if ok != 0 && !out_ptr.is_null() {
         let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
         Some(String::from_utf8_lossy(&boxed).into_owned())
@@ -637,7 +697,8 @@ pub unsafe fn dict_get_in_place(
     key_bits: u64,
 ) -> Result<Option<u64>, molt_runtime_core::ErrorIndicatorSet> {
     let mut out: u64 = 0;
-    let ok = unsafe { (vt().dict_get_in_place)(dict_ptr, key_bits, &mut out) };
+    let ok =
+        unsafe { (vt().dict_get_in_place)(_py.attached_context(), dict_ptr, key_bits, &mut out) };
     match ok {
         1 => Ok(Some(out)),
         0 => Ok(None),
@@ -657,7 +718,8 @@ pub unsafe fn dict_set_in_place(
     key_bits: u64,
     val_bits: u64,
 ) -> bool {
-    match unsafe { (vt().dict_set_in_place)(dict_ptr, key_bits, val_bits) } {
+    match unsafe { (vt().dict_set_in_place)(_py.attached_context(), dict_ptr, key_bits, val_bits) }
+    {
         1 => true,
         0 => false,
         _ => unreachable!("invalid dictionary mutation status"),
@@ -675,15 +737,16 @@ pub unsafe fn list_len(ptr: *mut u8) -> usize {
 ///
 /// # Safety
 /// `ptr` must refer to a live Molt list or tuple for the duration of this call.
-pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
+pub unsafe fn seq_snapshot(_py: &PyToken, ptr: *mut u8) -> OwnedBridgeHandleSnapshot<'_> {
     let mut out_ptr: *const u64 = std::ptr::null();
     let mut out_len = 0usize;
-    let ok = unsafe { (vt().seq_snapshot)(ptr, &mut out_ptr, &mut out_len) };
+    let ok =
+        unsafe { (vt().seq_snapshot)(_py.attached_context(), ptr, &mut out_ptr, &mut out_len) };
     if ok == 0 {
         out_ptr = std::ptr::null();
         out_len = 0;
     }
-    unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) }
+    unsafe { bridge_owned_handle_snapshot(_py, out_ptr, out_len) }
 }
 
 // ---------------------------------------------------------------------------
@@ -691,19 +754,19 @@ pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
 // ---------------------------------------------------------------------------
 
 pub fn molt_iter(_py: &PyToken, bits: u64) -> u64 {
-    unsafe { (vt().molt_iter)(bits) }
+    unsafe { (vt().molt_iter)(_py.attached_context(), bits) }
 }
 
 pub fn raise_not_iterable(_py: &PyToken, bits: u64) -> u64 {
-    unsafe { (vt().raise_not_iterable)(bits) }
+    unsafe { (vt().raise_not_iterable)(_py.attached_context(), bits) }
 }
 
 pub fn molt_sorted_builtin(_py: &PyToken, bits: u64) -> u64 {
-    unsafe { (vt().molt_sorted_builtin)(bits) }
+    unsafe { (vt().molt_sorted_builtin)(_py.attached_context(), bits) }
 }
 
 pub fn molt_mul(_py: &PyToken, a: u64, b: u64) -> u64 {
-    unsafe { (vt().molt_mul)(a, b) }
+    unsafe { (vt().molt_mul)(_py.attached_context(), a, b) }
 }
 
 // ---------------------------------------------------------------------------
@@ -722,8 +785,8 @@ pub fn fill_os_random(buf: &mut [u8]) -> Result<(), FillOsRandomError> {
     }
 }
 
-pub fn time_local_offset_host(secs: i64) -> i64 {
-    unsafe { (vt().time_local_offset_host)(secs) }
+pub fn time_local_offset_host(_py: &PyToken, secs: i64) -> i64 {
+    unsafe { (vt().time_local_offset_host)(_py.attached_context(), secs) }
 }
 
 // ---------------------------------------------------------------------------
@@ -731,7 +794,7 @@ pub fn time_local_offset_host(secs: i64) -> i64 {
 // ---------------------------------------------------------------------------
 
 pub fn alloc_dict_with_pairs(_py: &PyToken, pairs: &[u64]) -> *mut u8 {
-    unsafe { (vt().alloc_dict_with_pairs)(pairs.as_ptr(), pairs.len()) }
+    unsafe { (vt().alloc_dict_with_pairs)(_py.attached_context(), pairs.as_ptr(), pairs.len()) }
 }
 
 /// Returns owned, pinned key/value pairs in insertion order.
@@ -739,14 +802,15 @@ pub fn alloc_dict_with_pairs(_py: &PyToken, pairs: &[u64]) -> *mut u8 {
 ///
 /// `ptr` must refer to a live Molt dictionary object for the duration of this
 /// call.
-pub unsafe fn dict_snapshot(_py: &PyToken, ptr: *mut u8) -> Option<OwnedBridgeHandleSnapshot> {
+pub unsafe fn dict_snapshot(_py: &PyToken, ptr: *mut u8) -> Option<OwnedBridgeHandleSnapshot<'_>> {
     let mut out_ptr: *const u64 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { (vt().dict_snapshot)(ptr, &mut out_ptr, &mut out_len) };
+    let ok =
+        unsafe { (vt().dict_snapshot)(_py.attached_context(), ptr, &mut out_ptr, &mut out_len) };
     if ok == 0 {
         return None;
     }
-    Some(unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) })
+    Some(unsafe { bridge_owned_handle_snapshot(_py, out_ptr, out_len) })
 }
 
 // ---------------------------------------------------------------------------
@@ -754,12 +818,26 @@ pub unsafe fn dict_snapshot(_py: &PyToken, ptr: *mut u8) -> Option<OwnedBridgeHa
 // ---------------------------------------------------------------------------
 
 pub fn alloc_list_with_capacity(_py: &PyToken, elems: &[u64], capacity: usize) -> *mut u8 {
-    unsafe { (vt().alloc_list_with_capacity)(elems.as_ptr(), elems.len(), capacity) }
+    unsafe {
+        (vt().alloc_list_with_capacity)(
+            _py.attached_context(),
+            elems.as_ptr(),
+            elems.len(),
+            capacity,
+        )
+    }
 }
 
 pub fn attr_name_bits_from_bytes(_py: &PyToken, name: &[u8]) -> Option<u64> {
     let mut out: u64 = 0;
-    let ok = unsafe { (vt().attr_name_bits_from_bytes)(name.as_ptr(), name.len(), &mut out) };
+    let ok = unsafe {
+        (vt().attr_name_bits_from_bytes)(
+            _py.attached_context(),
+            name.as_ptr(),
+            name.len(),
+            &mut out,
+        )
+    };
     if ok != 0 { Some(out) } else { None }
 }
 
@@ -768,19 +846,33 @@ pub fn attr_name_bits_from_bytes(_py: &PyToken, name: &[u8]) -> Option<u64> {
 /// `class_ptr` must refer to a live Molt class object for the duration of this
 /// call.
 pub unsafe fn call_class_init_with_args(_py: &PyToken, class_ptr: *mut u8, args: &[u64]) -> u64 {
-    unsafe { (vt().call_class_init_with_args)(class_ptr, args.as_ptr(), args.len()) }
+    unsafe {
+        (vt().call_class_init_with_args)(
+            _py.attached_context(),
+            class_ptr,
+            args.as_ptr(),
+            args.len(),
+        )
+    }
 }
 
 pub fn missing_bits(_py: &PyToken) -> u64 {
-    unsafe { (vt().missing_bits)() }
+    unsafe { (vt().missing_bits)(_py.attached_context()) }
 }
 
-pub fn molt_getattr_builtin(obj_bits: u64, name_bits: u64, default_bits: u64) -> u64 {
-    unsafe { (vt().molt_getattr_builtin)(obj_bits, name_bits, default_bits) }
+pub fn molt_getattr_builtin(
+    _py: &PyToken,
+    obj_bits: u64,
+    name_bits: u64,
+    default_bits: u64,
+) -> u64 {
+    unsafe {
+        (vt().molt_getattr_builtin)(_py.attached_context(), obj_bits, name_bits, default_bits)
+    }
 }
 
-pub fn molt_module_import(name_bits: u64) -> u64 {
-    unsafe { (vt().molt_module_import)(name_bits) }
+pub fn molt_module_import(_py: &PyToken, name_bits: u64) -> u64 {
+    unsafe { (vt().molt_module_import)(_py.attached_context(), name_bits) }
 }
 
 // ---------------------------------------------------------------------------

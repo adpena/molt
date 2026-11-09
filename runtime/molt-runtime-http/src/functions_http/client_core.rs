@@ -10,7 +10,7 @@ pub(super) fn urllib_request_set_attr(
     let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
         return false;
     };
-    crate::bridge::molt_set_attr_name(obj_bits, name_bits, value_bits);
+    crate::bridge::molt_set_attr_name(_py, obj_bits, name_bits, value_bits);
     dec_ref_bits(_py, name_bits);
     !exception_pending(_py)
 }
@@ -259,7 +259,7 @@ pub(super) fn urllib_response_headers_list_bits(
             "response headers cache is invalid",
         ));
     }
-    let items = unsafe { seq_snapshot(cached_ptr) };
+    let items = unsafe { seq_snapshot(_py, cached_ptr) };
     let list_ptr = alloc_list_with_capacity(_py, items.as_ref(), items.len());
     if list_ptr.is_null() {
         Err(MoltObject::none().bits())
@@ -950,12 +950,12 @@ pub(super) fn urllib_http_extract_headers_mapping(
         return Err(MoltObject::none().bits());
     };
     let missing = missing_bits(_py);
-    let items_method_bits = molt_getattr_builtin(mapping_bits, items_name_bits, missing);
+    let items_method_bits = molt_getattr_builtin(_py, mapping_bits, items_name_bits, missing);
     dec_ref_bits(_py, items_name_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
-    if items_method_bits == missing || !molt_is_callable(items_method_bits) {
+    if items_method_bits == missing || !molt_is_callable(_py, items_method_bits) {
         if items_method_bits != missing {
             dec_ref_bits(_py, items_method_bits);
         }
@@ -970,7 +970,7 @@ pub(super) fn urllib_http_extract_headers_mapping(
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
-    let iter_bits = molt_iter(iterable_bits);
+    let iter_bits = molt_iter(_py, iterable_bits);
     dec_ref_bits(_py, iterable_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
@@ -1003,7 +1003,7 @@ pub(super) fn urllib_http_extract_headers_mapping(
                     "headers mapping items must be pairs",
                 ));
             }
-            let fields = unsafe { seq_snapshot(item_ptr) };
+            let fields = unsafe { seq_snapshot(_py, item_ptr) };
             if fields.len() != 2 {
                 return Err(raise_exception::<u64>(
                     _py,
@@ -1374,7 +1374,7 @@ pub(super) fn urllib_http_extract_method_and_body(
     let name =
         attr_name_bits_from_bytes(py, b"get_method").ok_or_else(|| MoltObject::none().bits())?;
     let name = unsafe { ProtectedRuntimeValue::from_owned_bits(py, name) };
-    let get_method = molt_getattr_builtin(request_bits, name.bits(), missing_bits(py));
+    let get_method = molt_getattr_builtin(py, request_bits, name.bits(), missing_bits(py));
     let get_method = unsafe { ProtectedRuntimeValue::from_owned_bits(py, get_method) };
     if exception_pending(py) {
         return Err(MoltObject::none().bits());
@@ -1388,7 +1388,7 @@ pub(super) fn urllib_http_extract_method_and_body(
     drop(get_method);
     let name = attr_name_bits_from_bytes(py, b"data").ok_or_else(|| MoltObject::none().bits())?;
     let name = unsafe { ProtectedRuntimeValue::from_owned_bits(py, name) };
-    let data = molt_getattr_builtin(request_bits, name.bits(), missing_bits(py));
+    let data = molt_getattr_builtin(py, request_bits, name.bits(), missing_bits(py));
     let data = unsafe { ProtectedRuntimeValue::from_owned_bits(py, data) };
     if exception_pending(py) {
         return Err(MoltObject::none().bits());
@@ -1514,7 +1514,7 @@ pub(super) fn urllib_proxy_find_basic_credentials(
             dec_ref_bits(_py, passwd_bits);
             return Err(MoltObject::none().bits());
         };
-        let lookup = lookup_attribute(passwd_bits, find_name_bits);
+        let lookup = lookup_attribute(_py, passwd_bits, find_name_bits);
         dec_ref_bits(_py, find_name_bits);
         dec_ref_bits(_py, passwd_bits);
         let Some(find_bits) = lookup
@@ -1523,7 +1523,7 @@ pub(super) fn urllib_proxy_find_basic_credentials(
         else {
             continue;
         };
-        if !molt_is_callable(find_bits) {
+        if !molt_is_callable(_py, find_bits) {
             dec_ref_bits(_py, find_bits);
             continue;
         }
@@ -1567,7 +1567,7 @@ pub(super) fn urllib_proxy_find_basic_credentials(
             dec_ref_bits(_py, creds_bits);
             continue;
         }
-        let fields = unsafe { seq_snapshot(creds_ptr) };
+        let fields = unsafe { seq_snapshot(_py, creds_ptr) };
         if fields.len() != 2
             || obj_from_bits(fields[0]).is_none()
             || obj_from_bits(fields[1]).is_none()
@@ -1734,7 +1734,7 @@ fn urllib_http_try_inmemory_dispatch(
         return Err(MoltObject::none().bits());
     }
     let module_name_bits = MoltObject::from_ptr(module_name_ptr).bits();
-    let module_bits = crate::bridge::molt_module_import(module_name_bits);
+    let module_bits = crate::bridge::molt_module_import(_py, module_name_bits);
     dec_ref_bits(_py, module_name_bits);
     if exception_pending(_py) {
         if pending_exception_matches_builtin(_py, BuiltinExc::ImportError)
@@ -1763,7 +1763,7 @@ fn urllib_http_try_inmemory_dispatch(
         dec_ref_bits(_py, module_bits);
         return Err(MoltObject::none().bits());
     };
-    let lookup = lookup_attribute(module_bits, lookup_name_bits);
+    let lookup = lookup_attribute(_py, module_bits, lookup_name_bits);
     dec_ref_bits(_py, lookup_name_bits);
     let lookup_bits = match lookup {
         molt_obj_model::AttributeLookup::Found(bits) => bits,
@@ -1806,7 +1806,7 @@ fn urllib_http_try_inmemory_dispatch(
         dec_ref_bits(_py, server_bits);
         return Ok(None);
     };
-    if !molt_is_callable(dispatch_bits) {
+    if !molt_is_callable(_py, dispatch_bits) {
         dec_ref_bits(_py, dispatch_bits);
         dec_ref_bits(_py, server_bits);
         return Ok(None);
@@ -2022,7 +2022,7 @@ pub(super) fn urllib_request_response_handle_from_bits(
             "response object is invalid",
         ));
     }
-    let fields = unsafe { seq_snapshot(ptr) };
+    let fields = unsafe { seq_snapshot(_py, ptr) };
     if fields.len() != 2 {
         return Err(raise_exception::<u64>(
             _py,
@@ -2061,7 +2061,7 @@ pub(super) fn http_module_error_class_bits(
     _py: &molt_runtime_core::CoreGilToken,
     kind: ModuleExc,
 ) -> Result<u64, u64> {
-    let class_bits = molt_runtime_core::rt_exception_class(kind);
+    let class_bits = molt_runtime_core::rt_exception_class(_py, kind);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
@@ -2088,7 +2088,7 @@ pub(super) fn http_client_raise_invalid_url(
     if exception_pending(py) {
         return MoltObject::none().bits();
     }
-    let result = crate::bridge::molt_raise(exception);
+    let result = crate::bridge::molt_raise(py, exception);
     dec_ref_bits(py, exception);
     result
 }
@@ -2119,7 +2119,7 @@ pub(super) fn urllib_raise_url_error(_py: &molt_runtime_core::CoreGilToken, reas
     if exception_pending(_py) {
         return MoltObject::none().bits();
     }
-    crate::bridge::molt_raise(exception.bits())
+    crate::bridge::molt_raise(_py, exception.bits())
 }
 
 pub(super) fn urllib_raise_http_error(
@@ -2179,5 +2179,5 @@ pub(super) fn urllib_raise_http_error(
     if exception_pending(_py) {
         return MoltObject::none().bits();
     }
-    crate::bridge::molt_raise(exception.bits())
+    crate::bridge::molt_raise(_py, exception.bits())
 }

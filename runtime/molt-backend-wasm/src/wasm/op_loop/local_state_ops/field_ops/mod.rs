@@ -1,6 +1,6 @@
 use super::LocalStateOpContext;
 use crate::OpIR;
-use wasm_encoder::Function;
+use crate::wasm_binary::Function;
 
 mod common;
 mod guarded;

@@ -569,54 +569,50 @@ fn method_compare(py: &PyToken<'_>, left: u64, right: u64, op: RichCompareOp) ->
     .bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_method_eq(left: u64, right: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { method_compare(py, left, right, RichCompareOp::Eq) })
+pub(crate) fn molt_method_eq_attached_body(_py: &crate::PyToken<'_>, left: u64, right: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        method_compare(py, left, right, RichCompareOp::Eq)
+    })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_method_ne(left: u64, right: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { method_compare(py, left, right, RichCompareOp::Ne) })
+pub(crate) fn molt_method_ne_attached_body(_py: &crate::PyToken<'_>, left: u64, right: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        method_compare(py, left, right, RichCompareOp::Ne)
+    })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cell_eq(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_cell_eq_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         cell_compare_method(_py, a, b, "__eq__", RichCompareOp::Eq)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cell_ne(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_cell_ne_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         cell_compare_method(_py, a, b, "__ne__", RichCompareOp::Ne)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cell_lt(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_cell_lt_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         cell_compare_method(_py, a, b, "__lt__", RichCompareOp::Lt)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cell_le(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_cell_le_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         cell_compare_method(_py, a, b, "__le__", RichCompareOp::Le)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cell_gt(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_cell_gt_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         cell_compare_method(_py, a, b, "__gt__", RichCompareOp::Gt)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_cell_ge(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_cell_ge_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         cell_compare_method(_py, a, b, "__ge__", RichCompareOp::Ge)
     })
 }
@@ -950,9 +946,8 @@ pub(crate) fn compare_objects(
     rich_compare_order(_py, lhs, rhs)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_lt(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_lt_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         match compare_object_value_for_op(_py, obj_from_bits(a), obj_from_bits(b), CompareOp::Lt) {
             CompareValueOutcome::Value(bits) => bits,
             CompareValueOutcome::Error | CompareValueOutcome::NotComparable => {
@@ -962,9 +957,8 @@ pub extern "C" fn molt_lt(a: u64, b: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_le(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_le_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         match compare_object_value_for_op(_py, obj_from_bits(a), obj_from_bits(b), CompareOp::Le) {
             CompareValueOutcome::Value(bits) => bits,
             CompareValueOutcome::Error | CompareValueOutcome::NotComparable => {
@@ -974,9 +968,8 @@ pub extern "C" fn molt_le(a: u64, b: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_gt(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_gt_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         match compare_object_value_for_op(_py, obj_from_bits(a), obj_from_bits(b), CompareOp::Gt) {
             CompareValueOutcome::Value(bits) => bits,
             CompareValueOutcome::Error | CompareValueOutcome::NotComparable => {
@@ -986,9 +979,8 @@ pub extern "C" fn molt_gt(a: u64, b: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ge(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ge_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         match compare_object_value_for_op(_py, obj_from_bits(a), obj_from_bits(b), CompareOp::Ge) {
             CompareValueOutcome::Value(bits) => bits,
             CompareValueOutcome::Error | CompareValueOutcome::NotComparable => {
@@ -998,9 +990,8 @@ pub extern "C" fn molt_ge(a: u64, b: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_eq(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_eq_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         match compare_object_eq_value(_py, obj_from_bits(a), obj_from_bits(b)) {
             CompareValueOutcome::Value(bits) => bits,
             CompareValueOutcome::Error | CompareValueOutcome::NotComparable => {
@@ -1010,9 +1001,8 @@ pub extern "C" fn molt_eq(a: u64, b: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_ne(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_ne_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         match compare_object_ne_value(_py, obj_from_bits(a), obj_from_bits(b)) {
             CompareValueOutcome::Value(bits) => bits,
             CompareValueOutcome::Error | CompareValueOutcome::NotComparable => {
@@ -1046,17 +1036,17 @@ pub(crate) unsafe fn string_storage_equal(left_bits: u64, right_bits: u64) -> bo
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_string_eq(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_string_eq_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         MoltObject::from_bool(unsafe { string_storage_equal(a, b) }).bits()
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_is(a: u64, b: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(a == b).bits() })
+pub(crate) fn molt_is_attached_body(_py: &crate::PyToken<'_>, a: u64, b: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { MoltObject::from_bool(a == b).bits() })
 }
 
 #[cfg(test)]
 mod sequence_tests;
+
+include!("../attached_exports_generated/object/ops_compare.rs");

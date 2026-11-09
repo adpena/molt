@@ -18,38 +18,63 @@ fn mutate_configured_class(_py: &PyToken<'_>) -> bool {
     let name = MUTATION_NAME.load(Ordering::SeqCst);
     let replacement = MUTATION_REPLACEMENT.load(Ordering::SeqCst);
     if replacement == 0 {
-        crate::molt_del_attr_name(target, name);
+        crate::molt_del_attr_name_attached_body(_py, target, name);
     } else {
-        crate::molt_set_attr_name(target, name, replacement);
+        crate::molt_set_attr_name_attached_body(_py, target, name, replacement);
     }
     !exception_pending(_py)
 }
 
-extern "C" fn lhs_mutates_rhs(_self_bits: u64, _rhs_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn lhs_mutates_rhs(__context: u64, _self_bits: u64, _rhs_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         trace(1);
         if !mutate_configured_class(_py) {
             return MoltObject::none().bits();
         }
         crate::builtins::methods::not_implemented_bits(_py)
-    })
+    }
 }
 
-extern "C" fn preferred_rhs_mutates_lhs(_self_bits: u64, _lhs_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn preferred_rhs_mutates_lhs(__context: u64, _self_bits: u64, _lhs_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         trace(2);
         if !mutate_configured_class(_py) {
             return MoltObject::none().bits();
         }
         crate::builtins::methods::not_implemented_bits(_py)
-    })
+    }
 }
 
-extern "C" fn lhs_changes_rhs_class(_self_bits: u64, rhs_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn lhs_changes_rhs_class(__context: u64, _self_bits: u64, rhs_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         trace(1);
         let class_name = dynamic_attr_name_bits(_py, b"__class__").unwrap();
-        crate::molt_set_attr_name(
+        crate::molt_set_attr_name_attached_body(
+            _py,
             rhs_bits,
             class_name,
             REPLACEMENT_CLASS.load(Ordering::SeqCst),
@@ -59,28 +84,58 @@ extern "C" fn lhs_changes_rhs_class(_self_bits: u64, rhs_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         crate::builtins::methods::not_implemented_bits(_py)
-    })
+    }
 }
 
-extern "C" fn stale_dunder(_self_bits: u64, _other_bits: u64) -> u64 {
+extern "C" fn stale_dunder(__context: u64, _self_bits: u64, _other_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     trace(9);
     MoltObject::from_int(99).bits()
 }
 
-extern "C" fn fresh_dunder(_self_bits: u64, _other_bits: u64) -> u64 {
+extern "C" fn fresh_dunder(__context: u64, _self_bits: u64, _other_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     trace(3);
     MoltObject::from_int(42).bits()
 }
 
-extern "C" fn decline_dunder(_self_bits: u64, _other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn decline_dunder(__context: u64, _self_bits: u64, _other_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         trace(1);
         crate::builtins::methods::not_implemented_bits(_py)
-    })
+    }
 }
 
-extern "C" fn descriptor_get_raises(_self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn descriptor_get_raises(__context: u64, _self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         trace(4);
         let kind = if DESCRIPTOR_ATTRIBUTE_ERROR.load(Ordering::SeqCst) != 0 {
             crate::BuiltinExc::AttributeError
@@ -88,7 +143,7 @@ extern "C" fn descriptor_get_raises(_self_bits: u64) -> u64 {
             crate::BuiltinExc::RuntimeError
         };
         raise_exception::<u64>(_py, kind, "binary descriptor bind failure")
-    })
+    }
 }
 
 fn runtime_function(_py: &PyToken<'_>, name: &'static str, target: *const (), arity: u64) -> u64 {
@@ -99,8 +154,8 @@ fn runtime_function(_py: &PyToken<'_>, name: &'static str, target: *const (), ar
 
 fn test_class(_py: &PyToken<'_>, name: &[u8], base: u64) -> u64 {
     let name_bits = dynamic_attr_name_bits(_py, name).unwrap();
-    let class_bits = crate::molt_class_new(name_bits);
-    crate::molt_class_set_base(class_bits, base);
+    let class_bits = crate::molt_class_new_attached_body(_py, name_bits);
+    crate::molt_class_set_base_attached_body(_py, class_bits, base);
     let class_ptr = obj_from_bits(class_bits).as_ptr().expect("test class");
     unsafe { crate::object::class_finish_definition(_py, class_ptr) }.expect("finish test class");
     dec_ref_bits(_py, name_bits);
@@ -117,7 +172,7 @@ fn test_instance(_py: &PyToken<'_>, class_bits: u64) -> u64 {
 }
 
 fn set_class_attr(_py: &PyToken<'_>, class_bits: u64, name_bits: u64, value_bits: u64) {
-    crate::molt_set_attr_name(class_bits, name_bits, value_bits);
+    crate::molt_set_attr_name_attached_body(_py, class_bits, name_bits, value_bits);
     assert!(!exception_pending(_py));
 }
 
@@ -416,11 +471,12 @@ fn descriptor_bind_error_follows_binary_target_version_policy() {
                     assert_eq!(result, Some(MoltObject::none().bits()));
                     assert_eq!(TRACE.load(Ordering::SeqCst), 4);
                     assert!(exception_pending(_py));
-                    let error = crate::builtins::exceptions::molt_exception_last_pending();
+                    let error =
+                        crate::builtins::exceptions::molt_exception_last_pending_attached_body(_py);
                     assert!(crate::builtins::exceptions::exception_matches_kind(
                         _py, error, kind
                     ));
-                    crate::molt_exception_clear();
+                    crate::molt_exception_clear_attached_body(_py);
                     dec_ref_bits(_py, error);
                 }
 
@@ -439,7 +495,10 @@ fn descriptor_bind_error_follows_binary_target_version_policy() {
 #[test]
 fn exact_integer_real_and_complex_equality_preserves_nonfinite_and_fractional_edges() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
-    let _ = crate::molt_exception_clear();
+    let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+    let py = fixture_execution.token();
+
+    let _ = crate::molt_exception_clear_attached_body(py);
     crate::with_gil_entry_nopanic!(_py, {
         for integer in [
             num_bigint::BigInt::from(10u32).pow(400),
@@ -524,6 +583,9 @@ fn exact_integer_real_and_complex_equality_preserves_nonfinite_and_fractional_ed
                 .expect("numeric equality must complete")
         );
         dec_ref_bits(_py, complex);
-        assert_eq!(crate::molt_exception_pending(), 0);
+        assert_eq!(
+            crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+            0
+        );
     });
 }

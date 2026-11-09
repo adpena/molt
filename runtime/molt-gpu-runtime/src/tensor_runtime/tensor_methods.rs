@@ -1,10 +1,13 @@
 use super::*;
 use molt_runtime_core::BuiltinExc;
 
-#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
-pub extern "C" fn molt_gpu_tensor__tensor_linear(x_bits: u64, weight_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_gpu_tensor__tensor_linear_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    x_bits: u64,
+    weight_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -58,7 +61,8 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear(x_bits: u64, weight_bits: u64) 
                 Ok(value) => value,
                 Err(bits) => return bits,
             };
-        let out_data_bits = molt_gpu_linear_contiguous(
+        let out_data_bits = molt_gpu_linear_contiguous_attached_body(
+            _py,
             x.buffer.data_bits,
             x.buffer.format_bits,
             weight.buffer.data_bits,
@@ -109,14 +113,14 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear(x_bits: u64, weight_bits: u64) 
     })
 }
 
-#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
-pub extern "C" fn molt_gpu_tensor__tensor_linear_split_last_dim(
+pub fn molt_gpu_tensor__tensor_linear_split_last_dim_attached_body(
+    _py: &molt_runtime_core::PyToken,
     x_bits: u64,
     weight_bits: u64,
     split_sizes_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -182,7 +186,8 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_split_last_dim(
                 Ok(value) => value,
                 Err(bits) => return bits,
             };
-        let out_parts_bits = molt_gpu_linear_split_last_dim_contiguous(
+        let out_parts_bits = molt_gpu_linear_split_last_dim_contiguous_attached_body(
+            _py,
             x.buffer.data_bits,
             x.buffer.format_bits,
             weight.buffer.data_bits,
@@ -278,13 +283,13 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_split_last_dim(
     })
 }
 
-#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
-pub extern "C" fn molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved(
+pub fn molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved_attached_body(
+    _py: &molt_runtime_core::PyToken,
     x_bits: u64,
     weight_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -349,7 +354,8 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved(
                 Ok(value) => value,
                 Err(bits) => return bits,
             };
-        let out_data_bits = molt_gpu_linear_squared_relu_gate_interleaved_contiguous(
+        let out_data_bits = molt_gpu_linear_squared_relu_gate_interleaved_contiguous_attached_body(
+            _py,
             x.buffer.data_bits,
             x.buffer.format_bits,
             weight.buffer.data_bits,
@@ -399,10 +405,13 @@ pub extern "C" fn molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved(
     })
 }
 
-#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
-pub extern "C" fn molt_gpu_tensor__tensor_permute_dims(x_bits: u64, dims_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_gpu_tensor__tensor_permute_dims_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    x_bits: u64,
+    dims_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -424,7 +433,8 @@ pub extern "C" fn molt_gpu_tensor__tensor_permute_dims(x_bits: u64, dims_bits: u
                 Ok(bits) => bits,
                 Err(bits) => return bits,
             };
-        let out_data_bits = molt_gpu_permute_contiguous(
+        let out_data_bits = molt_gpu_permute_contiguous_attached_body(
+            _py,
             x.buffer.data_bits,
             x.buffer.format_bits,
             x.shape_bits,
@@ -470,10 +480,12 @@ pub extern "C" fn molt_gpu_tensor__tensor_permute_dims(x_bits: u64, dims_bits: u
     })
 }
 
-#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
-pub extern "C" fn molt_gpu_tensor__tensor_softmax_last_axis(x_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_gpu_tensor__tensor_softmax_last_axis_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    x_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -482,7 +494,8 @@ pub extern "C" fn molt_gpu_tensor__tensor_softmax_last_axis(x_bits: u64) -> u64 
             Ok(bits) => bits,
             Err(bits) => return bits,
         };
-        let out_data_bits = molt_gpu_softmax_last_axis_contiguous(
+        let out_data_bits = molt_gpu_softmax_last_axis_contiguous_attached_body(
+            _py,
             x.buffer.data_bits,
             x.buffer.format_bits,
             shape_bits,
@@ -515,10 +528,13 @@ pub extern "C" fn molt_gpu_tensor__tensor_softmax_last_axis(x_bits: u64) -> u64 
     })
 }
 
-#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
-pub extern "C" fn molt_gpu_tensor__tensor_reshape_view(x_bits: u64, shape_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_gpu_tensor__tensor_reshape_view_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    x_bits: u64,
+    shape_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -606,10 +622,12 @@ pub extern "C" fn molt_gpu_tensor__tensor_reshape_view(x_bits: u64, shape_bits: 
     })
 }
 
-#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
-pub extern "C" fn molt_gpu_tensor__tensor_data_list(x_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_gpu_tensor__tensor_data_list_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    x_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -619,18 +637,22 @@ pub extern "C" fn molt_gpu_tensor__tensor_data_list(x_bits: u64) -> u64 {
         } else {
             product(&x_shape)
         };
-        molt_gpu_buffer_to_list(x.buffer_bits, MoltObject::from_int(size as i64).bits())
+        molt_gpu_buffer_to_list_attached_body(
+            _py,
+            x.buffer_bits,
+            MoltObject::from_int(size as i64).bits(),
+        )
     })
 }
 
-#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
-pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
+pub fn molt_gpu_tensor__tensor_take_rows_attached_body(
+    _py: &molt_runtime_core::PyToken,
     x_bits: u64,
     indices_bits: u64,
     allow_negative_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let trace_take_rows = std::env::var("MOLT_TRACE_GPU_TAKE_ROWS").as_deref() == Ok("1");
         let (x, x_shape) = match unsafe { tensor_runtime_view(_py, x_bits, "x") } {
             Ok(value) => value,
@@ -657,7 +679,8 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
         } else {
             product(&indices_shape)
         };
-        let rows_list_bits = molt_gpu_buffer_to_list(
+        let rows_list_bits = molt_gpu_buffer_to_list_attached_body(
+            _py,
             indices.buffer_bits,
             MoltObject::from_int(row_count as i64).bits(),
         );
@@ -702,7 +725,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
             let preview: Vec<i64> = rows
                 .iter()
                 .take(8)
-                .map(|&bits| to_i64(obj_from_bits(bits)).unwrap_or(i64::MIN))
+                .map(|&bits| to_i64(_py, obj_from_bits(bits)).unwrap_or(i64::MIN))
                 .collect();
             eprintln!(
                 "molt gpu take_rows rows_len={} rows_preview={:?} allow_negative={}",
@@ -715,9 +738,9 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
         let mut out = vec![0u8; rows.len() * width];
         for (out_row, &raw_idx_bits) in rows.iter().enumerate() {
             let raw_idx_obj = obj_from_bits(raw_idx_bits);
-            let idx = if let Some(value) = to_i64(raw_idx_obj) {
+            let idx = if let Some(value) = to_i64(_py, raw_idx_obj) {
                 value
-            } else if let Some(value) = to_f64(raw_idx_obj) {
+            } else if let Some(value) = to_f64(_py, raw_idx_obj) {
                 let idx = value as i64;
                 if (idx as f64) != value {
                     return raise_exception::<_>(
@@ -796,10 +819,13 @@ pub extern "C" fn molt_gpu_tensor__tensor_take_rows(
     })
 }
 
-#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
-pub extern "C" fn molt_gpu_tensor__tensor_concat_first_dim(a_bits: u64, b_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_gpu_tensor__tensor_concat_first_dim_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let (a, a_shape) = match unsafe { tensor_runtime_view(_py, a_bits, "a") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -887,15 +913,15 @@ pub extern "C" fn molt_gpu_tensor__tensor_concat_first_dim(a_bits: u64, b_bits: 
     })
 }
 
-#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
-pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
+pub fn molt_gpu_tensor__tensor_scatter_rows_attached_body(
+    _py: &molt_runtime_core::PyToken,
     base_bits: u64,
     indices_bits: u64,
     updates_bits: u64,
     allow_negative_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let trace_scatter_rows = std::env::var("MOLT_TRACE_GPU_SCATTER_ROWS").as_deref() == Ok("1");
         let (base, base_shape) = match unsafe { tensor_runtime_view(_py, base_bits, "base") } {
             Ok(value) => value,
@@ -951,7 +977,8 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
                 "scatter_rows update row count mismatch",
             );
         }
-        let rows_list_bits = molt_gpu_buffer_to_list(
+        let rows_list_bits = molt_gpu_buffer_to_list_attached_body(
+            _py,
             indices.buffer_bits,
             MoltObject::from_int(row_count as i64).bits(),
         );
@@ -1011,7 +1038,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
             let preview: Vec<i64> = rows
                 .iter()
                 .take(8)
-                .map(|&bits| to_i64(obj_from_bits(bits)).unwrap_or(i64::MIN))
+                .map(|&bits| to_i64(_py, obj_from_bits(bits)).unwrap_or(i64::MIN))
                 .collect();
             eprintln!(
                 "molt gpu scatter_rows rows_len={} rows_preview={:?} allow_negative={}",
@@ -1027,9 +1054,9 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
         let mut out = base_src.to_vec();
         for (src_row, &raw_idx_bits) in rows.iter().enumerate() {
             let raw_idx_obj = obj_from_bits(raw_idx_bits);
-            let idx = if let Some(value) = to_i64(raw_idx_obj) {
+            let idx = if let Some(value) = to_i64(_py, raw_idx_obj) {
                 value
-            } else if let Some(value) = to_f64(raw_idx_obj) {
+            } else if let Some(value) = to_f64(_py, raw_idx_obj) {
                 let idx = value as i64;
                 if (idx as f64) != value {
                     return raise_exception::<_>(
@@ -1099,10 +1126,13 @@ pub extern "C" fn molt_gpu_tensor__tensor_scatter_rows(
     })
 }
 
-#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
-pub extern "C" fn molt_gpu_tensor__zeros(shape_bits: u64, dtype_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_gpu_tensor__zeros_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    shape_bits: u64,
+    dtype_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let tensor_class_bits =
             match unsafe { module_global_bits(_py, b"molt.gpu.tensor", b"Tensor", "Tensor") } {
                 Ok(bits) => bits,
@@ -1195,3 +1225,5 @@ pub extern "C" fn molt_gpu_tensor__zeros(shape_bits: u64, dtype_bits: u64) -> u6
         tensor_bits
     })
 }
+
+include!("../attached_exports_generated/tensor_runtime/tensor_methods.rs");

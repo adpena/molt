@@ -13,6 +13,7 @@ from molt.cli.source_extension_toolchain import (
     _source_extension_include_dirs_for_abi_tier,
     _source_extension_python_header_for_abi_tier,
 )
+from molt.process_guard import FRESH_EXECUTABLE_TIMEOUT_S
 from tests.cli.process_guard import run_cli_test_process
 from tests.llvm_sdk_test_support import verified_llvm_tools
 
@@ -120,7 +121,7 @@ def test_c_entry_helpers_publish_access_only_after_success(
         env=dict(tools.environment),
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=FRESH_EXECUTABLE_TIMEOUT_S,
     )
     if failure is not None:
         assert result.returncode != 0
@@ -354,6 +355,7 @@ int main(void) {
         capture_output=True,
         text=True,
         check=False,
+        timeout=FRESH_EXECUTABLE_TIMEOUT_S,
     )
     assert result.returncode == 0, result.stderr
 
@@ -554,7 +556,11 @@ int main(void) {
     )
     assert result.returncode == 0, result.stderr
     result = run_cli_test_process(
-        [str(output)], capture_output=True, text=True, check=False
+        [str(output)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=FRESH_EXECUTABLE_TIMEOUT_S,
     )
     assert result.returncode == 0, result.stderr
 
@@ -635,7 +641,11 @@ int main(void) {
     )
     assert result.returncode == 0, result.stderr
     result = run_cli_test_process(
-        [str(output)], capture_output=True, text=True, check=False
+        [str(output)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=FRESH_EXECUTABLE_TIMEOUT_S,
     )
     assert result.returncode == 0, result.stderr
 
@@ -883,7 +893,11 @@ int main(void) {
     )
     assert result.returncode == 0, result.stderr
     result = run_cli_test_process(
-        [str(output)], capture_output=True, text=True, check=False
+        [str(output)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=FRESH_EXECUTABLE_TIMEOUT_S,
     )
     assert result.returncode == 0, result.stderr
 
@@ -1154,6 +1168,7 @@ int main(void) {
         capture_output=True,
         text=True,
         check=False,
+        timeout=FRESH_EXECUTABLE_TIMEOUT_S,
     )
     assert result.returncode == 0, result.stderr
 
@@ -1282,7 +1297,12 @@ int main(void) {
     )
     assert build.returncode == 0, build.stderr
     result = run_cli_test_process(
-        [str(output)], cwd=tmp_path, capture_output=True, text=True, check=False
+        [str(output)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=FRESH_EXECUTABLE_TIMEOUT_S,
     )
     assert result.returncode == (41 if private_copy else 0), result.stderr
 
@@ -1356,6 +1376,10 @@ EXPORT void *PyMarshal_ReadObjectFromString(const char *data, intptr_t length) {
     )
     assert result.returncode == 0, result.stderr
     result = run_cli_test_process(
-        [str(output)], capture_output=True, text=True, check=False
+        [str(output)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=FRESH_EXECUTABLE_TIMEOUT_S,
     )
     assert result.returncode == 0, result.stderr

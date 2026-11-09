@@ -93,6 +93,7 @@ fn lower_with_wide_operands(
             &plan,
         );
         builder.ins().return_(&[]);
+        complete_unit_fixture_abi(&backend.module, builder.func);
         builder.finalize(crate::test_support::host_frontend_config());
     }
     verify_function(&function, &settings::Flags::new(settings::builder()))
@@ -178,7 +179,7 @@ fn slice_bounds_share_the_fixed_aggregate_transaction_without_range_storage() {
         let &[constructor] = import_calls(&function, &ids, "molt_slice_new").as_slice() else {
             panic!("one slice constructor:\n{}", function.display());
         };
-        let bounds = function.dfg.inst_args(constructor);
+        let bounds = attached_arguments(&function, constructor);
         assert_eq!(bounds[0], bounds[1], "a repeated bound reuses its one box");
         assert_ne!(bounds[1], bounds[2]);
     }
@@ -196,7 +197,7 @@ fn omitted_slice_bounds_are_none_direct_arguments() {
         let &[constructor] = import_calls(&function, &ids, "molt_slice_new").as_slice() else {
             panic!("one slice constructor:\n{}", function.display());
         };
-        let arguments = function.dfg.inst_args(constructor);
+        let arguments = attached_arguments(&function, constructor);
         assert_eq!(arguments.len(), 3);
         for &omitted in &arguments[bounds.len()..] {
             let ValueDef::Result(definition, _) = function.dfg.value_def(omitted) else {
@@ -242,7 +243,7 @@ fn bound_borrowed_transaction_result_is_secured_before_temporary_release() {
     let &[call] = import_calls(&function, &ids, "molt_dict_set").as_slice() else {
         panic!("one runtime call:\n{}", function.display());
     };
-    let arguments = function.dfg.inst_args(call);
+    let arguments = attached_arguments(&function, call);
     assert_eq!(
         arguments[0], arguments[1],
         "a repeated operand reuses its one box"
@@ -257,7 +258,7 @@ fn bound_borrowed_transaction_result_is_secured_before_temporary_release() {
         );
     };
     assert_eq!(
-        function.dfg.inst_args(retain),
+        attached_arguments(&function, retain),
         function.dfg.inst_results(call)
     );
     let call_block = function.layout.inst_block(call);
@@ -330,7 +331,7 @@ fn shared_boxed_calls_retire_temporary_and_discarded_owners_separately() {
             );
             let calls = import_calls(&function, &ids, abi.symbol);
             assert_eq!(calls.len(), 1, "{kind}: {}", function.display());
-            assert_eq!(function.dfg.inst_args(calls[0]).len(), abi.arity);
+            assert_eq!(attached_arguments(&function, calls[0]).len(), abi.arity);
             assert_eq!(
                 import_calls(&function, &ids, "molt_inc_ref_obj").len(),
                 0,
@@ -389,13 +390,16 @@ fn generated_runtime_call_agreement_imports_declared_native_function() {
             };
             let object = SimpleBackend::new().compile(ir);
             let symbols = native_object_symbols(&object.bytes).undefined;
-            assert!(symbols.contains(abi.symbol), "{call:?}: {symbols:?}");
             assert!(
-                !symbols.contains("molt_store_index"),
+                symbols.contains(physical_runtime_symbol(abi.symbol)),
+                "{call:?}: {symbols:?}"
+            );
+            assert!(
+                !symbols.contains(physical_runtime_symbol("molt_store_index")),
                 "dict storage must bypass the subclass protocol"
             );
             assert!(
-                !symbols.contains("molt_iter"),
+                !symbols.contains(physical_runtime_symbol("molt_iter")),
                 "iteration must retain the checked error protocol"
             );
         }
@@ -443,7 +447,9 @@ fn generated_runtime_call_agreement_jit_admits_declared_import_before_relocation
             panic!("JIT must report unresolved imports before relocation");
         };
         assert!(
-            symbols.iter().any(|symbol| symbol == abi.symbol),
+            symbols
+                .iter()
+                .any(|symbol| symbol == physical_runtime_symbol(abi.symbol)),
             "{call:?}: {symbols:?}"
         );
         assert!(

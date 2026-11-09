@@ -2,9 +2,10 @@ use super::super::super::super::result_sink::store_owned_value;
 use super::super::AggregateRuntimeContext;
 use crate::OpIR;
 use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use molt_tir::tir::simple_def_use::{SimpleIrResultField, visit_simple_ir_results};
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 pub(super) fn emit_iterator_op(
     func: &mut Function,

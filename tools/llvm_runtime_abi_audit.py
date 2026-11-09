@@ -169,32 +169,6 @@ def boxed_runtime_export_issues() -> tuple[ClassifiedFactIssue, ...]:
     return tuple(sorted(issues))
 
 
-def _split_top_level_commas(params: str) -> list[str]:
-    parts: list[str] = []
-    start = 0
-    angle = paren = bracket = 0
-    for idx, ch in enumerate(params):
-        if ch == "<":
-            angle += 1
-        elif ch == ">" and angle:
-            angle -= 1
-        elif ch == "(":
-            paren += 1
-        elif ch == ")" and paren:
-            paren -= 1
-        elif ch == "[":
-            bracket += 1
-        elif ch == "]" and bracket:
-            bracket -= 1
-        elif ch == "," and angle == paren == bracket == 0:
-            parts.append(params[start:idx].strip())
-            start = idx + 1
-    tail = params[start:].strip()
-    if tail:
-        parts.append(tail)
-    return [part for part in parts if part]
-
-
 def _rust_param_type(param: str) -> str:
     if ":" not in param:
         return param.strip()
@@ -228,37 +202,68 @@ def normalize_rust_type(rust_type: str, aliases: dict[str, str]) -> str:
 def runtime_exports(
     roots: Path | Iterable[Path] = RUNTIME_SRC_ROOTS,
 ) -> dict[str, RuntimeSignature]:
-    pattern = re.compile(
-        r"pub\s+(?:unsafe\s+)?extern\s+\"C\"\s+fn\s+"
-        r"(?P<name>molt_[A-Za-z0-9_]+)\s*"
-        r"\((?P<params>.*?)\)\s*"
-        r"(?:->\s*(?P<ret>[^{\n]+))?\s*\{",
-        re.DOTALL,
+    from molt.rust_source_scan import mask_rust_test_items, rust_test_only_source_files
+    from tools.check_runtime_symbol_owners import (
+        _c_link_identity,
+        _without_macro_templates,
     )
+    from tools.wasm_abi_gen.attached_entries import functions, split_params
+
+    paths = sorted(
+        path
+        for root in _iter_src_roots(roots)
+        if root.exists()
+        for path in root.rglob("*.rs")
+    )
+    test_only = rust_test_only_source_files(paths)
     exports: dict[str, RuntimeSignature] = {}
-    for root in _iter_src_roots(roots):
-        if not root.exists():
+    for path in paths:
+        if path.resolve() in test_only:
             continue
-        for path in sorted(root.rglob("*.rs")):
-            rel = _display_path(path)
-            text = path.read_text(encoding="utf-8", errors="ignore")
-            for match in pattern.finditer(text):
-                symbol = match.group("name")
-                params = match.group("params").strip()
-                rust_params = (
-                    tuple(
-                        _rust_param_type(param)
-                        for param in _split_top_level_commas(params)
-                    )
-                    if params
-                    else ()
-                )
-                arity = len(rust_params)
-                rust_return = (match.group("ret") or "").strip()
-                exports[symbol] = RuntimeSignature(
-                    symbol, arity, rust_return, rel, "", rust_params
-                )
+        text, _ = _without_macro_templates(
+            mask_rust_test_items(path.read_text(encoding="utf-8"))
+        )
+        for function in functions(text, include_private=True):
+            if not function.external:
+                continue
+            symbol = _c_link_identity(function.attrs, function.name)
+            if symbol is None:
+                continue
+            rust_params = tuple(
+                _rust_param_type(param) for param in split_params(function.params)
+            )
+            exports[symbol] = RuntimeSignature(
+                symbol,
+                len(rust_params),
+                function.result,
+                _display_path(path),
+                "",
+                rust_params,
+            )
     return exports
+
+
+def physical_runtime_import_facts(
+    facts: dict[tuple[str, int], AbiFact],
+) -> dict[tuple[str, int], AbiFact]:
+    """Project declarations to the generated link identity and machine signature.
+
+    Keep export observations physical: dropping an observed first argument
+    would hide a stale symbol or a context with the wrong machine carrier.
+    """
+    from molt._wasm_abi_generated import runtime_execution_abi
+
+    physical = {}
+    for fact in facts.values():
+        execution = runtime_execution_abi(fact.symbol)
+        if execution is None:
+            raise ValueError(f"unclassified runtime execution ABI: {fact.symbol}")
+        params = (("I64",) if execution.context == "Attached" else ()) + fact.param_abis
+        projected = AbiFact(
+            execution.physical_symbol, len(params), fact.return_abi, params
+        )
+        physical[(projected.symbol, projected.arity)] = projected
+    return physical
 
 
 def _insert_abi_fact(
@@ -517,7 +522,11 @@ def run_audit(root: Path = ROOT) -> AuditResult:
         conservative_imports, fixed_imports, runtime_import_abi
     )
     boxed = runtime_boxed_abi_facts()
-    classified_fact_issues = list(validate_classified_facts(exports, facts, aliases))
+    classified_fact_issues = list(
+        validate_classified_facts(
+            exports, physical_runtime_import_facts(facts), aliases
+        )
+    )
 
     # Fixed declarations retain stronger attributes; matching generated/fixed
     # facts are therefore legitimate. Conservative mirrors must be deleted.

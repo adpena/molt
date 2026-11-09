@@ -2,8 +2,8 @@ use super::{WasmFunctionLoweringPlan, is_production_lir_wasm_fast_path_name};
 use crate::FunctionIR;
 use crate::wasm::WasmBackend;
 use crate::wasm::context::CompileFuncContext;
+use crate::wasm_binary::Function;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
-use wasm_encoder::Function;
 
 pub(in crate::wasm) fn try_emit_planned_lir_fast_body(
     backend: &mut WasmBackend,
@@ -30,6 +30,10 @@ pub(in crate::wasm) fn try_emit_planned_lir_fast_body(
                 );
             }
             let mut func = Function::new_with_locals_types(lir_output.locals.clone());
+            func.attach_context(
+                lir_output.param_types.len(),
+                backend.execution_call_abis.clone(),
+            );
             lir_output.emit_into(
                 &func_ir.name,
                 backend,

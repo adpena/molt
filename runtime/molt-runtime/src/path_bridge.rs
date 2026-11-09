@@ -13,32 +13,39 @@ use crate::*;
 // Exception / error handling
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_raise_exception"))]
 pub extern "C" fn __molt_path_raise_exception(
+    __molt_context: u64,
     kind_code: u16,
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let msg = unsafe { std::slice::from_raw_parts(msg_ptr, msg_len) };
         crate::builtins::exceptions::raise_exception_code_bytes(_py, kind_code, msg)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_exception_pending() -> i32 {
-    crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_exception_pending"))]
+pub extern "C" fn __molt_path_exception_pending(__molt_context: u64) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        if exception_pending(_py) { 1 } else { 0 }
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_raise_os_error"))]
 pub extern "C" fn __molt_path_raise_os_error(
+    __molt_context: u64,
     raw_error: i64,
     err_msg_ptr: *const u8,
     err_msg_len: usize,
     ctx_ptr: *const u8,
     ctx_len: usize,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let err_msg = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_msg_ptr, err_msg_len))
         };
@@ -49,67 +56,91 @@ pub extern "C" fn __molt_path_raise_os_error(
             Err(_) => std::io::Error::other(err_msg.to_string()),
         };
         crate::builtins::io::PathIoError::from_native(err).raise(_py, ctx)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_raise_os_error_errno"))]
 pub extern "C" fn __molt_path_raise_os_error_errno(
+    __molt_context: u64,
     errno: i64,
     ctx_ptr: *const u8,
     ctx_len: usize,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let ctx =
             unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ctx_ptr, ctx_len)) };
         raise_os_error_errno::<u64>(_py, errno, ctx)
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Object allocation
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_alloc_tuple(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_alloc_tuple"))]
+pub extern "C" fn __molt_path_alloc_tuple(
+    __molt_context: u64,
+    elems_ptr: *const u64,
+    elems_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_tuple(_py, elems)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_alloc_list(elems_ptr: *const u64, elems_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_alloc_list"))]
+pub extern "C" fn __molt_path_alloc_list(
+    __molt_context: u64,
+    elems_ptr: *const u64,
+    elems_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_list(_py, elems)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_alloc_string"))]
+pub extern "C" fn __molt_path_alloc_string(
+    __molt_context: u64,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_string(_py, data)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_alloc_bytes(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_alloc_bytes"))]
+pub extern "C" fn __molt_path_alloc_bytes(
+    __molt_context: u64,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_bytes(_py, data)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_alloc_dict_with_pairs"))]
 pub extern "C" fn __molt_path_alloc_dict_with_pairs(
+    __molt_context: u64,
     pairs_ptr: *const u64,
     pairs_len: usize,
 ) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let pairs = unsafe { std::slice::from_raw_parts(pairs_ptr, pairs_len) };
         alloc_dict_with_pairs(_py, pairs)
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -137,12 +168,13 @@ pub extern "C" fn __molt_path_string_obj_to_owned(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_is_truthy(bits: u64) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_is_truthy"))]
+pub extern "C" fn __molt_path_is_truthy(__molt_context: u64, bits: u64) -> i32 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let obj = obj_from_bits(bits);
         if is_truthy(_py, obj) { 1 } else { 0 }
-    })
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -167,18 +199,20 @@ pub extern "C" fn __molt_path_bytes_like_slice(
 // Reference counting
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_dec_ref_bits(bits: u64) {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_dec_ref_bits"))]
+pub extern "C" fn __molt_path_dec_ref_bits(__molt_context: u64, bits: u64) {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         dec_ref_bits(_py, bits);
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_inc_ref_bits(bits: u64) {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_inc_ref_bits"))]
+pub extern "C" fn __molt_path_inc_ref_bits(__molt_context: u64, bits: u64) {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         inc_ref_bits(_py, bits);
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -217,15 +251,17 @@ pub extern "C" fn __molt_path_to_f64(bits: u64, out: *mut f64) -> i32 {
 // Container helpers
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_seq_snapshot"))]
 pub extern "C" fn __molt_path_seq_snapshot(
+    __molt_context: u64,
     ptr: *mut u8,
     out_ptr: *mut *const u64,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         unsafe { crate::seq_snapshot_bridge::export(_py, ptr, out_ptr, out_len) }
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -239,8 +275,9 @@ pub extern "C" fn __molt_path_seq_snapshot(
 /// Require a borrowed operation name and audit arguments from the path crate.
 /// Returns 1 on success; on refusal writes the exact exception sentinel and
 /// returns 0. All pointers are borrowed for this call, as in the other bridges.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_require_operation"))]
 pub extern "C" fn __molt_path_require_operation(
+    __molt_context: u64,
     operation_ptr: *const u8,
     operation_len: usize,
     arg_kind: u32,
@@ -248,7 +285,8 @@ pub extern "C" fn __molt_path_require_operation(
     arg_len: usize,
     out_error_bits: *mut u64,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let operation = unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(operation_ptr, operation_len))
         };
@@ -277,30 +315,34 @@ pub extern "C" fn __molt_path_require_operation(
                 0
             }
         }
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Hash helpers
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_molt_object_hash(bits: u64) -> u64 {
-    molt_object_hash(bits)
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_molt_object_hash"))]
+pub extern "C" fn __molt_path_molt_object_hash(__molt_context: u64, bits: u64) -> u64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    molt_object_hash_attached_body(_py, bits)
 }
 
 // ---------------------------------------------------------------------------
 // Path resolution helpers
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_path_from_bits"))]
 pub extern "C" fn __molt_path_path_from_bits(
+    __molt_context: u64,
     bits: u64,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
     out_bytes: *mut bool,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         match crate::builtins::io::path_from_bits_with_flavor(_py, bits) {
             Ok((path, flavor)) => {
                 unsafe { *out_bytes = flavor == crate::builtins::io::PathFlavor::Bytes };
@@ -314,12 +356,18 @@ pub extern "C" fn __molt_path_path_from_bits(
             }
             Err(_) => 0,
         }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_path_result(data: *const u8, len: usize, bytes: bool) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_path_result"))]
+pub extern "C" fn __molt_path_path_result(
+    __molt_context: u64,
+    data: *const u8,
+    len: usize,
+    bytes: bool,
+) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         // Same-process, same-target OsStr bytes from the extracted path crate.
         let raw = unsafe { std::slice::from_raw_parts(data, len) };
         let path = unsafe { std::ffi::OsStr::from_encoded_bytes_unchecked(raw) };
@@ -332,32 +380,35 @@ pub extern "C" fn __molt_path_path_result(data: *const u8, len: usize, bytes: bo
                 crate::builtins::io::PathFlavor::Str
             },
         )
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_type_name"))]
 pub extern "C" fn __molt_path_type_name(
+    __molt_context: u64,
     bits: u64,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let obj = obj_from_bits(bits);
         let name = crate::object::ops::type_name(_py, obj);
         let bytes = name.into_owned().into_bytes().into_boxed_slice();
         unsafe { crate::resource::bridge_buffer::export_u8_box(bytes, out_ptr, out_len) }
-    })
+    }
 }
 
 /// Return the canonical owned Python path, preserving str/bytes identity.
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_fspath_bits(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_fspath_bits"))]
+pub extern "C" fn __molt_path_fspath_bits(__molt_context: u64, bits: u64) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         match crate::builtins::io_path_utils::fspath_bits_with_flavor(_py, bits) {
             Ok((path, _)) => path,
             Err(error) => error,
         }
-    })
+    }
 }
 
 #[cfg(all(test, feature = "stdlib_path"))]
@@ -368,10 +419,10 @@ mod path_transport_tests {
     fn canonical_pid_requires_exact_permission() {
         for grants in ["", "os.getpid"] {
             crate::test_support::RuntimeTestTransaction::with_explicit_capabilities(grants, |py| {
-                let result = molt_os_getpid();
+                let result = molt_os_getpid_attached_body(py.core_token());
                 if grants.is_empty() {
                     assert_eq!(result, MoltObject::none().bits());
-                    let error = crate::molt_exception_last_pending();
+                    let error = crate::molt_exception_last_pending_attached_body(py);
                     let _owner = unsafe {
                         molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
                             py.core_token(),
@@ -383,7 +434,7 @@ mod path_transport_tests {
                         error,
                         crate::BuiltinExc::PermissionError
                     ));
-                    crate::molt_exception_clear();
+                    crate::molt_exception_clear_attached_body(py);
                 } else {
                     let pid = to_i64(obj_from_bits(result)).expect("PID integer");
                     #[cfg(not(target_arch = "wasm32"))]
@@ -400,29 +451,30 @@ mod path_transport_tests {
     #[test]
     fn cached_platform_host_facts_require_each_runtime_permission() {
         use crate::builtins::platform_mod::*;
-        let readers: [fn() -> u64; 7] = [
-            || molt_platform_system(),
-            || molt_platform_machine(),
-            || molt_platform_node(),
-            || molt_platform_release(),
-            || molt_platform_version(),
-            || {
-                molt_platform_platform(
+        let readers: [fn(&PyToken<'_>) -> u64; 7] = [
+            |py| molt_platform_system_attached_body(py),
+            |py| molt_platform_machine_attached_body(py),
+            |py| molt_platform_node_attached_body(py),
+            |py| molt_platform_release_attached_body(py),
+            |py| molt_platform_version_attached_body(py),
+            |py| {
+                molt_platform_platform_attached_body(
+                    py,
                     MoltObject::from_bool(false).bits(),
                     MoltObject::from_bool(false).bits(),
                 )
             },
-            || molt_platform_uname(),
+            |py| molt_platform_uname_attached_body(py),
         ];
         // Prime the process-wide cache, then start a new runtime without grants.
         // Checking only cache initialization would leak every subsequent read.
         for grants in ["os.uname", ""] {
             crate::test_support::RuntimeTestTransaction::with_explicit_capabilities(grants, |py| {
                 for read in readers {
-                    let bits = read();
+                    let bits = read(py);
                     if grants.is_empty() {
                         assert_eq!(bits, MoltObject::none().bits());
-                        let error = crate::molt_exception_last_pending();
+                        let error = crate::molt_exception_last_pending_attached_body(py);
                         let _owner = unsafe {
                             molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
                                 py.core_token(),
@@ -434,7 +486,7 @@ mod path_transport_tests {
                             error,
                             crate::BuiltinExc::PermissionError
                         ));
-                        crate::molt_exception_clear();
+                        crate::molt_exception_clear_attached_body(py);
                         assert_eq!(
                             crate::builtins::exceptions::format_exception_message(
                                 py,
@@ -449,7 +501,7 @@ mod path_transport_tests {
                     }
                 }
                 // Compile-time metadata does not disclose host uname state.
-                let bits = molt_platform_processor();
+                let bits = molt_platform_processor_attached_body(py);
                 assert!(!obj_from_bits(bits).is_none());
                 assert!(!exception_pending(py));
                 dec_ref_bits(py, bits);
@@ -466,7 +518,8 @@ mod path_transport_tests {
         ] {
             crate::test_support::RuntimeTestTransaction::with_explicit_capabilities(grants, |py| {
                 assert!(!crate::has_capability(py, "process"));
-                let cpu_count = molt_runtime_path::os_ext::molt_os_cpu_count();
+                let cpu_count =
+                    molt_runtime_path::os_ext::molt_os_cpu_count_attached_body(py.core_token());
                 assert!(to_i64(obj_from_bits(cpu_count)).is_some_and(|count| count > 0));
                 assert!(!exception_pending(py));
 
@@ -491,7 +544,7 @@ mod path_transport_tests {
                     if let Some(missing) = missing {
                         assert_eq!(result, Err(MoltObject::none().bits()));
                         assert!(exception_pending(py));
-                        let exception = crate::molt_exception_last_pending();
+                        let exception = crate::molt_exception_last_pending_attached_body(py);
                         let _exception_owner = unsafe {
                             molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
                                 py.core_token(),
@@ -503,7 +556,7 @@ mod path_transport_tests {
                             exception,
                             crate::BuiltinExc::PermissionError
                         ));
-                        crate::molt_exception_clear();
+                        crate::molt_exception_clear_attached_body(py);
                         assert_eq!(
                             crate::builtins::exceptions::format_exception_message(
                                 py,
@@ -524,6 +577,7 @@ mod path_transport_tests {
                 let mut error_bits = marker;
                 assert_eq!(
                     __molt_path_require_operation(
+                        py.attached_context(),
                         operation.as_ptr(),
                         operation.len(),
                         0,
@@ -537,6 +591,7 @@ mod path_transport_tests {
                 let operation = "path.operation.unknown";
                 assert_eq!(
                     __molt_path_require_operation(
+                        py.attached_context(),
                         operation.as_ptr(),
                         operation.len(),
                         0,
@@ -547,7 +602,7 @@ mod path_transport_tests {
                     0
                 );
                 assert_eq!(error_bits, MoltObject::none().bits());
-                let exception = crate::molt_exception_last_pending();
+                let exception = crate::molt_exception_last_pending_attached_body(py);
                 let _exception_owner = unsafe {
                     molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
                         py.core_token(),
@@ -559,7 +614,7 @@ mod path_transport_tests {
                     exception,
                     crate::BuiltinExc::ValueError
                 ));
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(py);
             });
         }
     }
@@ -568,12 +623,12 @@ mod path_transport_tests {
     fn fspath_transports_preserve_owned_identity_and_type_errors() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            type FspathTransport = (&'static str, fn(u64) -> u64);
+            type FspathTransport = (&'static str, fn(&molt_runtime_core::PyToken, u64) -> u64);
             let transports: [FspathTransport; 3] = [
                 ("direct", crate::bridge::fspath_bits),
                 ("satellite", molt_runtime_path::bridge::fspath_bits),
-                ("public", |bits| {
-                    molt_runtime_path::os_ext::molt_os_fspath(bits)
+                ("public", |py, bits| {
+                    molt_runtime_path::os_ext::molt_os_fspath_attached_body(py, bits)
                 }),
             ];
             for (name, transport) in transports {
@@ -582,22 +637,22 @@ mod path_transport_tests {
                     alloc_bytes(py, b"molt-fspath-owned-\xff"),
                 ] {
                     assert!(!pointer.is_null());
-                    let _input_owner = crate::PtrDropGuard::new(pointer);
+                    let _input_owner = crate::PtrDropGuard::new(py, pointer);
                     let bits = MoltObject::from_ptr(pointer).bits();
                     let references =
                         || unsafe { (*crate::header_from_obj_ptr(pointer)).ref_count_snapshot() };
                     let before = references();
-                    let result = transport(bits);
+                    let result = transport(py.core_token(), bits);
                     assert!(!exception_pending(py), "{name}");
                     assert_eq!(result, bits, "{name}: preserve str/bytes identity");
                     assert_eq!(references(), before + 1, "{name}: return an owned result");
                     dec_ref_bits(py, result);
                     assert_eq!(references(), before, "{name}: release exactly one result");
                 }
-                let result = transport(MoltObject::from_int(42).bits());
+                let result = transport(py.core_token(), MoltObject::from_int(42).bits());
                 assert_eq!(result, MoltObject::none().bits(), "{name}");
                 assert!(exception_pending(py), "{name}");
-                let exception = crate::molt_exception_last_pending();
+                let exception = crate::molt_exception_last_pending_attached_body(py);
                 let _exception_owner = unsafe {
                     molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
                         py.core_token(),
@@ -612,7 +667,7 @@ mod path_transport_tests {
                     ),
                     "{name}"
                 );
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(py);
                 assert_eq!(
                     crate::builtins::exceptions::format_exception_message(
                         py,
@@ -632,13 +687,14 @@ mod path_transport_tests {
             let input = b"molt-path-transport";
             let ptr = alloc_bytes(py, input);
             assert!(!ptr.is_null());
-            let _owner = crate::PtrDropGuard::new(ptr);
+            let _owner = crate::PtrDropGuard::new(py, ptr);
             let bits = MoltObject::from_ptr(ptr).bits();
             molt_runtime_core::with_core_gil!(core, {
                 let path = molt_runtime_path::bridge::path_from_bits(core, bits).unwrap();
                 assert_eq!(path, std::path::PathBuf::from("molt-path-transport"));
             });
-            let result = molt_runtime_path::os_ext::molt_os_fspath(bits);
+            let result =
+                molt_runtime_path::os_ext::molt_os_fspath_attached_body(py.core_token(), bits);
             let _result_owner = unsafe {
                 molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), result)
             };
@@ -653,6 +709,7 @@ mod path_transport_tests {
             let mut length = marker.len();
             assert_eq!(
                 __molt_path_path_from_bits(
+                    py.attached_context(),
                     MoltObject::from_int(42).bits(),
                     &mut out,
                     &mut length,
@@ -663,7 +720,7 @@ mod path_transport_tests {
             assert_eq!(out, marker.as_ptr());
             assert_eq!(length, marker.len());
             assert!(exception_pending(py));
-            let exception = crate::molt_exception_last_pending();
+            let exception = crate::molt_exception_last_pending_attached_body(py);
             let _exception_owner = unsafe {
                 molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), exception)
             };
@@ -672,7 +729,7 @@ mod path_transport_tests {
                 exception,
                 crate::BuiltinExc::TypeError
             ));
-            crate::molt_exception_clear();
+            crate::molt_exception_clear_attached_body(py);
         });
     }
 
@@ -685,7 +742,7 @@ mod path_transport_tests {
             let input = b"molt-path-\xff";
             let ptr = alloc_bytes(py, input);
             assert!(!ptr.is_null());
-            let _owner = crate::PtrDropGuard::new(ptr);
+            let _owner = crate::PtrDropGuard::new(py, ptr);
             let bits = MoltObject::from_ptr(ptr).bits();
             molt_runtime_core::with_core_gil!(core, {
                 let path = molt_runtime_path::bridge::path_from_bits(core, bits).unwrap();
@@ -696,9 +753,14 @@ mod path_transport_tests {
     }
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn __molt_path_index_c_int(bits: u64, out: *mut i32) -> i32 {
-    crate::with_gil_entry_nopanic!(py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_index_c_int"))]
+pub unsafe extern "C" fn __molt_path_index_c_int(
+    __molt_context: u64,
+    bits: u64,
+    out: *mut i32,
+) -> i32 {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let Some(value) = crate::builtins::numbers::index_c_int_from_obj(py, bits) else {
             return 0;
         };
@@ -706,12 +768,17 @@ pub unsafe extern "C" fn __molt_path_index_c_int(bits: u64, out: *mut i32) -> i3
             *out = value;
         }
         1
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn __molt_path_index_i64(bits: u64, out: *mut i64) -> i32 {
-    crate::with_gil_entry_nopanic!(py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_index_i64"))]
+pub unsafe extern "C" fn __molt_path_index_i64(
+    __molt_context: u64,
+    bits: u64,
+    out: *mut i64,
+) -> i32 {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         // Every path-crate consumer (lseek pos, truncate/ftruncate length)
         // takes CPython's `Py_off_t` argument.
         let Some(value) = crate::builtins::numbers::index_off_t_from_obj(py, bits) else {
@@ -721,13 +788,14 @@ pub unsafe extern "C" fn __molt_path_index_i64(bits: u64, out: *mut i64) -> i32 
             *out = value;
         }
         1
-    })
+    }
 }
 
 /// Fixed stack receiver; -1 is a raised error, 0 an explicitly suppressed OS
 /// failure, 1 initialized metadata. Policy failures are never suppressed.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_metadata"))]
 pub extern "C" fn __molt_path_metadata(
+    __molt_context: u64,
     path: *const u8,
     len: usize,
     follow: bool,
@@ -735,7 +803,8 @@ pub extern "C" fn __molt_path_metadata(
     suppress: bool,
     out: *mut molt_runtime_platform::stat_support::PathMetadata,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let path = unsafe {
             std::ffi::OsStr::from_encoded_bytes_unchecked(std::slice::from_raw_parts(path, len))
         };
@@ -755,18 +824,20 @@ pub extern "C" fn __molt_path_metadata(
                 -1
             }
         }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_samefile"))]
 pub extern "C" fn __molt_path_samefile(
+    __molt_context: u64,
     left: *const u8,
     left_len: usize,
     right: *const u8,
     right_len: usize,
     operation: *const std::ffi::c_void,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let left = unsafe {
             std::ffi::OsStr::from_encoded_bytes_unchecked(std::slice::from_raw_parts(
                 left, left_len,
@@ -788,12 +859,18 @@ pub extern "C" fn __molt_path_samefile(
             Ok(Ok(same)) => MoltObject::from_bool(same).bits(),
             Ok(Err(error)) => error.raise(py, operation.as_str()),
         }
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_path_readlink(path: *const u8, len: usize, bytes: bool) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_path_readlink"))]
+pub extern "C" fn __molt_path_readlink(
+    __molt_context: u64,
+    path: *const u8,
+    len: usize,
+    bytes: bool,
+) -> u64 {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let path = unsafe {
             std::ffi::OsStr::from_encoded_bytes_unchecked(std::slice::from_raw_parts(path, len))
         };
@@ -814,5 +891,5 @@ pub extern "C" fn __molt_path_readlink(path: *const u8, len: usize, bytes: bool)
             ),
             Ok(Err(error)) => error.raise(py, "readlink"),
         }
-    })
+    }
 }

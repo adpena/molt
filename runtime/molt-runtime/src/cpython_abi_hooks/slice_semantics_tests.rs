@@ -26,7 +26,7 @@ fn c_and_runtime_slices_share_list_get_set_delete_and_physical_fields() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     crate::concurrency::gil::with_gil(|py| unsafe {
         let values = [0, 1, 2, 3].map(|value| MoltObject::from_int(value).bits());
-        let list = MoltObject::from_ptr(crate::alloc_list(&py, &values)).bits();
+        let list = MoltObject::from_ptr(crate::alloc_list(py, &values)).bits();
         let list_view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(list);
         let reverse = numbers::PyLong_FromLong(-1);
         let key = slice::PySlice_New(std::ptr::null_mut(), std::ptr::null_mut(), reverse);
@@ -47,10 +47,11 @@ fn c_and_runtime_slices_share_list_get_set_delete_and_physical_fields() {
         assert_list(list_view, &[]);
         refcount::Py_DECREF(key);
         refcount::Py_DECREF(list_view);
-        crate::dec_ref_bits(&py, list);
+        crate::dec_ref_bits(py, list);
 
         // The opposite crossing must expose the same actual slice, not Other.
-        let key_bits = crate::molt_slice_new(
+        let key_bits = crate::molt_slice_new_attached_body(
+            py,
             MoltObject::none().bits(),
             MoltObject::none().bits(),
             MoltObject::from_int(-2).bits(),
@@ -72,7 +73,7 @@ fn c_and_runtime_slices_share_list_get_set_delete_and_physical_fields() {
         );
         assert_eq!((start, stop, step, length), (4, -1, -2, 3));
         refcount::Py_DECREF(view);
-        crate::dec_ref_bits(&py, key_bits);
+        crate::dec_ref_bits(py, key_bits);
         assert!(errors::PyErr_Occurred().is_null());
     });
 }
@@ -83,36 +84,61 @@ thread_local! {
     static INDEX_ERROR: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-extern "C" fn echo_key(_receiver: u64, key: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn echo_key(__context: u64, _receiver: u64, key: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         OBSERVED_KEYS.with(|keys| keys.borrow_mut().push(key));
         crate::inc_ref_bits(py, key);
         key
-    })
+    }
 }
-extern "C" fn set_key(receiver: u64, key: u64, _value: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
-        let result = echo_key(receiver, key);
+extern "C" fn set_key(__context: u64, receiver: u64, key: u64, _value: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        let result = echo_key(__context, receiver, key);
         crate::dec_ref_bits(py, result);
         MoltObject::none().bits()
-    })
+    }
 }
-extern "C" fn index_error(_receiver: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn index_error(__context: u64, _receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         INDEX_CALLS.with(|calls| calls.set(calls.get() + 1));
         let error = INDEX_ERROR.with(|error| error.get());
         crate::record_exception(py, crate::obj_from_bits(error).as_ptr().unwrap());
         MoltObject::none().bits()
-    })
+    }
 }
 
 fn callback_instance(py: &crate::PyToken<'_>, methods: &[(&[u8], *const (), u64)]) -> (u64, u64) {
     use crate::builtins::exceptions::ExceptionValue;
     let name = crate::dynamic_attr_name_bits(py, b"SliceCallbackProbe").unwrap();
-    let class = crate::molt_class_new(name);
+    let class = crate::molt_class_new_attached_body(py, name);
     let class_owner = ExceptionValue::adopt(py, class);
     crate::dec_ref_bits(py, name);
-    let result = crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+    let result =
+        crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).object);
     crate::dec_ref_bits(py, result);
     for &(name, target, arity) in methods {
         let name = crate::dynamic_attr_name_bits(py, name).unwrap();
@@ -124,7 +150,7 @@ fn callback_instance(py: &crate::PyToken<'_>, methods: &[(&[u8], *const (), u64)
         );
         assert!(!function.is_null());
         let function = MoltObject::from_ptr(function).bits();
-        let result = crate::molt_set_attr_name(class, name, function);
+        let result = crate::molt_set_attr_name_attached_body(py, class, name, function);
         for value in [function, result] {
             crate::dec_ref_bits(py, value);
         }
@@ -152,27 +178,27 @@ fn slice_construction_preserves_callback_key_identity_and_original_index_error()
         OBSERVED_KEYS.with(|keys| keys.borrow_mut().clear());
         INDEX_CALLS.with(|calls| calls.set(0));
         let (bound_class, bound) =
-            callback_instance(&py, &[(b"__index__", index_error as *const (), 1)]);
-        let _bound_class_owner = ExceptionValue::adopt(&py, bound_class);
-        let _bound_owner = ExceptionValue::adopt(&py, bound);
+            callback_instance(py, &[(b"__index__", index_error as *const (), 1)]);
+        let _bound_class_owner = ExceptionValue::adopt(py, bound_class);
+        let _bound_owner = ExceptionValue::adopt(py, bound);
         let (mapping_class, mapping) = callback_instance(
-            &py,
+            py,
             &[
                 (b"__getitem__", echo_key as *const (), 2),
                 (b"__setitem__", set_key as *const (), 3),
                 (b"__delitem__", echo_key as *const (), 2),
             ],
         );
-        let _mapping_class_owner = ExceptionValue::adopt(&py, mapping_class);
-        let _mapping_owner = ExceptionValue::adopt(&py, mapping);
+        let _mapping_class_owner = ExceptionValue::adopt(py, mapping_class);
+        let _mapping_owner = ExceptionValue::adopt(py, mapping);
         let error = crate::builtins::exceptions::alloc_exception(
-            &py,
+            py,
             BuiltinExc::ValueError,
             "slice index sentinel",
         );
         assert!(!error.is_null());
         let error = MoltObject::from_ptr(error).bits();
-        let _error_owner = ExceptionValue::adopt(&py, error);
+        let _error_owner = ExceptionValue::adopt(py, error);
         INDEX_ERROR.with(|slot| slot.set(error));
         let _error_binding = IndexErrorBinding;
         let error_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(error);
@@ -244,7 +270,7 @@ fn slice_projection_mirrors_do_not_root_a_managed_cycle() {
         refcount::Py_DECREF(key);
         refcount::Py_DECREF(list);
         assert_eq!(
-            crate::object::gc::collect_cycles(&py).status,
+            crate::object::gc::collect_cycles(py).status,
             crate::object::gc::GcCollectStatus::Completed
         );
         assert!(

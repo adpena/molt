@@ -193,7 +193,8 @@ fn asyncio_event_waiters_cleanup_token_impl(_py: &PyToken<'_>, token_bits: u64) 
         return MoltObject::none().bits();
     }
     let list_bits = bits_from_ptr(list_ptr);
-    let out_bits = unsafe { crate::molt_asyncio_event_waiters_cleanup(list_bits) };
+    let out_bits =
+        unsafe { crate::molt_asyncio_event_waiters_cleanup_attached_body(_py, list_bits) };
     dec_ref_bits(_py, list_bits);
     for bits in waiters {
         if bits != 0 && !obj_from_bits(bits).is_none() {
@@ -203,23 +204,33 @@ fn asyncio_event_waiters_cleanup_token_impl(_py: &PyToken<'_>, token_bits: u64) 
     out_bits
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_event_waiters_register(token_bits: u64, waiter_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_asyncio_event_waiters_register_attached_body(
+    _py: &crate::PyToken<'_>,
+    token_bits: u64,
+    waiter_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         asyncio_event_waiters_register_impl(_py, token_bits, waiter_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_event_waiters_unregister(token_bits: u64, waiter_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_asyncio_event_waiters_unregister_attached_body(
+    _py: &crate::PyToken<'_>,
+    token_bits: u64,
+    waiter_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         asyncio_event_waiters_unregister_impl(_py, token_bits, waiter_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_event_waiters_cleanup_token(token_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_asyncio_event_waiters_cleanup_token_attached_body(
+    _py: &crate::PyToken<'_>,
+    token_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         asyncio_event_waiters_cleanup_token_impl(_py, token_bits)
     })
 }
+
+include!("../../../attached_exports_generated/async_rt/scheduler/asyncio_runtime/event_waiters.rs");

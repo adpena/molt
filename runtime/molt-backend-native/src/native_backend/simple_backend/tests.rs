@@ -146,6 +146,18 @@ struct CompiledFunctionClif {
     import_ids: BTreeMap<String, FuncId>,
 }
 
+fn attached_arguments(function: &Function, instruction: Inst) -> &[Value] {
+    let arguments = function.dfg.inst_args(instruction);
+    let context = function
+        .dfg
+        .block_params(function.layout.entry_block().unwrap())[0];
+    assert_eq!(
+        arguments[0], context,
+        "attached call must forward the exact entry context"
+    );
+    &arguments[1..]
+}
+
 fn declared_import_ids(module: &dyn Module) -> BTreeMap<String, FuncId> {
     // Direct runtime calls and helper calls share the module's declarations;
     // the helper cache contains only calls made through import_func_ref.
@@ -153,7 +165,9 @@ fn declared_import_ids(module: &dyn Module) -> BTreeMap<String, FuncId> {
         .declarations()
         .get_functions()
         .filter(|(_, declaration)| declaration.linkage == cranelift_module::Linkage::Import)
-        .filter_map(|(id, declaration)| declaration.name.clone().map(|name| (name, id)))
+        .filter_map(|(id, declaration)| declaration.name.as_ref().map(|name| (
+            name.strip_suffix(molt_ir::runtime_callable_abi_generated::ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX)
+                .unwrap_or(name).to_owned(), id)))
         .collect()
 }
 

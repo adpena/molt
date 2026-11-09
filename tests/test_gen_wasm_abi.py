@@ -31,6 +31,16 @@ _RENDERED_PY_CACHE: str | None = None
 _RENDERED_TABLE_LAYOUT_INC_CACHE: str | None = None
 
 
+def _physical_runtime_symbol(data: dict, logical: str) -> str:
+    from tools.wasm_abi_gen.execution_context import runtime_execution_specs
+
+    return next(
+        row["physical_symbol"]
+        for row in runtime_execution_specs(data)
+        if row["symbol"] == logical
+    )
+
+
 def test_runtime_name_registry_changes_invalidate_callable_render_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -228,7 +238,7 @@ def test_runtime_callable_abi_preserves_target_neutral_callable_contracts() -> N
     for symbol, arity, trampoline in (
         ("molt_abs_builtin", 1, "unpack_args"),
         ("molt_importlib_import_transaction", 5, "unpack_args"),
-        ("molt_cpython_abi_cext_call_trampoline", 3, "call_frame"),
+        ("molt_cpython_abi_cext_call_trampoline_admitted", 3, "call_frame"),
         ("molt_sqlite3_connect", 1, "unpack_args"),
         ("molt_locale_getdefaultlocale", 0, "unpack_args"),
     ):
@@ -978,7 +988,7 @@ def test_runtime_return_contract_generated_rust_agrees_with_shared_boxed_project
     for name in (
         "exception_pending",
         "async_work_poll_and_exception_pending",
-        "thread_record",
+        "attached_context",
         "recursion_enter_fast",
     ):
         assert contracts[name] == "raw_bits"
@@ -1523,8 +1533,10 @@ def test_external_native_function_signature_authority_is_complete() -> None:
         "result": "i32",
     }
     assert wasm_import_signature("path_readlink") == (("i64",), ("i64",))
-    assert signatures[("env", "molt_call_indirect3")] == {
-        "params": ["i64", "i64", "i64", "i64"],
+    assert signatures[
+        ("env", _physical_runtime_symbol(data, "molt_call_indirect3"))
+    ] == {
+        "params": ["i64", "i64", "i64", "i64", "i64"],
         "result": "i64",
     }
     assert wasm_import_signature("molt_cbor_parse_scalar_obj") is not None
@@ -1728,6 +1740,11 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
         "params": ["i64"],
         "results": ["i32"],
     }
+    assert host_export_signatures["molt_compiled_execution_enter"]["params"] == ["i64"]
+    assert host_export_signatures["molt_compiled_execution_leave"]["params"] == [
+        "i64",
+        "i64",
+    ]
     assert {"molt_gpu_matmul_contiguous", "molt_gpu_tensor__zeros"} <= host_exports
     assert "gpu_intrinsic_manifest_name" not in data
 
@@ -1765,9 +1782,9 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     assert '"Py_GenericAliasType": "data"' in rendered_py
     assert '"Py_OptimizeFlag": "data"' in rendered_py
     assert '"PyType_Ready": "function"' in rendered_py
-    assert rendered_js_abi["runtime_export_by_import"]["socket_drop"] == (
-        "molt_socket_drop"
-    )
+    assert rendered_js_abi["runtime_export_by_import"][
+        "socket_drop"
+    ] == _physical_runtime_symbol(data, "molt_socket_drop")
     assert rendered_js_abi["runtime_export_by_import"]["runtime_execution_enter"] == (
         "molt_runtime_execution_enter"
     )
@@ -1817,7 +1834,9 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
             ("i64",) * arity,
             ("i64",),
         )
-        assert rendered_js_abi["runtime_export_by_import"][name] == export_name
+        assert rendered_js_abi["runtime_export_by_import"][
+            name
+        ] == _physical_runtime_symbol(data, export_name)
     assert rendered_namespace["wasm_runtime_import_name"]("molt_none") == "molt_none"
     assert rendered_namespace["wasm_runtime_export_name"]("molt_none") == "molt_none"
     assert rendered_namespace["wasm_import_signature"]("molt_none") == (
@@ -2753,6 +2772,33 @@ def test_reserved_python_callable_rejects_native_only_void(
         manifest.validate_loaded_manifest(_raw_manifest())
 
 
+@pytest.mark.parametrize(
+    "parameter", ["__context", "__molt_context", "context", "context_bits"]
+)
+def test_only_typed_attached_bodies_remove_the_context_parameter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, parameter: str
+) -> None:
+    provider = tmp_path / "boundary.rs"
+    provider.write_text(
+        "#[unsafe(no_mangle)]\n"
+        f'pub extern "C" fn molt_boundary_probe({parameter}: u64, value: u64) -> u64 {{ value }}\n'
+        "pub(crate) fn molt_attached_probe_attached_body(\n"
+        "    _py: &crate::PyToken<'_>, context: u64\n"
+        ") -> u64 { context }\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(manifest, "_runtime_rust_files", lambda: [provider])
+    monkeypatch.setattr(manifest, "_rust_type_aliases", lambda: {})
+    manifest._rust_export_signatures.cache_clear()
+    try:
+        assert manifest._rust_export_signatures() == {
+            "molt_boundary_probe": {(("i64", "i64"), "i64")},
+            "molt_attached_probe": {(("i64",), "i64")},
+        }
+    finally:
+        manifest._rust_export_signatures.cache_clear()
+
+
 def test_python_callable_abi_and_cache_include_native_only_providers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3344,8 +3390,8 @@ def test_wasm_abi_manifest_owns_split_runtime_table_prefix() -> None:
     }
     assert reserved[22] == {
         "index": 22,
-        "runtime_name": "molt_cpython_abi_cext_call_trampoline",
-        "import_name": "cpython_abi_cext_call_trampoline",
+        "runtime_name": "molt_cpython_abi_cext_call_trampoline_admitted",
+        "import_name": "cpython_abi_cext_call_trampoline_admitted",
         "callable_arity": 3,
         "trampoline_abi": "call_frame",
     }
@@ -3574,12 +3620,29 @@ def test_wasm_abi_manifest_owns_link_export_policy() -> None:
 
     link_format = (ROOT / "tools/wasm_link_format.py").read_text(encoding="utf-8")
     assert "_WASM_ABI.WASM_OUTPUT_EXPORT_ALIAS_PREFIX" in link_format
-    assert "_WASM_ABI.WASM_OUTPUT_RUNTIME_EXPORT_ALIASES" in link_format
     assert "_WASM_ABI.WASM_INTERNAL_OUTPUT_EXPORT_PREFIXES" in link_format
-    assert "_WASM_ABI.WASM_ESSENTIAL_EXPORTS" in link_format
-    assert "_WASM_ABI.wasm_runtime_export_name" in link_format
+    # The final-link consumer must retain physical exports, including attached
+    # compiled entries, while storage exports keep their raw wire identity.
+    # Derive this expectation from the manifest rather than a source spelling.
+    from tools import wasm_link_format
+
+    assert set(wasm_link_format._OUTPUT_RUNTIME_EXPORT_ALIASES) == {
+        _physical_runtime_symbol(data, name)
+        for name in policy["runtime_export_aliases"]
+    }
+    storage_exports = {
+        "memory",
+        "molt_memory",
+        "molt_table",
+        "__indirect_function_table",
+    }
+    assert wasm_link_format._ESSENTIAL_EXPORTS == {
+        name if name in storage_exports else _physical_runtime_symbol(data, name)
+        for name in policy["essential_exports"]
+    }
+    assert "_runtime_exports.wasm_split_runtime_import_signature" in link_format
     assert '"molt_alloc"' not in link_format
-    assert '"molt_isolate_import"' not in link_format
+    assert "_WASM_ABI.compiled_execution_symbol(logical)" in link_format
 
 
 def test_runtime_execution_token_exports_are_wasm_only() -> None:
@@ -3683,9 +3746,10 @@ def test_pure_profile_keeps_every_intrinsic_core_stdlib_modules_require() -> Non
     thread_imports = {
         name for name in import_by_runtime_name.values() if name.startswith("thread_")
     }
-    assert "thread_record" in thread_imports
+    assert "attached_context" in import_by_runtime_name.values()
+    assert not pure_profile_skips_import("attached_context")
     for name in thread_imports:
-        assert pure_profile_skips_import(name) == (name != "thread_record"), name
+        assert pure_profile_skips_import(name), name
 
 
 def test_every_frontend_direct_runtime_call_has_a_wasm_import() -> None:
@@ -4043,3 +4107,17 @@ def test_host_test_deny_launch_is_projected_from_the_python_authority():
             f"{json.dumps(name)}: {json.dumps(value)},"
             in (outputs[gen_wasm_host_test_launch.OUTPUT])
         )
+
+
+def test_manifest_registers_every_runtime_abi_projection() -> None:
+    import tomllib
+
+    manifest = tomllib.loads(
+        (ROOT / "tools/generator_manifest.toml").read_text(encoding="utf-8")
+    )
+    producer = next(
+        row for row in manifest["generator"] if row["tool"] == "tools/gen_wasm_abi.py"
+    )
+    assert set(producer["outputs"]) == {
+        path.relative_to(ROOT).as_posix() for path in gen_wasm_abi.OUTPUT_PATHS
+    }

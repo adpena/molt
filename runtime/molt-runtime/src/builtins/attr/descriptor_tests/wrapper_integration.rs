@@ -2,12 +2,20 @@ use super::*;
 
 static MODULE_FALLBACK_CALLS: AtomicU64 = AtomicU64::new(0);
 
-extern "C" fn echo_module_fallback(name: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn echo_module_fallback(__context: u64, name: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         MODULE_FALLBACK_CALLS.fetch_add(1, Ordering::Relaxed);
         inc_ref_bits(py, name);
         name
-    })
+    }
 }
 
 #[test]
@@ -36,18 +44,18 @@ fn descriptor_module_default_lookup_bypasses_module_getattr() {
             ))
         };
         let name = string_bits(py, b"absent");
-        let normal = crate::molt_get_attr_name(module, name);
+        let normal = crate::molt_get_attr_name_attached_body(py, module, name);
         assert!(!exception_pending(py));
         assert_eq!(normal, name);
         dec_ref_bits(py, normal);
         assert_eq!(MODULE_FALLBACK_CALLS.load(Ordering::Relaxed), 1);
-        let raw = crate::molt_object_getattribute(module, name);
+        let raw = crate::molt_object_getattribute_attached_body(py, module, name);
         dec_ref_bits(py, raw);
         assert!(exception_pending(py));
         assert_eq!(MODULE_FALLBACK_CALLS.load(Ordering::Relaxed), 1);
         clear_exception(py);
         let class_name = string_bits(py, b"__class__");
-        let class = crate::molt_get_attr_name(module, class_name);
+        let class = crate::molt_get_attr_name_attached_body(py, module, class_name);
         assert!(!exception_pending(py));
         assert_eq!(class, builtin_classes(py).module);
         dec_ref_bits(py, class);
@@ -60,11 +68,24 @@ fn descriptor_module_default_lookup_bypasses_module_getattr() {
     });
 }
 
-extern "C" fn echo_descriptor_owner(_descriptor: u64, _instance: u64, owner: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn echo_descriptor_owner(
+    __context: u64,
+    _descriptor: u64,
+    _instance: u64,
+    owner: u64,
+) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         inc_ref_bits(py, owner);
         owner
-    })
+    }
 }
 
 #[test]
@@ -141,7 +162,7 @@ fn wrapper_descriptors_have_real_flavor_identity_and_shared_metadata() {
                 (b"__objclass__".as_slice(), owner),
             ] {
                 let key = string_bits(py, attribute);
-                let value = crate::molt_get_attr_name(descriptor, key);
+                let value = crate::molt_get_attr_name_attached_body(py, descriptor, key);
                 assert!(!exception_pending(py));
                 assert!(matches!(
                     crate::object::ops_compare::compare_object_eq_bool(
@@ -183,7 +204,7 @@ fn property_member_binding_reads_storage_and_rejects_mutation() {
             1,
         );
         let none = MoltObject::none().bits();
-        let property = crate::molt_property_new(getter, none, none);
+        let property = crate::molt_property_new_attached_body(py, getter, none, none);
         assert!(!exception_pending(py));
         let name = string_bits(py, b"fget");
         let owner = obj_from_bits(builtin_classes(py).property)
@@ -192,14 +213,14 @@ fn property_member_binding_reads_storage_and_rejects_mutation() {
         let descriptor =
             unsafe { class_attr_lookup_raw_mro(py, owner, name).expect("operation succeeds") }
                 .unwrap();
-        let result = crate::molt_get_attr_name(property, name);
+        let result = crate::molt_get_attr_name_attached_body(py, property, name);
         assert!(!exception_pending(py));
         assert_eq!(result, getter);
         dec_ref_bits(py, result);
         let result =
             unsafe { descriptor_mutate(py, descriptor, property, DescriptorMutation::Set(none)) };
         assert!(matches!(result, DescriptorMutationOutcome::Error));
-        let error = crate::builtins::exceptions::molt_exception_last_pending();
+        let error = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
         assert!(exception_matches_kind(
             py,
             error,
@@ -207,7 +228,7 @@ fn property_member_binding_reads_storage_and_rejects_mutation() {
         ));
         clear_exception(py);
         dec_ref_bits(py, error);
-        let preserved = crate::molt_get_attr_name(property, name);
+        let preserved = crate::molt_get_attr_name_attached_body(py, property, name);
         assert_eq!(preserved, getter);
         dec_ref_bits(py, preserved);
         dec_ref_bits(py, name);

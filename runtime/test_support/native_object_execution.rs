@@ -8,6 +8,35 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Bind explicit fixture declarations to the same generated physical ABI as
+/// the object under test. Signatures and arguments remain fixture-authored.
+pub fn bind_execution_abi_source(source: &str) -> String {
+    source.replace(
+        "@EXECUTION_SUFFIX@",
+        molt_ir::runtime_callable_abi_generated::ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX,
+    )
+}
+
+/// A real context header shared by the provider and its host harness. The
+/// provider expression resolves its independent thread-record oracle. This
+/// getter is a host control boundary, not an attached Python callable.
+pub fn execution_context_fixture_source(thread_record_expression: &str) -> String {
+    format!(
+        r#"
+#[repr(C)]
+struct FixtureExecutionContext {{ thread_record: u64 }}
+static mut FIXTURE_EXECUTION_CONTEXT: FixtureExecutionContext = FixtureExecutionContext {{ thread_record: 0 }};
+#[no_mangle]
+pub extern "C" fn fixed_execution_context() -> u64 {{
+    unsafe {{
+        FIXTURE_EXECUTION_CONTEXT.thread_record = {thread_record_expression};
+        core::ptr::addr_of!(FIXTURE_EXECUTION_CONTEXT) as u64
+    }}
+}}
+"#
+    )
+}
+
 /// Resolve the fixture compiler; actual compilation must fail if it is unavailable.
 pub fn rustc_path() -> PathBuf {
     std::env::var_os("RUSTC")
@@ -52,7 +81,11 @@ pub fn link_and_run_native_object(
         "native_callable_execution"
     });
     fs::write(&app_object, object_bytes).expect("write generated app object");
-    fs::write(&provider_source, provider_source_text).expect("write native provider source");
+    fs::write(
+        &provider_source,
+        bind_execution_abi_source(provider_source_text),
+    )
+    .expect("write native provider source");
     run_checked(
         artifacts
             .command(rustc)
@@ -72,7 +105,10 @@ pub fn link_and_run_native_object(
     // retains providers reached only from the generated object's C ABI calls.
     fs::write(
         &harness_source,
-        format!("{harness_source_text}\nextern crate native_callable_provider;\n"),
+        format!(
+            "{}\nextern crate native_callable_provider;\n",
+            bind_execution_abi_source(harness_source_text)
+        ),
     )
     .expect("write native execution harness");
     run_checked(

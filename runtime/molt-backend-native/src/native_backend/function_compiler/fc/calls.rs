@@ -573,8 +573,7 @@ fn handle_call_direct_op(
     } else {
         Linkage::Import
     };
-    let callee = module
-        .declare_function(target_name, linkage, &target_sig)
+    let callee = declare_python_execution_function(module, target_name, linkage, &target_sig)
         .unwrap_or_else(|e| {
             panic!(
                 "call declaration mismatch for `{target_name}`: expected \
@@ -827,7 +826,7 @@ fn handle_call_internal_op(
         Linkage::Import
     };
 
-    let callee = match module.declare_function(target_name, linkage, &sig) {
+    let callee = match declare_python_execution_function(module, target_name, linkage, &sig) {
         Ok(id) => id,
         Err(e) => {
             panic!(
@@ -1030,8 +1029,7 @@ fn handle_call_guarded_op(
         Linkage::Import
     };
 
-    let callee = module
-        .declare_function(target_name, linkage, &sig)
+    let callee = declare_python_execution_function(module, target_name, linkage, &sig)
         .unwrap_or_else(|e| {
             panic!(
                 "call_guarded declaration mismatch for `{target_name}`: expected \
@@ -1373,12 +1371,18 @@ fn handle_call_func_op(
         let (record, outer_invocation) =
             emit_invocation_publish(builder, thread_record_slot, *func_bits);
         let mut call_sig = module.make_signature();
+        call_sig.params.push(AbiParam::new(types::I64));
         for _ in 0..nargs {
             call_sig.params.push(AbiParam::new(types::I64));
         }
         call_sig.returns.push(AbiParam::new(types::I64));
         let sig_ref = builder.import_signature(call_sig);
-        let indirect_call = builder.ins().call_indirect(sig_ref, fn_ptr_v, &args);
+        let mut physical_args = Vec::with_capacity(args.len() + 1);
+        physical_args.push(compiled_context(builder));
+        physical_args.extend_from_slice(&args);
+        let indirect_call = builder
+            .ins()
+            .call_indirect(sig_ref, fn_ptr_v, &physical_args);
         let direct_res = builder.inst_results(indirect_call)[0];
         emit_invocation_restore(builder, record, outer_invocation);
         builder.ins().call(guard_exit, &[]);
@@ -1976,9 +1980,7 @@ fn handle_call_bind_indirect_op(
             &[types::I64],
         )
     } else {
-        let callee = module
-            .declare_function(callee_name, Linkage::Import, &sig)
-            .unwrap();
+        let callee = declare_runtime_execution_function(module, callee_name, &sig).unwrap();
         module.declare_func_in_func(callee, builder.func)
     };
     let call_site_label = if op.kind == OpKind::CallIndirect {

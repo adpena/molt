@@ -1,6 +1,7 @@
 use super::{CallOpContext, CallOpEmission};
 use crate::OpIR;
-use wasm_encoder::{Function, Instruction};
+use crate::wasm_binary::Function;
+use wasm_encoder::Instruction;
 
 pub(super) fn emit_refcount_call_op(
     call_ctx: &CallOpContext<'_, '_, '_>,

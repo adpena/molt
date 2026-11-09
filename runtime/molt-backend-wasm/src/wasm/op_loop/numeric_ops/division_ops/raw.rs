@@ -3,10 +3,11 @@ use super::super::common::{
     emit_plain_f64_arithmetic_result,
 };
 use crate::wasm_abi_generated::WasmNumericOpLoopKind;
+use crate::wasm_binary::Function;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_values::ConstantCache;
 use std::collections::BTreeMap;
-use wasm_encoder::{BlockType, Function, Instruction, ValType};
+use wasm_encoder::{BlockType, Instruction, ValType};
 
 pub(super) fn emit_nonzero_rhs_raw_division_or_boxed(
     func: &mut Function,

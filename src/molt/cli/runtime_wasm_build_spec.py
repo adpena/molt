@@ -20,8 +20,11 @@ from typing import (
 )
 
 from molt._wasm_abi_generated import (
+    WASM_CALL_INDIRECT_IMPORTS,
+    WASM_OUTPUT_RUNTIME_EXPORT_ALIASES,
     WASM_RESERVED_RUNTIME_CALLABLE_BASE,
     WASM_RESERVED_RUNTIME_CALLABLE_COUNT,
+    compiled_execution_symbol,
 )
 from molt._wasm_runtime_exports import (
     wasm_split_runtime_export_rename_map,
@@ -161,6 +164,19 @@ def _runtime_wasm_combined_cargo_command(
     return command
 
 
+def _runtime_wasm_app_import_link_argument(root: Path) -> str:
+    from molt.cli.wasm_link_args import write_wasm_app_import_allowlist
+
+    symbols = [
+        compiled_execution_symbol(name)
+        for name in (*WASM_CALL_INDIRECT_IMPORTS, *WASM_OUTPUT_RUNTIME_EXPORT_ALIASES)
+    ]
+    path = write_wasm_app_import_allowlist(
+        _build_state_root(root) / "wasm_link_args", symbols
+    )
+    return f"--allow-undefined-file={path}"
+
+
 def _resolve_runtime_wasm_cargo_specs(
     root: Path,
     shared: _RuntimeWasmBuildSpec,
@@ -197,6 +213,10 @@ def _resolve_runtime_wasm_cargo_specs(
             link_args=link_args,
         )
         command.extend(["-C", f"link-arg=@{response}"])
+    # Shared-runtime app callbacks stay unresolved until the application or
+    # host supplies them. Capture their exact generated symbol set as a direct
+    # final-link resource; export responses contain no nested file selectors.
+    command.extend(["-C", "link-arg=" + _runtime_wasm_app_import_link_argument(root)])
     plan = resolve_runtime_cargo_plan(
         root,
         env=env,
@@ -457,6 +477,8 @@ def _compute_runtime_wasm_build_spec(
         shared_import_flags = (
             "-C",
             "link-arg=--import-memory",
+            "-C",
+            "link-arg=--export-memory",
             "-C",
             "link-arg=--import-table",
             "-C",
