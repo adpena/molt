@@ -2231,7 +2231,12 @@ static SUBCLASS_EQ_CALLS: AtomicU64 = AtomicU64::new(0);
 
 /// `__eq__` of the str subclass below: never equal, and counted, so a probe
 /// that ran ordinary equality is visible.
-extern "C" fn counted_unequal(_left: u64, _right: u64) -> u64 {
+extern "C" fn counted_unequal(__context: u64, _left: u64, _right: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
     SUBCLASS_EQ_CALLS.fetch_add(1, Ordering::SeqCst);
     MoltObject::from_bool(false).bits()
 }
@@ -2240,20 +2245,20 @@ extern "C" fn counted_unequal(_left: u64, _right: u64) -> u64 {
 /// it whose storage spells `text`.
 fn str_subclass_key(py: &PyToken<'_>, text: &[u8]) -> (u64, u64) {
     let name = dynamic_attr_name_bits(py, b"PhysicalProbeText").unwrap();
-    let class = crate::molt_class_new(name);
+    let class = crate::molt_class_new_attached_body(py, name);
     dec_ref_bits(py, name);
-    let result = crate::molt_class_set_base(class, builtin_classes(py).str);
+    let result = crate::molt_class_set_base_attached_body(py, class, builtin_classes(py).str);
     dec_ref_bits(py, result);
     unsafe { crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap()) }
         .expect("valid str subclass");
-    let eq_name = dynamic_attr_name_bits(py, b"__eq__").unwrap();
+    let eq_name = crate::NameId::DunderEq.owned_bits(py).unwrap();
     let function = MoltObject::from_ptr(alloc_runtime_function_obj(
         py,
         runtime_fn_addr("counted_unequal", counted_unequal as *const ()),
         2,
     ))
     .bits();
-    let result = crate::molt_set_attr_name(class, eq_name, function);
+    let result = crate::molt_set_attr_name_attached_body(py, class, eq_name, function);
     dec_ref_bits(py, result);
     dec_ref_bits(py, eq_name);
     dec_ref_bits(py, function);

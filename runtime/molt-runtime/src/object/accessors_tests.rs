@@ -1136,21 +1136,28 @@ fn layout_guard_misses_after_a_base_class_mutation() {
         let base_name = dynamic_attr_name_bits(_py, b"GuardBase").unwrap();
         let child_name = dynamic_attr_name_bits(_py, b"GuardChild").unwrap();
         let field = dynamic_attr_name_bits(_py, b"field").unwrap();
-        let offsets_key = dynamic_attr_name_bits(_py, b"__molt_field_offsets__").unwrap();
-        let size_key = dynamic_attr_name_bits(_py, b"__molt_layout_size__").unwrap();
-        let base = crate::molt_class_new(base_name);
-        crate::molt_class_set_base(base, crate::builtin_classes(_py).object);
-        let child = crate::molt_class_new(child_name);
-        crate::molt_class_set_base(child, base);
+        let offsets_key = crate::NameId::DunderMoltFieldOffsets
+            .owned_bits(_py)
+            .unwrap();
+        let size_key = crate::NameId::DunderMoltLayoutSize.owned_bits(_py).unwrap();
+        let base = crate::molt_class_new_attached_body(_py, base_name);
+        crate::molt_class_set_base_attached_body(_py, base, crate::builtin_classes(_py).object);
+        let child = crate::molt_class_new_attached_body(_py, child_name);
+        crate::molt_class_set_base_attached_body(_py, child, base);
         let offsets = crate::alloc_dict_with_pairs(_py, &[field, MoltObject::from_int(0).bits()]);
         assert!(!offsets.is_null());
         let offsets = MoltObject::from_ptr(offsets).bits();
-        crate::molt_set_attr_name(child, offsets_key, offsets);
-        crate::molt_set_attr_name(child, size_key, MoltObject::from_int(16).bits());
+        crate::molt_set_attr_name_attached_body(_py, child, offsets_key, offsets);
+        crate::molt_set_attr_name_attached_body(
+            _py,
+            child,
+            size_key,
+            MoltObject::from_int(16).bits(),
+        );
         let child_ptr = obj_from_bits(child).as_ptr().unwrap();
         unsafe { crate::object::class_finish_definition(_py, child_ptr) }.expect("seal child");
         assert_eq!(
-            crate::builtins::types::molt_class_set_definition(child, STATEMENT),
+            crate::builtins::types::molt_class_set_definition_attached_body(_py, child, STATEMENT),
             MoltObject::none().bits()
         );
         let object = alloc_class_instance(_py, 16, child);
@@ -1162,7 +1169,7 @@ fn layout_guard_misses_after_a_base_class_mutation() {
         assert!(unsafe { guard_layout_match(_py, object_ptr, STATEMENT, version) });
 
         // `type(obj).__bases__[0].field = ...`: only the base is written.
-        crate::molt_set_attr_name(base, field, MoltObject::from_int(99).bits());
+        crate::molt_set_attr_name_attached_body(_py, base, field, MoltObject::from_int(99).bits());
         assert!(!exception_pending(_py));
         assert!(
             !unsafe { guard_layout_match(_py, object_ptr, STATEMENT, version) },

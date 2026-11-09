@@ -3870,7 +3870,6 @@ unsafe extern "C" fn hook_import_add_module_borrowed(
 ) -> BorrowedHandleResult {
     if name_data.is_null() {
         return with_gil(|py| {
-            let py = &py;
             let _ = crate::raise_exception::<u64>(
                 py,
                 BuiltinExc::SystemError,
@@ -3881,7 +3880,6 @@ unsafe extern "C" fn hook_import_add_module_borrowed(
     }
     let name = unsafe { std::slice::from_raw_parts(name_data, name_len) };
     with_gil(|py| {
-        let py = &py;
         let name_ptr = alloc_string(py, name);
         if name_ptr.is_null() {
             return BorrowedHandleResult::error();
@@ -5609,7 +5607,7 @@ pub fn register_cpython_hooks() -> bool {
         return false;
     }
     with_gil(|py| {
-        let runtime = &crate::runtime_state(&py).cpython;
+        let runtime = &crate::runtime_state(py).cpython;
         let owner = std::thread::current().id();
         loop {
             let mut state = runtime.registration.lock().unwrap();
@@ -5651,7 +5649,7 @@ pub fn register_cpython_hooks() -> bool {
                 HookRegistrationState::Initializing { .. } => {
                     drop(state);
                     crate::raise_exception::<u64>(
-                        &py,
+                        py,
                         BuiltinExc::RuntimeError,
                         "C type exposure during runtime hook publication",
                     );
@@ -5710,7 +5708,7 @@ pub(crate) fn expose_cpython_types() -> bool {
     }
     with_gil(|py| {
         let ready = matches!(
-            *crate::runtime_state(&py)
+            *crate::runtime_state(py)
                 .cpython
                 .registration
                 .lock()
@@ -5719,7 +5717,7 @@ pub(crate) fn expose_cpython_types() -> bool {
         );
         if !ready {
             crate::raise_exception::<u64>(
-                &py,
+                py,
                 BuiltinExc::RuntimeError,
                 "C extension entry before type readiness completed",
             );
@@ -9223,7 +9221,7 @@ mod tests {
             "allocation_probe_enabled": cfg!(feature = "l7-attestation-probe"),
             "process_execution_contract": process_execution_contract,
         });
-        with_gil(|py| dec_ref_bits(&py, closure_bits));
+        with_gil(|py| dec_ref_bits(py, closure_bits));
         println!("MOLT_CEXT_BENCH_SAMPLE {sample}");
     }
 
