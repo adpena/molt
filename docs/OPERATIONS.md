@@ -1355,11 +1355,20 @@ fail closed; the inventory itself makes no claim about current file bytes.
   process-local lock or SQLite writer. It does not reopen a closed store solely
   for advisory recency. A flush saves, temporarily disables, then restores
   the existing connection busy timeout under its lock: three constant metadata
-  statements replace up to 60 seconds of writer-lock waiting. Ordinary reads,
-  publication and initialization retain their policies. This bounds contention
-  admission, not I/O latency; checkpoint sync can still block. WAL uses
-  synchronous NORMAL and default automatic
-  checkpointing, so sync cost remains possible. Row deletion uses bounded
+  statements replace up to 60 seconds of writer-lock waiting. Publication inside
+  a frontend operation queues records and saves them in chunks (256 records or
+  1 MiB, or once the oldest waited 2 s) without waiting for the writer; the
+  operation's explicit exit saves the rest once, waiting up to the 60-second busy
+  timeout, then saves recency stamps. A queued record answers this process's
+  reads (a different generation or an oversized payload is a miss, never an older
+  row) and has no revision to renew. Past 64 MiB queued, the largest records are
+  dropped. Abandoned operations drop queued records and stamps. Publication
+  outside an operation, ordinary reads and initialization retain their policies.
+  This bounds contention admission, not I/O latency. Every connection sets
+  `journal_size_limit` to 64 MiB. WAL uses synchronous NORMAL and default
+  automatic checkpointing, now once per chunk instead of once per record, so sync
+  cost remains possible, and overlapping readers can still starve a checkpoint
+  until maintenance's TRUNCATE succeeds. Row deletion uses bounded
   transactions (256 rows/1 MiB, with one oversized row allowed), and later sweeps
   continue bounded vacuum work even when no new rows are removed. BUSY deferral
   is reported separately from maintenance failure. Dry-run never changes rows,

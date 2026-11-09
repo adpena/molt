@@ -169,6 +169,14 @@ impl ModuleRegistry {
         std::str::from_utf8(bytes).expect("module registry names validated at install")
     }
 
+    /// Whether `id` is the program entry. CPython runs exactly one module as
+    /// `__main__` (a script or `-m`) and identifies it by that name; the compiler
+    /// registers the entry under it. Unlike an import, a failing entry is never
+    /// retracted from `sys.modules`: `PyRun` keeps `sys.modules["__main__"]`.
+    pub(crate) fn is_program_entry(&self, id: u32) -> bool {
+        self.name_of(id) == "__main__"
+    }
+
     pub(crate) fn origin_of(&self, id: u32) -> &'static str {
         debug_assert!(id < self.count);
         let row = self.row_base(id);
@@ -2440,6 +2448,14 @@ fn run_init_transaction_body(
     let unwind = |_py: &PyToken<'_>| {
         let previous = table.initialization().slots[idx].swap(0, Ordering::AcqRel);
         if previous != 0 {
+            // The program entry stays published after it fails, as in CPython;
+            // shutdown's module retirement clears its namespace. Retracting it
+            // here left its globals outside retirement, so their native owners
+            // survived into class retirement (HF-12).
+            if registry.is_program_entry(id) {
+                dec_ref_bits(_py, previous);
+                return;
+            }
             if let Some(key) = crate::dynamic_attr_name_bits(_py, name.as_bytes()) {
                 // This is the ordinary import-body failure boundary, matching
                 // _load_unlocked's name deletion even after nested publication.

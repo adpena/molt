@@ -231,8 +231,13 @@ receiver behavior.
    `PythonSourceParameters`). The classes read typed call facts (callee identity
    masks, source reach) after the base fixpoint; the solver keeps each original
    argument tuple and re-maps it when a rescan changes a class. Literal `getattr`/`hasattr`/`delattr` select real member
-   sources; unknown selectors retain protocol and escape effects. Class allocation
-   and method folding additionally require unexposed definition/method identities.
+   sources; unknown selectors retain protocol and escape effects. Class allocation,
+   method folding and unguarded field access additionally require unexposed
+   definition/method identities (`class_namespace_closed`). Exposure is not a layout
+   fact: an exposed class keeps its inferred field offsets, because a mutation of the
+   class or of any base advances its layout version (as CPython's `PyType_Modified`
+   does) and the per-site field cache keys on the global type version; an exposed
+   base still makes its subclasses dynamic (HF-812).
    A declined constructor proof calls the actual class protocol.
 
    Inventory scans collect deferred writes without asserting they ran before another

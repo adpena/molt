@@ -1149,25 +1149,20 @@ pub(crate) unsafe fn class_attr_lookup_raw_mro(
     }
 }
 
-/// Exact-string lookup over dict insertion order. Sealed maps have already
-/// validated every key/value pair, so this performs neither hashing nor Python
-/// equality and is safe for GC-adjacent physical-layout consumers.
+/// Physical string lookup in a sealed offsets map. Sealing validated every
+/// key/value pair, so the probe allocates nothing and runs no Python equality,
+/// which keeps it safe for GC-adjacent physical-layout consumers. An exact
+/// `str` name probes with its cached hash.
 unsafe fn field_offset_in_map(
     py: &PyToken<'_>,
     offsets_bits: u64,
     attr_bits: u64,
 ) -> Option<usize> {
     unsafe {
-        let attr_ptr = obj_from_bits(attr_bits).as_ptr()?;
-        if object_type_id(attr_ptr) != TYPE_ID_STRING {
-            return None;
-        }
         let offsets_ptr = obj_from_bits(offsets_bits).as_ptr()?;
-        if object_type_id(offsets_ptr) != TYPE_ID_DICT {
-            return None;
-        }
-        let name = std::slice::from_raw_parts(string_bytes(attr_ptr), string_len(attr_ptr));
-        crate::object::ops::dict_get_str_bytes_borrowed(py, offsets_ptr, name)
+        // Method-cache shadow checks run this on every hit: probe with the
+        // name's cached hash instead of rehashing its bytes (HF-812).
+        crate::object::ops::dict_get_str_borrowed(py, offsets_ptr, attr_bits)
             .and_then(|bits| obj_from_bits(bits).as_int())
             .and_then(|offset| usize::try_from(offset).ok())
     }

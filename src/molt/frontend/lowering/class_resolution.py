@@ -40,6 +40,7 @@ from molt.frontend._types import (
     MoltValue,
     ReceiverKind,
     TypeHint,
+    class_namespace_closed,
     layout_definition_symbol,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
@@ -420,7 +421,7 @@ class ClassResolutionMixin(GeneratorMixinBase):
         class_info = self.classes.get(class_id)
         if not class_info:
             return False
-        if class_info.get("dynamic") or class_info.get("dataclass"):
+        if not class_namespace_closed(class_info) or class_info.get("dataclass"):
             return False
         if class_id in self.mutated_classes:
             return False
