@@ -32,10 +32,174 @@ unsafe fn dir_materialize(py: &PyToken<'_>, result: u64) -> Option<u64> {
     }
 }
 
-/// Namespace discovery uses the existing optional-attribute, mapping and
-/// sequence owners. This is the one default dir protocol for both representations;
-/// no raw class-layout walker can bypass __dict__/__class__/__bases__ callbacks.
+/// `object.__dir__`: the default protocol over generic attribute lookups, so no
+/// raw class-layout walker bypasses `__dict__`/`__class__`/`__bases__` callbacks.
+/// The default `object.__dir__` and `type.__dir__` protocol (CPython
+/// `_dir_object`, `_dir_type` and `merge_class_dict`). `__dict__`, `__class__`
+/// and `__bases__` are generic attribute lookups, so descriptors and other
+/// callbacks run exactly as in CPython; the merging uses Molt's own dict and
+/// sequence operations. A foreign (C-extension) object keeps the C-API
+/// authority, whose type slots may implement those attributes.
 unsafe fn dir_default_collect(py: &PyToken<'_>, obj_bits: u64, type_directory: bool) -> u64 {
+    let foreign = obj_from_bits(obj_bits)
+        .as_ptr()
+        .is_some_and(|pointer| unsafe { object_type_id(pointer) } == TYPE_ID_FOREIGN);
+    if foreign {
+        return unsafe { dir_default_collect_foreign(py, obj_bits, type_directory) };
+    }
+    match unsafe { dir_default_collect_native(py, obj_bits, type_directory) } {
+        Ok(keys) => keys,
+        Err(()) => MoltObject::none().bits(),
+    }
+}
+
+/// A generic attribute lookup that treats a missing attribute as absent.
+fn dir_optional_attr(
+    py: &PyToken<'_>,
+    object: u64,
+    name: crate::NameId,
+) -> Result<Option<u64>, ()> {
+    crate::lookup_attribute(py, object, name.bits(py)).into_result()
+}
+
+/// Merge `source` into the fresh `target` dict as `PyDict_Update` does: a
+/// mapping only, never an iterable of pairs.
+unsafe fn dir_merge_mapping(py: &PyToken<'_>, target: *mut u8, source: u64) -> Result<(), ()> {
+    use crate::object::mapping_merge::{MergeOutcome, apply, insert_dict};
+    match unsafe {
+        apply(
+            py,
+            source,
+            Some(target),
+            |_, _| true,
+            |key, value, hash| insert_dict(py, target, key, value, hash),
+        )
+    } {
+        MergeOutcome::Complete => Ok(()),
+        MergeOutcome::Error | MergeOutcome::NotMapping => Err(()),
+    }
+}
+
+/// Merge `class`'s namespace and, recursively, its bases' (`merge_class_dict`).
+/// `__bases__` is read through the sequence protocol, as `PySequence_Size` and
+/// `PySequence_GetItem` read it.
+unsafe fn dir_merge_class(py: &PyToken<'_>, target: *mut u8, class: u64) -> Result<(), ()> {
+    let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(py) else {
+        return Err(());
+    };
+    if let Some(namespace) = dir_optional_attr(py, class, crate::NameId::DunderDict)? {
+        let merged = unsafe { dir_merge_mapping(py, target, namespace) };
+        dec_ref_bits(py, namespace);
+        merged?;
+    }
+    let Some(bases) = dir_optional_attr(py, class, crate::NameId::DunderBases)? else {
+        return Ok(());
+    };
+    let merged = (|| {
+        let count_bits = crate::molt_len(bases);
+        if exception_pending(py) {
+            return Err(());
+        }
+        let Some(count) = to_i64(obj_from_bits(count_bits)) else {
+            dec_ref_bits(py, count_bits);
+            return Err(());
+        };
+        for index in 0..count {
+            let base = crate::molt_index(bases, MoltObject::from_int(index).bits());
+            if exception_pending(py) {
+                dec_ref_bits(py, base);
+                return Err(());
+            }
+            let merged = unsafe { dir_merge_class(py, target, base) };
+            dec_ref_bits(py, base);
+            merged?;
+        }
+        Ok(())
+    })();
+    dec_ref_bits(py, bases);
+    merged
+}
+
+unsafe fn dir_default_collect_native(
+    py: &PyToken<'_>,
+    obj_bits: u64,
+    type_directory: bool,
+) -> Result<u64, ()> {
+    let dictionary = crate::object::builders::alloc_dict_with_pairs(py, &[]);
+    if dictionary.is_null() {
+        return Err(());
+    }
+    let dictionary_bits = MoltObject::from_ptr(dictionary).bits();
+    let collected = (|| unsafe {
+        if type_directory {
+            dir_merge_class(py, dictionary, obj_bits)?;
+        } else {
+            // A `__dict__` that is not a dict contributes nothing (CPython
+            // `_dir_object` starts from a fresh dict then).
+            if let Some(namespace) = dir_optional_attr(py, obj_bits, crate::NameId::DunderDict)? {
+                // `PyDict_Copy` copies a dict subclass's storage without
+                // calling an overriding `keys()`.
+                let copied = match crate::object::ops::dict_backing_bits(py, namespace) {
+                    Ok(Some(storage)) => dir_merge_mapping(py, dictionary, storage),
+                    Ok(None) => Ok(()),
+                    Err(()) => Err(()),
+                };
+                dec_ref_bits(py, namespace);
+                copied?;
+            }
+            if let Some(class) = dir_optional_attr(py, obj_bits, crate::NameId::DunderClass)? {
+                let merged = dir_merge_class(py, dictionary, class);
+                dec_ref_bits(py, class);
+                merged?;
+            }
+            dir_filter_native_callable_metadata(py, obj_bits, dictionary)?;
+        }
+        Ok(())
+    })();
+    let keys =
+        collected.and_then(|()| unsafe { list_from_iter_bits(py, dictionary_bits) }.ok_or(()));
+    dec_ref_bits(py, dictionary_bits);
+    keys
+}
+
+/// A native callable instance hides the metadata fields its kind does not
+/// declare, as callable lookup does. A type's own metadata does not become
+/// instance metadata.
+unsafe fn dir_filter_native_callable_metadata(
+    py: &PyToken<'_>,
+    obj_bits: u64,
+    dictionary: *mut u8,
+) -> Result<(), ()> {
+    use crate::builtins::functions::native_callable::{CallableMetadata, NativeCallableKind};
+    let Some(pointer) = obj_from_bits(obj_bits).as_ptr() else {
+        return Ok(());
+    };
+    let Some(kind) = NativeCallableKind::from_class(py, unsafe { object_class_bits(pointer) })
+    else {
+        return Ok(());
+    };
+    let allowed = kind.metadata_fields();
+    let fields = crate::object::function_metadata::FunctionMetadataField::ALL
+        .into_iter()
+        .map(CallableMetadata::Stored)
+        .chain(std::iter::once(CallableMetadata::Builtins));
+    for field in fields {
+        if allowed.contains(&field) {
+            continue;
+        }
+        // The interned name of the typed field: no string is spelled or allocated.
+        unsafe { crate::dict_del_in_place(py, dictionary, field.name_id().bits(py)) }?;
+    }
+    Ok(())
+}
+
+/// The C-API path for foreign objects: their `__dict__`, `__class__` and
+/// `__bases__` may be C type slots that only the C-API authority implements.
+unsafe fn dir_default_collect_foreign(
+    py: &PyToken<'_>,
+    obj_bits: u64,
+    type_directory: bool,
+) -> u64 {
     use molt_cpython_abi::abi_types::PyObject;
     use molt_cpython_abi::api::{abstract_sequence, mapping, object, refcount::ProtectedPyObject};
     use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
