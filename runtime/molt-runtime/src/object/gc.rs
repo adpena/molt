@@ -1584,6 +1584,57 @@ pub(crate) fn gc_has_live_native_nodes_for(state: &crate::RuntimeState) -> bool 
     })
 }
 
+/// The surviving native GC nodes of `state` (or of every runtime when `state`
+/// is `None`), for the retirement failure message: count, then up to `limit`
+/// nodes as type name, C reference count and lifecycle flags.
+///
+/// Each registered address is a live allocation: the registry entry is removed
+/// in the deallocate-before-free transition, so reading the object header of a
+/// registered node is sound. Called only on the failure path.
+pub(crate) fn gc_live_native_node_summary(
+    state: Option<&crate::RuntimeState>,
+    limit: usize,
+) -> String {
+    crate::gil_assert();
+    let identity = state.map(crate::RuntimeState::identity);
+    let mut nodes: Vec<(u64, String)> = Vec::new();
+    for index in 0..TRACKED_REGISTRY_SHARDS {
+        let shard = lock_tracked_registry_shard(index);
+        for (&address, entry) in &shard.native_nodes {
+            if identity.is_some_and(|identity| entry.runtime_owner != identity) {
+                continue;
+            }
+            let object = address as *const molt_cpython_abi::abi_types::PyObject;
+            // SAFETY: a registered native node is a live allocation (see above).
+            let (refcount, type_name) = unsafe {
+                let type_object = (*object).ob_type;
+                let name = if type_object.is_null() || (*type_object).tp_name.is_null() {
+                    String::from("<no type>")
+                } else {
+                    std::ffi::CStr::from_ptr((*type_object).tp_name)
+                        .to_string_lossy()
+                        .into_owned()
+                };
+                ((*object).ob_refcnt, name)
+            };
+            nodes.push((
+                entry.allocation_id,
+                format!(
+                    "{type_name} refcnt={refcount} tracked={} finalized={} pinned={} deferred={}",
+                    entry.tracked, entry.finalized, entry.pinned, entry.deferred
+                ),
+            ));
+        }
+    }
+    nodes.sort_unstable_by_key(|(allocation_id, _)| *allocation_id);
+    let shown: Vec<String> = nodes
+        .iter()
+        .take(limit)
+        .map(|(allocation_id, text)| format!("#{allocation_id} {text}"))
+        .collect();
+    format!("{} live native node(s): {}", nodes.len(), shown.join("; "))
+}
+
 /// Aggregate native-owner refusal remains authoritative for process retirement.
 pub(crate) fn gc_has_live_native_nodes() -> bool {
     crate::gil_assert();

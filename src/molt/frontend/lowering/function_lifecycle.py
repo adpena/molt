@@ -705,7 +705,16 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         for label, owns_entry_attempt in handler_labels:
             with self._suppress_check_exception(emit_on_exit=False):
                 self.emit(MoltOp(kind="LABEL", args=[label], result=MoltValue("none")))
-                if module_failure_cleanup:
+                # A failed import retracts its publication (importlib's
+                # _load_unlocked). The entry runs as __main__ and stays
+                # published after it fails, as CPython keeps sys.modules
+                # ["__main__"] for a failing script or -m module; shutdown's
+                # module retirement then clears that namespace like any
+                # other. The entry retracts nothing: the runtime resolves a
+                # retraction through the initializer's live spec name, which
+                # for the entry is __main__ even when the catalog alias is
+                # named.
+                if module_failure_cleanup and not self.is_entry_module:
                     module_name_val = MoltValue(self.next_var(), type_hint="str")
                     self.emit(
                         MoltOp(
@@ -721,22 +730,6 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
                             result=MoltValue("none"),
                         )
                     )
-                    if self.is_entry_module and self.module_name != "__main__":
-                        main_name_val = MoltValue(self.next_var(), type_hint="str")
-                        self.emit(
-                            MoltOp(
-                                kind="CONST_STR",
-                                args=["__main__"],
-                                result=main_name_val,
-                            )
-                        )
-                        self.emit(
-                            MoltOp(
-                                kind="MODULE_CACHE_DEL",
-                                args=[main_name_val],
-                                result=MoltValue("none"),
-                            )
-                        )
             self._emit_restore_exception_stack_depth()
             self._emit_raise_if_pending()
             if owns_entry_attempt and module_failure_cleanup:
