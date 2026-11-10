@@ -62,7 +62,7 @@ fn logging_config_dict_items<'py>(
         return Err(MoltObject::none().bits());
     };
     let missing = missing_bits(_py);
-    let items_method_bits = molt_getattr_builtin(dict_bits, items_name_bits, missing);
+    let items_method_bits = molt_getattr_builtin(_py, dict_bits, items_name_bits, missing);
     dec_ref_bits(_py, items_name_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
@@ -100,7 +100,7 @@ fn logging_config_dict_items<'py>(
             "logging config items() iterable materialization failed",
         ));
     }
-    let entries = unsafe { seq_snapshot(list_ptr) };
+    let entries = unsafe { seq_snapshot(_py, list_ptr) };
     let mut pairs = Vec::new();
     for item_bits in entries.iter().copied() {
         let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
@@ -119,7 +119,7 @@ fn logging_config_dict_items<'py>(
                 "logging config items must be pairs",
             ));
         }
-        let fields = unsafe { seq_snapshot(item_ptr) };
+        let fields = unsafe { seq_snapshot(_py, item_ptr) };
         if fields.len() != 2 {
             dec_ref_bits(_py, list_bits);
             return Err(raise_exception::<u64>(
@@ -163,7 +163,7 @@ fn logging_config_name_list(
             "logging config handler list materialization failed",
         ));
     }
-    let entries = unsafe { seq_snapshot(list_ptr) };
+    let entries = unsafe { seq_snapshot(_py, list_ptr) };
     let mut names: Vec<String> = Vec::new();
     for item_bits in entries.iter().copied() {
         let Some(name) = string_obj_to_owned(obj_from_bits(item_bits)) else {
@@ -214,7 +214,7 @@ fn logging_config_clear_logger_handlers(
     };
     let ty = unsafe { object_type_id(handlers_ptr) };
     let snapshot = if ty == crate::bridge::type_id_list() || ty == crate::bridge::type_id_tuple() {
-        unsafe { seq_snapshot(handlers_ptr) }
+        unsafe { seq_snapshot(_py, handlers_ptr) }
     } else {
         dec_ref_bits(_py, handlers_bits);
         return Ok(());
@@ -257,9 +257,11 @@ fn logging_config_resolve_ext_stream<'py>(
     ))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_logging_config_dict_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    config_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let configure = || -> Result<(), u64> {
             let version_bits = logging_config_dict_lookup(_py, config_bits, "version")?
                 .ok_or_else(|| {
@@ -569,9 +571,11 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_config_valid_ident(value_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_logging_config_valid_ident_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    value_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(value_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -596,14 +600,14 @@ pub extern "C" fn molt_logging_config_valid_ident(value_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_config_file_config(
+pub fn molt_logging_config_file_config_attached_body(
+    _py: &molt_runtime_core::PyToken,
     config_file_bits: u64,
     defaults_bits: u64,
     disable_existing_loggers_bits: u64,
     encoding_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let _ = (
             config_file_bits,
             defaults_bits,
@@ -618,9 +622,12 @@ pub extern "C" fn molt_logging_config_file_config(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_config_listen(port_bits: u64, verify_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_logging_config_listen_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    port_bits: u64,
+    verify_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let _ = (port_bits, verify_bits);
         raise_exception::<_>(
             _py,
@@ -630,7 +637,8 @@ pub extern "C" fn molt_logging_config_listen(port_bits: u64, verify_bits: u64) -
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_config_stop_listening() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, MoltObject::none().bits())
+pub fn molt_logging_config_stop_listening_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, MoltObject::none().bits())
 }
+
+include!("attached_exports_generated/functions_logging.rs");

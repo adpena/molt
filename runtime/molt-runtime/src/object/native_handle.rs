@@ -208,29 +208,27 @@ pub(crate) fn native_handle_release(detached: DetachedNativeHandle) {
     feature = "stdlib_regex"
 ))]
 macro_rules! native_handle_bridge {
-    ($new:ident, $clone:ident, $payload:ty) => {
+    ($new:ident => $new_symbol:tt, $clone:ident => $clone_symbol:tt, $payload:ty) => {
         /// Consumes one Arc<Payload> raw reference on every outcome.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $new(pointer: *const std::ffi::c_void) -> u64 {
-            $crate::with_gil_entry_nopanic!(py, {
-                let payload = unsafe { std::sync::Arc::<$payload>::from_raw(pointer.cast()) };
-                let bits = $crate::object::native_handle::native_handle_new(py, payload);
-                if bits == 0 {
-                    $crate::MoltObject::none().bits()
-                } else {
-                    bits
-                }
-            })
+        #[unsafe(export_name = molt_codegen_abi::attached_symbol!($new_symbol))]
+        pub unsafe extern "C" fn $new(context: u64, pointer: *const std::ffi::c_void) -> u64 {
+            let py = unsafe { $crate::PyToken::from_attached_context(context) };
+            let payload = unsafe { std::sync::Arc::<$payload>::from_raw(pointer.cast()) };
+            let bits = $crate::object::native_handle::native_handle_new(py, payload);
+            if bits == 0 {
+                $crate::MoltObject::none().bits()
+            } else {
+                bits
+            }
         }
 
         /// Returns one owned Arc raw reference, or null on typed mismatch.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $clone(bits: u64) -> *const std::ffi::c_void {
-            $crate::with_gil_entry_nopanic!(_py, {
-                $crate::object::native_handle::native_handle_arc::<$payload>(bits)
-                    .map(|payload| std::sync::Arc::into_raw(payload).cast())
-                    .unwrap_or(std::ptr::null())
-            })
+        #[unsafe(export_name = molt_codegen_abi::attached_symbol!($clone_symbol))]
+        pub unsafe extern "C" fn $clone(context: u64, bits: u64) -> *const std::ffi::c_void {
+            let _py = unsafe { $crate::PyToken::from_attached_context(context) };
+            $crate::object::native_handle::native_handle_arc::<$payload>(bits)
+                .map(|payload| std::sync::Arc::into_raw(payload).cast())
+                .unwrap_or(std::ptr::null())
         }
     };
 }

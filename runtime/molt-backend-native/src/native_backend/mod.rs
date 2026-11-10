@@ -21,10 +21,125 @@ use cranelift_frontend::{FunctionBuilderContext, Switch, Variable};
 mod native_ssa;
 use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule, ObjectProduct};
+use molt_ir::runtime_callable_abi_generated::{
+    ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX, RuntimeExecutionContext, compiled_execution_symbol,
+    runtime_execution_abi,
+};
 use native_ssa::FunctionBuilder;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashSet;
+
+/// Declare a runtime boundary using the generated execution ABI authority.
+/// Call emission keeps logical operands until `complete_attached_calls` adds
+/// the invocation's context at the machine ABI boundary.
+fn declare_runtime_execution_function(
+    module: &mut dyn Module,
+    logical: &str,
+    signature: &cranelift_codegen::ir::Signature,
+) -> Result<cranelift_module::FuncId, Box<cranelift_module::ModuleError>> {
+    let abi = runtime_execution_abi(logical).unwrap_or_else(|| {
+        panic!("runtime import `{logical}` has no execution ABI classification")
+    });
+    let mut physical = signature.clone();
+    if abi.context == RuntimeExecutionContext::Attached {
+        physical.params.insert(0, AbiParam::new(types::I64));
+    }
+    module
+        .declare_function(abi.physical_symbol, Linkage::Import, &physical)
+        .map_err(Box::new)
+}
+
+/// Python arity remains logical; only the native callable signature carries
+/// its leading context. Runtime callables share their generated declaration.
+fn declare_python_execution_function(
+    module: &mut dyn Module,
+    logical: &str,
+    linkage: Linkage,
+    signature: &cranelift_codegen::ir::Signature,
+) -> Result<cranelift_module::FuncId, Box<cranelift_module::ModuleError>> {
+    if runtime_execution_abi(logical).is_some() {
+        return declare_runtime_execution_function(module, logical, signature);
+    }
+    assert!(
+        molt_ir::runtime_fn_generated::runtime_boxed_abi(logical, signature.params.len()).is_none(),
+        "runtime callable `{logical}` has no execution ABI classification"
+    );
+    let mut physical = signature.clone();
+    physical.params.insert(0, AbiParam::new(types::I64));
+    module
+        .declare_function(&compiled_execution_symbol(logical), linkage, &physical)
+        .map_err(Box::new)
+}
+
+fn compiled_context(builder: &FunctionBuilder<'_>) -> Value {
+    let entry = builder
+        .func
+        .layout
+        .entry_block()
+        .expect("compiled entry block");
+    builder.func.dfg.block_params(entry)[0]
+}
+
+/// Logical Python operands follow the attached context in every compiled entry.
+fn compiled_argument(builder: &FunctionBuilder<'_>, index: usize) -> Value {
+    let entry = builder
+        .func
+        .layout
+        .entry_block()
+        .expect("compiled entry block");
+    builder.func.dfg.block_params(entry)[index + 1]
+}
+
+/// Complete the physical arguments of attached direct calls exactly once.
+/// The schema-bound symbol identifies the ABI; arity is checked, never used to
+/// infer a missing classification. Foreign C calls retain their real protocol.
+fn complete_attached_calls(module: &dyn Module, function: &mut Function, context: Value) {
+    use cranelift_codegen::ir::{ExternalName, InstructionData};
+    let attached: Vec<bool> = function
+        .dfg
+        .ext_funcs
+        .iter()
+        .map(|(_, external)| {
+            let ExternalName::User(name) = external.name else {
+                return false;
+            };
+            let name = &function.params.user_named_funcs()[name];
+            if name.namespace != 0 {
+                return false;
+            }
+            let declaration = module
+                .declarations()
+                .get_function_decl(cranelift_module::FuncId::from_u32(name.index));
+            declaration
+                .name
+                .as_deref()
+                .is_some_and(|name| name.ends_with(ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX))
+        })
+        .collect();
+    let stencil = &mut function.stencil;
+    for block in stencil.layout.blocks() {
+        for instruction in stencil.layout.block_insts(block) {
+            let InstructionData::Call {
+                func_ref,
+                ref mut args,
+                ..
+            } = stencil.dfg.insts[instruction]
+            else {
+                continue;
+            };
+            if attached[func_ref.as_u32() as usize] {
+                let signature = stencil.dfg.ext_funcs[func_ref].signature;
+                assert_eq!(
+                    args.len(&stencil.dfg.value_lists) + 1,
+                    stencil.dfg.signatures[signature].params.len(),
+                    "attached call must receive exactly one execution context"
+                );
+                args.insert(0, context, &mut stencil.dfg.value_lists);
+            }
+        }
+    }
+}
 
 const _: () = assert!(
     molt_codegen_abi::MOLT_FLAGS_ATOMIC == cfg!(not(target_arch = "wasm32"))

@@ -5,10 +5,16 @@
 //! I64+I64), we emit native LLVM instructions; when types are dynamic
 //! (DynBox), we emit calls to the Molt runtime.
 
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 #[cfg(all(test, feature = "llvm"))]
 use molt_ir::OpKind;
 use std::{cell::RefCell, collections::HashMap};
 
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::{prepend_execution_context, runtime_execution_type};
 #[cfg(feature = "llvm")]
 use inkwell::basic_block::BasicBlock;
 #[cfg(feature = "llvm")]
@@ -18,11 +24,9 @@ use inkwell::values::{BasicValueEnum, FastMathFlags, FunctionValue, PhiValue};
 #[cfg(feature = "llvm")]
 use molt_codegen_abi as nanbox;
 #[cfg(feature = "llvm")]
-use molt_ir::runtime_boxed_abi_generated::{
-    RuntimeBoxedAbi, RuntimeBoxedReturn, runtime_boxed_abi,
+use molt_ir::runtime_fn_generated::{
+    RuntimeBoxedAbi, RuntimeBoxedReturn, RuntimeFn, runtime_boxed_abi, runtime_raw_abi,
 };
-#[cfg(feature = "llvm")]
-use molt_ir::runtime_raw_abi_generated::{RuntimeRawAbi, runtime_raw_abi};
 
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::LlvmBackend;
@@ -34,9 +38,7 @@ use crate::llvm_backend::runtime_imports::{
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::types::lower_type;
 #[cfg(feature = "llvm")]
-use crate::runtime_import_abi::{
-    MOLT_DEC_REF_OBJ, MOLT_INC_REF_OBJ, RuntimeImportSignature, RuntimeReturnAbi,
-};
+use crate::runtime_import_abi::RuntimeReturnAbi;
 #[cfg(feature = "llvm")]
 use inkwell::FloatPredicate;
 #[cfg(feature = "llvm")]
@@ -229,17 +231,14 @@ fn heap_int_box_with_builder<'ctx>(
     module: &inkwell::module::Module<'ctx>,
     raw: inkwell::values::IntValue<'ctx>,
 ) -> inkwell::values::IntValue<'ctx> {
-    let i64_ty = context.i64_type();
-    let from_i64_fn = module.get_function("molt_int_from_i64").unwrap_or_else(|| {
-        let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
-        module.add_function(
-            "molt_int_from_i64",
-            fn_ty,
-            Some(inkwell::module::Linkage::External),
-        )
-    });
+    let from_i64_fn = module
+        .get_execution_function("molt_int_from_i64")
+        .unwrap_or_else(|| {
+            declare_fixed_runtime_function(context, module, "molt_int_from_i64")
+                .expect("integer boxer has a fixed runtime ABI")
+        });
     builder
-        .build_call(from_i64_fn, &[raw.into()], "molt_int_from_i64")
+        .build_execution_call(from_i64_fn, &[raw.into()], "molt_int_from_i64")
         .unwrap()
         .try_as_basic_value()
         .unwrap_basic()
@@ -409,12 +408,14 @@ fn unbox_i64_with_builder<'ctx>(
     module: &inkwell::module::Module<'ctx>,
     raw: inkwell::values::IntValue<'ctx>,
 ) -> inkwell::values::IntValue<'ctx> {
-    let runtime = module.get_function("molt_int_as_i64").unwrap_or_else(|| {
-        declare_fixed_runtime_function(context, module, "molt_int_as_i64")
-            .expect("integer extractor has a fixed runtime ABI")
-    });
+    let runtime = module
+        .get_execution_function("molt_int_as_i64")
+        .unwrap_or_else(|| {
+            declare_fixed_runtime_function(context, module, "molt_int_as_i64")
+                .expect("integer extractor has a fixed runtime ABI")
+        });
     builder
-        .build_call(runtime, &[raw.into()], "unbox_i64")
+        .build_execution_call(runtime, &[raw.into()], "unbox_i64")
         .unwrap()
         .try_as_basic_value()
         .unwrap_basic()
@@ -807,7 +808,7 @@ pub fn declare_tir_function<'ctx>(
         .map(|ty| lower_type(backend.context, ty).into())
         .collect();
 
-    let fn_ty = match linkage_abi.return_type.as_ref() {
+    let logical_fn_ty = match linkage_abi.return_type.as_ref() {
         Some(return_type) => {
             lower_type(backend.context, return_type).fn_type(&param_llvm_types, false)
         }
@@ -816,12 +817,13 @@ pub fn declare_tir_function<'ctx>(
             .void_type()
             .fn_type(&param_llvm_types, false),
     };
+    let fn_ty = prepend_execution_context(logical_fn_ty);
     // Reuse an existing forward-declaration if present (e.g., from a prior
     // Call op that referenced this function before it was defined).
     // If not, create a new function.  This avoids LLVM appending `.1` to
     // the name when a declaration already exists.
 
-    let llvm_fn = if let Some(existing) = backend.module.get_function(&func.name) {
+    let llvm_fn = if let Some(existing) = backend.module.get_execution_function(&func.name) {
         let existing = require_llvm_function_type(&func.name, existing, fn_ty);
         // Verify it's just a declaration (no basic blocks yet).
         if existing.count_basic_blocks() == 0 {
@@ -833,7 +835,9 @@ pub fn declare_tir_function<'ctx>(
             );
         }
     } else {
-        backend.module.add_function(&func.name, fn_ty, None)
+        backend
+            .module
+            .add_compiled_function(&func.name, logical_fn_ty, None)
     };
     add_molt_nounwind_attribute(backend, llvm_fn);
     llvm_fn
@@ -859,7 +863,7 @@ pub fn declare_extern_tir_function<'ctx>(
         .iter()
         .map(|ty| lower_type(backend.context, ty).into())
         .collect();
-    let fn_ty = match linkage_abi.return_type.as_ref() {
+    let logical_fn_ty = match linkage_abi.return_type.as_ref() {
         Some(return_type) => {
             lower_type(backend.context, return_type).fn_type(&param_llvm_types, false)
         }
@@ -868,7 +872,8 @@ pub fn declare_extern_tir_function<'ctx>(
             .void_type()
             .fn_type(&param_llvm_types, false),
     };
-    let llvm_fn = if let Some(existing) = backend.module.get_function(&func.name) {
+    let fn_ty = prepend_execution_context(logical_fn_ty);
+    let llvm_fn = if let Some(existing) = backend.module.get_execution_function(&func.name) {
         let existing = require_llvm_function_type(&func.name, existing, fn_ty);
         assert_eq!(
             existing.count_basic_blocks(),
@@ -878,9 +883,11 @@ pub fn declare_extern_tir_function<'ctx>(
         );
         existing
     } else {
-        backend
-            .module
-            .add_function(&func.name, fn_ty, Some(inkwell::module::Linkage::External))
+        backend.module.add_compiled_function(
+            &func.name,
+            logical_fn_ty,
+            Some(inkwell::module::Linkage::External),
+        )
     };
     add_molt_nounwind_attribute(backend, llvm_fn);
     llvm_fn
@@ -934,7 +941,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // Entry block: map block args to function parameters.
         if block_id == self.func.entry_block && self.entry_trampoline_bb.is_none() {
             for (i, arg) in block.args.iter().enumerate() {
-                let value = self.llvm_fn.get_nth_param(i as u32).unwrap_or_else(|| {
+                let value = self.llvm_fn.get_nth_param(i as u32 + 1).unwrap_or_else(|| {
                     self.record_fatal(format!(
                         "entry block argument %{} at index {} has no corresponding function parameter",
                         arg.id.0, i

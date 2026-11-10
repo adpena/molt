@@ -754,26 +754,26 @@ fn decimal_bits(dec: DecimalHandle) -> u64 {
     opaque_handle_bits(Box::into_raw(Box::new(dec)) as *mut u8)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_new() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_context_new_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let handle = Box::new(default_context());
         opaque_handle_bits(Box::into_raw(handle) as *mut u8)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_get_current() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_context_get_current_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ptr = ensure_current_context();
         context_inc(ptr);
         opaque_handle_bits(ptr as *mut u8)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_set_current(ctx_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_context_set_current_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(new_ptr) = context_ptr_from_bits(ctx_bits) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal context");
         };
@@ -793,9 +793,11 @@ pub extern "C" fn molt_decimal_context_set_current(ctx_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_copy(ctx_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_context_copy_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -807,9 +809,11 @@ pub extern "C" fn molt_decimal_context_copy(ctx_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_drop(ctx_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_context_drop_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(ptr) = context_ptr_from_bits(ctx_bits) else {
             return MoltObject::none().bits();
         };
@@ -818,9 +822,11 @@ pub extern "C" fn molt_decimal_context_drop(ctx_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_get_prec(ctx_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_context_get_prec_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -830,9 +836,12 @@ pub extern "C" fn molt_decimal_context_get_prec(ctx_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_set_prec(ctx_bits: u64, prec_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_context_set_prec_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    prec_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -855,9 +864,11 @@ pub extern "C" fn molt_decimal_context_set_prec(ctx_bits: u64, prec_bits: u64) -
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_get_rounding(ctx_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_context_get_rounding_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -867,9 +878,12 @@ pub extern "C" fn molt_decimal_context_get_rounding(ctx_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_set_rounding(ctx_bits: u64, round_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_context_set_rounding_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    round_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -888,9 +902,11 @@ pub extern "C" fn molt_decimal_context_set_rounding(ctx_bits: u64, round_bits: u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_get_emin(ctx_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_context_get_emin_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -900,9 +916,12 @@ pub extern "C" fn molt_decimal_context_get_emin(ctx_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_set_emin(ctx_bits: u64, emin_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_context_set_emin_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    emin_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -926,9 +945,11 @@ pub extern "C" fn molt_decimal_context_set_emin(ctx_bits: u64, emin_bits: u64) -
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_get_emax(ctx_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_context_get_emax_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -938,9 +959,12 @@ pub extern "C" fn molt_decimal_context_get_emax(ctx_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_set_emax(ctx_bits: u64, emax_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_context_set_emax_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    emax_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -960,9 +984,11 @@ pub extern "C" fn molt_decimal_context_set_emax(ctx_bits: u64, emax_bits: u64) -
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_get_clamp(ctx_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_context_get_clamp_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -972,9 +998,12 @@ pub extern "C" fn molt_decimal_context_get_clamp(ctx_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_set_clamp(ctx_bits: u64, clamp_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_context_set_clamp_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    clamp_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -994,9 +1023,11 @@ pub extern "C" fn molt_decimal_context_set_clamp(ctx_bits: u64, clamp_bits: u64)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_get_capitals(ctx_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_context_get_capitals_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1006,9 +1037,12 @@ pub extern "C" fn molt_decimal_context_get_capitals(ctx_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_set_capitals(ctx_bits: u64, capitals_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_context_set_capitals_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    capitals_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1036,9 +1070,11 @@ pub extern "C" fn molt_decimal_context_set_capitals(ctx_bits: u64, capitals_bits
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_etiny(ctx_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_context_etiny_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1048,9 +1084,11 @@ pub extern "C" fn molt_decimal_context_etiny(ctx_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_etop(ctx_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_context_etop_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1060,9 +1098,11 @@ pub extern "C" fn molt_decimal_context_etop(ctx_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_clear_flags(ctx_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_context_clear_flags_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1075,9 +1115,12 @@ pub extern "C" fn molt_decimal_context_clear_flags(ctx_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_get_flag(ctx_bits: u64, flag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_context_get_flag_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    flag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1091,13 +1134,13 @@ pub extern "C" fn molt_decimal_context_get_flag(ctx_bits: u64, flag_bits: u64) -
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_set_flag(
+pub fn molt_decimal_context_set_flag_attached_body(
+    _py: &molt_runtime_core::PyToken,
     ctx_bits: u64,
     flag_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1118,9 +1161,12 @@ pub extern "C" fn molt_decimal_context_set_flag(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_get_trap(ctx_bits: u64, flag_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_context_get_trap_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    flag_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1134,13 +1180,13 @@ pub extern "C" fn molt_decimal_context_get_trap(ctx_bits: u64, flag_bits: u64) -
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_context_set_trap(
+pub fn molt_decimal_context_set_trap_attached_body(
+    _py: &molt_runtime_core::PyToken,
     ctx_bits: u64,
     flag_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1161,9 +1207,12 @@ pub extern "C" fn molt_decimal_context_set_trap(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_from_str(ctx_bits: u64, value_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_from_str_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1186,9 +1235,12 @@ pub extern "C" fn molt_decimal_from_str(ctx_bits: u64, value_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_from_int(ctx_bits: u64, value_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_from_int_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let _ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1206,9 +1258,8 @@ pub extern "C" fn molt_decimal_from_int(ctx_bits: u64, value_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_clone(value_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_clone_attached_body(_py: &molt_runtime_core::PyToken, value_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(handle) = decimal_handle_from_bits(value_bits) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
@@ -1216,9 +1267,8 @@ pub extern "C" fn molt_decimal_clone(value_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_drop(value_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_drop_attached_body(_py: &molt_runtime_core::PyToken, value_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(ptr) = opaque_handle_ptr_from_bits(value_bits) else {
             return MoltObject::none().bits();
         };
@@ -1231,9 +1281,11 @@ pub extern "C" fn molt_decimal_drop(value_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_to_string(value_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_to_string_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    value_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(handle) = decimal_handle_from_bits(value_bits) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
@@ -1251,9 +1303,11 @@ pub extern "C" fn molt_decimal_to_string(value_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_as_tuple(value_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_as_tuple_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    value_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(handle) = decimal_handle_from_bits(value_bits) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
@@ -1261,9 +1315,11 @@ pub extern "C" fn molt_decimal_as_tuple(value_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_to_float(value_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_to_float_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    value_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(handle) = decimal_handle_from_bits(value_bits) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
@@ -1284,9 +1340,13 @@ pub extern "C" fn molt_decimal_to_float(value_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_div(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_div_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1421,9 +1481,13 @@ fn rescale_quiet(dec: &DecimalHandle, target_exp: i64, rounding: i32) -> Option<
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_quantize(ctx_bits: u64, a_bits: u64, exp_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_quantize_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+    exp_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1547,9 +1611,13 @@ pub extern "C" fn molt_decimal_quantize(ctx_bits: u64, a_bits: u64, exp_bits: u6
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_compare(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_compare_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let _ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1579,9 +1647,12 @@ pub extern "C" fn molt_decimal_compare(ctx_bits: u64, a_bits: u64, b_bits: u64) 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_compare_total(a_bits: u64, b_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_compare_total_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
@@ -1624,9 +1695,12 @@ pub extern "C" fn molt_decimal_compare_total(a_bits: u64, b_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_normalize(ctx_bits: u64, a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_normalize_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1674,9 +1748,12 @@ pub extern "C" fn molt_decimal_normalize(ctx_bits: u64, a_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_exp(ctx_bits: u64, a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_exp_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -1900,9 +1977,13 @@ fn transcendental_via_f64(
     decimal_bits(dec)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_add(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_add_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
             Ok(t) => t,
             Err(bits) => return bits,
@@ -1948,9 +2029,13 @@ pub extern "C" fn molt_decimal_add(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_sub(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_sub_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
             Ok(t) => t,
             Err(bits) => return bits,
@@ -2001,9 +2086,13 @@ pub extern "C" fn molt_decimal_sub(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_mul(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_mul_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
             Ok(t) => t,
             Err(bits) => return bits,
@@ -2042,9 +2131,13 @@ pub extern "C" fn molt_decimal_mul(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_floordiv(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_floordiv_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
             Ok(t) => t,
             Err(bits) => return bits,
@@ -2089,9 +2182,13 @@ pub extern "C" fn molt_decimal_floordiv(ctx_bits: u64, a_bits: u64, b_bits: u64)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_mod(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_mod_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
             Ok(t) => t,
             Err(bits) => return bits,
@@ -2130,9 +2227,13 @@ pub extern "C" fn molt_decimal_mod(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_pow(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_pow_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
             Ok(t) => t,
             Err(bits) => return bits,
@@ -2175,9 +2276,12 @@ pub extern "C" fn molt_decimal_pow(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_abs(ctx_bits: u64, a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_abs_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -2195,9 +2299,12 @@ pub extern "C" fn molt_decimal_abs(ctx_bits: u64, a_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_neg(ctx_bits: u64, a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_neg_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -2215,9 +2322,12 @@ pub extern "C" fn molt_decimal_neg(ctx_bits: u64, a_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_pos(ctx_bits: u64, a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_pos_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -2364,9 +2474,12 @@ fn sqrt_decimal(
     Ok((out, status))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_sqrt(ctx_bits: u64, a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_sqrt_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -2391,9 +2504,12 @@ pub extern "C" fn molt_decimal_sqrt(ctx_bits: u64, a_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_ln(ctx_bits: u64, a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_ln_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -2424,9 +2540,12 @@ pub extern "C" fn molt_decimal_ln(ctx_bits: u64, a_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_log10(ctx_bits: u64, a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_log10_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -2459,9 +2578,8 @@ pub extern "C" fn molt_decimal_log10(ctx_bits: u64, a_bits: u64) -> u64 {
 
 // ── Predicates ────────────────────────────────────────────────────────────
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_is_finite(a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_is_finite_attached_body(_py: &molt_runtime_core::PyToken, a_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -2469,9 +2587,11 @@ pub extern "C" fn molt_decimal_is_finite(a_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_is_infinite(a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_is_infinite_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    a_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -2479,9 +2599,8 @@ pub extern "C" fn molt_decimal_is_infinite(a_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_is_nan(a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_is_nan_attached_body(_py: &molt_runtime_core::PyToken, a_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -2490,9 +2609,8 @@ pub extern "C" fn molt_decimal_is_nan(a_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_is_zero(a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_is_zero_attached_body(_py: &molt_runtime_core::PyToken, a_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -2500,9 +2618,8 @@ pub extern "C" fn molt_decimal_is_zero(a_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_is_signed(a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_is_signed_attached_body(_py: &molt_runtime_core::PyToken, a_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -2515,9 +2632,8 @@ pub extern "C" fn molt_decimal_is_signed(a_bits: u64) -> u64 {
 /// Decimal hashes equal to a numerically-equal int/float/Fraction
 /// (`Lib/_pydecimal.py::Decimal.__hash__`). NaN handling (sNaN -> TypeError;
 /// qNaN -> identity) stays in the Python shim, which guards this call.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_hash(a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_hash_attached_body(_py: &molt_runtime_core::PyToken, a_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Decimal handle");
         };
@@ -2554,9 +2670,12 @@ pub extern "C" fn molt_decimal_hash(a_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_is_normal(ctx_bits: u64, a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_is_normal_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -2574,9 +2693,12 @@ pub extern "C" fn molt_decimal_is_normal(ctx_bits: u64, a_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_is_subnormal(ctx_bits: u64, a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_is_subnormal_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -2594,9 +2716,12 @@ pub extern "C" fn molt_decimal_is_subnormal(ctx_bits: u64, a_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_number_class(ctx_bits: u64, a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_number_class_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -2639,9 +2764,8 @@ pub extern "C" fn molt_decimal_number_class(ctx_bits: u64, a_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_adjusted(a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_adjusted_attached_body(_py: &molt_runtime_core::PyToken, a_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
@@ -2659,9 +2783,13 @@ pub extern "C" fn molt_decimal_adjusted(a_bits: u64) -> u64 {
 
 // ── Min/Max/SameQuantum ──────────────────────────────────────────────────
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_max(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_max_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
             Ok(t) => t,
             Err(bits) => return bits,
@@ -2689,9 +2817,13 @@ pub extern "C" fn molt_decimal_max(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_min(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_min_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
             Ok(t) => t,
             Err(bits) => return bits,
@@ -2719,9 +2851,12 @@ pub extern "C" fn molt_decimal_min(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_same_quantum(a_bits: u64, b_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_same_quantum_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return MoltObject::from_bool(false).bits();
         };
@@ -2737,9 +2872,12 @@ pub extern "C" fn molt_decimal_same_quantum(a_bits: u64, b_bits: u64) -> u64 {
 
 // ── Integral conversion ─────────────────────────────────────────────────
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_to_integral_value(ctx_bits: u64, a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_to_integral_value_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -2761,9 +2899,12 @@ pub extern "C" fn molt_decimal_to_integral_value(ctx_bits: u64, a_bits: u64) -> 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_to_integral_exact(ctx_bits: u64, a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_to_integral_exact_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -2800,9 +2941,11 @@ pub extern "C" fn molt_decimal_to_integral_exact(ctx_bits: u64, a_bits: u64) -> 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_to_eng_string(a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_to_eng_string_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    a_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
@@ -2958,9 +3101,12 @@ fn decimal_next(
     decimal_bits(result)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_next_plus(ctx_bits: u64, a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_next_plus_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -2973,9 +3119,12 @@ pub extern "C" fn molt_decimal_next_plus(ctx_bits: u64, a_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_next_minus(ctx_bits: u64, a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_next_minus_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -2990,9 +3139,8 @@ pub extern "C" fn molt_decimal_next_minus(ctx_bits: u64, a_bits: u64) -> u64 {
 
 // ── Copy operations ─────────────────────────────────────────────────────
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_copy_abs(a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_copy_abs_attached_body(_py: &molt_runtime_core::PyToken, a_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
@@ -3005,9 +3153,11 @@ pub extern "C" fn molt_decimal_copy_abs(a_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_copy_negate(a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_copy_negate_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    a_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
@@ -3020,9 +3170,12 @@ pub extern "C" fn molt_decimal_copy_negate(a_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_copy_sign(a_bits: u64, b_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_copy_sign_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
@@ -3040,9 +3193,11 @@ pub extern "C" fn molt_decimal_copy_sign(a_bits: u64, b_bits: u64) -> u64 {
 
 // ── Conversion ──────────────────────────────────────────────────────────
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_as_integer_ratio(a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_as_integer_ratio_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    a_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
@@ -3076,9 +3231,12 @@ pub extern "C" fn molt_decimal_as_integer_ratio(a_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_from_float(ctx_bits: u64, value_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_from_float_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -3116,9 +3274,8 @@ pub extern "C" fn molt_decimal_from_float(ctx_bits: u64, value_bits: u64) -> u64
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_to_int(a_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_to_int_attached_body(_py: &molt_runtime_core::PyToken, a_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
             return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
@@ -3141,9 +3298,13 @@ pub extern "C" fn molt_decimal_to_int(a_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_scaleb(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_scaleb_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
             Ok(t) => t,
             Err(bits) => return bits,
@@ -3208,9 +3369,13 @@ pub extern "C" fn molt_decimal_scaleb(ctx_bits: u64, a_bits: u64, b_bits: u64) -
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_remainder_near(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_remainder_near_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+    b_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let (ctx_ptr, a, b) = match binary_arith_setup(_py, ctx_bits, a_bits, b_bits) {
             Ok(t) => t,
             Err(bits) => return bits,
@@ -3245,9 +3410,14 @@ pub extern "C" fn molt_decimal_remainder_near(ctx_bits: u64, a_bits: u64, b_bits
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_decimal_fma(ctx_bits: u64, a_bits: u64, b_bits: u64, c_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_decimal_fma_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    ctx_bits: u64,
+    a_bits: u64,
+    b_bits: u64,
+    c_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let ctx_ptr = match context_ptr_from_bits(ctx_bits) {
             Some(ptr) => ptr,
             None => ensure_current_context(),
@@ -3290,6 +3460,8 @@ pub extern "C" fn molt_decimal_fma(ctx_bits: u64, a_bits: u64, b_bits: u64, c_bi
         finalize_binary(_py, ctx, sign, coeff, common_exp)
     })
 }
+
+include!("attached_exports_generated/decimal.rs");
 
 #[cfg(test)]
 mod tests {

@@ -39,8 +39,6 @@ mod fixed;
 #[cfg(all(test, feature = "llvm"))]
 mod tests;
 
-#[cfg(all(test, feature = "llvm"))]
-pub(crate) use abi_facts::CONSERVATIVE_RUNTIME_IMPORTS;
 #[cfg(feature = "llvm")]
 pub(crate) use abi_facts::{is_runtime_import_abi, runtime_import_return_abi};
 #[cfg(feature = "llvm")]

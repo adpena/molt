@@ -136,7 +136,7 @@ fn execution_is_nested() -> bool {
 
 #[cfg(target_arch = "wasm32")]
 fn execution_is_nested() -> bool {
-    WASM_RUNTIME_EXECUTION_DEPTH.with(|depth| depth.get() != 0)
+    crate::state::execution_tls().wasm_execution_depth.get() != 0
 }
 
 /// Exact current-thread projection of an admitted runtime execution boundary.
@@ -158,7 +158,8 @@ fn runtime_execution_custody_in(tls: &crate::state::ExecutionTls) -> bool {
     // Shutdown owns a distinct lifetime capability, not an ordinary admitted
     // execution frame. Its callbacks must remain attached without fabricating
     // a runtime lease or WASM execution depth during finalization.
-    tls.shutdown_drain_depth.get() != 0 || (tls.lease_depth.get() != 0 && execution_is_nested())
+    tls.shutdown_drain_depth.get() != 0
+        || (tls.lease_depth.get() != 0 && tls.wasm_execution_depth.get() != 0)
 }
 
 /// Admission custody (a lease or shutdown-drain custody) and the GIL: the
@@ -176,7 +177,7 @@ pub(crate) fn current_thread_holds_shutdown_drain_custody() -> bool {
 
 #[inline(always)]
 pub(crate) fn current_thread_has_c_extension_execution_context() -> bool {
-    CEXT_EXECUTION_CONTEXT_DEPTH.with(|depth| depth.get() != 0)
+    crate::state::execution_tls().cext_execution_depth.get() != 0
 }
 
 /// Borrow the current execution admission for one compiled invocation.
@@ -187,14 +188,16 @@ pub(crate) fn current_thread_has_c_extension_execution_context() -> bool {
 /// Generator suspension returns to the invoker and a resume obtains a fresh
 /// snapshot. A GIL-only caller, detached caller or diagnostic run uses the
 /// existing checked runtime transitions instead of touching header cells.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_refcount_admission() -> u64 {
+pub(crate) fn molt_refcount_admission_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    refcount_admission_in(_py.execution_tls())
+}
+
+fn refcount_admission_in(tls: &crate::state::ExecutionTls) -> u64 {
     use molt_codegen_abi::inline_refcount::CompiledRefcountAdmission;
     if molt_codegen_abi::MOLT_REFCOUNT_ATOMIC
-        || !gil_held()
-        || !current_thread_has_c_extension_execution_context()
-        || (!crate::state::runtime_state::current_thread_holds_runtime_execution_lease()
-            && !current_thread_holds_shutdown_drain_custody())
+        || tls.gil_depth.get() == 0
+        || tls.cext_execution_depth.get() == 0
+        || (tls.lease_depth.get() == 0 && tls.shutdown_drain_depth.get() == 0)
         || crate::object::rc_transition_trace_enabled()
     {
         CompiledRefcountAdmission::Runtime as u64
@@ -205,24 +208,26 @@ pub extern "C" fn molt_refcount_admission() -> u64 {
 
 fn enter_c_extension_execution_context() {
     assert!(gil_held(), "C extension execution context requires the GIL");
-    CEXT_EXECUTION_CONTEXT_DEPTH.with(|depth| {
+    {
+        let depth = &crate::state::execution_tls().cext_execution_depth;
         depth.set(
             depth
                 .get()
                 .checked_add(1)
                 .expect("C extension execution context depth overflow"),
         );
-    });
+    }
 }
 
 fn leave_c_extension_execution_context() {
-    CEXT_EXECUTION_CONTEXT_DEPTH.with(|depth| {
+    {
+        let depth = &crate::state::execution_tls().cext_execution_depth;
         let current = depth.get();
         if current != 0 {
             depth.set(current - 1);
         }
         assert_ne!(current, 0, "C extension execution context depth underflow");
-    });
+    }
 }
 
 pub(crate) struct ShutdownDrainExecutionCustody {
@@ -332,6 +337,7 @@ pub(crate) struct RuntimeExecutionCustody {
     established_cext_context: bool,
     destroy_thread_state: bool,
     established_attachment: bool,
+    resumed_attachment: bool,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -348,13 +354,15 @@ impl RuntimeExecutionCustody {
             established_cext_context: false,
             destroy_thread_state: false,
             established_attachment: false,
+            resumed_attachment: false,
         }
     }
 
     fn enter(acquired_outer_gil: bool, cleanup_policy: ExecutionCleanupPolicy) -> Self {
         #[cfg(target_arch = "wasm32")]
         {
-            let was_outer = WASM_RUNTIME_EXECUTION_DEPTH.with(|depth| {
+            let was_outer = {
+                let depth = &crate::state::execution_tls().wasm_execution_depth;
                 let previous = depth.get();
                 depth.set(
                     previous
@@ -362,20 +370,26 @@ impl RuntimeExecutionCustody {
                         .expect("wasm runtime execution depth overflow"),
                 );
                 previous == 0
-            });
+            };
             assert_eq!(
                 acquired_outer_gil, was_outer,
                 "logical wasm GIL custody diverged from execution nesting"
             );
         }
-        let attached_before = molt_cpython_abi::api::object::runtime_execution_thread_is_attached();
-        if attached_before {
+        use molt_cpython_abi::api::object::BorrowedRuntimeThreadAttachment;
+        let attachment = crate::state::runtime_state::runtime_state_for_gil()
+            .map(|state| {
+                molt_cpython_abi::api::object::borrow_runtime_execution_thread(state.identity())
+            })
+            .unwrap_or(BorrowedRuntimeThreadAttachment::Absent);
+        if attachment != BorrowedRuntimeThreadAttachment::Absent {
             enter_c_extension_execution_context();
             return Self {
                 clear_worker_state: false,
                 established_cext_context: true,
                 destroy_thread_state: false,
                 established_attachment: false,
+                resumed_attachment: attachment == BorrowedRuntimeThreadAttachment::Resumed,
             };
         }
         if !crate::state::runtime_state::runtime_is_initialized() {
@@ -408,6 +422,7 @@ impl RuntimeExecutionCustody {
                     ExecutionCleanupPolicy::WorkerEnd => true,
                 },
             established_attachment,
+            resumed_attachment: false,
             established_cext_context: true,
         }
     }
@@ -430,6 +445,9 @@ impl RuntimeExecutionCustody {
                 }
             },
             || {
+                if self.resumed_attachment {
+                    molt_cpython_abi::api::object::suspend_resumed_runtime_execution_thread();
+                }
                 if self.established_attachment {
                     molt_cpython_abi::api::object::detach_runtime_execution_thread();
                     if self.destroy_thread_state {
@@ -457,11 +475,12 @@ impl RuntimeExecutionCustody {
                 finish_then_release(
                     || {
                         if self.established_cext_context {
-                            WASM_RUNTIME_EXECUTION_DEPTH.with(|depth| {
+                            {
+                                let depth = &crate::state::execution_tls().wasm_execution_depth;
                                 let previous = depth.get();
                                 assert_ne!(previous, 0, "wasm runtime execution depth underflow");
                                 depth.set(previous - 1);
-                            });
+                            }
                         }
                     },
                     leave_context,
@@ -477,11 +496,12 @@ impl RuntimeExecutionCustody {
             | (u64::from(self.established_attachment) << 1)
             | (u64::from(self.destroy_thread_state) << 2)
             | (u64::from(self.established_cext_context) << 3)
+            | (u64::from(self.resumed_attachment) << 4)
     }
 
     fn from_encoded_bits(bits: u64) -> Self {
         assert_eq!(
-            bits & !0b1111,
+            bits & !0b1_1111,
             0,
             "invalid encoded execution custody {bits}"
         );
@@ -490,6 +510,7 @@ impl RuntimeExecutionCustody {
             established_attachment: bits & 2 != 0,
             destroy_thread_state: bits & 4 != 0,
             established_cext_context: bits & 8 != 0,
+            resumed_attachment: bits & 16 != 0,
         }
     }
 }
@@ -539,7 +560,7 @@ impl RuntimeServiceExecutionGuard {
             return None;
         }
         assert_eq!(
-            crate::runtime_state(&execution.token()).identity(),
+            crate::runtime_state(execution.token()).identity(),
             origin.identity()
         );
         Some(Self {
@@ -550,7 +571,7 @@ impl RuntimeServiceExecutionGuard {
     }
 
     #[inline(always)]
-    pub(crate) fn token(&self) -> PyToken<'_> {
+    pub(crate) fn token(&self) -> &PyToken<'_> {
         self.execution.token()
     }
 }
@@ -576,7 +597,7 @@ struct OwnedExecution {
 /// The encoded lane of a nested entry that borrowed its caller's custody. It
 /// lies outside the GIL lane byte and the custody and lease bits, so no owned
 /// lane can equal it.
-const BORROWED_EXECUTION_LANE: u64 = 1 << 13;
+const BORROWED_EXECUTION_LANE: u64 = 1 << 14;
 
 impl RuntimeExecutionGuard {
     /// Enter a runtime call, lazily initializing only before acquiring the GIL.
@@ -596,9 +617,14 @@ impl RuntimeExecutionGuard {
         Self::enter_with_policy(true, ExecutionCleanupPolicy::WorkerEnd)
     }
 
-    #[inline(always)]
-    pub(crate) fn enter_with_boundary_created_cleanup() -> Self {
-        Self::enter_with_policy(true, ExecutionCleanupPolicy::BoundaryCreated)
+    /// A foreign callback owns a real scope even when it borrows an existing
+    /// attachment. SaveThread may have made that owner's C record dormant.
+    pub(crate) fn enter_foreign_callback() -> Self {
+        Self::enter_cold(
+            crate::state::execution_tls(),
+            true,
+            ExecutionCleanupPolicy::BoundaryCreated,
+        )
     }
 
     /// Compiled code enters here on every runtime operation, already holding
@@ -639,13 +665,23 @@ impl RuntimeExecutionGuard {
         initialize_runtime: bool,
         cleanup_policy: ExecutionCleanupPolicy,
     ) -> Self {
+        let cleanup_policy = if cleanup_policy == ExecutionCleanupPolicy::Preserve
+            && molt_cpython_abi::api::object::runtime_thread_state_lifetime_is_retired()
+        {
+            // The actual C lifetime key is gone. A late foreign boundary owns
+            // any record it creates through cleanup, not another TLS sentinel.
+            ExecutionCleanupPolicy::BoundaryCreated
+        } else {
+            cleanup_policy
+        };
         if tls.lease_depth.get() != 0 || tls.shutdown_drain_depth.get() != 0 {
-            // Custody whose GIL the inline test cannot borrow: the
-            // TLS-destruction GIL lane on native, a lease outside a logical
-            // WASM frame on wasm32. These keep the nested guard they always
-            // had, with no new custody.
+            // A forced foreign boundary owns its scope even if it borrows
+            // current lifetime admission. On WASM an admitted owner may also
+            // be outside a logical execution frame.
             if let Some(gil) = GilGuard::new_if_held_in(tls) {
-                return Self::owned(tls, gil, None, false);
+                let custody =
+                    RuntimeExecutionCustody::enter(!execution_is_nested(), cleanup_policy);
+                return Self::owned(tls, gil, Some(custody), false);
             }
             // Admission/retained shutdown custody survives GIL suspension.
             // Reentry must not wait for Ready: the finalization owner may be
@@ -747,7 +783,7 @@ impl RuntimeExecutionGuard {
     }
 
     #[inline(always)]
-    pub(crate) fn token(&self) -> PyToken<'_> {
+    pub(crate) fn token(&self) -> &PyToken<'_> {
         // SAFETY: the entry holds or borrows this thread's GIL custody for as
         // long as it lives, and `tls` is this thread's record.
         unsafe { PyToken::with_custody(self.tls) }
@@ -764,7 +800,7 @@ impl RuntimeExecutionGuard {
         } = owned;
         let custody = custody.unwrap_or_else(RuntimeExecutionCustody::inherited);
         gil.into_encoded_lane()
-            | ((custody.encoded_bits() | (u64::from(active_lifecycle_lease) << 4)) << 8)
+            | ((custody.encoded_bits() | (u64::from(active_lifecycle_lease) << 5)) << 8)
     }
 
     /// Rebuild the exact guard returned by [`Self::into_encoded_lane`].
@@ -781,14 +817,14 @@ impl RuntimeExecutionGuard {
         let gil = unsafe { GilGuard::from_encoded_lane(token & 0xff) };
         let execution_bits = token >> 8;
         assert_eq!(
-            execution_bits & !0b1_1111,
+            execution_bits & !0b11_1111,
             0,
             "invalid encoded execution lane {execution_bits}"
         );
-        let custody_bits = execution_bits & 0b1111;
+        let custody_bits = execution_bits & 0b1_1111;
         let custody =
             (custody_bits != 0).then(|| RuntimeExecutionCustody::from_encoded_bits(custody_bits));
-        Self::owned(tls, gil, custody, execution_bits & 0b1_0000 != 0)
+        Self::owned(tls, gil, custody, execution_bits & 0b10_0000 != 0)
     }
 }
 
@@ -811,7 +847,7 @@ impl RuntimeExecutionGuard {
             .custody
             .take()
             .expect("execution custody finished twice");
-        finish_execution(custody, &owned.gil.token(), owned.active_lifecycle_lease);
+        finish_execution(custody, owned.gil.token(), owned.active_lifecycle_lease);
         owned.active_lifecycle_lease = false;
     }
 }
@@ -838,28 +874,49 @@ pub extern "C" fn molt_runtime_execution_leave(token: u64) {
     drop(unsafe { RuntimeExecutionGuard::from_encoded_lane(token) });
 }
 
-/// Enter the one non-attaching destruction lane used by CPython thread-state
-/// TLS. Unlike [`RuntimeExecutionGuard`], this acquires only lifecycle and GIL
-/// custody: creating or attaching thread state here would recurse into the TLS
-/// record currently being destroyed.
-pub(crate) fn enter_retained_thread_state_drop() -> u64 {
+/// Own normal execution custody for destruction of one exact retained C
+/// record. The C drain makes that existing record current; creating another
+/// record here would recurse into the ownership domain being destroyed.
+pub(crate) fn enter_retained_thread_state_drop(runtime_owner: u64) -> u64 {
+    assert_ne!(
+        runtime_owner, 0,
+        "thread-state destruction requires its exact origin"
+    );
     loop {
-        let Some(active_lifecycle_lease) =
-            crate::state::runtime_state::try_acquire_runtime_execution_lease(true)
-        else {
-            if !crate::state::runtime_state::runtime_is_initialized() {
-                return 0;
-            }
-            std::thread::yield_now();
-            continue;
-        };
+        let tls = crate::state::execution_tls();
+        let active_lifecycle_lease =
+            if tls.lease_depth.get() != 0 || tls.shutdown_drain_depth.get() != 0 {
+                // A suspended ordinary/drain owner retains this allocation.
+                // Independently reacquire its GIL below, never wait for Ready.
+                false
+            } else {
+                let Some(acquired) =
+                    crate::state::runtime_state::try_acquire_runtime_execution_lease(true)
+                else {
+                    if !crate::state::runtime_state::runtime_is_initialized() {
+                        return 0;
+                    }
+                    std::thread::yield_now();
+                    continue;
+                };
+                acquired
+            };
         let gil = GilGuard::new();
-        if crate::state::runtime_state::runtime_state_for_gil().is_some() {
+        let (resolved, matches_origin) = crate::state::runtime_state::runtime_state_for_gil()
+            .map_or((false, false), |state| {
+                (true, state.identity() as u64 == runtime_owner)
+            });
+        if matches_origin {
+            enter_c_extension_execution_context();
             return gil.into_encoded_lane() | (u64::from(active_lifecycle_lease) << 8);
         }
         drop(gil);
         if active_lifecycle_lease {
             crate::state::runtime_state::release_runtime_execution_lease();
+        }
+        if resolved {
+            // A different Ready runtime cannot license this record's payload.
+            return 0;
         }
         if !crate::state::runtime_state::runtime_is_initialized() {
             return 0;
@@ -877,10 +934,222 @@ pub(crate) unsafe fn leave_retained_thread_state_drop(token: u64) {
     assert_eq!(token & !0x1ff, 0, "invalid retained-state drop token");
     let active_lifecycle_lease = token & 0x100 != 0;
     let gil = unsafe { GilGuard::from_encoded_lane(token & 0xff) };
+    assert!(
+        gil_held(),
+        "thread-state finalizer returned without restoring the GIL"
+    );
+    leave_c_extension_execution_context();
     if active_lifecycle_lease {
         crate::state::runtime_state::release_runtime_execution_lease();
     }
     drop(gil);
+}
+
+/// Exact ownership of one compiled invocation. This value moves freely: only
+/// typed scalar identities, never its stack address, are published in the record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CompiledScopeId(u64);
+
+#[derive(Clone, Copy)]
+pub(crate) struct CompiledScopeFrame {
+    id: CompiledScopeId,
+    previous: u64,
+    runtime: *const crate::state::runtime_state::RuntimeState,
+    gil_depth: usize,
+    lease_depth: usize,
+    shutdown_depth: u8,
+    public_depth: u32,
+    public_owns_persistent: bool,
+    cext_depth: u32,
+    persistent_owner: u64,
+    suspension: u64,
+    depends_on_persistent: bool,
+}
+
+#[cold]
+pub(crate) fn invalid_execution_restore(message: &str) -> ! {
+    eprintln!("molt fatal: invalid execution custody restore: {message}");
+    std::process::abort()
+}
+
+pub(crate) fn next_execution_identity(tls: &crate::state::ExecutionTls) -> u64 {
+    let next = tls
+        .execution_identity
+        .get()
+        .checked_add(1)
+        .unwrap_or_else(|| invalid_execution_restore("execution identity exhausted"));
+    tls.execution_identity.set(next);
+    next
+}
+
+fn current_suspension(tls: &crate::state::ExecutionTls) -> u64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        tls.native_gil.suspension_identity()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = tls;
+        0
+    }
+}
+
+impl CompiledScopeFrame {
+    fn enter(py: &PyToken<'_>) -> Self {
+        let tls = py.execution_tls();
+        if !runtime_execution_custody_in(tls) || tls.bound_state.get().is_null() {
+            invalid_execution_restore("compiled entry lacks admitted runtime/GIL custody");
+        }
+        let id = CompiledScopeId(next_execution_identity(tls));
+        let persistent_owner = tls.persistent_execution_owner.get();
+        let suspension = current_suspension(tls);
+        let depends_on_persistent = persistent_owner != 0
+            && tls.persistent_execution_owns_gil.get()
+            && tls.gil_depth.get() == 1
+            && suspension == 0;
+        let frame = Self {
+            id,
+            previous: tls.compiled_scope_top.get(),
+            runtime: tls.bound_state.get(),
+            gil_depth: tls.gil_depth.get(),
+            lease_depth: tls.lease_depth.get(),
+            shutdown_depth: tls.shutdown_drain_depth.get(),
+            public_depth: tls.public_gil_depth.get(),
+            public_owns_persistent: tls.public_gil_owns_persistent.get(),
+            persistent_owner,
+            suspension,
+            depends_on_persistent,
+            cext_depth: tls.cext_execution_depth.get(),
+        };
+        let depth = tls
+            .compiled_depth
+            .get()
+            .checked_add(1)
+            .unwrap_or_else(|| invalid_execution_restore("compiled scope depth overflow"));
+        if depends_on_persistent {
+            tls.compiled_public_dependencies.set(
+                tls.compiled_public_dependencies
+                    .get()
+                    .checked_add(1)
+                    .unwrap_or_else(|| {
+                        invalid_execution_restore("compiled owner dependency overflow")
+                    }),
+            );
+        }
+        tls.compiled_scope_top.set(id.0);
+        tls.compiled_depth.set(depth);
+        frame
+    }
+
+    fn validate(&self, tls: &crate::state::ExecutionTls) {
+        if tls.compiled_scope_top.get() != self.id.0
+            || tls.bound_state.get() != self.runtime
+            || tls.gil_depth.get() != self.gil_depth
+            || tls.lease_depth.get() != self.lease_depth
+            || tls.shutdown_drain_depth.get() != self.shutdown_depth
+            || tls.public_gil_depth.get() != self.public_depth
+            || tls.public_gil_owns_persistent.get() != self.public_owns_persistent
+            || tls.cext_execution_depth.get() != self.cext_depth
+            || tls.persistent_execution_owner.get() != self.persistent_owner
+            || current_suspension(tls) != self.suspension
+            || !runtime_execution_custody_in(tls)
+        {
+            invalid_execution_restore("compiled scope identity/runtime/GIL/public custody changed");
+        }
+    }
+
+    fn leave(self, tls: &crate::state::ExecutionTls) {
+        self.validate(tls);
+        tls.compiled_scope_top.set(self.previous);
+        tls.compiled_depth.set(
+            tls.compiled_depth
+                .get()
+                .checked_sub(1)
+                .unwrap_or_else(|| invalid_execution_restore("compiled scope depth underflow")),
+        );
+        if self.depends_on_persistent {
+            tls.compiled_public_dependencies.set(
+                tls.compiled_public_dependencies
+                    .get()
+                    .checked_sub(1)
+                    .unwrap_or_else(|| {
+                        invalid_execution_restore("compiled owner dependency underflow")
+                    }),
+            );
+        }
+    }
+}
+
+pub(crate) struct CompiledScopeGuard<'scope, 'py> {
+    py: &'scope PyToken<'py>,
+    frame: CompiledScopeFrame,
+}
+impl<'scope, 'py> CompiledScopeGuard<'scope, 'py> {
+    pub(crate) fn enter(py: &'scope PyToken<'py>) -> Self {
+        Self {
+            py,
+            frame: CompiledScopeFrame::enter(py),
+        }
+    }
+    pub(crate) fn validate(&self) {
+        self.frame.validate(self.py.execution_tls());
+    }
+}
+impl Drop for CompiledScopeGuard<'_, '_> {
+    fn drop(&mut self) {
+        self.frame.leave(self.py.execution_tls());
+    }
+}
+
+/// Host boundary: a scope id owns one retained frame, closed exactly in LIFO order.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_compiled_execution_enter(context: u64) -> u64 {
+    let py = unsafe { PyToken::from_attached_context(context) };
+    let tls = py.execution_tls();
+    if !std::ptr::eq(tls, crate::state::execution_tls()) {
+        invalid_execution_restore("compiled host entry used another thread record");
+    }
+    // Reserve before publishing the scope so allocation failure cannot strand it.
+    tls.compiled_host_scopes.borrow_mut().reserve(1);
+    let frame = CompiledScopeFrame::enter(py);
+    tls.compiled_host_scopes.borrow_mut().push(frame);
+    frame.id.0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_compiled_execution_leave(context: u64, identity: u64) {
+    let py = unsafe { PyToken::from_attached_context(context) };
+    let tls = py.execution_tls();
+    if !std::ptr::eq(tls, crate::state::execution_tls()) {
+        invalid_execution_restore("compiled host leave used another thread record");
+    }
+    let frame = tls
+        .compiled_host_scopes
+        .borrow()
+        .last()
+        .copied()
+        .unwrap_or_else(|| invalid_execution_restore("compiled host scope is absent"));
+    if frame.id.0 != identity {
+        invalid_execution_restore("compiled host scope is not LIFO");
+    }
+    frame.validate(tls);
+    let _ = tls.compiled_host_scopes.borrow_mut().pop();
+    frame.leave(tls);
+}
+
+pub(crate) fn retire_idle_compiled_scope_storage() {
+    let tls = crate::state::execution_tls();
+    if tls.compiled_depth.get() == 0 {
+        let mut scopes = tls.compiled_host_scopes.borrow_mut();
+        if !scopes.is_empty() {
+            invalid_execution_restore("idle compiled host scope remained owned");
+        }
+        *scopes = Vec::new();
+    }
+}
+
+pub(crate) fn has_persistent_runtime_execution() -> bool {
+    PERSISTENT_RUNTIME_EXECUTION.with(|slot| slot.get().is_some())
 }
 
 #[derive(Clone, Copy)]
@@ -892,9 +1161,6 @@ struct PersistentRuntimeExecution {
 
 thread_local! {
     static PERSISTENT_RUNTIME_EXECUTION: Cell<Option<PersistentRuntimeExecution>> = const { Cell::new(None) };
-    static CEXT_EXECUTION_CONTEXT_DEPTH: Cell<u32> = const { Cell::new(0) };
-    #[cfg(target_arch = "wasm32")]
-    static WASM_RUNTIME_EXECUTION_DEPTH: Cell<usize> = const { Cell::new(0) };
     #[cfg(test)]
     static RUNTIME_EXECUTION_CLEANUP_TEST_PANIC: Cell<bool> = const { Cell::new(false) };
     #[cfg(test)]
@@ -906,7 +1172,7 @@ thread_local! {
 /// Establish the persistent public C GIL boundary through the same lifecycle
 /// admission and attachment authority as scoped entries.
 pub(crate) fn ensure_persistent_runtime_execution() {
-    if PERSISTENT_RUNTIME_EXECUTION.with(|slot| slot.get().is_some()) {
+    if has_persistent_runtime_execution() {
         return;
     }
     if execution_is_nested() {
@@ -925,6 +1191,10 @@ pub(crate) fn ensure_persistent_runtime_execution() {
                 active_lifecycle_lease,
             }));
         });
+        let tls = crate::state::execution_tls();
+        tls.persistent_execution_owner
+            .set(next_execution_identity(tls));
+        tls.persistent_execution_owns_gil.set(false);
         return;
     }
 
@@ -946,6 +1216,10 @@ pub(crate) fn ensure_persistent_runtime_execution() {
             active_lifecycle_lease,
         }));
     });
+    let tls = crate::state::execution_tls();
+    tls.persistent_execution_owner
+        .set(next_execution_identity(tls));
+    tls.persistent_execution_owns_gil.set(true);
 }
 
 #[cfg(all(test, panic = "unwind"))]
@@ -954,15 +1228,23 @@ pub(crate) fn inject_shutdown_drain_drop_panic() {
 }
 
 pub(crate) fn release_persistent_runtime_execution() -> bool {
+    let tls = crate::state::execution_tls();
+    if tls.compiled_public_dependencies.get() != 0
+        || (tls.persistent_execution_owns_gil.get() && current_suspension(tls) != 0)
+    {
+        return false;
+    }
     let Some(execution) = PERSISTENT_RUNTIME_EXECUTION.with(|slot| slot.replace(None)) else {
         return false;
     };
+    tls.persistent_execution_owner.set(0);
+    tls.persistent_execution_owns_gil.set(false);
     let gil = GilGuard::new();
     finish_then_release(
         || {
             finish_execution(
                 execution.custody,
-                &gil.token(),
+                gil.token(),
                 execution.active_lifecycle_lease,
             );
             drop(gil);
@@ -976,6 +1258,8 @@ pub(crate) fn release_persistent_runtime_execution() -> bool {
     true
 }
 
+include!("../attached_exports_generated/concurrency/execution.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -987,12 +1271,15 @@ mod tests {
         use molt_codegen_abi::inline_refcount::CompiledRefcountAdmission;
         let _test = crate::test_support::RuntimeTestTransaction::new();
         let runtime = CompiledRefcountAdmission::Runtime as u64;
-        assert_eq!(molt_refcount_admission(), runtime);
+        assert_eq!(
+            refcount_admission_in(crate::state::execution_tls()),
+            runtime
+        );
         {
             let _gil_only = GilGuard::new();
             assert!(gil_held());
             assert_eq!(
-                molt_refcount_admission(),
+                refcount_admission_in(crate::state::execution_tls()),
                 runtime,
                 "a GIL token grants no attachment or lifecycle authority"
             );
@@ -1009,24 +1296,36 @@ mod tests {
             } else {
                 CompiledRefcountAdmission::AttachedPlain as u64
             };
-            assert_eq!(molt_refcount_admission(), expected);
+            assert_eq!(
+                refcount_admission_in(crate::state::execution_tls()),
+                expected
+            );
             {
                 let _suspended = crate::GilReleaseGuard::suspend();
-                assert_eq!(molt_refcount_admission(), runtime);
+                assert_eq!(
+                    refcount_admission_in(crate::state::execution_tls()),
+                    runtime
+                );
             }
             assert_eq!(
-                molt_refcount_admission(),
+                refcount_admission_in(crate::state::execution_tls()),
                 expected,
                 "resumption borrows a fresh admission"
             );
             {
                 let _nested = RuntimeExecutionGuard::enter();
-                assert_eq!(molt_refcount_admission(), expected);
+                assert_eq!(
+                    refcount_admission_in(crate::state::execution_tls()),
+                    expected
+                );
             }
-            assert_eq!(molt_refcount_admission(), expected);
+            assert_eq!(
+                refcount_admission_in(crate::state::execution_tls()),
+                expected
+            );
         }
         assert_eq!(
-            molt_refcount_admission(),
+            refcount_admission_in(crate::state::execution_tls()),
             runtime,
             "admission expires with its execution boundary"
         );
@@ -1066,24 +1365,47 @@ mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    fn published_poll_word(record: u64) -> u64 {
+        let address = record + molt_codegen_abi::THREAD_RECORD_PENDING_WORK_PTR_OFFSET as u64;
+        // Read the physical ABI consumed by compiled native and LLVM polls.
+        unsafe { std::ptr::with_exposed_provenance::<u64>(address as usize).read() }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn compiled_poll_word(py: &crate::PyToken<'_>) -> u64 {
+        let address =
+            py.attached_context() + molt_codegen_abi::ATTACHED_CONTEXT_THREAD_RECORD_OFFSET as u64;
+        let record = unsafe { std::ptr::with_exposed_provenance::<u64>(address as usize).read() };
+        assert_eq!(record, std::ptr::from_ref(py.execution_tls()) as u64);
+        published_poll_word(record)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn lease_custody_binds_the_resolved_state_until_its_release() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
         std::thread::spawn(|| {
             let tls = crate::state::execution_tls();
             assert!(tls.bound_state.get().is_null());
+            assert_eq!(published_poll_word(std::ptr::from_ref(tls) as u64), 0);
             {
                 let guard = RuntimeExecutionGuard::enter_with_worker_cleanup();
                 let bound = tls.bound_state.get();
                 let resolved = crate::state::runtime_state::runtime_state_for_gil_in(tls)
                     .expect("an admitted thread resolves its runtime");
                 assert!(std::ptr::eq(bound, resolved));
-                assert!(std::ptr::eq(crate::runtime_state(&guard.token()), resolved));
+                assert!(std::ptr::eq(crate::runtime_state(guard.token()), resolved));
+                assert_eq!(
+                    compiled_poll_word(guard.token()),
+                    resolved.pending_work.word_ptr() as u64,
+                    "a fresh callback must publish the real runtime eval breaker before any host entry"
+                );
             }
             assert!(
                 tls.bound_state.get().is_null(),
                 "the last lease release resets the binding"
             );
+            assert_eq!(published_poll_word(std::ptr::from_ref(tls) as u64), 0);
         })
         .join()
         .unwrap();
@@ -1096,17 +1418,33 @@ mod tests {
         std::thread::spawn(|| {
             let tls = crate::state::execution_tls();
             let guard = RuntimeExecutionGuard::enter_with_worker_cleanup();
-            let shared = crate::runtime_state(&guard.token()) as *const _;
+            let shared = crate::runtime_state(guard.token());
+            assert_eq!(
+                compiled_poll_word(guard.token()),
+                shared.pending_work.word_ptr() as u64
+            );
             let mut isolate = Box::new(crate::state::runtime_state::RuntimeState::new());
             crate::state::runtime_state::set_thread_runtime_state(&mut *isolate);
             assert!(std::ptr::eq(tls.bound_state.get(), &*isolate));
-            assert!(std::ptr::eq(
-                crate::runtime_state(&guard.token()),
-                &*isolate
-            ));
+            assert!(std::ptr::eq(crate::runtime_state(guard.token()), &*isolate));
+            assert_eq!(
+                compiled_poll_word(guard.token()),
+                isolate.pending_work.word_ptr() as u64
+            );
             crate::state::runtime_state::clear_thread_runtime_state();
             assert!(tls.bound_state.get().is_null());
-            assert!(std::ptr::eq(crate::runtime_state(&guard.token()), shared));
+            assert_eq!(published_poll_word(std::ptr::from_ref(tls) as u64), 0);
+            assert!(std::ptr::eq(crate::runtime_state(guard.token()), shared));
+            // Internal full resolution after clear is distinct from publishing
+            // a new compiled entry. The host boundary uses the same binder.
+            assert_eq!(
+                crate::state::tls::molt_attached_context(),
+                guard.token().attached_context()
+            );
+            assert_eq!(
+                compiled_poll_word(guard.token()),
+                shared.pending_work.word_ptr() as u64
+            );
             drop(guard);
             drop(isolate);
         })
@@ -1125,12 +1463,17 @@ mod tests {
             let resolved = crate::state::runtime_state::runtime_state_for_gil_in(tls)
                 .expect("drain custody resolves the ready runtime");
             assert!(std::ptr::eq(tls.bound_state.get(), resolved));
+            assert_eq!(
+                compiled_poll_word(gil.token()),
+                resolved.pending_work.word_ptr() as u64
+            );
             {
                 let nested = RuntimeExecutionGuard::enter();
                 assert!(nested.owned.is_none(), "a callback borrows drain custody");
             }
             drop(custody);
             assert!(tls.bound_state.get().is_null());
+            assert_eq!(published_poll_word(std::ptr::from_ref(tls) as u64), 0);
             drop(gil);
         })
         .join()
@@ -1150,15 +1493,22 @@ mod tests {
             assert_eq!(terminal.is_some(), shutdown);
             let count = crate::state::runtime_state::active_runtime_execution_lease_count();
             let attached = molt_cpython_abi::api::object::runtime_execution_thread_is_attached();
+            let runtime = crate::runtime_state(gil.token());
+            let word = compiled_poll_word(gil.token());
+            assert_eq!(word, runtime.pending_work.word_ptr() as u64);
             {
                 let _release = crate::GilReleaseGuard::suspend();
                 assert!(!crate::gil_held());
                 let token = unsafe { molt_cpython_abi::api::object::PyGILState_Ensure() };
                 assert!(crate::gil_held());
+                assert!(std::ptr::eq(crate::runtime_state(gil.token()), runtime));
+                assert_eq!(compiled_poll_word(gil.token()), word);
                 assert!(
-                    crate::obj_from_bits(crate::molt_getrecursionlimit())
-                        .as_int()
-                        .unwrap()
+                    crate::obj_from_bits(crate::with_gil_entry_nopanic!(__entry_py, {
+                        crate::object::ops_sys::molt_getrecursionlimit_attached_body(__entry_py)
+                    }))
+                    .as_int()
+                    .unwrap()
                         > 0
                 );
                 assert_eq!(
@@ -1176,6 +1526,8 @@ mod tests {
                     count
                 );
             }
+            assert!(std::ptr::eq(crate::runtime_state(gil.token()), runtime));
+            assert_eq!(compiled_poll_word(gil.token()), word);
             drop(terminal);
             drop(ordinary);
             drop(gil);
@@ -1353,7 +1705,7 @@ mod tests {
         );
         assert!(!current_thread_has_c_extension_execution_context());
         assert!(!current_thread_holds_shutdown_drain_custody());
-        let profile = crate::object::ops::runtime_profile_payload(&gil.token(), false);
+        let profile = crate::object::ops::runtime_profile_payload(gil.token(), false);
         let safety = profile
             .get("execution_safety")
             .expect("runtime profile must expose execution-safety diagnostics");

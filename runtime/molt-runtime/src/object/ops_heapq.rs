@@ -12,7 +12,7 @@ use std::cmp::Ordering;
 use super::ops::{CompareOutcome, compare_objects};
 
 fn heapq_lt(_py: &PyToken<'_>, a_bits: u64, b_bits: u64) -> Option<bool> {
-    let res_bits = super::ops_compare::molt_lt(a_bits, b_bits);
+    let res_bits = super::ops_compare::molt_lt_attached_body(_py, a_bits, b_bits);
     if exception_pending(_py) {
         return None;
     }
@@ -215,9 +215,8 @@ unsafe fn heapq_siftup(_py: &PyToken<'_>, heap_ptr: *mut u8, mut pos: usize) -> 
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_heapq_heapify(list_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_heapq_heapify_attached_body(_py: &crate::PyToken<'_>, list_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let list_obj = obj_from_bits(list_bits);
         let Some(list_ptr) = list_obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -240,9 +239,12 @@ pub extern "C" fn molt_heapq_heapify(list_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_heapq_heappush(list_bits: u64, item_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_heapq_heappush_attached_body(
+    _py: &crate::PyToken<'_>,
+    list_bits: u64,
+    item_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let list_obj = obj_from_bits(list_bits);
         let Some(list_ptr) = list_obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -267,9 +269,8 @@ pub extern "C" fn molt_heapq_heappush(list_bits: u64, item_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_heapq_heappop(list_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_heapq_heappop_attached_body(_py: &crate::PyToken<'_>, list_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let list_obj = obj_from_bits(list_bits);
         let Some(list_ptr) = list_obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -324,9 +325,12 @@ pub extern "C" fn molt_heapq_heappop(list_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_heapq_heapreplace(list_bits: u64, item_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_heapq_heapreplace_attached_body(
+    _py: &crate::PyToken<'_>,
+    list_bits: u64,
+    item_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let list_obj = obj_from_bits(list_bits);
         let Some(list_ptr) = list_obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -363,9 +367,12 @@ pub extern "C" fn molt_heapq_heapreplace(list_bits: u64, item_bits: u64) -> u64 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_heapq_heappushpop(list_bits: u64, item_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_heapq_heappushpop_attached_body(
+    _py: &crate::PyToken<'_>,
+    list_bits: u64,
+    item_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let list_obj = obj_from_bits(list_bits);
         let Some(list_ptr) = list_obj.as_ptr() else {
             return MoltObject::none().bits();
@@ -433,9 +440,13 @@ pub extern "C" fn molt_heapq_heappushpop(list_bits: u64, item_bits: u64) -> u64 
 //     the keys.
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_heapq_nsmallest(n_bits: u64, iterable_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_heapq_nsmallest_attached_body(
+    _py: &crate::PyToken<'_>,
+    n_bits: u64,
+    iterable_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // --- extract n ---
         let n_raw = index_i64_from_obj(_py, n_bits, "nsmallest() argument 'n' must be an integer");
         if exception_pending(_py) {
@@ -873,9 +884,13 @@ pub extern "C" fn molt_heapq_nsmallest(n_bits: u64, iterable_bits: u64, key_bits
 //     Return heap sorted descending.
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_heapq_nlargest(n_bits: u64, iterable_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_heapq_nlargest_attached_body(
+    _py: &crate::PyToken<'_>,
+    n_bits: u64,
+    iterable_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let n_raw = index_i64_from_obj(_py, n_bits, "nlargest() argument 'n' must be an integer");
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -1259,9 +1274,13 @@ pub extern "C" fn molt_heapq_nlargest(n_bits: u64, iterable_bits: u64, key_bits:
 // lists up front and build the result list in memory.
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_heapq_merge(iterables_bits: u64, key_bits: u64, reverse_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_heapq_merge_attached_body(
+    _py: &crate::PyToken<'_>,
+    iterables_bits: u64,
+    key_bits: u64,
+    reverse_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let iter_obj = obj_from_bits(iterables_bits);
         let Some(iter_ptr) = iter_obj.as_ptr() else {
             // Empty iterables argument → return empty list.
@@ -1539,3 +1558,5 @@ pub extern "C" fn molt_heapq_merge(iterables_bits: u64, key_bits: u64, reverse_b
         }
     })
 }
+
+include!("../attached_exports_generated/object/ops_heapq.rs");

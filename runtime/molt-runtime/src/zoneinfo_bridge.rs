@@ -7,39 +7,48 @@ use crate::*;
 // Exception / error handling
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_zoneinfo_raise_exception"))]
 pub extern "C" fn __molt_zoneinfo_raise_exception(
+    __molt_context: u64,
     kind_code: u16,
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let msg = unsafe { std::slice::from_raw_parts(msg_ptr, msg_len) };
         crate::builtins::exceptions::raise_exception_code_bytes(_py, kind_code, msg)
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Object allocation
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_zoneinfo_alloc_string(data_ptr: *const u8, data_len: usize) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_zoneinfo_alloc_string"))]
+pub extern "C" fn __molt_zoneinfo_alloc_string(
+    __molt_context: u64,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> *mut u8 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         alloc_string(_py, data)
-    })
+    }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_zoneinfo_alloc_set_with_entries"))]
 pub extern "C" fn __molt_zoneinfo_alloc_set_with_entries(
+    __molt_context: u64,
     elems_ptr: *const u64,
     elems_len: usize,
 ) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         let elems = unsafe { std::slice::from_raw_parts(elems_ptr, elems_len) };
         alloc_set_with_entries(_py, elems)
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -67,15 +76,17 @@ pub extern "C" fn __molt_zoneinfo_object_type_id(ptr: *mut u8) -> u32 {
     unsafe { object_type_id(ptr) }
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_zoneinfo_seq_snapshot"))]
 pub extern "C" fn __molt_zoneinfo_seq_snapshot(
+    __molt_context: u64,
     ptr: *mut u8,
     out_ptr: *mut *const u64,
     out_len: *mut usize,
 ) -> i32 {
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
         unsafe { crate::seq_snapshot_bridge::export(_py, ptr, out_ptr, out_len) }
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -96,7 +107,10 @@ pub extern "C" fn __molt_zoneinfo_to_i64(bits: u64, out: *mut i64) -> i32 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __molt_zoneinfo_int_bits_from_i64(val: i64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { int_bits_from_i64(_py, val) })
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_zoneinfo_int_bits_from_i64"))]
+pub extern "C" fn __molt_zoneinfo_int_bits_from_i64(__molt_context: u64, val: i64) -> u64 {
+    {
+        let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+        int_bits_from_i64(_py, val)
+    }
 }

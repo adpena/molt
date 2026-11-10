@@ -3,8 +3,10 @@ use crate::BuiltinExc;
 use molt_stdlib_text::codec_registry::{EncodingKind, normalize_encoding};
 use std::borrow::Cow;
 
-pub(crate) extern "C" fn io_base_flush(object: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn io_base_flush(__context: u64, object: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         match io_base_is_closed(py, object) {
             Ok(false) => MoltObject::none().bits(),
             Ok(true) => {
@@ -15,8 +17,10 @@ pub(crate) extern "C" fn io_base_flush(object: u64) -> u64 {
     })
 }
 
-pub(crate) extern "C" fn io_base_close(object: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn io_base_close(__context: u64, object: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         match io_base_is_closed(py, object) {
             Ok(true) => return MoltObject::none().bits(),
             Err(error) => return error,
@@ -28,8 +32,13 @@ pub(crate) extern "C" fn io_base_close(object: u64) -> u64 {
         // Publish closed even after a failed flush. A user setter may itself
         // fail, in which case that error takes precedence and retains context.
         if let Some(name) = crate::NameId::PrivateIOBaseClosed.owned_bits(py) {
-            let _name = PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());
-            molt_setattr_builtin(object, name, MoltObject::from_bool(true).bits());
+            let _name = PtrDropGuard::new(py, obj_from_bits(name).as_ptr().unwrap());
+            molt_setattr_builtin_attached_body(
+                py,
+                object,
+                name,
+                MoltObject::from_bool(true).bits(),
+            );
         }
         io_chain_close_error(py, error);
         dec_ref_bits(py, result);
@@ -85,9 +94,12 @@ unsafe fn file_write_once(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_file_write_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    data_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected file handle");
@@ -109,7 +121,7 @@ pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
             // native instance and acquire before borrowing its payload or
             // locking the backend; state Arc custody alone is insufficient.
             inc_ref_bits(_py, handle_bits);
-            let _owner = PtrDropGuard::new(ptr);
+            let _owner = PtrDropGuard::new(_py, ptr);
             let text = (*handle_ptr).text;
             let memory_stream =
                 !text && (*handle_ptr).mem_bits != 0 && (*handle_ptr).buffer_bits == 0;
@@ -376,9 +388,12 @@ pub extern "C" fn molt_file_write(handle_bits: u64, data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_file_writelines(handle_bits: u64, lines_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_file_writelines_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    lines_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected file handle");
@@ -413,7 +428,7 @@ pub extern "C" fn molt_file_writelines(handle_bits: u64, lines_bits: u64) -> u64
                 Ok(None) => break,
                 Err(_) => return MoltObject::none().bits(),
             };
-            let result = molt_file_write(handle_bits, line);
+            let result = molt_file_write_attached_body(_py, handle_bits, line);
             dec_ref_bits(_py, line);
             dec_ref_bits(_py, result);
             if exception_pending(_py) {
@@ -424,9 +439,8 @@ pub extern "C" fn molt_file_writelines(handle_bits: u64, lines_bits: u64) -> u64
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_file_flush(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { file_flush(py, handle_bits) })
+pub(crate) fn molt_file_flush_attached_body(_py: &crate::PyToken<'_>, handle_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { file_flush(py, handle_bits) })
 }
 
 pub(super) fn file_flush(_py: &PyToken<'_>, handle_bits: u64) -> u64 {
@@ -516,9 +530,8 @@ pub(super) fn file_flush(_py: &PyToken<'_>, handle_bits: u64) -> u64 {
     MoltObject::none().bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_file_close(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_file_close_attached_body(_py: &crate::PyToken<'_>, handle_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected file handle");
@@ -591,7 +604,7 @@ pub extern "C" fn molt_file_close(handle_bits: u64) -> u64 {
         // BytesIO/StringIO close their storage directly without calling flush.
         let _exception_scope = crate::builtins::exceptions::ExceptionStackScope::push(_py);
         let result = if raw {
-            io_base_close(handle_bits)
+            io_base_close(_py.attached_context(), handle_bits)
         } else if memory {
             MoltObject::none().bits()
         } else {
@@ -618,7 +631,9 @@ pub extern "C" fn molt_file_close(handle_bits: u64) -> u64 {
                 }
             };
             if let Some(child) = child {
-                let _child = obj_from_bits(child).as_ptr().map(PtrDropGuard::new);
+                let _child = obj_from_bits(child)
+                    .as_ptr()
+                    .map(|__ptr| PtrDropGuard::new(_py, __ptr));
                 let result = io_call_noargs(_py, child, crate::NameId::Close);
                 unsafe {
                     let handle = &mut *file_handle_ptr(ptr);
@@ -674,3 +689,5 @@ pub extern "C" fn molt_file_close(handle_bits: u64) -> u64 {
         }
     })
 }
+
+include!("../../attached_exports_generated/builtins/io/write.rs");

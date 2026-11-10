@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use wasm_encoder::{Function, Instruction};
+use crate::wasm_binary::Function;
+use wasm_encoder::Instruction;
 
 use crate::wasm::WasmBackend;
 use crate::wasm_abi::{RESERVED_RUNTIME_CALLABLE_SPECS, RUNTIME_CALLABLE_IMPORTS};
@@ -80,14 +81,17 @@ impl WasmBackend {
     ) -> BTreeMap<String, u32> {
         let mut wrapper_indices = BTreeMap::new();
         for spec in &plan.compact_builtin_runtime_callables {
-            let type_idx = self.types.boxed(spec.arity, true);
+            let type_idx = self.types.boxed(spec.arity + 1, true);
             let import_idx = self.import_ids[spec.import];
             self.funcs.function(type_idx);
             let func_index = self.func_count;
+            std::rc::Rc::make_mut(&mut self.execution_call_abis)
+                .register_attached(func_index, &vec![wasm_encoder::ValType::I64; spec.arity]);
             self.func_count += 1;
             let mut func = Function::new_with_locals_types(Vec::new());
+            func.attach_context(spec.arity + 1, self.execution_call_abis.clone());
             for idx in 0..spec.arity {
-                func.instruction(&Instruction::LocalGet(idx as u32));
+                func.instruction(&Instruction::LocalGet(idx as u32 + 1));
             }
             emit_call(&mut func, reloc_enabled, import_idx);
             func.instruction(&Instruction::End);

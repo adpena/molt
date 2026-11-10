@@ -19,6 +19,10 @@ pub(super) fn emit_fallback_function_body(
     let import_ids = ctx.import_ids;
     let frame_plan = WasmFunctionFramePlan::for_function(func_ir, scalar_plan);
     let (mut func, mut frame) = frame_plan.into_function_and_frame();
+    func.attach_context(
+        func_ir.params.len() + 1,
+        backend.execution_call_abis.clone(),
+    );
     frame.emit_debug_local_map(func_ir, func_index);
 
     if let Some(plan) = frame.control_plan() {

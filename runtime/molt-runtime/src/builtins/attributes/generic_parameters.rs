@@ -29,10 +29,13 @@ fn optional_attribute<'py>(
 
 fn append_parameter<'py>(
     py: &'py PyToken<'_>,
-    parameters: &mut Vec<ProtectedRuntimeValue<'py>>,
+    parameters: &mut molt_runtime_core::RuntimeValueCollection<
+        'py,
+        molt_runtime_core::ProtectedRuntimeReferenceRelease,
+    >,
     value: u64,
 ) -> Result<(), ()> {
-    if parameters.iter().any(|parameter| parameter.bits() == value) {
+    if parameters.as_bits_slice().contains(&value) {
         return Ok(());
     }
     if parameters.try_reserve(1).is_err() {
@@ -98,7 +101,9 @@ fn collect_parameters(py: &PyToken<'_>, arguments: u64) -> Result<u64, ()> {
     let parameters_name =
         unsafe { ProtectedRuntimeValue::from_owned_bits(py.core_token(), parameters_name) };
     let descend_sequences = crate::object::ops_sys::runtime_target_at_least(py, 3, 14);
-    let mut parameters = Vec::new();
+    let mut parameters = molt_runtime_core::RuntimeValueCollection::<
+        molt_runtime_core::ProtectedRuntimeReferenceRelease,
+    >::new(py.core_token());
     for &argument in arguments.iter() {
         if obj_from_bits(argument)
             .as_ptr()
@@ -135,7 +140,7 @@ fn collect_parameters(py: &PyToken<'_>, arguments: u64) -> Result<u64, ()> {
             }
         }
     }
-    let pointer = alloc_tuple(py, ProtectedRuntimeValue::as_bits_slice(&parameters));
+    let pointer = alloc_tuple(py, parameters.as_bits_slice());
     if pointer.is_null() {
         return Err(());
     }

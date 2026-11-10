@@ -5,6 +5,7 @@ use super::super::common::{
 use crate::OpIR;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::{WasmFrameLocals, WasmNumericLaneStats};
+use crate::wasm_binary::Function;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_plan::wasm_scalar_integer_fast_path_for_op;
 use crate::wasm_values::{
@@ -12,7 +13,7 @@ use crate::wasm_values::{
     emit_unbox_int_local_trusted_opt, emit_unbox_int_local_trusted_tee_opt,
 };
 use std::collections::BTreeMap;
-use wasm_encoder::{BlockType, Function, Instruction, ValType};
+use wasm_encoder::{BlockType, Instruction, ValType};
 
 #[derive(Clone, Copy)]
 pub(super) enum ShiftDirection {

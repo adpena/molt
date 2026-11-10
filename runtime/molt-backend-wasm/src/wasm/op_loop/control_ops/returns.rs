@@ -1,6 +1,7 @@
 use super::ControlOpContext;
 use crate::OpIR;
-use wasm_encoder::{Function, Instruction};
+use crate::wasm_binary::Function;
+use wasm_encoder::Instruction;
 
 pub(super) fn emit_return_control_op(
     context: &ControlOpContext<'_>,

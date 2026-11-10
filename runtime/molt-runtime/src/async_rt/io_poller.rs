@@ -21,8 +21,9 @@ use super::wake_await_waiters;
 use crate::require_net_capability;
 use crate::{
     GilReleaseGuard, MoltObject, PtrSlot, PyToken, dec_ref_bits, header_from_obj_ptr, inc_ref_bits,
-    io_wait_poll_fn_addr, molt_future_new, monotonic_now_secs, obj_from_bits, pending_bits_i64,
-    ptr_from_bits, raise_exception, resolve_obj_ptr, runtime_state, to_f64, to_i64,
+    io_wait_poll_fn_addr, molt_future_new_attached_body, monotonic_now_secs, obj_from_bits,
+    pending_bits_i64, ptr_from_bits, raise_exception, resolve_obj_ptr, runtime_state, to_f64,
+    to_i64,
 };
 #[cfg(target_arch = "wasm32")]
 use crate::{IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE};

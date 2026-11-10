@@ -111,7 +111,7 @@ mod tests {
             include_str!("wasm_abi_exports.rs"),
         ),
         (
-            "molt_thread_record",
+            "molt_attached_context",
             AbiReturnKind::RawAddress,
             include_str!("state/tls.rs"),
         ),
@@ -227,29 +227,39 @@ mod tests {
     fn warm_runtime_raw_failures_never_return_boxed_object_sentinels() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let _ =
-                crate::raise_exception::<u64>(py, crate::BuiltinExc::ValueError, "warm runtime");
-            crate::clear_exception(py);
-        });
+            {
+                let _ = crate::raise_exception::<u64>(
+                    py,
+                    crate::BuiltinExc::ValueError,
+                    "warm runtime",
+                );
+                crate::clear_exception(py);
+            };
 
-        assert_eq!(crate::molt_scratch_alloc(u64::MAX), 0);
-        let _ = crate::molt_exception_clear();
-        assert_eq!(crate::c_api::molt_module_state_find(0), 0);
-        let _ = crate::molt_exception_clear();
-        assert_eq!(crate::c_api::PyErr_NoMemory(), 0);
-        let _ = crate::molt_exception_clear();
-        assert_eq!(
-            crate::molt_list_int_getitem_raw_checked(MoltObject::none().bits(), 0),
-            0
-        );
-        assert_eq!(
-            crate::seq_snapshot_bridge::molt_seq_snapshot(
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            ),
-            0
-        );
+            assert_eq!(crate::molt_scratch_alloc(u64::MAX), 0);
+            let _ = crate::molt_exception_clear_attached_body(py);
+            assert_eq!(crate::c_api::molt_module_state_find_attached_body(py, 0), 0);
+            let _ = crate::molt_exception_clear_attached_body(py);
+            assert_eq!(crate::c_api::PyErr_NoMemory(), 0);
+            let _ = crate::molt_exception_clear_attached_body(py);
+            assert_eq!(
+                crate::object::ops::molt_list_int_getitem_raw_checked_attached_body(
+                    py,
+                    MoltObject::none().bits(),
+                    0
+                ),
+                0
+            );
+            assert_eq!(
+                crate::seq_snapshot_bridge::molt_seq_snapshot_attached_body(
+                    py,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                ),
+                0
+            );
+        });
     }
 
     #[test]

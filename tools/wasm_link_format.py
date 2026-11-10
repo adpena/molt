@@ -50,7 +50,10 @@ _STANDARD_SECTION_ORDER = {
     11: 13,
 }
 
-WASM_CALL_INDIRECT_IMPORTS = tuple(_WASM_ABI.WASM_CALL_INDIRECT_IMPORTS)
+WASM_CALL_INDIRECT_IMPORTS = tuple(
+    _WASM_ABI.compiled_execution_symbol(name)
+    for name in _WASM_ABI.WASM_CALL_INDIRECT_IMPORTS
+)
 
 WASM_EXTERNAL_NATIVE_LINK_IMPORTS = tuple(_WASM_ABI.WASM_EXTERNAL_NATIVE_LINK_IMPORTS)
 
@@ -94,7 +97,7 @@ def wasm_runtime_import_name(name: str) -> str | None:
 
 
 def wasm_runtime_export_name(name: str) -> str | None:
-    return _WASM_ABI.wasm_runtime_export_name(name)
+    return _runtime_exports.wasm_runtime_export_name_for_import(name)
 
 
 _CALL_INDIRECT_IMPORT_SET = frozenset(WASM_CALL_INDIRECT_IMPORTS)
@@ -102,6 +105,10 @@ _CALL_INDIRECT_IMPORT_SET = frozenset(WASM_CALL_INDIRECT_IMPORTS)
 
 def is_call_indirect_import_name(name: str) -> bool:
     return name in _CALL_INDIRECT_IMPORT_SET
+
+
+def is_obsolete_call_indirect_import_name(name: str) -> bool:
+    return name in _WASM_ABI.WASM_CALL_INDIRECT_IMPORTS
 
 
 _WASM_VALUE_TYPE_ENCODINGS = {
@@ -147,7 +154,7 @@ def canonical_extern_type(value: object) -> object:
     return value
 
 
-_OUTPUT_RUNTIME_EXPORT_ALIASES = _WASM_ABI.WASM_OUTPUT_RUNTIME_EXPORT_ALIASES
+_OUTPUT_RUNTIME_EXPORT_ALIASES = _runtime_exports.wasm_output_runtime_export_names()
 
 _OUTPUT_EXPORT_ALIAS_PREFIX = _WASM_ABI.WASM_OUTPUT_EXPORT_ALIAS_PREFIX
 
@@ -155,7 +162,23 @@ _INTERNAL_OUTPUT_EXPORT_PREFIXES = _WASM_ABI.WASM_INTERNAL_OUTPUT_EXPORT_PREFIXE
 
 _EMPTY_FUNC_BODY = bytes([0x00, 0x0B])
 
-_ESSENTIAL_EXPORTS = _WASM_ABI.WASM_ESSENTIAL_EXPORTS
+
+def _physical_essential_export(name: str) -> str:
+    for logical in ("molt_main", "molt_host_init", "molt_isolate_import"):
+        physical = _WASM_ABI.compiled_execution_symbol(logical)
+        if name in (logical, physical):
+            return physical
+    if name in {"memory", "molt_memory", "molt_table", "__indirect_function_table"}:
+        return name
+    execution = _WASM_ABI.runtime_execution_abi(name)
+    if execution is None:
+        raise ValueError(f"unknown essential WASM runtime export {name}")
+    return execution.physical_symbol
+
+
+_ESSENTIAL_EXPORTS = frozenset(
+    _physical_essential_export(name) for name in _WASM_ABI.WASM_ESSENTIAL_EXPORTS
+)
 
 _TRAP_STUB_BODY = bytes([0x00, 0x00, 0x0B])
 

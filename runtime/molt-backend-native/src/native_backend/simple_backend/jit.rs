@@ -47,9 +47,9 @@ pub struct JitEntryPoints {
     pub app_callable_resolver: *const u8,
     /// `molt_module_registry_blob`.
     pub module_registry_blob: *const u8,
-    /// `molt_main()`.
+    /// The schema-bound compiled main, `(context) -> void`.
     pub main: *const u8,
-    /// `molt_isolate_bootstrap() -> u64`.
+    /// The schema-bound compiled isolate initializer, `(context) -> u64`.
     pub isolate_bootstrap: *const u8,
 }
 
@@ -57,7 +57,7 @@ impl JitProgram {
     /// Every launch symbol, or the first one this program does not define.
     pub fn entry_points(&self) -> Result<JitEntryPoints, JitCompileError> {
         let function = |name: &'static str| {
-            self.function_address(name)
+            self.declared_function_address(name)
                 .ok_or(JitCompileError::MissingProgramSymbol(name))
         };
         Ok(JitEntryPoints {
@@ -67,13 +67,23 @@ impl JitProgram {
                 .ok_or(JitCompileError::MissingProgramSymbol(
                     super::module_registry::MODULE_REGISTRY_BLOB_SYMBOL,
                 ))?,
-            main: function(PROGRAM_ENTRY_SYMBOL)?,
-            isolate_bootstrap: function(ISOLATE_BOOTSTRAP_SYMBOL)?,
+            main: self
+                .function_address(PROGRAM_ENTRY_SYMBOL)
+                .ok_or(JitCompileError::MissingProgramSymbol(PROGRAM_ENTRY_SYMBOL))?,
+            isolate_bootstrap: self.function_address(ISOLATE_BOOTSTRAP_SYMBOL).ok_or(
+                JitCompileError::MissingProgramSymbol(ISOLATE_BOOTSTRAP_SYMBOL),
+            )?,
         })
     }
 
     /// The address of a function this program defines.
     pub fn function_address(&self, name: &str) -> Option<*const u8> {
+        self.declared_function_address(&compiled_execution_symbol(name))
+    }
+
+    /// Exact physical binding for a genuine host entry, such as the resolver
+    /// or the W^X probe. Python callables use `function_address` instead.
+    fn declared_function_address(&self, name: &str) -> Option<*const u8> {
         match self.module.get_name(name)? {
             cranelift_module::FuncOrDataId::Func(id)
                 if self
@@ -278,7 +288,7 @@ pub fn probe_jit_execution() -> Result<(), JitCompileError> {
         .map_err(|error| JitCompileError::Finalize(error.to_string()))?;
     let program = owner.finalize()?;
     let address = program
-        .function_address(PROBE_SYMBOL)
+        .declared_function_address(PROBE_SYMBOL)
         .ok_or(JitCompileError::MissingProgramSymbol(PROBE_SYMBOL))?;
     // SAFETY: `address` is the finalized code of the function defined above,
     // whose signature is `extern "C" fn() -> i64` in the host call convention.

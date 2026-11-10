@@ -55,7 +55,7 @@ fn decode_float_sequence_bits(_py: &PyToken, bits: u64, label: &str) -> Result<V
             &format!("{label} must be a list or tuple"),
         ));
     };
-    let type_id = unsafe { object_type_id(ptr) };
+    let type_id = unsafe { object_type_id(_py, ptr) };
     if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
         return Err(raise_exception::<u64>(
             _py,
@@ -64,13 +64,13 @@ fn decode_float_sequence_bits(_py: &PyToken, bits: u64, label: &str) -> Result<V
         ));
     }
     let decoded = unsafe {
-        seq_access::with_borrowed(ptr, |elems| {
+        seq_access::with_borrowed(_py, ptr, |elems| {
             let mut out = Vec::with_capacity(elems.len());
             for &elem_bits in elems {
                 let elem = obj_from_bits(elem_bits);
-                let value = to_f64(elem)
+                let value = to_f64(_py, elem)
                     .map(|value| value as f32)
-                    .or_else(|| to_i64(elem).map(|value| value as f32))?;
+                    .or_else(|| to_i64(_py, elem).map(|value| value as f32))?;
                 out.push(value);
             }
             Some(out)
@@ -85,11 +85,11 @@ fn decode_float_sequence_bits(_py: &PyToken, bits: u64, label: &str) -> Result<V
     })
 }
 
-fn decode_u64_sequence_bits(
-    _py: &PyToken,
+fn decode_u64_sequence_bits<'py>(
+    _py: &'py PyToken,
     bits: u64,
     label: &str,
-) -> Result<seq_access::PinnedSequenceSnapshot, u64> {
+) -> Result<seq_access::PinnedSequenceSnapshot<'py>, u64> {
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
@@ -97,7 +97,7 @@ fn decode_u64_sequence_bits(
             &format!("{label} must be a list or tuple"),
         ));
     };
-    let type_id = unsafe { object_type_id(ptr) };
+    let type_id = unsafe { object_type_id(_py, ptr) };
     if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
         return Err(raise_exception::<u64>(
             _py,
@@ -116,7 +116,7 @@ fn require_attr_bits(
     attr_name: &str,
 ) -> Result<u64, u64> {
     let missing = missing_bits(_py);
-    let bits = molt_getattr_builtin(target_bits, attr_name_bits, missing);
+    let bits = molt_getattr_builtin(_py, target_bits, attr_name_bits, missing);
     if bits == missing {
         return Err(raise_exception::<u64>(
             _py,
@@ -134,7 +134,7 @@ fn decode_i64_attr(
     attr_name: &str,
 ) -> Result<i64, u64> {
     let bits = require_attr_bits(_py, target_bits, attr_name_bits, attr_name)?;
-    let Some(value) = to_i64(obj_from_bits(bits)) else {
+    let Some(value) = to_i64(_py, obj_from_bits(bits)) else {
         return Err(raise_exception::<u64>(
             _py,
             BuiltinExc::TypeError,
@@ -295,16 +295,16 @@ fn kv_head_index(
     Ok(query_head_index / (query_heads / kv_heads))
 }
 
-#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
-pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
+pub fn molt_gpu_tensor__tensor_scaled_dot_product_attention_attached_body(
+    _py: &molt_runtime_core::PyToken,
     q_bits: u64,
     k_bits: u64,
     v_bits: u64,
     mask_bits: u64,
     scale_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let (q, q_shape) = match unsafe { tensor_runtime_view(_py, q_bits, "q") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -355,9 +355,9 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
             );
         }
 
-        let scale = if let Some(value) = to_f64(obj_from_bits(scale_bits)) {
+        let scale = if let Some(value) = to_f64(_py, obj_from_bits(scale_bits)) {
             value as f32
-        } else if let Some(value) = to_i64(obj_from_bits(scale_bits)) {
+        } else if let Some(value) = to_i64(_py, obj_from_bits(scale_bits)) {
             value as f32
         } else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "scale must be a float");
@@ -755,16 +755,16 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
     })
 }
 
-#[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn molt_gpu_turboquant_attention_packed(
+pub fn molt_gpu_turboquant_attention_packed_attached_body(
+    _py: &molt_runtime_core::PyToken,
     q_bits: u64,
     k_bits: u64,
     v_bits: u64,
     mask_bits: u64,
     scale_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let (q, q_shape) = match unsafe { tensor_runtime_view(_py, q_bits, "q") } {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -967,7 +967,8 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
 
         // Keep each successful probe alive and retire it on every later exit,
         // including an error from the next optional observation.
-        let (k_cache_bits, _k_cache_bits_owner) = match lookup_attribute(k_bits, kv_cache_name) {
+        let (k_cache_bits, _k_cache_bits_owner) = match lookup_attribute(_py, k_bits, kv_cache_name)
+        {
             molt_obj_model::AttributeLookup::Found(bits) => (
                 bits,
                 Some(unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) }),
@@ -975,7 +976,8 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             molt_obj_model::AttributeLookup::Missing => (missing, None),
             molt_obj_model::AttributeLookup::Error => return MoltObject::none().bits(),
         };
-        let (v_cache_bits, _v_cache_bits_owner) = match lookup_attribute(v_bits, kv_cache_name) {
+        let (v_cache_bits, _v_cache_bits_owner) = match lookup_attribute(_py, v_bits, kv_cache_name)
+        {
             molt_obj_model::AttributeLookup::Found(bits) => (
                 bits,
                 Some(unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) }),
@@ -996,13 +998,13 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         let k_role_owner = unsafe {
             OwnedRuntimeValue::from_owned_bits(
                 _py,
-                molt_getattr_builtin(k_bits, role_name, missing),
+                molt_getattr_builtin(_py, k_bits, role_name, missing),
             )
         };
         let v_role_owner = unsafe {
             OwnedRuntimeValue::from_owned_bits(
                 _py,
-                molt_getattr_builtin(v_bits, role_name, missing),
+                molt_getattr_builtin(_py, v_bits, role_name, missing),
             )
         };
         let Some(k_role) = k_role_owner.string_bytes(_py).map(String::from_utf8_lossy) else {
@@ -1027,7 +1029,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             );
         }
         let (runtime_mse_signs_bits, _runtime_mse_signs_bits_owner) =
-            match lookup_attribute(k_cache_bits, runtime_mse_signs_name) {
+            match lookup_attribute(_py, k_cache_bits, runtime_mse_signs_name) {
                 molt_obj_model::AttributeLookup::Found(bits) => (
                     bits,
                     Some(unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) }),
@@ -1036,7 +1038,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                 molt_obj_model::AttributeLookup::Error => return MoltObject::none().bits(),
             };
         let (runtime_qjl_signs_bits, _runtime_qjl_signs_bits_owner) =
-            match lookup_attribute(k_cache_bits, runtime_qjl_signs_name) {
+            match lookup_attribute(_py, k_cache_bits, runtime_qjl_signs_name) {
                 molt_obj_model::AttributeLookup::Found(bits) => (
                     bits,
                     Some(unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) }),
@@ -1136,9 +1138,9 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             );
         }
 
-        let scale = if let Some(value) = to_f64(obj_from_bits(scale_bits)) {
+        let scale = if let Some(value) = to_f64(_py, obj_from_bits(scale_bits)) {
             value as f32
-        } else if let Some(value) = to_i64(obj_from_bits(scale_bits)) {
+        } else if let Some(value) = to_i64(_py, obj_from_bits(scale_bits)) {
             value as f32
         } else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "scale must be a float");
@@ -1186,7 +1188,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         };
 
         let (runtime_key_mse_bits, _runtime_key_mse_bits_owner) =
-            match lookup_attribute(k_cache_bits, runtime_key_mse_rows_name) {
+            match lookup_attribute(_py, k_cache_bits, runtime_key_mse_rows_name) {
                 molt_obj_model::AttributeLookup::Found(bits) => (
                     bits,
                     Some(unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) }),
@@ -1195,7 +1197,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                 molt_obj_model::AttributeLookup::Error => return MoltObject::none().bits(),
             };
         let (runtime_key_sign_bits, _runtime_key_sign_bits_owner) =
-            match lookup_attribute(k_cache_bits, runtime_key_sign_rows_name) {
+            match lookup_attribute(_py, k_cache_bits, runtime_key_sign_rows_name) {
                 molt_obj_model::AttributeLookup::Found(bits) => (
                     bits,
                     Some(unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) }),
@@ -1204,7 +1206,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                 molt_obj_model::AttributeLookup::Error => return MoltObject::none().bits(),
             };
         let (runtime_key_scale_bits, _runtime_key_scale_bits_owner) =
-            match lookup_attribute(k_cache_bits, runtime_key_scale_rows_name) {
+            match lookup_attribute(_py, k_cache_bits, runtime_key_scale_rows_name) {
                 molt_obj_model::AttributeLookup::Found(bits) => (
                     bits,
                     Some(unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) }),
@@ -1213,7 +1215,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                 molt_obj_model::AttributeLookup::Error => return MoltObject::none().bits(),
             };
         let (runtime_value_bits, _runtime_value_bits_owner) =
-            match lookup_attribute(k_cache_bits, runtime_value_rows_name) {
+            match lookup_attribute(_py, k_cache_bits, runtime_value_rows_name) {
                 molt_obj_model::AttributeLookup::Found(bits) => (
                     bits,
                     Some(unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) }),
@@ -2627,18 +2629,20 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                             Ok(value) => value,
                             Err(bits) => return bits,
                         };
-                        let residual_scale =
-                            if let Some(value) = to_f64(obj_from_bits(residual_scale_bits)) {
-                                value as f32
-                            } else if let Some(value) = to_i64(obj_from_bits(residual_scale_bits)) {
-                                value as f32
-                            } else {
-                                return raise_exception::<_>(
-                                    _py,
-                                    BuiltinExc::TypeError,
-                                    "residual_scale must be numeric",
-                                );
-                            };
+                        let residual_scale = if let Some(value) =
+                            to_f64(_py, obj_from_bits(residual_scale_bits))
+                        {
+                            value as f32
+                        } else if let Some(value) = to_i64(_py, obj_from_bits(residual_scale_bits))
+                        {
+                            value as f32
+                        } else {
+                            return raise_exception::<_>(
+                                _py,
+                                BuiltinExc::TypeError,
+                                "residual_scale must be numeric",
+                            );
+                        };
                         if mse_weights.len() != dim || residual_signs.len() != dim {
                             return raise_exception::<_>(
                                 _py,
@@ -2732,18 +2736,20 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                             Ok(value) => value,
                             Err(bits) => return bits,
                         };
-                        let residual_scale =
-                            if let Some(value) = to_f64(obj_from_bits(residual_scale_bits)) {
-                                value as f32
-                            } else if let Some(value) = to_i64(obj_from_bits(residual_scale_bits)) {
-                                value as f32
-                            } else {
-                                return raise_exception::<_>(
-                                    _py,
-                                    BuiltinExc::TypeError,
-                                    "residual_scale must be numeric",
-                                );
-                            };
+                        let residual_scale = if let Some(value) =
+                            to_f64(_py, obj_from_bits(residual_scale_bits))
+                        {
+                            value as f32
+                        } else if let Some(value) = to_i64(_py, obj_from_bits(residual_scale_bits))
+                        {
+                            value as f32
+                        } else {
+                            return raise_exception::<_>(
+                                _py,
+                                BuiltinExc::TypeError,
+                                "residual_scale must be numeric",
+                            );
+                        };
                         let base = hadamard_invert_with_signs(
                             mse_weights.as_slice(),
                             mse_signs.as_slice(),
@@ -2827,3 +2833,5 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         tensor_bits
     })
 }
+
+include!("../attached_exports_generated/tensor_runtime/attention.rs");

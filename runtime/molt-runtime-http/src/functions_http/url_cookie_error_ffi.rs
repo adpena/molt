@@ -1,8 +1,12 @@
 use super::*;
 use molt_runtime_core::BuiltinExc;
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_quote(string_bits: u64, safe_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_urllib_quote_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    string_bits: u64,
+    safe_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(string) = string_obj_to_owned(obj_from_bits(string_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "string must be str");
         };
@@ -18,9 +22,13 @@ pub extern "C" fn molt_urllib_quote(string_bits: u64, safe_bits: u64) -> u64 {
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_quote_plus(string_bits: u64, safe_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_urllib_quote_plus_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    string_bits: u64,
+    safe_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(string) = string_obj_to_owned(obj_from_bits(string_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "string must be str");
         };
@@ -36,9 +44,12 @@ pub extern "C" fn molt_urllib_quote_plus(string_bits: u64, safe_bits: u64) -> u6
         }
     })
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_unquote(string_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+
+pub fn molt_urllib_unquote_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    string_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(string) = string_obj_to_owned(obj_from_bits(string_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "string must be str");
         };
@@ -52,9 +63,11 @@ pub extern "C" fn molt_urllib_unquote(string_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_unquote_plus(string_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_urllib_unquote_plus_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    string_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(string) = string_obj_to_owned(obj_from_bits(string_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "string must be str");
         };
@@ -68,13 +81,13 @@ pub extern "C" fn molt_urllib_unquote_plus(string_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_parse_qsl(
+pub fn molt_urllib_parse_qsl_attached_body(
+    _py: &molt_runtime_core::PyToken,
     qs_bits: u64,
     keep_blank_values_bits: u64,
     strict_parsing_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(qs) = string_obj_to_owned(obj_from_bits(qs_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "qs must be str");
         };
@@ -88,13 +101,13 @@ pub extern "C" fn molt_urllib_parse_qsl(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_parse_qs(
+pub fn molt_urllib_parse_qs_attached_body(
+    _py: &molt_runtime_core::PyToken,
     qs_bits: u64,
     keep_blank_values_bits: u64,
     strict_parsing_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(qs) = string_obj_to_owned(obj_from_bits(qs_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "qs must be str");
         };
@@ -116,9 +129,13 @@ pub extern "C" fn molt_urllib_parse_qs(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_urlencode(query_bits: u64, doseq_bits: u64, safe_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_urllib_urlencode_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    query_bits: u64,
+    doseq_bits: u64,
+    safe_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let doseq = is_truthy(_py, obj_from_bits(doseq_bits));
         let Some(safe) = string_obj_to_owned(obj_from_bits(safe_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "safe must be str");
@@ -136,13 +153,13 @@ pub extern "C" fn molt_urllib_urlencode(query_bits: u64, doseq_bits: u64, safe_b
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_urlsplit(
+pub fn molt_urllib_urlsplit_attached_body(
+    _py: &molt_runtime_core::PyToken,
     url_bits: u64,
     scheme_bits: u64,
     allow_fragments_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(url) = string_obj_to_owned(obj_from_bits(url_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "url must be str");
         };
@@ -155,13 +172,13 @@ pub extern "C" fn molt_urllib_urlsplit(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_client_urlsplit(
+pub fn molt_http_client_urlsplit_attached_body(
+    _py: &molt_runtime_core::PyToken,
     url_bits: u64,
     scheme_bits: u64,
     allow_fragments_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(url) = string_obj_to_owned(obj_from_bits(url_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "url must be str");
         };
@@ -174,13 +191,13 @@ pub extern "C" fn molt_http_client_urlsplit(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_urlparse(
+pub fn molt_urllib_urlparse_attached_body(
+    _py: &molt_runtime_core::PyToken,
     url_bits: u64,
     scheme_bits: u64,
     allow_fragments_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(url) = string_obj_to_owned(obj_from_bits(url_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "url must be str");
         };
@@ -193,15 +210,15 @@ pub extern "C" fn molt_urllib_urlparse(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_urlunsplit(
+pub fn molt_urllib_urlunsplit_attached_body(
+    _py: &molt_runtime_core::PyToken,
     scheme_bits: u64,
     netloc_bits: u64,
     path_bits: u64,
     query_bits: u64,
     fragment_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(scheme) = string_obj_to_owned(obj_from_bits(scheme_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "scheme must be str");
         };
@@ -227,8 +244,8 @@ pub extern "C" fn molt_urllib_urlunsplit(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_urlunparse(
+pub fn molt_urllib_urlunparse_attached_body(
+    _py: &molt_runtime_core::PyToken,
     scheme_bits: u64,
     netloc_bits: u64,
     path_bits: u64,
@@ -236,7 +253,7 @@ pub extern "C" fn molt_urllib_urlunparse(
     query_bits: u64,
     fragment_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(scheme) = string_obj_to_owned(obj_from_bits(scheme_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "scheme must be str");
         };
@@ -269,9 +286,8 @@ pub extern "C" fn molt_urllib_urlunparse(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_urldefrag(url_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_urllib_urldefrag_attached_body(_py: &molt_runtime_core::PyToken, url_bits: u64) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(url) = string_obj_to_owned(obj_from_bits(url_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "url must be str");
         };
@@ -284,9 +300,12 @@ pub extern "C" fn molt_urllib_urldefrag(url_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_urljoin(base_bits: u64, url_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_urllib_urljoin_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    base_bits: u64,
+    url_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(base) = string_obj_to_owned(obj_from_bits(base_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "base must be str");
         };
@@ -349,9 +368,8 @@ pub extern "C" fn molt_urllib_urljoin(base_bits: u64, url_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_cookiejar_new() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_cookiejar_new_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(handle) = cookiejar_store_new() else {
             return raise_exception::<_>(
                 _py,
@@ -363,9 +381,11 @@ pub extern "C" fn molt_http_cookiejar_new() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_cookiejar_len(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_cookiejar_len_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -384,9 +404,11 @@ pub extern "C" fn molt_http_cookiejar_len(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_cookiejar_clear(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_cookiejar_clear_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -407,13 +429,13 @@ pub extern "C" fn molt_http_cookiejar_clear(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_cookiejar_extract(
+pub fn molt_http_cookiejar_extract_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     request_url_bits: u64,
     headers_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -433,12 +455,12 @@ pub extern "C" fn molt_http_cookiejar_extract(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_cookiejar_header_for_url(
+pub fn molt_http_cookiejar_header_for_url_attached_body(
+    _py: &molt_runtime_core::PyToken,
     handle_bits: u64,
     request_url_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
             return raise_exception::<_>(
                 _py,
@@ -459,9 +481,11 @@ pub extern "C" fn molt_http_cookiejar_header_for_url(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_cookies_parse(cookie_header_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_http_cookies_parse_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    cookie_header_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(cookie_header) = string_obj_to_owned(obj_from_bits(cookie_header_bits)) else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "cookie header must be str");
         };
@@ -473,8 +497,12 @@ pub extern "C" fn molt_http_cookies_parse(cookie_header_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_cookies_render_morsel(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
+pub fn molt_http_cookies_render_morsel_attached_body(
+    _py: &molt_runtime_core::PyToken,
     name_bits: u64,
     value_bits: u64,
     path_bits: u64,
@@ -483,7 +511,7 @@ pub extern "C" fn molt_http_cookies_render_morsel(
     max_age_bits: u64,
     expires_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let out = match http_cookies_render_morsel_impl(
             _py,
             HttpCookieMorselInput {
@@ -506,13 +534,13 @@ pub extern "C" fn molt_http_cookies_render_morsel(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_error_urlerror_init(
+pub fn molt_urllib_error_urlerror_init_attached_body(
+    _py: &molt_runtime_core::PyToken,
     self_bits: u64,
     reason_bits: u64,
     filename_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if !urllib_error_init_args(_py, self_bits, &[reason_bits]) {
             return MoltObject::none().bits();
         }
@@ -528,9 +556,11 @@ pub extern "C" fn molt_urllib_error_urlerror_init(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_error_urlerror_str(reason_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_urllib_error_urlerror_str_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    reason_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(reason_text) = crate::bridge::format_obj_str(_py, obj_from_bits(reason_bits))
         else {
             return MoltObject::none().bits();
@@ -545,8 +575,8 @@ pub extern "C" fn molt_urllib_error_urlerror_str(reason_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_error_httperror_init(
+pub fn molt_urllib_error_httperror_init_attached_body(
+    _py: &molt_runtime_core::PyToken,
     self_bits: u64,
     url_bits: u64,
     code_bits: u64,
@@ -554,7 +584,7 @@ pub extern "C" fn molt_urllib_error_httperror_init(
     hdrs_bits: u64,
     fp_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         // CPython's urllib.error.HTTPError does not populate BaseException.args
         // with constructor values in this path; normalize args to ().
         if !urllib_error_init_args(_py, self_bits, &[]) {
@@ -573,9 +603,12 @@ pub extern "C" fn molt_urllib_error_httperror_init(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_error_httperror_str(code_bits: u64, msg_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+pub fn molt_urllib_error_httperror_str_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    code_bits: u64,
+    msg_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let Some(code_text) = crate::bridge::format_obj_str(_py, obj_from_bits(code_bits)) else {
             return MoltObject::none().bits();
         };
@@ -592,13 +625,13 @@ pub extern "C" fn molt_urllib_error_httperror_str(code_bits: u64, msg_bits: u64)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_error_content_too_short_init(
+pub fn molt_urllib_error_content_too_short_init_attached_body(
+    _py: &molt_runtime_core::PyToken,
     self_bits: u64,
     msg_bits: u64,
     content_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         if !urllib_error_init_args(_py, self_bits, &[msg_bits]) {
             return MoltObject::none().bits();
         }
@@ -610,3 +643,5 @@ pub extern "C" fn molt_urllib_error_content_too_short_init(
         MoltObject::none().bits()
     })
 }
+
+include!("../attached_exports_generated/functions_http/url_cookie_error_ffi.rs");

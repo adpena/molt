@@ -22,6 +22,15 @@ pub use formatting::{
     molt_native_exception_repr, molt_native_exception_str, render_native_exception_str,
 };
 
+/// Allocation authority alone cannot license an exception constructor: that
+/// call may execute Python. Bootstrap and detached boundary refusals retain
+/// the existing class-only C indicator until execution custody is available.
+fn exception_construction_available() -> bool {
+    crate::hooks::native_gc_allocation_available()
+        && unsafe { (crate::hooks::hooks_or_stubs().foreign_execution_capture)() }.domain
+            != crate::hooks::ForeignExecutionDomain::Unavailable
+}
+
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use libc as platform_errno;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -809,9 +818,9 @@ unsafe fn normalize_error_in_place(error: &mut OwnedCError, ingress: ExceptionIn
             // instance retains the old indicator until final publication.
             replace_current_error(None);
         }
-        if !crate::hooks::native_gc_allocation_available() {
-            // Before GC authority exists, construction cannot even allocate its
-            // argument tuple. Keep only the admitted exception class in the
+        if !exception_construction_available() {
+            // Before GC and execution custody exist, construction cannot allocate
+            // its argument tuple or invoke Python. Keep the admitted class in the
             // existing allocation-free error indicator. Arbitrary input is not
             // an exception instance and must never be published as one.
             let value = std::mem::replace(&mut error.value, ptr::null_mut());
@@ -972,7 +981,7 @@ pub unsafe extern "C" fn PyErr_SetString(exc_type: *mut PyObject, message: *cons
     let normalized = unsafe {
         normalize_prepared_error(
             move || {
-                let value = if crate::hooks::native_gc_allocation_available() {
+                let value = if exception_construction_available() {
                     let msg = if message.is_null() {
                         ""
                     } else {

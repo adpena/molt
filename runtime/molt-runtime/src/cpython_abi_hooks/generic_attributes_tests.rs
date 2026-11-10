@@ -21,8 +21,18 @@ fn record(index: usize) {
     });
 }
 
-extern "C" fn crossing_receiver(receiver: u64) -> u64 {
-    with_gil(|py| inc_ref_bits(&py, receiver));
+extern "C" fn crossing_receiver(__context: u64, receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        inc_ref_bits(py, receiver)
+    };
     receiver
 }
 
@@ -208,7 +218,7 @@ fn exercise_native_namespaces(
             let _set_owner = ExceptionValue::adopt(py, set);
             let delete = function(py, descriptor_delete as *const (), 1);
             let _delete_owner = ExceptionValue::adopt(py, delete);
-            let property = crate::molt_property_new(get, set, delete);
+            let property = crate::molt_property_new_attached_body(py, get, set, delete);
             let _property_owner = ExceptionValue::adopt(py, property);
             let method = function(py, crossing_receiver as *const (), 1);
             let _method_owner = ExceptionValue::adopt(py, method);
@@ -252,7 +262,7 @@ fn exercise_native_namespaces(
             class.tp_getattro = Some(crossing_get_override);
             let name_bits = GLOBAL_BRIDGE.molt_value_for_pyobj(name).unwrap();
             let name_bits_owner = ExceptionValue::adopt(py, name_bits);
-            let normal = crate::molt_get_attr_name(receiver_bits, name_bits);
+            let normal = crate::molt_get_attr_name_attached_body(py, receiver_bits, name_bits);
             let normal_owner = ExceptionValue::adopt(py, normal);
             assert_eq!(
                 crate::type_of_bits(py, normal),
@@ -265,7 +275,8 @@ fn exercise_native_namespaces(
                     std::panic::panic_any("native descriptor fixture unwind");
                 });
             }
-            let generic = crate::molt_object_getattribute(receiver_bits, name_bits);
+            let generic =
+                crate::molt_object_getattribute_attached_body(py, receiver_bits, name_bits);
             let generic_owner = ExceptionValue::adopt(py, generic);
             assert_eq!(
                 crate::type_of_bits(py, generic),
@@ -327,9 +338,10 @@ fn exercise_native_namespaces(
             let name_bits_owner = ExceptionValue::adopt(py, name_bits);
             for delete in [false, true] {
                 let result = if delete {
-                    crate::molt_object_delattr(receiver_bits, name_bits)
+                    crate::molt_object_delattr_attached_body(py, receiver_bits, name_bits)
                 } else {
-                    crate::molt_object_setattr(
+                    crate::molt_object_setattr_attached_body(
+                        py,
                         receiver_bits,
                         name_bits,
                         MoltObject::from_int(55).bits(),
@@ -356,10 +368,14 @@ fn exercise_native_namespaces(
             assert_eq!(&CALLS.with(Cell::get)[3..5], &[2, 2]);
 
             class.tp_setattro = Some(object::PyObject_GenericSetAttr);
-            let result =
-                crate::molt_object_setattr(receiver_bits, name_bits, MoltObject::none().bits());
+            let result = crate::molt_object_setattr_attached_body(
+                py,
+                receiver_bits,
+                name_bits,
+                MoltObject::none().bits(),
+            );
             dec_ref_bits(py, result);
-            let result = crate::molt_object_delattr(receiver_bits, name_bits);
+            let result = crate::molt_object_delattr_attached_body(py, receiver_bits, name_bits);
             dec_ref_bits(py, result);
             assert_eq!(&CALLS.with(Cell::get)[3..5], &[3, 3]);
             assert!(!crate::exception_pending(py));
@@ -369,9 +385,14 @@ fn exercise_native_namespaces(
             class.tp_setattro = None;
             for delete in [false, true] {
                 let result = if delete {
-                    crate::molt_object_delattr(receiver_bits, name_bits)
+                    crate::molt_object_delattr_attached_body(py, receiver_bits, name_bits)
                 } else {
-                    crate::molt_object_setattr(receiver_bits, name_bits, MoltObject::none().bits())
+                    crate::molt_object_setattr_attached_body(
+                        py,
+                        receiver_bits,
+                        name_bits,
+                        MoltObject::none().bits(),
+                    )
                 };
                 dec_ref_bits(py, result);
                 assert_native_setter_rejection(delete, "NativeManagedDescriptorReceiver");
@@ -380,10 +401,14 @@ fn exercise_native_namespaces(
                 &mut class.tp_mro,
                 ptr::null_mut(),
             ));
-            let result =
-                crate::molt_object_setattr(receiver_bits, name_bits, MoltObject::none().bits());
+            let result = crate::molt_object_setattr_attached_body(
+                py,
+                receiver_bits,
+                name_bits,
+                MoltObject::none().bits(),
+            );
             dec_ref_bits(py, result);
-            let result = crate::molt_object_delattr(receiver_bits, name_bits);
+            let result = crate::molt_object_delattr_attached_body(py, receiver_bits, name_bits);
             dec_ref_bits(py, result);
             class.tp_mro = mro.into_ptr();
             assert_eq!(&CALLS.with(Cell::get)[3..5], &[4, 4]);
@@ -545,44 +570,86 @@ fn native_descriptor_fixture_unwind_retires_foreign_receiver_binding() {
     );
 }
 
-extern "C" fn overridden_get(_receiver: u64, _name: u64) -> u64 {
+extern "C" fn overridden_get(__context: u64, _receiver: u64, _name: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     record(0);
     MoltObject::from_int(701).bits()
 }
 
-extern "C" fn overridden_set(_receiver: u64, _name: u64, _value: u64) -> u64 {
+extern "C" fn overridden_set(__context: u64, _receiver: u64, _name: u64, _value: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     record(1);
     MoltObject::none().bits()
 }
 
-extern "C" fn overridden_delete(_receiver: u64, _name: u64) -> u64 {
+extern "C" fn overridden_delete(__context: u64, _receiver: u64, _name: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     record(2);
     MoltObject::none().bits()
 }
 
-extern "C" fn descriptor_get(_receiver: u64) -> u64 {
+extern "C" fn descriptor_get(__context: u64, _receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     let failure = FAILURE.with(Cell::get);
     if failure != 0 {
-        return crate::molt_raise(failure);
+        return crate::molt_raise_attached_body(__py, failure);
     }
     MoltObject::from_int(222).bits()
 }
 
-extern "C" fn descriptor_set(_receiver: u64, value: u64) -> u64 {
+extern "C" fn descriptor_set(__context: u64, _receiver: u64, value: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     record(3);
     ASSIGNED.with(|assigned| assigned.set(value));
     let failure = FAILURE.with(Cell::get);
     if failure != 0 {
-        return crate::molt_raise(failure);
+        return crate::molt_raise_attached_body(__py, failure);
     }
     MoltObject::none().bits()
 }
 
-extern "C" fn descriptor_delete(_receiver: u64) -> u64 {
+extern "C" fn descriptor_delete(__context: u64, _receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     record(4);
     let failure = FAILURE.with(Cell::get);
     if failure != 0 {
-        return crate::molt_raise(failure);
+        return crate::molt_raise_attached_body(__py, failure);
     }
     MoltObject::none().bits()
 }
@@ -598,7 +665,7 @@ fn function(py: &crate::PyToken<'_>, target: *const (), arity: u64) -> u64 {
 
 fn member(py: &crate::PyToken<'_>, class: u64, name: &[u8], value: u64) {
     let key = crate::dynamic_attr_name_bits(py, name).unwrap();
-    crate::molt_set_attr_name(class, key, value);
+    crate::molt_set_attr_name_attached_body(py, class, key, value);
     dec_ref_bits(py, key);
     assert!(!crate::exception_pending(py));
 }
@@ -611,9 +678,9 @@ fn method(py: &crate::PyToken<'_>, class: u64, name: &[u8], target: *const (), a
 
 fn attribute_class(py: &crate::PyToken<'_>, base: u64, dictless: bool) -> u64 {
     let name = crate::dynamic_attr_name_bits(py, b"ManagedGenericAttributes").unwrap();
-    let class = crate::molt_class_new(name);
+    let class = crate::molt_class_new_attached_body(py, name);
     dec_ref_bits(py, name);
-    crate::molt_class_set_base(class, base);
+    crate::molt_class_set_base_attached_body(py, class, base);
     if dictless {
         let slots = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
         member(py, class, b"__slots__", slots);
@@ -632,7 +699,7 @@ fn attribute_class(py: &crate::PyToken<'_>, base: u64, dictless: bool) -> u64 {
     let get = function(py, descriptor_get as *const (), 1);
     let set = function(py, descriptor_set as *const (), 2);
     let delete = function(py, descriptor_delete as *const (), 1);
-    let property = crate::molt_property_new(get, set, delete);
+    let property = crate::molt_property_new_attached_body(py, get, set, delete);
     member(py, class, b"managed", property);
     for bits in [property, get, set, delete] {
         dec_ref_bits(py, bits);
@@ -691,7 +758,7 @@ fn raised_error_conversion_unwind_retires_unprojected_native_owner() {
             "conversion unwind leaked the transferred native exception"
         );
         assert!(errors::PyErr_Occurred().is_null());
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -715,8 +782,9 @@ fn explicit_native_wrappers_skip_managed_dispatch_but_keep_native_ancestors() {
                 let receiver = if native_override {
                     let name = crate::dynamic_attr_name_bits(py, b"SetterClassInstance").unwrap();
                     let bases = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
-                    let namespace = crate::molt_dict_new(0);
-                    let value = crate::builtins::types::molt_type_new(
+                    let namespace = crate::molt_dict_new_attached_body(py, 0);
+                    let value = crate::builtins::types::molt_type_new_attached_body(
+                        py,
                         class,
                         name,
                         bases,
@@ -803,8 +871,8 @@ fn explicit_native_wrappers_skip_managed_dispatch_but_keep_native_ancestors() {
 
 fn pending_error(py: &crate::PyToken<'_>, kind: crate::BuiltinExc) -> u64 {
     crate::raise_exception::<u64>(py, kind, "generic descriptor sentinel");
-    let error = crate::builtins::exceptions::molt_exception_last_pending();
-    crate::molt_exception_clear();
+    let error = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
+    crate::molt_exception_clear_attached_body(py);
     error
 }
 
@@ -812,7 +880,7 @@ fn pending_error(py: &crate::PyToken<'_>, kind: crate::BuiltinExc) -> u64 {
 fn managed_generic_attributes_use_logical_class_and_bypass_override_family() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     with_gil(|py| unsafe {
-        let classes = crate::builtin_classes(&py);
+        let classes = crate::builtin_classes(py);
         for (base, dictless) in [
             (classes.list, false),
             (classes.tuple, false),
@@ -820,9 +888,9 @@ fn managed_generic_attributes_use_logical_class_and_bypass_override_family() {
         ] {
             CALLS.with(|calls| calls.set([0; 6]));
             FAILURE.with(|failure| failure.set(0));
-            let class = attribute_class(&py, base, dictless);
-            let bits = crate::call::bind::call_bind_borrowed(&py, class, None, &[], &[], &[]);
-            assert!(!crate::exception_pending(&py));
+            let class = attribute_class(py, base, dictless);
+            let bits = crate::call::bind::call_bind_borrowed(py, class, None, &[], &[], &[]);
+            assert!(!crate::exception_pending(py));
             let view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits);
             let name = strings::PyUnicode_FromString(c"managed".as_ptr());
             let shadow = strings::PyUnicode_FromString(c"shadow".as_ptr());
@@ -873,12 +941,12 @@ fn managed_generic_attributes_use_logical_class_and_bypass_override_family() {
             );
             assert_eq!(CALLS.with(Cell::get), [1, 1, 1, 1, 1, 0]);
             assert!(errors::PyErr_Occurred().is_null());
-            assert!(!crate::exception_pending(&py));
+            assert!(!crate::exception_pending(py));
             for value in [zero, class_name, shadow, name, view] {
                 refcount::Py_DECREF(value);
             }
-            dec_ref_bits(&py, bits);
-            dec_ref_bits(&py, class);
+            dec_ref_bits(py, bits);
+            dec_ref_bits(py, class);
         }
     });
 }
@@ -897,12 +965,12 @@ fn managed_generic_dictionary_replaces_only_instance_tier_and_preserves_errors()
         FAILURE.with(|failure| failure.set(0));
         let class_owner = OwnedRuntimeValue::from_owned_bits(
             py.core_token(),
-            attribute_class(&py, crate::builtin_classes(&py).list, false),
+            attribute_class(py, crate::builtin_classes(py).list, false),
         );
         let class = class_owner.bits();
         let instance = OwnedRuntimeValue::from_owned_bits(
             py.core_token(),
-            crate::call::bind::call_bind_borrowed(&py, class, None, &[], &[], &[]),
+            crate::call::bind::call_bind_borrowed(py, class, None, &[], &[], &[]),
         );
         let bits = instance.bits();
         let view_owner =
@@ -955,26 +1023,38 @@ fn managed_generic_dictionary_replaces_only_instance_tier_and_preserves_errors()
         assert!(absent_result.as_ptr().is_null());
         assert!(errors::PyErr_Occurred().is_null());
 
-        extern "C" fn nondata_get(_descriptor: u64, receiver: u64, _owner: u64) -> u64 {
-            descriptor_get(receiver)
+        extern "C" fn nondata_get(
+            __context: u64,
+            _descriptor: u64,
+            receiver: u64,
+            _owner: u64,
+        ) -> u64 {
+            assert_eq!(
+                __context,
+                crate::state::molt_attached_context(),
+                "Python callback context identity"
+            );
+            let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+            descriptor_get(__context, receiver)
         }
         let descriptor_name = OwnedRuntimeValue::from_owned_bits(
             py.core_token(),
-            crate::dynamic_attr_name_bits(&py, b"OptionalDescriptor").unwrap(),
+            crate::dynamic_attr_name_bits(py, b"OptionalDescriptor").unwrap(),
         );
         let descriptor_class = OwnedRuntimeValue::from_owned_bits(
             py.core_token(),
-            crate::molt_class_new(descriptor_name.bits()),
+            crate::molt_class_new_attached_body(py, descriptor_name.bits()),
         );
         method(
-            &py,
+            py,
             descriptor_class.bits(),
             b"__get__",
             nondata_get as *const (),
             3,
         );
         crate::object::class_finish_definition(
-            &py,
+            py,
             MoltObject::from_bits(descriptor_class.bits())
                 .as_ptr()
                 .unwrap(),
@@ -982,16 +1062,9 @@ fn managed_generic_dictionary_replaces_only_instance_tier_and_preserves_errors()
         .unwrap();
         let descriptor = OwnedRuntimeValue::from_owned_bits(
             py.core_token(),
-            crate::call::bind::call_bind_borrowed(
-                &py,
-                descriptor_class.bits(),
-                None,
-                &[],
-                &[],
-                &[],
-            ),
+            crate::call::bind::call_bind_borrowed(py, descriptor_class.bits(), None, &[], &[], &[]),
         );
-        member(&py, class, b"nondata", descriptor.bits());
+        member(py, class, b"nondata", descriptor.bits());
         let nondata =
             refcount::OwnedPyObject::from_owned(strings::PyUnicode_FromString(c"nondata".as_ptr()));
 
@@ -1000,7 +1073,7 @@ fn managed_generic_dictionary_replaces_only_instance_tier_and_preserves_errors()
             crate::BuiltinExc::AttributeError,
         ] {
             let failure_owner =
-                OwnedRuntimeValue::from_owned_bits(py.core_token(), pending_error(&py, kind));
+                OwnedRuntimeValue::from_owned_bits(py.core_token(), pending_error(py, kind));
             let failure = failure_owner.bits();
             FAILURE.with(|slot| slot.set(failure));
             let _reset = ResetFailure;
@@ -1021,7 +1094,7 @@ fn managed_generic_dictionary_replaces_only_instance_tier_and_preserves_errors()
                         } else {
                             assert_eq!(take_bits(errors::PyErr_GetRaisedException()), failure);
                         }
-                        assert!(!crate::exception_pending(&py));
+                        assert!(!crate::exception_pending(py));
                     }
                 }
             }
@@ -1038,22 +1111,39 @@ fn managed_generic_dictionary_replaces_only_instance_tier_and_preserves_errors()
             assert_eq!(take_bits(errors::PyErr_GetRaisedException()), failure);
             FAILURE.with(|slot| slot.set(0));
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
-extern "C" fn colliding_hash(_receiver: u64) -> u64 {
-    with_gil(|py| {
-        let name = crate::dynamic_attr_name_bits(&py, b"shadow").unwrap();
-        let result = crate::molt_hash_builtin(name);
-        dec_ref_bits(&py, name);
-        result
-    })
+extern "C" fn colliding_hash(__context: u64, _receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        {
+            let name = crate::dynamic_attr_name_bits(py, b"shadow").unwrap();
+            let result = crate::molt_hash_builtin_attached_body(py, name);
+            dec_ref_bits(py, name);
+            result
+        }
+    }
 }
 
-extern "C" fn failing_equality(_receiver: u64, _other: u64) -> u64 {
+extern "C" fn failing_equality(__context: u64, _receiver: u64, _other: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     record(5);
-    crate::molt_raise(FAILURE.with(Cell::get))
+    crate::molt_raise_attached_body(__py, FAILURE.with(Cell::get))
 }
 
 #[test]
@@ -1062,30 +1152,30 @@ fn managed_generic_suppressed_dictionary_attribute_error_continues_to_class() {
     with_gil(|py| unsafe {
         CALLS.with(|calls| calls.set([0; 6]));
         FAILURE.with(|failure| failure.set(0));
-        let class = attribute_class(&py, crate::builtin_classes(&py).list, false);
-        let bits = crate::call::bind::call_bind_borrowed(&py, class, None, &[], &[], &[]);
+        let class = attribute_class(py, crate::builtin_classes(py).list, false);
+        let bits = crate::call::bind::call_bind_borrowed(py, class, None, &[], &[], &[]);
         let view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits);
-        let key_name = crate::dynamic_attr_name_bits(&py, b"CollidingAttributeKey").unwrap();
-        let key_class = crate::molt_class_new(key_name);
-        dec_ref_bits(&py, key_name);
-        method(&py, key_class, b"__hash__", colliding_hash as *const (), 1);
-        method(&py, key_class, b"__eq__", failing_equality as *const (), 2);
+        let key_name = crate::dynamic_attr_name_bits(py, b"CollidingAttributeKey").unwrap();
+        let key_class = crate::molt_class_new_attached_body(py, key_name);
+        dec_ref_bits(py, key_name);
+        method(py, key_class, b"__hash__", colliding_hash as *const (), 1);
+        method(py, key_class, b"__eq__", failing_equality as *const (), 2);
         crate::object::class_finish_definition(
-            &py,
+            py,
             MoltObject::from_bits(key_class).as_ptr().unwrap(),
         )
         .unwrap();
-        let key = crate::call::bind::call_bind_borrowed(&py, key_class, None, &[], &[], &[]);
+        let key = crate::call::bind::call_bind_borrowed(py, key_class, None, &[], &[], &[]);
         let dictionary_bits = MoltObject::from_ptr(crate::alloc_dict_with_pairs(
-            &py,
+            py,
             &[key, MoltObject::none().bits()],
         ))
         .bits();
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
         let dictionary = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(dictionary_bits);
         let shadow = strings::PyUnicode_FromString(c"shadow".as_ptr());
         crate::object::field_storage::replace_dictionary(
-            &py,
+            py,
             MoltObject::from_bits(bits).as_ptr().unwrap(),
             Some(dictionary_bits),
         )
@@ -1094,7 +1184,7 @@ fn managed_generic_suppressed_dictionary_attribute_error_continues_to_class() {
             crate::BuiltinExc::AttributeError,
             crate::BuiltinExc::RuntimeError,
         ] {
-            let failure = pending_error(&py, kind);
+            let failure = pending_error(py, kind);
             FAILURE.with(|slot| slot.set(failure));
             for explicit in [ptr::null_mut(), dictionary] {
                 for suppress in [0, 1] {
@@ -1110,7 +1200,7 @@ fn managed_generic_suppressed_dictionary_attribute_error_continues_to_class() {
                 }
             }
             FAILURE.with(|slot| slot.set(0));
-            dec_ref_bits(&py, failure);
+            dec_ref_bits(py, failure);
         }
         assert_eq!(
             CALLS.with(Cell::get)[5],
@@ -1121,9 +1211,9 @@ fn managed_generic_suppressed_dictionary_attribute_error_continues_to_class() {
             refcount::Py_DECREF(value);
         }
         for value in [dictionary_bits, key, key_class, bits, class] {
-            dec_ref_bits(&py, value);
+            dec_ref_bits(py, value);
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
@@ -1138,7 +1228,7 @@ unsafe fn generic_read_variant(
 ) -> Option<u64> {
     unsafe {
         if variant == 0 {
-            let value = crate::molt_object_getattribute(receiver, name);
+            let value = crate::molt_object_getattribute_attached_body(py, receiver, name);
             if crate::exception_pending(py) {
                 dec_ref_bits(py, value);
                 return None;
@@ -1171,7 +1261,14 @@ unsafe fn generic_read_variant(
     }
 }
 
-extern "C" fn numeric_attribute_override(_receiver: u64) -> u64 {
+extern "C" fn numeric_attribute_override(__context: u64, _receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::from_int(333).bits()
 }
 
@@ -1180,45 +1277,45 @@ fn managed_generic_numeric_subclasses_share_logical_attribute_identity() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     with_gil(|py| unsafe {
         FAILURE.with(|failure| failure.set(0));
-        let classes = crate::builtin_classes(&py);
+        let classes = crate::builtin_classes(py);
         for (base, input, expected_float) in [
             (classes.int, MoltObject::from_int(42).bits(), 42.0),
             (
                 classes.int,
-                crate::int_bits_from_i128(&py, 1i128 << 80),
+                crate::int_bits_from_i128(py, 1i128 << 80),
                 2_f64.powi(80),
             ),
             (classes.float, MoltObject::from_float(1.25).bits(), 1.25),
             (
                 classes.float,
-                crate::object::ops::float_result_bits(&py, f64::NAN),
+                crate::object::ops::float_result_bits(py, f64::NAN),
                 f64::NAN,
             ),
         ] {
             for dictless in [false, true] {
-                let class = attribute_class(&py, base, dictless);
-                member(&py, class, b"marker", MoltObject::from_int(55).bits());
+                let class = attribute_class(py, base, dictless);
+                member(py, class, b"marker", MoltObject::from_int(55).bits());
                 method(
-                    &py,
+                    py,
                     class,
                     b"conjugate",
                     numeric_attribute_override as *const (),
                     1,
                 );
                 let receiver = if base == classes.int {
-                    crate::molt_int_new(class, input, crate::missing_bits(&py))
+                    crate::molt_int_new_attached_body(py, class, input, crate::missing_bits(py))
                 } else {
-                    crate::molt_float_new(class, input)
+                    crate::molt_float_new_attached_body(py, class, input)
                 };
-                assert!(!crate::exception_pending(&py));
-                let class_name = crate::dynamic_attr_name_bits(&py, b"__class__").unwrap();
-                let marker = crate::dynamic_attr_name_bits(&py, b"marker").unwrap();
-                let data = crate::dynamic_attr_name_bits(&py, b"managed").unwrap();
-                let shadow = crate::dynamic_attr_name_bits(&py, b"shadow").unwrap();
-                let conjugate = crate::dynamic_attr_name_bits(&py, b"conjugate").unwrap();
-                let float = crate::dynamic_attr_name_bits(&py, b"__float__").unwrap();
+                assert!(!crate::exception_pending(py));
+                let class_name = crate::dynamic_attr_name_bits(py, b"__class__").unwrap();
+                let marker = crate::dynamic_attr_name_bits(py, b"marker").unwrap();
+                let data = crate::dynamic_attr_name_bits(py, b"managed").unwrap();
+                let shadow = crate::dynamic_attr_name_bits(py, b"shadow").unwrap();
+                let conjugate = crate::dynamic_attr_name_bits(py, b"conjugate").unwrap();
+                let float = crate::dynamic_attr_name_bits(py, b"__float__").unwrap();
                 let dictionary = MoltObject::from_ptr(crate::alloc_dict_with_pairs(
-                    &py,
+                    py,
                     &[
                         shadow,
                         MoltObject::from_int(44).bits(),
@@ -1228,8 +1325,13 @@ fn managed_generic_numeric_subclasses_share_logical_attribute_identity() {
                 ))
                 .bits();
                 if !dictless {
-                    crate::molt_object_setattr(receiver, shadow, MoltObject::from_int(33).bits());
-                    assert!(!crate::exception_pending(&py));
+                    crate::molt_object_setattr_attached_body(
+                        py,
+                        receiver,
+                        shadow,
+                        MoltObject::from_int(33).bits(),
+                    );
+                    assert!(!crate::exception_pending(py));
                 }
                 for variant in 0..3 {
                     for (name, expected) in [
@@ -1249,41 +1351,41 @@ fn managed_generic_numeric_subclasses_share_logical_attribute_identity() {
                         ),
                     ] {
                         let value =
-                            generic_read_variant(&py, receiver, name, dictionary, variant).unwrap();
+                            generic_read_variant(py, receiver, name, dictionary, variant).unwrap();
                         assert_eq!(value, expected);
-                        dec_ref_bits(&py, value);
+                        dec_ref_bits(py, value);
                     }
                     let method =
-                        generic_read_variant(&py, receiver, conjugate, dictionary, variant)
-                            .unwrap();
+                        generic_read_variant(py, receiver, conjugate, dictionary, variant).unwrap();
                     let value =
-                        crate::call::bind::call_bind_borrowed(&py, method, None, &[], &[], &[]);
+                        crate::call::bind::call_bind_borrowed(py, method, None, &[], &[], &[]);
                     assert_eq!(value, MoltObject::from_int(333).bits());
-                    dec_ref_bits(&py, value);
-                    dec_ref_bits(&py, method);
+                    dec_ref_bits(py, value);
+                    dec_ref_bits(py, method);
                     let method =
-                        generic_read_variant(&py, receiver, float, dictionary, variant).unwrap();
+                        generic_read_variant(py, receiver, float, dictionary, variant).unwrap();
                     let value =
-                        crate::call::bind::call_bind_borrowed(&py, method, None, &[], &[], &[]);
+                        crate::call::bind::call_bind_borrowed(py, method, None, &[], &[], &[]);
                     let actual = crate::as_float_extended(MoltObject::from_bits(value));
                     if expected_float.is_nan() {
                         assert!(actual.is_some_and(f64::is_nan));
                     } else {
                         assert_eq!(actual, Some(expected_float));
                     }
-                    dec_ref_bits(&py, value);
-                    dec_ref_bits(&py, method);
-                    assert!(!crate::exception_pending(&py));
+                    dec_ref_bits(py, value);
+                    dec_ref_bits(py, method);
+                    assert!(!crate::exception_pending(py));
                     assert!(errors::PyErr_Occurred().is_null());
                 }
                 // Every scalar resolver caller must let a heap subtype's
                 // normal override run, including synthetic __class__ reads.
                 assert_eq!(
-                    crate::molt_get_attr_name(receiver, class_name),
+                    crate::molt_get_attr_name_attached_body(py, receiver, class_name),
                     MoltObject::from_int(701).bits()
                 );
                 assert_eq!(
-                    crate::molt_get_attr_name_default(
+                    crate::molt_get_attr_name_default_attached_body(
+                        py,
                         receiver,
                         class_name,
                         MoltObject::none().bits()
@@ -1291,7 +1393,8 @@ fn managed_generic_numeric_subclasses_share_logical_attribute_identity() {
                     MoltObject::from_int(701).bits()
                 );
                 assert_eq!(
-                    crate::molt_get_attr_object(
+                    crate::molt_get_attr_object_attached_body(
+                        py,
                         receiver,
                         b"__class__".as_ptr(),
                         b"__class__".len() as u64
@@ -1299,36 +1402,57 @@ fn managed_generic_numeric_subclasses_share_logical_attribute_identity() {
                     MoltObject::from_int(701).bits()
                 );
                 assert_eq!(
-                    crate::molt_has_attr_name(receiver, marker),
+                    crate::molt_has_attr_name_attached_body(py, receiver, marker),
                     MoltObject::from_bool(true).bits()
                 );
                 for value in [
                     dictionary, float, conjugate, shadow, data, marker, class_name, receiver, class,
                 ] {
-                    dec_ref_bits(&py, value);
+                    dec_ref_bits(py, value);
                 }
             }
-            dec_ref_bits(&py, input);
+            dec_ref_bits(py, input);
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
     });
 }
 
-extern "C" fn optional_getattribute(_receiver: u64, _name: u64) -> u64 {
+extern "C" fn optional_getattribute(__context: u64, _receiver: u64, _name: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     record(0);
     let failure = FAILURE.with(Cell::get);
     if failure != 0 {
-        return crate::molt_raise(failure);
+        return crate::molt_raise_attached_body(__py, failure);
     }
     MoltObject::from_int(701).bits()
 }
 
-extern "C" fn optional_getattr(_receiver: u64, _name: u64) -> u64 {
+extern "C" fn optional_getattr(__context: u64, _receiver: u64, _name: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     record(1);
     MoltObject::from_int(702).bits()
 }
 
-extern "C" fn optional_index(_receiver: u64) -> u64 {
+extern "C" fn optional_index(__context: u64, _receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     record(2);
     MoltObject::from_int(42).bits()
 }
@@ -1373,20 +1497,23 @@ fn optional_attributes_share_normal_lookup_and_preserve_special_protocols() {
                 let c_name = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(name);
                 CALLS.with(|calls| calls.set([0; 6]));
                 for result in [
-                    crate::molt_get_attr_name(receiver, name),
-                    crate::molt_get_attr_name_default(receiver, name, default),
-                    crate::molt_get_attr_object(
+                    crate::molt_get_attr_name_attached_body(py, receiver, name),
+                    crate::molt_get_attr_name_default_attached_body(py, receiver, name, default),
+                    crate::molt_get_attr_object_attached_body(
+                        py,
                         receiver,
                         b"__class__".as_ptr(),
                         b"__class__".len() as u64,
                     ),
-                    crate::builtins::attributes::molt_get_attr_object_ic(
+                    crate::builtins::attributes::molt_get_attr_object_ic_attached_body(
+                        py,
                         receiver,
                         b"__class__".as_ptr(),
                         b"__class__".len() as u64,
                         0,
                     ),
-                    crate::builtins::attributes::molt_get_attr_generic(
+                    crate::builtins::attributes::molt_get_attr_generic_attached_body(
+                        py,
                         pointer,
                         b"__class__".as_ptr(),
                         b"__class__".len() as u64,
@@ -1405,7 +1532,7 @@ fn optional_attributes_share_normal_lookup_and_preserve_special_protocols() {
                     dec_ref_bits(py, result);
                 }
                 assert_eq!(
-                    crate::molt_has_attr_name(receiver, name),
+                    crate::molt_has_attr_name_attached_body(py, receiver, name),
                     MoltObject::from_bool(true).bits()
                 );
                 assert_eq!(CALLS.with(Cell::get)[0], 8);
@@ -1432,6 +1559,7 @@ fn optional_attributes_share_normal_lookup_and_preserve_special_protocols() {
                     let mut math_special = MoltObject::none().bits();
                     assert_eq!(
                         crate::math_bridge::__molt_math_lookup_special_method(
+                            py.attached_context(),
                             pointer,
                             index,
                             &mut math_special,
@@ -1468,6 +1596,7 @@ fn optional_attributes_share_normal_lookup_and_preserve_special_protocols() {
                     let mut projected = u64::MAX;
                     assert_eq!(
                         crate::math_bridge::__molt_math_lookup_special_method(
+                            py.attached_context(),
                             pointer,
                             index,
                             &mut projected,
@@ -1489,14 +1618,19 @@ fn optional_attributes_share_normal_lookup_and_preserve_special_protocols() {
                         ))
                         .bits();
                     FAILURE.with(|slot| slot.set(failure));
-                    let result = crate::molt_get_attr_name_default(receiver, name, default);
+                    let result = crate::molt_get_attr_name_default_attached_body(
+                        py, receiver, name, default,
+                    );
                     if missing {
                         assert_eq!(result, default);
                         assert!(!crate::exception_pending(py));
                     } else {
-                        let observed = crate::builtins::exceptions::molt_exception_last_pending();
+                        let observed =
+                            crate::builtins::exceptions::molt_exception_last_pending_attached_body(
+                                py,
+                            );
                         assert_eq!(observed, failure);
-                        crate::molt_exception_clear();
+                        crate::molt_exception_clear_attached_body(py);
                         dec_ref_bits(py, observed);
                     }
                     dec_ref_bits(py, result);
@@ -1513,7 +1647,8 @@ fn optional_attributes_share_normal_lookup_and_preserve_special_protocols() {
                 ))
                 .bits();
                 FAILURE.with(|slot| slot.set(failure));
-                let result = crate::molt_get_attr_name_default(receiver, name, default);
+                let result =
+                    crate::molt_get_attr_name_default_attached_body(py, receiver, name, default);
                 assert_eq!(result, MoltObject::from_int(702).bits());
                 assert_eq!(CALLS.with(Cell::get)[1], 1);
                 assert!(!crate::exception_pending(py));
@@ -1527,11 +1662,13 @@ fn optional_attributes_share_normal_lookup_and_preserve_special_protocols() {
                 ))
                 .bits();
                 FAILURE.with(|slot| slot.set(failure));
-                let result = crate::molt_get_attr_name_default(receiver, name, default);
-                let observed = crate::builtins::exceptions::molt_exception_last_pending();
+                let result =
+                    crate::molt_get_attr_name_default_attached_body(py, receiver, name, default);
+                let observed =
+                    crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                 assert_eq!(observed, failure);
                 assert_eq!(CALLS.with(Cell::get)[1], 1);
-                crate::molt_exception_clear();
+                crate::molt_exception_clear_attached_body(py);
                 FAILURE.with(|slot| slot.set(0));
                 for value in [result, observed, failure, receiver, class] {
                     dec_ref_bits(py, value);
@@ -1553,9 +1690,9 @@ thread_local! {
 
 fn snapshot_class(py: &crate::PyToken<'_>, name: &[u8]) -> u64 {
     let name = crate::dynamic_attr_name_bits(py, name).unwrap();
-    let class = crate::molt_class_new(name);
+    let class = crate::molt_class_new_attached_body(py, name);
     dec_ref_bits(py, name);
-    crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+    crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).object);
     member(py, class, b"cache_flush", MoltObject::from_int(7).bits());
     unsafe {
         crate::object::class_finish_definition(py, MoltObject::from_bits(class).as_ptr().unwrap())
@@ -1568,26 +1705,36 @@ fn snapshot_receiver(py: &crate::PyToken<'_>, class: u64) -> u64 {
     unsafe { crate::call::bind::call_bind_borrowed(py, class, None, &[], &[], &[]) }
 }
 
-extern "C" fn mutating_equality(_receiver: u64, _other: u64) -> u64 {
+extern "C" fn mutating_equality(__context: u64, _receiver: u64, _other: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     record(5);
-    with_gil(|py| {
-        let [class, receiver, next_class, value] = SNAPSHOT_MUTATION.with(Cell::get);
-        let name = crate::dynamic_attr_name_bits(&py, b"shadow").unwrap();
-        crate::molt_set_attr_name(class, name, value);
-        dec_ref_bits(&py, name);
-        if next_class != 0 {
-            let name = crate::dynamic_attr_name_bits(&py, b"__class__").unwrap();
-            crate::molt_object_setattr(receiver, name, next_class);
-            dec_ref_bits(&py, name);
+    {
+        let py = __py;
+        {
+            let [class, receiver, next_class, value] = SNAPSHOT_MUTATION.with(Cell::get);
+            let name = crate::dynamic_attr_name_bits(py, b"shadow").unwrap();
+            crate::molt_set_attr_name_attached_body(py, class, name, value);
+            dec_ref_bits(py, name);
+            if next_class != 0 {
+                let name = crate::dynamic_attr_name_bits(py, b"__class__").unwrap();
+                crate::molt_object_setattr_attached_body(py, receiver, name, next_class);
+                dec_ref_bits(py, name);
+            }
+            // A real nested lookup retires the cache's descriptor reference. The
+            // interrupted lookup must own its original selection independently.
+            let flush = crate::dynamic_attr_name_bits(py, b"cache_flush").unwrap();
+            let result = crate::molt_object_getattribute_attached_body(py, receiver, flush);
+            dec_ref_bits(py, result);
+            dec_ref_bits(py, flush);
+            MoltObject::from_bool(false).bits()
         }
-        // A real nested lookup retires the cache's descriptor reference. The
-        // interrupted lookup must own its original selection independently.
-        let flush = crate::dynamic_attr_name_bits(&py, b"cache_flush").unwrap();
-        let result = crate::molt_object_getattribute(receiver, flush);
-        dec_ref_bits(&py, result);
-        dec_ref_bits(&py, flush);
-        MoltObject::from_bool(false).bits()
-    })
+    }
 }
 
 fn mutating_dictionary(py: &crate::PyToken<'_>) -> u64 {
@@ -1613,35 +1760,35 @@ fn managed_generic_dictionary_mutation_retains_initial_class_value_and_miss() {
         for present in [false, true] {
             for variant in 0..3 {
                 CALLS.with(|calls| calls.set([0; 6]));
-                let class = snapshot_class(&py, b"SnapshotOwner");
-                let old = crate::dynamic_attr_name_bits(&py, b"old").unwrap();
-                let new = crate::dynamic_attr_name_bits(&py, b"new").unwrap();
-                let name = crate::dynamic_attr_name_bits(&py, b"shadow").unwrap();
+                let class = snapshot_class(py, b"SnapshotOwner");
+                let old = crate::dynamic_attr_name_bits(py, b"old").unwrap();
+                let new = crate::dynamic_attr_name_bits(py, b"new").unwrap();
+                let name = crate::dynamic_attr_name_bits(py, b"shadow").unwrap();
                 if present {
-                    member(&py, class, b"shadow", old);
+                    member(py, class, b"shadow", old);
                 }
-                let receiver = snapshot_receiver(&py, class);
-                let dictionary = mutating_dictionary(&py);
+                let receiver = snapshot_receiver(py, class);
+                let dictionary = mutating_dictionary(py);
                 if variant != 2 {
                     crate::object::field_storage::replace_dictionary(
-                        &py,
+                        py,
                         MoltObject::from_bits(receiver).as_ptr().unwrap(),
                         Some(dictionary),
                     )
                     .unwrap();
                 }
                 SNAPSHOT_MUTATION.with(|context| context.set([class, receiver, 0, new]));
-                let result = generic_read_variant(&py, receiver, name, dictionary, variant);
+                let result = generic_read_variant(py, receiver, name, dictionary, variant);
                 if present {
                     assert_eq!(result, Some(old));
-                    dec_ref_bits(&py, result.unwrap());
+                    dec_ref_bits(py, result.unwrap());
                 } else {
                     assert!(
                         result.is_none(),
                         "the initial MRO miss must survive dictionary mutation"
                     );
                     if variant == 0 {
-                        assert!(crate::builtins::attr::clear_attribute_error_if_pending(&py));
+                        assert!(crate::builtins::attr::clear_attribute_error_if_pending(py));
                     } else {
                         assert_eq!(
                             errors::PyErr_ExceptionMatches(
@@ -1658,23 +1805,38 @@ fn managed_generic_dictionary_mutation_retains_initial_class_value_and_miss() {
                     1,
                     "one dictionary equality probe per lookup"
                 );
-                assert!(!crate::exception_pending(&py));
+                assert!(!crate::exception_pending(py));
                 assert!(errors::PyErr_Occurred().is_null());
                 SNAPSHOT_MUTATION.with(|context| context.set([0; 4]));
                 for value in [dictionary, receiver, name, new, old, class] {
-                    dec_ref_bits(&py, value);
+                    dec_ref_bits(py, value);
                 }
             }
         }
     });
 }
 
-extern "C" fn snapshot_descriptor_get(descriptor: u64, _receiver: u64, owner: u64) -> u64 {
+extern "C" fn snapshot_descriptor_get(
+    __context: u64,
+    descriptor: u64,
+    _receiver: u64,
+    owner: u64,
+) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     ASSIGNED.with(|assigned| assigned.set(descriptor));
-    with_gil(|py| {
-        inc_ref_bits(&py, owner);
-        owner
-    })
+    {
+        let py = __py;
+        {
+            inc_ref_bits(py, owner);
+            owner
+        }
+    }
 }
 
 #[test]
@@ -1684,35 +1846,35 @@ fn managed_generic_dictionary_mutation_binds_retained_descriptor_to_live_class()
         for variant in 0..3 {
             CALLS.with(|calls| calls.set([0; 6]));
             ASSIGNED.with(|assigned| assigned.set(0));
-            let class = snapshot_class(&py, b"InitialDescriptorOwner");
-            let next_class = snapshot_class(&py, b"CurrentDescriptorOwner");
-            let descriptor_class = snapshot_class(&py, b"RetainedDescriptor");
+            let class = snapshot_class(py, b"InitialDescriptorOwner");
+            let next_class = snapshot_class(py, b"CurrentDescriptorOwner");
+            let descriptor_class = snapshot_class(py, b"RetainedDescriptor");
             method(
-                &py,
+                py,
                 descriptor_class,
                 b"__get__",
                 snapshot_descriptor_get as *const (),
                 3,
             );
             let descriptor =
-                crate::call::bind::call_bind_borrowed(&py, descriptor_class, None, &[], &[], &[]);
-            member(&py, class, b"shadow", descriptor);
-            dec_ref_bits(&py, descriptor);
-            let receiver = snapshot_receiver(&py, class);
-            let dictionary = mutating_dictionary(&py);
+                crate::call::bind::call_bind_borrowed(py, descriptor_class, None, &[], &[], &[]);
+            member(py, class, b"shadow", descriptor);
+            dec_ref_bits(py, descriptor);
+            let receiver = snapshot_receiver(py, class);
+            let dictionary = mutating_dictionary(py);
             if variant != 2 {
                 crate::object::field_storage::replace_dictionary(
-                    &py,
+                    py,
                     MoltObject::from_bits(receiver).as_ptr().unwrap(),
                     Some(dictionary),
                 )
                 .unwrap();
             }
-            let name = crate::dynamic_attr_name_bits(&py, b"shadow").unwrap();
+            let name = crate::dynamic_attr_name_bits(py, b"shadow").unwrap();
             SNAPSHOT_MUTATION.with(|context| {
                 context.set([class, receiver, next_class, MoltObject::from_int(99).bits()])
             });
-            let result = generic_read_variant(&py, receiver, name, dictionary, variant).unwrap();
+            let result = generic_read_variant(py, receiver, name, dictionary, variant).unwrap();
             assert_eq!(
                 result, next_class,
                 "__get__ receives the receiver's current class"
@@ -1723,7 +1885,7 @@ fn managed_generic_dictionary_mutation_binds_retained_descriptor_to_live_class()
                 "the original descriptor survives replacement and cache retirement"
             );
             assert_eq!(CALLS.with(Cell::get)[5], 1);
-            assert!(!crate::exception_pending(&py));
+            assert!(!crate::exception_pending(py));
             assert!(errors::PyErr_Occurred().is_null());
             SNAPSHOT_MUTATION.with(|context| context.set([0; 4]));
             ASSIGNED.with(|assigned| assigned.set(0));
@@ -1736,7 +1898,7 @@ fn managed_generic_dictionary_mutation_binds_retained_descriptor_to_live_class()
                 next_class,
                 class,
             ] {
-                dec_ref_bits(&py, value);
+                dec_ref_bits(py, value);
             }
         }
     });
@@ -1746,7 +1908,7 @@ fn managed_generic_dictionary_mutation_binds_retained_descriptor_to_live_class()
 fn managed_generic_descriptor_cache_keeps_lossless_name_identity() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     with_gil(|py| unsafe {
-        let class = snapshot_class(&py, b"LosslessAttributeOwner");
+        let class = snapshot_class(py, b"LosslessAttributeOwner");
         let spellings: [&[u8]; 5] = [
             b"n\xed\xa0\x80\0m",
             b"n\xed\xa0\x81\0m",
@@ -1757,30 +1919,30 @@ fn managed_generic_descriptor_cache_keeps_lossless_name_identity() {
         let mut names = Vec::new();
         for (index, spelling) in spellings.into_iter().enumerate() {
             member(
-                &py,
+                py,
                 class,
                 spelling,
                 MoltObject::from_int(index as i64).bits(),
             );
-            names.push(crate::dynamic_attr_name_bits(&py, spelling).unwrap());
+            names.push(crate::dynamic_attr_name_bits(py, spelling).unwrap());
         }
-        let receiver = snapshot_receiver(&py, class);
-        let dictionary = MoltObject::from_ptr(crate::alloc_dict_with_pairs(&py, &[])).bits();
+        let receiver = snapshot_receiver(py, class);
+        let dictionary = MoltObject::from_ptr(crate::alloc_dict_with_pairs(py, &[])).bits();
         for variant in 0..3 {
             for index in [0, 0, 1, 1, 0, 2, 3, 4, 1] {
                 let result =
-                    generic_read_variant(&py, receiver, names[index], dictionary, variant).unwrap();
+                    generic_read_variant(py, receiver, names[index], dictionary, variant).unwrap();
                 assert_eq!(result, MoltObject::from_int(index as i64).bits());
-                dec_ref_bits(&py, result);
+                dec_ref_bits(py, result);
             }
         }
         for name in names {
-            dec_ref_bits(&py, name);
+            dec_ref_bits(py, name);
         }
         for value in [dictionary, receiver, class] {
-            dec_ref_bits(&py, value);
+            dec_ref_bits(py, value);
         }
-        assert!(!crate::exception_pending(&py));
+        assert!(!crate::exception_pending(py));
         assert!(errors::PyErr_Occurred().is_null());
     });
 }
@@ -1837,7 +1999,14 @@ unsafe extern "C" fn observe_getattribute_retirement(callable: *mut PyObject) {
     }
 }
 
-extern "C" fn after_getattribute_retirement(_receiver: u64, _name: u64) -> u64 {
+extern "C" fn after_getattribute_retirement(__context: u64, _receiver: u64, _name: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     LOOKUP_PHASE.with(|phase| phase.set(if phase.get() == 2 { 3 } else { usize::MAX }));
     MoltObject::from_int(71).bits()
 }
@@ -1926,8 +2095,10 @@ fn getattribute_callable_retires_under_its_exact_error_before_fallback() {
             let receiver = ExceptionValue::adopt(py, snapshot_receiver(py, class.bits()));
             let name =
                 ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, b"missing").unwrap());
-            let result =
-                ExceptionValue::adopt(py, crate::molt_get_attr_name(receiver.bits(), name.bits()));
+            let result = ExceptionValue::adopt(
+                py,
+                crate::molt_get_attr_name_attached_body(py, receiver.bits(), name.bits()),
+            );
             assert_eq!(result.bits(), MoltObject::from_int(71).bits());
             assert_eq!(LOOKUP_PHASE.with(Cell::get), 3);
             assert_eq!(
@@ -1940,14 +2111,28 @@ fn getattribute_callable_retires_under_its_exact_error_before_fallback() {
     });
 }
 
-extern "C" fn publication_key_hash(_receiver: u64) -> u64 {
-    crate::molt_hash_builtin(PUBLICATION_PROBE.with(Cell::get)[0])
+extern "C" fn publication_key_hash(__context: u64, _receiver: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::molt_hash_builtin_attached_body(__py, PUBLICATION_PROBE.with(Cell::get)[0])
 }
 
-extern "C" fn publication_key_equal(_receiver: u64, _other: u64) -> u64 {
+extern "C" fn publication_key_equal(__context: u64, _receiver: u64, _other: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     let [_, failure, armed] = PUBLICATION_PROBE.with(Cell::get);
     if armed != 0 {
-        crate::molt_raise(failure)
+        crate::molt_raise_attached_body(__py, failure)
     } else {
         MoltObject::from_bool(false).bits()
     }
@@ -2005,9 +2190,14 @@ fn fallible_type_publication_preserves_prior_on_success_and_selects_new_failure(
                 py,
                 crate::dynamic_attr_name_bits(py, b"PublicationDescendant").unwrap(),
             );
-            let child = ExceptionValue::adopt(py, crate::molt_class_new(child_name.bits()));
-            let base_result =
-                ExceptionValue::adopt(py, crate::molt_class_set_base(child.bits(), class.bits()));
+            let child = ExceptionValue::adopt(
+                py,
+                crate::molt_class_new_attached_body(py, child_name.bits()),
+            );
+            let base_result = ExceptionValue::adopt(
+                py,
+                crate::molt_class_set_base_attached_body(py, child.bits(), class.bits()),
+            );
             drop(base_result);
             let child_ptr = obj_from_bits(child.bits()).as_ptr().unwrap();
             crate::object::class_finish_definition(py, child_ptr).unwrap();

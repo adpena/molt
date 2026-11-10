@@ -139,6 +139,7 @@ impl CFunctionConvention {
         arguments: CFunctionArguments<'_>,
         name: impl Fn() -> String,
     ) -> *mut PyObject {
+        let _foreign = crate::hooks::ForeignExecutionGuard::capture();
         if meth_target.is_null() || (self == Self::Method) == defining_class.is_null() {
             unsafe { crate::api::errors::PyErr_BadInternalCall() };
             return ptr::null_mut();
@@ -292,6 +293,7 @@ unsafe fn validate_arguments(
 
 /// The sole vector-to-tuple/dict adapter, also used by generic tp_call fallback.
 pub(crate) struct TupleDictArguments {
+    custody: crate::hooks::ForeignExecutionGuard,
     pub tuple: *mut PyObject,
     pub dict: *mut PyObject,
 }
@@ -308,6 +310,7 @@ impl TupleDictArguments {
             return None;
         }
         let mut packed = Self {
+            custody: crate::hooks::ForeignExecutionGuard::capture(),
             tuple,
             dict: ptr::null_mut(),
         };
@@ -337,6 +340,7 @@ impl TupleDictArguments {
 
 impl Drop for TupleDictArguments {
     fn drop(&mut self) {
+        self.custody.validate();
         unsafe {
             for &object in &[self.tuple, self.dict] {
                 crate::api::refcount::Py_XDECREF(object);

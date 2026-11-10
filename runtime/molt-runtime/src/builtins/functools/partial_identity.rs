@@ -150,9 +150,12 @@ pub(super) fn publish_members(py: &PyToken<'_>, class: u64, namespace: *mut u8) 
     true
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_functools_partial_member_get(descriptor: u64, instance: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_functools_partial_member_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    descriptor: u64,
+    instance: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(pointer) = partial_pointer(py, instance) else {
             return MoltObject::none().bits();
         };
@@ -196,13 +199,14 @@ pub extern "C" fn molt_functools_partial_member_get(descriptor: u64, instance: u
 
 // This is the physical PyObject_GenericSetDict boundary of partial, which
 // also permits recovery from the admitted 3.12 __setstate__ representation.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_functools_partial_dictionary_set(
+
+pub(crate) fn molt_functools_partial_dictionary_set_attached_body(
+    _py: &crate::PyToken<'_>,
     _descriptor: u64,
     instance: u64,
     value: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(pointer) = partial_pointer(py, instance) else {
             return MoltObject::none().bits();
         };
@@ -228,9 +232,12 @@ pub extern "C" fn molt_functools_partial_dictionary_set(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_functools_partial_dictionary_delete(_descriptor: u64, instance: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_functools_partial_dictionary_delete_attached_body(
+    _py: &crate::PyToken<'_>,
+    _descriptor: u64,
+    instance: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if partial_pointer(py, instance).is_none() {
             return MoltObject::none().bits();
         }
@@ -238,9 +245,13 @@ pub extern "C" fn molt_functools_partial_dictionary_delete(_descriptor: u64, ins
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_functools_partial_new(class: u64, arguments: u64, keywords: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_functools_partial_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    class: u64,
+    arguments: u64,
+    keywords: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(arguments_ptr) = obj_from_bits(arguments).as_ptr() else {
             return MoltObject::none().bits();
         };
@@ -323,7 +334,7 @@ pub extern "C" fn molt_functools_partial_new(class: u64, arguments: u64, keyword
             return MoltObject::none().bits();
         };
         let dictionary = if let Some(stored) = inherited_keywords {
-            let copy = crate::dict_copy_method(stored.bits()) as u64;
+            let copy = crate::dict_copy_method(_py.attached_context(), stored.bits()) as u64;
             let copy = unsafe { Value::from_owned_bits(py.core_token(), copy) };
             if exception_pending(py) {
                 return MoltObject::none().bits();
@@ -344,7 +355,7 @@ pub extern "C" fn molt_functools_partial_new(class: u64, arguments: u64, keyword
                 }
                 MoltObject::from_ptr(pointer).bits()
             } else {
-                crate::dict_copy_method(keywords) as u64
+                crate::dict_copy_method(_py.attached_context(), keywords) as u64
             };
             if exception_pending(py) {
                 dec_ref_bits(py, copy);
@@ -383,9 +394,11 @@ pub extern "C" fn molt_functools_partial_new(class: u64, arguments: u64, keyword
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_functools_partial_reduce(instance: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_functools_partial_reduce_attached_body(
+    _py: &crate::PyToken<'_>,
+    instance: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(pointer) = partial_pointer(py, instance) else {
             return MoltObject::none().bits();
         };
@@ -421,9 +434,12 @@ pub extern "C" fn molt_functools_partial_reduce(instance: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_functools_partial_setstate(instance: u64, state: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_functools_partial_setstate_attached_body(
+    _py: &crate::PyToken<'_>,
+    instance: u64,
+    state: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(pointer) = partial_pointer(py, instance) else {
             return MoltObject::none().bits();
         };
@@ -472,7 +488,7 @@ pub extern "C" fn molt_functools_partial_setstate(instance: u64, state: u64) -> 
         } else if type_of_bits(py, state[2]) == builtin_classes(py).dict {
             Value::retain(py.core_token(), state[2])
         } else {
-            let copy = crate::dict_copy_method(state[2]) as u64;
+            let copy = crate::dict_copy_method(_py.attached_context(), state[2]) as u64;
             if exception_pending(py) {
                 dec_ref_bits(py, copy);
                 return MoltObject::none().bits();
@@ -517,9 +533,13 @@ pub extern "C" fn molt_functools_partial_setstate(instance: u64, state: u64) -> 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_functools_partial_get(instance: u64, receiver: u64, _owner: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_functools_partial_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    instance: u64,
+    receiver: u64,
+    _owner: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if partial_pointer(py, instance).is_none() {
             return MoltObject::none().bits();
         }
@@ -537,8 +557,12 @@ pub extern "C" fn molt_functools_partial_get(instance: u64, receiver: u64, _owne
             };
             let category =
                 crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::FutureWarning);
-            let result =
-                crate::molt_warnings_warn(message.bits(), category, MoltObject::from_int(1).bits());
+            let result = crate::molt_warnings_warn_attached_body(
+                py,
+                message.bits(),
+                category,
+                MoltObject::from_int(1).bits(),
+            );
             dec_ref_bits(py, result);
             if exception_pending(py) {
                 return MoltObject::none().bits();
@@ -552,9 +576,9 @@ pub extern "C" fn molt_functools_partial_get(instance: u64, receiver: u64, _owne
 
 fn append_representation(py: &PyToken<'_>, value: u64, output: &mut Vec<u8>, repr: bool) -> bool {
     let rendered = if repr {
-        crate::molt_repr_from_obj(value)
+        crate::molt_repr_from_obj_attached_body(py, value)
     } else {
-        crate::molt_str_from_obj(value)
+        crate::molt_str_from_obj_attached_body(py, value)
     };
     let rendered = unsafe { Value::from_owned_bits(py.core_token(), rendered) };
     if exception_pending(py) {
@@ -577,9 +601,11 @@ fn append_representation(py: &PyToken<'_>, value: u64, output: &mut Vec<u8>, rep
     true
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_functools_partial_repr(instance: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_functools_partial_repr_attached_body(
+    _py: &crate::PyToken<'_>,
+    instance: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(pointer) = partial_pointer(py, instance) else {
             return MoltObject::none().bits();
         };
@@ -688,3 +714,5 @@ pub extern "C" fn molt_functools_partial_repr(instance: u64) -> u64 {
         }
     })
 }
+
+include!("../../attached_exports_generated/builtins/functools/partial_identity.rs");

@@ -12,7 +12,7 @@ pub enum AppBootstrapProvider {
     /// owned Molt object result (including None on failure). Runtime
     /// initialization and GIL custody precede this
     /// callback; it must not unwind through the C ABI.
-    Initializer(unsafe extern "C" fn() -> u64),
+    Initializer(unsafe extern "C" fn(context: u64) -> u64),
     /// This image has no compiled application to initialize. The label names
     /// the owning host or harness in the fatal diagnostic.
     Unavailable(&'static str),
@@ -25,9 +25,9 @@ impl AppBootstrapProvider {
     /// The caller must satisfy the selected initializer's safety contract.
     /// Application initializers require the initialized isolate's GIL and any
     /// additional runtime preconditions imposed by the application.
-    pub unsafe fn invoke(self) -> u64 {
+    pub unsafe fn invoke(self, context: u64) -> u64 {
         match self {
-            Self::Initializer(initialize) => unsafe { initialize() },
+            Self::Initializer(initialize) => unsafe { initialize(context) },
             Self::Unavailable(image) => unavailable(image),
         }
     }
@@ -54,15 +54,15 @@ fn unavailable(image: &str) -> ! {
 macro_rules! declare_app_bootstrap {
     ($provider:expr) => {
         #[cfg(not(target_arch = "wasm32"))]
-        #[unsafe(no_mangle)]
+        #[unsafe(export_name = $crate::attached_symbol!("molt_isolate_bootstrap"))]
         /// Initialize the final image's application in the current isolate.
         ///
         /// # Safety
         /// The caller must satisfy the declared initializer's safety contract,
         /// including initialized-isolate GIL custody for application code.
-        pub unsafe extern "C" fn molt_isolate_bootstrap() -> u64 {
+        pub unsafe extern "C" fn molt_isolate_bootstrap(context: u64) -> u64 {
             const PROVIDER: $crate::app_bootstrap::AppBootstrapProvider = $provider;
-            unsafe { PROVIDER.invoke() }
+            unsafe { PROVIDER.invoke(context) }
         }
     };
 }
@@ -74,7 +74,8 @@ mod tests {
 
     static INITIALIZATIONS: AtomicUsize = AtomicUsize::new(0);
 
-    unsafe extern "C" fn initialize_application() -> u64 {
+    unsafe extern "C" fn initialize_application(context: u64) -> u64 {
+        assert_eq!(context, 0xa11a_c7ed);
         INITIALIZATIONS.fetch_add(1, Ordering::SeqCst);
         0x1234_5678_9abc_def0
     }
@@ -85,7 +86,7 @@ mod tests {
     fn final_image_forwards_initializer_once_and_preserves_result() {
         let before = INITIALIZATIONS.load(Ordering::SeqCst);
         // This test initializer only updates an atomic and needs no runtime.
-        let result = unsafe { molt_isolate_bootstrap() };
+        let result = unsafe { molt_isolate_bootstrap(0xa11a_c7ed) };
         assert_eq!(result, 0x1234_5678_9abc_def0);
         assert_eq!(INITIALIZATIONS.load(Ordering::SeqCst), before + 1);
     }
@@ -94,7 +95,7 @@ mod tests {
     fn unavailable_initializer_aborts_with_owner_diagnostic() {
         const CHILD: &str = "MOLT_TEST_APP_BOOTSTRAP_UNAVAILABLE_CHILD";
         if std::env::var_os(CHILD).is_some() {
-            unsafe { AppBootstrapProvider::Unavailable("bootstrap-contract-test").invoke() };
+            unsafe { AppBootstrapProvider::Unavailable("bootstrap-contract-test").invoke(0) };
             panic!("an unavailable application initializer returned");
         }
         let output = std::process::Command::new(std::env::current_exe().unwrap())

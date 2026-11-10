@@ -137,9 +137,11 @@ fn generated_eval_breaker_is_distinct_from_pure_exception_observation() {
     )
     .unwrap();
 
-    let pure_start = exception_abi.find("fn molt_exception_pending()").unwrap();
+    let pure_start = exception_abi
+        .find("fn molt_exception_pending_attached_body(")
+        .unwrap();
     let async_start = exception_abi
-        .find("fn molt_async_work_poll_and_exception_pending()")
+        .find("fn molt_async_work_poll_and_exception_pending_attached_body(")
         .unwrap();
     assert!(pure_start < async_start);
     assert!(
@@ -159,10 +161,9 @@ fn generated_eval_breaker_is_distinct_from_pure_exception_observation() {
     assert!(target_info.contains("supports_pending_call_eval_breaker_poll"));
     assert!(pass_manager.contains("tti.supports_pending_call_eval_breaker_poll()"));
 
-    // Native and LLVM name the service entry by its symbol; no typed runtime
-    // identity spans the three backends yet. LLVM's poll arm routes to the one
-    // inline-word emitter, which owns the cold service call.
-    assert!(llvm_dispatch.contains("self.emit_async_work_poll(false)"));
+    // Each backend routes to the service entry. LLVM's inline-word emitter
+    // carries the operation's frame location into its cold service call.
+    assert!(llvm_dispatch.contains("self.emit_async_work_poll(false, op.frame_location())"));
     for (name, backend) in [("native", &native), ("llvm", &llvm_poll), ("wasm", &wasm)] {
         assert!(
             backend.contains("molt_async_work_poll_and_exception_pending")

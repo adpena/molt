@@ -28,7 +28,10 @@ impl RuntimeImportPlan {
                 bail!("malformed molt_runtime::{name} import: expected a function");
             };
             let runtime = runtime.context("molt_runtime imports require a runtime module")?;
-            let export_name = format!("molt_{name}");
+            let export_name = runtime_execution_abi_for_symbol(name)
+                .with_context(|| format!("unclassified runtime execution ABI symbol: {name}"))?
+                .physical_symbol
+                .to_owned();
             let export_type = runtime
                 .get_export(&export_name)
                 .with_context(|| format!("missing runtime export {export_name}"))?;
@@ -297,19 +300,24 @@ pub(super) fn has_runtime_imports(module: &Module) -> bool {
 }
 
 fn validate_call_indirect_type(name: &str, ty: &FuncType) -> Result<()> {
-    let suffix = name.strip_prefix("molt_call_indirect").unwrap_or("");
+    let logical = name
+        .strip_suffix(ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX)
+        .with_context(|| format!("stale indirect-call execution ABI: {name}"))?;
+    let suffix = logical.strip_prefix("molt_call_indirect").unwrap_or("");
     let arity = suffix
         .parse::<usize>()
         .with_context(|| format!("malformed indirect-call import name: {name}"))?;
     if suffix != arity.to_string()
-        || arity.checked_add(1) != Some(ty.params().len())
+        || arity.checked_add(2) != Some(ty.params().len())
         || ty.results().len() != 1
         || !ty
             .params()
             .chain(ty.results())
             .all(|value| ValType::eq(&value, &ValType::I64))
     {
-        bail!("malformed {name} import: expected (table index i64, {arity} i64 arguments) -> i64");
+        bail!(
+            "malformed {name} import: expected (context i64, table index i64, {arity} i64 arguments) -> i64"
+        );
     }
     Ok(())
 }
@@ -342,7 +350,13 @@ pub(super) fn define_call_indirect_imports(
         let target = match kind {
             LoadedGuestKind::WasiCommand | LoadedGuestKind::WasiCommandManifest(_) => {
                 IndirectDispatch::CommandTable {
-                    callee_type: FuncType::new(ty.engine(), ty.params().skip(1), ty.results()),
+                    callee_type: FuncType::new(
+                        ty.engine(),
+                        ty.params()
+                            .enumerate()
+                            .filter_map(|(index, ty)| (index != 1).then_some(ty)),
+                        ty.results(),
+                    ),
                 }
             }
             LoadedGuestKind::MoltApplication { .. } => {
@@ -371,7 +385,7 @@ fn make_call_indirect_func(
         ty,
         move |mut caller, params, results| match &target {
             IndirectDispatch::CommandTable { callee_type } => {
-                let index = params[0]
+                let index = params[1]
                     .i64()
                     .ok_or_else(|| wasmtime::Error::msg("indirect-call index is not i64"))?;
                 let index = u32::try_from(index).map_err(|_| {
@@ -393,7 +407,10 @@ fn make_call_indirect_func(
                 // selected function, not a cached signature for the table slot.
                 require_indirect_signature(&name, &func.ty(&caller), callee_type)
                     .with_context(|| format!("dispatch {name} at command table index {index}"))?;
-                func.call(&mut caller, &params[1..], results)
+                let mut logical = Vec::with_capacity(params.len() - 1);
+                logical.push(params[0]);
+                logical.extend_from_slice(&params[2..]);
+                func.call(&mut caller, &logical, results)
                     .with_context(|| format!("dispatch {name} at command table index {index}"))
             }
             IndirectDispatch::ApplicationExports(registry) => {
@@ -583,7 +600,7 @@ mod indirect_dispatch_tests {
 
     fn execute_command(wat: &str) -> Result<GuestTermination> {
         let engine = build_engine().expect("production host engine");
-        let module = Module::new(&engine, wat)?;
+        let module = Module::new(&engine, crate::execution_fixture::render(wat))?;
         execute_loaded_guest(
             &engine,
             &module,
@@ -608,7 +625,7 @@ mod indirect_dispatch_tests {
                 format!("(param{parameters})")
             };
             let sum = (0..arity)
-                .map(|index| format!("local.get {index} i64.add "))
+                .map(|index| format!("local.get {} i64.add ", index + 1))
                 .collect::<String>();
             let arguments = (1..=arity)
                 .map(|argument| format!("i64.const {argument} "))
@@ -618,13 +635,15 @@ mod indirect_dispatch_tests {
                 let start = if core_start { "(start $run)" } else { "" };
                 let wat = format!(
                     r#"(module
-                        (import "env" "molt_call_indirect{arity}"
-                          (func $call (param i64{parameters}) (result i64)))
+                        (import "env" "molt_call_indirect{arity}@CONTEXT_SUFFIX@"
+                          (func $call (param $context i64) (param i64{parameters}) (result i64)))
                         (table (export "__indirect_function_table") 2 funcref)
-                        (func $target {target_parameters} (result i64) i64.const 10 {sum})
+                        (func $target (param $context i64) {target_parameters} (result i64)
+                            local.get $context i64.const 32768 i64.ne if unreachable end
+                            i64.const 10 {sum})
                         (elem (i32.const 1) $target)
                         (func $run (export "_start")
-                          i64.const 1 {arguments} call $call
+                          i64.const 32768 i64.const 1 {arguments} call $call
                           i64.const {expected} i64.ne if unreachable end)
                         {start})"#
                 );
@@ -652,7 +671,7 @@ mod indirect_dispatch_tests {
         ] {
             let wat = format!(
                 r#"(module
-                    (import "env" "molt_call_indirect0" (func (param i64) (result i64)))
+                    (import "env" "molt_call_indirect0@CONTEXT_SUFFIX@" (func (param i64) (param i64) (result i64)))
                     {table}
                     (func $start unreachable) (start $start)
                     (func (export "_start")))"#
@@ -684,10 +703,10 @@ mod indirect_dispatch_tests {
         ] {
             let wat = format!(
                 r#"(module
-                    (import "env" "molt_call_indirect0" (func $call (param i64) (result i64)))
+                    (import "env" "molt_call_indirect0@CONTEXT_SUFFIX@" (func $call (param i64) (param i64) (result i64)))
                     (table (export "__indirect_function_table") 2 funcref)
-                    (func $target {target}) (elem (i32.const 1) $target)
-                    (func (export "_start") i64.const {index} call $call drop))"#
+                    (func $target (param $context i64) {target}) (elem (i32.const 1) $target)
+                    (func (export "_start") i64.const 32768 i64.const {index} call $call drop))"#
             );
             let error = execute_command(&wat).unwrap_err();
             assert!(format!("{error:#}").contains(diagnostic), "{error:#}");
@@ -704,16 +723,16 @@ mod indirect_dispatch_tests {
         {
             let wat = format!(
                 r#"(module
-                    (import "env" "molt_call_indirect0" (func $call (param i64) (result i64)))
+                    (import "env" "molt_call_indirect0@CONTEXT_SUFFIX@" (func $call (param i64) (param i64) (result i64)))
                     (table (export "__indirect_function_table") 2 funcref)
-                    (func $good (result i64) i64.const 42)
-                    (func $bad {bad_signature} unreachable)
+                    (func $good (param $context i64) (result i64) local.get $context i64.const 32768 i64.ne if unreachable end  i64.const 42)
+                    (func $bad (param $context i64) {bad_signature} unreachable)
                     (elem (i32.const 1) $good)
                     (elem declare func $bad)
                     (func (export "_start")
-                        i64.const 1 call $call i64.const 42 i64.ne if unreachable end
+                        i64.const 32768 i64.const 1 call $call i64.const 42 i64.ne if unreachable end
                         i32.const 1 ref.func $bad table.set
-                        i64.const 1 call $call drop))"#
+                        i64.const 32768 i64.const 1 call $call drop))"#
             );
             let error = execute_command(&wat).unwrap_err();
             assert!(format!("{error:#}").contains("dispatch molt_call_indirect0"));
@@ -731,14 +750,14 @@ mod indirect_dispatch_tests {
     #[test]
     fn command_indirect_dispatch_accepts_compatible_function_subtypes() {
         let wat = r#"(module
-            (type $base (sub (func (result i64))))
-            (type $derived (sub $base (func (result i64))))
-            (import "env" "molt_call_indirect0" (func $call (param i64) (result i64)))
+            (type $base (sub (func (param i64) (result i64))))
+            (type $derived (sub $base (func (param i64) (result i64))))
+            (import "env" "molt_call_indirect0@CONTEXT_SUFFIX@" (func $call (param i64) (param i64) (result i64)))
             (table (export "__indirect_function_table") 2 funcref)
-            (func $target (type $derived) i64.const 42)
+            (func $target (type $derived) (param $context i64) (result i64) local.get $context i64.const 32768 i64.ne if unreachable end  i64.const 42)
             (elem (i32.const 1) $target)
             (func (export "_start")
-                i64.const 1 call $call i64.const 42 i64.ne if unreachable end))"#;
+                i64.const 32768 i64.const 1 call $call i64.const 42 i64.ne if unreachable end))"#;
         assert_eq!(execute_command(wat).unwrap(), GuestTermination::Returned);
     }
 
@@ -748,45 +767,81 @@ mod indirect_dispatch_tests {
         for linked in [true, false] {
             for wrapper in [
                 "",
-                "(memory (export \"molt_call_indirect0\") 1)",
-                "(func (export \"molt_call_indirect0\") (param i64) (result i32) unreachable)",
-                "(func (export \"molt_call_indirect0\") (result i64) unreachable)",
+                "(memory (export \"molt_call_indirect0@CONTEXT_SUFFIX@\") 1)",
+                "(func (export \"molt_call_indirect0@CONTEXT_SUFFIX@\") (param i64) (param i64) (result i32) unreachable)",
+                "(func (export \"molt_call_indirect0@CONTEXT_SUFFIX@\") (param i64) (result i64) unreachable)",
             ] {
                 let application_import = if linked {
-                    r#"(import "env" "molt_call_indirect0" (func (param i64) (result i64)))"#
+                    r#"(import "env" "molt_call_indirect0@CONTEXT_SUFFIX@" (func (param i64) (param i64) (result i64)))"#
                 } else {
-                    r#"(import "molt_runtime" "run" (func))"#
+                    r#"(import "molt_runtime" "molt_exception_last@CONTEXT_SUFFIX@" (func (param i64) (result i64)))"#
                 };
                 let application = Module::new(
                     &engine,
-                    format!(
+                    crate::execution_fixture::render(format!(
                         r#"(module
                         {application_import}
                         {wrapper}
                         (func $initialize unreachable) (start $initialize)
-                        (func (export "molt_main") (result i64) i64.const 0)
-                        (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
-                        (func (export "molt_isolate_import") (param i64) (result i64) i64.const 0)
+                        (func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+                        (func (export "molt_isolate_bootstrap@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+                        (func (export "molt_isolate_import@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
                         (func (export "molt_runtime_execution_enter") (result i64) i64.const 1)
                         (func (export "molt_runtime_execution_leave") (param i64))
                         (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
                         (func (export "molt_main_exit_status") (result i64) i64.const 0)
-                        (func (export "molt_exception_pending") (result i64) i64.const 0))"#
-                    ),
+                        (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+(func (export "molt_exception_pending_detached") (result i64)
+ i64.const 0)
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+
+        (memory (export "memory") 1)
+)"#
+                    )),
                 )
                 .unwrap();
                 let runtime = (!linked).then(|| {
                     Module::new(
                         &engine,
-                        r#"(module
-                    (import "env" "molt_call_indirect0" (func (param i64) (result i64)))
+                        crate::execution_fixture::render(r#"(module
+                    (import "env" "molt_call_indirect0@CONTEXT_SUFFIX@" (func (param i64) (param i64) (result i64)))
                     (func $initialize unreachable) (start $initialize)
-                    (func (export "molt_run"))
+                    (func (export "molt_exception_last@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
                     (func (export "molt_runtime_execution_enter") (result i64) i64.const 1)
                     (func (export "molt_runtime_execution_leave") (param i64))
                     (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
                     (func (export "molt_main_exit_status") (result i64) i64.const 0)
-                    (func (export "molt_exception_pending") (result i64) i64.const 0))"#,
+                    (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+(func (export "molt_exception_pending_detached") (result i64)
+ i64.const 0)
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+
+        (memory (export "memory") 1)
+)"#),
                     )
                     .unwrap()
                 });
@@ -820,17 +875,17 @@ mod indirect_dispatch_tests {
         let engine = build_engine().expect("production host engine");
         let runtime = Module::new(
             &engine,
-            r#"(module
-            (import "env" "molt_call_indirect1" (func (param i64 i64) (result i64))))"#,
+            crate::execution_fixture::render(r#"(module
+            (import "env" "molt_call_indirect1@CONTEXT_SUFFIX@" (func (param i64) (param i64 i64) (result i64))))"#),
         )
         .unwrap();
         let output = Module::new(
             &engine,
-            r#"(module
-            (import "env" "molt_call_indirect0" (func (param i64) (result i64)))
-            (import "env" "molt_call_indirect1" (func (param i64 i64) (result i64)))
-            (func (export "molt_call_indirect0") (param i64) (result i64) i64.const 0)
-            (func (export "molt_call_indirect1") (param i64 i64) (result i64) i64.const 0))"#,
+            crate::execution_fixture::render(r#"(module
+            (import "env" "molt_call_indirect0@CONTEXT_SUFFIX@" (func (param i64) (param i64) (result i64)))
+            (import "env" "molt_call_indirect1@CONTEXT_SUFFIX@" (func (param i64) (param i64 i64) (result i64)))
+            (func (export "molt_call_indirect0@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64) local.get $context i64.const 32768 i64.ne if unreachable end  i64.const 0)
+            (func (export "molt_call_indirect1@CONTEXT_SUFFIX@") (param $context i64) (param i64 i64) (result i64) local.get $context i64.const 32768 i64.ne if unreachable end  i64.const 0))"#),
         )
         .unwrap();
         let plan = plan_call_indirect_imports(
@@ -841,32 +896,38 @@ mod indirect_dispatch_tests {
         .unwrap();
         assert_eq!(
             plan.iter()
-                .map(|(name, _)| name.as_str())
+                .map(|(name, _)| name.clone())
                 .collect::<Vec<_>>(),
-            ["molt_call_indirect0", "molt_call_indirect1"]
+            [
+                compiled_execution_symbol("molt_call_indirect0"),
+                compiled_execution_symbol("molt_call_indirect1")
+            ]
         );
         let mut store = Store::new(&engine, crate::main_tests::test_host_state());
         let malformed = Module::new(
             &engine,
-            r#"(module
-            (func (export "molt_call_indirect0") (param i64) (result i64) i64.const 0)
-            (func (export "molt_call_indirect1") (param i64 i64) (result i32) i32.const 0))"#,
+            crate::execution_fixture::render(r#"(module
+            (func (export "molt_call_indirect0@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64) local.get $context i64.const 32768 i64.ne if unreachable end  i64.const 0)
+            (func (export "molt_call_indirect1@CONTEXT_SUFFIX@") (param $context i64) (param i64 i64) (result i32) local.get $context i64.const 32768 i64.ne if unreachable end  i32.const 0))"#),
         )
         .unwrap();
         let instance = Instance::new(&mut store, &malformed, &[]).unwrap();
         let registry = store.data().call_indirect.clone();
         let error =
             register_call_indirect_exports(&mut store, &instance, &registry, &plan).unwrap_err();
-        assert!(format!("{error:#}").contains("molt_call_indirect1 signature mismatch"));
+        assert!(format!("{error:#}").contains(&format!(
+            "{} signature mismatch",
+            compiled_execution_symbol("molt_call_indirect1")
+        )));
         assert!(
             registry.get().is_none(),
             "a rejected export family must publish no partial registry"
         );
         let valid = Module::new(
             &engine,
-            r#"(module
-            (func (export "molt_call_indirect0") (param i64) (result i64) i64.const 0)
-            (func (export "molt_call_indirect1") (param i64 i64) (result i64) i64.const 0))"#,
+            crate::execution_fixture::render(r#"(module
+            (func (export "molt_call_indirect0@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64) local.get $context i64.const 32768 i64.ne if unreachable end  i64.const 0)
+            (func (export "molt_call_indirect1@CONTEXT_SUFFIX@") (param $context i64) (param i64 i64) (result i64) local.get $context i64.const 32768 i64.ne if unreachable end  i64.const 0))"#),
         )
         .unwrap();
         let valid_instance = Instance::new(&mut store, &valid, &[]).unwrap();
@@ -881,12 +942,15 @@ mod indirect_dispatch_tests {
     fn non_function_indirect_import_is_rejected_before_core_start() {
         let error = execute_command(
             r#"(module
-            (import "env" "molt_call_indirect0" (global i64))
+            (import "env" "molt_call_indirect0@CONTEXT_SUFFIX@" (global i64))
             (func $initialize unreachable) (start $initialize)
             (func (export "_start")))"#,
         )
         .unwrap_err();
-        assert!(format!("{error:#}").contains("malformed molt_call_indirect0 import"));
+        assert!(format!("{error:#}").contains(&format!(
+            "malformed {} import",
+            compiled_execution_symbol("molt_call_indirect0")
+        )));
         assert!(error.downcast_ref::<wasmtime::Trap>().is_none());
     }
 
@@ -901,7 +965,7 @@ mod indirect_dispatch_tests {
         ] {
             let wat = format!(
                 r#"(module
-                    (import "env" "{name}" (func {signature}))
+                    (import "env" "{name}@CONTEXT_SUFFIX@" (func (param i64) {signature}))
                     (table (export "__indirect_function_table") 2 funcref)
                     (func $start unreachable) (start $start)
                     (func (export "_start")))"#
@@ -912,23 +976,62 @@ mod indirect_dispatch_tests {
     }
 
     #[test]
+    fn obsolete_indirect_symbols_are_rejected_before_core_start() {
+        for name in [
+            "molt_call_indirect0",
+            "molt_call_indirect0__molt_context_obsolete",
+        ] {
+            let wat = format!(
+                r#"(module
+                (import "env" "{name}" (func (param i64 i64) (result i64)))
+                (table (export "__indirect_function_table") 1 funcref)
+                (func $start unreachable) (start $start)
+                (func (export "_start")))"#
+            );
+            let error = execute_command(&wat).unwrap_err();
+            assert!(format!("{error:#}").contains("stale indirect-call execution ABI"));
+            assert!(error.downcast_ref::<wasmtime::Trap>().is_none());
+        }
+    }
+
+    #[test]
     fn applications_keep_generated_wrapper_dispatch_without_raw_table_requirement() {
         let engine = build_engine().expect("production host engine");
         let module = Module::new(
             &engine,
-            r#"(module
-                (import "env" "molt_call_indirect0" (func $call (param i64) (result i64)))
-                (func (export "molt_call_indirect0") (param i64) (result i64) i64.const 42)
-                (func (export "molt_main") (result i64)
-                    i64.const 37 call $call i64.const 42 i64.ne if unreachable end
+            crate::execution_fixture::render(r#"(module
+                (import "env" "molt_call_indirect0@CONTEXT_SUFFIX@" (func $call (param i64) (param i64) (result i64)))
+                (func (export "molt_call_indirect0@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64) local.get $context i64.const 32768 i64.ne if unreachable end  i64.const 42)
+                (func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+
+                    local.get $context i64.const 37 call $call i64.const 42 i64.ne if unreachable end
                     i64.const 0)
-                (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
-                (func (export "molt_isolate_import") (param i64) (result i64) i64.const 0)
+                (func (export "molt_isolate_bootstrap@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+                (func (export "molt_isolate_import@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
                 (func (export "molt_runtime_execution_enter") (result i64) i64.const 1)
                 (func (export "molt_runtime_execution_leave") (param i64))
                 (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
                 (func (export "molt_main_exit_status") (result i64) i64.const 0)
-                (func (export "molt_exception_pending") (result i64) i64.const 0))"#,
+                (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+(func (export "molt_exception_pending_detached") (result i64)
+ i64.const 0)
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+
+        (memory (export "memory") 1)
+)"#),
         )
         .unwrap();
         assert_eq!(
@@ -954,31 +1057,65 @@ mod indirect_dispatch_tests {
         let engine = build_engine().expect("production host engine");
         let runtime = Module::new(
             &engine,
-            r#"(module
-            (import "env" "molt_call_indirect1" (func $call (param i64 i64) (result i64)))
-            (func (export "molt_run") (result i64)
-                i64.const 37 i64.const 5 call $call)
+            crate::execution_fixture::render(r#"(module
+            (import "env" "memory" (memory 1))
+            (import "env" "molt_call_indirect1@CONTEXT_SUFFIX@" (func $call (param i64) (param i64 i64) (result i64)))
+            (func (export "molt_exception_last@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+
+                local.get $context i64.const 37 i64.const 5 call $call)
             (func (export "molt_runtime_execution_enter") (result i64) i64.const 1)
             (func (export "molt_runtime_execution_leave") (param i64))
             (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
             (func (export "molt_main_exit_status") (result i64) i64.const 0)
-            (func (export "molt_exception_pending") (result i64) i64.const 0))"#,
+            (func (export "molt_exception_pending@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+(func (export "molt_exception_pending_detached") (result i64)
+ i64.const 0)
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+
+
+)"#),
         )
         .unwrap();
         let application = Module::new(
             &engine,
-            r#"(module
-            (import "env" "molt_call_indirect0" (func $call (param i64) (result i64)))
-            (import "molt_runtime" "run" (func $run (result i64)))
-            (func (export "molt_call_indirect0") (param i64) (result i64) i64.const 42)
-            (func (export "molt_call_indirect1") (param i64 i64) (result i64)
-                local.get 0 local.get 1 i64.add)
-            (func (export "molt_main") (result i64)
-                i64.const 37 call $call i64.const 42 i64.ne if unreachable end
-                call $run i64.const 42 i64.ne if unreachable end
+            crate::execution_fixture::render(r#"(module
+            (import "env" "memory" (memory 1))
+            (import "env" "molt_call_indirect0@CONTEXT_SUFFIX@" (func $call (param i64) (param i64) (result i64)))
+            (import "molt_runtime" "molt_exception_last@CONTEXT_SUFFIX@" (func $run (param i64) (result i64)))
+            (func (export "molt_call_indirect0@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64) local.get $context i64.const 32768 i64.ne if unreachable end  i64.const 42)
+            (func (export "molt_call_indirect1@CONTEXT_SUFFIX@") (param $context i64) (param i64 i64) (result i64) local.get $context i64.const 32768 i64.ne if unreachable end
+                local.get 1 local.get 2 i64.add)
+            (func (export "molt_main@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+
+                local.get $context i64.const 37 call $call i64.const 42 i64.ne if unreachable end
+                local.get $context call $run i64.const 42 i64.ne if unreachable end
                 i64.const 0)
-            (func (export "molt_isolate_bootstrap") (result i64) i64.const 0)
-            (func (export "molt_isolate_import") (param i64) (result i64) i64.const 0))"#,
+            (func (export "molt_isolate_bootstrap@CONTEXT_SUFFIX@") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+            (func (export "molt_isolate_import@CONTEXT_SUFFIX@") (param $context i64) (param i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+ i64.const 0)
+        (func (export "molt_attached_context_abi_fingerprint") (result i64) i64.const @CONTEXT_FINGERPRINT@)
+        (func (export "molt_attached_context") (result i64) i64.const 32768)
+        (func (export "molt_compiled_execution_enter") (param $context i64) (result i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end i64.const 1)
+        (func (export "molt_compiled_execution_leave") (param $context i64) (param $scope i64)
+            local.get $context i64.const 32768 i64.ne if unreachable end
+            local.get $scope i64.const 1 i64.ne if unreachable end)
+
+
+)"#),
         )
         .unwrap();
         assert_eq!(

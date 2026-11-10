@@ -14,6 +14,7 @@ mod lir_runtime_calls;
 mod numeric_runtime_selector;
 mod pure_profile;
 mod runtime_callables;
+#[cfg(test)]
 mod runtime_surface;
 mod static_types;
 
@@ -26,10 +27,9 @@ pub(crate) use container_runtime_selector::{
     WasmContainerRuntimeFact, WasmContainerRuntimeOp, WasmContainerRuntimeSelection,
     wasm_container_runtime_op, wasm_container_runtime_selection,
 };
-pub(crate) use import_metadata::WasmRuntimeReturn;
-pub(crate) use import_registry::{
-    IMPORT_REGISTRY, RuntimeImportSpec, wasm_runtime_export_name, wasm_runtime_import,
-};
+#[cfg(test)]
+pub(crate) use import_registry::wasm_runtime_export_name;
+pub(crate) use import_registry::{IMPORT_REGISTRY, RuntimeImportSpec, wasm_runtime_import};
 pub(crate) use import_tokens::WasmRuntimeImport;
 pub(crate) use lir_runtime_calls::{
     LirFixedRuntimeCall, LirRuntimeCall, OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec,

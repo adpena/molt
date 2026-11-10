@@ -1,12 +1,12 @@
 use super::*;
 use crate::BuiltinExc;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_find_in_path_package_context(
+pub(crate) fn molt_importlib_find_in_path_package_context_attached_body(
+    _py: &crate::PyToken<'_>,
     fullname_bits: u64,
     search_paths_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         importlib_find_in_path_payload(_py, fullname_bits, search_paths_bits, true)
     })
 }
@@ -103,7 +103,7 @@ pub(in super::super) fn importlib_find_spec_impl(
     }
     let contains = || -> Result<bool, u64> {
         let modules = read(sys.bits(), crate::NameId::Modules)?;
-        let result = crate::object::ops::molt_contains(modules.bits(), name);
+        let result = crate::object::ops::molt_contains_attached_body(py, modules.bits(), name);
         if exception_pending(py) {
             return Err(MoltObject::none().bits());
         }
@@ -153,7 +153,7 @@ pub(in super::super) fn importlib_find_spec_impl(
                 // sys.modules is a public subscription receiver: custom
                 // mappings must reach __getitem__, with the normal dict fast
                 // path retained by the shared subscription authority.
-                let bits = crate::object::ops::molt_index(modules.bits(), name);
+                let bits = crate::object::ops::molt_index_attached_body(py, modules.bits(), name);
                 let module = ExceptionValue::adopt(py, bits);
                 if exception_pending(py) {
                     return Err(MoltObject::none().bits());
@@ -186,9 +186,15 @@ pub(in super::super) fn importlib_find_spec_impl(
     Ok(MoltObject::none().bits())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_find_spec(name: u64, path: u64, target: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_importlib_find_spec_attached_body(
+    _py: &crate::PyToken<'_>,
+    name: u64,
+    path: u64,
+    target: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         importlib_find_spec_impl(py, name, path, target).unwrap_or_else(|error| error)
     })
 }
+
+include!("../../attached_exports_generated/builtins/platform_importlib_ffi/find_spec.rs");

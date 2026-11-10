@@ -132,8 +132,11 @@ pub(crate) unsafe fn promote_list_bool_to_list(_py: &PyToken<'_>, ptr: *mut u8) 
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_append(list_bits: u64, val_bits: u64) -> u64 {
+pub(crate) fn molt_list_append_attached_body(
+    _py: &crate::PyToken<'_>,
+    list_bits: u64,
+    val_bits: u64,
+) -> u64 {
     let _ = molt_list_append_with_projection(list_bits, val_bits, std::ptr::null_mut());
     MoltObject::none().bits()
 }
@@ -220,9 +223,12 @@ pub(crate) fn molt_list_append_with_projection(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_pop(list_bits: u64, index_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_list_pop_attached_body(
+    _py: &crate::PyToken<'_>,
+    list_bits: u64,
+    index_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(storage) = list_receiver(py, list_bits, "pop") else {
             return MoltObject::none().bits();
         };
@@ -246,9 +252,12 @@ pub extern "C" fn molt_list_pop(list_bits: u64, index_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_list_extend_attached_body(
+    _py: &crate::PyToken<'_>,
+    list_bits: u64,
+    other_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(storage) = list_receiver(_py, list_bits, "extend") else {
             return MoltObject::none().bits();
         };
@@ -350,8 +359,12 @@ pub extern "C" fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_insert(list_bits: u64, index_bits: u64, val_bits: u64) -> u64 {
+pub(crate) fn molt_list_insert_attached_body(
+    _py: &crate::PyToken<'_>,
+    list_bits: u64,
+    index_bits: u64,
+    val_bits: u64,
+) -> u64 {
     let _ = molt_list_insert_with_projection(list_bits, index_bits, val_bits, std::ptr::null_mut());
     MoltObject::none().bits()
 }
@@ -412,9 +425,12 @@ pub(crate) unsafe fn insert_at_native_index_with_projection(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_remove(list_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_list_remove_attached_body(
+    _py: &crate::PyToken<'_>,
+    list_bits: u64,
+    val_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(storage) = list_receiver(py, list_bits, "remove") else {
             return MoltObject::none().bits();
         };
@@ -441,9 +457,8 @@ pub extern "C" fn molt_list_remove(list_bits: u64, val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_clear(list_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_list_clear_attached_body(_py: &crate::PyToken<'_>, list_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(storage) = list_receiver(_py, list_bits, "clear") else {
             return MoltObject::none().bits();
         };
@@ -467,20 +482,23 @@ pub extern "C" fn molt_list_clear(list_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_init_method(list_bits: u64, iterable_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_list_init_method_attached_body(
+    _py: &crate::PyToken<'_>,
+    list_bits: u64,
+    iterable_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if list_receiver(_py, list_bits, "__init__").is_none() {
             return MoltObject::none().bits();
         }
-        let _ = molt_list_clear(list_bits);
+        let _ = molt_list_clear_attached_body(_py, list_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
         if iterable_bits == missing_bits(_py) {
             return MoltObject::none().bits();
         }
-        let _ = molt_list_extend(list_bits, iterable_bits);
+        let _ = molt_list_extend_attached_body(_py, list_bits, iterable_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -488,9 +506,8 @@ pub extern "C" fn molt_list_init_method(list_bits: u64, iterable_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_copy(list_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_list_copy_attached_body(_py: &crate::PyToken<'_>, list_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(storage) = list_receiver(_py, list_bits, "copy") else {
             return MoltObject::none().bits();
         };
@@ -541,9 +558,8 @@ pub extern "C" fn molt_list_copy(list_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_reverse(list_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_list_reverse_attached_body(_py: &crate::PyToken<'_>, list_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let _ = reverse_in_place(py, list_bits);
         MoltObject::none().bits()
     })
@@ -563,9 +579,13 @@ pub(crate) fn reverse_in_place(py: &PyToken<'_>, list_bits: u64) -> bool {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_sort(list_bits: u64, key_bits: u64, reverse_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_list_sort_attached_body(
+    _py: &crate::PyToken<'_>,
+    list_bits: u64,
+    key_bits: u64,
+    reverse_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(storage) = list_receiver(py, list_bits, "sort") else {
             return MoltObject::none().bits();
         };
@@ -709,9 +729,12 @@ fn sort_storage(
     false
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_add_method(list_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_list_add_method_attached_body(
+    _py: &crate::PyToken<'_>,
+    list_bits: u64,
+    other_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(storage) = list_receiver(_py, list_bits, "__add__") else {
             return MoltObject::none().bits();
         };
@@ -792,26 +815,34 @@ fn list_repeat_method(
     result.unwrap_or_else(|| MoltObject::none().bits())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_mul_method(list_bits: u64, count_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_list_mul_method_attached_body(
+    _py: &crate::PyToken<'_>,
+    list_bits: u64,
+    count_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         list_repeat_method(_py, list_bits, count_bits, ListRepeatMode::Copy)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_imul_method(list_bits: u64, count_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_list_imul_method_attached_body(
+    _py: &crate::PyToken<'_>,
+    list_bits: u64,
+    count_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         list_repeat_method(_py, list_bits, count_bits, ListRepeatMode::InPlace)
     })
 }
 
-pub(crate) extern "C" fn list_iadd_slot(list_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn list_iadd_slot(__context: u64, list_bits: u64, other_bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         if list_receiver(py, list_bits, "__iadd__").is_none() {
             return MoltObject::none().bits();
         }
-        let _ = molt_list_extend(list_bits, other_bits);
+        let _ = molt_list_extend_attached_body(py, list_bits, other_bits);
         if exception_pending(py) {
             return MoltObject::none().bits();
         }
@@ -820,20 +851,29 @@ pub(crate) extern "C" fn list_iadd_slot(list_bits: u64, other_bits: u64) -> u64 
     })
 }
 
-pub(crate) extern "C" fn list_getitem_slot(list_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn list_getitem_slot(__context: u64, list_bits: u64, key_bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(storage) = list_receiver(py, list_bits, "__getitem__") else {
             return MoltObject::none().bits();
         };
         if storage.native().is_some() {
             return storage.getitem(key_bits);
         }
-        crate::object::ops::molt_getitem_builtin(list_bits, key_bits)
+        crate::object::ops::molt_getitem_builtin_attached_body(py, list_bits, key_bits)
     })
 }
 
-pub(crate) extern "C" fn list_setitem_slot(list_bits: u64, key_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn list_setitem_slot(
+    __context: u64,
+    list_bits: u64,
+    key_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(storage) = list_receiver(py, list_bits, "__setitem__") else {
             return MoltObject::none().bits();
         };
@@ -841,13 +881,17 @@ pub(crate) extern "C" fn list_setitem_slot(list_bits: u64, key_bits: u64, value_
             let _ = storage.assign(key_bits, Some(value_bits));
             return MoltObject::none().bits();
         }
-        let _ = crate::object::ops::molt_setitem_builtin(list_bits, key_bits, value_bits);
+        let _ = crate::object::ops::molt_setitem_builtin_attached_body(
+            py, list_bits, key_bits, value_bits,
+        );
         MoltObject::none().bits()
     })
 }
 
-pub(crate) extern "C" fn list_delitem_slot(list_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn list_delitem_slot(__context: u64, list_bits: u64, key_bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(storage) = list_receiver(py, list_bits, "__delitem__") else {
             return MoltObject::none().bits();
         };
@@ -855,22 +899,26 @@ pub(crate) extern "C" fn list_delitem_slot(list_bits: u64, key_bits: u64) -> u64
             let _ = storage.assign(key_bits, None);
             return MoltObject::none().bits();
         }
-        let _ = crate::object::ops::molt_delitem_builtin(list_bits, key_bits);
+        let _ = crate::object::ops::molt_delitem_builtin_attached_body(py, list_bits, key_bits);
         MoltObject::none().bits()
     })
 }
 
-pub(crate) extern "C" fn list_iter_slot(list_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn list_iter_slot(__context: u64, list_bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         if list_receiver(py, list_bits, "__iter__").is_none() {
             return MoltObject::none().bits();
         }
-        crate::object::ops_iter::builtin_iter_slot(list_bits)
+        crate::object::ops_iter::builtin_iter_slot(__attached_py.attached_context(), list_bits)
     })
 }
 
-pub(crate) extern "C" fn list_len_slot(list_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn list_len_slot(__context: u64, list_bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(storage) = list_receiver(py, list_bits, "__len__") else {
             return MoltObject::none().bits();
         };
@@ -880,36 +928,43 @@ pub(crate) extern "C" fn list_len_slot(list_bits: u64) -> u64 {
                 .map(|len| int_bits_from_i64(py, len as i64))
                 .unwrap_or_else(|| MoltObject::none().bits());
         }
-        crate::object::ops_sys::molt_len_builtin(list_bits)
+        crate::object::ops_sys::molt_len_builtin_attached_body(py, list_bits)
     })
 }
 
-pub(crate) extern "C" fn list_contains_slot(list_bits: u64, item_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn list_contains_slot(__context: u64, list_bits: u64, item_bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(storage) = list_receiver(py, list_bits, "__contains__") else {
             return MoltObject::none().bits();
         };
         if storage.native().is_some() {
             return storage.contains(item_bits);
         }
-        crate::object::ops::molt_contains_builtin(list_bits, item_bits)
+        crate::object::ops::molt_contains_builtin_attached_body(py, list_bits, item_bits)
     })
 }
 
-pub(crate) extern "C" fn list_reversed_slot(list_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn list_reversed_slot(__context: u64, list_bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         if list_receiver(py, list_bits, "__reversed__").is_none() {
             return MoltObject::none().bits();
         }
-        crate::object::ops_iter::builtin_reversed_slot(list_bits)
+        crate::object::ops_iter::builtin_reversed_slot(__attached_py.attached_context(), list_bits)
     })
 }
 
 // heapq operations moved to ops_heapq.rs
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_count(list_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_list_count_attached_body(
+    _py: &crate::PyToken<'_>,
+    list_bits: u64,
+    val_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(storage) = list_receiver(py, list_bits, "count") else {
             return MoltObject::none().bits();
         };
@@ -933,14 +988,14 @@ pub extern "C" fn molt_list_count(list_bits: u64, val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_index_range(
+pub(crate) fn molt_list_index_range_attached_body(
+    _py: &crate::PyToken<'_>,
     list_bits: u64,
     val_bits: u64,
     start_bits: u64,
     stop_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(storage) = list_receiver(_py, list_bits, "index") else {
             return MoltObject::none().bits();
         };
@@ -1006,7 +1061,7 @@ pub extern "C" fn molt_list_index_range(
                 "list.index(x): x not in list",
             );
         }
-        let repr_bits = crate::molt_repr_from_obj(val_bits);
+        let repr_bits = crate::molt_repr_from_obj_attached_body(_py, val_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -1018,17 +1073,23 @@ pub extern "C" fn molt_list_index_range(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_list_index(list_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_list_index_attached_body(
+    _py: &crate::PyToken<'_>,
+    list_bits: u64,
+    val_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let missing = missing_bits(_py);
-        molt_list_index_range(list_bits, val_bits, missing, missing)
+        molt_list_index_range_attached_body(_py, list_bits, val_bits, missing, missing)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tuple_count(tuple_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_tuple_count_attached_body(
+    _py: &crate::PyToken<'_>,
+    tuple_bits: u64,
+    val_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(tuple) =
             crate::object::tuple_storage::TupleStorage::admit(py, tuple_bits, "count")
         else {
@@ -1053,22 +1114,25 @@ pub extern "C" fn molt_tuple_count(tuple_bits: u64, val_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tuple_index(tuple_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_tuple_index_attached_body(
+    _py: &crate::PyToken<'_>,
+    tuple_bits: u64,
+    val_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let missing = missing_bits(_py);
-        molt_tuple_index_range(tuple_bits, val_bits, missing, missing)
+        molt_tuple_index_range_attached_body(_py, tuple_bits, val_bits, missing, missing)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tuple_index_range(
+pub(crate) fn molt_tuple_index_range_attached_body(
+    _py: &crate::PyToken<'_>,
     tuple_bits: u64,
     val_bits: u64,
     start_bits: u64,
     stop_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(tuple) =
             crate::object::tuple_storage::TupleStorage::admit(py, tuple_bits, "index")
         else {
@@ -1125,3 +1189,5 @@ pub extern "C" fn molt_tuple_index_range(
         raise_exception(py, BuiltinExc::ValueError, "tuple.index(x): x not in tuple")
     })
 }
+
+include!("../attached_exports_generated/object/ops_list.rs");

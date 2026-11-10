@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use molt_ir::OpKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
@@ -50,7 +52,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             let pair = self
                 .backend
                 .builder
-                .build_call(decl, &[lhs.into(), rhs.into()], "checked_add")
+                .build_execution_call(decl, &[lhs.into(), rhs.into()], "checked_add")
                 .unwrap()
                 .try_as_basic_value()
                 .unwrap_basic()
@@ -130,7 +132,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             let pair = self
                 .backend
                 .builder
-                .build_call(decl, &[lhs.into(), rhs.into()], "checked_mul")
+                .build_execution_call(decl, &[lhs.into(), rhs.into()], "checked_mul")
                 .unwrap()
                 .try_as_basic_value()
                 .unwrap_basic()
@@ -796,32 +798,40 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     pub(super) fn emit_identity(&mut self, op: &crate::tir::ops::TirOp) {
         let result_id = op.results[0];
-        let negate = op.opcode == OpCode::IsNot;
-        // Identity compares Python words, not machine carriers: a raw false
-        // is zero, while a boxed False has the boolean tag. Use the same
-        // operation-local materialization/custody as every borrowing consumer.
+        let invert = op.opcode == OpCode::IsNot;
+        let i64_ty = self.backend.context.i64_type();
+        // Identity consumes object words, not raw register payloads: a boxed
+        // False and a raw i1 zero denote the same singleton. The shared operand
+        // custody also boxes each full-width integer once and retires its owner.
         let word = self
-            .with_borrowed_boxed_operands(&op.operands, "identity", |this, words, _| {
-                let equal = this
+            .with_borrowed_boxed_operands(&op.operands, "identity", |this, words, name| {
+                let cmp = this
                     .backend
                     .builder
                     .build_int_compare(inkwell::IntPredicate::EQ, words[0], words[1], "is")
                     .unwrap();
-                let result = if negate {
-                    this.backend.builder.build_not(equal, "is_not").unwrap()
+                let flag = if invert {
+                    this.backend.builder.build_not(cmp, "is_not").unwrap()
                 } else {
-                    equal
+                    cmp
                 };
                 this.backend
                     .builder
-                    .build_int_z_extend(result, this.backend.context.i64_type(), "identity_word")
+                    .build_int_z_extend(flag, i64_ty, name)
                     .unwrap()
             })
             .into_int_value();
+        // Failed materialization returns None with the first error pending.
+        // Only a committed machine 1 is true, including for `is not`.
         let val = self
             .backend
             .builder
-            .build_int_truncate(word, self.backend.context.bool_type(), "identity_bool")
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                word,
+                i64_ty.const_int(1, false),
+                "identity_bool",
+            )
             .unwrap();
         self.values.insert(result_id, val.into());
         self.value_types.insert(result_id, TirType::Bool);
@@ -865,7 +875,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let truthy = self
             .backend
             .builder
-            .build_call(truthy_fn, &[val.into()], "truthy")
+            .build_execution_call(truthy_fn, &[val.into()], "truthy")
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic();
@@ -1049,7 +1059,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let truthy = self
                     .backend
                     .builder
-                    .build_call(truthy_fn, &[bits.into()], "truthy")
+                    .build_execution_call(truthy_fn, &[bits.into()], "truthy")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic()

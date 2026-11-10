@@ -8,8 +8,8 @@ use crate::object::layout::CodeExecutionKind;
 use crate::{
     TYPE_ID_FUNCTION, TYPE_ID_STRING, TYPE_ID_TYPE, alloc_dict_with_pairs, alloc_list,
     alloc_string, alloc_tuple, call_callable1, dec_ref_bits, decode_value_list, exception_pending,
-    int_bits_from_i64, is_truthy, maybe_ptr_from_bits, molt_dir_builtin, obj_from_bits,
-    object_type_id, raise_exception, string_obj_to_owned, to_i64, type_of_bits,
+    int_bits_from_i64, is_truthy, maybe_ptr_from_bits, molt_dir_builtin_attached_body,
+    obj_from_bits, object_type_id, raise_exception, string_obj_to_owned, to_i64, type_of_bits,
 };
 
 fn get_attr_optional(
@@ -1042,9 +1042,11 @@ fn inspect_cleandoc_impl(_py: &crate::PyToken<'_>, doc_bits: u64) -> u64 {
     state_string(_py, cleaned.as_bytes())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inspect_signature_data(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inspect_signature_data_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let builtins = crate::builtins::classes::builtin_classes(_py);
         let is_builtin_fn = builtins.is_native_callable_class(type_of_bits(_py, obj_bits));
 
@@ -1120,14 +1122,12 @@ pub extern "C" fn molt_inspect_signature_data(obj_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inspect_cleandoc(doc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { inspect_cleandoc_impl(_py, doc_bits) })
+pub(crate) fn molt_inspect_cleandoc_attached_body(_py: &crate::PyToken<'_>, doc_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { inspect_cleandoc_impl(_py, doc_bits) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inspect_currentframe() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inspect_currentframe_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // The runtime intrinsic has no Python frame. Skip only the compiled
         // inspect.currentframe wrapper; an absent caller maps to None, while
         // materialization errors remain pending.
@@ -1138,9 +1138,8 @@ pub extern "C" fn molt_inspect_currentframe() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inspect_getdoc(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inspect_getdoc_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(doc_bits) = (match get_attr_optional(_py, obj_bits, crate::NameId::DunderDoc) {
             Ok(value) => value,
             Err(err) => return err,
@@ -1156,10 +1155,13 @@ pub extern "C" fn molt_inspect_getdoc(obj_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inspect_getmembers(obj_bits: u64, predicate_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let names_bits = molt_dir_builtin(obj_bits);
+pub(crate) fn molt_inspect_getmembers_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    predicate_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let names_bits = molt_dir_builtin_attached_body(_py, obj_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -1247,17 +1249,18 @@ pub extern "C" fn molt_inspect_getmembers(obj_bits: u64, predicate_bits: u64) ->
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inspect_isfunction(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inspect_isfunction_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         MoltObject::from_bool(type_of_bits(_py, obj_bits) == crate::builtin_classes(_py).function)
             .bits()
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inspect_isclass(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inspect_isclass_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let has_mro = match has_attr(_py, obj_bits, crate::NameId::DunderMro) {
             Ok(value) => value,
             Err(err) => return err,
@@ -1266,9 +1269,8 @@ pub extern "C" fn molt_inspect_isclass(obj_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inspect_ismodule(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inspect_ismodule_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let has_dict = match has_attr(_py, obj_bits, crate::NameId::DunderDict) {
             Ok(value) => value,
             Err(err) => return err,
@@ -1284,9 +1286,11 @@ pub extern "C" fn molt_inspect_ismodule(obj_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inspect_iscoroutine(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inspect_iscoroutine_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         MoltObject::from_bool(crate::async_rt::generators::is_native_coroutine_bits(
             obj_bits,
         ))
@@ -1294,9 +1298,11 @@ pub extern "C" fn molt_inspect_iscoroutine(obj_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inspect_iscoroutinefunction(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inspect_iscoroutinefunction_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Some(kind) = callable_execution_kind(_py, obj_bits) {
             return MoltObject::from_bool(kind == CodeExecutionKind::Coroutine).bits();
         }
@@ -1308,9 +1314,11 @@ pub extern "C" fn molt_inspect_iscoroutinefunction(obj_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inspect_isasyncgenfunction(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inspect_isasyncgenfunction_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Some(kind) = callable_execution_kind(_py, obj_bits) {
             return MoltObject::from_bool(kind == CodeExecutionKind::AsyncGenerator).bits();
         }
@@ -1322,9 +1330,11 @@ pub extern "C" fn molt_inspect_isasyncgenfunction(obj_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inspect_isgeneratorfunction(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inspect_isgeneratorfunction_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Some(kind) = callable_execution_kind(_py, obj_bits) {
             return MoltObject::from_bool(kind == CodeExecutionKind::Generator).bits();
         }
@@ -1338,9 +1348,11 @@ pub extern "C" fn molt_inspect_isgeneratorfunction(obj_bits: u64) -> u64 {
 
 /// The native portion of inspect.isawaitable. The stdlib owns the live
 /// collections.abc.Awaitable check, including registered virtual subclasses.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inspect_isnativeawaitable(obj_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inspect_isnativeawaitable_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         MoltObject::from_bool(
             crate::async_rt::generators::is_native_python_awaitable_bits(obj_bits),
         )
@@ -1348,9 +1360,11 @@ pub extern "C" fn molt_inspect_isnativeawaitable(obj_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inspect_getgeneratorstate(gen_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inspect_getgeneratorstate_attached_body(
+    _py: &crate::PyToken<'_>,
+    gen_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let running = match attr_truthy(_py, gen_bits, crate::NameId::GiRunning) {
             Ok(value) => value,
             Err(err) => return err,
@@ -1379,9 +1393,11 @@ pub extern "C" fn molt_inspect_getgeneratorstate(gen_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inspect_getasyncgenstate(agen_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inspect_getasyncgenstate_attached_body(
+    _py: &crate::PyToken<'_>,
+    agen_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let running = match attr_truthy(_py, agen_bits, crate::NameId::AgRunning) {
             Ok(value) => value,
             Err(err) => return err,
@@ -1408,9 +1424,11 @@ pub extern "C" fn molt_inspect_getasyncgenstate(agen_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_inspect_getcoroutinestate(coro_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_inspect_getcoroutinestate_attached_body(
+    _py: &crate::PyToken<'_>,
+    coro_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let running = match attr_truthy(_py, coro_bits, crate::NameId::CrRunning) {
             Ok(value) => value,
             Err(err) => return err,
@@ -1543,7 +1561,7 @@ mod coroutine_identity_tests {
                 }
             }
             assert_eq!(
-                obj_from_bits(molt_inspect_iscoroutine(bits)).as_bool(),
+                obj_from_bits(molt_inspect_iscoroutine_attached_body(_py, bits)).as_bool(),
                 Some(false)
             );
             assert!(!exception_pending(_py));
@@ -1573,8 +1591,16 @@ mod signature_snapshot_tests {
         }
     }
 
-    extern "C" fn signature_getattribute(_object: u64, name: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn signature_getattribute(__context: u64, _object: u64, name: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             let name = string_obj_to_owned(obj_from_bits(name)).unwrap();
             let bits = match name.as_str() {
                 "co_flags" => return MoltObject::from_int(0x0c).bits(),
@@ -1583,7 +1609,7 @@ mod signature_snapshot_tests {
                 }
                 "co_varnames" => VARNAMES.load(Ordering::SeqCst),
                 "__defaults__" => {
-                    crate::molt_list_clear(VARNAMES.load(Ordering::SeqCst));
+                    crate::molt_list_clear_attached_body(py, VARNAMES.load(Ordering::SeqCst));
                     // Observer references keep a broken implementation safe to
                     // reject here, before it dereferences the remaining names.
                     assert_eq!(owners(VARARG.load(Ordering::SeqCst)), 2);
@@ -1613,7 +1639,7 @@ mod signature_snapshot_tests {
             };
             crate::inc_ref_bits(py, bits);
             bits
-        })
+        }
     }
 
     #[test]
@@ -1621,8 +1647,8 @@ mod signature_snapshot_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let name = dynamic_attr_name_bits(py, b"SignatureSnapshot").unwrap();
-            let class = crate::molt_class_new(name);
-            crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+            let class = crate::molt_class_new_attached_body(py, name);
+            crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).object);
             let getter_name = dynamic_attr_name_bits(py, b"__getattribute__").unwrap();
             let getter = MoltObject::from_ptr(alloc_runtime_function_obj(
                 py,
@@ -1633,7 +1659,7 @@ mod signature_snapshot_tests {
                 2,
             ))
             .bits();
-            crate::molt_set_attr_name(class, getter_name, getter);
+            crate::molt_set_attr_name_attached_body(py, class, getter_name, getter);
             let class_ptr = obj_from_bits(class).as_ptr().unwrap();
             unsafe {
                 crate::object::class_finish_definition(py, class_ptr).unwrap();
@@ -1671,7 +1697,7 @@ mod signature_snapshot_tests {
                         crate::exception_last_bits_noinc(py),
                         Some(ERROR.load(Ordering::SeqCst))
                     );
-                    crate::molt_exception_clear();
+                    crate::molt_exception_clear_attached_body(py);
                 }
                 assert_eq!(owners(vararg), 1);
                 assert_eq!(owners(varkw), 1);
@@ -1716,3 +1742,5 @@ mod signature_snapshot_tests {
         });
     }
 }
+
+include!("../attached_exports_generated/builtins/inspect.rs");

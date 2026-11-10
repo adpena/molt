@@ -1,8 +1,9 @@
 use super::constant_cache::ConstantCache;
+use crate::wasm_binary::Function;
 use crate::wasm_values::{INT_MASK, box_int};
 use molt_codegen_abi::{INT_MAX_INLINE, INT_MIN_INLINE, INT_SHIFT, QNAN, TAG_BOOL, TAG_INT};
 use std::collections::BTreeMap;
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 /// Trusted unbox: when we *know* the value is a NaN-boxed integer (from IR
 /// representation facts), we can skip the `AND INT_MASK` step.

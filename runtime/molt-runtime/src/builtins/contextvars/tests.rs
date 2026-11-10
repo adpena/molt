@@ -9,7 +9,7 @@ use std::ptr;
 fn fixture(body: impl FnOnce(&PyToken<'_>)) {
     let _runtime = crate::test_support::RuntimeTestTransaction::new();
     assert!(crate::cpython_abi_hooks::register_cpython_hooks());
-    with_gil(|py| body(&py));
+    with_gil(|py| body(py));
 }
 fn variable_named(py: &PyToken<'_>, name: &str, default: Option<u64>) -> u64 {
     let p = crate::alloc_string(py, name.as_bytes());
@@ -49,14 +49,14 @@ fn cold_missing_and_every_context_payload_have_disjoint_shared_backing() {
             use molt_cpython_abi::abi_types::PyContextToken_Type;
             use molt_cpython_abi::api::object::PyObject_GetAttrString;
             use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
-            let var = variable_named(&py, "layout", Some(none()));
-            let selected = new_context(&py).unwrap();
-            assert!(enter(&py, selected));
+            let var = variable_named(py, "layout", Some(none()));
+            let selected = new_context(py).unwrap();
+            assert!(enter(py, selected));
             // The first set constructs Token.MISSING from a zero-sized native
             // prefix. The second gives Token a nonzero final native flags word.
-            let first = set_variable(&py, var, integer(11)).unwrap();
-            let second = set_variable(&py, var, integer(22)).unwrap();
-            assert!(!exception_pending(&py));
+            let first = set_variable(py, var, integer(11)).unwrap();
+            let second = set_variable(py, var, integer(22)).unwrap();
+            assert!(!exception_pending(py));
             let token_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(first);
             assert!(!token_view.is_null());
             let old = PyObject_GetAttrString(token_view, c"old_value".as_ptr());
@@ -69,9 +69,9 @@ fn cold_missing_and_every_context_payload_have_disjoint_shared_backing() {
             assert_eq!(old, missing, "old_value must return the cached singleton");
             let missing_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(missing).unwrap().bits();
             let iterators = [
-                molt_contextvars_keys(selected),
-                molt_contextvars_values(selected),
-                molt_contextvars_items(selected),
+                molt_contextvars_keys_attached_body(py, selected),
+                molt_contextvars_values_attached_body(py, selected),
+                molt_contextvars_items_attached_body(py, selected),
             ];
             for (bits, prefix_size) in [
                 (selected, std::mem::size_of::<Context>()),
@@ -86,17 +86,17 @@ fn cold_missing_and_every_context_payload_have_disjoint_shared_backing() {
                     iterator,
                     std::mem::size_of::<ContextIterator>(),
                 );
-                dec_ref_bits(&py, iterator);
+                dec_ref_bits(py, iterator);
             }
             refcount::Py_DECREF(old);
             refcount::Py_DECREF(missing);
-            assert!(reset_variable(&py, var, second));
-            assert!(reset_variable(&py, var, first));
-            assert!(exit(&py, selected));
+            assert!(reset_variable(py, var, second));
+            assert!(reset_variable(py, var, first));
+            assert!(exit(py, selected));
             for bits in [first, second, selected, var] {
-                dec_ref_bits(&py, bits);
+                dec_ref_bits(py, bits);
             }
-            clear_thread_context(&py);
+            clear_thread_context(py);
         });
     });
 }
@@ -113,9 +113,9 @@ fn all_iterator_modes_own_snapshots_after_context_and_token_release() {
         let token = set_variable(py, var, value).unwrap();
         let selected = current(py).unwrap();
         let iterators = [
-            molt_contextvars_keys(selected),
-            molt_contextvars_values(selected),
-            molt_contextvars_items(selected),
+            molt_contextvars_keys_attached_body(py, selected),
+            molt_contextvars_values_attached_body(py, selected),
+            molt_contextvars_items_attached_body(py, selected),
         ];
         assert!(!exception_pending(py));
         assert!(reset_variable(py, var, token));
@@ -129,7 +129,7 @@ fn all_iterator_modes_own_snapshots_after_context_and_token_release() {
             dec_ref_bits(py, retained);
         }
         for (mode, iterator) in iterators.into_iter().enumerate() {
-            let item = molt_contextvars_iter_next(iterator);
+            let item = molt_contextvars_iter_next_attached_body(py, iterator);
             assert!(!exception_pending(py));
             match mode {
                 0 => assert_eq!(item, var),
@@ -149,7 +149,10 @@ fn all_iterator_modes_own_snapshots_after_context_and_token_release() {
                 iterator,
                 std::mem::size_of::<ContextIterator>(),
             );
-            assert_eq!(molt_contextvars_iter_next(iterator), none());
+            assert_eq!(
+                molt_contextvars_iter_next_attached_body(py, iterator),
+                none()
+            );
             unsafe {
                 assert_ne!(
                     errors::PyErr_ExceptionMatches(
@@ -371,7 +374,8 @@ fn public_c_api_shares_runtime_identity_defaults_tokens_and_snapshots() {
             }
             let copied_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(copied).unwrap().bits();
             let iterator = OwnedPyObject::from_owned(
-                GLOBAL_BRIDGE.owned_handle_to_pyobj(molt_contextvars_keys(copied_bits)),
+                GLOBAL_BRIDGE
+                    .owned_handle_to_pyobj(molt_contextvars_keys_attached_body(py, copied_bits)),
             );
             let token_missing =
                 OwnedPyObject::from_owned(molt_cpython_abi::api::object::PyObject_GetAttrString(
@@ -452,9 +456,9 @@ fn allocation_failure_is_atomic_and_failed_reset_consumes_the_token() {
         // Warm native class caches so each denial reaches the actual instance
         // allocator. All three iterator modes share that allocation authority.
         for iterator in [
-            molt_contextvars_keys(ctx),
-            molt_contextvars_values(ctx),
-            molt_contextvars_items(ctx),
+            molt_contextvars_keys_attached_body(py, ctx),
+            molt_contextvars_values_attached_body(py, ctx),
+            molt_contextvars_items_attached_body(py, ctx),
         ] {
             assert!(obj_from_bits(iterator).as_ptr().is_some());
             dec_ref_bits(py, iterator);
@@ -466,9 +470,9 @@ fn allocation_failure_is_atomic_and_failed_reset_consumes_the_token() {
                 2 => new_variable(py, unsafe { variable(var).name }, Some(none())),
                 mode => {
                     let bits = match mode {
-                        3 => molt_contextvars_keys(ctx),
-                        4 => molt_contextvars_values(ctx),
-                        _ => molt_contextvars_items(ctx),
+                        3 => molt_contextvars_keys_attached_body(py, ctx),
+                        4 => molt_contextvars_values_attached_body(py, ctx),
+                        _ => molt_contextvars_items_attached_body(py, ctx),
                     };
                     obj_from_bits(bits).as_ptr().map(|_| bits)
                 }
@@ -522,12 +526,22 @@ fn allocation_failure_is_atomic_and_failed_reset_consumes_the_token() {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-extern "C" fn observe_context_poll(raw_task: u64) -> i64 {
-    with_gil(|py| unsafe {
-        let task = std::ptr::with_exposed_provenance_mut::<u64>(raw_task as usize);
-        let var = *task;
-        get_variable(&py, var, None).flatten().unwrap_or_else(none) as i64
-    })
+extern "C" fn observe_context_poll(__context: u64, raw_task: u64) -> i64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        unsafe {
+            let task = std::ptr::with_exposed_provenance_mut::<u64>(raw_task as usize);
+            let var = *task;
+            get_variable(py, var, None).flatten().unwrap_or_else(none) as i64
+        }
+    }
 }
 
 #[test]
@@ -545,7 +559,7 @@ fn scheduled_poll_leases_owned_context_but_manual_poll_inherits_and_restores() {
             dec_ref_bits(py, token);
         }
         let poll = observe_context_poll as *const () as usize as u64;
-        let task = crate::molt_task_new(poll, 8, crate::TASK_KIND_FUTURE);
+        let task = crate::molt_task_new_attached_body(py, poll, 8, crate::TASK_KIND_FUTURE);
         let task_ptr = obj_from_bits(task).as_ptr().unwrap();
         unsafe {
             crate::object::payload_refs::store_borrowed(py, task_ptr, 0, var);
@@ -615,7 +629,7 @@ fn cold_c_shell_export_precedes_module_identity_and_constructor_dispatch() {
                     (&raw mut PyContextToken_Type).cast::<PyObject>(),
                 ];
                 assert_eq!(
-                    crate::runtime_state(&py)
+                    crate::runtime_state(py)
                         .types
                         .context_class
                         .load(std::sync::atomic::Ordering::Acquire),
@@ -631,7 +645,7 @@ fn cold_c_shell_export_precedes_module_identity_and_constructor_dispatch() {
                     refcount::Py_DECREF(object);
                 }
                 if ordering == 3 {
-                    let name = MoltObject::from_ptr(crate::alloc_string(&py, b"cold-var")).bits();
+                    let name = MoltObject::from_ptr(crate::alloc_string(py, b"cold-var")).bits();
                     let argument = GLOBAL_BRIDGE.owned_handle_to_pyobj(name);
                     let variable =
                         molt_cpython_abi::api::object::PyObject_CallOneArg(shells[1], argument);
@@ -653,10 +667,10 @@ fn cold_c_shell_export_precedes_module_identity_and_constructor_dispatch() {
                 }
                 let exported =
                     shells.map(|shell| GLOBAL_BRIDGE.molt_value_for_pyobj(shell).unwrap());
-                let name = crate::alloc_string(&py, b"_contextvars");
+                let name = crate::alloc_string(py, b"_contextvars");
                 let name_bits = MoltObject::from_ptr(name).bits();
-                let module = crate::molt_module_new(name_bits);
-                let namespace = molt_contextvars_types(module);
+                let module = crate::molt_module_new_attached_body(py, name_bits);
+                let namespace = molt_contextvars_types_attached_body(py, module);
                 let tuple = obj_from_bits(namespace).as_ptr().unwrap();
                 for (index, (&bits, &shell)) in exported.iter().zip(&shells).enumerate() {
                     assert_eq!(
@@ -672,16 +686,16 @@ fn cold_c_shell_export_precedes_module_identity_and_constructor_dispatch() {
                     );
                     assert!(!name.is_null());
                     refcount::Py_DECREF(name);
-                    dec_ref_bits(&py, bits);
+                    dec_ref_bits(py, bits);
                 }
                 let token = molt_cpython_abi::api::object::PyObject_CallNoArgs(shells[2]);
                 assert!(token.is_null());
                 assert!(!errors::PyErr_Occurred().is_null());
                 errors::PyErr_Clear();
                 for bits in [namespace, module, name_bits] {
-                    dec_ref_bits(&py, bits);
+                    dec_ref_bits(py, bits);
                 }
-                clear_thread_context(&py);
+                clear_thread_context(py);
             });
         });
     }
@@ -804,16 +818,26 @@ fn staged_trie_failures_preserve_shared_snapshot_at_later_allocation_ordinals() 
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-extern "C" fn mutate_empty_context_poll(raw_task: u64) -> i64 {
-    with_gil(|py| unsafe {
-        let task = std::ptr::with_exposed_provenance_mut::<u64>(raw_task as usize);
-        let var = *task;
-        let observed = get_variable(&py, var, None).flatten().unwrap_or(0);
-        if let Some(token) = set_variable(&py, var, integer(99)) {
-            dec_ref_bits(&py, token);
+extern "C" fn mutate_empty_context_poll(__context: u64, raw_task: u64) -> i64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
+        unsafe {
+            let task = std::ptr::with_exposed_provenance_mut::<u64>(raw_task as usize);
+            let var = *task;
+            let observed = get_variable(py, var, None).flatten().unwrap_or(0);
+            if let Some(token) = set_variable(py, var, integer(99)) {
+                dec_ref_bits(py, token);
+            }
+            observed as i64
         }
-        observed as i64
-    })
+    }
 }
 
 #[test]
@@ -832,7 +856,7 @@ fn owned_empty_poll_materializes_once_persists_and_restores_after_allocation_fai
         let var = variable_named(py, "empty-poll", Some(integer(0)));
         let ambient = set_variable(py, var, integer(1)).unwrap();
         let address = mutate_empty_context_poll as *const () as usize as u64;
-        let task = crate::molt_task_new(address, 8, crate::TASK_KIND_FUTURE);
+        let task = crate::molt_task_new_attached_body(py, address, 8, crate::TASK_KIND_FUTURE);
         let pointer = obj_from_bits(task).as_ptr().unwrap();
         unsafe {
             crate::object::payload_refs::store_borrowed(py, pointer, 0, var);

@@ -108,7 +108,7 @@ pub(super) fn handle_bindtags_command(py: &PyToken, handle: i64, args: &[u64]) -
         return alloc_tuple_from_strings(py, tags.as_slice(), "failed to allocate bindtags tuple");
     }
 
-    let tag_values = if let Some(raw) = decode_value_list(obj_from_bits(args[2])) {
+    let tag_values = if let Some(raw) = decode_value_list(py, obj_from_bits(args[2])) {
         let mut tags = Vec::with_capacity(raw.len());
         for &tag_bits in raw.iter() {
             tags.push(get_string_arg(py, handle, tag_bits, "bindtags tag")?);
@@ -282,12 +282,13 @@ pub(super) fn parse_bind_script_commands(script: &str) -> Vec<Vec<String>> {
 
 pub(super) const TK_EVENT_SUBST_FIELD_COUNT: usize = 19;
 
-pub(super) fn flatten_event_subst_arg(
+pub(super) fn flatten_event_subst_arg<'py>(
+    py: &'py molt_runtime_core::PyToken,
     mut value_bits: u64,
-    snapshots: &mut Vec<OwnedBridgeHandleSnapshot>,
+    snapshots: &mut Vec<OwnedBridgeHandleSnapshot<'py>>,
 ) -> u64 {
     for _ in 0..8 {
-        let Some(values) = decode_value_list(obj_from_bits(value_bits)) else {
+        let Some(values) = decode_value_list(py, obj_from_bits(value_bits)) else {
             break;
         };
         if values.len() != 1 {
@@ -300,12 +301,15 @@ pub(super) fn flatten_event_subst_arg(
     value_bits
 }
 
-pub(super) fn parse_event_subst_i64(value_bits: u64) -> Option<i64> {
+pub(super) fn parse_event_subst_i64(
+    py: &molt_runtime_core::PyToken,
+    value_bits: u64,
+) -> Option<i64> {
     let obj = obj_from_bits(value_bits);
     if let Some(value) = to_i64(obj) {
         return Some(value);
     }
-    if let Some(text) = unsafe { string_obj_to_owned(obj) } {
+    if let Some(text) = unsafe { string_obj_to_owned(py, obj) } {
         return text.trim().parse::<i64>().ok();
     }
     if let Some(value) = to_f64(obj)
@@ -319,20 +323,26 @@ pub(super) fn parse_event_subst_i64(value_bits: u64) -> Option<i64> {
     None
 }
 
-pub(super) fn normalize_event_subst_int_field(value_bits: u64) -> u64 {
-    parse_event_subst_i64(value_bits)
+pub(super) fn normalize_event_subst_int_field(
+    py: &molt_runtime_core::PyToken,
+    value_bits: u64,
+) -> u64 {
+    parse_event_subst_i64(py, value_bits)
         .map(MoltObject::from_int)
         .map(MoltObject::bits)
         .unwrap_or(value_bits)
 }
 
-pub(super) fn normalize_event_subst_bool_field(value_bits: u64) -> u64 {
+pub(super) fn normalize_event_subst_bool_field(
+    py: &molt_runtime_core::PyToken,
+    value_bits: u64,
+) -> u64 {
     let obj = obj_from_bits(value_bits);
     let parsed = if obj.is_bool() {
         obj.as_bool()
     } else if let Some(value) = to_i64(obj) {
         Some(value != 0)
-    } else if let Some(text) = unsafe { string_obj_to_owned(obj) } {
+    } else if let Some(text) = unsafe { string_obj_to_owned(py, obj) } {
         parse_bool_text(&text)
     } else {
         to_f64(obj).map(|value| value != 0.0)
@@ -343,19 +353,22 @@ pub(super) fn normalize_event_subst_bool_field(value_bits: u64) -> u64 {
         .unwrap_or_else(|| MoltObject::none().bits())
 }
 
-pub(super) fn event_subst_value_is_empty(value_bits: u64) -> bool {
+pub(super) fn event_subst_value_is_empty(py: &molt_runtime_core::PyToken, value_bits: u64) -> bool {
     let obj = obj_from_bits(value_bits);
     if obj.is_none() {
         return true;
     }
-    unsafe { string_obj_to_owned(obj) }.is_some_and(|value| value.is_empty())
+    unsafe { string_obj_to_owned(py, obj) }.is_some_and(|value| value.is_empty())
 }
 
-pub(super) fn normalize_event_subst_delta_field(value_bits: u64) -> u64 {
-    if let Some(value) = parse_event_subst_i64(value_bits) {
+pub(super) fn normalize_event_subst_delta_field(
+    py: &molt_runtime_core::PyToken,
+    value_bits: u64,
+) -> u64 {
+    if let Some(value) = parse_event_subst_i64(py, value_bits) {
         return MoltObject::from_int(value).bits();
     }
-    if event_subst_value_is_empty(value_bits) {
+    if event_subst_value_is_empty(py, value_bits) {
         return MoltObject::from_int(0).bits();
     }
     value_bits
@@ -506,6 +519,7 @@ pub(super) fn treeview_event_target_item(
 }
 
 pub(super) fn build_treeview_tag_event_commands(
+    py: &molt_runtime_core::PyToken,
     app: &TkAppState,
     target_path: &str,
     sequence: &str,
@@ -525,7 +539,7 @@ pub(super) fn build_treeview_tag_event_commands(
     let Some(item) = treeview.items.get(&item_id) else {
         return Vec::new();
     };
-    let item_tags = parse_treeview_tags(item);
+    let item_tags = parse_treeview_tags(py, item);
     if item_tags.is_empty() {
         return Vec::new();
     }
@@ -631,6 +645,7 @@ pub(super) fn handle_event_command(py: &PyToken, handle: i64, args: &[u64]) -> R
                 &options,
             );
             let mut tree_tag_command_lines = build_treeview_tag_event_commands(
+                py,
                 app,
                 &target_path,
                 &sequence,
@@ -659,7 +674,7 @@ pub(super) fn handle_event_command(py: &PyToken, handle: i64, args: &[u64]) -> R
                     dec_ref_bits(py, owned);
                 }
                 let out_bits = dispatch_out?;
-                let should_break = unsafe { string_obj_to_owned(obj_from_bits(out_bits)) }
+                let should_break = unsafe { string_obj_to_owned(py, obj_from_bits(out_bits)) }
                     .is_some_and(|value| value == "break");
                 if !obj_from_bits(out_bits).is_none() {
                     dec_ref_bits(py, out_bits);

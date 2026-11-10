@@ -1,5 +1,6 @@
+use crate::wasm_binary::Function;
 use molt_codegen_abi::CANONICAL_NAN_BITS;
-use wasm_encoder::{BlockType, Function, Instruction, ValType};
+use wasm_encoder::{BlockType, Instruction, ValType};
 
 const F64_EXPONENT_MASK: i64 = 0x7ff0_0000_0000_0000u64 as i64;
 const F64_FRACTION_MASK: i64 = 0x000f_ffff_ffff_ffffu64 as i64;

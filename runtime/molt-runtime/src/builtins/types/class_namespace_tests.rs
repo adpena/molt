@@ -20,7 +20,8 @@ fn class_namespace_cell_rejection_releases_unpublished_class_payload() {
         assert!(!namespace.is_null());
         let namespace_bits = MoltObject::from_ptr(namespace).bits();
         let before = unsafe { (*crate::header_from_obj_ptr(payload)).ref_count_snapshot() };
-        let result = molt_type_new(
+        let result = molt_type_new_attached_body(
+            _py,
             builtin_classes(_py).type_obj,
             name,
             MoltObject::none().bits(),
@@ -29,7 +30,7 @@ fn class_namespace_cell_rejection_releases_unpublished_class_payload() {
         );
         assert!(obj_from_bits(result).is_none());
         assert!(exception_pending(_py));
-        crate::molt_exception_clear();
+        crate::molt_exception_clear_attached_body(_py);
         assert_eq!(
             unsafe { (*crate::header_from_obj_ptr(payload)).ref_count_snapshot() },
             before,

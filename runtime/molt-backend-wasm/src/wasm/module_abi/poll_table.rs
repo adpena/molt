@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use wasm_encoder::{Function, Instruction};
+use crate::wasm_binary::Function;
+use wasm_encoder::Instruction;
 
 use super::callable_table::CallableIdentity;
 use crate::wasm::WasmBackend;
@@ -66,14 +67,17 @@ impl WasmPollTableLayout {
         for (_, import) in self.defined_imports() {
             let import_name = import.name();
             let arity = 1usize;
-            let type_idx = backend.types.boxed(arity, true);
+            let type_idx = backend.types.boxed(arity + 1, true);
             let import_idx = backend.import_ids[import];
             backend.funcs.function(type_idx);
             let func_index = backend.func_count;
+            std::rc::Rc::make_mut(&mut backend.execution_call_abis)
+                .register_attached(func_index, &[wasm_encoder::ValType::I64]);
             backend.func_count += 1;
             let mut func = Function::new_with_locals_types(Vec::new());
+            func.attach_context(arity + 1, backend.execution_call_abis.clone());
             for idx in 0..arity {
-                func.instruction(&Instruction::LocalGet(idx as u32));
+                func.instruction(&Instruction::LocalGet(idx as u32 + 1));
             }
             emit_call(&mut func, reloc_enabled, import_idx);
             func.instruction(&Instruction::End);

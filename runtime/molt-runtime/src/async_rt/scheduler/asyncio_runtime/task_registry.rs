@@ -7,8 +7,8 @@ use crate::PyToken;
 use crate::async_rt::cancellation::current_token_id;
 use crate::{
     MoltObject, alloc_list, alloc_string, bits_from_ptr, call_callable0, dec_ref_bits,
-    exception_pending, inc_ref_bits, is_truthy, molt_set_add, molt_set_new, obj_from_bits,
-    raise_exception, resolve_task_ptr, runtime_state,
+    exception_pending, inc_ref_bits, is_truthy, molt_set_add_attached_body,
+    molt_set_new_attached_body, obj_from_bits, raise_exception, resolve_task_ptr, runtime_state,
 };
 
 use super::super::current_task_ptr;
@@ -276,69 +276,89 @@ fn asyncio_task_registry_live_values_impl(
     Ok(out_bits)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_task_registry_set(token_bits: u64, task_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_asyncio_task_registry_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    token_bits: u64,
+    task_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         asyncio_task_registry_set_impl(_py, token_bits, task_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_task_registry_get(token_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { asyncio_task_registry_get_impl(_py, token_bits) })
+pub(crate) fn molt_asyncio_task_registry_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    token_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        asyncio_task_registry_get_impl(_py, token_bits)
+    })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_task_registry_contains(token_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_asyncio_task_registry_contains_attached_body(
+    _py: &crate::PyToken<'_>,
+    token_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         asyncio_task_registry_contains_impl(_py, token_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_task_registry_current() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { asyncio_task_registry_current_impl(_py) })
+pub(crate) fn molt_asyncio_task_registry_current_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { asyncio_task_registry_current_impl(_py) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_task_registry_current_for_loop(loop_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_asyncio_task_registry_current_for_loop_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         asyncio_task_registry_current_for_loop_impl(_py, loop_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_task_registry_pop(token_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { asyncio_task_registry_pop_impl(_py, token_bits) })
+pub(crate) fn molt_asyncio_task_registry_pop_attached_body(
+    _py: &crate::PyToken<'_>,
+    token_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        asyncio_task_registry_pop_impl(_py, token_bits)
+    })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_task_last_exception_clear(task_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_asyncio_task_last_exception_clear_attached_body(
+    _py: &crate::PyToken<'_>,
+    task_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         asyncio_task_last_exception_clear_impl(_py, task_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_task_registry_move(old_token_bits: u64, new_token_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_asyncio_task_registry_move_attached_body(
+    _py: &crate::PyToken<'_>,
+    old_token_bits: u64,
+    new_token_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         asyncio_task_registry_move_impl(_py, old_token_bits, new_token_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_task_registry_values() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { asyncio_task_registry_values_impl(_py) })
+pub(crate) fn molt_asyncio_task_registry_values_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { asyncio_task_registry_values_impl(_py) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_task_registry_live_set(loop_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_asyncio_task_registry_live_set_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let tasks = match asyncio_task_registry_live_values_impl(_py, loop_bits) {
             Ok(bits) => bits,
             Err(bits) => return bits,
         };
-        let set_bits = molt_set_new(tasks.len() as u64);
+        let set_bits = molt_set_new_attached_body(_py, tasks.len() as u64);
         if obj_from_bits(set_bits).is_none() {
             for task_bits in tasks {
                 dec_ref_bits(_py, task_bits);
@@ -346,7 +366,7 @@ pub extern "C" fn molt_asyncio_task_registry_live_set(loop_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         for &task_bits in &tasks {
-            let _ = molt_set_add(set_bits, task_bits);
+            let _ = molt_set_add_attached_body(_py, set_bits, task_bits);
             if exception_pending(_py) {
                 dec_ref_bits(_py, set_bits);
                 for live_task_bits in tasks {
@@ -464,22 +484,38 @@ fn asyncio_unregister_task_impl(_py: &PyToken<'_>, task_bits: u64) -> u64 {
     MoltObject::none().bits()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_enter_task(loop_bits: u64, task_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { asyncio_enter_task_impl(_py, loop_bits, task_bits) })
+pub(crate) fn molt_asyncio_enter_task_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_bits: u64,
+    task_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        asyncio_enter_task_impl(_py, loop_bits, task_bits)
+    })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_leave_task(loop_bits: u64, task_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { asyncio_leave_task_impl(_py, loop_bits, task_bits) })
+pub(crate) fn molt_asyncio_leave_task_attached_body(
+    _py: &crate::PyToken<'_>,
+    loop_bits: u64,
+    task_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        asyncio_leave_task_impl(_py, loop_bits, task_bits)
+    })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_register_task(task_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { asyncio_register_task_impl(_py, task_bits) })
+pub(crate) fn molt_asyncio_register_task_attached_body(
+    _py: &crate::PyToken<'_>,
+    task_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { asyncio_register_task_impl(_py, task_bits) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_unregister_task(task_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { asyncio_unregister_task_impl(_py, task_bits) })
+pub(crate) fn molt_asyncio_unregister_task_attached_body(
+    _py: &crate::PyToken<'_>,
+    task_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { asyncio_unregister_task_impl(_py, task_bits) })
 }
+
+include!("../../../attached_exports_generated/async_rt/scheduler/asyncio_runtime/task_registry.rs");

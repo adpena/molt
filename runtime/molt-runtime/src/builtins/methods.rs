@@ -43,8 +43,10 @@ pub(crate) use native_method_table;
 macro_rules! native_comparison_descriptor {
     ($py:ident, $family:expr, $op:ident) => {{
         use molt_obj_model::sequence_compare::RichCompareOp;
-        extern "C" fn invoke(left: u64, right: u64) -> u64 {
-            crate::with_gil_entry_nopanic!(py, {
+        extern "C" fn invoke(__context: u64, left: u64, right: u64) -> u64 {
+            let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+            crate::with_attached_entry_nopanic!(__attached_py, py, {
                 $family.invoke(py, left, right, RichCompareOp::$op)
             })
         }
@@ -121,7 +123,7 @@ pub(crate) use specialized::{asyncgen_method_bits, generator_method_bits};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builtins::exceptions::molt_exception_last_pending;
+
     use crate::*;
 
     #[test]
@@ -148,13 +150,13 @@ mod tests {
                 );
                 for explicit_object_new in [false, true] {
                     let constructed = if explicit_object_new {
-                        molt_object_new_bound(adapter)
+                        molt_object_new_bound_attached_body(py, adapter)
                     } else {
                         unsafe { call_callable0(py, adapter) }
                     };
                     dec_ref_bits(py, constructed);
                     assert!(exception_pending(py));
-                    let exception = molt_exception_last();
+                    let exception = molt_exception_last_attached_body(py);
                     assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         exception,
@@ -164,12 +166,12 @@ mod tests {
                     dec_ref_bits(py, exception);
                 }
                 let child_name = dynamic_attr_name_bits(py, b"ForgedAdapter").unwrap();
-                let child = molt_class_new(child_name);
+                let child = molt_class_new_attached_body(py, child_name);
                 dec_ref_bits(py, child_name);
-                let inherited = molt_class_set_base(child, adapter);
+                let inherited = molt_class_set_base_attached_body(py, child, adapter);
                 dec_ref_bits(py, inherited);
                 assert!(exception_pending(py));
-                let exception = molt_exception_last();
+                let exception = molt_exception_last_attached_body(py);
                 assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     exception,
@@ -237,7 +239,7 @@ mod tests {
                     &[crate::NameId::Athrow, crate::NameId::Aclose][..],
                 ),
             ] {
-                let directory = molt_dir_builtin(class);
+                let directory = molt_dir_builtin_attached_body(py, class);
                 assert!(!exception_pending(py));
                 for &name in required {
                     let first = builtin_class_method_bits(py, class, name)
@@ -245,7 +247,7 @@ mod tests {
                         .expect("required method");
                     assert_eq!(builtin_class_method_bits(py, class, name), Ok(Some(first)));
                     let name_bits = dynamic_attr_name_bits(py, name.as_str().as_bytes()).unwrap();
-                    let contains = molt_contains(directory, name_bits);
+                    let contains = molt_contains_attached_body(py, directory, name_bits);
                     assert!(is_truthy(py, obj_from_bits(contains)));
                     dec_ref_bits(py, contains);
                     dec_ref_bits(py, name_bits);
@@ -253,7 +255,7 @@ mod tests {
                 for &name in absent {
                     assert_eq!(builtin_class_method_bits(py, class, name), Ok(None));
                     let name_bits = dynamic_attr_name_bits(py, name.as_str().as_bytes()).unwrap();
-                    let contains = molt_contains(directory, name_bits);
+                    let contains = molt_contains_attached_body(py, directory, name_bits);
                     assert!(!is_truthy(py, obj_from_bits(contains)));
                     dec_ref_bits(py, contains);
                     dec_ref_bits(py, name_bits);
@@ -275,7 +277,7 @@ mod tests {
                 let tuple = alloc_tuple(py, &[MoltObject::from_int(7).bits()]);
                 assert!(!tuple.is_null());
                 let source = MoltObject::from_ptr(tuple).bits();
-                let iterator = molt_iter(source);
+                let iterator = molt_iter_attached_body(py, source);
                 dec_ref_bits(py, source);
                 let class = builtin_classes(py).tuple_iterator;
                 let next = builtin_class_method_bits(py, class, crate::NameId::DunderNext)
@@ -295,7 +297,7 @@ mod tests {
                     let result = call_callable1(py, next, iterator);
                     dec_ref_bits(py, result);
                     assert!(exception_pending(py));
-                    let exception = molt_exception_last();
+                    let exception = molt_exception_last_attached_body(py);
                     assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         exception,
@@ -308,12 +310,12 @@ mod tests {
                 let list = alloc_list(py, &[]);
                 assert!(!list.is_null());
                 let source = MoltObject::from_ptr(list).bits();
-                let wrong = molt_iter(source);
+                let wrong = molt_iter_attached_body(py, source);
                 dec_ref_bits(py, source);
                 let result = call_callable1(py, next, wrong);
                 dec_ref_bits(py, result);
                 assert!(exception_pending(py));
-                let exception = molt_exception_last();
+                let exception = molt_exception_last_attached_body(py);
                 assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     exception,
@@ -334,7 +336,7 @@ mod tests {
             assert_eq!(method_dispatch(py, || Ok(None)), Ok(None));
             assert_eq!(method_dispatch(py, || Ok(Some(0))), Err(()));
             assert!(exception_pending(py));
-            let _ = molt_exception_clear();
+            let _ = molt_exception_clear_attached_body(py);
             let cached = object_method_bits(py, crate::NameId::DunderGetattribute)
                 .unwrap()
                 .unwrap();
@@ -349,7 +351,7 @@ mod tests {
                         BuiltinExc::MemoryError,
                         "method allocation test failure",
                     );
-                    failure.set(molt_exception_last_pending());
+                    failure.set(molt_exception_last_pending_attached_body(py));
                     Ok(Some(0))
                 }),
                 Err(())
@@ -372,13 +374,13 @@ mod tests {
                     builtin_class_method_bits(py, file_io, name),
                     Ok(Some(method))
                 );
-                let pending = molt_exception_last_pending();
+                let pending = molt_exception_last_pending_attached_body(py);
                 assert_eq!(pending, failure.get());
                 dec_ref_bits(py, pending);
             }
-            let observed = molt_exception_last_pending();
+            let observed = molt_exception_last_pending_attached_body(py);
             assert_eq!(observed, failure.get());
-            molt_exception_clear();
+            molt_exception_clear_attached_body(py);
             dec_ref_bits(py, observed);
             dec_ref_bits(py, failure.get());
         });

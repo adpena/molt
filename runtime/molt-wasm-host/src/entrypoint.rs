@@ -51,7 +51,7 @@ pub(super) enum GuestModuleEntrypoint<'a> {
 
 fn validate_exported_function_type(
     module: &Module,
-    export_name: &'static str,
+    export_name: &str,
     expected_params: &[ValType],
     expected_results: &[ValType],
 ) -> Result<()> {
@@ -87,45 +87,62 @@ pub(super) fn validate_guest_module_entrypoint(
             application,
             runtime,
         } => {
-            // static_type[0] in the generated Molt WASM ABI.
-            validate_exported_function_type(application, "molt_main", &[], &[ValType::I64])?;
             validate_exported_function_type(
                 application,
-                "molt_isolate_bootstrap",
-                &[],
+                &compiled_execution_symbol("molt_main"),
+                &[ValType::I64],
                 &[ValType::I64],
             )?;
             validate_exported_function_type(
                 application,
-                "molt_isolate_import",
+                &compiled_execution_symbol("molt_isolate_bootstrap"),
                 &[ValType::I64],
                 &[ValType::I64],
             )?;
             validate_exported_function_type(
+                application,
+                &compiled_execution_symbol("molt_isolate_import"),
+                &[ValType::I64, ValType::I64],
+                &[ValType::I64],
+            )?;
+            validate_exported_function_type(
                 runtime,
-                "molt_exception_pending",
+                runtime_symbol("molt_exception_pending_detached")?,
                 &[],
                 &[ValType::I64],
             )?;
-            validate_exported_function_type(
-                runtime,
+            for export in [
                 "molt_main_exit_status",
-                &[],
-                &[ValType::I64],
-            )?;
-            validate_exported_function_type(
-                runtime,
                 "molt_runtime_execution_enter",
+                "molt_runtime_shutdown",
+                "molt_attached_context",
+                "molt_attached_context_abi_fingerprint",
+            ] {
+                validate_exported_function_type(
+                    runtime,
+                    runtime_symbol(export)?,
+                    &[],
+                    &[ValType::I64],
+                )?;
+            }
+            validate_exported_function_type(
+                runtime,
+                runtime_symbol("molt_runtime_execution_leave")?,
+                &[ValType::I64],
                 &[],
+            )?;
+            validate_exported_function_type(
+                runtime,
+                runtime_symbol("molt_compiled_execution_enter")?,
+                &[ValType::I64],
                 &[ValType::I64],
             )?;
             validate_exported_function_type(
                 runtime,
-                "molt_runtime_execution_leave",
-                &[ValType::I64],
+                runtime_symbol("molt_compiled_execution_leave")?,
+                &[ValType::I64, ValType::I64],
                 &[],
-            )?;
-            validate_exported_function_type(runtime, "molt_runtime_shutdown", &[], &[ValType::I64])
+            )
         }
         GuestModuleEntrypoint::WasiCommand { command } => {
             validate_exported_function_type(command, "_start", &[], &[])
@@ -155,7 +172,10 @@ fn admit_application_runtime_status(
     runtime: &Instance,
 ) -> Result<()> {
     let pending = runtime
-        .get_typed_func::<(), i64>(&mut *store, "molt_exception_pending")
+        .get_typed_func::<(), i64>(
+            &mut *store,
+            runtime_symbol("molt_exception_pending_detached")?,
+        )
         .context("missing or malformed molt_exception_pending startup status export")?;
     if read_runtime_exception_pending(store, &pending, "before molt_main")? {
         bail!("MOLT_APP_BOOTSTRAP_FAILED: pending runtime exception before molt_main");
@@ -167,20 +187,20 @@ pub(super) fn call_molt_application_entrypoint(
     store: &mut Store<HostState>,
     application: &Instance,
     runtime: &Instance,
+    context: i64,
 ) -> Result<GuestTermination> {
-    // The generated WASM ABI's static type 0 is () -> i64, and the canonical
-    // entry wrapper is emitted with that type. The boxed result is deliberately
-    // ignored here, preserving the production host's existing entry semantics.
+    // The host owns the execution scope; the application receives its actual
+    // context before the logical Python arguments and returns one boxed word.
     let main = application
-        .get_typed_func::<(), i64>(&mut *store, "molt_main")
+        .get_typed_func::<i64, i64>(&mut *store, &compiled_execution_symbol("molt_main"))
         .context("missing or malformed molt_main application entrypoint export")?;
     admit_application_runtime_status(store, runtime)?;
     let report_exit = runtime
-        .get_typed_func::<(), i64>(&mut *store, "molt_main_exit_status")
+        .get_typed_func::<(), i64>(&mut *store, runtime_symbol("molt_main_exit_status")?)
         .context("missing or malformed molt_main_exit_status application status export")?;
     log::debug!("calling molt_main");
     let _entry_result = main
-        .call(&mut *store, ())
+        .call(&mut *store, context)
         .context("call molt_main application entrypoint")?;
     log::debug!("molt_main returned");
     // The runtime owns uncaught-exception reporting, SystemExit and exception
@@ -227,8 +247,8 @@ pub(super) fn call_guest_entrypoint(
             application,
             runtime,
             lifetime,
-        } => lifetime.execute(store, |store| {
-            call_molt_application_entrypoint(store, application, runtime)
+        } => lifetime.execute(store, |store, context| {
+            call_molt_application_entrypoint(store, application, runtime, context)
         }),
         GuestEntrypoint::WasiCommand { command } => call_wasi_command_entrypoint(store, command),
     }
@@ -242,35 +262,81 @@ pub(super) struct MoltRuntimeLifetime {
     leave: wasmtime::TypedFunc<i64, ()>,
     shutdown: wasmtime::TypedFunc<(), i64>,
     pending: wasmtime::TypedFunc<(), i64>,
+    context: wasmtime::TypedFunc<(), i64>,
+    compiled_enter: wasmtime::TypedFunc<i64, i64>,
+    compiled_leave: wasmtime::TypedFunc<(i64, i64), ()>,
+    schema: ContextSchemaAdmission,
     entered: bool,
+}
+
+enum ContextSchemaAdmission {
+    Offered(wasmtime::TypedFunc<(), i64>),
+    Admitted,
 }
 
 impl MoltRuntimeLifetime {
     pub(super) fn admit(store: &mut Store<HostState>, runtime: &Instance) -> Result<Self> {
-        // Module-level admission precedes instantiation. Resolve all typed
-        // bindings together before any host-triggered runtime setup or entry.
+        // Module admission proved these types before instantiation. Resolve
+        // them without calling guest code, then publish this cleanup owner.
         Ok(Self {
             enter: runtime
-                .get_typed_func::<(), i64>(&mut *store, "molt_runtime_execution_enter")
+                .get_typed_func::<(), i64>(
+                    &mut *store,
+                    runtime_symbol("molt_runtime_execution_enter")?,
+                )
                 .context("missing or malformed runtime execution enter export")?,
             leave: runtime
-                .get_typed_func::<i64, ()>(&mut *store, "molt_runtime_execution_leave")
+                .get_typed_func::<i64, ()>(
+                    &mut *store,
+                    runtime_symbol("molt_runtime_execution_leave")?,
+                )
                 .context("missing or malformed runtime execution leave export")?,
             shutdown: runtime
-                .get_typed_func::<(), i64>(&mut *store, "molt_runtime_shutdown")
+                .get_typed_func::<(), i64>(&mut *store, runtime_symbol("molt_runtime_shutdown")?)
                 .context("missing or malformed runtime shutdown export")?,
             pending: runtime
-                .get_typed_func::<(), i64>(&mut *store, "molt_exception_pending")
+                .get_typed_func::<(), i64>(
+                    &mut *store,
+                    runtime_symbol("molt_exception_pending_detached")?,
+                )
                 .context("missing or malformed runtime pending exception export")?,
+            context: runtime
+                .get_typed_func::<(), i64>(&mut *store, runtime_symbol("molt_attached_context")?)?,
+            compiled_enter: runtime.get_typed_func::<i64, i64>(
+                &mut *store,
+                runtime_symbol("molt_compiled_execution_enter")?,
+            )?,
+            compiled_leave: runtime.get_typed_func::<(i64, i64), ()>(
+                &mut *store,
+                runtime_symbol("molt_compiled_execution_leave")?,
+            )?,
+            schema: ContextSchemaAdmission::Offered(runtime.get_typed_func::<(), i64>(
+                &mut *store,
+                runtime_symbol("molt_attached_context_abi_fingerprint")?,
+            )?),
             entered: false,
         })
+    }
+
+    pub(super) fn validate_context_schema(&mut self, store: &mut Store<HostState>) -> Result<()> {
+        if let ContextSchemaAdmission::Offered(fingerprint) = &self.schema {
+            let offered = fingerprint.call(&mut *store, ())? as u64;
+            if offered != ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT {
+                bail!(
+                    "MOLT_ATTACHED_CONTEXT_ABI_MISMATCH: runtime fingerprint differs from application schema"
+                );
+            }
+            self.schema = ContextSchemaAdmission::Admitted;
+        }
+        Ok(())
     }
 
     pub(super) fn execute<T>(
         &mut self,
         store: &mut Store<HostState>,
-        operation: impl FnOnce(&mut Store<HostState>) -> Result<T>,
+        operation: impl FnOnce(&mut Store<HostState>, i64) -> Result<T>,
     ) -> Result<T> {
+        self.validate_context_schema(store)?;
         let token = self
             .enter
             .call(&mut *store, ())
@@ -279,7 +345,43 @@ impl MoltRuntimeLifetime {
             bail!("runtime returned an empty execution-boundary token");
         }
         self.entered = true;
-        let result = operation(store);
+        let result = (|| {
+            let context = self
+                .context
+                .call(&mut *store, ())
+                .context("get attached execution context")?;
+            let address =
+                u32::try_from(context).context("attached context is outside wasm32 memory")?;
+            let memory = store
+                .data()
+                .memory
+                .context("attached execution context requires runtime memory")?;
+            if address == 0
+                || !(address as usize).is_multiple_of(std::mem::align_of::<
+                    molt_codegen_abi::AttachedExecutionContextStorage,
+                >())
+                || (address as usize)
+                    .checked_add(std::mem::size_of::<
+                        molt_codegen_abi::AttachedExecutionContextStorage,
+                    >())
+                    .is_none_or(|end| end > memory.data_size(&*store))
+            {
+                bail!("attached execution context header is outside runtime memory");
+            }
+            let scope = self
+                .compiled_enter
+                .call(&mut *store, context)
+                .context("enter compiled execution scope")?;
+            if scope == 0 {
+                bail!("runtime returned an empty compiled execution scope");
+            }
+            let result = operation(store, context);
+            let retired = self
+                .compiled_leave
+                .call(&mut *store, (context, scope))
+                .context("leave compiled execution scope");
+            preserve_application_and_cleanup_result(result, retired)
+        })();
         let released = self
             .leave
             .call(&mut *store, token)
@@ -288,10 +390,8 @@ impl MoltRuntimeLifetime {
     }
 
     pub(super) fn finish<T>(self, store: &mut Store<HostState>, result: Result<T>) -> Result<T> {
-        // Trapping guest calls and lease release may leave a Python exception
-        // pending. Capture it before shutdown clears runtime-owned objects.
-        // The pending-status ABI is a pure, non-initializing observation. Setup
-        // and a failed enter can publish exceptions before any lease exists.
+        // This canonical Boundary observer neither initializes nor re-enters
+        // the runtime, including after failed execution admission.
         let pending = read_runtime_exception_pending(
             store,
             &self.pending,

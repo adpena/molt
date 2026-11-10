@@ -1,12 +1,12 @@
 use super::*;
 use crate::BuiltinExc;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_metadata_dist_paths(
+pub(crate) fn molt_importlib_metadata_dist_paths_attached_body(
+    _py: &crate::PyToken<'_>,
     search_paths_bits: u64,
     module_file_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.metadata.dist_paths",
@@ -38,12 +38,12 @@ pub extern "C" fn molt_importlib_metadata_dist_paths(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_metadata_entry_points_payload(
+pub(crate) fn molt_importlib_metadata_entry_points_payload_attached_body(
+    _py: &crate::PyToken<'_>,
     search_paths_bits: u64,
     module_file_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.metadata.entry_points_payload",
@@ -75,15 +75,15 @@ pub extern "C" fn molt_importlib_metadata_entry_points_payload(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_metadata_entry_points_filter_payload(
+pub(crate) fn molt_importlib_metadata_entry_points_filter_payload_attached_body(
+    _py: &crate::PyToken<'_>,
     search_paths_bits: u64,
     module_file_bits: u64,
     group_bits: u64,
     name_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.metadata.entry_points_filter_payload",
@@ -134,9 +134,11 @@ pub extern "C" fn molt_importlib_metadata_entry_points_filter_payload(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_metadata_normalize_name(name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_importlib_metadata_normalize_name_attached_body(
+    _py: &crate::PyToken<'_>,
+    name_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let name = match string_arg_from_bits(_py, name_bits, "name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -263,9 +265,11 @@ pub(super) fn alloc_importlib_metadata_payload_dict_bits(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_metadata_payload(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_importlib_metadata_payload_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.metadata.payload",
@@ -292,12 +296,12 @@ pub extern "C" fn molt_importlib_metadata_payload(path_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_metadata_distributions_payload(
+pub(crate) fn molt_importlib_metadata_distributions_payload_attached_body(
+    _py: &crate::PyToken<'_>,
     search_paths_bits: u64,
     module_file_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.metadata.distributions_payload",
@@ -347,9 +351,11 @@ pub extern "C" fn molt_importlib_metadata_distributions_payload(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_metadata_record_payload(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_importlib_metadata_record_payload_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.metadata.record_payload",
@@ -437,12 +443,12 @@ pub extern "C" fn molt_importlib_metadata_record_payload(path_bits: u64) -> u64 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_metadata_packages_distributions_payload(
+pub(crate) fn molt_importlib_metadata_packages_distributions_payload_attached_body(
+    _py: &crate::PyToken<'_>,
     search_paths_bits: u64,
     module_file_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.metadata.packages_distributions_payload",
@@ -507,9 +513,13 @@ pub extern "C" fn molt_importlib_metadata_packages_distributions_payload(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_module_from_spec(spec_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { importlib_module_from_spec_impl(_py, spec_bits) })
+pub(crate) fn molt_importlib_module_from_spec_attached_body(
+    _py: &crate::PyToken<'_>,
+    spec_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        importlib_module_from_spec_impl(_py, spec_bits)
+    })
 }
 
 /// The one spec-to-module attribute phase for creation and _exec reload.
@@ -770,7 +780,7 @@ pub(in super::super) fn importlib_module_from_spec_impl(_py: &PyToken<'_>, spec_
 
         if obj_from_bits(module_bits).is_none() {
             let name = crate::builtins::module_table::spec_name(_py, spec.bits())?;
-            module_bits = crate::molt_module_new(name.bits());
+            module_bits = crate::molt_module_new_attached_body(_py, name.bits());
             if exception_pending(_py) {
                 return Err(MoltObject::none().bits());
             }
@@ -795,15 +805,15 @@ pub(in super::super) fn importlib_module_from_spec_impl(_py: &PyToken<'_>, spec_
     result
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_spec_from_loader(
+pub(crate) fn molt_importlib_spec_from_loader_attached_body(
+    _py: &crate::PyToken<'_>,
     name_bits: u64,
     loader_bits: u64,
     origin_bits: u64,
     is_package_bits: u64,
     machinery_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let _name = match string_arg_from_bits(_py, name_bits, "name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -945,15 +955,15 @@ pub extern "C" fn molt_importlib_spec_from_loader(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_spec_from_file_location(
+pub(crate) fn molt_importlib_spec_from_file_location_attached_body(
+    _py: &crate::PyToken<'_>,
     name_bits: u64,
     location_bits: u64,
     loader_bits: u64,
     submodule_search_locations_bits: u64,
     machinery_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         importlib_spec_from_file_location_impl(
             _py,
             name_bits,
@@ -1166,7 +1176,7 @@ fn importlib_spec_from_file_location_impl(
         {
             let root = path_dirname_text(&path, bootstrap_path_sep());
             let root = ExceptionValue::adopt(_py, alloc_str_bits(_py, &root)?);
-            let result = crate::molt_list_append(locations_bits, root.bits());
+            let result = crate::molt_list_append_attached_body(_py, locations_bits, root.bits());
             if exception_pending(_py) {
                 return Err(result);
             }
@@ -1234,9 +1244,11 @@ pub(super) fn importlib_module_dict_ptr_for_state(
     Ok(dict_ptr)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_spec_from_file_location_payload(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_importlib_spec_from_file_location_payload_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let path = match string_arg_from_bits(_py, path_bits, "path") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1289,3 +1301,5 @@ pub extern "C" fn molt_importlib_spec_from_file_location_payload(path_bits: u64)
         }
     })
 }
+
+include!("../../attached_exports_generated/builtins/platform_importlib_ffi/metadata_spec.rs");

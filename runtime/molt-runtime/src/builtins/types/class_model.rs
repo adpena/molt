@@ -114,9 +114,9 @@ pub(crate) unsafe fn class_finalize_namespace_metadata(
             });
             if plain_function {
                 let descriptor = if static_method {
-                    molt_staticmethod_new(function)
+                    molt_staticmethod_new_attached_body(_py, function)
                 } else {
-                    molt_classmethod_new(function)
+                    molt_classmethod_new_attached_body(_py, function)
                 };
                 if !exception_pending(_py)
                     && !unsafe { dict_set_in_place(_py, dict_ptr, key_bits, descriptor) }
@@ -185,7 +185,8 @@ pub(crate) unsafe fn class_finalize_namespace_metadata(
             let cell_ptr = crate::object::cells::cell_ptr_from_bits(cell_bits);
             let Some(cell_ptr) = cell_ptr else {
                 dec_ref_bits(_py, key_bits);
-                let type_repr_bits = crate::molt_repr_builtin(type_of_bits(_py, cell_bits));
+                let type_repr_bits =
+                    crate::molt_repr_builtin_attached_body(_py, type_of_bits(_py, cell_bits));
                 if exception_pending(_py) {
                     dec_ref_bits(_py, type_repr_bits);
                     return false;
@@ -234,9 +235,8 @@ fn trace_isinstance_enabled() -> bool {
     runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_ISINSTANCE)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_class_new(name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_class_new_attached_body(_py: &crate::PyToken<'_>, name_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "class name must be str");
@@ -271,9 +271,8 @@ pub extern "C" fn molt_class_new(name_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_builtin_type(tag_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_builtin_type_attached_body(_py: &crate::PyToken<'_>, tag_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let tag = match to_i64(obj_from_bits(tag_bits)) {
             Some(val) => val,
             None => {
@@ -308,27 +307,28 @@ pub(crate) fn type_of_owned(py: &PyToken<'_>, val_bits: u64) -> u64 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_type_of(val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { type_of_owned(_py, val_bits) })
+pub(crate) fn molt_type_of_attached_body(_py: &crate::PyToken<'_>, val_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { type_of_owned(_py, val_bits) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_type_new(
+pub(crate) fn molt_type_new_attached_body(
+    _py: &crate::PyToken<'_>,
     cls_bits: u64,
     name_bits: u64,
     bases_bits: u64,
     namespace_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // Namespace providers, slot iterators, cell replacement, and class
         // hooks may release caller-visible owners. Keep every borrowed input
         // alive throughout preparation, publication, and failure finalization.
         let _input_owners =
             [cls_bits, name_bits, bases_bits, namespace_bits, kwargs_bits].map(|bits| {
                 inc_ref_bits(_py, bits);
-                obj_from_bits(bits).as_ptr().map(crate::PtrDropGuard::new)
+                obj_from_bits(bits)
+                    .as_ptr()
+                    .map(|__ptr| crate::PtrDropGuard::new(_py, __ptr))
             });
         let cls_obj = obj_from_bits(cls_bits);
         let Some(cls_ptr) = cls_obj.as_ptr() else {
@@ -457,7 +457,7 @@ pub extern "C" fn molt_type_new(
             return MoltObject::none().bits();
         }
         let copied_namespace = MoltObject::from_ptr(namespace_ptr).bits();
-        let _namespace_owner = crate::PtrDropGuard::new(namespace_ptr);
+        let _namespace_owner = crate::PtrDropGuard::new(_py, namespace_ptr);
         if !unsafe {
             dict_update_apply(
                 _py,
@@ -487,7 +487,7 @@ pub extern "C" fn molt_type_new(
         };
         let mut slot_owner = obj_from_bits(slot_declaration)
             .as_ptr()
-            .map(crate::PtrDropGuard::new);
+            .map(|__ptr| crate::PtrDropGuard::new(_py, __ptr));
         let class_ptr = crate::object::builders::alloc_class_obj_with_namespace(
             _py,
             name_bits,
@@ -504,7 +504,7 @@ pub extern "C" fn molt_type_new(
         // Postallocation metadata failure intentionally invokes metaclass __del__
         // (including resurrection), matching type.__new__. Layout sealing is a
         // separate admission boundary, not a finalizer-suppression state.
-        let mut class_owner = crate::PtrDropGuard::new(class_ptr);
+        let mut class_owner = crate::PtrDropGuard::new(_py, class_ptr);
         unsafe {
             if !object_init_class_edge_unpublished(
                 _py,
@@ -526,7 +526,7 @@ pub extern "C" fn molt_type_new(
             return MoltObject::none().bits();
         }
 
-        let _ = molt_class_set_base(class_bits, bases_tuple_bits);
+        let _ = molt_class_set_base_attached_body(_py, class_bits, bases_tuple_bits);
         if exception_pending(_py) {
             if bases_owned {
                 dec_ref_bits(_py, bases_tuple_bits);
@@ -571,23 +571,27 @@ pub extern "C" fn molt_type_new(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_type_init(
+pub(crate) fn molt_type_init_attached_body(
+    _py: &crate::PyToken<'_>,
     _cls_bits: u64,
     _name_bits: u64,
     _bases_bits: u64,
     _namespace_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let _ = kwargs_bits;
         MoltObject::none().bits()
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_type_prepare(_cls_bits: u64, _name_bits: u64, _bases_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_type_prepare_attached_body(
+    _py: &crate::PyToken<'_>,
+    _cls_bits: u64,
+    _name_bits: u64,
+    _bases_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let dict_ptr = alloc_dict_with_pairs(_py, &[]);
         if dict_ptr.is_null() {
             MoltObject::none().bits()
@@ -597,9 +601,8 @@ pub extern "C" fn molt_type_prepare(_cls_bits: u64, _name_bits: u64, _bases_bits
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_type_mro(cls_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_type_mro_attached_body(_py: &crate::PyToken<'_>, cls_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let cls_obj = obj_from_bits(cls_bits);
         let Some(cls_ptr) = cls_obj.as_ptr() else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "mro expects type");
@@ -618,9 +621,12 @@ pub extern "C" fn molt_type_mro(cls_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_type_instancecheck(cls_bits: u64, inst_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_type_instancecheck_attached_body(
+    _py: &crate::PyToken<'_>,
+    cls_bits: u64,
+    inst_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         match crate::builtins::type_ops::instancecheck_default(_py, inst_bits, cls_bits) {
             Some(matched) => MoltObject::from_bool(matched).bits(),
             None => MoltObject::none().bits(),
@@ -628,9 +634,12 @@ pub extern "C" fn molt_type_instancecheck(cls_bits: u64, inst_bits: u64) -> u64 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_type_subclasscheck(cls_bits: u64, sub_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_type_subclasscheck_attached_body(
+    _py: &crate::PyToken<'_>,
+    cls_bits: u64,
+    sub_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         match crate::builtins::type_ops::subclasscheck_default(_py, sub_bits, cls_bits) {
             Some(matched) => MoltObject::from_bool(matched).bits(),
             None => MoltObject::none().bits(),
@@ -638,9 +647,12 @@ pub extern "C" fn molt_type_subclasscheck(cls_bits: u64, sub_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_isinstance(val_bits: u64, class_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_isinstance_attached_body(
+    _py: &crate::PyToken<'_>,
+    val_bits: u64,
+    class_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(result) = isinstance_runtime(_py, val_bits, class_bits) else {
             return MoltObject::none().bits();
         };
@@ -656,9 +668,12 @@ pub extern "C" fn molt_isinstance(val_bits: u64, class_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_issubclass(sub_bits: u64, class_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_issubclass_attached_body(
+    _py: &crate::PyToken<'_>,
+    sub_bits: u64,
+    class_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         issubclass_runtime(_py, sub_bits, class_bits).map_or_else(
             || MoltObject::none().bits(),
             |matched| MoltObject::from_bool(matched).bits(),
@@ -666,9 +681,8 @@ pub extern "C" fn molt_issubclass(sub_bits: u64, class_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_object_new() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_object_new_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let class_bits = builtin_classes(_py).object;
         let obj_bits = crate::object::builders::alloc_class_instance(
             _py,
@@ -708,9 +722,8 @@ unsafe fn intrinsic_layout_owner(py: &PyToken<'_>, class: *mut u8) -> Option<u64
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_object_new_bound(cls_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_object_new_bound_attached_body(_py: &crate::PyToken<'_>, cls_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let cls_obj = obj_from_bits(cls_bits);
         let Some(cls_ptr) = cls_obj.as_ptr() else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "object.__new__ expects type");
@@ -767,15 +780,16 @@ unsafe fn reject_abstract_object_new(py: &PyToken<'_>, class: *mut u8) -> bool {
         };
         let _methods = obj_from_bits(methods)
             .as_ptr()
-            .map(crate::PtrDropGuard::new);
+            .map(|__ptr| crate::PtrDropGuard::new(py, __ptr));
         let Some(sorted) = crate::object::ops::list_from_iter_bits(py, methods) else {
             return true;
         };
         let sorted_ptr = obj_from_bits(sorted)
             .as_ptr()
             .expect("owned abstract method list");
-        let _sorted = crate::PtrDropGuard::new(sorted_ptr);
-        crate::molt_list_sort(
+        let _sorted = crate::PtrDropGuard::new(py, sorted_ptr);
+        crate::molt_list_sort_attached_body(
+            py,
             sorted,
             MoltObject::none().bits(),
             MoltObject::from_bool(false).bits(),
@@ -787,11 +801,15 @@ unsafe fn reject_abstract_object_new(py: &PyToken<'_>, class: *mut u8) -> bool {
         if separator.is_null() {
             return true;
         }
-        let _separator = crate::PtrDropGuard::preserving(separator);
-        let joined = crate::molt_string_join(MoltObject::from_ptr(separator).bits(), sorted);
+        let _separator = crate::PtrDropGuard::preserving(py, separator);
+        let joined = crate::molt_string_join_attached_body(
+            py,
+            MoltObject::from_ptr(separator).bits(),
+            sorted,
+        );
         let _joined = obj_from_bits(joined)
             .as_ptr()
-            .map(crate::PtrDropGuard::preserving);
+            .map(|__ptr| crate::PtrDropGuard::preserving(py, __ptr));
         if exception_pending(py) {
             return true;
         }
@@ -813,9 +831,12 @@ unsafe fn reject_abstract_object_new(py: &PyToken<'_>, class: *mut u8) -> bool {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tuple_new_bound(cls_bits: u64, iterable_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_tuple_new_bound_attached_body(
+    _py: &crate::PyToken<'_>,
+    cls_bits: u64,
+    iterable_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let cls_obj = obj_from_bits(cls_bits);
         let Some(cls_ptr) = cls_obj.as_ptr() else {
             return raise_exception::<_>(_py, BuiltinExc::TypeError, "tuple.__new__ expects type");
@@ -1062,10 +1083,13 @@ pub(crate) unsafe fn object_set_class(
 /// # Safety
 /// `obj_ptr_bits` must encode a valid Molt object header that can be mutated,
 /// and `class_bits` must encode a valid Molt type object.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_object_set_class(obj_ptr_bits: u64, class_bits: u64) -> u64 {
+pub(crate) unsafe fn molt_object_set_class_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_ptr_bits: u64,
+    class_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(obj_ptr) = crate::provenance::abi::mut_ptr::<u8>(obj_ptr_bits) else {
                 return MoltObject::none().bits();
             };
@@ -1074,3 +1098,5 @@ pub unsafe extern "C" fn molt_object_set_class(obj_ptr_bits: u64, class_bits: u6
         })
     }
 }
+
+include!("../../attached_exports_generated/builtins/types/class_model.rs");

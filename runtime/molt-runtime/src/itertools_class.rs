@@ -6,9 +6,8 @@ use crate::*;
 use molt_runtime_core::ObjectShapeId;
 use molt_runtime_core::ProtectedRuntimeValue as Value;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_reduce(instance: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_itertools_reduce_attached_body(_py: &crate::PyToken<'_>, instance: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(pointer) = obj_from_bits(instance).as_ptr() else {
             return raise_exception::<u64>(
                 py,
@@ -24,9 +23,12 @@ pub extern "C" fn molt_itertools_reduce(instance: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_setstate(instance: u64, state: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_itertools_setstate_attached_body(
+    _py: &crate::PyToken<'_>,
+    instance: u64,
+    state: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(pointer) = obj_from_bits(instance).as_ptr() else {
             return raise_exception::<u64>(
                 py,
@@ -104,13 +106,13 @@ pub(crate) fn constructor_repr(
             );
         }
     };
-    let first_repr = crate::molt_repr_from_obj(first.bits());
+    let first_repr = crate::molt_repr_from_obj_attached_body(py, first.bits());
     let first_repr = unsafe { Value::from_owned_bits(py.core_token(), first_repr) };
     if exception_pending(py) {
         return MoltObject::none().bits();
     }
     let second_repr = if include_second {
-        let bits = crate::molt_repr_from_obj(second.bits());
+        let bits = crate::molt_repr_from_obj_attached_body(py, second.bits());
         if exception_pending(py) {
             dec_ref_bits(py, bits);
             return MoltObject::none().bits();
@@ -193,7 +195,7 @@ fn discard_itertools_class(py: &crate::PyToken<'_>, class: u64) -> u64 {
 
 /// Allocate a complete itertools declaration before publishing its class cache.
 ///
-/// Iterator callbacks have the positional `(self)` ABI. An optional constructor
+/// Iterator callbacks have the attached `(context, self)` ABI. An optional constructor
 /// supplies its full positional arity, including an explicit first `cls` operand,
 /// and retained trailing defaults. Attribute lookup never binds `cls` implicitly:
 /// type.__call__ prepends it, while explicit __new__ callers supply it themselves.
@@ -296,7 +298,7 @@ pub(crate) fn alloc_itertools_class(
         }
         return discard_itertools_class(py, class_bits);
     }
-    let _ = molt_class_set_base(class_bits, builtins.object);
+    let _ = molt_class_set_base_attached_body(py, class_bits, builtins.object);
     if exception_pending(py) {
         return discard_itertools_class(py, class_bits);
     }
@@ -355,7 +357,7 @@ pub(crate) fn alloc_itertools_class(
         return discard_itertools_class(py, class_bits);
     }
     if !is_tee_block {
-        // SAFETY: `next_fn` is the address of the `(self)` callback just declared
+        // SAFETY: `next_fn` is the address of the `(context, self)` callback just declared
         // as `__next__`; the class is unpublished.
         unsafe {
             crate::object::layout::class_declare_native_next(
@@ -503,12 +505,18 @@ pub(crate) fn alloc_itertools_class(
     class_bits
 }
 
+include!("attached_exports_generated/itertools_class.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn tee_pair(py: &crate::PyToken<'_>, source: u64) -> [u64; 2] {
-        let result = crate::molt_itertools_tee(source, MoltObject::from_int(2).bits());
+        let result = crate::molt_itertools_tee_attached_body(
+            py.core_token(),
+            source,
+            MoltObject::from_int(2).bits(),
+        );
         assert!(!exception_pending(py));
         let tuple = obj_from_bits(result).as_ptr().unwrap();
         let readers = std::array::from_fn(|index| unsafe {
@@ -527,12 +535,12 @@ mod tests {
             let value = MoltObject::from_ptr(alloc_list(py, &[])).bits();
             let sequence = MoltObject::from_ptr(alloc_tuple(py, &[value])).bits();
             let [first, second] = tee_pair(py, sequence);
-            let yielded = crate::molt_itertools_tee_next(first);
+            let yielded = crate::molt_itertools_tee_next_attached_body(py.core_token(), first);
             assert_eq!(yielded, value);
             dec_ref_bits(py, yielded);
             dec_ref_bits(py, first);
             unsafe { crate::object::gc::collect_cycles(py) };
-            let yielded = crate::molt_itertools_tee_next(second);
+            let yielded = crate::molt_itertools_tee_next_attached_body(py.core_token(), second);
             assert!(!exception_pending(py));
             assert_eq!(
                 yielded, value,
@@ -567,7 +575,8 @@ mod tests {
             let source = crate::test_support::with_public_type_class(
                 crate::molt_itertools_repeat_type,
                 |public_class| {
-                    crate::molt_itertools_repeat_new(
+                    crate::molt_itertools_repeat_new_attached_body(
+                        py.core_token(),
                         public_class,
                         value,
                         MoltObject::from_int(900).bits(),
@@ -603,7 +612,8 @@ mod tests {
             for _ in 0..400 {
                 for reader in [first, second] {
                     let before = crate::ALLOC_COUNT.load(std::sync::atomic::Ordering::Relaxed);
-                    let yielded = crate::molt_itertools_tee_next(reader);
+                    let yielded =
+                        crate::molt_itertools_tee_next_attached_body(py.core_token(), reader);
                     assert!(!exception_pending(py));
                     assert_eq!(yielded, value);
                     dec_ref_bits(py, yielded);
@@ -737,10 +747,10 @@ mod tests {
             // Both profiles call these same exports: reduced builds include the
             // source in-tree, while edge/full builds use the satellite bridge.
             for (get, minimum_owners) in [(
-                crate::molt_itertools_repeat_type as extern "C" fn() -> u64,
+                crate::molt_itertools_repeat_type as unsafe extern "C" fn(u64) -> u64,
                 3,
             )] {
-                let first = get();
+                let first = unsafe { get(py.attached_context()) };
                 assert!(!exception_pending(py));
                 let ptr = obj_from_bits(first).as_ptr().expect("cached heap result");
                 let owners = unsafe { (*header_from_obj_ptr(ptr)).owned_ref_count_snapshot() };
@@ -750,7 +760,7 @@ mod tests {
                     "public result consumed a cache owner"
                 );
                 for _ in 0..4 {
-                    let next = get();
+                    let next = unsafe { get(py.attached_context()) };
                     assert_eq!(first, next);
                     assert_eq!(
                         unsafe { (*header_from_obj_ptr(ptr)).owned_ref_count_snapshot() },
@@ -804,7 +814,7 @@ mod tests {
         crate::with_gil_entry_nopanic!(py, {
             fn attr(py: &crate::PyToken<'_>, object: u64, name: &[u8]) -> u64 {
                 let key = dynamic_attr_name_bits(py, name).expect("attribute name");
-                let value = crate::molt_get_attr_name(object, key);
+                let value = crate::molt_get_attr_name_attached_body(py, object, key);
                 dec_ref_bits(py, key);
                 assert!(!exception_pending(py), "attribute lookup failed");
                 value
@@ -813,7 +823,8 @@ mod tests {
             let repeat = crate::test_support::with_public_type_class(
                 crate::molt_itertools_repeat_type,
                 |public_class| {
-                    crate::molt_itertools_repeat_new(
+                    crate::molt_itertools_repeat_new_attached_body(
+                        py.core_token(),
                         public_class,
                         value,
                         MoltObject::from_int(2).bits(),
@@ -823,7 +834,8 @@ mod tests {
             let count = crate::test_support::with_public_type_class(
                 crate::molt_itertools_count_type,
                 |public_class| {
-                    crate::molt_itertools_count_new(
+                    crate::molt_itertools_count_new_attached_body(
+                        py.core_token(),
                         public_class,
                         value,
                         MoltObject::from_int(3).bits(),
@@ -881,13 +893,14 @@ mod tests {
             let declared_owner = attr(py, constructor, b"__self__");
             assert_eq!(declared_owner, repeat_class);
             dec_ref_bits(py, declared_owner);
-            let builder = crate::molt_callargs_new(
+            let builder = crate::molt_callargs_new_attached_body(
+                py,
                 MoltObject::from_int(2).bits(),
                 MoltObject::from_int(0).bits(),
             );
-            unsafe { crate::molt_callargs_push_pos(builder, repeat_class) };
-            unsafe { crate::molt_callargs_push_pos(builder, value) };
-            let defaulted = crate::molt_call_bind(constructor, builder);
+            unsafe { crate::molt_callargs_push_pos_attached_body(py, builder, repeat_class) };
+            unsafe { crate::molt_callargs_push_pos_attached_body(py, builder, value) };
+            let defaulted = crate::molt_call_bind_attached_body(py, constructor, builder);
             assert!(
                 !exception_pending(py),
                 "constructor must retain its omitted count default"
@@ -914,7 +927,8 @@ mod tests {
                 "repeat class must bind its full arity"
             );
             for _ in 0..2 {
-                let yielded = crate::molt_itertools_repeat_next(finite);
+                let yielded =
+                    crate::molt_itertools_repeat_next_attached_body(py.core_token(), finite);
                 assert!(!exception_pending(py));
                 assert_eq!(yielded, value);
                 dec_ref_bits(py, yielded);
@@ -940,25 +954,34 @@ mod tests {
             let int = |value| MoltObject::from_int(value).bits();
             let count = crate::test_support::with_public_type_class(
                 crate::molt_itertools_count_type,
-                |public_class| crate::molt_itertools_count_new(public_class, int(5), int(2)),
+                |public_class| {
+                    crate::molt_itertools_count_new_attached_body(
+                        py.core_token(),
+                        public_class,
+                        int(5),
+                        int(2),
+                    )
+                },
             );
             let source = MoltObject::from_ptr(alloc_tuple(py, &[int(1)])).bits();
-            let tees = crate::molt_itertools_tee(source, int(1));
+            let tees = crate::molt_itertools_tee_attached_body(py.core_token(), source, int(1));
             assert!(!exception_pending(py));
             let tee = unsafe {
                 crate::object::seq_access::item(obj_from_bits(tees).as_ptr().unwrap(), 0)
             }
             .expect("one tee");
-            for (instance, callback, basetype) in [
+            for (instance, callback, basetype, first_value) in [
                 (
                     count,
                     crate::molt_itertools_count_next as *const () as usize,
                     true,
+                    int(5),
                 ),
                 (
                     tee,
                     crate::molt_itertools_tee_next as *const () as usize,
                     false,
+                    int(1),
                 ),
             ] {
                 let class_bits =
@@ -968,13 +991,17 @@ mod tests {
                     .expect("the exact class declares its native next");
                 // One callback is both the slot and the `__next__` descriptor.
                 assert_eq!(next as usize, callback);
+                let value = unsafe { next(py.attached_context(), instance) };
+                assert!(!exception_pending(py));
+                assert_eq!(value, first_value, "cached next receives context then self");
+                dec_ref_bits(py, value);
                 assert!(unsafe { crate::object::class_is_immutable(py, class) });
                 assert_eq!(
                     unsafe { crate::object::class_is_not_base(py, class) },
                     !basetype
                 );
                 let key = dynamic_attr_name_bits(py, b"__module__").unwrap();
-                let module = crate::molt_get_attr_name(class_bits, key);
+                let module = crate::molt_get_attr_name_attached_body(py, class_bits, key);
                 dec_ref_bits(py, key);
                 assert_eq!(
                     string_obj_to_owned(obj_from_bits(module)).as_deref(),
@@ -985,12 +1012,12 @@ mod tests {
             // CPython itertools types are immutable heap types.
             let key = dynamic_attr_name_bits(py, b"__next__").unwrap();
             let count_class = unsafe { object_class_bits(obj_from_bits(count).as_ptr().unwrap()) };
-            let _ = crate::molt_set_attr_name(count_class, key, int(0));
+            let _ = crate::molt_set_attr_name_attached_body(py, count_class, key, int(0));
             assert!(
                 exception_pending(py),
                 "an immutable type rejects __next__ rebinding"
             );
-            let error = crate::molt_exception_last();
+            let error = crate::molt_exception_last_attached_body(py);
             assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
@@ -1000,7 +1027,7 @@ mod tests {
             dec_ref_bits(py, error);
             dec_ref_bits(py, key);
             // The slot is the iteration step: no lookup, bound method or binding.
-            for expected in [5, 7, 9] {
+            for expected in [7, 9, 11] {
                 match crate::object::ops_iter::iteration_step(
                     py,
                     count,
@@ -1015,9 +1042,9 @@ mod tests {
             // A heap subclass declares no slot; its own or inherited __next__
             // is reached through the special-method protocol.
             let name = dynamic_attr_name_bits(py, b"CountChild").unwrap();
-            let child = crate::molt_class_new(name);
+            let child = crate::molt_class_new_attached_body(py, name);
             dec_ref_bits(py, name);
-            let base = crate::molt_class_set_base(child, count_class);
+            let base = crate::molt_class_set_base_attached_body(py, child, count_class);
             assert!(!exception_pending(py));
             dec_ref_bits(py, base);
             let child_ptr = obj_from_bits(child).as_ptr().unwrap();

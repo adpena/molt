@@ -20,10 +20,19 @@ static EVICTION_TARGET_CLASS: AtomicU64 = AtomicU64::new(0);
 static EVICTION_TARGET_NAME: AtomicU64 = AtomicU64::new(0);
 static EVICTION_CALLBACK_COUNT: AtomicU64 = AtomicU64::new(0);
 
-extern "C" fn cache_eviction_removes_selected_method(_: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn cache_eviction_removes_selected_method(__context: u64, _: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         EVICTION_CALLBACK_COUNT.fetch_add(1, Ordering::SeqCst);
-        let result = crate::molt_del_attr_name(
+        let result = crate::molt_del_attr_name_attached_body(
+            py,
             EVICTION_TARGET_CLASS.load(Ordering::SeqCst),
             EVICTION_TARGET_NAME.load(Ordering::SeqCst),
         );
@@ -33,7 +42,7 @@ extern "C" fn cache_eviction_removes_selected_method(_: u64) -> u64 {
         crate::runtime_state(py).attributes.class_lookup.clear(py);
         clear_attr_tls_caches(py);
         MoltObject::none().bits()
-    })
+    }
 }
 
 #[test]
@@ -118,61 +127,111 @@ fn descriptor_snapshot_owns_selection_through_reentrant_retirement_and_cache_cle
     });
 }
 
-extern "C" fn scalar_attr_identity(value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn scalar_attr_identity(__context: u64, value_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         inc_ref_bits(_py, value_bits);
         value_bits
-    })
+    }
 }
 
-extern "C" fn descriptor_test_dir(_self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn descriptor_test_dir(__context: u64, _self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         let ptr = alloc_list(_py, &[]);
         if ptr.is_null() {
             MoltObject::none().bits()
         } else {
             MoltObject::from_ptr(ptr).bits()
         }
-    })
+    }
 }
 
-extern "C" fn descriptor_test_property_attribute_error(_self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn descriptor_test_property_attribute_error(__context: u64, _self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         raise_exception::<u64>(
             _py,
             BuiltinExc::AttributeError,
             "descriptor test attribute miss",
         )
-    })
+    }
 }
 
-extern "C" fn descriptor_test_property_runtime_error(_self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn descriptor_test_property_runtime_error(__context: u64, _self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "descriptor test failure")
-    })
+    }
 }
 
-extern "C" fn descriptor_test_call1(receiver_bits: u64, argument_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn descriptor_test_call1(__context: u64, receiver_bits: u64, argument_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         CALL1_RECEIVER_BITS.store(receiver_bits, Ordering::SeqCst);
         CALL1_ARGUMENT_BITS.store(argument_bits, Ordering::SeqCst);
         inc_ref_bits(_py, argument_bits);
         argument_bits
-    })
+    }
 }
 
 extern "C" fn descriptor_test_get_replaces_own_method(
+    __context: u64,
     self_bits: u64,
     _instance_bits: u64,
     owner_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         MUTATING_GET_SELF_BITS.store(self_bits, Ordering::SeqCst);
         MUTATING_GET_OWNER_BITS.store(owner_bits, Ordering::SeqCst);
 
         let descriptor_class_bits = type_of_bits(_py, self_bits);
         let get_name_bits = string_bits(_py, b"__get__");
-        let _ = crate::molt_set_attr_name(
+        let _ = crate::molt_set_attr_name_attached_body(
+            _py,
             descriptor_class_bits,
             get_name_bits,
             MoltObject::none().bits(),
@@ -195,21 +254,30 @@ extern "C" fn descriptor_test_get_replaces_own_method(
         }
         inc_ref_bits(_py, callable_bits);
         callable_bits
-    })
+    }
 }
 
 extern "C" fn scalar_attr_custom_get_reentrant(
+    __context: u64,
     self_bits: u64,
     instance_bits: u64,
     owner_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         CUSTOM_GET_SELF_BITS.store(self_bits, Ordering::SeqCst);
         CUSTOM_GET_INSTANCE_BITS.store(instance_bits, Ordering::SeqCst);
         CUSTOM_GET_OWNER_BITS.store(owner_bits, Ordering::SeqCst);
 
         let name_bits = string_bits(_py, b"probe");
-        let _ = crate::molt_del_attr_name(owner_bits, name_bits);
+        let _ = crate::molt_del_attr_name_attached_body(_py, owner_bits, name_bits);
         dec_ref_bits(_py, name_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -221,7 +289,7 @@ extern "C" fn scalar_attr_custom_get_reentrant(
         // owned result returned to the caller.
         inc_ref_bits(_py, self_bits);
         self_bits
-    })
+    }
 }
 
 fn string_bits(_py: &PyToken<'_>, value: &[u8]) -> u64 {
@@ -258,12 +326,17 @@ pub(super) fn test_class_bits(
 ) -> u64 {
     let builtins = builtin_classes(_py);
     let name_bits = string_bits(_py, name);
-    let namespace_bits = crate::molt_dict_new(attrs.len() as u64);
+    let namespace_bits = crate::molt_dict_new_attached_body(_py, attrs.len() as u64);
     assert!(!obj_from_bits(namespace_bits).is_none());
     for &(attr_name, value_bits) in attrs {
         let attr_bits = string_bits(_py, attr_name);
         assert_eq!(
-            crate::c_api::molt_mapping_setitem(namespace_bits, attr_bits, value_bits),
+            crate::c_api::molt_mapping_setitem_attached_body(
+                _py,
+                namespace_bits,
+                attr_bits,
+                value_bits
+            ),
             0
         );
         dec_ref_bits(_py, attr_bits);
@@ -273,7 +346,8 @@ pub(super) fn test_class_bits(
     let bases_ptr = alloc_tuple(_py, bases);
     assert!(!bases_ptr.is_null());
     let bases_bits = MoltObject::from_ptr(bases_ptr).bits();
-    let class_bits = crate::builtins::types::molt_type_new(
+    let class_bits = crate::builtins::types::molt_type_new_attached_body(
+        _py,
         builtins.type_obj,
         name_bits,
         bases_bits,
@@ -682,7 +756,7 @@ fn dir_raw_mro_lookup_preserves_class_held_function_descriptor() {
 
         let function_refcount = heap_refcount(dir_function_bits);
         for invocation in 0..3 {
-            let result_bits = crate::molt_dir_builtin(instance_bits);
+            let result_bits = crate::molt_dir_builtin_attached_body(_py, instance_bits);
             assert!(
                 !exception_pending(_py),
                 "dir invocation {invocation} raised unexpectedly"
@@ -746,13 +820,14 @@ fn descriptor_bind_property_preserves_attribute_and_runtime_errors() {
         };
         assert!(failed_attribute_lookup.is_err());
         assert!(exception_pending(_py));
-        let attribute_error = crate::builtins::exceptions::molt_exception_last_pending();
+        let attribute_error =
+            crate::builtins::exceptions::molt_exception_last_pending_attached_body(_py);
         assert!(crate::builtins::exceptions::exception_matches_kind(
             _py,
             attribute_error,
             crate::BuiltinExc::AttributeError
         ));
-        crate::molt_exception_clear();
+        crate::molt_exception_clear_attached_body(_py);
         dec_ref_bits(_py, attribute_error);
 
         // Binding preserves the same error for ordinary attributes and special
@@ -768,13 +843,14 @@ fn descriptor_bind_property_preserves_attribute_and_runtime_errors() {
         };
         assert!(failed_call.is_err());
         assert!(exception_pending(_py));
-        let invocation_error = crate::builtins::exceptions::molt_exception_last_pending();
+        let invocation_error =
+            crate::builtins::exceptions::molt_exception_last_pending_attached_body(_py);
         assert!(crate::builtins::exceptions::exception_matches_kind(
             _py,
             invocation_error,
             crate::BuiltinExc::AttributeError
         ));
-        crate::molt_exception_clear();
+        crate::molt_exception_clear_attached_body(_py);
         dec_ref_bits(_py, invocation_error);
 
         let failed = unsafe {
@@ -787,13 +863,14 @@ fn descriptor_bind_property_preserves_attribute_and_runtime_errors() {
         };
         assert!(failed.is_err());
         assert!(exception_pending(_py));
-        let error_bits = crate::builtins::exceptions::molt_exception_last_pending();
+        let error_bits =
+            crate::builtins::exceptions::molt_exception_last_pending_attached_body(_py);
         assert!(crate::builtins::exceptions::exception_matches_kind(
             _py,
             error_bits,
             crate::BuiltinExc::RuntimeError
         ));
-        crate::molt_exception_clear();
+        crate::molt_exception_clear_attached_body(_py);
         dec_ref_bits(_py, error_bits);
 
         let call_failed = unsafe {
@@ -807,13 +884,14 @@ fn descriptor_bind_property_preserves_attribute_and_runtime_errors() {
         };
         assert!(call_failed.is_err());
         assert!(exception_pending(_py));
-        let call_error_bits = crate::builtins::exceptions::molt_exception_last_pending();
+        let call_error_bits =
+            crate::builtins::exceptions::molt_exception_last_pending_attached_body(_py);
         assert!(crate::builtins::exceptions::exception_matches_kind(
             _py,
             call_error_bits,
             crate::BuiltinExc::RuntimeError
         ));
-        crate::molt_exception_clear();
+        crate::molt_exception_clear_attached_body(_py);
         dec_ref_bits(_py, call_error_bits);
 
         dec_ref_bits(_py, runtime_error_property);

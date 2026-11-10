@@ -118,9 +118,8 @@ fn get_uname(_py: &PyToken<'_>) -> Result<&'static UnameInfo, u64> {
 
 // ── Public intrinsics ─────────────────────────────────────────────────────
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_platform_system() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_platform_system_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let uname = match get_uname(_py) {
             Ok(uname) => uname,
             Err(error) => return error,
@@ -130,9 +129,8 @@ pub extern "C" fn molt_platform_system() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_platform_machine() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_platform_machine_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let uname = match get_uname(_py) {
             Ok(uname) => uname,
             Err(error) => return error,
@@ -142,18 +140,16 @@ pub extern "C" fn molt_platform_machine() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_platform_processor() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_platform_processor_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // On macOS arm64 the processor string is "arm" in CPython.
         // We mirror PLATFORM_MACHINE which is the most portable value.
         return_str(_py, PLATFORM_MACHINE)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_platform_architecture() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_platform_architecture_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let bits_ptr = alloc_string(_py, PLATFORM_BITS.as_bytes());
         let link_ptr = alloc_string(_py, b"");
         if bits_ptr.is_null() || link_ptr.is_null() {
@@ -173,9 +169,8 @@ pub extern "C" fn molt_platform_architecture() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_platform_node() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_platform_node_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let uname = match get_uname(_py) {
             Ok(uname) => uname,
             Err(error) => return error,
@@ -185,9 +180,8 @@ pub extern "C" fn molt_platform_node() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_platform_release() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_platform_release_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let uname = match get_uname(_py) {
             Ok(uname) => uname,
             Err(error) => return error,
@@ -197,9 +191,8 @@ pub extern "C" fn molt_platform_release() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_platform_version() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_platform_version_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let uname = match get_uname(_py) {
             Ok(uname) => uname,
             Err(error) => return error,
@@ -209,9 +202,12 @@ pub extern "C" fn molt_platform_version() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_platform_platform(aliased_bits: u64, terse_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_platform_platform_attached_body(
+    _py: &crate::PyToken<'_>,
+    aliased_bits: u64,
+    terse_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let _aliased = is_truthy(_py, obj_from_bits(aliased_bits));
         let terse = is_truthy(_py, obj_from_bits(terse_bits));
         let uname = match get_uname(_py) {
@@ -230,9 +226,8 @@ pub extern "C" fn molt_platform_platform(aliased_bits: u64, terse_bits: u64) -> 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_platform_python_version() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_platform_python_version_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let info = crate::object::ops_sys::runtime_target_python_info(runtime_state(_py));
         return_str(
             _py,
@@ -241,9 +236,8 @@ pub extern "C" fn molt_platform_python_version() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_platform_python_version_tuple() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_platform_python_version_tuple_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let info = crate::object::ops_sys::runtime_target_python_info(runtime_state(_py));
         let major = info.major.to_string();
         let minor = info.minor.to_string();
@@ -269,19 +263,16 @@ pub extern "C" fn molt_platform_python_version_tuple() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_platform_python_implementation() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { return_str(_py, "Molt") })
+pub(crate) fn molt_platform_python_implementation_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { return_str(_py, "Molt") })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_platform_python_compiler() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { return_str(_py, "Molt/Cranelift") })
+pub(crate) fn molt_platform_python_compiler_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { return_str(_py, "Molt/Cranelift") })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_platform_uname() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_platform_uname_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let uname = match get_uname(_py) {
             Ok(uname) => uname,
             Err(error) => return error,
@@ -309,3 +300,5 @@ pub extern "C" fn molt_platform_uname() -> u64 {
         MoltObject::from_ptr(tuple_ptr).bits()
     })
 }
+
+include!("../attached_exports_generated/builtins/platform_mod.rs");

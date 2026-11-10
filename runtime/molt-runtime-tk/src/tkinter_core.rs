@@ -28,6 +28,13 @@ mod options;
 mod tcl_list;
 
 pub use color::molt_tk_hex_to_rgb;
-pub use event::{molt_tk_event_build_from_args, molt_tk_event_int, molt_tk_event_state_decode};
-pub use options::{molt_tk_cnfmerge, molt_tk_flatten_args};
+pub use event::{
+    molt_tk_event_build_from_args, molt_tk_event_build_from_args_attached_body, molt_tk_event_int,
+    molt_tk_event_int_attached_body, molt_tk_event_state_decode,
+    molt_tk_event_state_decode_attached_body,
+};
+pub use options::{
+    molt_tk_cnfmerge, molt_tk_cnfmerge_attached_body, molt_tk_flatten_args,
+    molt_tk_flatten_args_attached_body,
+};
 pub use tcl_list::molt_tk_splitdict;

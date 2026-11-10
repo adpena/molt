@@ -2,6 +2,12 @@ use crate::BuiltinExc;
 use crate::PyToken;
 use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
 use molt_obj_model::MoltObject;
+#[cfg(test)]
+pub(crate) use mutation::{
+    molt_del_attr_generic_attached_body, molt_del_attr_object_attached_body,
+    molt_del_attr_ptr_attached_body, molt_set_attr_generic_attached_body,
+    molt_set_attr_object_ic_attached_body, molt_set_attr_ptr_attached_body,
+};
 use std::sync::atomic::Ordering;
 
 use crate::async_rt::generators::generator_yieldfrom_bits;
@@ -35,11 +41,12 @@ mod state;
 pub(crate) mod type_metadata;
 mod wrapper_attrs;
 
-pub use wrapper_attrs::{
-    molt_wrapper_member_delete, molt_wrapper_member_get, molt_wrapper_member_set,
-};
 pub(crate) use wrapper_attrs::{
     prepare_wrapper_members, property_name_value, wrapper_copy_metadata, wrapper_publish_members,
+};
+pub use {
+    wrapper_attrs::molt_wrapper_member_delete, wrapper_attrs::molt_wrapper_member_get,
+    wrapper_attrs::molt_wrapper_member_set,
 };
 
 pub(crate) use class_lookup::{type_attr_lookup_ptr, type_attr_lookup_ptr_default};
@@ -51,11 +58,6 @@ pub(crate) use mutation::{
     TypeMutation, explicit_object_mutation_admitted, explicit_type_mutate_attr_name,
     generic_del_attr_name, generic_set_attr_name, mutate_attr_name,
 };
-pub use mutation::{
-    molt_del_attr_generic, molt_del_attr_name, molt_del_attr_object, molt_del_attr_ptr,
-    molt_set_attr_generic, molt_set_attr_name, molt_set_attr_object, molt_set_attr_object_ic,
-    molt_set_attr_ptr,
-};
 pub(crate) use scalar_attrs::{
     is_numeric_scalar_attr_receiver, numeric_publish_members, resolve_scalar_attr,
 };
@@ -64,6 +66,15 @@ use state::{
 };
 pub(crate) use state::{
     AttributesRuntimeState, attributes_clear_runtime_state, debug_bound_method_enabled,
+};
+pub use {
+    mutation::molt_del_attr_generic, mutation::molt_del_attr_name, mutation::molt_del_attr_object,
+    mutation::molt_del_attr_ptr, mutation::molt_set_attr_generic, mutation::molt_set_attr_name,
+    mutation::molt_set_attr_object, mutation::molt_set_attr_object_ic, mutation::molt_set_attr_ptr,
+};
+pub(crate) use {
+    mutation::molt_del_attr_name_attached_body, mutation::molt_set_attr_name_attached_body,
+    mutation::molt_set_attr_object_attached_body,
 };
 
 fn native_descriptor_metadata_field(
@@ -124,9 +135,8 @@ unsafe fn attr_name_bits_for_site(_py: &PyToken<'_>, site_id: u64, slice: &[u8])
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_code_positions(code_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_code_positions_attached_body(_py: &crate::PyToken<'_>, code_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let code_obj = obj_from_bits(code_bits);
         let Some(code_ptr) = code_obj.as_ptr() else {
             return raise_exception::<_>(
@@ -211,7 +221,7 @@ pub extern "C" fn molt_code_positions(code_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         let bits = MoltObject::from_ptr(table).bits();
-        let result = molt_iter(bits);
+        let result = molt_iter_attached_body(_py, bits);
         dec_ref_bits(_py, bits);
         result
     })
@@ -968,7 +978,7 @@ unsafe fn attr_lookup_ptr_default_inner(
                     if func_bits == 0 {
                         return Err(());
                     }
-                    let bound = molt_bound_method_new(func_bits, self_bits);
+                    let bound = molt_bound_method_new_attached_body(_py, func_bits, self_bits);
                     return if obj_from_bits(bound).is_none() {
                         Err(())
                     } else {
@@ -1089,7 +1099,7 @@ unsafe fn attr_lookup_ptr_default_inner(
                     return Err(());
                 }
                 let func_bits = MoltObject::from_ptr(func_ptr).bits();
-                let _ = crate::molt_function_set_builtin(func_bits);
+                let _ = crate::molt_function_set_builtin_attached_body(_py, func_bits);
                 let self_bits = MoltObject::from_ptr(obj_ptr).bits();
                 let bound_ptr = alloc_bound_method_obj(_py, func_bits, self_bits);
                 dec_ref_bits(_py, func_bits);
@@ -1127,14 +1137,14 @@ unsafe fn attr_lookup_ptr_default_inner(
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_get_attr_generic(
+pub(crate) unsafe fn molt_get_attr_generic_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_ptr: *mut u8,
     attr_name_ptr: *const u8,
     attr_name_len_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(attr_name_len) = usize_from_bits(attr_name_len_bits) else {
                 return raise_exception::<u64>(
                     _py,
@@ -1203,29 +1213,29 @@ pub(crate) unsafe fn raise_attribute_miss(
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_get_attr_ptr(
+pub(crate) unsafe fn molt_get_attr_ptr_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_ptr: *mut u8,
     attr_name_ptr: *const u8,
     attr_name_len_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            molt_get_attr_generic(obj_ptr, attr_name_ptr, attr_name_len_bits)
+        crate::with_attached_entry_nopanic!(_py, _py, {
+            molt_get_attr_generic_attached_body(_py, obj_ptr, attr_name_ptr, attr_name_len_bits)
         })
     }
 }
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_get_attr_object(
+pub(crate) unsafe fn molt_get_attr_object_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     attr_name_ptr: *const u8,
     attr_name_len_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(attr_name_len) = usize_from_bits(attr_name_len_bits) else {
                 return raise_exception::<u64>(
                     _py,
@@ -1237,7 +1247,12 @@ pub unsafe extern "C" fn molt_get_attr_object(
             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
             let attr_name = std::str::from_utf8(slice).unwrap_or("<attr>");
             if let Some(ptr) = maybe_ptr_from_bits(obj_bits) {
-                return molt_get_attr_generic(ptr, attr_name_ptr, attr_name_len_bits);
+                return molt_get_attr_generic_attached_body(
+                    _py,
+                    ptr,
+                    attr_name_ptr,
+                    attr_name_len_bits,
+                );
             }
             let Some(name_bits) = dynamic_attr_name_bits(_py, slice) else {
                 return MoltObject::none().bits();
@@ -1256,17 +1271,22 @@ pub unsafe extern "C" fn molt_get_attr_object(
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_get_attr_object_ic(
+pub(crate) unsafe fn molt_get_attr_object_ic_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     attr_name_ptr: *const u8,
     attr_name_len_bits: u64,
     site_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             if ic_site_from_bits(site_bits).is_none() {
-                return molt_get_attr_object(obj_bits, attr_name_ptr, attr_name_len_bits);
+                return molt_get_attr_object_attached_body(
+                    _py,
+                    obj_bits,
+                    attr_name_ptr,
+                    attr_name_len_bits,
+                );
             }
             let Some(attr_name_len) = usize_from_bits(attr_name_len_bits) else {
                 return raise_exception::<u64>(
@@ -1336,14 +1356,14 @@ pub(crate) unsafe fn get_attr_object_ic_with_mode(
 /// # Safety
 /// Dereferences `attr_name_ptr`. Caller must ensure it points to valid UTF-8
 /// of length `attr_name_len_bits`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_get_attr_special(
+pub(crate) unsafe fn molt_get_attr_special_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     attr_name_ptr: *const u8,
     attr_name_len_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let Some(attr_name_len) = usize_from_bits(attr_name_len_bits) else {
                 return raise_exception::<u64>(
                     _py,
@@ -1419,13 +1439,13 @@ unsafe fn native_callable_attr(
 }
 
 /// Descriptor binding shares receiver admission with implicit attribute access.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_function_descriptor_get(
+pub(crate) fn molt_function_descriptor_get_attached_body(
+    _py: &crate::PyToken<'_>,
     self_bits: u64,
     instance_bits: u64,
     owner_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(pointer) = obj_from_bits(self_bits).as_ptr() else {
             return raise_exception::<_>(
                 _py,
@@ -1460,9 +1480,12 @@ pub extern "C" fn molt_function_descriptor_get(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_get_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_get_attr_name_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+    name_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         get_attr_name(py, obj_bits, name_bits).unwrap_or_else(|()| MoltObject::none().bits())
     })
 }
@@ -1526,11 +1549,15 @@ pub(crate) fn lookup_attribute_with_mode(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_get_attr_name_default(object: u64, name: u64, default: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_get_attr_name_default_attached_body(
+    _py: &crate::PyToken<'_>,
+    object: u64,
+    name: u64,
+    default: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         if is_missing_bits(py, default) {
-            return molt_get_attr_name(object, name);
+            return molt_get_attr_name_attached_body(py, object, name);
         }
         match lookup_attribute(py, object, name) {
             AttributeLookup::Found(value) => value,
@@ -1543,9 +1570,12 @@ pub extern "C" fn molt_get_attr_name_default(object: u64, name: u64, default: u6
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_has_attr_name(object: u64, name: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_has_attr_name_attached_body(
+    _py: &crate::PyToken<'_>,
+    object: u64,
+    name: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         match lookup_attribute(py, object, name) {
             AttributeLookup::Found(value) => {
                 dec_ref_bits(py, value);
@@ -1557,6 +1587,8 @@ pub extern "C" fn molt_has_attr_name(object: u64, name: u64) -> u64 {
         }
     })
 }
+
+include!("../attached_exports_generated/builtins/attributes.rs");
 
 #[cfg(test)]
 mod tests {
@@ -1570,7 +1602,14 @@ mod tests {
 
     static CUSTOM_GETATTRIBUTE_CALLS: AtomicU64 = AtomicU64::new(0);
 
-    extern "C" fn visibility_probe() -> u64 {
+    extern "C" fn visibility_probe(__context: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         MoltObject::none().bits()
     }
 
@@ -1603,17 +1642,23 @@ mod tests {
     fn test_class_bits(_py: &PyToken<'_>, name: &[u8], attrs: &[(&[u8], u64)]) -> u64 {
         let builtins = crate::builtin_classes(_py);
         let name_bits = string_bits(_py, name);
-        let namespace_bits = crate::molt_dict_new(attrs.len() as u64);
+        let namespace_bits = crate::molt_dict_new_attached_body(_py, attrs.len() as u64);
         assert!(!obj_from_bits(namespace_bits).is_none());
         for &(attr_name, value_bits) in attrs {
             let attr_bits = string_bits(_py, attr_name);
             assert_eq!(
-                crate::c_api::molt_mapping_setitem(namespace_bits, attr_bits, value_bits),
+                crate::c_api::molt_mapping_setitem_attached_body(
+                    _py,
+                    namespace_bits,
+                    attr_bits,
+                    value_bits
+                ),
                 0
             );
             dec_ref_bits(_py, attr_bits);
         }
-        let class_bits = crate::builtins::types::molt_type_new(
+        let class_bits = crate::builtins::types::molt_type_new_attached_body(
+            _py,
             builtins.type_obj,
             name_bits,
             MoltObject::none().bits(),
@@ -1634,7 +1679,14 @@ mod tests {
         instance_bits
     }
 
-    extern "C" fn changing_getattribute(_self_bits: u64, _name_bits: u64) -> u64 {
+    extern "C" fn changing_getattribute(__context: u64, _self_bits: u64, _name_bits: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         let call = CUSTOM_GETATTRIBUTE_CALLS.fetch_add(1, Ordering::SeqCst) + 1;
         MoltObject::from_int(call as i64).bits()
     }
@@ -1644,7 +1696,7 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let declared_name = string_bits(_py, b"BoxedAttributeErrors");
-            let class_bits = crate::molt_class_new(declared_name);
+            let class_bits = crate::molt_class_new_attached_body(_py, declared_name);
             let class_ptr = MoltObject::from_bits(class_bits).as_ptr().unwrap();
             let invalid_name = MoltObject::from_int(17).bits();
             for (operation, name, expected_error, routes) in [
@@ -1667,51 +1719,72 @@ mod tests {
                     assert!(!crate::exception_pending(_py));
                     let result: u64 = unsafe {
                         match (operation, route) {
-                            ("get", 0) => super::molt_get_attr_name(class_bits, name_bits),
-                            ("get", 1) => super::molt_get_attr_generic(
+                            ("get", 0) => {
+                                super::molt_get_attr_name_attached_body(_py, class_bits, name_bits)
+                            }
+                            ("get", 1) => super::molt_get_attr_generic_attached_body(
+                                _py,
                                 class_ptr,
                                 name.as_ptr(),
                                 name.len() as u64,
                             ),
-                            ("get", 2) => super::molt_get_attr_ptr(
+                            ("get", 2) => super::molt_get_attr_ptr_attached_body(
+                                _py,
                                 class_ptr,
                                 name.as_ptr(),
                                 name.len() as u64,
                             ),
-                            ("get", 3) => super::molt_get_attr_object(
+                            ("get", 3) => super::molt_get_attr_object_attached_body(
+                                _py,
                                 class_bits,
                                 name.as_ptr(),
                                 name.len() as u64,
                             ),
-                            ("get", 4) => super::molt_get_attr_object_ic(
+                            ("get", 4) => super::molt_get_attr_object_ic_attached_body(
+                                _py,
                                 class_bits,
                                 name.as_ptr(),
                                 name.len() as u64,
                                 MoltObject::from_int(91).bits(),
                             ),
-                            ("get", 5) => super::molt_get_attr_special(
+                            ("get", 5) => super::molt_get_attr_special_attached_body(
+                                _py,
                                 class_bits,
                                 name.as_ptr(),
                                 name.len() as u64,
                             ),
-                            ("get", 6) => crate::molt_object_getattribute(class_bits, name_bits),
-                            ("get", 7) => crate::molt_type_getattribute(class_bits, name_bits),
-                            ("set", 0) => {
-                                super::molt_set_attr_name(class_bits, name_bits, invalid_name)
+                            ("get", 6) => crate::molt_object_getattribute_attached_body(
+                                _py, class_bits, name_bits,
+                            ),
+                            ("get", 7) => crate::molt_type_getattribute_attached_body(
+                                _py, class_bits, name_bits,
+                            ),
+                            ("set", 0) => super::molt_set_attr_name_attached_body(
+                                _py,
+                                class_bits,
+                                name_bits,
+                                invalid_name,
+                            ),
+                            ("set", 1) => {
+                                crate::builtins::attributes::molt_set_attr_generic_attached_body(
+                                    _py,
+                                    class_ptr,
+                                    name.as_ptr(),
+                                    name.len() as u64,
+                                    invalid_name,
+                                )
                             }
-                            ("set", 1) => super::molt_set_attr_generic(
-                                class_ptr,
-                                name.as_ptr(),
-                                name.len() as u64,
-                                invalid_name,
-                            ),
-                            ("set", 2) => super::molt_set_attr_ptr(
-                                class_ptr,
-                                name.as_ptr(),
-                                name.len() as u64,
-                                invalid_name,
-                            ),
-                            ("set", 3) => super::molt_set_attr_object(
+                            ("set", 2) => {
+                                crate::builtins::attributes::molt_set_attr_ptr_attached_body(
+                                    _py,
+                                    class_ptr,
+                                    name.as_ptr(),
+                                    name.len() as u64,
+                                    invalid_name,
+                                )
+                            }
+                            ("set", 3) => super::molt_set_attr_object_attached_body(
+                                _py,
                                 class_bits,
                                 name.as_ptr(),
                                 name.len() as u64,
@@ -1728,22 +1801,33 @@ mod tests {
                                 );
                                 MoltObject::none().bits()
                             }
-                            ("del", 0) => super::molt_del_attr_name(class_bits, name_bits),
-                            ("del", 1) => super::molt_del_attr_generic(
-                                class_ptr,
-                                name.as_ptr(),
-                                name.len() as u64,
-                            ),
-                            ("del", 2) => super::molt_del_attr_ptr(
-                                class_ptr,
-                                name.as_ptr(),
-                                name.len() as u64,
-                            ),
-                            ("del", 3) => super::molt_del_attr_object(
-                                class_bits,
-                                name.as_ptr(),
-                                name.len() as u64,
-                            ),
+                            ("del", 0) => {
+                                super::molt_del_attr_name_attached_body(_py, class_bits, name_bits)
+                            }
+                            ("del", 1) => {
+                                crate::builtins::attributes::molt_del_attr_generic_attached_body(
+                                    _py,
+                                    class_ptr,
+                                    name.as_ptr(),
+                                    name.len() as u64,
+                                )
+                            }
+                            ("del", 2) => {
+                                crate::builtins::attributes::molt_del_attr_ptr_attached_body(
+                                    _py,
+                                    class_ptr,
+                                    name.as_ptr(),
+                                    name.len() as u64,
+                                )
+                            }
+                            ("del", 3) => {
+                                crate::builtins::attributes::molt_del_attr_object_attached_body(
+                                    _py,
+                                    class_bits,
+                                    name.as_ptr(),
+                                    name.len() as u64,
+                                )
+                            }
                             _ => unreachable!(),
                         }
                     };
@@ -1767,7 +1851,7 @@ mod tests {
                 dec_ref_bits(_py, name_bits);
             }
             let name_key = string_bits(_py, b"__name__");
-            let actual_name = super::molt_get_attr_name(class_bits, name_key);
+            let actual_name = super::molt_get_attr_name_attached_body(_py, class_bits, name_key);
             assert_eq!(
                 crate::string_obj_to_owned(MoltObject::from_bits(actual_name)).as_deref(),
                 Some("BoxedAttributeErrors")
@@ -1790,6 +1874,7 @@ mod tests {
             assert!(!receiver.is_null());
             for invalid_receiver in [true, false] {
                 let result = crate::gpu_bridge::__molt_gpu_object_setattr_raw(
+                    _py.attached_context(),
                     if invalid_receiver {
                         std::ptr::null_mut()
                     } else {
@@ -1832,25 +1917,38 @@ mod tests {
             let builtin_ptr = MoltObject::from_bits(builtin).as_ptr().unwrap();
             let code_name = string_bits(_py, b"__code__");
 
-            let by_name = super::molt_get_attr_name(builtin, code_name);
+            let by_name = super::molt_get_attr_name_attached_body(_py, builtin, code_name);
             assert!(MoltObject::from_bits(by_name).is_none());
             assert!(crate::exception_pending(_py));
             crate::clear_exception(_py);
 
-            let by_generic =
-                unsafe { super::molt_get_attr_generic(builtin_ptr, b"__code__".as_ptr(), 8) };
+            let by_generic = unsafe {
+                super::molt_get_attr_generic_attached_body(
+                    _py,
+                    builtin_ptr,
+                    b"__code__".as_ptr(),
+                    8,
+                )
+            };
             assert!(MoltObject::from_bits(by_generic).is_none());
             assert!(crate::exception_pending(_py));
             crate::clear_exception(_py);
 
             let closure_name = string_bits(_py, b"__closure__");
-            let closure_by_name = super::molt_get_attr_name(builtin, closure_name);
+            let closure_by_name =
+                super::molt_get_attr_name_attached_body(_py, builtin, closure_name);
             assert!(MoltObject::from_bits(closure_by_name).is_none());
             assert!(crate::exception_pending(_py));
             crate::clear_exception(_py);
 
-            let closure_by_generic =
-                unsafe { super::molt_get_attr_generic(builtin_ptr, b"__closure__".as_ptr(), 11) };
+            let closure_by_generic = unsafe {
+                super::molt_get_attr_generic_attached_body(
+                    _py,
+                    builtin_ptr,
+                    b"__closure__".as_ptr(),
+                    11,
+                )
+            };
             assert!(MoltObject::from_bits(closure_by_generic).is_none());
             assert!(crate::exception_pending(_py));
             crate::clear_exception(_py);
@@ -1869,11 +1967,17 @@ mod tests {
                     crate::FunctionCallAbi::OpaqueContextFirst,
                 );
             }
-            let opaque_by_name = super::molt_get_attr_name(opaque, closure_name);
+            let opaque_by_name = super::molt_get_attr_name_attached_body(_py, opaque, closure_name);
             assert!(MoltObject::from_bits(opaque_by_name).is_none());
             assert!(!crate::exception_pending(_py));
-            let opaque_by_generic =
-                unsafe { super::molt_get_attr_generic(opaque_ptr, b"__closure__".as_ptr(), 11) };
+            let opaque_by_generic = unsafe {
+                super::molt_get_attr_generic_attached_body(
+                    _py,
+                    opaque_ptr,
+                    b"__closure__".as_ptr(),
+                    11,
+                )
+            };
             assert!(MoltObject::from_bits(opaque_by_generic).is_none());
             assert!(!crate::exception_pending(_py));
 
@@ -1881,7 +1985,7 @@ mod tests {
                 crate::alloc_function_obj(_py, visibility_probe as *const () as usize as u64, 0);
             assert!(!ordinary_ptr.is_null());
             let ordinary = MoltObject::from_ptr(ordinary_ptr).bits();
-            let ordinary_code = super::molt_get_attr_name(ordinary, code_name);
+            let ordinary_code = super::molt_get_attr_name_attached_body(_py, ordinary, code_name);
             assert!(!MoltObject::from_bits(ordinary_code).is_none());
             assert!(!crate::exception_pending(_py));
 
@@ -1916,7 +2020,7 @@ mod tests {
                         .is_none()
                 );
                 let before = refcount(left);
-                let retained = super::molt_get_attr_name(source, name);
+                let retained = super::molt_get_attr_name_attached_body(py, source, name);
                 assert_eq!(retained, left);
                 assert_eq!(refcount(left), before + 1);
                 assert!(!crate::exception_pending(py));
@@ -1925,13 +2029,17 @@ mod tests {
                         .unwrap()
                         .is_none()
                 );
-                let generic =
-                    super::molt_get_attr_generic(source_ptr, b"__builtins__".as_ptr(), 12);
+                let generic = super::molt_get_attr_generic_attached_body(
+                    py,
+                    source_ptr,
+                    b"__builtins__".as_ptr(),
+                    12,
+                );
                 assert_eq!(generic, left);
                 dec_ref_bits(py, generic);
 
                 let code_name = string_bits(py, b"__code__");
-                let code = super::molt_get_attr_name(source, code_name);
+                let code = super::molt_get_attr_name_attached_body(py, source, code_name);
                 assert!(!obj_from_bits(code).is_none() && !crate::exception_pending(py));
                 assert!(crate::dict_set_in_place(py, globals_ptr, name, right));
                 let rebuilt =
@@ -1939,13 +2047,14 @@ mod tests {
                 assert!(!obj_from_bits(rebuilt).is_none() && !crate::exception_pending(py));
                 assert!(crate::dict_set_in_place(py, globals_ptr, name, left));
                 for (function, expected) in [(source, left), (rebuilt, right)] {
-                    let captured = super::molt_get_attr_name(function, name);
+                    let captured = super::molt_get_attr_name_attached_body(py, function, name);
                     assert_eq!(captured, expected);
                     dec_ref_bits(py, captured);
                 }
 
                 let dictionary_name = string_bits(py, b"__dict__");
-                let dictionary = super::molt_get_attr_name(source, dictionary_name);
+                let dictionary =
+                    super::molt_get_attr_name_attached_body(py, source, dictionary_name);
                 assert!(!crate::exception_pending(py));
                 assert!(crate::dict_set_in_place(
                     py,
@@ -1953,15 +2062,16 @@ mod tests {
                     name,
                     right
                 ));
-                let shadowed = super::molt_get_attr_name(source, name);
+                let shadowed = super::molt_get_attr_name_attached_body(py, source, name);
                 assert_eq!(shadowed, left, "the member precedes the public dictionary");
                 dec_ref_bits(py, shadowed);
                 dec_ref_bits(py, dictionary);
-                let method = crate::builtins::functions::molt_bound_method_new(
+                let method = crate::builtins::functions::molt_bound_method_new_attached_body(
+                    py,
                     source,
                     MoltObject::from_int(7).bits(),
                 );
-                let delegated = super::molt_get_attr_name(method, name);
+                let delegated = super::molt_get_attr_name_attached_body(py, method, name);
                 assert_eq!(
                     delegated, left,
                     "Python bound methods delegate to their function"
@@ -2006,7 +2116,7 @@ mod tests {
                 let function = MoltObject::from_ptr(function_ptr).bits();
                 crate::function_set_globals_bits(py, function_ptr, globals).unwrap();
                 let owner = crate::builtin_classes(py).function;
-                let descriptor = super::molt_get_attr_name(owner, name);
+                let descriptor = super::molt_get_attr_name_attached_body(py, owner, name);
                 assert!(!obj_from_bits(descriptor).is_none() && !crate::exception_pending(py));
                 assert_eq!(
                     crate::object::layout::native_descriptor_flavor(
@@ -2053,15 +2163,20 @@ mod tests {
                 }
                 for delete in [false, true] {
                     let mutation = if delete {
-                        super::molt_del_attr_name(function, name)
+                        super::molt_del_attr_name_attached_body(py, function, name)
                     } else {
-                        super::molt_set_attr_name(function, name, MoltObject::from_int(42).bits())
+                        super::molt_set_attr_name_attached_body(
+                            py,
+                            function,
+                            name,
+                            MoltObject::from_int(42).bits(),
+                        )
                     };
                     assert!(obj_from_bits(mutation).is_none());
                     assert!(crate::exception_pending(py));
                     crate::clear_exception(py);
                 }
-                let still_none = super::molt_get_attr_name(function, name);
+                let still_none = super::molt_get_attr_name_attached_body(py, function, name);
                 assert_eq!(still_none, none);
                 assert!(!crate::exception_pending(py));
                 dec_ref_bits(py, still_none);
@@ -2075,16 +2190,16 @@ mod tests {
                 assert!(!wrapper_ptr.is_null());
                 let wrapper = MoltObject::from_ptr(wrapper_ptr).bits();
                 for (object, expected) in [(function, true), (builtin, false), (wrapper, false)] {
-                    let directory = crate::molt_dir_builtin(object);
+                    let directory = crate::molt_dir_builtin_attached_body(py, object);
                     assert!(!crate::exception_pending(py));
-                    let contains = crate::molt_contains(directory, name);
+                    let contains = crate::molt_contains_attached_body(py, directory, name);
                     assert!(!crate::exception_pending(py));
                     assert_eq!(crate::is_truthy(py, obj_from_bits(contains)), expected);
                     dec_ref_bits(py, contains);
                     dec_ref_bits(py, directory);
                 }
                 for other in [builtin, wrapper] {
-                    let missing = super::molt_get_attr_name(other, name);
+                    let missing = super::molt_get_attr_name_attached_body(py, other, name);
                     assert!(obj_from_bits(missing).is_none());
                     assert!(crate::exception_pending(py));
                     crate::clear_exception(py);
@@ -2192,32 +2307,51 @@ mod tests {
             .expect("numeric scalar resolver should find attribute");
         assert_callable_attr(_py, resolved);
 
-        let getattr_bits = super::molt_get_attr_name(receiver_bits, name_bits);
-        assert_eq!(crate::molt_exception_pending(), 0);
+        let getattr_bits = super::molt_get_attr_name_attached_body(_py, receiver_bits, name_bits);
+        assert_eq!(
+            crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+            0
+        );
         assert_callable_attr(_py, getattr_bits);
 
-        let default_getattr_bits =
-            super::molt_get_attr_name_default(receiver_bits, name_bits, default_bits);
-        assert_eq!(crate::molt_exception_pending(), 0);
+        let default_getattr_bits = super::molt_get_attr_name_default_attached_body(
+            _py,
+            receiver_bits,
+            name_bits,
+            default_bits,
+        );
+        assert_eq!(
+            crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+            0
+        );
         assert_ne!(default_getattr_bits, default_bits);
         assert_callable_attr(_py, default_getattr_bits);
 
-        let direct_bits = crate::molt_object_getattribute(receiver_bits, name_bits);
-        assert_eq!(crate::molt_exception_pending(), 0);
+        let direct_bits =
+            crate::molt_object_getattribute_attached_body(_py, receiver_bits, name_bits);
+        assert_eq!(
+            crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+            0
+        );
         assert_callable_attr(_py, direct_bits);
 
-        let has_bits = super::molt_has_attr_name(receiver_bits, name_bits);
+        let has_bits = super::molt_has_attr_name_attached_body(_py, receiver_bits, name_bits);
         assert_eq!(MoltObject::from_bits(has_bits).as_bool(), Some(true));
 
         let missing_name_bits = string_bits(_py, b"definitely_missing_scalar_attr");
-        let missing_has_bits = super::molt_has_attr_name(receiver_bits, missing_name_bits);
+        let missing_has_bits =
+            super::molt_has_attr_name_attached_body(_py, receiver_bits, missing_name_bits);
         assert_eq!(
             MoltObject::from_bits(missing_has_bits).as_bool(),
             Some(false)
         );
 
-        let missing_default_bits =
-            super::molt_get_attr_name_default(receiver_bits, missing_name_bits, default_bits);
+        let missing_default_bits = super::molt_get_attr_name_default_attached_body(
+            _py,
+            receiver_bits,
+            missing_name_bits,
+            default_bits,
+        );
         assert_eq!(missing_default_bits, default_bits);
         dec_ref_bits(_py, missing_default_bits);
 
@@ -2292,10 +2426,13 @@ mod tests {
             let name_bits = string_bits(_py, b"items");
             let before = refcount(dict_bits);
 
-            let has_bits = super::molt_has_attr_name(dict_bits, name_bits);
+            let has_bits = super::molt_has_attr_name_attached_body(_py, dict_bits, name_bits);
 
             assert_eq!(MoltObject::from_bits(has_bits).as_bool(), Some(true));
-            assert_eq!(crate::molt_exception_pending(), 0);
+            assert_eq!(
+                crate::builtins::exceptions::molt_exception_pending_attached_body(_py),
+                0
+            );
             assert_eq!(
                 refcount(dict_bits),
                 before,
@@ -2312,7 +2449,7 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let declared_name = string_bits(_py, b"ActualName");
-            let class_bits = crate::molt_class_new(declared_name);
+            let class_bits = crate::molt_class_new_attached_body(_py, declared_name);
             let class_ptr = MoltObject::from_bits(class_bits)
                 .as_ptr()
                 .expect("class allocation");
@@ -2331,7 +2468,7 @@ mod tests {
                 ))
             };
 
-            let resolved = super::molt_get_attr_name(class_bits, name_key);
+            let resolved = super::molt_get_attr_name_attached_body(_py, class_bits, name_key);
             assert_eq!(
                 crate::string_obj_to_owned(MoltObject::from_bits(resolved)).as_deref(),
                 Some("ActualName")
@@ -2383,7 +2520,8 @@ mod tests {
             let first_name = string_bits(_py, b"first");
             let second_name = string_bits(_py, b"second");
             assert_eq!(
-                super::molt_set_attr_name(
+                super::molt_set_attr_name_attached_body(
+                    _py,
                     instance_bits,
                     first_name,
                     MoltObject::from_int(11).bits()
@@ -2391,7 +2529,8 @@ mod tests {
                 MoltObject::none().bits()
             );
             assert_eq!(
-                super::molt_set_attr_name(
+                super::molt_set_attr_name_attached_body(
+                    _py,
                     instance_bits,
                     second_name,
                     MoltObject::from_int(22).bits(),
@@ -2401,13 +2540,25 @@ mod tests {
             let site = MoltObject::from_int(700).bits();
             assert_eq!(
                 unsafe {
-                    super::molt_get_attr_object_ic(instance_bits, b"first".as_ptr(), 5, site)
+                    super::molt_get_attr_object_ic_attached_body(
+                        _py,
+                        instance_bits,
+                        b"first".as_ptr(),
+                        5,
+                        site,
+                    )
                 },
                 MoltObject::from_int(11).bits()
             );
             assert_eq!(
                 unsafe {
-                    super::molt_get_attr_object_ic(instance_bits, b"second".as_ptr(), 6, site)
+                    super::molt_get_attr_object_ic_attached_body(
+                        _py,
+                        instance_bits,
+                        b"second".as_ptr(),
+                        6,
+                        site,
+                    )
                 },
                 MoltObject::from_int(22).bits()
             );
@@ -2434,20 +2585,46 @@ mod tests {
             let second = unsafe { test_instance_bits(_py, class_bits) };
             let name_bits = string_bits(_py, b"value");
             assert_eq!(
-                super::molt_set_attr_name(first, name_bits, MoltObject::from_int(31).bits()),
+                super::molt_set_attr_name_attached_body(
+                    _py,
+                    first,
+                    name_bits,
+                    MoltObject::from_int(31).bits()
+                ),
                 MoltObject::none().bits()
             );
             assert_eq!(
-                super::molt_set_attr_name(second, name_bits, MoltObject::from_int(32).bits()),
+                super::molt_set_attr_name_attached_body(
+                    _py,
+                    second,
+                    name_bits,
+                    MoltObject::from_int(32).bits()
+                ),
                 MoltObject::none().bits()
             );
             let site = MoltObject::from_int(701).bits();
             assert_eq!(
-                unsafe { super::molt_get_attr_object_ic(first, b"value".as_ptr(), 5, site) },
+                unsafe {
+                    super::molt_get_attr_object_ic_attached_body(
+                        _py,
+                        first,
+                        b"value".as_ptr(),
+                        5,
+                        site,
+                    )
+                },
                 MoltObject::from_int(31).bits()
             );
             assert_eq!(
-                unsafe { super::molt_get_attr_object_ic(second, b"value".as_ptr(), 5, site) },
+                unsafe {
+                    super::molt_get_attr_object_ic_attached_body(
+                        _py,
+                        second,
+                        b"value".as_ptr(),
+                        5,
+                        site,
+                    )
+                },
                 MoltObject::from_int(32).bits()
             );
             assert!(!crate::exception_pending(_py));
@@ -2482,13 +2659,25 @@ mod tests {
 
             assert_eq!(
                 unsafe {
-                    super::molt_get_attr_object_ic(instance_bits, b"probe".as_ptr(), 5, site)
+                    super::molt_get_attr_object_ic_attached_body(
+                        _py,
+                        instance_bits,
+                        b"probe".as_ptr(),
+                        5,
+                        site,
+                    )
                 },
                 MoltObject::from_int(1).bits()
             );
             assert_eq!(
                 unsafe {
-                    super::molt_get_attr_object_ic(instance_bits, b"probe".as_ptr(), 5, site)
+                    super::molt_get_attr_object_ic_attached_body(
+                        _py,
+                        instance_bits,
+                        b"probe".as_ptr(),
+                        5,
+                        site,
+                    )
                 },
                 MoltObject::from_int(2).bits()
             );
@@ -2521,7 +2710,7 @@ mod tests {
             assert!(!alias.is_null());
             let alias_bits = MoltObject::from_ptr(alias).bits();
             let name = string_bits(py, b"__parameters__");
-            let parameters = super::molt_get_attr_name(alias_bits, name);
+            let parameters = super::molt_get_attr_name_attached_body(py, alias_bits, name);
             assert!(!crate::exception_pending(py));
             let tuple = obj_from_bits(parameters).as_ptr().unwrap();
             assert_eq!(unsafe { object_type_id(tuple) }, crate::TYPE_ID_TUPLE);
@@ -2529,7 +2718,7 @@ mod tests {
             assert_eq!(&*values, &[second, first]);
             drop(values);
             assert_eq!(refcount(first), before + 1);
-            let again = super::molt_get_attr_name(alias_bits, name);
+            let again = super::molt_get_attr_name_attached_body(py, alias_bits, name);
             assert_eq!(again, parameters, "success must cache the actual tuple");
             let mut edges = Vec::new();
             unsafe {
@@ -2624,7 +2813,7 @@ mod tests {
             assert!(!union.is_null());
             let union_bits = MoltObject::from_ptr(union).bits();
             let name = string_bits(py, b"__parameters__");
-            let parameters = super::molt_get_attr_name(union_bits, name);
+            let parameters = super::molt_get_attr_name_attached_body(py, union_bits, name);
             assert!(!crate::exception_pending(py));
             let values = unsafe {
                 crate::object::seq_access::pin_tuple(
@@ -2651,12 +2840,21 @@ mod tests {
     static PARAMETER_REENTRY_ALIAS: AtomicU64 = AtomicU64::new(0);
     static PARAMETER_REENTRY_CALLS: AtomicU64 = AtomicU64::new(0);
 
-    extern "C" fn reentrant_parameter_getter(_receiver: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn reentrant_parameter_getter(__context: u64, _receiver: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             let call = PARAMETER_REENTRY_CALLS.fetch_add(1, Ordering::Relaxed);
             let value = if call == 0 {
                 let name = string_bits(py, b"__parameters__");
-                let inner = super::molt_get_attr_name(
+                let inner = super::molt_get_attr_name_attached_body(
+                    py,
                     PARAMETER_REENTRY_ALIAS.load(Ordering::Acquire),
                     name,
                 );
@@ -2670,7 +2868,7 @@ mod tests {
             let tuple = crate::alloc_tuple(py, &[MoltObject::from_int(value).bits()]);
             assert!(!tuple.is_null());
             MoltObject::from_ptr(tuple).bits()
-        })
+        }
     }
 
     #[test]
@@ -2684,7 +2882,8 @@ mod tests {
                 reentrant_parameter_getter as *const (),
                 1,
             );
-            let descriptor = crate::molt_property_new(
+            let descriptor = crate::molt_property_new_attached_body(
+                py,
                 getter,
                 MoltObject::none().bits(),
                 MoltObject::none().bits(),
@@ -2703,9 +2902,9 @@ mod tests {
             let alias = MoltObject::from_ptr(alias).bits();
             PARAMETER_REENTRY_ALIAS.store(alias, Ordering::Release);
             let name = string_bits(py, b"__parameters__");
-            let first = super::molt_get_attr_name(alias, name);
+            let first = super::molt_get_attr_name_attached_body(py, alias, name);
             assert!(!crate::exception_pending(py));
-            let second = super::molt_get_attr_name(alias, name);
+            let second = super::molt_get_attr_name_attached_body(py, alias, name);
             assert_eq!(first, second);
             let values = unsafe {
                 crate::object::seq_access::pin_tuple(py, obj_from_bits(first).as_ptr().unwrap())
@@ -2751,7 +2950,7 @@ mod tests {
             assert!(!alias.is_null());
             let alias_bits = MoltObject::from_ptr(alias).bits();
             let name = string_bits(py, b"__parameters__");
-            let cached = super::molt_get_attr_name(alias_bits, name);
+            let cached = super::molt_get_attr_name_attached_body(py, alias_bits, name);
             assert!(!crate::exception_pending(py));
             let cache_pointer = obj_from_bits(cached).as_ptr().unwrap();
             let values =
@@ -2763,14 +2962,14 @@ mod tests {
             let empty = crate::alloc_tuple(py, &[]);
             assert!(!empty.is_null());
             let empty = MoltObject::from_ptr(empty).bits();
-            let result = super::molt_set_attr_name(class, name, empty);
+            let result = super::molt_set_attr_name_attached_body(py, class, name, empty);
             assert!(!crate::exception_pending(py));
             dec_ref_bits(py, result);
             // The setup lookup's descriptor snapshot separately owns the old
             // metadata. Retire that TLS root before isolating the object cache;
             // this does not clear the GenericAlias parameter cache.
             crate::builtins::attr::clear_attr_tls_caches(py);
-            let result = crate::molt_list_append(parameter_bits, alias_bits);
+            let result = crate::molt_list_append_attached_body(py, parameter_bits, alias_bits);
             dec_ref_bits(py, result);
             for bits in [
                 cached,
@@ -2860,7 +3059,7 @@ mod tests {
             let warm = crate::alloc_generic_alias(py, crate::builtin_classes(py).list, args);
             assert!(!warm.is_null());
             let warm = MoltObject::from_ptr(warm).bits();
-            let result = super::molt_get_attr_name(warm, name);
+            let result = super::molt_get_attr_name_attached_body(py, warm, name);
             assert!(!crate::exception_pending(py), "{label}: positive witness");
             let values = unsafe {
                 crate::object::seq_access::pin_tuple(py, obj_from_bits(result).as_ptr().unwrap())
@@ -2893,7 +3092,7 @@ mod tests {
                 crate::test_support::assert_and_clear_emergency_memory_error(py);
             }
             let capacity_before = available_capacity(py, label);
-            let result = super::molt_get_attr_name(alias_bits, name);
+            let result = super::molt_get_attr_name_attached_body(py, alias_bits, name);
             assert!(obj_from_bits(result).is_none(), "{label}: must refuse");
             crate::test_support::assert_and_clear_emergency_memory_error(py);
             assert!(
@@ -2911,7 +3110,7 @@ mod tests {
                 "{label}: all live capacity restored"
             );
             drop(reset);
-            let retry = super::molt_get_attr_name(alias_bits, name);
+            let retry = super::molt_get_attr_name_attached_body(py, alias_bits, name);
             assert!(
                 !crate::exception_pending(py),
                 "{label}: explicit read after resource restoration"
@@ -2938,7 +3137,8 @@ mod tests {
             assert!(crate::cpython_abi_hooks::register_cpython_hooks());
             crate::with_gil_entry_nopanic!(py, {
                 let release = string_bits(py, b"final");
-                let result = crate::object::ops_sys::molt_sys_set_version_info(
+                let result = crate::object::ops_sys::molt_sys_set_version_info_attached_body(
+                    py,
                     MoltObject::from_int(3).bits(),
                     MoltObject::from_int(14).bits(),
                     MoltObject::from_int(0).bits(),

@@ -233,11 +233,11 @@ for (const test of config.cases) {
       assert.ok(entry.module === 'env' && entry.name in imports.env, test.name + ': unexpected host surface ' + entry.name);
       continue;
     }
-    imports[entry.module][entry.name] = providers[entry.name] ??
+    imports[entry.module][entry.name] = providers[runtimeImportName(entry.name)] ??
       (() => { throw new Error(test.name + ': unexpected runtime call ' + entry.name); });
   }
-  const app = new WebAssembly.Instance(module, imports).exports;
-  assert.equal(app.molt_main(first, second), BigInt(test.expected), test.name);
+  const app = new WebAssembly.Instance(module, attachedImports(imports)).exports;
+  assert.equal(app[compiledSymbol('molt_main')](executionContext, first, second), BigInt(test.expected), test.name);
 }
 "#,
         &[&config],

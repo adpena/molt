@@ -18,13 +18,17 @@ use crate::{
     clear_exception, dec_ref_bits, dict_del_in_place, dict_get_in_place, dict_set_in_place,
     dict_update_apply, dict_update_set_in_place, dynamic_attr_name_bits, exception_pending,
     generic_alias_origin_bits, inc_ref_bits, init_atomic_bits, instance_dict_bits, is_truthy,
-    isinstance_runtime, issubclass_bits, issubclass_runtime, missing_bits, molt_call_bind,
-    molt_callargs_new, molt_callargs_push_pos, molt_contains, molt_dict_from_obj, molt_dict_get,
-    molt_eq, molt_getattr_builtin, molt_hash_builtin, molt_index, molt_iter, molt_len,
-    molt_repr_from_obj, molt_set_attr_name, molt_setitem_method, molt_str_from_obj,
-    molt_string_isidentifier, obj_from_bits, object_class_bits, object_type_id, property_del_bits,
-    property_get_bits, property_set_bits, raise_exception, raise_not_iterable, runtime_state,
-    string_obj_to_owned, to_i64, tuple_from_iter_bits, type_name, type_of_bits,
+    isinstance_runtime, issubclass_bits, issubclass_runtime, missing_bits,
+    molt_call_bind_attached_body, molt_callargs_new_attached_body,
+    molt_callargs_push_pos_attached_body, molt_contains_attached_body,
+    molt_dict_from_obj_attached_body, molt_dict_get_attached_body, molt_eq_attached_body,
+    molt_getattr_builtin_attached_body, molt_hash_builtin_attached_body, molt_index_attached_body,
+    molt_iter_attached_body, molt_len_attached_body, molt_repr_from_obj_attached_body,
+    molt_set_attr_name_attached_body, molt_setitem_method_attached_body,
+    molt_str_from_obj_attached_body, molt_string_isidentifier_attached_body, obj_from_bits,
+    object_class_bits, object_type_id, property_del_bits, property_get_bits, property_set_bits,
+    raise_exception, raise_not_iterable, runtime_state, string_obj_to_owned, to_i64,
+    tuple_from_iter_bits, type_name, type_of_bits,
 };
 
 pub(crate) mod class_construction;
@@ -59,18 +63,22 @@ pub use dynamic_class_attr::*;
 pub use keyword_metadata::*;
 pub(crate) use keyword_metadata::{HARD_KEYWORDS, keyword_contains};
 pub(crate) use module_spec::alloc_module_spec;
+pub(crate) use module_spec::molt_importlib_module_spec_type_attached_body;
 pub(crate) use module_spec::{
     commit_module_spec_suffix_namespace, module_spec_suffix_value,
     module_spec_suffix_value_from_namespace, stage_module_spec_suffix_namespace,
 };
-pub use module_spec::{
-    molt_importlib_module_spec_cached_get, molt_importlib_module_spec_cached_set,
-    molt_importlib_module_spec_has_location_get, molt_importlib_module_spec_has_location_set,
-    molt_importlib_module_spec_init, molt_importlib_module_spec_parent,
-    molt_importlib_module_spec_repr, molt_importlib_module_spec_type, molt_importlib_suffixes,
-};
 pub use native_descriptors::*;
 pub use wrappers::*;
+pub use {
+    module_spec::molt_importlib_module_spec_cached_get,
+    module_spec::molt_importlib_module_spec_cached_set,
+    module_spec::molt_importlib_module_spec_has_location_get,
+    module_spec::molt_importlib_module_spec_has_location_set,
+    module_spec::molt_importlib_module_spec_init, module_spec::molt_importlib_module_spec_parent,
+    module_spec::molt_importlib_module_spec_repr, module_spec::molt_importlib_module_spec_type,
+    module_spec::molt_importlib_suffixes,
+};
 
 macro_rules! define_types_runtime_state {
     (@unit $field:ident) => {
@@ -280,7 +288,7 @@ pub(crate) fn init_cached_runtime_class_configured(
             return runtime_class_init_failed(_py, class_bits, name);
         }
 
-        let base_result = molt_class_set_base(class_bits, builtins.object);
+        let base_result = molt_class_set_base_attached_body(_py, class_bits, builtins.object);
         dec_ref_bits(_py, base_result);
         let bases = class_bases_vec(unsafe { class_bases_bits(class_ptr) });
         if exception_pending(_py) || bases.as_slice() != [builtins.object] {
@@ -493,9 +501,8 @@ fn set_class_method(
     published
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_coroutine(func_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_coroutine_attached_body(_py: &crate::PyToken<'_>, func_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if !crate::builtins::callable::is_callable_impl(_py, func_bits) {
             return raise_exception::<_>(
                 _py,
@@ -728,13 +735,15 @@ fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
         if value == 0 {
             return release_failed_payload();
         }
-        let _value_owner =
-            crate::PtrDropGuard::new(obj_from_bits(value).as_ptr().expect("bootstrap function"));
+        let _value_owner = crate::PtrDropGuard::new(
+            _py,
+            obj_from_bits(value).as_ptr().expect("bootstrap function"),
+        );
         let key = alloc_string(_py, name.as_bytes());
         if key.is_null() {
             return release_failed_payload();
         }
-        let _key_owner = crate::PtrDropGuard::new(key);
+        let _key_owner = crate::PtrDropGuard::new(_py, key);
         let completed =
             unsafe { dict_set_in_place(_py, dict_ptr, MoltObject::from_ptr(key).bits(), value) };
         if !completed {
@@ -746,9 +755,8 @@ fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
     dict_bits
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_bootstrap() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_bootstrap_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let dict_bits = build_types_bootstrap_dict(_py);
         if dict_bits == 0 {
             return MoltObject::none().bits();
@@ -756,6 +764,8 @@ pub extern "C" fn molt_types_bootstrap() -> u64 {
         dict_bits
     })
 }
+include!("../attached_exports_generated/builtins/types.rs");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -768,11 +778,11 @@ mod tests {
 
     static INIT: Once = Once::new();
 
-    fn init_runtime() {
+    fn init_runtime(py: &crate::PyToken<'_>) {
         INIT.call_once(|| {
             assert_ne!(crate::lifecycle::init(), 0);
         });
-        let _ = crate::molt_exception_clear();
+        let _ = crate::molt_exception_clear_attached_body(py);
     }
 
     unsafe fn ref_count(bits: u64) -> u32 {
@@ -784,7 +794,10 @@ mod tests {
     #[test]
     fn type_new_borrows_kwargs_dict() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
-        init_runtime();
+        let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        let py = fixture_execution.token();
+
+        init_runtime(py);
 
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
@@ -804,7 +817,8 @@ mod tests {
                 inc_ref_bits(_py, kwargs_bits);
                 let before = ref_count(kwargs_bits);
 
-                let cls_bits = molt_type_new(
+                let cls_bits = molt_type_new_attached_body(
+                    _py,
                     builtins.type_obj,
                     name_bits,
                     bases_bits,
@@ -835,7 +849,10 @@ mod tests {
     #[test]
     fn type_init_borrows_kwargs_dict() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
-        init_runtime();
+        let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        let py = fixture_execution.token();
+
+        init_runtime(py);
 
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
@@ -845,7 +862,8 @@ mod tests {
                 inc_ref_bits(_py, kwargs_bits);
                 let before = ref_count(kwargs_bits);
 
-                let result = molt_type_init(
+                let result = molt_type_init_attached_body(
+                    _py,
                     MoltObject::none().bits(),
                     MoltObject::none().bits(),
                     MoltObject::none().bits(),
@@ -868,10 +886,13 @@ mod tests {
     #[test]
     fn types_bootstrap_payloads_own_their_helpers_without_runtime_cache_edges() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
-        init_runtime();
+        let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        let py = fixture_execution.token();
 
-        let first_bits = molt_types_bootstrap();
-        let second_bits = molt_types_bootstrap();
+        init_runtime(py);
+
+        let first_bits = molt_types_bootstrap_attached_body(py);
+        let second_bits = molt_types_bootstrap_attached_body(py);
 
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
@@ -975,7 +996,10 @@ mod tests {
     #[test]
     fn types_runtime_state_is_owned_and_clearable() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
-        init_runtime();
+        let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        let py = fixture_execution.token();
+
+        init_runtime(py);
 
         let state = RuntimeState::new();
         for slot in state.types.slots() {
@@ -994,7 +1018,10 @@ mod tests {
     #[test]
     fn cached_runtime_class_is_not_published_before_configuration_succeeds() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
-        init_runtime();
+        let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        let py = fixture_execution.token();
+
+        init_runtime(py);
 
         crate::with_gil_entry_nopanic!(_py, {
             let slot = AtomicU64::new(0);
@@ -1021,7 +1048,10 @@ mod tests {
     #[test]
     fn vararg_marker_reuses_typed_signature_and_preserves_lazy_dictionary() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
-        init_runtime();
+        let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        let py = fixture_execution.token();
+
+        init_runtime(py);
 
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
@@ -1066,7 +1096,10 @@ mod tests {
     #[test]
     fn types_coroutine_clones_generator_code_without_mutating_shared_authority() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
-        init_runtime();
+        let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        let py = fixture_execution.token();
+
+        init_runtime(py);
 
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
@@ -1180,7 +1213,7 @@ mod tests {
                 assert_eq!(code_vararg_bits(original), vararg_bits);
                 assert_eq!(code_varkw_bits(original), varkw_bits);
 
-                let decorated_result = molt_types_coroutine(first_bits);
+                let decorated_result = molt_types_coroutine_attached_body(_py, first_bits);
                 assert_eq!(decorated_result, first_bits);
                 assert!(!exception_pending(_py));
                 dec_ref_bits(_py, decorated_result);
@@ -1234,7 +1267,7 @@ mod tests {
                 assert_eq!(code_vararg_bits(clone), code_vararg_bits(original));
                 assert_eq!(code_varkw_bits(clone), code_varkw_bits(original));
 
-                let repeated_result = molt_types_coroutine(first_bits);
+                let repeated_result = molt_types_coroutine_attached_body(_py, first_bits);
                 assert_eq!(repeated_result, first_bits);
                 assert_eq!(function_code_bits(first), clone_bits);
                 assert!(!exception_pending(_py));
@@ -1257,7 +1290,10 @@ mod tests {
     #[test]
     fn types_coroutine_is_identity_for_coroutines_and_rejects_noncallables() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
-        init_runtime();
+        let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        let py = fixture_execution.token();
+
+        init_runtime(py);
 
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
@@ -1292,12 +1328,13 @@ mod tests {
                     Ok(())
                 );
 
-                let result = molt_types_coroutine(function_bits);
+                let result = molt_types_coroutine_attached_body(_py, function_bits);
                 assert_eq!(result, function_bits);
                 assert!(!exception_pending(_py));
                 dec_ref_bits(_py, result);
 
-                let rejected = molt_types_coroutine(MoltObject::from_int(7).bits());
+                let rejected =
+                    molt_types_coroutine_attached_body(_py, MoltObject::from_int(7).bits());
                 assert!(obj_from_bits(rejected).is_none());
                 assert!(exception_pending(_py));
                 clear_exception(_py);
@@ -1318,30 +1355,34 @@ mod tests {
             // Equal, unhashable receivers must remain distinct identities.
             let receiver = MoltObject::from_ptr(alloc_list(py, &[])).bits();
             let other_receiver = MoltObject::from_ptr(alloc_list(py, &[])).bits();
-            let make = |value| molt_types_method_new(method_class(py), function, value);
+            let make =
+                |value| molt_types_method_new_attached_body(py, method_class(py), function, value);
             let first = make(receiver);
             let same = make(receiver);
             let different = make(other_receiver);
             assert!(!exception_pending(py));
             assert_ne!(first, same);
-            assert_eq!(molt_eq(first, same), MoltObject::from_bool(true).bits());
             assert_eq!(
-                molt_eq(first, different),
+                molt_eq_attached_body(py, first, same),
+                MoltObject::from_bool(true).bits()
+            );
+            assert_eq!(
+                molt_eq_attached_body(py, first, different),
                 MoltObject::from_bool(false).bits()
             );
             assert_eq!(
-                crate::molt_ne(first, different),
+                crate::molt_ne_attached_body(py, first, different),
                 MoltObject::from_bool(true).bits()
             );
 
             // CPython classobject.c uses object identity hash for the receiver,
             // then XORs the function's Python hash and normalizes the sentinel.
-            let identity = crate::molt_object_hash(receiver);
-            let function_hash = molt_hash_builtin(function);
+            let identity = crate::molt_object_hash_attached_body(py, receiver);
+            let function_hash = molt_hash_builtin_attached_body(py, function);
             let expected = to_i64(obj_from_bits(identity)).unwrap()
                 ^ to_i64(obj_from_bits(function_hash)).unwrap();
             let expected = if expected == -1 { -2 } else { expected };
-            let hashed = molt_hash_builtin(first);
+            let hashed = molt_hash_builtin_attached_body(py, first);
             assert!(!exception_pending(py), "receiver __hash__ must not run");
             assert_eq!(to_i64(obj_from_bits(hashed)), Some(expected));
 
@@ -1395,14 +1436,22 @@ mod tests {
         });
     }
 
-    extern "C" fn method_operand_failure(_self: u64, _other: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn method_operand_failure(__context: u64, _self: u64, _other: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             raise_exception(
                 py,
                 BuiltinExc::ValueError,
                 "method function equality witness",
             )
-        })
+        }
     }
 
     #[test]
@@ -1419,15 +1468,18 @@ mod tests {
             let first = crate::builtins::functions::explicit_bound_method_new(py, left, receiver);
             let second = crate::builtins::functions::explicit_bound_method_new(py, right, receiver);
             assert!(!exception_pending(py));
-            assert_eq!(molt_eq(first, second), MoltObject::from_bool(true).bits());
             assert_eq!(
-                crate::molt_ne(first, second),
+                molt_eq_attached_body(py, first, second),
+                MoltObject::from_bool(true).bits()
+            );
+            assert_eq!(
+                crate::molt_ne_attached_body(py, first, second),
                 MoltObject::from_bool(false).bits()
             );
-            let hashed = molt_hash_builtin(first);
+            let hashed = molt_hash_builtin_attached_body(py, first);
             dec_ref_bits(py, hashed);
             assert!(exception_pending(py));
-            let error = crate::molt_exception_last();
+            let error = crate::molt_exception_last_attached_body(py);
             assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
@@ -1440,7 +1492,7 @@ mod tests {
             }
 
             let name = dynamic_attr_name_bits(py, b"MethodFunctionOperand").unwrap();
-            let class = crate::molt_class_new(name);
+            let class = crate::molt_class_new_attached_body(py, name);
             dec_ref_bits(py, name);
             let name = dynamic_attr_name_bits(py, b"__eq__").unwrap();
             let function =
@@ -1453,7 +1505,7 @@ mod tests {
                     2,
                 ))
                 .bits();
-            let assigned = molt_set_attr_name(class, name, function);
+            let assigned = molt_set_attr_name_attached_body(py, class, name, function);
             dec_ref_bits(py, assigned);
             dec_ref_bits(py, function);
             dec_ref_bits(py, name);
@@ -1472,13 +1524,13 @@ mod tests {
                 right,
                 MoltObject::from_int(2).bits(),
             );
-            let result = molt_eq(first, second);
+            let result = molt_eq_attached_body(py, first, second);
             dec_ref_bits(py, result);
             assert!(
                 exception_pending(py),
                 "different receivers must not bypass function equality"
             );
-            let error = crate::molt_exception_last();
+            let error = crate::molt_exception_last_attached_body(py);
             assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
@@ -1495,7 +1547,10 @@ mod tests {
     #[test]
     fn cell_class_publishes_comparison_hash_and_contents_protocol() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
-        init_runtime();
+        let fixture_execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        let py = fixture_execution.token();
+
+        init_runtime(py);
         crate::with_gil_entry_nopanic!(py, {
             let class_bits = cell_class(py);
             assert_ne!(class_bits, 0);

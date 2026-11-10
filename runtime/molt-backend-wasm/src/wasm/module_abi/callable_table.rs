@@ -1,8 +1,9 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::wasm_binary::Function;
 use wasm_encoder::{
-    ConstExpr, ElementMode, ElementSection, ElementSegment, Elements, Encode, ExportKind, Function,
+    ConstExpr, ElementMode, ElementSection, ElementSegment, Elements, Encode, ExportKind,
     Instruction,
 };
 
@@ -379,8 +380,11 @@ impl WasmBackend {
                 manifest_segment,
                 manifest_len as u32,
             );
-            self.exports
-                .export("molt_main", ExportKind::Func, wrapper_index);
+            self.exports.export(
+                &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol("molt_main"),
+                ExportKind::Func,
+                wrapper_index,
+            );
             if let Some(host_init_index) = self.molt_host_init_index {
                 let host_init_wrapper_index = self.compile_entry_wrapper(
                     reloc_enabled,
@@ -389,8 +393,13 @@ impl WasmBackend {
                     manifest_segment,
                     manifest_len as u32,
                 );
-                self.exports
-                    .export("molt_host_init", ExportKind::Func, host_init_wrapper_index);
+                self.exports.export(
+                    &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(
+                        "molt_host_init",
+                    ),
+                    ExportKind::Func,
+                    host_init_wrapper_index,
+                );
             }
 
             let mut payload = Vec::new();
@@ -426,8 +435,13 @@ impl WasmBackend {
                     manifest_segment,
                     manifest_len as u32,
                 );
-                self.exports
-                    .export("molt_main", ExportKind::Func, wrapper_index);
+                self.exports.export(
+                    &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(
+                        "molt_main",
+                    ),
+                    ExportKind::Func,
+                    wrapper_index,
+                );
                 if let Some(host_init_index) = self.molt_host_init_index {
                     let host_init_wrapper_index = self.compile_entry_wrapper(
                         reloc_enabled,
@@ -437,7 +451,9 @@ impl WasmBackend {
                         manifest_len as u32,
                     );
                     self.exports.export(
-                        "molt_host_init",
+                        &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(
+                            "molt_host_init",
+                        ),
                         ExportKind::Func,
                         host_init_wrapper_index,
                     );
@@ -490,10 +506,11 @@ impl WasmBackend {
         manifest_len: u32,
     ) -> u32 {
         let func_index = self.func_count;
-        let type_idx = self.types.boxed(0, true);
+        let type_idx = self.types.boxed(1, true);
         self.funcs.function(type_idx);
         self.func_count += 1;
         let mut func = Function::new_with_locals_types(Vec::new());
+        func.attach_context(1, self.execution_call_abis.clone());
         self.emit_host_init_sequence(
             reloc_enabled,
             func_index,

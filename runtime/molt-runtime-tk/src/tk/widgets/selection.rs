@@ -52,7 +52,8 @@ pub(super) fn handle_selection_subcommand(
                         ));
                     }
                     let index = if widget.widget_command == "text" {
-                        let Some(index) = parse_text_index_bits(args[3], &widget.text_value) else {
+                        let Some(index) = parse_text_index_bits(py, args[3], &widget.text_value)
+                        else {
                             return Err(widget_tcl_error(
                                 py,
                                 last_error,
@@ -62,6 +63,7 @@ pub(super) fn handle_selection_subcommand(
                         index
                     } else {
                         let Some(index) = parse_entry_like_index_bits(
+                            py,
                             args[3],
                             text_char_count(&widget.text_value),
                             widget.insert_cursor,
@@ -89,7 +91,8 @@ pub(super) fn handle_selection_subcommand(
                         ));
                     }
                     let index = if widget.widget_command == "text" {
-                        let Some(index) = parse_text_index_bits(args[3], &widget.text_value) else {
+                        let Some(index) = parse_text_index_bits(py, args[3], &widget.text_value)
+                        else {
                             return Err(widget_tcl_error(
                                 py,
                                 last_error,
@@ -99,6 +102,7 @@ pub(super) fn handle_selection_subcommand(
                         index
                     } else {
                         let Some(index) = parse_entry_like_index_bits(
+                            py,
                             args[3],
                             text_char_count(&widget.text_value),
                             widget.insert_cursor,
@@ -131,7 +135,8 @@ pub(super) fn handle_selection_subcommand(
                         ));
                     }
                     let start = if widget.widget_command == "text" {
-                        let Some(index) = parse_text_index_bits(args[3], &widget.text_value) else {
+                        let Some(index) = parse_text_index_bits(py, args[3], &widget.text_value)
+                        else {
                             return Err(widget_tcl_error(
                                 py,
                                 last_error,
@@ -141,6 +146,7 @@ pub(super) fn handle_selection_subcommand(
                         index
                     } else {
                         let Some(index) = parse_entry_like_index_bits(
+                            py,
                             args[3],
                             text_char_count(&widget.text_value),
                             widget.insert_cursor,
@@ -155,7 +161,8 @@ pub(super) fn handle_selection_subcommand(
                         index
                     };
                     let end = if widget.widget_command == "text" {
-                        let Some(index) = parse_text_index_bits(args[4], &widget.text_value) else {
+                        let Some(index) = parse_text_index_bits(py, args[4], &widget.text_value)
+                        else {
                             return Err(widget_tcl_error(
                                 py,
                                 last_error,
@@ -165,6 +172,7 @@ pub(super) fn handle_selection_subcommand(
                         index
                     } else {
                         let Some(index) = parse_entry_like_index_bits(
+                            py,
                             args[4],
                             text_char_count(&widget.text_value),
                             widget.insert_cursor,
@@ -191,7 +199,8 @@ pub(super) fn handle_selection_subcommand(
                         ));
                     }
                     let index = if widget.widget_command == "text" {
-                        let Some(index) = parse_text_index_bits(args[3], &widget.text_value) else {
+                        let Some(index) = parse_text_index_bits(py, args[3], &widget.text_value)
+                        else {
                             return Err(widget_tcl_error(
                                 py,
                                 last_error,
@@ -201,6 +210,7 @@ pub(super) fn handle_selection_subcommand(
                         index
                     } else {
                         let Some(index) = parse_entry_like_index_bits(
+                            py,
                             args[3],
                             text_char_count(&widget.text_value),
                             widget.insert_cursor,
@@ -229,7 +239,8 @@ pub(super) fn handle_selection_subcommand(
                         ));
                     }
                     let index = if widget.widget_command == "text" {
-                        let Some(index) = parse_text_index_bits(args[3], &widget.text_value) else {
+                        let Some(index) = parse_text_index_bits(py, args[3], &widget.text_value)
+                        else {
                             return Err(widget_tcl_error(
                                 py,
                                 last_error,
@@ -239,6 +250,7 @@ pub(super) fn handle_selection_subcommand(
                         index
                     } else {
                         let Some(index) = parse_entry_like_index_bits(
+                            py,
                             args[3],
                             text_char_count(&widget.text_value),
                             widget.insert_cursor,

@@ -4,9 +4,11 @@ use crate::builtins::compatibility_error::CompatibilityError;
 use digest::Digest;
 use sha1::Sha1;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sys_bootstrap_path(module_file_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sys_bootstrap_path_attached_body(
+    _py: &crate::PyToken<'_>,
+    module_file_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let module_file = match module_file_from_bits(_py, module_file_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -16,9 +18,11 @@ pub extern "C" fn molt_sys_bootstrap_path(module_file_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sys_bootstrap_pythonpath(module_file_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sys_bootstrap_pythonpath_attached_body(
+    _py: &crate::PyToken<'_>,
+    module_file_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let module_file = match module_file_from_bits(_py, module_file_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -29,9 +33,11 @@ pub extern "C" fn molt_sys_bootstrap_pythonpath(module_file_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sys_bootstrap_module_roots(module_file_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sys_bootstrap_module_roots_attached_body(
+    _py: &crate::PyToken<'_>,
+    module_file_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let module_file = match module_file_from_bits(_py, module_file_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -42,9 +48,11 @@ pub extern "C" fn molt_sys_bootstrap_module_roots(module_file_bits: u64) -> u64 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sys_bootstrap_pwd(module_file_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sys_bootstrap_pwd_attached_body(
+    _py: &crate::PyToken<'_>,
+    module_file_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let module_file = match module_file_from_bits(_py, module_file_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -57,9 +65,11 @@ pub extern "C" fn molt_sys_bootstrap_pwd(module_file_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sys_bootstrap_include_cwd(module_file_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sys_bootstrap_include_cwd_attached_body(
+    _py: &crate::PyToken<'_>,
+    module_file_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let module_file = match module_file_from_bits(_py, module_file_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -69,9 +79,11 @@ pub extern "C" fn molt_sys_bootstrap_include_cwd(module_file_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sys_bootstrap_stdlib_root(module_file_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_sys_bootstrap_stdlib_root_attached_body(
+    _py: &crate::PyToken<'_>,
+    module_file_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let module_file = match module_file_from_bits(_py, module_file_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -87,13 +99,13 @@ pub extern "C" fn molt_sys_bootstrap_stdlib_root(module_file_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_source_loader_payload(
+pub(crate) fn molt_importlib_source_loader_payload_attached_body(
+    _py: &crate::PyToken<'_>,
     module_name_bits: u64,
     path_bits: u64,
     spec_is_package_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -111,13 +123,13 @@ pub extern "C" fn molt_importlib_source_loader_payload(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_extension_loader_payload(
+pub(crate) fn molt_importlib_extension_loader_payload_attached_body(
+    _py: &crate::PyToken<'_>,
     module_name_bits: u64,
     path_bits: u64,
     spec_is_package_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -207,14 +219,14 @@ pub(super) fn importlib_extension_loader_resolution_checked(
     ))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_zip_source_exec_payload(
+pub(crate) fn molt_importlib_zip_source_exec_payload_attached_body(
+    _py: &crate::PyToken<'_>,
     module_name_bits: u64,
     archive_path_bits: u64,
     inner_path_bits: u64,
     spec_is_package_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -444,13 +456,13 @@ pub(in crate::builtins::platform) fn importlib_exec_extension_impl(
     ))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_extension_loader_create_module(
+pub(crate) fn molt_importlib_extension_loader_create_module_attached_body(
+    _py: &crate::PyToken<'_>,
     module_name_bits: u64,
     path_bits: u64,
     _spec_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -601,13 +613,13 @@ fn importlib_loader_exec_module(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_sourcefileloader_exec_module(
+pub(crate) fn molt_importlib_sourcefileloader_exec_module_attached_body(
+    _py: &crate::PyToken<'_>,
     loader_bits: u64,
     module_bits: u64,
     path_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if let Err(bits) = string_arg_from_bits(_py, path_bits, "path") {
             return bits;
         }
@@ -622,14 +634,14 @@ pub extern "C" fn molt_importlib_sourcefileloader_exec_module(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_zip_source_loader_exec_module(
+pub(crate) fn molt_importlib_zip_source_loader_exec_module_attached_body(
+    _py: &crate::PyToken<'_>,
     loader_bits: u64,
     module_bits: u64,
     archive_path_bits: u64,
     inner_path_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let archive_path = match string_arg_from_bits(_py, archive_path_bits, "archive path") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -659,13 +671,13 @@ pub extern "C" fn molt_importlib_zip_source_loader_exec_module(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_extension_loader_exec_module(
+pub(crate) fn molt_importlib_extension_loader_exec_module_attached_body(
+    _py: &crate::PyToken<'_>,
     loader_bits: u64,
     module_bits: u64,
     path_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let path = match string_arg_from_bits(_py, path_bits, "path") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -681,13 +693,13 @@ pub extern "C" fn molt_importlib_extension_loader_exec_module(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_sourceless_loader_exec_module(
+pub(crate) fn molt_importlib_sourceless_loader_exec_module_attached_body(
+    _py: &crate::PyToken<'_>,
     loader_bits: u64,
     module_bits: u64,
     path_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let path = match string_arg_from_bits(_py, path_bits, "path") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -707,9 +719,12 @@ pub extern "C" fn molt_importlib_sourceless_loader_exec_module(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_linecache_loader_get_source(loader_bits: u64, module_name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_linecache_loader_get_source_attached_body(
+    _py: &crate::PyToken<'_>,
+    loader_bits: u64,
+    module_name_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -733,7 +748,8 @@ pub(super) fn importlib_coerce_module_name_bits(
 ) -> Result<u64, u64> {
     let module_name_name = crate::NameId::DunderName.bits(_py);
     let publish_name = |name_bits| {
-        let result = crate::molt_set_attr_name(module_bits, module_name_name, name_bits);
+        let result =
+            crate::molt_set_attr_name_attached_body(_py, module_bits, module_name_name, name_bits);
         dec_ref_bits(_py, result);
         if exception_pending(_py) {
             dec_ref_bits(_py, name_bits);
@@ -805,13 +821,13 @@ pub(super) fn importlib_coerce_module_name_bits(
     ))
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_coerce_module_name(
+pub(crate) fn molt_importlib_coerce_module_name_attached_body(
+    _py: &crate::PyToken<'_>,
     module_bits: u64,
     loader_bits: u64,
     spec_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         match importlib_coerce_module_name_bits(_py, module_bits, loader_bits, spec_bits) {
             Ok(bits) => bits,
             Err(bits) => bits,
@@ -819,9 +835,11 @@ pub extern "C" fn molt_importlib_coerce_module_name(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_package_root_from_origin(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_importlib_package_root_from_origin_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let path = match string_arg_from_bits(_py, path_bits, "path") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -836,9 +854,11 @@ pub extern "C" fn molt_importlib_package_root_from_origin(path_bits: u64) -> u64
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_traceback_exception_suppress_context(value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_traceback_exception_suppress_context_attached_body(
+    _py: &crate::PyToken<'_>,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         match traceback_exception_suppress_context_bits(_py, value_bits) {
             Ok(value) => MoltObject::from_bool(value).bits(),
             Err(bits) => bits,
@@ -846,9 +866,11 @@ pub extern "C" fn molt_traceback_exception_suppress_context(value_bits: u64) -> 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_zip_archive_path(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_importlib_zip_archive_path_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let path = match string_arg_from_bits(py, path_bits, "archive path") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -894,12 +916,12 @@ pub extern "C" fn molt_importlib_zip_archive_path(path_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_zip_read_entry(
+pub(crate) fn molt_importlib_zip_read_entry_attached_body(
+    _py: &crate::PyToken<'_>,
     archive_path_bits: u64,
     inner_path_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision(
             "importlib.zip.read_entry",
@@ -943,9 +965,11 @@ pub extern "C" fn molt_importlib_zip_read_entry(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_read_file(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_importlib_read_file_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision("importlib.read_file", "fs.read", AuditArgs::None, allowed);
         if !allowed {
@@ -972,9 +996,11 @@ pub extern "C" fn molt_importlib_read_file(path_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_cache_from_source(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_importlib_cache_from_source_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         use crate::builtins::exceptions::ExceptionValue;
         let path = match string_arg_from_bits(_py, path_bits, "path") {
             Ok(value) => value,
@@ -1015,7 +1041,8 @@ pub extern "C" fn molt_importlib_cache_from_source(path_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         let suffixes = ExceptionValue::adopt(_py, suffixes);
-        let suffix = crate::molt_index(suffixes.bits(), MoltObject::from_int(0).bits());
+        let suffix =
+            crate::molt_index_attached_body(_py, suffixes.bits(), MoltObject::from_int(0).bits());
         let suffix = ExceptionValue::adopt(_py, suffix);
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -1032,9 +1059,11 @@ pub extern "C" fn molt_importlib_cache_from_source(path_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_decode_source(source_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_importlib_decode_source_attached_body(
+    _py: &crate::PyToken<'_>,
+    source_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(source_ptr) = obj_from_bits(source_bits).as_ptr() else {
             inc_ref_bits(_py, source_bits);
             return source_bits;
@@ -1049,9 +1078,19 @@ pub extern "C" fn molt_importlib_decode_source(source_bits: u64) -> u64 {
             Err(err) => return err,
         };
         let decoded_bits = if source_type == TYPE_ID_BYTES {
-            molt_bytes_decode(source_bits, encoding_bits, MoltObject::none().bits())
+            molt_bytes_decode_attached_body(
+                _py,
+                source_bits,
+                encoding_bits,
+                MoltObject::none().bits(),
+            )
         } else {
-            molt_bytearray_decode(source_bits, encoding_bits, MoltObject::none().bits())
+            molt_bytearray_decode_attached_body(
+                _py,
+                source_bits,
+                encoding_bits,
+                MoltObject::none().bits(),
+            )
         };
         dec_ref_bits(_py, encoding_bits);
         if exception_pending(_py) {
@@ -1061,9 +1100,11 @@ pub extern "C" fn molt_importlib_decode_source(source_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_source_hash(source_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_importlib_source_hash_attached_body(
+    _py: &crate::PyToken<'_>,
+    source_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let source = match bytes_arg_from_bits(_py, source_bits, "source_bytes") {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -1080,10 +1121,14 @@ pub extern "C" fn molt_importlib_source_hash(source_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_source_from_cache(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_importlib_source_from_cache_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         inc_ref_bits(_py, path_bits);
         path_bits
     })
 }
+
+include!("../../attached_exports_generated/builtins/platform_importlib_ffi/bootstrap_loader.rs");

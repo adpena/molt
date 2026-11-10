@@ -1,5 +1,6 @@
 use super::*;
 use molt_ir::OpKind;
+use molt_ir::runtime_callable_abi_generated::compiled_execution_symbol;
 
 #[test]
 fn llvm_backend_keeps_shared_stdlib_partition_external() {
@@ -54,10 +55,11 @@ fn llvm_backend_keeps_shared_stdlib_partition_external() {
     backend.set_module_context(module_context);
     let bytes = backend.compile_llvm(ir).bytes;
     let object = object::File::parse(bytes.as_slice()).expect("parse LLVM output object");
+    let physical = compiled_execution_symbol("molt_init_sys");
     let expected = if object.format() == BinaryFormat::MachO {
-        "_molt_init_sys"
+        format!("_{physical}")
     } else {
-        "molt_init_sys"
+        physical
     };
     let symbols: Vec<_> = object
         .symbols()

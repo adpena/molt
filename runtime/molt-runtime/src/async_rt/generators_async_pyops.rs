@@ -22,7 +22,7 @@ pub(crate) unsafe fn asyncio_clear_pending_exception(_py: &PyToken<'_>) {
     if !exception_pending(_py) {
         return;
     }
-    molt_exception_clear();
+    molt_exception_clear_attached_body(_py);
 }
 
 #[cfg(molt_net)]
@@ -137,16 +137,16 @@ pub(crate) unsafe fn asyncio_call_with_args(
     args_bits: u64,
 ) -> u64 {
     unsafe {
-        let builder_bits = molt_callargs_new(0, 0);
+        let builder_bits = molt_callargs_new_attached_body(_py, 0, 0);
         if obj_from_bits(builder_bits).is_none() {
             return builder_bits;
         }
-        let _ = molt_callargs_expand_star(builder_bits, args_bits);
+        let _ = molt_callargs_expand_star_attached_body(_py, builder_bits, args_bits);
         if exception_pending(_py) {
             dec_ref_bits(_py, builder_bits);
             return MoltObject::none().bits();
         }
-        molt_call_bind(callable_bits, builder_bits)
+        molt_call_bind_attached_body(_py, callable_bits, builder_bits)
     }
 }
 
@@ -190,8 +190,8 @@ pub(crate) unsafe fn asyncio_attr_lookup_allow_missing(
 
 #[cfg(molt_net)]
 pub(crate) unsafe fn asyncio_take_pending_exception_bits(_py: &PyToken<'_>) -> u64 {
-    let exc_bits = molt_exception_last_pending();
-    molt_exception_clear();
+    let exc_bits = molt_exception_last_pending_attached_body(_py);
+    molt_exception_clear_attached_body(_py);
     exc_bits
 }
 
@@ -238,7 +238,8 @@ mod exception_dispatch_tests {
         let name = MoltObject::from_ptr(alloc_string(py, name)).bits();
         let bases = MoltObject::from_ptr(alloc_tuple(py, &[base])).bits();
         let namespace = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
-        let result = crate::builtins::types::molt_type_new(
+        let result = crate::builtins::types::molt_type_new_attached_body(
+            py,
             builtin_classes(py).type_obj,
             name,
             bases,
@@ -305,8 +306,10 @@ mod exception_dispatch_tests {
     }
 
     #[cfg(molt_net)]
-    extern "C" fn failing_descriptor(_instance: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn failing_descriptor(__context: u64, _instance: u64) -> u64 {
+        let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        crate::with_attached_entry_nopanic!(__attached_py, py, {
             raise_exception::<u64>(py, crate::BuiltinExc::AttributeError, "descriptor-origin")
         })
     }
@@ -328,9 +331,10 @@ mod exception_dispatch_tests {
                 ))
                 .bits();
             let none = MoltObject::none().bits();
-            let descriptor = crate::builtins::types::molt_property_new(getter, none, none);
+            let descriptor =
+                crate::builtins::types::molt_property_new_attached_body(py, getter, none, none);
             let name = dynamic_attr_name_bits(py, b"send").unwrap();
-            crate::molt_set_attr_name(class, name, descriptor);
+            crate::molt_set_attr_name_attached_body(py, class, name, descriptor);
             assert!(!exception_pending(py));
             let instance = unsafe {
                 crate::alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap())
@@ -353,7 +357,7 @@ mod exception_dispatch_tests {
                 };
                 assert_eq!(result, none);
                 assert!(exception_pending(py));
-                let exception = molt_exception_last_pending();
+                let exception = molt_exception_last_pending_attached_body(py);
                 assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     exception,
@@ -402,7 +406,7 @@ mod exception_dispatch_tests {
                     };
                     assert_eq!(result, none);
                     assert!(exception_pending(py));
-                    let exception = molt_exception_last_pending();
+                    let exception = molt_exception_last_pending_attached_body(py);
                     assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         exception,
@@ -435,8 +439,10 @@ mod exception_dispatch_tests {
 
     static FALLBACK_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-    extern "C" fn failing_runtime_descriptor(_instance: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn failing_runtime_descriptor(__context: u64, _instance: u64) -> u64 {
+        let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        crate::with_attached_entry_nopanic!(__attached_py, py, {
             raise_exception::<u64>(
                 py,
                 crate::BuiltinExc::RuntimeError,
@@ -445,7 +451,9 @@ mod exception_dispatch_tests {
         })
     }
 
-    extern "C" fn record_fallback(_instance: u64, _index: u64) -> u64 {
+    extern "C" fn record_fallback(__context: u64, _instance: u64, _index: u64) -> u64 {
+        let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         FALLBACK_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         MoltObject::from_int(17).bits()
     }
@@ -481,7 +489,8 @@ mod exception_dispatch_tests {
                 molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), fallback)
             };
             let none = MoltObject::none().bits();
-            let descriptor = crate::builtins::types::molt_property_new(getter, none, none);
+            let descriptor =
+                crate::builtins::types::molt_property_new_attached_body(py, getter, none, none);
             let _descriptor_owner = unsafe {
                 molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), descriptor)
             };
@@ -493,8 +502,8 @@ mod exception_dispatch_tests {
             let _pop_owner = unsafe {
                 molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), pop)
             };
-            crate::molt_set_attr_name(class, popleft, descriptor);
-            crate::molt_set_attr_name(class, pop, fallback);
+            crate::molt_set_attr_name_attached_body(py, class, popleft, descriptor);
+            crate::molt_set_attr_name_attached_body(py, class, pop, fallback);
             assert!(!exception_pending(py));
             let instance = unsafe {
                 crate::alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap())
@@ -519,7 +528,7 @@ mod exception_dispatch_tests {
             };
             assert_eq!(result, none);
             assert_eq!(FALLBACK_CALLS.load(std::sync::atomic::Ordering::Relaxed), 0);
-            let exception = molt_exception_last_pending();
+            let exception = molt_exception_last_pending_attached_body(py);
             let _exception_owner = unsafe {
                 molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), exception)
             };

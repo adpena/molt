@@ -899,8 +899,7 @@ fn validate_direct_call_custody(ir: &SimpleIR) -> Result<(), String> {
             let arity = op.args.as_ref().map_or(0, Vec::len);
             let Some(target) = targets.get(symbol) else {
                 if op.argument_custody.is_some()
-                    && crate::runtime_boxed_abi_generated::runtime_boxed_abi(symbol, arity)
-                        .is_some()
+                    && crate::runtime_fn_generated::runtime_boxed_abi(symbol, arity).is_some()
                 {
                     return Err(format!(
                         "function `{}` op#{op_index}: runtime entry `{symbol}` borrows its operands; argument_custody names a source call",

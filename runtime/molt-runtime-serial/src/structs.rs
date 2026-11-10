@@ -610,9 +610,9 @@ fn struct_unpack_values<'py>(
     ops: &[StructOp],
     data: *const u8,
     size: usize,
-) -> Result<Vec<OwnedRuntimeValue<'py>>, StructIntrinsicError> {
+) -> Result<molt_runtime_core::RuntimeValueCollection<'py>, StructIntrinsicError> {
     let expected_values = expected_value_count(ops);
-    let mut out = Vec::with_capacity(expected_values);
+    let mut out = molt_runtime_core::RuntimeValueCollection::with_capacity(_py, expected_values);
     let mut offset = 0usize;
     for op in ops {
         match op.kind {
@@ -838,11 +838,11 @@ struct StructPlan {
 }
 
 fn struct_error(py: &PyToken, class: u64, message: &str) -> u64 {
-    let text = unsafe { OwnedRuntimeValue::from_owned_bits(py, rt_string_from(message)) };
+    let text = unsafe { OwnedRuntimeValue::from_owned_bits(py, rt_string_from(py, message)) };
     if exception_pending(py) {
         return MoltObject::none().bits();
     }
-    let args = unsafe { OwnedRuntimeValue::from_owned_bits(py, rt_tuple(&[text.bits()])) };
+    let args = unsafe { OwnedRuntimeValue::from_owned_bits(py, rt_tuple(py, &[text.bits()])) };
     if exception_pending(py) {
         return MoltObject::none().bits();
     }
@@ -852,7 +852,7 @@ fn struct_error(py: &PyToken, class: u64, message: &str) -> u64 {
     if exception_pending(py) {
         return MoltObject::none().bits();
     }
-    rt_raise(error.bits())
+    rt_raise(py, error.bits())
 }
 
 fn plan(py: &PyToken, error: u64, format: u64) -> Result<StructPlan, u64> {
@@ -1223,20 +1223,20 @@ fn pack_values(
     Ok(())
 }
 
-fn packing_arguments(
-    py: &PyToken,
+fn packing_arguments<'py>(
+    py: &'py PyToken,
     error: u64,
     plan: &StructPlan,
     values: u64,
     operation: &str,
-) -> Result<OwnedBridgeHandleSnapshot, u64> {
+) -> Result<OwnedBridgeHandleSnapshot<'py>, u64> {
     let Some(ptr) = obj_from_bits(values).as_ptr() else {
         return Err(struct_error(py, error, "pack expects a tuple"));
     };
     if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
         return Err(struct_error(py, error, "pack expects a tuple"));
     }
-    let values = unsafe { seq_snapshot(ptr) };
+    let values = unsafe { seq_snapshot(py, ptr) };
     if exception_pending(py) {
         return Err(MoltObject::none().bits());
     }
@@ -1270,7 +1270,7 @@ fn unpack_record(py: &PyToken, error: Option<u64>, plan: &StructPlan, data: *con
             };
         }
     };
-    let result = alloc_tuple(py, OwnedRuntimeValue::as_bits_slice(&values));
+    let result = alloc_tuple(py, values.as_bits_slice());
     if result.is_null() {
         MoltObject::none().bits()
     } else {
@@ -1319,9 +1319,12 @@ fn checked_offset(
     Ok(start)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_struct_calcsize(error: u64, format: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(py, {
+pub fn molt_struct_calcsize_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    error: u64,
+    format: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, py, {
         match plan(py, error, format) {
             Ok(plan) => int_bits_from_i128(py, plan.size as i128),
             Err(bits) => bits,
@@ -1329,9 +1332,13 @@ pub extern "C" fn molt_struct_calcsize(error: u64, format: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_struct_pack(error: u64, format: u64, values: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(py, {
+pub fn molt_struct_pack_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    error: u64,
+    format: u64,
+    values: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, py, {
         let plan = match plan(py, error, format) {
             Ok(plan) => plan,
             Err(bits) => return bits,
@@ -1361,15 +1368,15 @@ pub extern "C" fn molt_struct_pack(error: u64, format: u64, values: u64) -> u64 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_struct_pack_into(
+pub fn molt_struct_pack_into_attached_body(
+    _py: &molt_runtime_core::PyToken,
     error: u64,
     format: u64,
     buffer: u64,
     offset: u64,
     values: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(py, {
+    molt_runtime_core::with_attached_entry!(_py, py, {
         let plan = match plan(py, error, format) {
             Ok(plan) => plan,
             Err(bits) => return bits,
@@ -1420,9 +1427,13 @@ pub extern "C" fn molt_struct_pack_into(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_struct_unpack(error: u64, format: u64, buffer: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(py, {
+pub fn molt_struct_unpack_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    error: u64,
+    format: u64,
+    buffer: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, py, {
         let plan = match plan(py, error, format) {
             Ok(plan) => plan,
             Err(bits) => return bits,
@@ -1448,14 +1459,14 @@ pub extern "C" fn molt_struct_unpack(error: u64, format: u64, buffer: u64) -> u6
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_struct_unpack_from(
+pub fn molt_struct_unpack_from_attached_body(
+    _py: &molt_runtime_core::PyToken,
     error: u64,
     format: u64,
     buffer: u64,
     offset: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(py, {
+    molt_runtime_core::with_attached_entry!(_py, py, {
         let plan = match plan(py, error, format) {
             Ok(plan) => plan,
             Err(bits) => return bits,
@@ -1613,9 +1624,8 @@ static mut UNPACK_ITER_METHODS: [abi::abi_types::PyMethodDef; 2] = [
     },
 ];
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_struct_unpack_iterator_type() -> u64 {
-    molt_runtime_core::with_gil_entry!(py, {
+pub fn molt_struct_unpack_iterator_type_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, py, {
         use abi::type_slots::*;
         let mut slots = [
             abi::abi_types::PyType_Slot {
@@ -1719,9 +1729,14 @@ unsafe fn admitted_iterator_class(object: *mut PyObject) -> bool {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_struct_iter_unpack(error: u64, class: u64, format: u64, buffer: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(py, {
+pub fn molt_struct_iter_unpack_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    error: u64,
+    class: u64,
+    format: u64,
+    buffer: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, py, {
         let plan = match plan(py, error, format) {
             Ok(plan) => plan,
             Err(bits) => return bits,
@@ -1778,6 +1793,8 @@ pub extern "C" fn molt_struct_iter_unpack(error: u64, class: u64, format: u64, b
         }
     })
 }
+
+include!("attached_exports_generated/structs.rs");
 
 #[cfg(test)]
 mod float_pack_tests {

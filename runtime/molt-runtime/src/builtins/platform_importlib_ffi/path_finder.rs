@@ -90,14 +90,14 @@ fn truth(py: &PyToken<'_>, bits: u64) -> Result<bool, u64> {
 
 fn is_str_instance(py: &PyToken<'_>, bits: u64) -> Result<bool, u64> {
     let class = crate::builtins::classes::builtin_classes(py).str;
-    let result = crate::molt_isinstance(bits, class);
+    let result = crate::molt_isinstance_attached_body(py, bits, class);
     pending_error(py)?;
     Ok(obj_from_bits(result).as_bool().unwrap_or(false))
 }
 
 /// Clear a pending exception of `kind` (or a subclass); leave any other one.
 fn take_pending(py: &PyToken<'_>, kind: BuiltinExc) -> bool {
-    let exception = crate::builtins::exceptions::molt_exception_last_pending();
+    let exception = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
     let matched = crate::builtins::exceptions::exception_matches_kind(py, exception, kind);
     dec_ref_bits(py, exception);
     if matched {
@@ -255,18 +255,19 @@ fn declare_file_loader_types(py: &PyToken<'_>, namespace: u64) -> Result<(), u64
     Ok(())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_file_loader_types_declare(namespace_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub fn molt_importlib_file_loader_types_declare_attached_body(
+    _py: &crate::PyToken<'_>,
+    namespace_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         declare_file_loader_types(py, namespace_bits).map_or_else(|error| error, |()| none_bits())
     })
 }
 
 /// CPython's private `_NamespacePath._epoch` (bpo-45703), owned natively so
 /// `PathFinder.invalidate_caches` needs no facade.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_namespace_path_epoch() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub fn molt_importlib_namespace_path_epoch_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let epoch = platform_state(py)
             .namespace_path_epoch
             .load(Ordering::Relaxed);
@@ -274,9 +275,8 @@ pub extern "C" fn molt_importlib_namespace_path_epoch() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_path_finder_types() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub fn molt_importlib_path_finder_types_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let path_finder = crate::builtins::types::path_finder_class(py);
         let file_finder = crate::builtins::types::file_finder_class(py);
         if path_finder == 0 || file_finder == 0 || exception_pending(py) {
@@ -296,7 +296,7 @@ pub extern "C" fn molt_importlib_path_finder_types() -> u64 {
 fn current_directory<'a, 'py>(
     py: &'a PyToken<'py>,
 ) -> Result<Option<ExceptionValue<'a, 'py>>, u64> {
-    let bits = crate::molt_os_getcwd();
+    let bits = crate::molt_os_getcwd_attached_body(py.core_token());
     if exception_pending(py) {
         if !is_none(bits) {
             dec_ref_bits(py, bits);
@@ -341,7 +341,7 @@ fn path_entry_finder<'a, 'py>(
     drop(hooks);
     let cache = sys_member(py, crate::NameId::PathImporterCache)?;
     // The subscription protocol returns its borrowed receiver, not a new owner.
-    let _ = crate::molt_store_index(cache.bits(), entry, finder.bits());
+    let _ = crate::molt_store_index_attached_body(py, cache.bits(), entry, finder.bits());
     pending_error(py)?;
     Ok(finder)
 }
@@ -361,7 +361,10 @@ fn path_finder_get_spec(
         if !is_str_instance(py, entry.bits())? {
             continue;
         }
-        let equal = checked(py, crate::molt_eq(entry.bits(), empty.bits()))?;
+        let equal = checked(
+            py,
+            crate::molt_eq_attached_body(py, entry.bits(), empty.bits()),
+        )?;
         if truth(py, equal.bits())? {
             match current_directory(py)? {
                 Some(directory) => entry = directory,
@@ -517,7 +520,8 @@ pub(in super::super) fn import_root_is_absolute(
             }
             let parts = checked(
                 py,
-                crate::molt_path_splitroot(
+                crate::molt_path_splitroot_attached_body(
+                    py.core_token(),
                     key,
                     MoltObject::from_bool(false).bits(),
                     MoltObject::from_bool(true).bits(),
@@ -628,7 +632,7 @@ fn path_finder_invalidate_caches_with(
         if is_none(finder.bits()) || !import_root_is_absolute(py, key.bits(), flavor)? {
             let cache = sys_member(py, crate::NameId::PathImporterCache)?;
             // The deletion protocol returns its borrowed receiver, not a new owner.
-            let _ = crate::molt_del_index(cache.bits(), key.bits());
+            let _ = crate::molt_del_index_attached_body(py, cache.bits(), key.bits());
             pending_error(py)?;
             continue;
         }
@@ -650,35 +654,34 @@ fn path_finder_invalidate_caches_with(
     Ok(())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_path_finder_find_spec(
+pub fn molt_importlib_path_finder_find_spec_attached_body(
+    _py: &crate::PyToken<'_>,
     class_bits: u64,
     fullname_bits: u64,
     path_bits: u64,
     target_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         path_finder_find_spec(py, class_bits, fullname_bits, path_bits, target_bits)
             .unwrap_or_else(|error| error)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_path_finder_get_spec(
+pub fn molt_importlib_path_finder_get_spec_attached_body(
+    _py: &crate::PyToken<'_>,
     _class_bits: u64,
     fullname_bits: u64,
     path_bits: u64,
     target_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         path_finder_get_spec(py, fullname_bits, path_bits, target_bits)
             .unwrap_or_else(|error| error)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_path_finder_invalidate_caches() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub fn molt_importlib_path_finder_invalidate_caches_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         path_finder_invalidate_caches_with(py, ImportRootFlavor::for_target())
             .map_or_else(|error| error, |()| none_bits())
     })
@@ -686,15 +689,15 @@ pub extern "C" fn molt_importlib_path_finder_invalidate_caches() -> u64 {
 
 // --- FileFinder and the default hooks --------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_file_finder_init(
+pub fn molt_importlib_file_finder_init_attached_body(
+    _py: &crate::PyToken<'_>,
     self_bits: u64,
     path_bits: u64,
     details_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let result = (|| -> Result<(), u64> {
-            let text = checked(py, crate::molt_str_from_obj(path_bits))?;
+            let text = checked(py, crate::molt_str_from_obj_attached_body(py, path_bits))?;
             set_attribute(py, self_bits, crate::NameId::Path, text.bits())?;
             let details = ExceptionValue::adopt(
                 py,
@@ -712,12 +715,14 @@ pub extern "C" fn molt_importlib_file_finder_init(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_file_finder_repr(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub fn molt_importlib_file_finder_repr_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let result = (|| -> Result<u64, u64> {
             let path = attribute(py, self_bits, crate::NameId::Path)?;
-            let rendered = checked(py, crate::molt_repr_from_obj(path.bits()))?;
+            let rendered = checked(py, crate::molt_repr_from_obj_attached_body(py, path.bits()))?;
             let rendered =
                 crate::object::ops_format::string_obj_bytes(obj_from_bits(rendered.bits()))
                     .ok_or_else(none_bits)?;
@@ -732,13 +737,13 @@ pub extern "C" fn molt_importlib_file_finder_repr(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_file_finder_find_spec(
+pub fn molt_importlib_file_finder_find_spec_attached_body(
+    _py: &crate::PyToken<'_>,
     self_bits: u64,
     fullname_bits: u64,
     _target_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let result = (|| -> Result<u64, u64> {
             let path = attribute(py, self_bits, crate::NameId::Path)?;
             let fullname = string_arg_from_bits(py, fullname_bits, "module name")?;
@@ -757,8 +762,10 @@ pub extern "C" fn molt_importlib_file_finder_find_spec(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_file_finder_invalidate_caches(_self_bits: u64) -> u64 {
+pub fn molt_importlib_file_finder_invalidate_caches_attached_body(
+    _py: &crate::PyToken<'_>,
+    _self_bits: u64,
+) -> u64 {
     // The native leaf has no directory-result cache. PathFinder owns the
     // separate path-to-finder cache and never re-enters it from this leaf.
     none_bits()
@@ -822,9 +829,12 @@ pub(crate) fn file_finder_path_hook(
     Ok(function)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_file_finder_path_hook(class_bits: u64, details_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub fn molt_importlib_file_finder_path_hook_attached_body(
+    _py: &crate::PyToken<'_>,
+    class_bits: u64,
+    details_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let result = (|| -> Result<u64, u64> {
             let details = ExceptionValue::adopt(
                 py,
@@ -837,12 +847,12 @@ pub extern "C" fn molt_importlib_file_finder_path_hook(class_bits: u64, details_
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_file_finder_path_hook_call(
+pub fn molt_importlib_file_finder_path_hook_call_attached_body(
+    _py: &crate::PyToken<'_>,
     context_bits: u64,
     path_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let result = (|| -> Result<u64, u64> {
             let context = obj_from_bits(context_bits)
                 .as_ptr()
@@ -855,7 +865,7 @@ pub extern "C" fn molt_importlib_file_finder_path_hook_call(
             }
             .ok_or_else(none_bits)?;
             let directory = is_str_instance(py, path_bits)? && {
-                let result = checked(py, crate::molt_path_isdir(path_bits))?;
+                let result = checked(py, crate::molt_path_isdir_attached_body(py, path_bits))?;
                 truth(py, result.bits())?
             };
             if !directory {
@@ -923,9 +933,8 @@ fn zip_path_hook(py: &PyToken<'_>, path: u64) -> Result<u64, u64> {
     Ok(result.into_bits())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_zip_path_hook(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub fn molt_importlib_zip_path_hook_attached_body(_py: &crate::PyToken<'_>, path_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         zip_path_hook(py, path_bits).unwrap_or_else(|error| error)
     })
 }
@@ -979,3 +988,5 @@ pub(crate) fn default_path_hooks(py: &PyToken<'_>) -> Result<[u64; 2], u64> {
     let file_hook = file_finder_path_hook(py, class, details.bits())?;
     Ok([zip_hook.into_bits(), file_hook])
 }
+
+include!("../../attached_exports_generated/builtins/platform_importlib_ffi/path_finder.rs");

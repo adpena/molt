@@ -73,8 +73,20 @@ use registry::*;
 #[allow(unused_imports)]
 use substitution::*;
 
-pub use compile_api::{molt_re_compile, molt_re_pattern_info};
-pub use execute_api::{molt_re_execute, molt_re_finditer_next, molt_re_scanner_new};
-pub use functions_re::{molt_re_expand_replacement, molt_re_group_values};
+pub use compile_api::{
+    molt_re_compile, molt_re_compile_attached_body, molt_re_pattern_info,
+    molt_re_pattern_info_attached_body,
+};
+pub use execute_api::{
+    molt_re_execute, molt_re_execute_attached_body, molt_re_finditer_next,
+    molt_re_finditer_next_attached_body, molt_re_scanner_new, molt_re_scanner_new_attached_body,
+};
+pub use functions_re::{
+    molt_re_expand_replacement, molt_re_expand_replacement_attached_body, molt_re_group_values,
+    molt_re_group_values_attached_body,
+};
 
-pub use substitution::{molt_re_escape, molt_re_split, molt_re_sub};
+pub use substitution::{
+    molt_re_escape, molt_re_escape_attached_body, molt_re_split, molt_re_split_attached_body,
+    molt_re_sub, molt_re_sub_attached_body,
+};

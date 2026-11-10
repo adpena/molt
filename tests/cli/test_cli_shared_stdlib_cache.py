@@ -1,3 +1,4 @@
+from molt._wasm_abi_generated import compiled_execution_symbol
 from molt.compilation_target import Target, TargetKind, admit_target
 from molt import native_target
 from molt.cli.cache_keys import FunctionDigests
@@ -352,7 +353,8 @@ def _write_object_digest_sidecar(stdlib_object: Path) -> None:
 def _stdlib_archive_fixture(*, target_triple: str | None = None) -> bytes:
     return static_archive_bytes(
         native_relocatable_object(
-            target_triple=target_triple, symbols=("molt_init_sys",)
+            target_triple=target_triple,
+            symbols=(compiled_execution_symbol("molt_init_sys"),),
         )
     )
 

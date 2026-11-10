@@ -35,18 +35,18 @@ fn dynamic_class_attr_set(
     let Some(name_bits) = name.owned_bits(_py) else {
         return false;
     };
-    let _ = molt_set_attr_name(obj_bits, name_bits, value_bits);
+    let _ = molt_set_attr_name_attached_body(_py, obj_bits, name_bits, value_bits);
     dec_ref_bits(_py, name_bits);
     !exception_pending(_py)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_dynamic_class_attr_init(
+pub(crate) fn molt_types_dynamic_class_attr_init_attached_body(
+    _py: &crate::PyToken<'_>,
     self_bits: u64,
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(positional) = call_vararg_args(_py, "DynamicClassAttribute.__init__", args_bits)
         else {
             return MoltObject::none().bits();
@@ -178,13 +178,13 @@ pub extern "C" fn molt_types_dynamic_class_attr_init(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_dynamic_class_attr_get(
+pub(crate) fn molt_types_dynamic_class_attr_get_attached_body(
+    _py: &crate::PyToken<'_>,
     self_bits: u64,
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let kwargs_is_dict = obj_from_bits(kwargs_bits)
             .as_ptr()
             .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_DICT });
@@ -288,13 +288,13 @@ pub extern "C" fn molt_types_dynamic_class_attr_get(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_dynamic_class_attr_set(
+pub(crate) fn molt_types_dynamic_class_attr_set_attached_body(
+    _py: &crate::PyToken<'_>,
     self_bits: u64,
     instance_bits: u64,
     value_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let none = MoltObject::none().bits();
         let Some(fset) = dynamic_class_attr_get(_py, self_bits, crate::NameId::Fset, none) else {
             return MoltObject::none().bits();
@@ -316,9 +316,12 @@ pub extern "C" fn molt_types_dynamic_class_attr_set(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_dynamic_class_attr_delete(self_bits: u64, instance_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_dynamic_class_attr_delete_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    instance_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let none = MoltObject::none().bits();
         let Some(fdel) = dynamic_class_attr_get(_py, self_bits, crate::NameId::Fdel, none) else {
             return MoltObject::none().bits();
@@ -357,9 +360,12 @@ fn dynamic_class_attr_clone(
     )
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_dynamic_class_attr_getter(self_bits: u64, fget_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_dynamic_class_attr_getter_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    fget_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let none = MoltObject::none().bits();
         let Some(overwrite_doc) = dynamic_class_attr_get(
             _py,
@@ -470,9 +476,12 @@ pub extern "C" fn molt_types_dynamic_class_attr_getter(self_bits: u64, fget_bits
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_dynamic_class_attr_setter(self_bits: u64, fset_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_dynamic_class_attr_setter_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    fset_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let none = MoltObject::none().bits();
         let Some(overwrite_doc) = dynamic_class_attr_get(
             _py,
@@ -551,9 +560,12 @@ pub extern "C" fn molt_types_dynamic_class_attr_setter(self_bits: u64, fset_bits
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_dynamic_class_attr_deleter(self_bits: u64, fdel_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_dynamic_class_attr_deleter_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    fdel_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let none = MoltObject::none().bits();
         let Some(overwrite_doc) = dynamic_class_attr_get(
             _py,
@@ -695,3 +707,5 @@ pub(crate) fn dynamic_class_attribute_class(_py: &PyToken<'_>) -> u64 {
         &methods,
     )
 }
+
+include!("../../attached_exports_generated/builtins/types/dynamic_class_attr.rs");

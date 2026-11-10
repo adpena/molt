@@ -1,8 +1,10 @@
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
-use crate::wasm_abi_generated::{WasmRuntimeImport, WasmRuntimeReturn};
+use crate::wasm_abi_generated::WasmRuntimeImport;
+use crate::wasm_binary::Function;
 use crate::wasm_import_tracking::TrackedImportIds;
-use wasm_encoder::{Function, Instruction};
+use molt_ir::runtime_fn_generated::RuntimeReturnContract;
+use wasm_encoder::Instruction;
 
 /// Consume the owned boxed value on the machine stack, not just its bits.
 pub(super) fn store_owned_result_or_release(
@@ -138,27 +140,27 @@ fn emit_runtime_result(
     match import.return_contract() {
         // Pending is an immediate tag, not a heap pointer; DecRefObj is a
         // no-op for it and consumes exactly one owner for a ready value.
-        WasmRuntimeReturn::OwnedObject | WasmRuntimeReturn::PollResult => {
+        RuntimeReturnContract::OwnedObject | RuntimeReturnContract::PollResult => {
             store_owned_value(func, output, import_ids, reloc_enabled, refcount);
         }
-        WasmRuntimeReturn::BorrowedObject => {
+        RuntimeReturnContract::BorrowedObject => {
             store_borrowed_value(func, output, import_ids, reloc_enabled, refcount);
         }
-        WasmRuntimeReturn::RawBits => store_raw_value(func, output),
-        WasmRuntimeReturn::Void => assert!(
+        RuntimeReturnContract::RawBits => store_raw_value(func, output),
+        RuntimeReturnContract::Void => assert!(
             output.is_none(),
             "void runtime import {} cannot bind a result",
             import.name()
         ),
-        WasmRuntimeReturn::UnpublishedObject => panic!(
+        RuntimeReturnContract::UnpublishedObject => panic!(
             "runtime import {} requires object publication before result binding or disposal",
             import.name()
         ),
-        WasmRuntimeReturn::ScratchAllocation => panic!(
+        RuntimeReturnContract::ScratchAllocation => panic!(
             "runtime import {} requires sized scratch-allocation custody",
             import.name()
         ),
-        WasmRuntimeReturn::ExecutionToken => panic!(
+        RuntimeReturnContract::ExecutionToken => panic!(
             "runtime import {} requires paired execution-lane custody",
             import.name()
         ),

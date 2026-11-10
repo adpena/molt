@@ -77,7 +77,7 @@ fn conditional_branch() {
         !output.bails_to_generic_path,
         "annotation-only conditional branch must stay in the LIR fast lane"
     );
-    assert_eq!(output.param_types, vec![ValType::I64]);
+    assert_eq!(output.param_types, vec![ValType::I64; 2]);
     assert!(output.runtime_calls.contains(&"is_truthy"));
 }
 

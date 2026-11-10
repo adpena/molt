@@ -6,8 +6,9 @@ use crate::wasm::task_runtime::{
     WasmTaskRuntimeLayout, emit_register_cancel_token, emit_store_task_payload_local,
     emit_task_payload_base,
 };
+use crate::wasm_binary::Function;
 use crate::wasm_values::emit_boxed_none;
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 pub(super) fn emit_async_task_runtime_op(
     context: &mut RuntimeServiceOpContext<'_>,

@@ -339,15 +339,15 @@ fn sleep_worker(origin: crate::state::runtime_state::RuntimeWorkerOrigin, queue:
             return;
         };
         let py = execution.token();
-        for task_ptr in queue.take_due_scheduler_tasks(&py) {
-            profile_hit(&py, &ASYNC_WAKEUP_COUNT);
+        for task_ptr in queue.take_due_scheduler_tasks(py) {
+            profile_hit(py, &ASYNC_WAKEUP_COUNT);
             if async_trace_enabled() {
                 eprintln!(
                     "molt async trace: sleep_wakeup task=0x{:x}",
                     task_ptr as usize
                 );
             }
-            enqueue_task_ptr(&py, task_ptr);
+            enqueue_task_ptr(py, task_ptr);
         }
     }
 }
@@ -389,7 +389,7 @@ mod custody_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let queue = Arc::new(SleepQueue::new());
-            let task = crate::molt_future_new(0, 0);
+            let task = crate::molt_future_new_attached_body(py, 0, 0);
             let task_ptr = crate::ptr_from_bits(task);
             queue.register_scheduler(py, task_ptr, Instant::now());
             let worker_queue = Arc::clone(&queue);
@@ -401,7 +401,7 @@ mod custody_tests {
                 resume_rx.recv_timeout(Duration::from_secs(2)).unwrap();
                 let gil = GilGuard::new();
                 let token = gil.token();
-                worker_queue.take_due_scheduler_tasks(&token).len()
+                worker_queue.take_due_scheduler_tasks(token).len()
             });
             observed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
             // Observing an expired deadline is not custody of its task pointer.

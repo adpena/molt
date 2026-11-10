@@ -73,7 +73,7 @@ pub(in crate::tk) fn handle_menu_widget_path_command(
                     "menu insert expects index, item type, and optional key/value pairs",
                 ));
             }
-            let Some(index) = parse_menu_insert_index_bits(args[2], widget.menu_entries.len())
+            let Some(index) = parse_menu_insert_index_bits(py, args[2], widget.menu_entries.len())
             else {
                 return Err(app_tcl_error_locked(
                     py,
@@ -119,6 +119,7 @@ pub(in crate::tk) fn handle_menu_widget_path_command(
                 ));
             }
             let Some(first) = parse_menu_existing_index_bits(
+                py,
                 args[2],
                 widget.menu_entries.len(),
                 widget.menu_active_index,
@@ -131,6 +132,7 @@ pub(in crate::tk) fn handle_menu_widget_path_command(
             };
             let last = if args.len() == 4 {
                 let Some(last) = parse_menu_existing_index_bits(
+                    py,
                     args[3],
                     widget.menu_entries.len(),
                     widget.menu_active_index,
@@ -173,6 +175,7 @@ pub(in crate::tk) fn handle_menu_widget_path_command(
                 ));
             }
             let maybe_index = parse_menu_existing_index_bits(
+                py,
                 args[2],
                 widget.menu_entries.len(),
                 widget.menu_active_index,
@@ -192,6 +195,7 @@ pub(in crate::tk) fn handle_menu_widget_path_command(
                 ));
             }
             let Some(index) = parse_menu_existing_index_bits(
+                py,
                 args[2],
                 widget.menu_entries.len(),
                 widget.menu_active_index,
@@ -215,6 +219,7 @@ pub(in crate::tk) fn handle_menu_widget_path_command(
                 ));
             }
             let Some(index) = parse_menu_existing_index_bits(
+                py,
                 args[2],
                 widget.menu_entries.len(),
                 widget.menu_active_index,
@@ -249,6 +254,7 @@ pub(in crate::tk) fn handle_menu_widget_path_command(
                 ));
             }
             let Some(index) = parse_menu_existing_index_bits(
+                py,
                 args[2],
                 widget.menu_entries.len(),
                 widget.menu_active_index,
@@ -313,6 +319,7 @@ pub(in crate::tk) fn handle_menu_widget_path_command(
                 ));
             }
             let Some(index) = parse_menu_existing_index_bits(
+                py,
                 args[2],
                 widget.menu_entries.len(),
                 widget.menu_active_index,
@@ -340,6 +347,7 @@ pub(in crate::tk) fn handle_menu_widget_path_command(
                 ));
             }
             widget.menu_active_index = parse_menu_existing_index_bits(
+                py,
                 args[2],
                 widget.menu_entries.len(),
                 widget.menu_active_index,
@@ -383,7 +391,7 @@ pub(in crate::tk) fn handle_menu_widget_path_command(
             }
             let x = parse_i64_arg(py, handle, args[2], "menu popup x")?;
             let y = parse_i64_arg(py, handle, args[3], "menu popup y")?;
-            set_menu_popup_state_locked(widget, x, y, args.get(4).copied());
+            set_menu_popup_state_locked(py, widget, x, y, args.get(4).copied());
             app.last_error = None;
             Ok(Some(MoltObject::none().bits()))
         }
@@ -396,6 +404,7 @@ pub(in crate::tk) fn handle_menu_widget_path_command(
                 ));
             }
             let Some(index) = parse_menu_existing_index_bits(
+                py,
                 args[2],
                 widget.menu_entries.len(),
                 widget.menu_active_index,
@@ -492,12 +501,13 @@ fn set_menu_popup_state(
             format!("widget \"{menu_path}\" is not a menu"),
         ));
     }
-    set_menu_popup_state_locked(widget, x, y, entry_bits);
+    set_menu_popup_state_locked(py, widget, x, y, entry_bits);
     app.last_error = None;
     Ok(MoltObject::none().bits())
 }
 
 fn set_menu_popup_state_locked(
+    py: &molt_runtime_core::PyToken,
     widget: &mut TkWidgetState,
     x: i64,
     y: i64,
@@ -506,6 +516,7 @@ fn set_menu_popup_state_locked(
     widget.menu_posted_at = Some((x, y));
     if let Some(bits) = entry_bits {
         widget.menu_active_index = parse_menu_existing_index_bits(
+            py,
             bits,
             widget.menu_entries.len(),
             widget.menu_active_index,

@@ -1,5 +1,9 @@
 use super::task_construction::TaskConstruction;
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use inkwell::values::BasicValue;
 use molt_tir::trampolines::TaskConstructorLayout;
 use std::collections::BTreeMap;
@@ -127,7 +131,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let exit = self.ensure_runtime_i64_fn("molt_trace_exit", 0);
         self.backend
             .builder
-            .build_call(exit, &[], "trace_exit")
+            .build_execution_call(exit, &[], "trace_exit")
             .unwrap();
         self.backend
             .builder
@@ -549,7 +553,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let call = self
             .backend
             .builder
-            .build_call(
+            .build_execution_call(
                 callee,
                 &call_args,
                 if returns_word { call_name } else { "" },
@@ -754,7 +758,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let release = self.ensure_runtime_void_fn("molt_call_inputs_release", 3);
         let callable = callable.unwrap_or_else(|| self.backend.context.i64_type().const_zero());
         builder
-            .build_call(
+            .build_execution_call(
                 release,
                 &[callable.into(), args_ptr.into(), nargs.into()],
                 "",
@@ -906,7 +910,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let from_i64_fn = self.ensure_runtime_i64_fn("molt_int_from_i64", 1);
         self.backend
             .builder
-            .build_call(from_i64_fn, &[raw.into()], "molt_int_from_i64")
+            .build_execution_call(from_i64_fn, &[raw.into()], "molt_int_from_i64")
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic()
@@ -1104,11 +1108,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     _ => {
                         // DynBox: call molt_is_truthy
                         let cond_i64 = self.ensure_i64(cond_val);
-                        let truthy_fn = self.backend.module.get_function("molt_is_truthy").unwrap();
+                        let truthy_fn = self
+                            .backend
+                            .module
+                            .get_execution_function("molt_is_truthy")
+                            .unwrap();
                         let result = self
                             .backend
                             .builder
-                            .build_call(truthy_fn, &[cond_i64.into()], "truthy")
+                            .build_execution_call(truthy_fn, &[cond_i64.into()], "truthy")
                             .unwrap()
                             .try_as_basic_value()
                             .unwrap_basic();
@@ -1260,7 +1268,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let state_val = self
                     .backend
                     .builder
-                    .build_call(get_state_fn, &[self_bits.into()], "state_dispatch_state")
+                    .build_execution_call(get_state_fn, &[self_bits.into()], "state_dispatch_state")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic()
@@ -1468,7 +1476,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             if *block_id == self.func.entry_block
                 && let Some(trampoline_bb) = self.entry_trampoline_bb
             {
-                if let Some(param) = self.llvm_fn.get_nth_param(*arg_index as u32) {
+                if let Some(param) = self.llvm_fn.get_nth_param(*arg_index as u32 + 1) {
                     let source_tir_ty = require_function_linkage_abi(self.func, self.backend)
                         .param_types
                         .get(*arg_index)
@@ -1838,13 +1846,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         param_count: usize,
         return_abi: RuntimeReturnAbi,
     ) -> FunctionValue<'ctx> {
-        if let Some(func) = self.backend.module.get_function(name) {
-            return require_llvm_function_type(name, func, fn_ty);
+        let physical_ty = runtime_execution_type(name, fn_ty);
+        if let Some(func) = self.backend.module.get_execution_function(name) {
+            return require_llvm_function_type(name, func, physical_ty);
         }
         if let Some(func) =
             declare_fixed_runtime_function(self.backend.context, &self.backend.module, name)
         {
-            return require_llvm_function_type(name, func, fn_ty);
+            return require_llvm_function_type(name, func, physical_ty);
         }
         if !is_runtime_import_abi(name, param_count, return_abi) {
             panic!(
@@ -1857,7 +1866,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             name,
             fn_ty,
         );
-        require_llvm_function_type(name, func, fn_ty)
+        require_llvm_function_type(name, func, physical_ty)
     }
 
     /// The execution lease keeps both pointers alive for this invocation.
@@ -1871,15 +1880,27 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         if let Some(context) = self.poll_context {
             return context;
         }
-        let record_fn = self.ensure_runtime_i64_fn("molt_thread_record", 0);
         let builder = self.entry_block_builder(&self.backend.builder);
         let context = self.backend.context;
         let ptr_ty = context.ptr_type(inkwell::AddressSpace::default());
+        let token = self.llvm_fn.get_first_param().unwrap().into_int_value();
+        let header = builder
+            .build_int_add(
+                token,
+                context.i64_type().const_int(
+                    molt_ir::runtime_callable_abi_generated::ATTACHED_CONTEXT_THREAD_RECORD_OFFSET
+                        as u64,
+                    false,
+                ),
+                "execution_context_header",
+            )
+            .unwrap();
+        let header = builder
+            .build_int_to_ptr(header, ptr_ty, "execution_context_header_ptr")
+            .unwrap();
         let bits = builder
-            .build_call(record_fn, &[], "thread_record")
+            .build_load(context.i64_type(), header, "thread_record")
             .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic()
             .into_int_value();
         let record = builder
             .build_int_to_ptr(bits, ptr_ty, "thread_record_ptr")
@@ -1959,7 +1980,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let cold_call = self
             .backend
             .builder
-            .build_call(cold_fn, &[], "serviced_async_work")
+            .build_execution_call(cold_fn, &[], "serviced_async_work")
             .unwrap();
         cold_call.add_attribute(
             inkwell::attributes::AttributeLoc::Function,
@@ -2010,7 +2031,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             let observer = self.ensure_runtime_i64_fn("molt_exception_last_pending", 0);
             self.backend
                 .builder
-                .build_call(observer, &[], "pending_exception_payload")
+                .build_execution_call(observer, &[], "pending_exception_payload")
                 .unwrap()
                 .try_as_basic_value()
                 .unwrap_basic()
@@ -2057,7 +2078,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             return self
                 .backend
                 .builder
-                .build_call(pending_fn, &[], name)
+                .build_execution_call(pending_fn, &[], name)
                 .unwrap()
                 .try_as_basic_value()
                 .unwrap_basic()
@@ -2109,7 +2130,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let confirm_call = self
             .backend
             .builder
-            .build_call(pending_fn, &[], name)
+            .build_execution_call(pending_fn, &[], name)
             .unwrap();
         confirm_call.add_attribute(
             inkwell::attributes::AttributeLoc::Function,
@@ -2173,17 +2194,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         )
     }
 
-    pub(super) fn ensure_runtime_import(
-        &self,
-        signature: RuntimeImportSignature,
-    ) -> FunctionValue<'ctx> {
-        match signature.return_abi {
-            RuntimeReturnAbi::I64 => {
-                self.ensure_runtime_i64_fn(signature.name, signature.param_count)
-            }
-            RuntimeReturnAbi::Void => {
-                self.ensure_runtime_void_fn(signature.name, signature.param_count)
-            }
+    pub(super) fn ensure_runtime_import(&self, function: RuntimeFn) -> FunctionValue<'ctx> {
+        if function.returns_word() {
+            self.ensure_runtime_i64_fn(function.symbol(), function.params())
+        } else {
+            self.ensure_runtime_void_fn(function.symbol(), function.params())
         }
     }
 

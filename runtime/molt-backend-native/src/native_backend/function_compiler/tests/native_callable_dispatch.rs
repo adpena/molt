@@ -20,7 +20,7 @@
 //!   4. structured-data parsers ignore stale raw-literal metadata, release raw
 //!      input boxes, preserve boxing failures, and consume every owned result.
 
-use super::native_object_symbols;
+use super::{native_object_symbols, physical_runtime_symbol};
 use crate::native_backend::simple_backend::tests::{
     compile_selected_functions_direct, emit_direct_object,
 };
@@ -77,16 +77,51 @@ static PASSIVES:AtomicU64=AtomicU64::new(0);
 static ERROR:AtomicU64=AtomicU64::new(0);
 static ORIGINS:AtomicU64=AtomicU64::new(0);
 #[no_mangle] pub static {abi}:u64=1;
-#[no_mangle] pub extern "C" fn molt_thread_record()->u64 {{
+fn fixture_thread_record() ->u64 {{
  unsafe {{RECORD.work=core::ptr::addr_of!(WORK) as u64;}} core::ptr::addr_of!(RECORD) as u64
 }}
-#[no_mangle] pub extern "C" fn molt_exception_pending_fast()->u64 {{unsafe{{RECORD.pending as u64}}}}
-#[no_mangle] pub extern "C" fn molt_async_work_poll_and_exception_pending()->u64 {{CALLS.fetch_add(1,SeqCst);ERROR.load(SeqCst)}}
-#[no_mangle] pub extern "C" fn molt_async_work_poll_and_exception_last_pending()->u64 {{CALLS.fetch_add(1,SeqCst);0x7ffb_0000_0000_0000}}
-#[no_mangle] pub extern "C" fn molt_exception_last_pending()->u64 {{assert!(unsafe{{RECORD.pending!=0}},"empty exception state entered passive capture");PASSIVES.fetch_add(1,SeqCst);0x7ff9_0000_0000_0007}}
-#[no_mangle] pub extern "C" fn molt_dec_ref_obj(_:u64){{}}
-#[no_mangle] pub extern "C" fn molt_inc_ref_obj(_:u64){{}}
-#[no_mangle] pub extern "C" fn molt_exception_frame_origin(homes:u64)->u64 {{assert_eq!(homes,0,"a frameless probe lends no homes");ORIGINS.fetch_add(1,SeqCst);0}}
+#[export_name = "molt_exception_pending_fast@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_exception_pending_fast(_context: u64) ->u64 {{
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_exception_pending_fast()
+}}
+pub fn molt_exception_pending_fast() ->u64 {{unsafe{{RECORD.pending as u64}}}}
+#[export_name = "molt_async_work_poll_and_exception_pending@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_async_work_poll_and_exception_pending(_context: u64) ->u64 {{
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_async_work_poll_and_exception_pending()
+}}
+pub fn molt_async_work_poll_and_exception_pending() ->u64 {{CALLS.fetch_add(1,SeqCst);ERROR.load(SeqCst)}}
+#[export_name = "molt_async_work_poll_and_exception_last_pending@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_async_work_poll_and_exception_last_pending(_context: u64) ->u64 {{
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_async_work_poll_and_exception_last_pending()
+}}
+pub fn molt_async_work_poll_and_exception_last_pending() ->u64 {{CALLS.fetch_add(1,SeqCst);0x7ffb_0000_0000_0000}}
+#[export_name = "molt_exception_last_pending@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_exception_last_pending(_context: u64) ->u64 {{
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_exception_last_pending()
+}}
+pub fn molt_exception_last_pending() ->u64 {{assert!(unsafe{{RECORD.pending!=0}},"empty exception state entered passive capture");PASSIVES.fetch_add(1,SeqCst);0x7ff9_0000_0000_0007}}
+#[export_name = "molt_dec_ref_obj@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_dec_ref_obj(_context: u64, _arg0: u64)  {{
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_dec_ref_obj(_arg0)
+}}
+pub fn molt_dec_ref_obj(_:u64)  {{}}
+#[export_name = "molt_inc_ref_obj@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_inc_ref_obj(_context: u64, _arg0: u64)  {{
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_inc_ref_obj(_arg0)
+}}
+pub fn molt_inc_ref_obj(_:u64)  {{}}
+#[export_name = "molt_exception_frame_origin@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_exception_frame_origin(_context: u64, _arg0: u64) ->u64 {{
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_exception_frame_origin(_arg0)
+}}
+pub fn molt_exception_frame_origin(homes:u64)->u64 {{assert_eq!(homes,0,"a frameless probe lends no homes");ORIGINS.fetch_add(1,SeqCst);0}}
 #[no_mangle] pub extern "C" fn poll_config(word:u32,pending:u8,error:u64){{WORK.store(word,SeqCst);unsafe{{RECORD.pending=pending;}}ERROR.store(error,SeqCst);CALLS.store(0,SeqCst);PASSIVES.store(0,SeqCst);ORIGINS.store(0,SeqCst);}}
 #[no_mangle] pub extern "C" fn origin_calls()->u64{{ORIGINS.load(SeqCst)}}
 #[no_mangle] pub extern "C" fn poll_calls()->u64{{CALLS.load(SeqCst)}}
@@ -95,27 +130,31 @@ static ORIGINS:AtomicU64=AtomicU64::new(0);
         abi = molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL
     );
     let harness = r#"
-extern "C" {fn inline_poll_probe()->u64;fn inline_payload_probe()->u64;fn poll_config(word:u32,pending:u8,error:u64);fn poll_calls()->u64;fn passive_calls()->u64;fn origin_calls()->u64;}
+extern "C" { fn fixed_execution_context() -> u64;#[link_name = "inline_poll_probe@EXECUTION_SUFFIX@"] fn inline_poll_probe(_context: u64)->u64;#[link_name = "inline_payload_probe@EXECUTION_SUFFIX@"] fn inline_payload_probe(_context: u64)->u64;fn poll_config(word:u32,pending:u8,error:u64);fn poll_calls()->u64;fn passive_calls()->u64;fn origin_calls()->u64;}
 fn main(){unsafe{
  let int=0x7ff9_0000_0000_0000u64;
  // Only a taken Origin edge captures: once per failing probe, never otherwise.
- poll_config(0,0,0);for _ in 0..1000{assert_eq!(inline_poll_probe(),int);}assert_eq!(poll_calls(),0);assert_eq!(origin_calls(),0);
- poll_config(8,0,0);assert_eq!(inline_poll_probe(),int);assert_eq!(poll_calls(),1);assert_eq!(origin_calls(),0);
- poll_config(8,0,1);assert_eq!(inline_poll_probe(),int|1);assert_eq!(poll_calls(),1);assert_eq!(origin_calls(),1);
- poll_config(0,1,0);assert_eq!(inline_poll_probe(),int|1);assert_eq!(poll_calls(),0);assert_eq!(origin_calls(),1);
+ poll_config(0,0,0);for _ in 0..1000{assert_eq!(inline_poll_probe(fixed_execution_context()),int);}assert_eq!(poll_calls(),0);assert_eq!(origin_calls(),0);
+ poll_config(8,0,0);assert_eq!(inline_poll_probe(fixed_execution_context()),int);assert_eq!(poll_calls(),1);assert_eq!(origin_calls(),0);
+ poll_config(8,0,1);assert_eq!(inline_poll_probe(fixed_execution_context()),int|1);assert_eq!(poll_calls(),1);assert_eq!(origin_calls(),1);
+ poll_config(0,1,0);assert_eq!(inline_poll_probe(fixed_execution_context()),int|1);assert_eq!(poll_calls(),0);assert_eq!(origin_calls(),1);
  // Mutation control: callback work with its producer notification suppressed
  // cannot enter service. The real C-API producer is tested in molt-runtime.
- poll_config(0,0,1);assert_eq!(inline_poll_probe(),int);assert_eq!(poll_calls(),0);
- poll_config(0,0,0);assert_eq!(inline_payload_probe(),0x7ffb_0000_0000_0000);assert_eq!(poll_calls(),0);
- poll_config(0,1,0);assert_eq!(inline_payload_probe(),int|7);assert_eq!(poll_calls(),0);assert_eq!(passive_calls(),1);
- poll_config(8,0,0);assert_eq!(inline_payload_probe(),0x7ffb_0000_0000_0000);assert_eq!(poll_calls(),1);
+ poll_config(0,0,1);assert_eq!(inline_poll_probe(fixed_execution_context()),int);assert_eq!(poll_calls(),0);
+ poll_config(0,0,0);assert_eq!(inline_payload_probe(fixed_execution_context()),0x7ffb_0000_0000_0000);assert_eq!(poll_calls(),0);
+ poll_config(0,1,0);assert_eq!(inline_payload_probe(fixed_execution_context()),int|7);assert_eq!(poll_calls(),0);assert_eq!(passive_calls(),1);
+ poll_config(8,0,0);assert_eq!(inline_payload_probe(fixed_execution_context()),0x7ffb_0000_0000_0000);assert_eq!(poll_calls(),1);
 }}
 "#;
     link_and_run_native_object(
         &rustc_path(),
         "inline-async-work-poll",
         output,
-        &provider,
+        &format!(
+            "{}{}",
+            provider,
+            native_object_execution::execution_context_fixture_source("fixture_thread_record()")
+        ),
         harness,
         "inline async-work poll",
     );
@@ -304,45 +343,77 @@ pub static GENERATED_OBJECT_ABI: u8 = 0;
 #[repr(C)] struct TestThreadRecord {{ pending: u8, invocation: u64, work: u64 }}
 static WORK_WORD: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 static mut EXCEPTION_PENDING_RECORD: TestThreadRecord = TestThreadRecord {{ pending: 0, invocation: 0, work: 0 }};
-#[no_mangle]
-pub extern "C" fn molt_dec_ref(_: u64) {{}}
-#[no_mangle]
-pub extern "C" fn molt_dec_ref_obj(_: u64) {{}}
-#[no_mangle]
-pub extern "C" fn molt_inc_ref_obj(_: u64) {{}}
-#[no_mangle]
-pub extern "C" fn molt_exception_pending_fast() -> u64 {{ 0 }}
-#[no_mangle]
-pub extern "C" fn molt_thread_record() -> u64 {{
+#[export_name = "molt_dec_ref@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_dec_ref(_context: u64, _arg0: u64)  {{
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_dec_ref(_arg0)
+}}
+pub fn molt_dec_ref(_: u64)  {{}}
+#[export_name = "molt_dec_ref_obj@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_dec_ref_obj(_context: u64, _arg0: u64)  {{
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_dec_ref_obj(_arg0)
+}}
+pub fn molt_dec_ref_obj(_: u64)  {{}}
+#[export_name = "molt_inc_ref_obj@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_inc_ref_obj(_context: u64, _arg0: u64)  {{
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_inc_ref_obj(_arg0)
+}}
+pub fn molt_inc_ref_obj(_: u64)  {{}}
+#[export_name = "molt_exception_pending_fast@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_exception_pending_fast(_context: u64) -> u64 {{
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_exception_pending_fast()
+}}
+pub fn molt_exception_pending_fast() -> u64 {{ 0 }}
+fn fixture_thread_record() -> u64 {{
     unsafe {{ EXCEPTION_PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; }} core::ptr::addr_of!(EXCEPTION_PENDING_RECORD) as u64
 }}
-#[no_mangle]
-pub extern "C" fn molt_int_from_i64(value: i64) -> u64 {{ value as u64 }}
-#[no_mangle]
-pub extern "C" fn molt_async_work_poll_and_exception_pending() -> u64 {{ 0 }}
-#[no_mangle]
-pub extern "C" fn molt_exception_frame_origin(_: u64) -> u64 {{
+#[export_name = "molt_int_from_i64@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_int_from_i64(_context: u64, _arg0: i64) -> u64 {{
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_int_from_i64(_arg0)
+}}
+pub fn molt_int_from_i64(value: i64) -> u64 {{ value as u64 }}
+#[export_name = "molt_async_work_poll_and_exception_pending@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_async_work_poll_and_exception_pending(_context: u64) -> u64 {{
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_async_work_poll_and_exception_pending()
+}}
+pub fn molt_async_work_poll_and_exception_pending() -> u64 {{ 0 }}
+#[export_name = "molt_exception_frame_origin@EXECUTION_SUFFIX@"]
+pub extern "C" fn molt_exception_frame_origin(context: u64, _: u64) -> u64 {{
+    assert_eq!(context, fixed_execution_context(), "wrong attached context");
     panic!("this provider never sets an error, so no Origin edge is taken")
 }}
 #[no_mangle]
 pub extern "C" fn {SYMBOL}(_: u64) -> u64 {{ {SENTINEL}u64 }}
 
 // This isolated provider has no runtime execution attachment or lease.
-#[no_mangle]
-pub extern "C" fn molt_refcount_admission() -> u64 {{ 0 }}
+#[export_name = "molt_refcount_admission@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_refcount_admission(_context: u64) -> u64 {{
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_refcount_admission()
+}}
+pub fn molt_refcount_admission() -> u64 {{ 0 }}
 "#,
         generated_object_abi_symbol = molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL,
     );
     let harness_source = format!(
-        "extern \"C\" {{ fn native_callable_dispatch() -> u64; }}\n\
-             fn main() {{ let actual = unsafe {{ native_callable_dispatch() }}; \
+        "extern \"C\" {{ #[link_name = \"native_callable_dispatch@EXECUTION_SUFFIX@\"] fn native_callable_dispatch(_context: u64) -> u64; fn fixed_execution_context() -> u64; }}\n\
+             fn main() {{ let actual = unsafe {{ native_callable_dispatch(fixed_execution_context()) }}; \
              assert_eq!(actual, {SENTINEL}u64, \"direct-symbol ABI returned {{actual:#x}}\"); }}\n"
     );
     link_and_run_native_object(
         &rustc,
         "native-callable-link",
         output.bytes,
-        &provider_source,
+        &format!(
+            "{}{}",
+            provider_source,
+            native_object_execution::execution_context_fixture_source("fixture_thread_record()")
+        ),
         &harness_source,
         "native callable",
     );
@@ -422,7 +493,7 @@ fn scalarized_tuple_index_never_retains_a_word_after_failed_construction() {
     let object_bytes = emit_direct_object(backend);
     let imports = native_object_symbols(&object_bytes).undefined;
     assert!(
-        imports.contains("molt_tuple_from_values"),
+        imports.contains(physical_runtime_symbol("molt_tuple_from_values")),
         "the tuple is still constructed through the canonical word-range ABI"
     );
     for fallback in [
@@ -432,7 +503,7 @@ fn scalarized_tuple_index_never_retains_a_word_after_failed_construction() {
         "molt_index",
     ] {
         assert!(
-            !imports.contains(fallback),
+            !imports.contains(physical_runtime_symbol(fallback)),
             "a constant index into a scalarized tuple must not call `{fallback}`"
         );
     }
@@ -450,8 +521,12 @@ static FAIL: AtomicU64 = AtomicU64::new(0);
 static CONSTRUCTED: AtomicU64 = AtomicU64::new(0);
 static WORD_RETAINS: AtomicU64 = AtomicU64::new(0);
 
-#[no_mangle]
-pub unsafe extern "C" fn molt_tuple_from_values(address: u64, len: u64) -> u64 {
+#[export_name = "molt_tuple_from_values@EXECUTION_SUFFIX@"]
+pub unsafe extern "C" fn attached_molt_tuple_from_values(_context: u64, _arg0: u64, _arg1: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    unsafe { molt_tuple_from_values(_arg0, _arg1) }
+}
+pub unsafe fn molt_tuple_from_values(address: u64, len: u64) -> u64 {
     if FAIL.load(Ordering::SeqCst) != 0 {
         unsafe { EXCEPTION_PENDING_RECORD.pending = 1; }
         return @BOXED_NONE@;
@@ -462,28 +537,51 @@ pub unsafe extern "C" fn molt_tuple_from_values(address: u64, len: u64) -> u64 {
     }
     0x7ffc000000000200
 }
-#[no_mangle]
-pub extern "C" fn molt_inc_ref_obj(value: u64) {
+#[export_name = "molt_inc_ref_obj@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_inc_ref_obj(_context: u64, _arg0: u64)  {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_inc_ref_obj(_arg0)
+}
+pub fn molt_inc_ref_obj(value: u64)  {
     if value == 0x7ffc000000000065u64 || value == 0x7ffc000000000066u64 {
         WORD_RETAINS.fetch_add(1, Ordering::SeqCst);
     }
 }
-#[no_mangle]
-pub extern "C" fn molt_dec_ref_obj(_: u64) {}
-#[no_mangle]
-pub extern "C" fn molt_dec_ref(_: u64) {}
-#[no_mangle]
-pub extern "C" fn molt_exception_pending_fast() -> u64 { unsafe { EXCEPTION_PENDING_RECORD.pending as u64 } }
-#[no_mangle]
-pub extern "C" fn molt_thread_record() -> u64 {
-    unsafe { EXCEPTION_PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; } core::ptr::addr_of!(EXCEPTION_PENDING_RECORD) as u64
+#[export_name = "molt_dec_ref_obj@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_dec_ref_obj(_context: u64, _arg0: u64)  {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_dec_ref_obj(_arg0)
 }
-#[no_mangle]
-pub extern "C" fn molt_async_work_poll_and_exception_pending() -> u64 {
+pub fn molt_dec_ref_obj(_: u64)  {}
+#[export_name = "molt_dec_ref@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_dec_ref(_context: u64, _arg0: u64)  {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_dec_ref(_arg0)
+}
+pub fn molt_dec_ref(_: u64)  {}
+#[export_name = "molt_exception_pending_fast@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_exception_pending_fast(_context: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
     molt_exception_pending_fast()
 }
-#[no_mangle]
-pub extern "C" fn molt_int_from_i64(value: i64) -> u64 { value as u64 }
+pub fn molt_exception_pending_fast() -> u64 { unsafe { EXCEPTION_PENDING_RECORD.pending as u64 } }
+fn fixture_thread_record() -> u64 {
+    unsafe { EXCEPTION_PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; } core::ptr::addr_of!(EXCEPTION_PENDING_RECORD) as u64
+}
+#[export_name = "molt_async_work_poll_and_exception_pending@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_async_work_poll_and_exception_pending(_context: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_async_work_poll_and_exception_pending()
+}
+pub fn molt_async_work_poll_and_exception_pending() -> u64 {
+    molt_exception_pending_fast()
+}
+#[export_name = "molt_int_from_i64@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_int_from_i64(_context: u64, _arg0: i64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_int_from_i64(_arg0)
+}
+pub fn molt_int_from_i64(value: i64) -> u64 { value as u64 }
 #[no_mangle]
 pub extern "C" fn scalarized_fail(fail: u64) { FAIL.store(fail, Ordering::SeqCst); }
 #[no_mangle]
@@ -492,8 +590,12 @@ pub extern "C" fn scalarized_constructed() -> u64 { CONSTRUCTED.load(Ordering::S
 pub extern "C" fn scalarized_word_retains() -> u64 { WORD_RETAINS.load(Ordering::SeqCst) }
 
 // This isolated provider has no runtime execution attachment or lease.
-#[no_mangle]
-pub extern "C" fn molt_refcount_admission() -> u64 { 0 }
+#[export_name = "molt_refcount_admission@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_refcount_admission(_context: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_refcount_admission()
+}
+pub fn molt_refcount_admission() -> u64 { 0 }
 "#
     .replace(
         "@GENERATED_OBJECT_ABI_SYMBOL@",
@@ -506,30 +608,30 @@ pub extern "C" fn molt_refcount_admission() -> u64 { 0 }
     let harness_source = r#"
 const BOXED_NONE: u64 = @BOXED_NONE@;
 
-extern "C" {
-    fn scalarized_tuple_head(head: u64, tail: u64) -> u64;
+extern "C" { fn fixed_execution_context() -> u64;
+    #[link_name = "scalarized_tuple_head@EXECUTION_SUFFIX@"] fn scalarized_tuple_head(_context: u64, head: u64, tail: u64) -> u64;
     fn scalarized_fail(fail: u64);
     fn scalarized_constructed() -> u64;
     fn scalarized_word_retains() -> u64;
-    fn molt_exception_pending_fast() -> u64;
+    #[link_name = "molt_exception_pending_fast@EXECUTION_SUFFIX@"] fn molt_exception_pending_fast(_context: u64) -> u64;
 }
 
 fn main() {
     unsafe {
-        assert_eq!(scalarized_tuple_head(0x7ffc000000000065u64, 0x7ffc000000000066u64), 0x7ffc000000000065u64, "constant index reads the first word");
+        assert_eq!(scalarized_tuple_head(fixed_execution_context(), 0x7ffc000000000065u64, 0x7ffc000000000066u64), 0x7ffc000000000065u64, "constant index reads the first word");
         assert_eq!(scalarized_constructed(), 1, "the constructor received both borrowed words");
         let success_retains = scalarized_word_retains();
         assert!(success_retains >= 1, "the bound element must own one retain");
-        assert_eq!(molt_exception_pending_fast(), 0);
+        assert_eq!(molt_exception_pending_fast(fixed_execution_context()), 0);
 
         scalarized_fail(1);
-        assert_eq!(scalarized_tuple_head(0x7ffc000000000065u64, 0x7ffc000000000066u64), BOXED_NONE, "a failed tuple has no element");
+        assert_eq!(scalarized_tuple_head(fixed_execution_context(), 0x7ffc000000000065u64, 0x7ffc000000000066u64), BOXED_NONE, "a failed tuple has no element");
         assert_eq!(
             scalarized_word_retains() - success_retains,
             success_retains - 1,
             "a failed construction must not retain a borrowed word"
         );
-        assert_eq!(molt_exception_pending_fast(), 1, "the construction failure stays pending");
+        assert_eq!(molt_exception_pending_fast(fixed_execution_context()), 1, "the construction failure stays pending");
     }
 }
 "#
@@ -541,7 +643,11 @@ fn main() {
         &rustc,
         "native-scalarized-tuple-index",
         object_bytes,
-        &provider_source,
+        &format!(
+            "{}{}",
+            provider_source,
+            native_object_execution::execution_context_fixture_source("fixture_thread_record()")
+        ),
         &harness_source,
         "native scalarized tuple index",
     );
@@ -1772,8 +1878,12 @@ pub extern "C" fn cleanup_oracle_owner(index: u64) -> u64 {
     unsafe { TOKENS[index as usize] }
 }
 
-#[no_mangle]
-pub extern "C" fn molt_classmethod_new(_: u64) -> u64 {
+#[export_name = "molt_classmethod_new@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_classmethod_new(_context: u64, _arg0: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_classmethod_new(_arg0)
+}
+pub fn molt_classmethod_new(_: u64) -> u64 {
     let index = ALLOCATIONS.fetch_add(1, Ordering::SeqCst) as usize;
     assert!(index < MAX_OWNERS, "cleanup oracle owner table exhausted");
     let token = PTR_TAG | (0x1000 + ((index as u64 + 1) << 4));
@@ -1785,8 +1895,12 @@ pub extern "C" fn molt_classmethod_new(_: u64) -> u64 {
     token
 }
 
-#[no_mangle]
-pub extern "C" fn molt_inc_ref_obj(value: u64) {
+#[export_name = "molt_inc_ref_obj@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_inc_ref_obj(_context: u64, _arg0: u64)  {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_inc_ref_obj(_arg0)
+}
+pub fn molt_inc_ref_obj(value: u64)  {
     let Some(index) = owner_index(value) else { return; };
     unsafe {
         assert_ne!(REFS[index], 0, "retain after final release");
@@ -1796,8 +1910,12 @@ pub extern "C" fn molt_inc_ref_obj(value: u64) {
     LIVE_REFS.fetch_add(1, Ordering::SeqCst);
 }
 
-#[no_mangle]
-pub extern "C" fn molt_dec_ref_obj(value: u64) {
+#[export_name = "molt_dec_ref_obj@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_dec_ref_obj(_context: u64, _arg0: u64)  {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_dec_ref_obj(_arg0)
+}
+pub fn molt_dec_ref_obj(value: u64)  {
     let Some(index) = owner_index(value) else { return; };
     unsafe {
         assert_ne!(REFS[index], 0, "duplicate owner release");
@@ -1807,8 +1925,12 @@ pub extern "C" fn molt_dec_ref_obj(value: u64) {
     LIVE_REFS.fetch_sub(1, Ordering::SeqCst);
 }
 
-#[no_mangle]
-pub extern "C" fn molt_dec_ref(value: u64) { molt_dec_ref_obj(value); }
+#[export_name = "molt_dec_ref@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_dec_ref(_context: u64, _arg0: u64)  {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_dec_ref(_arg0)
+}
+pub fn molt_dec_ref(value: u64)  { molt_dec_ref_obj(value); }
 // Providers model ABI owner credits and failure boundaries, not hash semantics.
 fn hash_failure(code: u64) -> u64 {
     assert_eq!(HASH_ERROR.swap(code, Ordering::SeqCst), 0, "original exception overwritten");
@@ -1845,20 +1967,48 @@ pub extern "C" fn cleanup_hash_error() -> u64 { HASH_ERROR.load(Ordering::SeqCst
 pub extern "C" fn cleanup_hash_box_fail(index: u64) { HASH_FAIL_BOX.store(index, Ordering::SeqCst); }
 #[no_mangle]
 pub extern "C" fn cleanup_hash_boxes() -> u64 { HASH_BOXES.load(Ordering::SeqCst) }
-#[no_mangle]
-pub extern "C" fn molt_dict_set(value: u64, key: u64, item: u64) -> u64 { hash_insert(value, &[key, item]) }
-#[no_mangle]
-pub extern "C" fn molt_store_index(value: u64, _: u64, _: u64) -> u64 { value }
-#[no_mangle]
-pub extern "C" fn molt_dict_setitem(value: u64, _: u64, _: u64) -> u64 { value }
-#[no_mangle]
-pub extern "C" fn molt_list_int_setitem(value: u64, _: u64, _: u64) -> u64 { value }
-#[no_mangle]
-pub extern "C" fn molt_del_index(value: u64, _: u64) -> u64 { value }
-#[no_mangle]
-pub extern "C" fn molt_dict_update_missing(value: u64, _: u64, _: u64) -> u64 { value }
-#[no_mangle]
-pub unsafe extern "C" fn molt_dict_from_pairs(keys: *const u64, values: *const u64, len: u64) -> u64 {
+#[export_name = "molt_dict_set@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_dict_set(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_dict_set(_arg0, _arg1, _arg2)
+}
+pub fn molt_dict_set(value: u64, key: u64, item: u64) -> u64 { hash_insert(value, &[key, item]) }
+#[export_name = "molt_store_index@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_store_index(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_store_index(_arg0, _arg1, _arg2)
+}
+pub fn molt_store_index(value: u64, _: u64, _: u64) -> u64 { value }
+#[export_name = "molt_dict_setitem@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_dict_setitem(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_dict_setitem(_arg0, _arg1, _arg2)
+}
+pub fn molt_dict_setitem(value: u64, _: u64, _: u64) -> u64 { value }
+#[export_name = "molt_list_int_setitem@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_list_int_setitem(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_list_int_setitem(_arg0, _arg1, _arg2)
+}
+pub fn molt_list_int_setitem(value: u64, _: u64, _: u64) -> u64 { value }
+#[export_name = "molt_del_index@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_del_index(_context: u64, _arg0: u64, _arg1: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_del_index(_arg0, _arg1)
+}
+pub fn molt_del_index(value: u64, _: u64) -> u64 { value }
+#[export_name = "molt_dict_update_missing@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_dict_update_missing(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_dict_update_missing(_arg0, _arg1, _arg2)
+}
+pub fn molt_dict_update_missing(value: u64, _: u64, _: u64) -> u64 { value }
+#[export_name = "molt_dict_from_pairs@EXECUTION_SUFFIX@"]
+pub unsafe extern "C" fn attached_molt_dict_from_pairs(_context: u64, _arg0: *const u64, _arg1: *const u64, _arg2: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    unsafe { molt_dict_from_pairs(_arg0, _arg1, _arg2) }
+}
+pub unsafe fn molt_dict_from_pairs(keys: *const u64, values: *const u64, len: u64) -> u64 {
     let result = hash_new();
     if EXCEPTION_PENDING_RECORD.pending != 0 { return result; }
     for index in 0..len as usize {
@@ -1870,32 +2020,72 @@ pub unsafe extern "C" fn molt_dict_from_pairs(keys: *const u64, values: *const u
     }
     result
 }
-#[no_mangle]
-pub extern "C" fn molt_set_new(_: u64) -> u64 { hash_new() }
-#[no_mangle]
-pub extern "C" fn molt_frozenset_new(_: u64) -> u64 { hash_new() }
-#[no_mangle]
-pub extern "C" fn molt_set_add(value: u64, key: u64) -> u64 { hash_insert(value, &[key]); BOXED_NONE }
-#[no_mangle]
-pub extern "C" fn molt_frozenset_add(value: u64, key: u64) -> u64 { hash_insert(value, &[key]); BOXED_NONE }
-#[no_mangle]
-pub extern "C" fn molt_recursion_enter_fast() -> u64 { 1 }
-#[no_mangle]
-pub extern "C" fn molt_recursion_exit_fast() {}
-#[no_mangle]
-pub extern "C" fn molt_raise_recursion_error() -> u64 { panic!("unexpected recursion failure") }
+#[export_name = "molt_set_new@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_set_new(_context: u64, _arg0: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_set_new(_arg0)
+}
+pub fn molt_set_new(_: u64) -> u64 { hash_new() }
+#[export_name = "molt_frozenset_new@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_frozenset_new(_context: u64, _arg0: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_frozenset_new(_arg0)
+}
+pub fn molt_frozenset_new(_: u64) -> u64 { hash_new() }
+#[export_name = "molt_set_add@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_set_add(_context: u64, _arg0: u64, _arg1: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_set_add(_arg0, _arg1)
+}
+pub fn molt_set_add(value: u64, key: u64) -> u64 { hash_insert(value, &[key]); BOXED_NONE }
+#[export_name = "molt_frozenset_add@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_frozenset_add(_context: u64, _arg0: u64, _arg1: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_frozenset_add(_arg0, _arg1)
+}
+pub fn molt_frozenset_add(value: u64, key: u64) -> u64 { hash_insert(value, &[key]); BOXED_NONE }
+#[export_name = "molt_recursion_enter_fast@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_recursion_enter_fast(_context: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_recursion_enter_fast()
+}
+pub fn molt_recursion_enter_fast() -> u64 { 1 }
+#[export_name = "molt_recursion_exit_fast@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_recursion_exit_fast(_context: u64)  {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_recursion_exit_fast()
+}
+pub fn molt_recursion_exit_fast()  {}
+#[export_name = "molt_raise_recursion_error@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_raise_recursion_error(_context: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_raise_recursion_error()
+}
+pub fn molt_raise_recursion_error() -> u64 { panic!("unexpected recursion failure") }
 // These providers model only the owned-result ABI, not iterator semantics.
 // The input token represents the materialized pair and must retain its identity.
-#[no_mangle]
-pub unsafe extern "C" fn molt_iter_next_unboxed(pair: u64, output: u64) -> u64 {
+#[export_name = "molt_iter_next_unboxed@EXECUTION_SUFFIX@"]
+pub unsafe extern "C" fn attached_molt_iter_next_unboxed(_context: u64, _arg0: u64, _arg1: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    unsafe { molt_iter_next_unboxed(_arg0, _arg1) }
+}
+pub unsafe fn molt_iter_next_unboxed(pair: u64, output: u64) -> u64 {
     molt_inc_ref_obj(pair);
     *(output as *mut u64) = pair;
     BOXED_FALSE
 }
-#[no_mangle]
-pub extern "C" fn molt_iter_next(iterator: u64) -> u64 { molt_classmethod_new(iterator) }
-#[no_mangle]
-pub unsafe extern "C" fn molt_unpack_sequence(pair: u64, count: u64, output: u64) -> u64 {
+#[export_name = "molt_iter_next@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_iter_next(_context: u64, _arg0: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_iter_next(_arg0)
+}
+pub fn molt_iter_next(iterator: u64) -> u64 { molt_classmethod_new(iterator) }
+#[export_name = "molt_unpack_sequence@EXECUTION_SUFFIX@"]
+pub unsafe extern "C" fn attached_molt_unpack_sequence(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    unsafe { molt_unpack_sequence(_arg0, _arg1, _arg2) }
+}
+pub unsafe fn molt_unpack_sequence(pair: u64, count: u64, output: u64) -> u64 {
     let index = owner_index(pair).expect("unpack must observe the materialized pair");
     assert_ne!(REFS[index], 0, "unpack read a released pair");
     assert_eq!(count, 2);
@@ -1904,18 +2094,33 @@ pub unsafe extern "C" fn molt_unpack_sequence(pair: u64, count: u64, output: u64
     *output.add(1) = molt_classmethod_new(BOXED_NONE);
     BOXED_NONE
 }
-#[no_mangle]
-pub extern "C" fn molt_exception_pending_fast() -> u64 { unsafe { EXCEPTION_PENDING_RECORD.pending as u64 } }
-#[no_mangle]
-pub extern "C" fn molt_thread_record() -> u64 {
+#[export_name = "molt_exception_pending_fast@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_exception_pending_fast(_context: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_exception_pending_fast()
+}
+pub fn molt_exception_pending_fast() -> u64 { unsafe { EXCEPTION_PENDING_RECORD.pending as u64 } }
+fn fixture_thread_record() -> u64 {
     unsafe { EXCEPTION_PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; } core::ptr::addr_of!(EXCEPTION_PENDING_RECORD) as u64
 }
-#[no_mangle]
-pub extern "C" fn molt_async_work_poll_and_exception_pending() -> u64 { molt_exception_pending_fast() }
-#[no_mangle]
-pub extern "C" fn molt_exception_pop() -> u64 { BOXED_NONE }
-#[no_mangle]
-pub extern "C" fn molt_is(lhs: u64, rhs: u64) -> u64 {
+#[export_name = "molt_async_work_poll_and_exception_pending@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_async_work_poll_and_exception_pending(_context: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_async_work_poll_and_exception_pending()
+}
+pub fn molt_async_work_poll_and_exception_pending() -> u64 { molt_exception_pending_fast() }
+#[export_name = "molt_exception_pop@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_exception_pop(_context: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_exception_pop()
+}
+pub fn molt_exception_pop() -> u64 { BOXED_NONE }
+#[export_name = "molt_is@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_is(_context: u64, _arg0: u64, _arg1: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_is(_arg0, _arg1)
+}
+pub fn molt_is(lhs: u64, rhs: u64) -> u64 {
     for value in [lhs, rhs] {
         if let Some(index) = owner_index(value) {
             assert_ne!(unsafe { REFS[index] }, 0, "identity read after final release");
@@ -1925,12 +2130,20 @@ pub extern "C" fn molt_is(lhs: u64, rhs: u64) -> u64 {
     // borrows both operands and returns an immediate Boolean without credits.
     if lhs == rhs { BOXED_TRUE } else { BOXED_FALSE }
 }
-#[no_mangle]
-pub extern "C" fn molt_is_truthy(value: u64) -> u64 {
+#[export_name = "molt_is_truthy@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_is_truthy(_context: u64, _arg0: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_is_truthy(_arg0)
+}
+pub fn molt_is_truthy(value: u64) -> u64 {
     u64::from(value != BOXED_FALSE)
 }
-#[no_mangle]
-pub extern "C" fn molt_int_from_i64(value: i64) -> u64 {
+#[export_name = "molt_int_from_i64@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_int_from_i64(_context: u64, _arg0: i64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_int_from_i64(_arg0)
+}
+pub fn molt_int_from_i64(value: i64) -> u64 {
     if (-(1_i64 << 46)..(1_i64 << 46)).contains(&value) {
         INT_TAG | ((value as u64) & INT_MASK)
     } else {
@@ -1949,16 +2162,28 @@ pub extern "C" fn cleanup_oracle_integer(token: u64) -> i64 {
         INTEGERS[index]
     }
 }
-#[no_mangle]
-pub extern "C" fn molt_lt(lhs: u64, rhs: u64) -> u64 {
+#[export_name = "molt_lt@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_lt(_context: u64, _arg0: u64, _arg1: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_lt(_arg0, _arg1)
+}
+pub fn molt_lt(lhs: u64, rhs: u64) -> u64 {
     if (lhs & INT_MASK) < (rhs & INT_MASK) { BOXED_TRUE } else { BOXED_FALSE }
 }
-#[no_mangle]
-pub extern "C" fn molt_add(lhs: u64, rhs: u64) -> u64 {
+#[export_name = "molt_add@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_add(_context: u64, _arg0: u64, _arg1: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_add(_arg0, _arg1)
+}
+pub fn molt_add(lhs: u64, rhs: u64) -> u64 {
     molt_int_from_i64(integer_value(lhs) + integer_value(rhs))
 }
-#[no_mangle]
-pub extern "C" fn molt_mul(lhs: u64, rhs: u64) -> u64 {
+#[export_name = "molt_mul@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_mul(_context: u64, _arg0: u64, _arg1: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_mul(_arg0, _arg1)
+}
+pub fn molt_mul(lhs: u64, rhs: u64) -> u64 {
     molt_int_from_i64(integer_value(lhs) * integer_value(rhs))
 }
 fn integer_value(bits: u64) -> i64 {
@@ -1975,8 +2200,12 @@ fn integer_value(bits: u64) -> i64 {
 }
 
 // This isolated provider has no runtime execution attachment or lease.
-#[no_mangle]
-pub extern "C" fn molt_refcount_admission() -> u64 { 0 }
+#[export_name = "molt_refcount_admission@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_refcount_admission(_context: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_refcount_admission()
+}
+pub fn molt_refcount_admission() -> u64 { 0 }
 "#
     .replace(
         "@GENERATED_OBJECT_ABI_SYMBOL@",
@@ -2003,90 +2232,90 @@ pub extern "C" fn molt_refcount_admission() -> u64 { 0 }
         "@BOXED_TRUE@",
         &(molt_codegen_abi::box_bool_bits(1) as u64).to_string(),
     );
-    let harness_source = r#"extern "C" {
-    fn cleanup_dynamic_successors(condition: u64);
-    fn cleanup_explicit_or_sibling(condition: u64);
-    fn cleanup_common_predecessor(condition: u64);
-    fn cleanup_return_transfer(condition: u64) -> u64;
-    fn cleanup_transparent_copy();
-    fn cleanup_binding_alias();
-    fn cleanup_box_alias();
-    fn cleanup_unbox_alias();
-    fn cleanup_loop_rearm();
-    fn cleanup_return_borrowed(borrowed: u64) -> u64;
-    fn cleanup_rebind_parameter(owner: u64, condition: u64) -> u64;
-    fn cleanup_slot_snapshot_rebind() -> u64;
-    fn cleanup_optional_rebind_return(owner: u64, condition: u64) -> u64;
-    fn cleanup_explicit_credit();
-    fn cleanup_conditional_credit(condition: u64);
-    fn cleanup_iterator_multi_results(iterator: u64) -> u64;
-    fn cleanup_local_result_store_snapshot() -> u64;
-    fn cleanup_explicit_credit_rebind();
-    fn cleanup_parameter_snapshot_rebind(owner: u64) -> u64;
-    fn cleanup_mutable_source_result_store_snapshot() -> u64;
-    fn cleanup_binding_result_direct() -> u64;
-    fn cleanup_binding_result_labelled() -> u64;
-    fn cleanup_binding_out_only_direct() -> u64;
-    fn cleanup_binding_out_only_labelled() -> u64;
-    fn cleanup_binding_same_name_direct() -> u64;
-    fn cleanup_binding_same_name_labelled() -> u64;
-    fn cleanup_binding_none_result_direct() -> u64;
-    fn cleanup_binding_none_result_labelled() -> u64;
-    fn cleanup_binding_raw_raw(unused: u64) -> u64;
-    fn cleanup_binding_boxed_raw(unused: u64) -> u64;
-    fn cleanup_binding_raw_boxed(snapshot: u64) -> u64;
-    fn cleanup_binding_boxed_boxed(snapshot: u64) -> u64;
-    fn cleanup_binding_source_result(unused: u64) -> u64;
-    fn cleanup_binding_shared_identity(snapshot: u64) -> u64;
-    fn cleanup_load_argument_precedence(borrowed: u64) -> u64;
-    fn cleanup_copy_join_metadata_absent(original: u64, source: u64) -> u64;
-    fn cleanup_copy_join_metadata_empty(original: u64, source: u64) -> u64;
-    fn cleanup_load_join_metadata_absent(original: u64, source: u64) -> u64;
-    fn cleanup_load_join_metadata_empty(original: u64, source: u64) -> u64;
-    fn cleanup_phi_join_metadata(original: u64, source: u64) -> u64;
-    fn cleanup_iterator_discard_value(iterator: u64) -> u64;
-    fn cleanup_iterator_discard_done(iterator: u64) -> u64;
-    fn cleanup_iterator_discard_both(iterator: u64);
-    fn cleanup_checked_add_discard_value(lhs: u64, rhs: u64) -> u64;
-    fn cleanup_checked_mul_discard_value(lhs: u64, rhs: u64) -> u64;
-    fn cleanup_checked_raw_discard_positions() -> u64;
-    fn cleanup_reserved_none_binding() -> u64;
-    fn cleanup_reserved_none_load() -> u64;
-    fn cleanup_reserved_none_return() -> u64;
-    fn cleanup_iterator_pair_absent(iterator: u64);
-    fn cleanup_iterator_pair_none(iterator: u64);
-    fn cleanup_borrowed_call_bound(source: u64) -> u64;
-    fn cleanup_borrowed_call_absent(source: u64);
-    fn cleanup_borrowed_call_none(source: u64);
-    fn cleanup_dict_set_bound(source: u64) -> u64;
-    fn cleanup_dict_set_absent(source: u64);
-    fn cleanup_dict_set_none(source: u64);
-    fn cleanup_dict_update_missing_bound(source: u64) -> u64;
-    fn cleanup_dict_update_missing_absent(source: u64);
-    fn cleanup_dict_update_missing_none(source: u64);
-    fn cleanup_store_index_metadata(source: u64);
-    fn cleanup_dict_store_metadata(source: u64);
-    fn cleanup_list_int_store_discard(source: u64);
-    fn cleanup_del_index_metadata(source: u64);
-    fn cleanup_dict_set_temporary() -> u64;
-    fn cleanup_hash_dict_bound() -> u64;
-    fn cleanup_hash_dict_absent();
-    fn cleanup_hash_dict_none();
-    fn cleanup_hash_set_bound() -> u64;
-    fn cleanup_hash_set_absent();
-    fn cleanup_hash_set_none();
-    fn cleanup_hash_frozenset_bound() -> u64;
-    fn cleanup_hash_frozenset_absent();
-    fn cleanup_hash_frozenset_none();
-    fn cleanup_hash_dict_raw() -> u64;
-    fn cleanup_hash_set_raw() -> u64;
-    fn cleanup_hash_frozenset_raw() -> u64;
+    let harness_source = r#"extern "C" { fn fixed_execution_context() -> u64;
+    #[link_name = "cleanup_dynamic_successors@EXECUTION_SUFFIX@"] fn cleanup_dynamic_successors(_context: u64, condition: u64);
+    #[link_name = "cleanup_explicit_or_sibling@EXECUTION_SUFFIX@"] fn cleanup_explicit_or_sibling(_context: u64, condition: u64);
+    #[link_name = "cleanup_common_predecessor@EXECUTION_SUFFIX@"] fn cleanup_common_predecessor(_context: u64, condition: u64);
+    #[link_name = "cleanup_return_transfer@EXECUTION_SUFFIX@"] fn cleanup_return_transfer(_context: u64, condition: u64) -> u64;
+    #[link_name = "cleanup_transparent_copy@EXECUTION_SUFFIX@"] fn cleanup_transparent_copy(_context: u64);
+    #[link_name = "cleanup_binding_alias@EXECUTION_SUFFIX@"] fn cleanup_binding_alias(_context: u64);
+    #[link_name = "cleanup_box_alias@EXECUTION_SUFFIX@"] fn cleanup_box_alias(_context: u64);
+    #[link_name = "cleanup_unbox_alias@EXECUTION_SUFFIX@"] fn cleanup_unbox_alias(_context: u64);
+    #[link_name = "cleanup_loop_rearm@EXECUTION_SUFFIX@"] fn cleanup_loop_rearm(_context: u64);
+    #[link_name = "cleanup_return_borrowed@EXECUTION_SUFFIX@"] fn cleanup_return_borrowed(_context: u64, borrowed: u64) -> u64;
+    #[link_name = "cleanup_rebind_parameter@EXECUTION_SUFFIX@"] fn cleanup_rebind_parameter(_context: u64, owner: u64, condition: u64) -> u64;
+    #[link_name = "cleanup_slot_snapshot_rebind@EXECUTION_SUFFIX@"] fn cleanup_slot_snapshot_rebind(_context: u64) -> u64;
+    #[link_name = "cleanup_optional_rebind_return@EXECUTION_SUFFIX@"] fn cleanup_optional_rebind_return(_context: u64, owner: u64, condition: u64) -> u64;
+    #[link_name = "cleanup_explicit_credit@EXECUTION_SUFFIX@"] fn cleanup_explicit_credit(_context: u64);
+    #[link_name = "cleanup_conditional_credit@EXECUTION_SUFFIX@"] fn cleanup_conditional_credit(_context: u64, condition: u64);
+    #[link_name = "cleanup_iterator_multi_results@EXECUTION_SUFFIX@"] fn cleanup_iterator_multi_results(_context: u64, iterator: u64) -> u64;
+    #[link_name = "cleanup_local_result_store_snapshot@EXECUTION_SUFFIX@"] fn cleanup_local_result_store_snapshot(_context: u64) -> u64;
+    #[link_name = "cleanup_explicit_credit_rebind@EXECUTION_SUFFIX@"] fn cleanup_explicit_credit_rebind(_context: u64);
+    #[link_name = "cleanup_parameter_snapshot_rebind@EXECUTION_SUFFIX@"] fn cleanup_parameter_snapshot_rebind(_context: u64, owner: u64) -> u64;
+    #[link_name = "cleanup_mutable_source_result_store_snapshot@EXECUTION_SUFFIX@"] fn cleanup_mutable_source_result_store_snapshot(_context: u64) -> u64;
+    #[link_name = "cleanup_binding_result_direct@EXECUTION_SUFFIX@"] fn cleanup_binding_result_direct(_context: u64) -> u64;
+    #[link_name = "cleanup_binding_result_labelled@EXECUTION_SUFFIX@"] fn cleanup_binding_result_labelled(_context: u64) -> u64;
+    #[link_name = "cleanup_binding_out_only_direct@EXECUTION_SUFFIX@"] fn cleanup_binding_out_only_direct(_context: u64) -> u64;
+    #[link_name = "cleanup_binding_out_only_labelled@EXECUTION_SUFFIX@"] fn cleanup_binding_out_only_labelled(_context: u64) -> u64;
+    #[link_name = "cleanup_binding_same_name_direct@EXECUTION_SUFFIX@"] fn cleanup_binding_same_name_direct(_context: u64) -> u64;
+    #[link_name = "cleanup_binding_same_name_labelled@EXECUTION_SUFFIX@"] fn cleanup_binding_same_name_labelled(_context: u64) -> u64;
+    #[link_name = "cleanup_binding_none_result_direct@EXECUTION_SUFFIX@"] fn cleanup_binding_none_result_direct(_context: u64) -> u64;
+    #[link_name = "cleanup_binding_none_result_labelled@EXECUTION_SUFFIX@"] fn cleanup_binding_none_result_labelled(_context: u64) -> u64;
+    #[link_name = "cleanup_binding_raw_raw@EXECUTION_SUFFIX@"] fn cleanup_binding_raw_raw(_context: u64, unused: u64) -> u64;
+    #[link_name = "cleanup_binding_boxed_raw@EXECUTION_SUFFIX@"] fn cleanup_binding_boxed_raw(_context: u64, unused: u64) -> u64;
+    #[link_name = "cleanup_binding_raw_boxed@EXECUTION_SUFFIX@"] fn cleanup_binding_raw_boxed(_context: u64, snapshot: u64) -> u64;
+    #[link_name = "cleanup_binding_boxed_boxed@EXECUTION_SUFFIX@"] fn cleanup_binding_boxed_boxed(_context: u64, snapshot: u64) -> u64;
+    #[link_name = "cleanup_binding_source_result@EXECUTION_SUFFIX@"] fn cleanup_binding_source_result(_context: u64, unused: u64) -> u64;
+    #[link_name = "cleanup_binding_shared_identity@EXECUTION_SUFFIX@"] fn cleanup_binding_shared_identity(_context: u64, snapshot: u64) -> u64;
+    #[link_name = "cleanup_load_argument_precedence@EXECUTION_SUFFIX@"] fn cleanup_load_argument_precedence(_context: u64, borrowed: u64) -> u64;
+    #[link_name = "cleanup_copy_join_metadata_absent@EXECUTION_SUFFIX@"] fn cleanup_copy_join_metadata_absent(_context: u64, original: u64, source: u64) -> u64;
+    #[link_name = "cleanup_copy_join_metadata_empty@EXECUTION_SUFFIX@"] fn cleanup_copy_join_metadata_empty(_context: u64, original: u64, source: u64) -> u64;
+    #[link_name = "cleanup_load_join_metadata_absent@EXECUTION_SUFFIX@"] fn cleanup_load_join_metadata_absent(_context: u64, original: u64, source: u64) -> u64;
+    #[link_name = "cleanup_load_join_metadata_empty@EXECUTION_SUFFIX@"] fn cleanup_load_join_metadata_empty(_context: u64, original: u64, source: u64) -> u64;
+    #[link_name = "cleanup_phi_join_metadata@EXECUTION_SUFFIX@"] fn cleanup_phi_join_metadata(_context: u64, original: u64, source: u64) -> u64;
+    #[link_name = "cleanup_iterator_discard_value@EXECUTION_SUFFIX@"] fn cleanup_iterator_discard_value(_context: u64, iterator: u64) -> u64;
+    #[link_name = "cleanup_iterator_discard_done@EXECUTION_SUFFIX@"] fn cleanup_iterator_discard_done(_context: u64, iterator: u64) -> u64;
+    #[link_name = "cleanup_iterator_discard_both@EXECUTION_SUFFIX@"] fn cleanup_iterator_discard_both(_context: u64, iterator: u64);
+    #[link_name = "cleanup_checked_add_discard_value@EXECUTION_SUFFIX@"] fn cleanup_checked_add_discard_value(_context: u64, lhs: u64, rhs: u64) -> u64;
+    #[link_name = "cleanup_checked_mul_discard_value@EXECUTION_SUFFIX@"] fn cleanup_checked_mul_discard_value(_context: u64, lhs: u64, rhs: u64) -> u64;
+    #[link_name = "cleanup_checked_raw_discard_positions@EXECUTION_SUFFIX@"] fn cleanup_checked_raw_discard_positions(_context: u64) -> u64;
+    #[link_name = "cleanup_reserved_none_binding@EXECUTION_SUFFIX@"] fn cleanup_reserved_none_binding(_context: u64) -> u64;
+    #[link_name = "cleanup_reserved_none_load@EXECUTION_SUFFIX@"] fn cleanup_reserved_none_load(_context: u64) -> u64;
+    #[link_name = "cleanup_reserved_none_return@EXECUTION_SUFFIX@"] fn cleanup_reserved_none_return(_context: u64) -> u64;
+    #[link_name = "cleanup_iterator_pair_absent@EXECUTION_SUFFIX@"] fn cleanup_iterator_pair_absent(_context: u64, iterator: u64);
+    #[link_name = "cleanup_iterator_pair_none@EXECUTION_SUFFIX@"] fn cleanup_iterator_pair_none(_context: u64, iterator: u64);
+    #[link_name = "cleanup_borrowed_call_bound@EXECUTION_SUFFIX@"] fn cleanup_borrowed_call_bound(_context: u64, source: u64) -> u64;
+    #[link_name = "cleanup_borrowed_call_absent@EXECUTION_SUFFIX@"] fn cleanup_borrowed_call_absent(_context: u64, source: u64);
+    #[link_name = "cleanup_borrowed_call_none@EXECUTION_SUFFIX@"] fn cleanup_borrowed_call_none(_context: u64, source: u64);
+    #[link_name = "cleanup_dict_set_bound@EXECUTION_SUFFIX@"] fn cleanup_dict_set_bound(_context: u64, source: u64) -> u64;
+    #[link_name = "cleanup_dict_set_absent@EXECUTION_SUFFIX@"] fn cleanup_dict_set_absent(_context: u64, source: u64);
+    #[link_name = "cleanup_dict_set_none@EXECUTION_SUFFIX@"] fn cleanup_dict_set_none(_context: u64, source: u64);
+    #[link_name = "cleanup_dict_update_missing_bound@EXECUTION_SUFFIX@"] fn cleanup_dict_update_missing_bound(_context: u64, source: u64) -> u64;
+    #[link_name = "cleanup_dict_update_missing_absent@EXECUTION_SUFFIX@"] fn cleanup_dict_update_missing_absent(_context: u64, source: u64);
+    #[link_name = "cleanup_dict_update_missing_none@EXECUTION_SUFFIX@"] fn cleanup_dict_update_missing_none(_context: u64, source: u64);
+    #[link_name = "cleanup_store_index_metadata@EXECUTION_SUFFIX@"] fn cleanup_store_index_metadata(_context: u64, source: u64);
+    #[link_name = "cleanup_dict_store_metadata@EXECUTION_SUFFIX@"] fn cleanup_dict_store_metadata(_context: u64, source: u64);
+    #[link_name = "cleanup_list_int_store_discard@EXECUTION_SUFFIX@"] fn cleanup_list_int_store_discard(_context: u64, source: u64);
+    #[link_name = "cleanup_del_index_metadata@EXECUTION_SUFFIX@"] fn cleanup_del_index_metadata(_context: u64, source: u64);
+    #[link_name = "cleanup_dict_set_temporary@EXECUTION_SUFFIX@"] fn cleanup_dict_set_temporary(_context: u64) -> u64;
+    #[link_name = "cleanup_hash_dict_bound@EXECUTION_SUFFIX@"] fn cleanup_hash_dict_bound(_context: u64) -> u64;
+    #[link_name = "cleanup_hash_dict_absent@EXECUTION_SUFFIX@"] fn cleanup_hash_dict_absent(_context: u64);
+    #[link_name = "cleanup_hash_dict_none@EXECUTION_SUFFIX@"] fn cleanup_hash_dict_none(_context: u64);
+    #[link_name = "cleanup_hash_set_bound@EXECUTION_SUFFIX@"] fn cleanup_hash_set_bound(_context: u64) -> u64;
+    #[link_name = "cleanup_hash_set_absent@EXECUTION_SUFFIX@"] fn cleanup_hash_set_absent(_context: u64);
+    #[link_name = "cleanup_hash_set_none@EXECUTION_SUFFIX@"] fn cleanup_hash_set_none(_context: u64);
+    #[link_name = "cleanup_hash_frozenset_bound@EXECUTION_SUFFIX@"] fn cleanup_hash_frozenset_bound(_context: u64) -> u64;
+    #[link_name = "cleanup_hash_frozenset_absent@EXECUTION_SUFFIX@"] fn cleanup_hash_frozenset_absent(_context: u64);
+    #[link_name = "cleanup_hash_frozenset_none@EXECUTION_SUFFIX@"] fn cleanup_hash_frozenset_none(_context: u64);
+    #[link_name = "cleanup_hash_dict_raw@EXECUTION_SUFFIX@"] fn cleanup_hash_dict_raw(_context: u64) -> u64;
+    #[link_name = "cleanup_hash_set_raw@EXECUTION_SUFFIX@"] fn cleanup_hash_set_raw(_context: u64) -> u64;
+    #[link_name = "cleanup_hash_frozenset_raw@EXECUTION_SUFFIX@"] fn cleanup_hash_frozenset_raw(_context: u64) -> u64;
     fn cleanup_hash_mode(allocate: u64, insert: u64);
     fn cleanup_hash_inserts() -> u64;
     fn cleanup_hash_error() -> u64;
     fn cleanup_hash_box_fail(index: u64);
     fn cleanup_hash_boxes() -> u64;
-    fn molt_exception_pending_fast() -> u64;
+    #[link_name = "molt_exception_pending_fast@EXECUTION_SUFFIX@"] fn molt_exception_pending_fast(_context: u64) -> u64;
     fn cleanup_oracle_reset();
     fn cleanup_oracle_allocations() -> u64;
     fn cleanup_oracle_inc_refs() -> u64;
@@ -2094,9 +2323,9 @@ pub extern "C" fn molt_refcount_admission() -> u64 { 0 }
     fn cleanup_oracle_live_refs() -> u64;
     fn cleanup_oracle_owner(index: u64) -> u64;
     fn cleanup_oracle_integer(token: u64) -> i64;
-    fn molt_classmethod_new(borrowed: u64) -> u64;
-    fn molt_int_from_i64(value: i64) -> u64;
-    fn molt_dec_ref_obj(value: u64);
+    #[link_name = "molt_classmethod_new@EXECUTION_SUFFIX@"] fn molt_classmethod_new(_context: u64, borrowed: u64) -> u64;
+    #[link_name = "molt_int_from_i64@EXECUTION_SUFFIX@"] fn molt_int_from_i64(_context: u64, value: i64) -> u64;
+    #[link_name = "molt_dec_ref_obj@EXECUTION_SUFFIX@"] fn molt_dec_ref_obj(_context: u64, value: u64);
 }
 
 const BOXED_FALSE: u64 = @BOXED_FALSE@;
@@ -2115,309 +2344,309 @@ unsafe fn reset() { cleanup_oracle_reset(); }
 fn main() {
     unsafe {
         reset();
-        cleanup_dynamic_successors(BOXED_FALSE);
+        cleanup_dynamic_successors(fixed_execution_context(), BOXED_FALSE);
         assert_counts("dynamic false successor", 1, 0, 1, 0);
         reset();
-        cleanup_dynamic_successors(BOXED_TRUE);
+        cleanup_dynamic_successors(fixed_execution_context(), BOXED_TRUE);
         assert_counts("dynamic true successor", 1, 0, 1, 0);
 
         reset();
-        cleanup_explicit_or_sibling(BOXED_FALSE);
+        cleanup_explicit_or_sibling(fixed_execution_context(), BOXED_FALSE);
         assert_counts("explicit release branch", 1, 0, 1, 0);
         reset();
-        cleanup_explicit_or_sibling(BOXED_TRUE);
+        cleanup_explicit_or_sibling(fixed_execution_context(), BOXED_TRUE);
         assert_counts("sibling cleanup branch", 1, 0, 1, 0);
 
         reset();
-        cleanup_common_predecessor(BOXED_FALSE);
+        cleanup_common_predecessor(fixed_execution_context(), BOXED_FALSE);
         assert_counts("common predecessor false", 1, 0, 1, 0);
         reset();
-        cleanup_common_predecessor(BOXED_TRUE);
+        cleanup_common_predecessor(fixed_execution_context(), BOXED_TRUE);
         assert_counts("common predecessor true", 1, 0, 1, 0);
 
         reset();
-        let none = cleanup_return_transfer(BOXED_FALSE);
+        let none = cleanup_return_transfer(fixed_execution_context(), BOXED_FALSE);
         assert_eq!(none, @BOXED_NONE@, "drop branch must return None");
         assert_counts("return sibling drop", 1, 0, 1, 0);
         reset();
-        let transferred = cleanup_return_transfer(BOXED_TRUE);
+        let transferred = cleanup_return_transfer(fixed_execution_context(), BOXED_TRUE);
         assert_counts("returned owner before caller release", 1, 0, 0, 1);
-        molt_dec_ref_obj(transferred);
+        molt_dec_ref_obj(fixed_execution_context(), transferred);
         assert_counts("returned owner after caller release", 1, 0, 1, 0);
 
         reset();
-        cleanup_transparent_copy();
+        cleanup_transparent_copy(fixed_execution_context());
         assert_counts("transparent copy", 1, 0, 1, 0);
         reset();
-        cleanup_binding_alias();
+        cleanup_binding_alias(fixed_execution_context());
         assert_counts("binding alias", 1, 1, 2, 0);
         reset();
-        cleanup_box_alias();
+        cleanup_box_alias(fixed_execution_context());
         assert_counts("box alias", 1, 1, 2, 0);
         reset();
-        cleanup_unbox_alias();
+        cleanup_unbox_alias(fixed_execution_context());
         assert_counts("unbox alias", 1, 1, 2, 0);
 
         reset();
-        cleanup_loop_rearm();
+        cleanup_loop_rearm(fixed_execution_context());
         assert_counts("two loop allocations", 2, 0, 2, 0);
 
         reset();
-        let borrowed = molt_classmethod_new(BOXED_FALSE);
-        let returned_borrow = cleanup_return_borrowed(borrowed);
+        let borrowed = molt_classmethod_new(fixed_execution_context(), BOXED_FALSE);
+        let returned_borrow = cleanup_return_borrowed(fixed_execution_context(), borrowed);
         assert_eq!(returned_borrow, borrowed, "borrowed return must preserve object identity");
         assert_counts("borrowed return credit", 1, 1, 0, 2);
-        molt_dec_ref_obj(returned_borrow);
-        molt_dec_ref_obj(borrowed);
+        molt_dec_ref_obj(fixed_execution_context(), returned_borrow);
+        molt_dec_ref_obj(fixed_execution_context(), borrowed);
         assert_counts("borrowed return caller cleanup", 1, 1, 2, 0);
 
         reset();
-        let original = molt_classmethod_new(BOXED_FALSE);
-        let none = cleanup_rebind_parameter(original, BOXED_FALSE);
+        let original = molt_classmethod_new(fixed_execution_context(), BOXED_FALSE);
+        let none = cleanup_rebind_parameter(fixed_execution_context(), original, BOXED_FALSE);
         assert_eq!(none, @BOXED_NONE@, "rebound drop path must return None");
         assert_counts("rebound parameter drop", 2, 0, 1, 1);
-        molt_dec_ref_obj(original);
+        molt_dec_ref_obj(fixed_execution_context(), original);
         assert_counts("rebound parameter drop caller cleanup", 2, 0, 2, 0);
 
         reset();
-        let original = molt_classmethod_new(BOXED_FALSE);
-        let returned_owner = cleanup_rebind_parameter(original, BOXED_TRUE);
+        let original = molt_classmethod_new(fixed_execution_context(), BOXED_FALSE);
+        let returned_owner = cleanup_rebind_parameter(fixed_execution_context(), original, BOXED_TRUE);
         assert_ne!(returned_owner, original, "rebound return must transfer the fresh owner");
         assert_counts("rebound parameter return", 2, 0, 0, 2);
-        molt_dec_ref_obj(returned_owner);
-        molt_dec_ref_obj(original);
+        molt_dec_ref_obj(fixed_execution_context(), returned_owner);
+        molt_dec_ref_obj(fixed_execution_context(), original);
         assert_counts("rebound parameter return caller cleanup", 2, 0, 2, 0);
 
         reset();
-        let snapshot = cleanup_slot_snapshot_rebind();
+        let snapshot = cleanup_slot_snapshot_rebind(fixed_execution_context());
         assert_counts("slot snapshot before rebind", 2, 3, 4, 1);
-        molt_dec_ref_obj(snapshot);
+        molt_dec_ref_obj(fixed_execution_context(), snapshot);
         assert_counts("slot snapshot caller cleanup", 2, 3, 5, 0);
 
         reset();
-        let original = molt_classmethod_new(BOXED_FALSE);
-        let returned_borrow = cleanup_optional_rebind_return(original, BOXED_FALSE);
+        let original = molt_classmethod_new(fixed_execution_context(), BOXED_FALSE);
+        let returned_borrow = cleanup_optional_rebind_return(fixed_execution_context(), original, BOXED_FALSE);
         assert_eq!(returned_borrow, original, "non-rebound merge path must return the borrow");
         assert_counts("optional rebind borrowed merge", 1, 1, 0, 2);
-        molt_dec_ref_obj(returned_borrow);
-        molt_dec_ref_obj(original);
+        molt_dec_ref_obj(fixed_execution_context(), returned_borrow);
+        molt_dec_ref_obj(fixed_execution_context(), original);
         assert_counts("optional rebind borrowed caller cleanup", 1, 1, 2, 0);
 
         reset();
-        let original = molt_classmethod_new(BOXED_FALSE);
-        let returned_owner = cleanup_optional_rebind_return(original, BOXED_TRUE);
+        let original = molt_classmethod_new(fixed_execution_context(), BOXED_FALSE);
+        let returned_owner = cleanup_optional_rebind_return(fixed_execution_context(), original, BOXED_TRUE);
         assert_ne!(returned_owner, original, "rebound merge path must transfer the fresh owner");
         assert_counts("optional rebind owned merge", 2, 0, 0, 2);
-        molt_dec_ref_obj(returned_owner);
-        molt_dec_ref_obj(original);
+        molt_dec_ref_obj(fixed_execution_context(), returned_owner);
+        molt_dec_ref_obj(fixed_execution_context(), original);
         assert_counts("optional rebind owned caller cleanup", 2, 0, 2, 0);
 
         reset();
-        cleanup_explicit_credit();
+        cleanup_explicit_credit(fixed_execution_context());
         assert_counts("explicit retain credit then release", 1, 1, 2, 0);
 
         reset();
-        cleanup_conditional_credit(BOXED_FALSE);
+        cleanup_conditional_credit(fixed_execution_context(), BOXED_FALSE);
         assert_counts("conditional credit false merge", 1, 0, 1, 0);
         reset();
-        cleanup_conditional_credit(BOXED_TRUE);
+        cleanup_conditional_credit(fixed_execution_context(), BOXED_TRUE);
         assert_counts("conditional credit true merge", 1, 1, 2, 0);
         reset();
 
-        let pair = molt_classmethod_new(BOXED_FALSE);
-        let returned_pair = cleanup_iterator_multi_results(pair);
+        let pair = molt_classmethod_new(fixed_execution_context(), BOXED_FALSE);
+        let returned_pair = cleanup_iterator_multi_results(fixed_execution_context(), pair);
         assert_eq!(returned_pair, pair, "unpack must not substitute a key for the pair");
         assert_counts("iterator and trailing unpack result cleanup", 3, 1, 2, 2);
-        molt_dec_ref_obj(returned_pair);
-        molt_dec_ref_obj(pair);
+        molt_dec_ref_obj(fixed_execution_context(), returned_pair);
+        molt_dec_ref_obj(fixed_execution_context(), pair);
         assert_counts("iterator result caller cleanup", 3, 1, 4, 0);
         reset();
 
-        let snapshot = cleanup_local_result_store_snapshot();
+        let snapshot = cleanup_local_result_store_snapshot(fixed_execution_context());
         assert_eq!(snapshot, cleanup_oracle_owner(0), "local snapshot must survive the result-carrying rebind");
         assert_counts("local result store snapshot", 2, 3, 4, 1);
-        molt_dec_ref_obj(snapshot);
+        molt_dec_ref_obj(fixed_execution_context(), snapshot);
         assert_counts("local result store caller cleanup", 2, 3, 5, 0);
         reset();
 
-        cleanup_explicit_credit_rebind();
+        cleanup_explicit_credit_rebind(fixed_execution_context());
         assert_counts("explicit credit remains with old binding", 2, 2, 4, 0);
         reset();
 
-        let original = molt_classmethod_new(BOXED_FALSE);
-        let snapshot = cleanup_parameter_snapshot_rebind(original);
+        let original = molt_classmethod_new(fixed_execution_context(), BOXED_FALSE);
+        let snapshot = cleanup_parameter_snapshot_rebind(fixed_execution_context(), original);
         assert_eq!(snapshot, original, "snapshot must refer to the original parameter binding");
         assert_counts("parameter snapshot before single rebind", 2, 1, 1, 2);
-        molt_dec_ref_obj(snapshot);
-        molt_dec_ref_obj(original);
+        molt_dec_ref_obj(fixed_execution_context(), snapshot);
+        molt_dec_ref_obj(fixed_execution_context(), original);
         assert_counts("parameter snapshot caller cleanup", 2, 1, 3, 0);
         reset();
 
-        let snapshot = cleanup_mutable_source_result_store_snapshot();
+        let snapshot = cleanup_mutable_source_result_store_snapshot(fixed_execution_context());
         assert_eq!(snapshot, cleanup_oracle_owner(0), "result store must snapshot a mutable source exactly once");
         assert_counts("mutable source result store snapshot", 2, 5, 6, 1);
-        molt_dec_ref_obj(snapshot);
+        molt_dec_ref_obj(fixed_execution_context(), snapshot);
         assert_counts("mutable source result store caller cleanup", 2, 5, 7, 0);
         reset();
 
         for (label, run, incs, decs) in [
-            ("binding result direct", cleanup_binding_result_direct as unsafe extern "C" fn() -> u64, 2, 3),
-            ("binding result labelled", cleanup_binding_result_labelled as unsafe extern "C" fn() -> u64, 2, 3),
-            ("binding-only out direct", cleanup_binding_out_only_direct as unsafe extern "C" fn() -> u64, 3, 4),
-            ("binding-only out labelled", cleanup_binding_out_only_labelled as unsafe extern "C" fn() -> u64, 3, 4),
-            ("same binding/result direct", cleanup_binding_same_name_direct as unsafe extern "C" fn() -> u64, 3, 4),
-            ("same binding/result labelled", cleanup_binding_same_name_labelled as unsafe extern "C" fn() -> u64, 3, 4),
-            ("none result direct", cleanup_binding_none_result_direct as unsafe extern "C" fn() -> u64, 3, 4),
-            ("none result labelled", cleanup_binding_none_result_labelled as unsafe extern "C" fn() -> u64, 3, 4),
+            ("binding result direct", cleanup_binding_result_direct as unsafe extern "C" fn(u64) -> u64, 2, 3),
+            ("binding result labelled", cleanup_binding_result_labelled as unsafe extern "C" fn(u64) -> u64, 2, 3),
+            ("binding-only out direct", cleanup_binding_out_only_direct as unsafe extern "C" fn(u64) -> u64, 3, 4),
+            ("binding-only out labelled", cleanup_binding_out_only_labelled as unsafe extern "C" fn(u64) -> u64, 3, 4),
+            ("same binding/result direct", cleanup_binding_same_name_direct as unsafe extern "C" fn(u64) -> u64, 3, 4),
+            ("same binding/result labelled", cleanup_binding_same_name_labelled as unsafe extern "C" fn(u64) -> u64, 3, 4),
+            ("none result direct", cleanup_binding_none_result_direct as unsafe extern "C" fn(u64) -> u64, 3, 4),
+            ("none result labelled", cleanup_binding_none_result_labelled as unsafe extern "C" fn(u64) -> u64, 3, 4),
         ] {
-            let snapshot = run();
+            let snapshot = run(fixed_execution_context());
             assert_eq!(snapshot, cleanup_oracle_owner(0), "{label}: snapshot survives local rebind");
             assert_counts(label, 2, incs, decs, 1);
-            molt_dec_ref_obj(snapshot);
+            molt_dec_ref_obj(fixed_execution_context(), snapshot);
             assert_counts(label, 2, incs, decs + 1, 0);
             reset();
         }
         for (label, run, allocations, incs, decs) in [
-            ("raw/raw binding", cleanup_binding_raw_raw as unsafe extern "C" fn(u64) -> u64, 1, 0, 0),
-            ("boxed/raw binding", cleanup_binding_boxed_raw as unsafe extern "C" fn(u64) -> u64, 2, 0, 1),
-            ("raw/boxed binding", cleanup_binding_raw_boxed as unsafe extern "C" fn(u64) -> u64, 1, 0, 0),
-            ("boxed/boxed binding", cleanup_binding_boxed_boxed as unsafe extern "C" fn(u64) -> u64, 1, 1, 1),
+            ("raw/raw binding", cleanup_binding_raw_raw as unsafe extern "C" fn(u64, u64) -> u64, 1, 0, 0),
+            ("boxed/raw binding", cleanup_binding_boxed_raw as unsafe extern "C" fn(u64, u64) -> u64, 2, 0, 1),
+            ("raw/boxed binding", cleanup_binding_raw_boxed as unsafe extern "C" fn(u64, u64) -> u64, 1, 0, 0),
+            ("boxed/boxed binding", cleanup_binding_boxed_boxed as unsafe extern "C" fn(u64, u64) -> u64, 1, 1, 1),
         ] {
-            let result = run(BOXED_FALSE);
+            let result = run(fixed_execution_context(), BOXED_FALSE);
             assert_eq!(cleanup_oracle_integer(result), 1_i64 << 62, "{label}: full-width value");
             assert_counts(label, allocations, incs, decs, 1);
-            molt_dec_ref_obj(result);
+            molt_dec_ref_obj(fixed_execution_context(), result);
             assert_counts(label, allocations, incs, decs + 1, 0);
             reset();
         }
-        assert_eq!(cleanup_binding_shared_identity(BOXED_FALSE), BOXED_TRUE);
+        assert_eq!(cleanup_binding_shared_identity(fixed_execution_context(), BOXED_FALSE), BOXED_TRUE);
         assert_counts("shared materialization identity", 1, 2, 3, 0);
         reset();
-        let original = molt_classmethod_new(BOXED_FALSE);
-        let result = cleanup_binding_source_result(original);
+        let original = molt_classmethod_new(fixed_execution_context(), BOXED_FALSE);
+        let result = cleanup_binding_source_result(fixed_execution_context(), original);
         assert_eq!(result, original, "source/result overlap must preserve incoming binding");
         assert_counts("source is snapshot", 2, 2, 2, 2);
-        molt_dec_ref_obj(result);
-        molt_dec_ref_obj(original);
+        molt_dec_ref_obj(fixed_execution_context(), result);
+        molt_dec_ref_obj(fixed_execution_context(), original);
         assert_counts("source is snapshot caller cleanup", 2, 2, 4, 0);
         reset();
-        let result = cleanup_load_argument_precedence(BOXED_FALSE);
+        let result = cleanup_load_argument_precedence(fixed_execution_context(), BOXED_FALSE);
         assert_eq!(result, cleanup_oracle_owner(0), "load argument must win over var metadata");
         assert_counts("load argument precedence", 2, 0, 1, 1);
-        molt_dec_ref_obj(result);
+        molt_dec_ref_obj(fixed_execution_context(), result);
         assert_counts("load argument precedence caller cleanup", 2, 0, 2, 0);
         reset();
         for run in [
-            cleanup_copy_join_metadata_absent as unsafe extern "C" fn(u64, u64) -> u64,
+            cleanup_copy_join_metadata_absent as unsafe extern "C" fn(u64, u64, u64) -> u64,
             cleanup_copy_join_metadata_empty,
             cleanup_load_join_metadata_absent,
             cleanup_load_join_metadata_empty,
         ] {
-            let original = molt_classmethod_new(BOXED_FALSE);
-            let source = molt_classmethod_new(BOXED_TRUE);
-            let result = run(original, source);
+            let original = molt_classmethod_new(fixed_execution_context(), BOXED_FALSE);
+            let source = molt_classmethod_new(fixed_execution_context(), BOXED_TRUE);
+            let result = run(fixed_execution_context(), original, source);
             assert_eq!(result, original, "join-shaped var metadata must not replace the parameter's storage");
             assert_counts("join metadata preserves borrowed parameters", 2, 1, 0, 3);
-            molt_dec_ref_obj(result);
-            molt_dec_ref_obj(original);
-            molt_dec_ref_obj(source);
+            molt_dec_ref_obj(fixed_execution_context(), result);
+            molt_dec_ref_obj(fixed_execution_context(), original);
+            molt_dec_ref_obj(fixed_execution_context(), source);
             assert_counts("join metadata caller cleanup", 2, 1, 3, 0);
             reset();
         }
-        assert_eq!(cleanup_phi_join_metadata(BOXED_TRUE, BOXED_FALSE), BOXED_TRUE,
+        assert_eq!(cleanup_phi_join_metadata(fixed_execution_context(), BOXED_TRUE, BOXED_FALSE), BOXED_TRUE,
             "phi join discovery must not rebind a load's metadata name on the true edge");
-        assert_eq!(cleanup_phi_join_metadata(BOXED_FALSE, BOXED_TRUE), BOXED_FALSE,
+        assert_eq!(cleanup_phi_join_metadata(fixed_execution_context(), BOXED_FALSE, BOXED_TRUE), BOXED_FALSE,
             "phi join discovery must not rebind a load's metadata name on the false edge");
         assert_counts("phi metadata preserves scalar parameters", 0, 0, 0, 0);
         reset();
-        let iterator = molt_classmethod_new(BOXED_FALSE);
-        assert_eq!(cleanup_iterator_discard_value(iterator), BOXED_FALSE);
+        let iterator = molt_classmethod_new(fixed_execution_context(), BOXED_FALSE);
+        assert_eq!(cleanup_iterator_discard_value(fixed_execution_context(), iterator), BOXED_FALSE);
         assert_counts("discard iterator value", 1, 1, 1, 1);
-        let value = cleanup_iterator_discard_done(iterator);
+        let value = cleanup_iterator_discard_done(fixed_execution_context(), iterator);
         assert_eq!(value, iterator);
         assert_counts("discard iterator done", 1, 2, 1, 2);
-        molt_dec_ref_obj(value);
-        cleanup_iterator_discard_both(iterator);
+        molt_dec_ref_obj(fixed_execution_context(), value);
+        cleanup_iterator_discard_both(fixed_execution_context(), iterator);
         assert_counts("discard both iterator results", 1, 3, 3, 1);
-        molt_dec_ref_obj(iterator);
+        molt_dec_ref_obj(fixed_execution_context(), iterator);
         assert_counts("discard iterator caller cleanup", 1, 3, 4, 0);
         reset();
         for (label, run) in [
-            ("discard boxed checked sum", cleanup_checked_add_discard_value as unsafe extern "C" fn(u64, u64) -> u64),
-            ("discard boxed checked product", cleanup_checked_mul_discard_value as unsafe extern "C" fn(u64, u64) -> u64),
+            ("discard boxed checked sum", cleanup_checked_add_discard_value as unsafe extern "C" fn(u64, u64, u64) -> u64),
+            ("discard boxed checked product", cleanup_checked_mul_discard_value as unsafe extern "C" fn(u64, u64, u64) -> u64),
         ] {
-            let wide = molt_int_from_i64(1_i64 << 50);
-            let one = molt_int_from_i64(1);
-            assert_eq!(run(wide, one), BOXED_FALSE, "{label}: surviving overflow flag");
+            let wide = molt_int_from_i64(fixed_execution_context(), 1_i64 << 50);
+            let one = molt_int_from_i64(fixed_execution_context(), 1);
+            assert_eq!(run(fixed_execution_context(), wide, one), BOXED_FALSE, "{label}: surviving overflow flag");
             assert_counts(label, 2, 0, 1, 1);
-            molt_dec_ref_obj(wide);
+            molt_dec_ref_obj(fixed_execution_context(), wide);
             assert_counts(label, 2, 0, 2, 0);
             reset();
         }
-        assert_eq!(cleanup_checked_raw_discard_positions(), BOXED_TRUE);
+        assert_eq!(cleanup_checked_raw_discard_positions(fixed_execution_context()), BOXED_TRUE);
         assert_counts("discard raw checked positions", 0, 0, 0, 0);
         reset();
-        assert_eq!(cleanup_reserved_none_binding(), BOXED_TRUE);
+        assert_eq!(cleanup_reserved_none_binding(fixed_execution_context()), BOXED_TRUE);
         assert_counts("reserved None binding and rebind", 1, 1, 2, 0);
         reset();
-        assert_eq!(cleanup_reserved_none_load(), BOXED_NONE);
-        assert_eq!(cleanup_reserved_none_return(), BOXED_NONE);
+        assert_eq!(cleanup_reserved_none_load(fixed_execution_context()), BOXED_NONE);
+        assert_eq!(cleanup_reserved_none_return(fixed_execution_context()), BOXED_NONE);
         assert_counts("reserved None load and return", 0, 0, 0, 0);
         reset();
-        cleanup_iterator_pair_absent(BOXED_FALSE);
+        cleanup_iterator_pair_absent(fixed_execution_context(), BOXED_FALSE);
         assert_counts("absent iterator pair result", 1, 0, 1, 0);
         reset();
-        cleanup_iterator_pair_none(BOXED_FALSE);
+        cleanup_iterator_pair_none(fixed_execution_context(), BOXED_FALSE);
         assert_counts("reserved-none iterator pair result", 1, 0, 1, 0);
         reset();
-        let source = molt_classmethod_new(BOXED_NONE);
-        let result = cleanup_borrowed_call_bound(source);
+        let source = molt_classmethod_new(fixed_execution_context(), BOXED_NONE);
+        let result = cleanup_borrowed_call_bound(fixed_execution_context(), source);
         assert_eq!(result, source, "borrowed call preserves object identity");
         assert_counts("bound borrowed runtime result", 1, 1, 0, 2);
-        molt_dec_ref_obj(result);
-        cleanup_borrowed_call_absent(source);
-        cleanup_borrowed_call_none(source);
+        molt_dec_ref_obj(fixed_execution_context(), result);
+        cleanup_borrowed_call_absent(fixed_execution_context(), source);
+        cleanup_borrowed_call_none(fixed_execution_context(), source);
         assert_counts("discarded borrowed runtime result", 1, 1, 1, 1);
-        molt_dec_ref_obj(source);
+        molt_dec_ref_obj(fixed_execution_context(), source);
         assert_counts("borrowed runtime caller cleanup", 1, 1, 2, 0);
         reset();
-        let source = molt_classmethod_new(BOXED_NONE);
-        let first = cleanup_dict_set_bound(source);
-        let second = cleanup_dict_update_missing_bound(source);
+        let source = molt_classmethod_new(fixed_execution_context(), BOXED_NONE);
+        let first = cleanup_dict_set_bound(fixed_execution_context(), source);
+        let second = cleanup_dict_update_missing_bound(fixed_execution_context(), source);
         assert_eq!(first, source);
         assert_eq!(second, source);
         assert_counts("handwritten borrowed result publication", 1, 2, 0, 3);
-        molt_dec_ref_obj(first);
-        molt_dec_ref_obj(second);
-        cleanup_dict_set_absent(source);
-        cleanup_dict_set_none(source);
-        cleanup_dict_update_missing_absent(source);
-        cleanup_dict_update_missing_none(source);
-        cleanup_store_index_metadata(source);
-        cleanup_dict_store_metadata(source);
-        cleanup_list_int_store_discard(source);
-        cleanup_del_index_metadata(source);
+        molt_dec_ref_obj(fixed_execution_context(), first);
+        molt_dec_ref_obj(fixed_execution_context(), second);
+        cleanup_dict_set_absent(fixed_execution_context(), source);
+        cleanup_dict_set_none(fixed_execution_context(), source);
+        cleanup_dict_update_missing_absent(fixed_execution_context(), source);
+        cleanup_dict_update_missing_none(fixed_execution_context(), source);
+        cleanup_store_index_metadata(fixed_execution_context(), source);
+        cleanup_dict_store_metadata(fixed_execution_context(), source);
+        cleanup_list_int_store_discard(fixed_execution_context(), source);
+        cleanup_del_index_metadata(fixed_execution_context(), source);
         assert_counts("handwritten borrowed discard and out metadata", 1, 2, 2, 1);
-        molt_dec_ref_obj(source);
+        molt_dec_ref_obj(fixed_execution_context(), source);
         assert_counts("handwritten borrowed caller cleanup", 1, 2, 3, 0);
         reset();
-        let result = cleanup_dict_set_temporary();
+        let result = cleanup_dict_set_temporary(fixed_execution_context());
         assert_counts("borrowed alias retained before source cleanup", 1, 1, 1, 1);
-        molt_dec_ref_obj(result);
+        molt_dec_ref_obj(fixed_execution_context(), result);
         assert_counts("borrowed alias caller cleanup", 1, 1, 2, 0);
         reset();
         // `a` allocates the container, `b` boxes a distinct operand, and `i`
         // inserts one entry. Dict's full-pairs ABI receives all operands before
         // allocation; sets retain their existing incremental insertion boundary.
         for (label, run, steps) in [
-            ("dict raw", cleanup_hash_dict_raw as unsafe extern "C" fn() -> u64, "bbaiii"),
-            ("set raw", cleanup_hash_set_raw as unsafe extern "C" fn() -> u64, "abiibi"),
-            ("frozenset raw", cleanup_hash_frozenset_raw as unsafe extern "C" fn() -> u64, "abiibi"),
+            ("dict raw", cleanup_hash_dict_raw as unsafe extern "C" fn(u64) -> u64, "bbaiii"),
+            ("set raw", cleanup_hash_set_raw as unsafe extern "C" fn(u64) -> u64, "abiibi"),
+            ("frozenset raw", cleanup_hash_frozenset_raw as unsafe extern "C" fn(u64) -> u64, "abiibi"),
         ] {
             for (allocate, insert, boxing) in [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 2, 0), (0, 3, 0), (0, 0, 1), (0, 0, 2)] {
                 cleanup_hash_mode(allocate, insert);
                 cleanup_hash_box_fail(boxing);
-                let result = run();
+                let result = run(fixed_execution_context());
                 let (mut calls, mut boxes, mut allocations, mut error) = (0, 0, 0, 0);
                 for step in steps.bytes() {
                     match step {
@@ -2440,7 +2669,7 @@ fn main() {
                 if error == 0 {
                     assert_eq!(result, cleanup_oracle_owner(if label == "dict raw" { 2 } else { 0 }), "{label}: aggregate identity");
                     assert_counts(label, allocations, 0, allocations - 1, 1);
-                    molt_dec_ref_obj(result);
+                    molt_dec_ref_obj(fixed_execution_context(), result);
                 } else {
                     assert_eq!(result, BOXED_NONE, "{label}: failed temporary publication");
                 }
@@ -2448,41 +2677,41 @@ fn main() {
                 assert_eq!(cleanup_hash_inserts(), calls, "{label}: insert boundary");
                 assert_eq!(cleanup_hash_boxes(), boxes, "{label}: skipped later materialization");
                 assert_eq!(cleanup_hash_error(), error, "{label}: original exception");
-                assert_eq!(molt_exception_pending_fast(), u64::from(error != 0));
+                assert_eq!(molt_exception_pending_fast(fixed_execution_context()), u64::from(error != 0));
                 reset();
             }
         }
         for (label, bound, absent, none) in [
-            ("dict", cleanup_hash_dict_bound as unsafe extern "C" fn() -> u64,
-                cleanup_hash_dict_absent as unsafe extern "C" fn(), cleanup_hash_dict_none as unsafe extern "C" fn()),
-            ("set", cleanup_hash_set_bound as unsafe extern "C" fn() -> u64,
-                cleanup_hash_set_absent as unsafe extern "C" fn(), cleanup_hash_set_none as unsafe extern "C" fn()),
-            ("frozenset", cleanup_hash_frozenset_bound as unsafe extern "C" fn() -> u64,
-                cleanup_hash_frozenset_absent as unsafe extern "C" fn(), cleanup_hash_frozenset_none as unsafe extern "C" fn()),
+            ("dict", cleanup_hash_dict_bound as unsafe extern "C" fn(u64) -> u64,
+                cleanup_hash_dict_absent as unsafe extern "C" fn(u64), cleanup_hash_dict_none as unsafe extern "C" fn(u64)),
+            ("set", cleanup_hash_set_bound as unsafe extern "C" fn(u64) -> u64,
+                cleanup_hash_set_absent as unsafe extern "C" fn(u64), cleanup_hash_set_none as unsafe extern "C" fn(u64)),
+            ("frozenset", cleanup_hash_frozenset_bound as unsafe extern "C" fn(u64) -> u64,
+                cleanup_hash_frozenset_absent as unsafe extern "C" fn(u64), cleanup_hash_frozenset_none as unsafe extern "C" fn(u64)),
         ] {
             for (allocate, insert, expected_calls, error) in [(0, 0, 3, 0), (1, 0, 0, 71), (0, 1, 1, 101), (0, 2, 2, 102)] {
                 let allocations = if allocate != 0 { 1 } else { 2 };
                 cleanup_hash_mode(allocate, insert);
-                let result = bound();
+                let result = bound(fixed_execution_context());
                 if error == 0 {
                     assert_eq!(result, cleanup_oracle_owner(1), "{label}: published original owner");
                     assert_counts(label, allocations, 0, 1, 1);
-                    molt_dec_ref_obj(result);
+                    molt_dec_ref_obj(fixed_execution_context(), result);
                 } else {
                     assert_eq!(result, BOXED_NONE, "{label}: failure published partial container");
                 }
                 assert_counts(label, allocations, 0, allocations, 0);
                 assert_eq!(cleanup_hash_inserts(), expected_calls, "{label}: skipped later inserts");
                 assert_eq!(cleanup_hash_error(), error, "{label}: original exception");
-                assert_eq!(molt_exception_pending_fast(), u64::from(error != 0));
+                assert_eq!(molt_exception_pending_fast(fixed_execution_context()), u64::from(error != 0));
                 reset();
                 for discarded in [absent, none] {
                     cleanup_hash_mode(allocate, insert);
-                    discarded();
+                    discarded(fixed_execution_context());
                     assert_counts(label, allocations, 0, allocations, 0);
                     assert_eq!(cleanup_hash_inserts(), expected_calls, "{label}: discarded later inserts");
                     assert_eq!(cleanup_hash_error(), error, "{label}: discarded original exception");
-                    assert_eq!(molt_exception_pending_fast(), u64::from(error != 0));
+                    assert_eq!(molt_exception_pending_fast(fixed_execution_context()), u64::from(error != 0));
                     reset();
                 }
             }
@@ -2506,7 +2735,11 @@ fn main() {
         &rustc,
         "native-value-tracking-cleanup-oracle",
         object_bytes,
-        &provider_source,
+        &format!(
+            "{}{}",
+            provider_source,
+            native_object_execution::execution_context_fixture_source("fixture_thread_record()")
+        ),
         &harness_source,
         "NativeValueTracking cleanup oracle",
     );
@@ -2591,26 +2824,50 @@ static INIT_CALLS: AtomicU64 = AtomicU64::new(0);
 static TRANSACTIONS: AtomicU64 = AtomicU64::new(0);
 static MODULE_RELEASES: AtomicU64 = AtomicU64::new(0);
 static FAILURE: AtomicU64 = AtomicU64::new(0);
-#[no_mangle]
-pub extern "C" fn molt_dec_ref(bits: u64) {{ molt_dec_ref_obj(bits) }}
-#[no_mangle]
-pub extern "C" fn molt_dec_ref_obj(bits: u64) {{
+#[export_name = "molt_dec_ref@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_dec_ref(_context: u64, _arg0: u64)  {{
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_dec_ref(_arg0)
+}}
+pub fn molt_dec_ref(bits: u64)  {{ molt_dec_ref_obj(bits) }}
+#[export_name = "molt_dec_ref_obj@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_dec_ref_obj(_context: u64, _arg0: u64)  {{
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_dec_ref_obj(_arg0)
+}}
+pub fn molt_dec_ref_obj(bits: u64)  {{
     if bits == {OWNED_MODULE}u64 {{ MODULE_RELEASES.fetch_add(1, Ordering::SeqCst); }}
 }}
-#[no_mangle]
-pub extern "C" fn molt_inc_ref_obj(_: u64) {{}}
-#[no_mangle]
-pub extern "C" fn molt_exception_pending_fast() -> u64 {{ 0 }}
-#[no_mangle]
-pub extern "C" fn molt_thread_record() -> u64 {{
+#[export_name = "molt_inc_ref_obj@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_inc_ref_obj(_context: u64, _arg0: u64)  {{
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_inc_ref_obj(_arg0)
+}}
+pub fn molt_inc_ref_obj(_: u64)  {{}}
+#[export_name = "molt_exception_pending_fast@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_exception_pending_fast(_context: u64) -> u64 {{
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_exception_pending_fast()
+}}
+pub fn molt_exception_pending_fast() -> u64 {{ 0 }}
+fn fixture_thread_record() -> u64 {{
     unsafe {{ EXCEPTION_PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; }} core::ptr::addr_of!(EXCEPTION_PENDING_RECORD) as u64
 }}
-#[no_mangle]
-pub extern "C" fn molt_int_from_i64(value: i64) -> u64 {{ value as u64 }}
-#[no_mangle]
-pub extern "C" fn molt_async_work_poll_and_exception_pending() -> u64 {{ 0 }}
-#[no_mangle]
-pub extern "C" fn molt_exception_frame_origin(_: u64) -> u64 {{
+#[export_name = "molt_int_from_i64@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_int_from_i64(_context: u64, _arg0: i64) -> u64 {{
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_int_from_i64(_arg0)
+}}
+pub fn molt_int_from_i64(value: i64) -> u64 {{ value as u64 }}
+#[export_name = "molt_async_work_poll_and_exception_pending@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_async_work_poll_and_exception_pending(_context: u64) -> u64 {{
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_async_work_poll_and_exception_pending()
+}}
+pub fn molt_async_work_poll_and_exception_pending() -> u64 {{ 0 }}
+#[export_name = "molt_exception_frame_origin@EXECUTION_SUFFIX@"]
+pub extern "C" fn molt_exception_frame_origin(context: u64, _: u64) -> u64 {{
+    assert_eq!(context, fixed_execution_context(), "wrong attached context");
     panic!("this provider never sets an error, so no Origin edge is taken")
 }}
 #[no_mangle]
@@ -2618,8 +2875,12 @@ pub extern "C" fn {SYMBOL}() -> *mut u8 {{
     INIT_CALLS.fetch_add(1, Ordering::SeqCst);
     {RAW_MODULE_POINTER}usize as *mut u8
 }}
-#[no_mangle]
-pub extern "C" fn molt_cpython_abi_run_static_extension_init(init_addr: u64, module_name_bits: u64) -> u64 {{
+#[export_name = "molt_cpython_abi_run_static_extension_init@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_cpython_abi_run_static_extension_init(_context: u64, _arg0: u64, _arg1: u64) -> u64 {{
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_cpython_abi_run_static_extension_init(_arg0, _arg1)
+}}
+pub fn molt_cpython_abi_run_static_extension_init(init_addr: u64, module_name_bits: u64) -> u64 {{
     TRANSACTIONS.fetch_add(1, Ordering::SeqCst);
     if init_addr != {SYMBOL} as usize as u64 {{ FAILURE.store(1, Ordering::SeqCst); return 0; }}
     if module_name_bits != {module_name_bits}u64 {{ FAILURE.store(2, Ordering::SeqCst); return 0; }}
@@ -2638,14 +2899,18 @@ pub extern "C" fn pyinit_probe_count(index: u64) -> u64 {{
 }}
 
 // This isolated provider has no runtime execution attachment or lease.
-#[no_mangle]
-pub extern "C" fn molt_refcount_admission() -> u64 {{ 0 }}
+#[export_name = "molt_refcount_admission@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_refcount_admission(_context: u64) -> u64 {{
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_refcount_admission()
+}}
+pub fn molt_refcount_admission() -> u64 {{ 0 }}
 "#,
         generated_object_abi_symbol = molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL,
     );
     let harness_source = format!(
-        "extern \"C\" {{ fn native_callable_dispatch() -> u64; fn pyinit_probe_count(index: u64) -> u64; }}\n\
-             fn main() {{ let actual = unsafe {{ native_callable_dispatch() }}; \
+        "extern \"C\" {{ #[link_name = \"native_callable_dispatch@EXECUTION_SUFFIX@\"] fn native_callable_dispatch(_context: u64) -> u64; fn fixed_execution_context() -> u64; fn pyinit_probe_count(index: u64) -> u64; }}\n\
+             fn main() {{ let actual = unsafe {{ native_callable_dispatch(fixed_execution_context()) }}; \
              let [init_calls, transactions, module_releases, failure] = [0, 1, 2, 3].map(|index| unsafe {{ pyinit_probe_count(index) }}); \
              assert_eq!(failure, 0, \"runtime transaction received the wrong initializer address or payload\"); \
              assert_eq!((init_calls, transactions), (1, 1), \"PyInit must run exactly once, inside the runtime transaction\"); \
@@ -2656,7 +2921,11 @@ pub extern "C" fn molt_refcount_admission() -> u64 {{ 0 }}
         &rustc,
         "native-pyinit-transaction-link",
         output.bytes,
-        &provider_source,
+        &format!(
+            "{}{}",
+            provider_source,
+            native_object_execution::execution_context_fixture_source("fixture_thread_record()")
+        ),
         &harness_source,
         "native PyInit runtime transaction",
     );
@@ -2842,7 +3111,12 @@ static FIRST: AtomicU64 = AtomicU64::new(0);
 static SECOND: AtomicU64 = AtomicU64::new(0);
 static RESULT_FIRST: AtomicU64 = AtomicU64::new(0);
 static RESULT_SECOND: AtomicU64 = AtomicU64::new(0);
-#[no_mangle] pub extern "C" fn molt_int_from_i64(value: i64) -> u64 {
+#[export_name = "molt_int_from_i64@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_int_from_i64(_context: u64, _arg0: i64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_int_from_i64(_arg0)
+}
+pub fn molt_int_from_i64(value: i64) -> u64 {
     let attempt = ATTEMPTS.fetch_add(1, SeqCst) + 1;
     assert_eq!(value, if attempt == 1 {1_i64 << 62} else {(1_i64 << 62) + (1_i64 << 31)});
     if FAIL.load(SeqCst) == attempt { unsafe {PENDING_RECORD.pending = 1;} return NONE; }
@@ -2850,11 +3124,21 @@ static RESULT_SECOND: AtomicU64 = AtomicU64::new(0);
     if attempt == 1 {FIRST.store(1, SeqCst)} else {SECOND.store(1, SeqCst)}
     0x7ffc000000000100 + attempt
 }
-#[no_mangle] pub extern "C" fn molt_inc_ref_obj(value: u64) {
+#[export_name = "molt_inc_ref_obj@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_inc_ref_obj(_context: u64, _arg0: u64)  {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_inc_ref_obj(_arg0)
+}
+pub fn molt_inc_ref_obj(value: u64)  {
     let refs = match value {0x7ffc000000000101 => &FIRST, 0x7ffc000000000102 => &SECOND, 0x7ffc000000000200 => &RESULT, _ => return};
     assert!(refs.fetch_add(1, SeqCst) > 0, "retain after free");
 }
-#[no_mangle] pub extern "C" fn molt_dec_ref_obj(value: u64) {
+#[export_name = "molt_dec_ref_obj@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_dec_ref_obj(_context: u64, _arg0: u64)  {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_dec_ref_obj(_arg0)
+}
+pub fn molt_dec_ref_obj(value: u64)  {
     let refs = match value {0x7ffc000000000101 => &FIRST, 0x7ffc000000000102 => &SECOND, 0x7ffc000000000200 => &RESULT, _ => return};
     let old = refs.fetch_sub(1, SeqCst); assert!(old > 0, "duplicate release");
     if value == 0x7ffc000000000200 && old == 1 {
@@ -2862,7 +3146,12 @@ static RESULT_SECOND: AtomicU64 = AtomicU64::new(0);
         for _ in 0..RESULT_SECOND.load(SeqCst) {molt_dec_ref_obj(0x7ffc000000000102)}
     }
 }
-#[no_mangle] pub extern "C" fn molt_dec_ref(value: u64) {molt_dec_ref_obj(value)}
+#[export_name = "molt_dec_ref@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_dec_ref(_context: u64, _arg0: u64)  {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_dec_ref(_arg0)
+}
+pub fn molt_dec_ref(value: u64)  {molt_dec_ref_obj(value)}
 unsafe fn construct(address: u64, len: u64) -> u64 {
     assert_eq!(len, 3);
     construct_words(unsafe {core::slice::from_raw_parts(address as *const u64, len as usize)})
@@ -2876,15 +3165,55 @@ fn construct_words(values: &[u64]) -> u64 {
     RESULT_FIRST.store(2,SeqCst); RESULT_SECOND.store(1,SeqCst);
     RESULT.store(1, SeqCst); 0x7ffc000000000200
 }
-#[no_mangle] pub unsafe extern "C" fn molt_tuple_from_values(address: u64, len: u64) -> u64 {unsafe {construct(address,len)}}
-#[no_mangle] pub unsafe extern "C" fn molt_list_from_values(address: u64, len: u64) -> u64 {unsafe {construct(address,len)}}
-#[no_mangle] pub extern "C" fn molt_slice_new(start:u64, stop:u64, step:u64)->u64 {construct_words(&[start,stop,step])}
-#[no_mangle] pub extern "C" fn molt_slice(target:u64, start:u64, end:u64)->u64 {construct_words(&[target,start,end])}
+#[export_name = "molt_tuple_from_values@EXECUTION_SUFFIX@"]
+pub unsafe extern "C" fn attached_molt_tuple_from_values(_context: u64, _arg0: u64, _arg1: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    unsafe { molt_tuple_from_values(_arg0, _arg1) }
+}
+pub unsafe fn molt_tuple_from_values(address: u64, len: u64) -> u64 {unsafe {construct(address,len)}}
+#[export_name = "molt_list_from_values@EXECUTION_SUFFIX@"]
+pub unsafe extern "C" fn attached_molt_list_from_values(_context: u64, _arg0: u64, _arg1: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    unsafe { molt_list_from_values(_arg0, _arg1) }
+}
+pub unsafe fn molt_list_from_values(address: u64, len: u64) -> u64 {unsafe {construct(address,len)}}
+#[export_name = "molt_slice_new@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_slice_new(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) ->u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_slice_new(_arg0, _arg1, _arg2)
+}
+pub fn molt_slice_new(start:u64, stop:u64, step:u64) ->u64 {construct_words(&[start,stop,step])}
+#[export_name = "molt_slice@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_slice(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) ->u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_slice(_arg0, _arg1, _arg2)
+}
+pub fn molt_slice(target:u64, start:u64, end:u64) ->u64 {construct_words(&[target,start,end])}
 // Real family dispatch reaches these borrowed-input/owned-result providers.
-#[no_mangle] pub extern "C" fn molt_vec_sum(it:u64,acc:u64,target:u64)->u64 {construct_words(&[it,acc,target])}
-#[no_mangle] pub extern "C" fn molt_vec_prod(it:u64,acc:u64,target:u64)->u64 {construct_words(&[it,acc,target])}
-#[no_mangle] pub extern "C" fn molt_vec_min(it:u64,acc:u64,target:u64)->u64 {construct_words(&[it,acc,target])}
-#[no_mangle] pub extern "C" fn molt_vec_max(it:u64,acc:u64,target:u64)->u64 {construct_words(&[it,acc,target])}
+#[export_name = "molt_vec_sum@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_vec_sum(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) ->u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_vec_sum(_arg0, _arg1, _arg2)
+}
+pub fn molt_vec_sum(it:u64,acc:u64,target:u64) ->u64 {construct_words(&[it,acc,target])}
+#[export_name = "molt_vec_prod@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_vec_prod(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) ->u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_vec_prod(_arg0, _arg1, _arg2)
+}
+pub fn molt_vec_prod(it:u64,acc:u64,target:u64) ->u64 {construct_words(&[it,acc,target])}
+#[export_name = "molt_vec_min@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_vec_min(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) ->u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_vec_min(_arg0, _arg1, _arg2)
+}
+pub fn molt_vec_min(it:u64,acc:u64,target:u64) ->u64 {construct_words(&[it,acc,target])}
+#[export_name = "molt_vec_max@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_vec_max(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) ->u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_vec_max(_arg0, _arg1, _arg2)
+}
+pub fn molt_vec_max(it:u64,acc:u64,target:u64) ->u64 {construct_words(&[it,acc,target])}
 fn subscript_words(values:&[u64], expected:&[u64]) -> bool {
     CALLS.fetch_add(1,SeqCst); assert_eq!(molt_exception_pending_fast(),0);
     assert_eq!(values,expected,"borrow each distinct operand once, in order");
@@ -2895,46 +3224,107 @@ fn subscript_words(values:&[u64], expected:&[u64]) -> bool {
     if CTOR_FAIL.load(SeqCst) != 0 {unsafe {PENDING_RECORD.pending=1;} return false;}
     true
 }
-#[no_mangle] pub extern "C" fn molt_operator_index(value:u64)->u64 {
+#[export_name = "molt_operator_index@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_operator_index(_context: u64, _arg0: u64) ->u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_operator_index(_arg0)
+}
+pub fn molt_operator_index(value:u64) ->u64 {
     if !subscript_words(&[value],&[0x7ffc000000000101]) {return NONE;}
     RESULT_FIRST.store(0,SeqCst); RESULT_SECOND.store(0,SeqCst);
     RESULT.store(1,SeqCst); 0x7ffc000000000200
 }
-#[no_mangle] pub extern "C" fn molt_index(obj:u64,key:u64)->u64 {
+#[export_name = "molt_index@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_index(_context: u64, _arg0: u64, _arg1: u64) ->u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_index(_arg0, _arg1)
+}
+pub fn molt_index(obj:u64,key:u64) ->u64 {
     if !subscript_words(&[obj,key],&[0x7ffc000000000101,0x7ffc000000000102]) {return NONE;}
     molt_inc_ref_obj(key); key
 }
-#[no_mangle] pub extern "C" fn molt_list_getitem_int_fast(obj:u64,key:u64)->u64 {molt_index(obj,key)}
-#[no_mangle] pub extern "C" fn molt_store_index(obj:u64,key:u64,value:u64)->u64 {
+#[export_name = "molt_list_getitem_int_fast@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_list_getitem_int_fast(_context: u64, _arg0: u64, _arg1: u64) ->u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_list_getitem_int_fast(_arg0, _arg1)
+}
+pub fn molt_list_getitem_int_fast(obj:u64,key:u64) ->u64 {molt_index(obj,key)}
+#[export_name = "molt_store_index@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_store_index(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) ->u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_store_index(_arg0, _arg1, _arg2)
+}
+pub fn molt_store_index(obj:u64,key:u64,value:u64) ->u64 {
     if subscript_words(&[obj,key,value],&[0x7ffc000000000101,0x7ffc000000000101,0x7ffc000000000102]) {obj} else {NONE}
 }
-#[no_mangle] pub extern "C" fn molt_dict_set(obj:u64,key:u64,value:u64)->u64 {
+#[export_name = "molt_dict_set@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_dict_set(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) ->u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_dict_set(_arg0, _arg1, _arg2)
+}
+pub fn molt_dict_set(obj:u64,key:u64,value:u64) ->u64 {
     DICT_SETS.fetch_add(1,SeqCst);
     // Direct dict mutation borrows its operands and returns the borrowed dict;
     // it must not dispatch through the general __setitem__ provider.
     if subscript_words(&[obj,key,value],&[0x7ffc000000000101,0x7ffc000000000101,0x7ffc000000000102]) {obj} else {NONE}
 }
-#[no_mangle] pub extern "C" fn molt_del_index(obj:u64,key:u64)->u64 {
+#[export_name = "molt_del_index@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_del_index(_context: u64, _arg0: u64, _arg1: u64) ->u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_del_index(_arg0, _arg1)
+}
+pub fn molt_del_index(obj:u64,key:u64) ->u64 {
     if subscript_words(&[obj,key],&[0x7ffc000000000101,0x7ffc000000000101]) {obj} else {NONE}
 }
-#[no_mangle] pub extern "C" fn molt_dict_update_missing(obj:u64,key:u64,value:u64)->u64 {
+#[export_name = "molt_dict_update_missing@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_dict_update_missing(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) ->u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_dict_update_missing(_arg0, _arg1, _arg2)
+}
+pub fn molt_dict_update_missing(obj:u64,key:u64,value:u64) ->u64 {
     molt_store_index(obj,key,value)
 }
-#[no_mangle] pub extern "C" fn molt_dict_get(obj:u64,key:u64,default:u64)->u64 {
+#[export_name = "molt_dict_get@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_dict_get(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) ->u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_dict_get(_arg0, _arg1, _arg2)
+}
+pub fn molt_dict_get(obj:u64,key:u64,default:u64) ->u64 {
     if !subscript_words(&[obj,key,default],&[0x7ffc000000000101,0x7ffc000000000101,0x7ffc000000000102]) {return NONE;}
     molt_inc_ref_obj(default); default
 }
-#[no_mangle] pub extern "C" fn molt_set_add(obj:u64,key:u64)->u64 {
+#[export_name = "molt_set_add@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_set_add(_context: u64, _arg0: u64, _arg1: u64) ->u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_set_add(_arg0, _arg1)
+}
+pub fn molt_set_add(obj:u64,key:u64) ->u64 {
     subscript_words(&[obj,key],&[0x7ffc000000000101,0x7ffc000000000102]); NONE
 }
-#[no_mangle] pub unsafe extern "C" fn molt_guarded_class_def(name:u64,bases:u64,nbases:u64,attrs:u64,nattrs:u64,size:u64,version:u64,flags:u64)->u64 {
+#[export_name = "molt_guarded_class_def@EXECUTION_SUFFIX@"]
+pub unsafe extern "C" fn attached_molt_guarded_class_def(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64, _arg3: u64, _arg4: u64, _arg5: u64, _arg6: u64, _arg7: u64) ->u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    unsafe { molt_guarded_class_def(_arg0, _arg1, _arg2, _arg3, _arg4, _arg5, _arg6, _arg7) }
+}
+#[allow(clippy::too_many_arguments, reason = "the body takes the intrinsic ABI's parameters one for one")]
+pub unsafe fn molt_guarded_class_def(name:u64,bases:u64,nbases:u64,attrs:u64,nattrs:u64,size:u64,version:u64,flags:u64) ->u64 {
     assert_eq!(name,NONE); assert_eq!([nbases,nattrs,size,version,flags],[1,1,16,7,3]);
     let words=unsafe { [*(bases as *const u64), *(attrs as *const u64), *((attrs as *const u64).add(1))] };
     unsafe {construct(words.as_ptr() as u64,3)}
 }
-#[no_mangle] pub extern "C" fn molt_exception_pending_fast()->u64 {unsafe {PENDING_RECORD.pending as u64}}
-#[no_mangle] pub extern "C" fn molt_thread_record()->u64 {unsafe { PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; } core::ptr::addr_of!(PENDING_RECORD) as u64}
-#[no_mangle] pub extern "C" fn molt_async_work_poll_and_exception_pending()->u64 {molt_exception_pending_fast()}
+#[export_name = "molt_exception_pending_fast@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_exception_pending_fast(_context: u64) ->u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_exception_pending_fast()
+}
+pub fn molt_exception_pending_fast() ->u64 {unsafe {PENDING_RECORD.pending as u64}}
+fn fixture_thread_record() ->u64 {unsafe { PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; } core::ptr::addr_of!(PENDING_RECORD) as u64}
+#[export_name = "molt_async_work_poll_and_exception_pending@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_async_work_poll_and_exception_pending(_context: u64) ->u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_async_work_poll_and_exception_pending()
+}
+pub fn molt_async_work_poll_and_exception_pending() ->u64 {molt_exception_pending_fast()}
 #[no_mangle] pub extern "C" fn fixed_reset(failure:u64, ctor_failure:u64) {
     assert_eq!(fixed_live(),0); ATTEMPTS.store(0,SeqCst); CALLS.store(0,SeqCst);
     DICT_SETS.store(0,SeqCst);
@@ -2946,93 +3336,97 @@ fn subscript_words(values:&[u64], expected:&[u64]) -> bool {
 #[no_mangle] pub extern "C" fn fixed_dict_set_calls()->u64 {DICT_SETS.load(SeqCst)}
 
 // This isolated provider has no runtime execution attachment or lease.
-#[no_mangle]
-pub extern "C" fn molt_refcount_admission() -> u64 { 0 }
+#[export_name = "molt_refcount_admission@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_refcount_admission(_context: u64) -> u64 {
+    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
+    molt_refcount_admission()
+}
+pub fn molt_refcount_admission() -> u64 { 0 }
 "#.replace("@ABI@", molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL)
       .replace("@NONE@", &(molt_codegen_abi::box_none_bits() as u64).to_string());
     let harness = r#"
 const NONE:u64=@NONE@;
-extern "C" {
- fn fixed_tuple()->u64; fn fixed_list()->u64; fn fixed_discard();
- fn fixed_class()->u64; fn fixed_class_discard();
- fn fixed_slice()->u64; fn fixed_slice_discard();
- fn fixed_subscript_slice()->u64; fn fixed_subscript_slice_discard();
- fn fixed_index()->u64; fn fixed_index_discard(); fn fixed_store_index(); fn fixed_del_index();
- fn fixed_dict_set(); fn fixed_dict_update_missing(); fn fixed_dict_get()->u64;
- fn fixed_dict_get_discard(); fn fixed_set_add();
- fn fixed_vec_sum()->u64; fn fixed_vec_sum_discard();
- fn fixed_vec_prod()->u64; fn fixed_vec_prod_discard();
- fn fixed_vec_min()->u64; fn fixed_vec_min_discard();
- fn fixed_vec_max()->u64; fn fixed_vec_max_discard();
- fn fixed_operator_index()->u64; fn fixed_operator_index_discard();
+extern "C" { fn fixed_execution_context() -> u64;
+ #[link_name = "fixed_tuple@EXECUTION_SUFFIX@"] fn fixed_tuple(_context: u64)->u64; #[link_name = "fixed_list@EXECUTION_SUFFIX@"] fn fixed_list(_context: u64)->u64; #[link_name = "fixed_discard@EXECUTION_SUFFIX@"] fn fixed_discard(_context: u64);
+ #[link_name = "fixed_class@EXECUTION_SUFFIX@"] fn fixed_class(_context: u64)->u64; #[link_name = "fixed_class_discard@EXECUTION_SUFFIX@"] fn fixed_class_discard(_context: u64);
+ #[link_name = "fixed_slice@EXECUTION_SUFFIX@"] fn fixed_slice(_context: u64)->u64; #[link_name = "fixed_slice_discard@EXECUTION_SUFFIX@"] fn fixed_slice_discard(_context: u64);
+ #[link_name = "fixed_subscript_slice@EXECUTION_SUFFIX@"] fn fixed_subscript_slice(_context: u64)->u64; #[link_name = "fixed_subscript_slice_discard@EXECUTION_SUFFIX@"] fn fixed_subscript_slice_discard(_context: u64);
+ #[link_name = "fixed_index@EXECUTION_SUFFIX@"] fn fixed_index(_context: u64)->u64; #[link_name = "fixed_index_discard@EXECUTION_SUFFIX@"] fn fixed_index_discard(_context: u64); #[link_name = "fixed_store_index@EXECUTION_SUFFIX@"] fn fixed_store_index(_context: u64); #[link_name = "fixed_del_index@EXECUTION_SUFFIX@"] fn fixed_del_index(_context: u64);
+ #[link_name = "fixed_dict_set@EXECUTION_SUFFIX@"] fn fixed_dict_set(_context: u64); #[link_name = "fixed_dict_update_missing@EXECUTION_SUFFIX@"] fn fixed_dict_update_missing(_context: u64); #[link_name = "fixed_dict_get@EXECUTION_SUFFIX@"] fn fixed_dict_get(_context: u64)->u64;
+ #[link_name = "fixed_dict_get_discard@EXECUTION_SUFFIX@"] fn fixed_dict_get_discard(_context: u64); #[link_name = "fixed_set_add@EXECUTION_SUFFIX@"] fn fixed_set_add(_context: u64);
+ #[link_name = "fixed_vec_sum@EXECUTION_SUFFIX@"] fn fixed_vec_sum(_context: u64)->u64; #[link_name = "fixed_vec_sum_discard@EXECUTION_SUFFIX@"] fn fixed_vec_sum_discard(_context: u64);
+ #[link_name = "fixed_vec_prod@EXECUTION_SUFFIX@"] fn fixed_vec_prod(_context: u64)->u64; #[link_name = "fixed_vec_prod_discard@EXECUTION_SUFFIX@"] fn fixed_vec_prod_discard(_context: u64);
+ #[link_name = "fixed_vec_min@EXECUTION_SUFFIX@"] fn fixed_vec_min(_context: u64)->u64; #[link_name = "fixed_vec_min_discard@EXECUTION_SUFFIX@"] fn fixed_vec_min_discard(_context: u64);
+ #[link_name = "fixed_vec_max@EXECUTION_SUFFIX@"] fn fixed_vec_max(_context: u64)->u64; #[link_name = "fixed_vec_max_discard@EXECUTION_SUFFIX@"] fn fixed_vec_max_discard(_context: u64);
+ #[link_name = "fixed_operator_index@EXECUTION_SUFFIX@"] fn fixed_operator_index(_context: u64)->u64; #[link_name = "fixed_operator_index_discard@EXECUTION_SUFFIX@"] fn fixed_operator_index_discard(_context: u64);
  fn fixed_reset(failure:u64,ctor_failure:u64); fn fixed_live()->u64;
  fn fixed_attempts()->u64; fn fixed_calls()->u64; fn fixed_dict_set_calls()->u64;
- fn molt_exception_pending_fast()->u64;
- fn molt_dec_ref_obj(value:u64);
+ #[link_name = "molt_exception_pending_fast@EXECUTION_SUFFIX@"] fn molt_exception_pending_fast(_context: u64)->u64;
+ #[link_name = "molt_dec_ref_obj@EXECUTION_SUFFIX@"] fn molt_dec_ref_obj(_context: u64, value:u64);
 }
 fn main() {unsafe {
- for run in [fixed_tuple as unsafe extern "C" fn()->u64, fixed_list, fixed_class, fixed_slice, fixed_subscript_slice, fixed_vec_sum, fixed_vec_prod, fixed_vec_min, fixed_vec_max] {
+ for run in [fixed_tuple as unsafe extern "C" fn(u64)->u64, fixed_list, fixed_class, fixed_slice, fixed_subscript_slice, fixed_vec_sum, fixed_vec_prod, fixed_vec_min, fixed_vec_max] {
   for (failure,ctor_failure) in [(0,0),(1,0),(2,0),(0,1)] {
-   fixed_reset(failure,ctor_failure); let result=run();
+   fixed_reset(failure,ctor_failure); let result=run(fixed_execution_context());
    let success=failure==0 && ctor_failure==0;
    assert_eq!(result,if success {0x7ffc000000000200} else {NONE});
    assert_eq!(fixed_attempts(),if failure==1 {1} else {2});
    assert_eq!(fixed_calls(),u64::from(failure==0));
    assert_eq!(fixed_live(),if success {4} else {0});
-   assert_eq!(molt_exception_pending_fast(),u64::from(!success));
-   if success {molt_dec_ref_obj(result)} assert_eq!(fixed_live(),0);
+   assert_eq!(molt_exception_pending_fast(fixed_execution_context()),u64::from(!success));
+   if success {molt_dec_ref_obj(fixed_execution_context(), result)} assert_eq!(fixed_live(),0);
   }
  }
- for run in [fixed_discard as unsafe extern "C" fn(), fixed_class_discard, fixed_slice_discard, fixed_subscript_slice_discard, fixed_vec_sum_discard, fixed_vec_prod_discard, fixed_vec_min_discard, fixed_vec_max_discard] {
+ for run in [fixed_discard as unsafe extern "C" fn(u64), fixed_class_discard, fixed_slice_discard, fixed_subscript_slice_discard, fixed_vec_sum_discard, fixed_vec_prod_discard, fixed_vec_min_discard, fixed_vec_max_discard] {
   for (failure,consumer_failure) in [(0,0),(1,0),(2,0),(0,1)] {
-   fixed_reset(failure,consumer_failure); run(); assert_eq!(fixed_live(),0);
+   fixed_reset(failure,consumer_failure); run(fixed_execution_context()); assert_eq!(fixed_live(),0);
    assert_eq!(fixed_attempts(),if failure==1 {1} else {2});
    assert_eq!(fixed_calls(),u64::from(failure==0));
-   assert_eq!(molt_exception_pending_fast(),u64::from(failure!=0 || consumer_failure!=0));
+   assert_eq!(molt_exception_pending_fast(fixed_execution_context()),u64::from(failure!=0 || consumer_failure!=0));
   }
  }
  // operator.index returns a fresh owned result after borrowing one boxed input.
  for (failure,consumer_failure) in [(0,0),(1,0),(0,1)] {
   let success=failure==0 && consumer_failure==0;
-  fixed_reset(failure,consumer_failure); let result=fixed_operator_index();
+  fixed_reset(failure,consumer_failure); let result=fixed_operator_index(fixed_execution_context());
   assert_eq!(result,if success {0x7ffc000000000200} else {NONE});
   assert_eq!(fixed_attempts(),1); assert_eq!(fixed_calls(),u64::from(failure==0));
   assert_eq!(fixed_live(),u64::from(success));
-  assert_eq!(molt_exception_pending_fast(),u64::from(!success));
-  if success {molt_dec_ref_obj(result)} assert_eq!(fixed_live(),0);
-  fixed_reset(failure,consumer_failure); fixed_operator_index_discard();
+  assert_eq!(molt_exception_pending_fast(fixed_execution_context()),u64::from(!success));
+  if success {molt_dec_ref_obj(fixed_execution_context(), result)} assert_eq!(fixed_live(),0);
+  fixed_reset(failure,consumer_failure); fixed_operator_index_discard(fixed_execution_context());
   assert_eq!(fixed_live(),0); assert_eq!(fixed_attempts(),1);
   assert_eq!(fixed_calls(),u64::from(failure==0));
-  assert_eq!(molt_exception_pending_fast(),u64::from(!success));
+  assert_eq!(molt_exception_pending_fast(fixed_execution_context()),u64::from(!success));
  }
  // An owned result may alias a borrowed operand: the key keeps its box through
  // the result's own credit after the transaction releases its temporaries.
- for (run,discard) in [(fixed_index as unsafe extern "C" fn()->u64,fixed_index_discard as unsafe extern "C" fn()),(fixed_dict_get,fixed_dict_get_discard)] {
+ for (run,discard) in [(fixed_index as unsafe extern "C" fn(u64)->u64,fixed_index_discard as unsafe extern "C" fn(u64)),(fixed_dict_get,fixed_dict_get_discard)] {
  for (failure,consumer_failure) in [(0,0),(1,0),(2,0),(0,1)] {
   let success=failure==0 && consumer_failure==0;
-  fixed_reset(failure,consumer_failure); let result=run();
+  fixed_reset(failure,consumer_failure); let result=run(fixed_execution_context());
   assert_eq!(result,if success {0x7ffc000000000102} else {NONE});
   assert_eq!(fixed_attempts(),if failure==1 {1} else {2});
   assert_eq!(fixed_calls(),u64::from(failure==0));
   assert_eq!(fixed_live(),u64::from(success));
-  assert_eq!(molt_exception_pending_fast(),u64::from(!success));
-  if success {molt_dec_ref_obj(result)} assert_eq!(fixed_live(),0);
-  fixed_reset(failure,consumer_failure); discard();
+  assert_eq!(molt_exception_pending_fast(fixed_execution_context()),u64::from(!success));
+  if success {molt_dec_ref_obj(fixed_execution_context(), result)} assert_eq!(fixed_live(),0);
+  fixed_reset(failure,consumer_failure); discard(fixed_execution_context());
   assert_eq!(fixed_live(),0); assert_eq!(fixed_calls(),u64::from(failure==0));
-  assert_eq!(molt_exception_pending_fast(),u64::from(!success));
+  assert_eq!(molt_exception_pending_fast(fixed_execution_context()),u64::from(!success));
  }
  }
  // Statements discard the borrowed container return, which aliases the first
  // operand's box; only the transaction releases that box.
- for (run,boxes,dict_sets) in [(fixed_store_index as unsafe extern "C" fn(),2,0),(fixed_del_index,1,0),(fixed_dict_set,2,1),(fixed_dict_update_missing,2,0),(fixed_set_add,2,0)] {
+ for (run,boxes,dict_sets) in [(fixed_store_index as unsafe extern "C" fn(u64),2,0),(fixed_del_index,1,0),(fixed_dict_set,2,1),(fixed_dict_update_missing,2,0),(fixed_set_add,2,0)] {
   for (failure,consumer_failure) in [(0,0),(1,0),(2,0),(0,1)] {
-   fixed_reset(failure,consumer_failure); run();
+   fixed_reset(failure,consumer_failure); run(fixed_execution_context());
    let failed_box=failure!=0 && failure<=boxes;
    assert_eq!(fixed_attempts(),if failed_box {failure} else {boxes});
    assert_eq!(fixed_calls(),u64::from(!failed_box));
    assert_eq!(fixed_dict_set_calls(),if failed_box {0} else {dict_sets},"dict_set selects its direct provider, never the general store protocol");
    assert_eq!(fixed_live(),0);
-   assert_eq!(molt_exception_pending_fast(),u64::from(failed_box || consumer_failure!=0));
+   assert_eq!(molt_exception_pending_fast(fixed_execution_context()),u64::from(failed_box || consumer_failure!=0));
   }
  }
 }}
@@ -3045,7 +3439,11 @@ fn main() {unsafe {
         &rustc,
         "native-fixed-aggregate-owners",
         object_bytes,
-        &provider,
+        &format!(
+            "{}{}",
+            provider,
+            native_object_execution::execution_context_fixture_source("fixture_thread_record()")
+        ),
         &harness,
         "native fixed aggregate materialization and ownership",
     );

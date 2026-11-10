@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "llvm")]
+use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use molt_ir::OpKind;
 
 // Only container operations with custom lowering belong here. Exact
@@ -92,7 +94,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let unpack_result = self
                     .backend
                     .builder
-                    .build_call(
+                    .build_execution_call(
                         unpack_fn,
                         &[
                             seq_bits.into(),

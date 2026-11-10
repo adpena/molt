@@ -1,5 +1,5 @@
-use crate::runtime_boxed_abi_generated::{RuntimeBoxedReturn, RuntimeFn};
 use crate::runtime_calls::{RuntimeArgumentOwnership, RuntimeCall, RuntimeCallRealization};
+use crate::runtime_fn_generated::{RuntimeBoxedReturn, RuntimeFn};
 use crate::tir::target_info::TargetKind;
 
 #[test]
@@ -25,8 +25,8 @@ fn runtime_call_contract_preserves_python_meaning_and_result_custody() {
             assert_eq!(RuntimeCall::from_op(kind), Some(call));
         }
         assert_eq!(call.function(), function);
-        let abi = function.boxed_abi();
-        assert_eq!((abi.arity, abi.result), (arity, result));
+        let abi = function.boxed_abi().unwrap();
+        assert_eq!((abi.arity(), abi.result), (arity, result));
         for i in 0..arity {
             assert_eq!(
                 call.argument_ownership(i),

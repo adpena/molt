@@ -38,7 +38,10 @@ fn required<'a>(py: &'a PyToken<'_>, obj: u64, name: crate::NameId) -> Result<Va
         .owned_bits(py)
         .ok_or_else(|| MoltObject::none().bits())?;
     let name = owned(py, name)?;
-    owned(py, molt_getattr_builtin(obj, name.bits(), missing_bits(py)))
+    owned(
+        py,
+        molt_getattr_builtin_attached_body(py, obj, name.bits(), missing_bits(py)),
+    )
 }
 
 fn special<'a>(
@@ -82,7 +85,7 @@ fn copyreg<'a>(py: &'a PyToken<'_>, name: crate::NameId) -> Result<Value<'a>, u6
         return Err(MoltObject::none().bits());
     }
     let module_name = owned(py, MoltObject::from_ptr(module_name).bits())?;
-    let module = owned(py, molt_module_import(module_name.bits()))?;
+    let module = owned(py, molt_module_import_attached_body(py, module_name.bits()))?;
     required(py, module.bits(), name)
 }
 
@@ -265,14 +268,14 @@ fn reduce_newobj(py: &PyToken<'_>, obj: u64) -> Result<u64, u64> {
         },
     )?;
     let listitems = if is_list {
-        owned(py, molt_iter(obj))?
+        owned(py, molt_iter_attached_body(py, obj))?
     } else {
         Value::retain(py.core_token(), MoltObject::none().bits())
     };
     let dictitems = if is_dict {
         let items = required(py, obj, crate::NameId::Items)?;
         let items = owned(py, unsafe { call_callable0(py, items.bits()) })?;
-        owned(py, molt_iter(items.bits()))?
+        owned(py, molt_iter_attached_body(py, items.bits()))?
     } else {
         Value::retain(py.core_token(), MoltObject::none().bits())
     };
@@ -306,16 +309,18 @@ fn common_reduce(py: &PyToken<'_>, obj: u64, protocol: i32) -> Result<u64, u64> 
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_object_reduce(obj: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_object_reduce_attached_body(_py: &crate::PyToken<'_>, obj: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         common_reduce(py, obj, 0).unwrap_or_else(|error| error)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_object_reduce_ex(obj: u64, protocol: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_object_reduce_ex_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj: u64,
+    protocol: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(protocol) = crate::builtins::numbers::index_c_int_from_obj(py, protocol) else {
             return MoltObject::none().bits();
         };
@@ -358,41 +363,43 @@ fn one_newarg(py: &PyToken<'_>, value: u64) -> Result<u64, u64> {
     Ok(tuple(py, &[value.bits()])?.into_bits())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_int_getnewargs(obj: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_int_getnewargs_attached_body(_py: &crate::PyToken<'_>, obj: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         // CPython longobject.c int___getnewargs___impl: copy storage, never
         // invoke a subtype's __int__ override.
-        one_newarg(py, molt_int_int(obj)).unwrap_or_else(|error| error)
+        one_newarg(py, molt_int_int_attached_body(py, obj)).unwrap_or_else(|error| error)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_float_getnewargs(obj: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_float_getnewargs_attached_body(_py: &crate::PyToken<'_>, obj: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         // CPython floatobject.c float___getnewargs___impl.
-        one_newarg(py, molt_float_float(obj)).unwrap_or_else(|error| error)
+        one_newarg(py, molt_float_float_attached_body(py, obj)).unwrap_or_else(|error| error)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_str_getnewargs(obj: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
-        one_newarg(py, crate::object::ops_format::string_str_slot(obj))
-            .unwrap_or_else(|error| error)
+pub(crate) fn molt_str_getnewargs_attached_body(_py: &crate::PyToken<'_>, obj: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        one_newarg(
+            py,
+            crate::object::ops_format::string_str_slot(_py.attached_context(), obj),
+        )
+        .unwrap_or_else(|error| error)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_getnewargs(obj: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
-        one_newarg(py, crate::object::ops_bytes::bytes_bytes(obj)).unwrap_or_else(|error| error)
+pub(crate) fn molt_bytes_getnewargs_attached_body(_py: &crate::PyToken<'_>, obj: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        one_newarg(
+            py,
+            crate::object::ops_bytes::bytes_bytes(_py.attached_context(), obj),
+        )
+        .unwrap_or_else(|error| error)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tuple_getnewargs(obj: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_tuple_getnewargs_attached_body(_py: &crate::PyToken<'_>, obj: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let result = (|| {
             require_kind(
                 py,
@@ -419,9 +426,8 @@ pub extern "C" fn molt_tuple_getnewargs(obj: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_complex_getnewargs(obj: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_complex_getnewargs_attached_body(_py: &crate::PyToken<'_>, obj: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(ptr) = complex_ptr_from_bits(obj) else {
             return raise_exception::<u64>(
                 py,
@@ -439,13 +445,12 @@ pub extern "C" fn molt_complex_getnewargs(obj: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_set_reduce(obj: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_set_reduce_attached_body(_py: &crate::PyToken<'_>, obj: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         // CPython Objects/setobject.c set_reduce, shared by set/frozenset:
         // iteration is observable before __getstate__, including on subtypes.
         let result = (|| {
-            let keys = owned(py, molt_list_builtin(obj))?;
+            let keys = owned(py, molt_list_builtin_attached_body(py, obj))?;
             let args = tuple(py, &[keys.bits()])?;
             let getter = required(py, obj, crate::NameId::DunderGetstate)?;
             let state = owned(py, unsafe { call_callable0(py, getter.bits()) })?;
@@ -505,7 +510,12 @@ fn bytearray_reduce(py: &PyToken<'_>, obj: u64, protocol: i32) -> Result<u64, u6
             let encoding = owned(py, MoltObject::from_ptr(encoding).bits())?;
             let text = owned(
                 py,
-                molt_bytes_decode(bytes.bits(), encoding.bits(), missing_bits(py)),
+                molt_bytes_decode_attached_body(
+                    py,
+                    bytes.bits(),
+                    encoding.bits(),
+                    missing_bits(py),
+                ),
             )?;
             tuple(py, &[text.bits(), encoding.bits()])?
         } else {
@@ -515,19 +525,23 @@ fn bytearray_reduce(py: &PyToken<'_>, obj: u64, protocol: i32) -> Result<u64, u6
     Ok(tuple(py, &[cls.bits(), args.bits(), state.bits()])?.into_bits())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_reduce(obj: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_bytearray_reduce_attached_body(_py: &crate::PyToken<'_>, obj: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         bytearray_reduce(py, obj, 2).unwrap_or_else(|error| error)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_reduce_ex(obj: u64, protocol: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_bytearray_reduce_ex_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj: u64,
+    protocol: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let Some(protocol) = crate::builtins::numbers::index_c_int_from_obj(py, protocol) else {
             return MoltObject::none().bits();
         };
         bytearray_reduce(py, obj, protocol).unwrap_or_else(|error| error)
     })
 }
+
+include!("../../attached_exports_generated/object/ops_builtins/reduction.rs");

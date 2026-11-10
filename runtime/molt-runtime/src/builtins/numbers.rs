@@ -1072,7 +1072,7 @@ pub(crate) fn integer_storage_bigint(py: &PyToken<'_>, bits: u64) -> Result<Opti
     .ok_or(())?;
     let _owner = obj_from_bits(payload)
         .as_ptr()
-        .map(crate::PtrDropGuard::preserving);
+        .map(|__ptr| crate::PtrDropGuard::preserving(py, __ptr));
     let Some(value) = index_bigint_integral_bits(payload) else {
         raise_exception::<()>(
             py,
@@ -1196,10 +1196,12 @@ fn integer_from_special(py: &PyToken<'_>, bits: u64, name: crate::NameId) -> Opt
         };
     let callable_owner = obj_from_bits(callable)
         .as_ptr()
-        .map(crate::PtrDropGuard::new);
+        .map(|__ptr| crate::PtrDropGuard::new(py, __ptr));
     let result = unsafe { call_callable0(py, callable) };
     drop(callable_owner);
-    let mut result_owner = obj_from_bits(result).as_ptr().map(crate::PtrDropGuard::new);
+    let mut result_owner = obj_from_bits(result)
+        .as_ptr()
+        .map(|__ptr| crate::PtrDropGuard::new(py, __ptr));
     if exception_pending(py) {
         return None;
     }
@@ -1254,7 +1256,9 @@ pub(crate) fn exact_integer_from_owned(py: &PyToken<'_>, bits: u64) -> u64 {
     if obj_from_bits(bits).is_int() || builtin_int_bits_for_gil() == Some(type_of_bits(py, bits)) {
         return bits;
     }
-    let _owner = obj_from_bits(bits).as_ptr().map(crate::PtrDropGuard::new);
+    let _owner = obj_from_bits(bits)
+        .as_ptr()
+        .map(|__ptr| crate::PtrDropGuard::new(py, __ptr));
     exact_integer_from_storage(py, bits).unwrap_or_else(|| {
         if !exception_pending(py) {
             raise_exception::<()>(
@@ -1320,7 +1324,9 @@ pub(crate) fn index_bigint_from_obj(py: &PyToken<'_>, bits: u64, err: &str) -> O
         Err(()) => return None,
     }
     if let Some(result) = integer_from_special(py, bits, crate::NameId::DunderIndex) {
-        let _owner = obj_from_bits(result).as_ptr().map(crate::PtrDropGuard::new);
+        let _owner = obj_from_bits(result)
+            .as_ptr()
+            .map(|__ptr| crate::PtrDropGuard::new(py, __ptr));
         return integer_storage_bigint(py, result).ok().flatten();
     }
     if !exception_pending(py) {
@@ -1397,7 +1403,7 @@ pub(crate) fn int_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<u6
     };
     let callable_owner = obj_from_bits(callable)
         .as_ptr()
-        .map(crate::PtrDropGuard::new);
+        .map(|__ptr| crate::PtrDropGuard::new(py, __ptr));
     if !crate::builtins::warnings_ext::emit_deprecation_warning(
         py,
         "The delegation of int() to __trunc__ is deprecated.",
@@ -1406,7 +1412,9 @@ pub(crate) fn int_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<u6
     }
     let result = unsafe { call_callable0(py, callable) };
     drop(callable_owner);
-    let _result_owner = obj_from_bits(result).as_ptr().map(crate::PtrDropGuard::new);
+    let _result_owner = obj_from_bits(result)
+        .as_ptr()
+        .map(|__ptr| crate::PtrDropGuard::new(py, __ptr));
     if exception_pending(py) {
         return None;
     }
@@ -1490,8 +1498,10 @@ pub(crate) fn exact_float_storage_value(py: &PyToken<'_>, bits: u64) -> Result<O
 
 /// int.__float__ owns the native payload conversion inherited by int subclasses.
 /// Explicit base calls read that payload without redispatching __float__/__index__.
-pub(crate) extern "C" fn int_float_slot(bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn int_float_slot(__context: u64, bits: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(value) = index_bigint_integral_bits(bits) else {
             return raise_exception::<_>(
                 py,
@@ -1509,22 +1519,22 @@ pub(crate) extern "C" fn int_float_slot(bits: u64) -> u64 {
 /// Numeric scalar extraction usually needs no heap owner. An exact __float__
 /// callback result retains its identity until the object-producing consumer
 /// transfers it, or the scalar consumer retires it after reading the value.
-pub(crate) struct FloatConversion {
+pub(crate) struct FloatConversion<'guard> {
     value: f64,
-    owner: Option<(u64, crate::PtrDropGuard)>,
+    owner: Option<(u64, crate::PtrDropGuard<'guard>)>,
 }
 
-impl FloatConversion {
+impl<'guard> FloatConversion<'guard> {
     fn value(value: f64) -> Self {
         Self { value, owner: None }
     }
 
-    fn owned(bits: u64, value: f64) -> Self {
+    fn owned(py: &'guard PyToken<'guard>, bits: u64, value: f64) -> Self {
         Self {
             value,
             owner: obj_from_bits(bits)
                 .as_ptr()
-                .map(|ptr| (bits, crate::PtrDropGuard::new(ptr))),
+                .map(|ptr| (bits, crate::PtrDropGuard::new(py, ptr))),
         }
     }
 
@@ -1532,7 +1542,7 @@ impl FloatConversion {
         self.value
     }
 
-    pub(crate) fn into_bits(mut self, py: &PyToken<'_>) -> u64 {
+    pub(crate) fn into_bits(mut self, py: &'guard PyToken<'guard>) -> u64 {
         if let Some((bits, owner)) = &mut self.owner {
             owner.release();
             return *bits;
@@ -1547,19 +1557,22 @@ impl FloatConversion {
 /// the constructor's text parser; every protocol failure returns None with its
 /// original pending exception. Int subclasses must reach __float__ before any
 /// integral payload extraction. Float subclasses likewise reach their slot here.
-pub(crate) fn float_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<FloatConversion> {
+pub(crate) fn float_from_number_protocol<'guard>(
+    py: &'guard PyToken<'guard>,
+    bits: u64,
+) -> Option<FloatConversion<'guard>> {
     let obj = obj_from_bits(bits);
     if let Some(native) = native_numeric_object(bits) {
         let exact = unsafe { molt_cpython_abi::api::numbers::PyFloat_CheckExact(native) } != 0;
         if exact {
             let value = float_storage_value(py, bits).ok()??;
             crate::inc_ref_bits(py, bits);
-            return Some(FloatConversion::owned(bits, value));
+            return Some(FloatConversion::owned(py, bits, value));
         }
     }
     if is_exact_float(py, bits) {
         crate::inc_ref_bits(py, bits);
-        return as_float_extended(obj).map(|value| FloatConversion::owned(bits, value));
+        return as_float_extended(obj).map(|value| FloatConversion::owned(py, bits, value));
     }
     if let Some(value) = obj.as_int() {
         return Some(FloatConversion::value(value as f64));
@@ -1582,10 +1595,12 @@ pub(crate) fn float_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<
     if let Some(call_bits) = float_method {
         let callable_owner = obj_from_bits(call_bits)
             .as_ptr()
-            .map(crate::PtrDropGuard::new);
+            .map(|__ptr| crate::PtrDropGuard::new(py, __ptr));
         let result = unsafe { call_callable0(py, call_bits) };
         drop(callable_owner);
-        let mut result_owner = obj_from_bits(result).as_ptr().map(crate::PtrDropGuard::new);
+        let mut result_owner = obj_from_bits(result)
+            .as_ptr()
+            .map(|__ptr| crate::PtrDropGuard::new(py, __ptr));
         if exception_pending(py) {
             return None;
         }
@@ -1639,7 +1654,7 @@ pub(crate) fn float_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<
             if let Some(owner) = &mut result_owner {
                 owner.release();
             }
-            return Some(FloatConversion::owned(result, value));
+            return Some(FloatConversion::owned(py, result, value));
         }
         return Some(FloatConversion::value(value));
     }
@@ -1647,7 +1662,9 @@ pub(crate) fn float_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<
         return None;
     }
     let index = index_from_number_protocol(py, bits)?;
-    let _index_owner = obj_from_bits(index).as_ptr().map(crate::PtrDropGuard::new);
+    let _index_owner = obj_from_bits(index)
+        .as_ptr()
+        .map(|__ptr| crate::PtrDropGuard::new(py, __ptr));
     let value = integer_storage_bigint(py, index).ok()??;
     // Keep the original index result through overflow creation, as
     // PyNumber_Float does around PyLong_AsDouble.
@@ -1717,8 +1734,14 @@ mod float_conversion_tests {
     static RESULT: AtomicU64 = AtomicU64::new(0);
     static RAISE: AtomicU64 = AtomicU64::new(0);
 
-    extern "C" fn float_conversion_callback(_self: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn float_conversion_callback(__context: u64, _self: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let py = unsafe { crate::PyToken::from_attached_context(__context) };
+        {
             FLOAT_CALLS.fetch_add(1, Ordering::SeqCst);
             if RAISE.load(Ordering::SeqCst) != 0 {
                 return raise_exception::<_>(
@@ -1730,11 +1753,17 @@ mod float_conversion_tests {
             let result = RESULT.load(Ordering::SeqCst);
             inc_ref_bits(py, result);
             result
-        })
+        }
     }
 
-    extern "C" fn index_conversion_callback(_self: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn index_conversion_callback(__context: u64, _self: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let py = unsafe { crate::PyToken::from_attached_context(__context) };
+        {
             INDEX_CALLS.fetch_add(1, Ordering::SeqCst);
             if RAISE.load(Ordering::SeqCst) != 0 {
                 return raise_exception::<_>(py, BuiltinExc::LookupError, "index protocol failure");
@@ -1742,38 +1771,47 @@ mod float_conversion_tests {
             let result = RESULT.load(Ordering::SeqCst);
             inc_ref_bits(py, result);
             result
-        })
+        }
     }
 
     fn conversion_class(py: &PyToken<'_>, base: u64, float: bool, index: bool) -> u64 {
         let name = dynamic_attr_name_bits(py, b"FloatConversionContract").unwrap();
-        let class = crate::molt_class_new(name);
+        let class = crate::molt_class_new_attached_body(py, name);
         dec_ref_bits(py, name);
-        crate::molt_class_set_base(class, base);
-        let methods: [(&[u8], bool, extern "C" fn(u64) -> u64, &str); 2] = [
-            (
-                b"__float__",
-                float,
-                float_conversion_callback,
-                "float_conversion_callback",
-            ),
-            (
-                b"__index__",
-                index,
-                index_conversion_callback,
-                "index_conversion_callback",
-            ),
+        crate::molt_class_set_base_attached_body(py, class, base);
+        struct ConversionMethod {
+            name: crate::NameId,
+            enabled: bool,
+            callback: unsafe extern "C" fn(u64, u64) -> u64,
+            symbol: &'static str,
+        }
+        let methods = [
+            ConversionMethod {
+                name: crate::NameId::DunderFloat,
+                enabled: float,
+                callback: float_conversion_callback,
+                symbol: "float_conversion_callback",
+            },
+            ConversionMethod {
+                name: crate::NameId::DunderIndex,
+                enabled: index,
+                callback: index_conversion_callback,
+                symbol: "index_conversion_callback",
+            },
         ];
-        for (name, enabled, method, symbol) in methods {
-            if !enabled {
+        for method in methods {
+            if !method.enabled {
                 continue;
             }
-            let name = dynamic_attr_name_bits(py, name).unwrap();
-            let function =
-                alloc_runtime_function_obj(py, runtime_fn_addr(symbol, method as *const ()), 1);
+            let name = method.name.owned_bits(py).unwrap();
+            let function = alloc_runtime_function_obj(
+                py,
+                runtime_fn_addr(method.symbol, method.callback as *const ()),
+                1,
+            );
             assert!(!function.is_null());
             let function = MoltObject::from_ptr(function).bits();
-            crate::molt_set_attr_name(class, name, function);
+            crate::molt_set_attr_name_attached_body(py, class, name, function);
             dec_ref_bits(py, name);
             dec_ref_bits(py, function);
         }
@@ -1807,7 +1845,7 @@ mod float_conversion_tests {
 
     fn assert_error(py: &PyToken<'_>, kind: crate::BuiltinExc, message: &str) {
         assert!(exception_pending(py));
-        let error = crate::builtins::exceptions::molt_exception_last_pending();
+        let error = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
         assert!(crate::builtins::exceptions::exception_matches_kind(
             py, error, kind
         ));
@@ -1832,15 +1870,15 @@ mod float_conversion_tests {
         let function = alloc_runtime_function_obj(py, runtime_fn_addr(symbol, callback), arity);
         assert!(!function.is_null());
         let function = MoltObject::from_ptr(function).bits();
-        let result = crate::molt_set_attr_name(class, name, function);
+        let result = crate::molt_set_attr_name_attached_body(py, class, name, function);
         for value in [result, function, name] {
             dec_ref_bits(py, value);
         }
         assert!(!exception_pending(py));
     }
 
-    extern "C" fn scalar_binary_override(value: u64, _other: u64) -> u64 {
-        float_conversion_callback(value)
+    extern "C" fn scalar_binary_override(__context: u64, value: u64, _other: u64) -> u64 {
+        float_conversion_callback(__context, value)
     }
 
     #[test]
@@ -1848,22 +1886,23 @@ mod float_conversion_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::cpython_abi_hooks::register_cpython_hooks();
         crate::with_gil_entry_nopanic!(py, {
-            struct ResetCallbacks;
-            impl Drop for ResetCallbacks {
+            struct ResetCallbacks<'a, 'py>(&'a crate::PyToken<'py>);
+            impl Drop for ResetCallbacks<'_, '_> {
                 fn drop(&mut self) {
                     reset_callbacks(0, false);
-                    crate::molt_warnings_resetwarnings();
+                    crate::molt_warnings_resetwarnings_attached_body(self.0);
                 }
             }
-            let _callbacks = ResetCallbacks;
+            let _callbacks = ResetCallbacks(py);
             let int_class = conversion_class(py, builtin_classes(py).int, false, true);
             let producer_class = conversion_class(py, builtin_classes(py).object, false, true);
             let producer = plain_instance(py, producer_class);
             let wide = bigint_bits(py, (BigInt::from(1u8) << 100usize) + 13u8);
-            let subtype = crate::molt_int_new(int_class, wide, missing_bits(py));
+            let subtype = crate::molt_int_new_attached_body(py, int_class, wide, missing_bits(py));
             let ignore = dynamic_attr_name_bits(py, b"ignore").unwrap();
-            crate::molt_warnings_resetwarnings();
-            crate::molt_warnings_simplefilter(
+            crate::molt_warnings_resetwarnings_attached_body(py);
+            crate::molt_warnings_simplefilter_attached_body(
+                py,
                 ignore,
                 crate::builtins::exceptions::exception_class_bits(
                     py,
@@ -1895,7 +1934,7 @@ mod float_conversion_tests {
             };
             assert_eq!(projected, subtype);
             dec_ref_bits(py, projected);
-            let public = crate::molt_operator_index(producer);
+            let public = crate::molt_operator_index_attached_body(py, producer);
             assert_eq!(
                 public, wide,
                 "public index reuses the existing exact payload"
@@ -1912,11 +1951,13 @@ mod float_conversion_tests {
                     unsafe { crate::header_from_obj_ptr(obj_from_bits(input).as_ptr().unwrap()) };
                 let before = unsafe { (*header).ref_count_snapshot() };
                 raise_exception::<()>(py, BuiltinExc::LookupError, "existing index error");
-                let original = crate::builtins::exceptions::molt_exception_last_pending();
-                let failed = crate::molt_operator_index(input);
+                let original =
+                    crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
+                let failed = crate::molt_operator_index_attached_body(py, input);
                 assert_eq!(failed, MoltObject::none().bits());
                 assert_eq!(unsafe { (*header).ref_count_snapshot() }, before);
-                let observed = crate::builtins::exceptions::molt_exception_last_pending();
+                let observed =
+                    crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                 assert_eq!(observed, original);
                 assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
                 clear_exception(py);
@@ -1944,10 +1985,11 @@ mod float_conversion_tests {
             );
             let wide = bigint_bits(py, (BigInt::from(1u8) << 100usize) + 3u8);
             for payload in [MoltObject::from_int(42).bits(), wide] {
-                let value = crate::molt_int_new(class, payload, missing_bits(py));
+                let value = crate::molt_int_new_attached_body(py, class, payload, missing_bits(py));
                 assert!(!exception_pending(py));
                 reset_callbacks(MoltObject::from_int(99).bits(), false);
-                let converted = crate::molt_int_from_obj(
+                let converted = crate::molt_int_from_obj_attached_body(
+                    py,
                     value,
                     MoltObject::none().bits(),
                     MoltObject::from_bool(false).bits(),
@@ -1956,11 +1998,11 @@ mod float_conversion_tests {
                 assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
                 assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
                 for operation in [
-                    crate::molt_operator_index as extern "C" fn(u64) -> u64,
+                    crate::molt_operator_index as unsafe extern "C" fn(u64, u64) -> u64,
                     crate::molt_int_int,
                     crate::molt_int_index,
                 ] {
-                    let extracted = operation(value);
+                    let extracted = unsafe { operation(py.attached_context(), value) };
                     assert_eq!(
                         extracted, payload,
                         "base slot reuses the exact payload owner"
@@ -1969,7 +2011,8 @@ mod float_conversion_tests {
                 }
                 assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
                 assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
-                let exact = crate::molt_int_from_obj(
+                let exact = crate::molt_int_from_obj_attached_body(
+                    py,
                     payload,
                     MoltObject::none().bits(),
                     MoltObject::from_bool(false).bits(),
@@ -1990,7 +2033,11 @@ mod float_conversion_tests {
                     1,
                 );
                 let value = if base == builtin_classes(py).float {
-                    crate::molt_float_new(class, MoltObject::from_float(1.25).bits())
+                    crate::molt_float_new_attached_body(
+                        py,
+                        class,
+                        MoltObject::from_float(1.25).bits(),
+                    )
                 } else {
                     plain_instance(py, class)
                 };
@@ -2032,13 +2079,13 @@ mod float_conversion_tests {
     fn integer_trunc_delegation_is_target_versioned_and_warning_precedes_callback() {
         let transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            struct ResetWarnings;
-            impl Drop for ResetWarnings {
+            struct ResetWarnings<'a, 'py>(&'a crate::PyToken<'py>);
+            impl Drop for ResetWarnings<'_, '_> {
                 fn drop(&mut self) {
-                    crate::molt_warnings_resetwarnings();
+                    crate::molt_warnings_resetwarnings_attached_body(self.0);
                 }
             }
-            let _reset = ResetWarnings;
+            let _reset = ResetWarnings(py);
             let class = conversion_class(py, builtin_classes(py).object, false, false);
             install_scalar_test_method(
                 py,
@@ -2058,8 +2105,9 @@ mod float_conversion_tests {
             for minor in [12, 13, 14] {
                 transaction.with_target_python_minor(py, minor, || {
                     for (action, raises) in [(ignore, false), (error, true)] {
-                        crate::molt_warnings_resetwarnings();
-                        crate::molt_warnings_simplefilter(
+                        crate::molt_warnings_resetwarnings_attached_body(py);
+                        crate::molt_warnings_simplefilter_attached_body(
+                            py,
                             action,
                             category,
                             MoltObject::from_int(0).bits(),
@@ -2111,7 +2159,7 @@ mod float_conversion_tests {
                 f64::NAN,
             ] {
                 let carrier = crate::object::ops::float_result_bits(py, input);
-                let value = crate::molt_float_new(class, carrier);
+                let value = crate::molt_float_new_attached_body(py, class, carrier);
                 assert!(!exception_pending(py));
                 let object = obj_from_bits(value);
                 assert_eq!(
@@ -2138,7 +2186,7 @@ mod float_conversion_tests {
                     }
                 }
                 assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 0);
-                let hash = crate::object::ops_hash::molt_float_hash_method(value);
+                let hash = crate::object::ops_hash::molt_float_hash_method_attached_body(py, value);
                 assert!(!exception_pending(py));
                 for value in [hash, value, carrier] {
                     dec_ref_bits(py, value);
@@ -2147,7 +2195,8 @@ mod float_conversion_tests {
             let integer_class = conversion_class(py, builtin_classes(py).int, false, false);
             let large = bigint_bits(py, BigInt::from(1u8) << 80usize);
             for payload in [MoltObject::from_int(42).bits(), large] {
-                let value = crate::molt_int_new(integer_class, payload, missing_bits(py));
+                let value =
+                    crate::molt_int_new_attached_body(py, integer_class, payload, missing_bits(py));
                 assert_eq!(
                     scalar_value_bits(obj_from_bits(value), ScalarValueKind::Int),
                     Some(payload)
@@ -2175,7 +2224,7 @@ mod float_conversion_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let name = dynamic_attr_name_bits(py, b"ScalarStorageLookalike").unwrap();
-            let class = crate::molt_class_new(name);
+            let class = crate::molt_class_new_attached_body(py, name);
             let class_ptr = obj_from_bits(class).as_ptr().unwrap();
             assert_eq!(
                 unsafe {
@@ -2192,7 +2241,8 @@ mod float_conversion_tests {
                 crate::BuiltinExc::SystemError,
                 "scalar class has no matching intrinsic value word",
             );
-            let base_result = crate::molt_class_set_base(class, builtin_classes(py).object);
+            let base_result =
+                crate::molt_class_set_base_attached_body(py, class, builtin_classes(py).object);
             let slots = dynamic_attr_name_bits(py, b"__slots__").unwrap();
             let field = dynamic_attr_name_bits(py, b"payload").unwrap();
             let declaration = MoltObject::from_ptr(alloc_tuple(py, &[field])).bits();
@@ -2208,8 +2258,12 @@ mod float_conversion_tests {
                 );
             }
             let value = plain_instance(py, class);
-            let assigned =
-                crate::molt_set_attr_name(value, field, MoltObject::from_float(1.25).bits());
+            let assigned = crate::molt_set_attr_name_attached_body(
+                py,
+                value,
+                field,
+                MoltObject::from_float(1.25).bits(),
+            );
             assert!(!exception_pending(py));
             assert_eq!(
                 scalar_value_bits(obj_from_bits(value), ScalarValueKind::Float),
@@ -2240,7 +2294,7 @@ mod float_conversion_tests {
     fn float_conversion_contract_unary_entrypoints_share_payload_and_override_policy() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let operations: [(extern "C" fn(u64) -> u64, bool); 4] = [
+            let operations: [(unsafe extern "C" fn(u64, u64) -> u64, bool); 4] = [
                 (crate::molt_neg, true),
                 (crate::molt_operator_neg, true),
                 (crate::molt_pos, false),
@@ -2257,10 +2311,10 @@ mod float_conversion_tests {
                 f64::NAN,
             ] {
                 let carrier = crate::object::ops::float_result_bits(py, input);
-                let value = crate::molt_float_new(inherited, carrier);
+                let value = crate::molt_float_new_attached_body(py, inherited, carrier);
                 for receiver in [carrier, value] {
                     for (operation, negate) in operations {
-                        let result = operation(receiver);
+                        let result = unsafe { operation(py.attached_context(), receiver) };
                         assert!(!exception_pending(py));
                         assert!(is_exact_float(py, result));
                         let actual = as_float_extended(obj_from_bits(result)).unwrap();
@@ -2290,18 +2344,27 @@ mod float_conversion_tests {
                     );
                 }
                 let value = if base == builtin_classes(py).int {
-                    crate::molt_int_new(class, MoltObject::from_int(42).bits(), missing_bits(py))
+                    crate::molt_int_new_attached_body(
+                        py,
+                        class,
+                        MoltObject::from_int(42).bits(),
+                        missing_bits(py),
+                    )
                 } else {
-                    crate::molt_float_new(class, MoltObject::from_float(3.0).bits())
+                    crate::molt_float_new_attached_body(
+                        py,
+                        class,
+                        MoltObject::from_float(3.0).bits(),
+                    )
                 };
                 for (operation, _) in operations {
                     reset_callbacks(MoltObject::from_int(99).bits(), false);
-                    let result = operation(value);
+                    let result = unsafe { operation(py.attached_context(), value) };
                     assert_eq!(obj_from_bits(result).as_int(), Some(99));
                     assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
                     dec_ref_bits(py, result);
                     reset_callbacks(MoltObject::none().bits(), true);
-                    let result = operation(value);
+                    let result = unsafe { operation(py.attached_context(), value) };
                     assert_error(
                         py,
                         crate::BuiltinExc::RuntimeError,
@@ -2322,7 +2385,8 @@ mod float_conversion_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let class = conversion_class(py, builtin_classes(py).float, false, false);
-            let value = crate::molt_float_new(class, MoltObject::from_float(1.0).bits());
+            let value =
+                crate::molt_float_new_attached_body(py, class, MoltObject::from_float(1.0).bits());
             for name in [
                 b"__add__".as_slice(),
                 b"__radd__".as_slice(),
@@ -2347,44 +2411,47 @@ mod float_conversion_tests {
                 (plain, value),
             ] {
                 reset_callbacks(MoltObject::from_int(99).bits(), false);
-                let result = crate::molt_sum_builtin(items, start);
+                let result =
+                    crate::object::ops_builtins::molt_sum_builtin_attached_body(py, items, start);
                 assert!(!exception_pending(py));
                 assert_eq!(obj_from_bits(result).as_int(), Some(99));
                 assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
                 dec_ref_bits(py, result);
             }
             reset_callbacks(MoltObject::from_int(99).bits(), false);
-            let result = crate::molt_sum_builtin(empty, value);
+            let result =
+                crate::object::ops_builtins::molt_sum_builtin_attached_body(py, empty, value);
             assert_eq!(result, value);
             assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 0);
             dec_ref_bits(py, result);
 
-            let range = crate::molt_range_new(
+            let range = crate::molt_range_new_attached_body(
+                py,
                 MoltObject::from_int(0).bits(),
                 MoltObject::from_int(3).bits(),
                 MoltObject::from_int(1).bits(),
             );
             reset_callbacks(MoltObject::from_bool(false).bits(), false);
             assert_eq!(
-                obj_from_bits(crate::molt_contains(range, value)).as_bool(),
+                obj_from_bits(crate::molt_contains_attached_body(py, range, value)).as_bool(),
                 Some(false)
             );
             assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 3);
             reset_callbacks(MoltObject::from_bool(true).bits(), false);
             assert_eq!(
-                obj_from_bits(crate::molt_range_count(range, value)).as_int(),
+                obj_from_bits(crate::molt_range_count_attached_body(py, range, value)).as_int(),
                 Some(3)
             );
             assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 3);
             reset_callbacks(MoltObject::from_bool(true).bits(), false);
             assert_eq!(
-                obj_from_bits(crate::molt_range_index(range, value)).as_int(),
+                obj_from_bits(crate::molt_range_index_attached_body(py, range, value)).as_int(),
                 Some(0)
             );
             assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
 
             let format = dynamic_attr_name_bits(py, b"%d").unwrap();
-            let rendered = crate::molt_mod(format, value);
+            let rendered = crate::molt_mod_attached_body(py, format, value);
             assert_eq!(
                 string_obj_to_owned(obj_from_bits(rendered)).as_deref(),
                 Some("1")
@@ -2399,7 +2466,7 @@ mod float_conversion_tests {
                 1,
             );
             reset_callbacks(MoltObject::from_int(99).bits(), false);
-            let rendered = crate::molt_mod(format, value);
+            let rendered = crate::molt_mod_attached_body(py, format, value);
             assert_eq!(
                 string_obj_to_owned(obj_from_bits(rendered)).as_deref(),
                 Some("99")
@@ -2419,7 +2486,11 @@ mod float_conversion_tests {
     fn float_conversion_contract_binary_subtype_dispatch_and_declined_slots() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            type BinaryOperation = (&'static [u8], &'static [u8], extern "C" fn(u64, u64) -> u64);
+            type BinaryOperation = (
+                &'static [u8],
+                &'static [u8],
+                unsafe extern "C" fn(u64, u64, u64) -> u64,
+            );
             let operations: [BinaryOperation; 8] = [
                 (b"__add__", b"__radd__", crate::molt_add),
                 (b"__sub__", b"__rsub__", crate::molt_sub),
@@ -2431,18 +2502,29 @@ mod float_conversion_tests {
                 (b"__pow__", b"__rpow__", crate::molt_pow),
             ];
             let base = conversion_class(py, builtin_classes(py).float, false, false);
-            let base_value = crate::molt_float_new(base, MoltObject::from_float(3.0).bits());
+            let base_value =
+                crate::molt_float_new_attached_body(py, base, MoltObject::from_float(3.0).bits());
             let heap_value = crate::object::ops::alloc_heap_float(py, 3.0);
             for (forward, reflected, operation) in operations {
                 let class = conversion_class(py, base, false, false);
-                let value = crate::molt_float_new(class, MoltObject::from_float(2.0).bits());
-                let inherited = operation(base_value, value);
+                let value = crate::molt_float_new_attached_body(
+                    py,
+                    class,
+                    MoltObject::from_float(2.0).bits(),
+                );
+                let inherited = unsafe { operation(py.attached_context(), base_value, value) };
                 assert!(
                     !exception_pending(py),
                     "inherited float slot must terminate"
                 );
                 dec_ref_bits(py, inherited);
-                let native = operation(heap_value, MoltObject::from_int(2).bits());
+                let native = unsafe {
+                    operation(
+                        py.attached_context(),
+                        heap_value,
+                        MoltObject::from_int(2).bits(),
+                    )
+                };
                 assert!(!exception_pending(py));
                 if forward == b"__divmod__" {
                     unsafe {
@@ -2478,6 +2560,7 @@ mod float_conversion_tests {
                 if forward == b"__add__" {
                     reset_callbacks(MoltObject::from_int(99).bits(), false);
                     let result = crate::object::ops_arith::native_slots::float_add_slot(
+                        py.attached_context(),
                         value,
                         MoltObject::from_int(1).bits(),
                     );
@@ -2494,20 +2577,21 @@ mod float_conversion_tests {
                     (base_value, value),
                 ] {
                     reset_callbacks(MoltObject::from_int(99).bits(), false);
-                    let result = operation(left, right);
+                    let result = unsafe { operation(py.attached_context(), left, right) };
                     assert_eq!(obj_from_bits(result).as_int(), Some(99));
                     assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
                     assert!(!exception_pending(py));
                     dec_ref_bits(py, result);
                 }
                 reset_callbacks(not_implemented_bits(py), false);
-                let result = operation(value, value);
+                let result = unsafe { operation(py.attached_context(), value, value) };
                 assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
                 assert!(
                     exception_pending(py),
                     "declined same-type slot cannot read payload instead"
                 );
-                let error = crate::builtins::exceptions::molt_exception_last_pending();
+                let error =
+                    crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                 assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     error,
@@ -2521,11 +2605,11 @@ mod float_conversion_tests {
             for (name, operation) in [
                 (
                     b"__isub__".as_slice(),
-                    crate::molt_inplace_sub as extern "C" fn(u64, u64) -> u64,
+                    crate::molt_inplace_sub as unsafe extern "C" fn(u64, u64, u64) -> u64,
                 ),
                 (
                     b"__imul__".as_slice(),
-                    crate::molt_inplace_mul as extern "C" fn(u64, u64) -> u64,
+                    crate::molt_inplace_mul as unsafe extern "C" fn(u64, u64, u64) -> u64,
                 ),
             ] {
                 install_scalar_test_method(
@@ -2537,7 +2621,13 @@ mod float_conversion_tests {
                     2,
                 );
                 reset_callbacks(MoltObject::from_int(99).bits(), false);
-                let result = operation(base_value, MoltObject::from_int(1).bits());
+                let result = unsafe {
+                    operation(
+                        py.attached_context(),
+                        base_value,
+                        MoltObject::from_int(1).bits(),
+                    )
+                };
                 assert_eq!(obj_from_bits(result).as_int(), Some(99));
                 assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
                 assert!(!exception_pending(py));
@@ -2557,16 +2647,22 @@ mod float_conversion_tests {
             let class = conversion_class(py, builtin_classes(py).float, false, false);
             let inline = MoltObject::from_float(3.0).bits();
             let heap = crate::object::ops::alloc_heap_float(py, 3.0);
-            let tagged = crate::molt_float_new(class, inline);
+            let tagged = crate::molt_float_new_attached_body(py, class, inline);
             for value in [inline, heap, tagged] {
                 assert_eq!(index_i64_integral_bits(value), None);
                 assert_eq!(index_bigint_integral_bits(value), None);
-                let result = crate::molt_inplace_floordiv(value, MoltObject::from_int(2).bits());
+                let result = crate::molt_inplace_floordiv_attached_body(
+                    py,
+                    value,
+                    MoltObject::from_int(2).bits(),
+                );
                 assert!(is_exact_float(py, result));
                 assert_eq!(as_float_extended(obj_from_bits(result)), Some(1.0));
                 dec_ref_bits(py, result);
                 for operation in [crate::molt_floordiv, crate::molt_inplace_floordiv] {
-                    let failed = operation(value, MoltObject::from_int(0).bits());
+                    let failed = unsafe {
+                        operation(py.attached_context(), value, MoltObject::from_int(0).bits())
+                    };
                     assert_error(
                         py,
                         crate::BuiltinExc::ZeroDivisionError,
@@ -2574,10 +2670,11 @@ mod float_conversion_tests {
                     );
                     dec_ref_bits(py, failed);
                 }
-                let absolute = crate::molt_abs_builtin(value);
+                let absolute = crate::molt_abs_builtin_attached_body(py, value);
                 assert!(is_exact_float(py, absolute));
                 dec_ref_bits(py, absolute);
-                let rounded = crate::molt_round(
+                let rounded = crate::molt_round_attached_body(
+                    py,
                     value,
                     MoltObject::from_int(0).bits(),
                     MoltObject::from_int(1).bits(),
@@ -2589,9 +2686,12 @@ mod float_conversion_tests {
                     .unwrap();
                 assert_eq!(complex.re, 3.0);
                 for operation in [crate::molt_bit_or, crate::molt_bit_and, crate::molt_bit_xor] {
-                    let failed = operation(value, MoltObject::from_int(1).bits());
+                    let failed = unsafe {
+                        operation(py.attached_context(), value, MoltObject::from_int(1).bits())
+                    };
                     assert!(exception_pending(py));
-                    let error = crate::builtins::exceptions::molt_exception_last_pending();
+                    let error =
+                        crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                     assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         error,
@@ -2611,7 +2711,7 @@ mod float_conversion_tests {
                 2,
             );
             reset_callbacks(not_implemented_bits(py), false);
-            let failed = crate::molt_inplace_floordiv(tagged, tagged);
+            let failed = crate::molt_inplace_floordiv_attached_body(py, tagged, tagged);
             assert_error(
                 py,
                 crate::BuiltinExc::TypeError,
@@ -2632,7 +2732,7 @@ mod float_conversion_tests {
             let float_class = conversion_class(py, builtin_classes(py).float, false, false);
             let inline = MoltObject::from_float(1.0).bits();
             let heap = crate::object::ops::alloc_heap_float(py, 1.0);
-            let tagged = crate::molt_float_new(float_class, inline);
+            let tagged = crate::molt_float_new_attached_body(py, float_class, inline);
             install_scalar_test_method(
                 py,
                 float_class,
@@ -2652,9 +2752,10 @@ mod float_conversion_tests {
                 let format = dynamic_attr_name_bits(py, format).unwrap();
                 for returned in [inline, heap, tagged] {
                     reset_callbacks(returned, false);
-                    let failed = crate::molt_mod(format, receiver);
+                    let failed = crate::molt_mod_attached_body(py, format, receiver);
                     assert!(exception_pending(py));
-                    let error = crate::builtins::exceptions::molt_exception_last_pending();
+                    let error =
+                        crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                     assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         error,
@@ -2691,11 +2792,11 @@ mod float_conversion_tests {
                 (f64::NAN, false, "nan"),
             ] {
                 let input_bits = crate::object::ops::float_result_bits(py, input);
-                let value = crate::molt_float_new(class, input_bits);
+                let value = crate::molt_float_new_attached_body(py, class, input_bits);
                 assert!(!exception_pending(py));
                 reset_callbacks(MoltObject::from_int(99).bits(), true);
                 for descriptor in [crate::molt_float_float, crate::molt_float_conjugate] {
-                    let result = descriptor(value);
+                    let result = unsafe { descriptor(py.attached_context(), value) };
                     let actual = as_float_extended(obj_from_bits(result)).unwrap();
                     assert!(is_exact_float(py, result));
                     if input.is_nan() {
@@ -2706,16 +2807,16 @@ mod float_conversion_tests {
                     dec_ref_bits(py, result);
                 }
                 assert_eq!(
-                    crate::molt_float_is_integer(value),
+                    crate::molt_float_is_integer_attached_body(py, value),
                     MoltObject::from_bool(integer).bits(),
                 );
-                let rendered = crate::molt_float_hex(value);
+                let rendered = crate::molt_float_hex_attached_body(py, value);
                 assert_eq!(
                     string_obj_to_owned(obj_from_bits(rendered)).as_deref(),
                     Some(hex)
                 );
                 dec_ref_bits(py, rendered);
-                let ratio = crate::molt_float_as_integer_ratio(value);
+                let ratio = crate::molt_float_as_integer_ratio_attached_body(py, value);
                 if input.is_nan() {
                     assert_error(
                         py,
@@ -2760,9 +2861,10 @@ mod float_conversion_tests {
                 crate::molt_float_as_integer_ratio,
                 crate::molt_float_hex,
             ] {
-                let result = descriptor(value);
+                let result = unsafe { descriptor(py.attached_context(), value) };
                 assert!(exception_pending(py));
-                let error = crate::builtins::exceptions::molt_exception_last_pending();
+                let error =
+                    crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                 assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     error,
@@ -2802,8 +2904,8 @@ mod float_conversion_tests {
             }
             assert_eq!(index_i64_integral_bits(boolean), Some(1));
             assert_eq!(index_bigint_integral_bits(boolean), Some(BigInt::from(1u8)));
-            let wrapped = crate::molt_int_new(class, large, missing_bits(py));
-            let nested = crate::molt_int_new(class, small, missing_bits(py));
+            let wrapped = crate::molt_int_new_attached_body(py, class, large, missing_bits(py));
+            let nested = crate::molt_int_new_attached_body(py, class, small, missing_bits(py));
             let heap_float = crate::object::ops::alloc_heap_float(py, 1.0);
             reset_callbacks(0, true);
             assert_eq!(index_integral_payload_bits(wrapped), Some(large));
@@ -2862,7 +2964,7 @@ mod float_conversion_tests {
             let class = conversion_class(py, builtin_classes(py).int, true, true);
             let small = MoltObject::from_int(42).bits();
             let large = bigint_bits(py, BigInt::from(1u8) << 80usize);
-            let renderers: [extern "C" fn(u64, u64) -> u64; 2] =
+            let renderers: [unsafe extern "C" fn(u64, u64, u64) -> u64; 2] =
                 [crate::molt_string_format, crate::molt_format_builtin];
             for (payload, spec, expected) in [
                 (small, "d", "42"),
@@ -2877,12 +2979,16 @@ mod float_conversion_tests {
                 (large, "x", "100000000000000000000"),
                 (large, ">26", " 1208925819614629174706176"),
             ] {
-                let value = crate::molt_int_new(class, payload, missing_bits(py));
+                let value = crate::molt_int_new_attached_body(py, class, payload, missing_bits(py));
                 let spec = dynamic_attr_name_bits(py, spec.as_bytes()).unwrap();
                 for receiver in [payload, value] {
                     for render in renderers {
                         reset_callbacks(0, true);
-                        assert_scalar_rendered_text(py, render(receiver, spec), expected);
+                        assert_scalar_rendered_text(
+                            py,
+                            unsafe { render(py.attached_context(), receiver, spec) },
+                            expected,
+                        );
                         assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 0);
                         assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
                     }
@@ -2898,7 +3004,7 @@ mod float_conversion_tests {
             let spec = dynamic_attr_name_bits(py, b".2f").unwrap();
             for render in renderers {
                 reset_callbacks(MoltObject::from_float(2.5).bits(), false);
-                let failed = render(value, spec);
+                let failed = unsafe { render(py.attached_context(), value, spec) };
                 assert_error(
                     py,
                     crate::BuiltinExc::TypeError,
@@ -2921,13 +3027,17 @@ mod float_conversion_tests {
             let int_class = conversion_class(py, builtin_classes(py).int, true, true);
             let float_class = conversion_class(py, builtin_classes(py).float, true, true);
             let large = bigint_bits(py, BigInt::from(1u8) << 80usize);
-            let integer = crate::molt_int_new(int_class, large, missing_bits(py));
-            let floating = crate::molt_float_new(float_class, MoltObject::from_float(-0.0).bits());
+            let integer = crate::molt_int_new_attached_body(py, int_class, large, missing_bits(py));
+            let floating = crate::molt_float_new_attached_body(
+                py,
+                float_class,
+                MoltObject::from_float(-0.0).bits(),
+            );
             let empty = dynamic_attr_name_bits(py, b"").unwrap();
             let custom = dynamic_attr_name_bits(py, b"scalar-rendered").unwrap();
-            let unary: [extern "C" fn(u64) -> u64; 2] =
+            let unary: [unsafe extern "C" fn(u64, u64) -> u64; 2] =
                 [crate::molt_repr_builtin, crate::molt_str_from_obj];
-            let renderers: [extern "C" fn(u64, u64) -> u64; 2] =
+            let renderers: [unsafe extern "C" fn(u64, u64, u64) -> u64; 2] =
                 [crate::molt_string_format, crate::molt_format_builtin];
             for (class, value, spec, expected) in [
                 (int_class, integer, "d", "1208925819614629174706176"),
@@ -2935,13 +3045,21 @@ mod float_conversion_tests {
             ] {
                 for render in unary {
                     reset_callbacks(0, true);
-                    assert_scalar_rendered_text(py, render(value), expected);
+                    assert_scalar_rendered_text(
+                        py,
+                        unsafe { render(py.attached_context(), value) },
+                        expected,
+                    );
                     assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 0);
                     assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
                 }
                 for render in renderers {
                     reset_callbacks(0, true);
-                    assert_scalar_rendered_text(py, render(value, empty), expected);
+                    assert_scalar_rendered_text(
+                        py,
+                        unsafe { render(py.attached_context(), value, empty) },
+                        expected,
+                    );
                     assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 0);
                     assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
                 }
@@ -2950,7 +3068,7 @@ mod float_conversion_tests {
                         let spec = dynamic_attr_name_bits(py, code.as_bytes()).unwrap();
                         for render in renderers {
                             reset_callbacks(0, true);
-                            let failed = render(value, spec);
+                            let failed = unsafe { render(py.attached_context(), value, spec) };
                             let message = format!(
                                 "Unknown format code '{code}' for object of type 'FloatConversionContract'"
                             );
@@ -2972,12 +3090,20 @@ mod float_conversion_tests {
                 );
                 for render in unary {
                     reset_callbacks(custom, false);
-                    assert_scalar_rendered_text(py, render(value), "scalar-rendered");
+                    assert_scalar_rendered_text(
+                        py,
+                        unsafe { render(py.attached_context(), value) },
+                        "scalar-rendered",
+                    );
                     assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
                 }
                 for render in renderers {
                     reset_callbacks(custom, false);
-                    assert_scalar_rendered_text(py, render(value, empty), "scalar-rendered");
+                    assert_scalar_rendered_text(
+                        py,
+                        unsafe { render(py.attached_context(), value, empty) },
+                        "scalar-rendered",
+                    );
                     assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
                 }
                 // Generic formatting consults __format__. Its declaring base
@@ -2994,12 +3120,16 @@ mod float_conversion_tests {
                 reset_callbacks(custom, false);
                 assert_scalar_rendered_text(
                     py,
-                    crate::molt_format_builtin(value, spec),
+                    crate::molt_format_builtin_attached_body(py, value, spec),
                     "scalar-rendered",
                 );
                 assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
                 reset_callbacks(0, true);
-                assert_scalar_rendered_text(py, crate::molt_string_format(value, spec), expected);
+                assert_scalar_rendered_text(
+                    py,
+                    crate::molt_string_format_attached_body(py, value, spec),
+                    expected,
+                );
                 assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 0);
                 assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
                 dec_ref_bits(py, spec);
@@ -3014,13 +3144,13 @@ mod float_conversion_tests {
                 reset_callbacks(custom, false);
                 assert_scalar_rendered_text(
                     py,
-                    crate::molt_string_format(value, empty),
+                    crate::molt_string_format_attached_body(py, value, empty),
                     "scalar-rendered",
                 );
                 assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 0);
                 assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 1);
                 reset_callbacks(0, true);
-                let failed = crate::molt_string_format(value, empty);
+                let failed = crate::molt_string_format_attached_body(py, value, empty);
                 assert_error(py, crate::BuiltinExc::LookupError, "index protocol failure");
                 assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 0);
                 assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 1);
@@ -3050,17 +3180,17 @@ mod float_conversion_tests {
             let spec = dynamic_attr_name_bits(py, b".2f").unwrap();
             let percent = dynamic_attr_name_bits(py, b"%.2f").unwrap();
             for payload in [MoltObject::from_int(42).bits(), huge] {
-                let value = crate::molt_int_new(class, payload, missing_bits(py));
+                let value = crate::molt_int_new_attached_body(py, class, payload, missing_bits(py));
                 assert_eq!(
                     scalar_value_bits(obj_from_bits(value), ScalarValueKind::Int),
                     Some(payload)
                 );
                 assert_eq!(type_of_bits(py, value), class);
-                let renderers: [extern "C" fn(u64, u64) -> u64; 2] =
+                let renderers: [unsafe extern "C" fn(u64, u64, u64) -> u64; 2] =
                     [crate::molt_string_format, crate::molt_format_builtin];
                 for render in renderers {
                     reset_callbacks(MoltObject::from_float(2.5).bits(), false);
-                    let rendered = render(value, spec);
+                    let rendered = unsafe { render(py.attached_context(), value, spec) };
                     assert_eq!(
                         string_obj_to_owned(obj_from_bits(rendered)).as_deref(),
                         Some("2.50")
@@ -3069,7 +3199,7 @@ mod float_conversion_tests {
                     assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
                     dec_ref_bits(py, rendered);
                     reset_callbacks(MoltObject::from_float(2.5).bits(), true);
-                    let failed = render(value, spec);
+                    let failed = unsafe { render(py.attached_context(), value, spec) };
                     assert_error(
                         py,
                         crate::BuiltinExc::RuntimeError,
@@ -3080,7 +3210,7 @@ mod float_conversion_tests {
                     dec_ref_bits(py, failed);
                 }
                 reset_callbacks(MoltObject::from_float(2.5).bits(), false);
-                let rendered = crate::molt_mod(percent, value);
+                let rendered = crate::molt_mod_attached_body(py, percent, value);
                 assert_eq!(
                     string_obj_to_owned(obj_from_bits(rendered)).as_deref(),
                     Some("2.50")
@@ -3090,8 +3220,12 @@ mod float_conversion_tests {
                 dec_ref_bits(py, value);
             }
             let inherited = conversion_class(py, builtin_classes(py).int, false, true);
-            let value =
-                crate::molt_int_new(inherited, MoltObject::from_int(42).bits(), missing_bits(py));
+            let value = crate::molt_int_new_attached_body(
+                py,
+                inherited,
+                MoltObject::from_int(42).bits(),
+                missing_bits(py),
+            );
             reset_callbacks(MoltObject::from_int(99).bits(), true);
             let method = unsafe {
                 crate::builtins::attr::lookup_special_method(py, value, crate::NameId::DunderFloat)
@@ -3125,9 +3259,18 @@ mod float_conversion_tests {
             for base in [builtin_classes(py).int, builtin_classes(py).float] {
                 let class = conversion_class(py, base, true, true);
                 let value = if base == builtin_classes(py).int {
-                    crate::molt_int_new(class, MoltObject::from_int(42).bits(), missing_bits(py))
+                    crate::molt_int_new_attached_body(
+                        py,
+                        class,
+                        MoltObject::from_int(42).bits(),
+                        missing_bits(py),
+                    )
                 } else {
-                    crate::molt_float_new(class, MoltObject::from_float(1.25).bits())
+                    crate::molt_float_new_attached_body(
+                        py,
+                        class,
+                        MoltObject::from_float(1.25).bits(),
+                    )
                 };
                 inc_ref_bits(py, value);
                 let op =
@@ -3158,11 +3301,11 @@ mod float_conversion_tests {
                 dec_ref_bits(py, class);
             }
             let exact = crate::object::ops::float_result_bits(py, f64::NAN);
-            let copied = crate::molt_float_from_obj(exact);
+            let copied = crate::molt_float_from_obj_attached_body(py, exact);
             assert_eq!(copied, exact);
             let subclass = conversion_class(py, builtin_classes(py).float, false, false);
-            let value = crate::molt_float_new(subclass, exact);
-            let copied_subclass = crate::molt_float_float(value);
+            let value = crate::molt_float_new_attached_body(py, subclass, exact);
+            let copied_subclass = crate::molt_float_float_attached_body(py, value);
             assert!(
                 as_float_extended(obj_from_bits(copied_subclass))
                     .unwrap()
@@ -3257,7 +3400,7 @@ mod float_conversion_tests {
     fn float_conversion_contract_mixed_arithmetic_preserves_overflow() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let operations: &[extern "C" fn(u64, u64) -> u64] = &[
+            let operations: &[unsafe extern "C" fn(u64, u64, u64) -> u64] = &[
                 crate::molt_add,
                 crate::molt_sub,
                 crate::molt_inplace_sub,
@@ -3274,7 +3417,7 @@ mod float_conversion_tests {
                     let float = crate::object::ops::float_result_bits(py, number);
                     for operation in operations {
                         for (lhs, rhs) in [(huge, float), (float, huge)] {
-                            let result = operation(lhs, rhs);
+                            let result = unsafe { operation(py.attached_context(), lhs, rhs) };
                             assert_error(
                                 py,
                                 crate::BuiltinExc::OverflowError,
@@ -3291,7 +3434,7 @@ mod float_conversion_tests {
             for number in [1.5, f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
                 let float = crate::object::ops::float_result_bits(py, number);
                 for (lhs, rhs) in [(finite, float), (float, finite)] {
-                    let result = crate::molt_add(lhs, rhs);
+                    let result = crate::molt_add_attached_body(py, lhs, rhs);
                     assert!(!exception_pending(py));
                     let value = to_f64(obj_from_bits(result)).unwrap();
                     assert!(value == number + 1e300 || (value.is_nan() && number.is_nan()));
@@ -3308,15 +3451,17 @@ mod float_conversion_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let class = conversion_class(py, builtin_classes(py).float, true, false);
-            let value = crate::molt_float_new(class, MoltObject::from_float(1.25).bits());
+            let value =
+                crate::molt_float_new_attached_body(py, class, MoltObject::from_float(1.25).bits());
             assert!(!exception_pending(py));
             reset_callbacks(MoltObject::from_float(2.5).bits(), false);
             assert_eq!(float_as_double(py, value), Some(1.25));
             assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 0);
-            let constructed = crate::molt_float_from_obj(value);
+            let constructed = crate::molt_float_from_obj_attached_body(py, value);
             assert_eq!(as_float_extended(obj_from_bits(constructed)), Some(2.5));
             assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
-            let from_number = crate::molt_float_from_number(builtin_classes(py).float, value);
+            let from_number =
+                crate::molt_float_from_number_attached_body(py, builtin_classes(py).float, value);
             assert_eq!(as_float_extended(obj_from_bits(from_number)), Some(1.25));
             assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
             for bits in [constructed, from_number, value, class] {
@@ -3324,8 +3469,12 @@ mod float_conversion_tests {
             }
 
             let class = conversion_class(py, builtin_classes(py).int, true, true);
-            let value =
-                crate::molt_int_new(class, MoltObject::from_int(1).bits(), missing_bits(py));
+            let value = crate::molt_int_new_attached_body(
+                py,
+                class,
+                MoltObject::from_int(1).bits(),
+                missing_bits(py),
+            );
             assert!(!exception_pending(py));
             reset_callbacks(MoltObject::from_float(3.5).bits(), false);
             assert_eq!(float_as_double(py, value), Some(3.5));
@@ -3400,24 +3549,29 @@ mod float_conversion_tests {
     fn float_conversion_contract_strict_subclass_warnings_can_raise() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            struct ResetWarnings;
-            impl Drop for ResetWarnings {
+            struct ResetWarnings<'a, 'py>(&'a crate::PyToken<'py>);
+            impl Drop for ResetWarnings<'_, '_> {
                 fn drop(&mut self) {
-                    crate::molt_warnings_resetwarnings();
+                    crate::molt_warnings_resetwarnings_attached_body(self.0);
                 }
             }
-            let _reset = ResetWarnings;
-            crate::molt_warnings_resetwarnings();
+            let _reset = ResetWarnings(py);
+            crate::molt_warnings_resetwarnings_attached_body(py);
             let category = crate::builtins::exceptions::exception_class_bits(
                 py,
                 BuiltinExc::DeprecationWarning,
             );
             let float_class = conversion_class(py, builtin_classes(py).float, false, false);
-            let returned = crate::molt_float_new(float_class, MoltObject::from_float(4.25).bits());
+            let returned = crate::molt_float_new_attached_body(
+                py,
+                float_class,
+                MoltObject::from_float(4.25).bits(),
+            );
             let class = conversion_class(py, builtin_classes(py).object, true, false);
             let value = plain_instance(py, class);
             let ignore = dynamic_attr_name_bits(py, b"ignore").unwrap();
-            crate::molt_warnings_simplefilter(
+            crate::molt_warnings_simplefilter_attached_body(
+                py,
                 ignore,
                 category,
                 MoltObject::from_int(0).bits(),
@@ -3427,7 +3581,8 @@ mod float_conversion_tests {
             assert_eq!(float_as_double(py, value), Some(4.25));
             assert!(!exception_pending(py));
             let error = dynamic_attr_name_bits(py, b"error").unwrap();
-            crate::molt_warnings_simplefilter(
+            crate::molt_warnings_simplefilter_attached_body(
+                py,
                 error,
                 category,
                 MoltObject::from_int(0).bits(),

@@ -188,9 +188,13 @@ fn sync_state(state: &mut DumbState) -> Result<(), String> {
 
 /// Open a dbm.dumb database.
 /// flag: 'r' (read), 'w' (write), 'c' (create), 'n' (new/truncate)
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dbm_dumb_open(path_bits: u64, flag_bits: u64, _mode_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dbm_dumb_open_attached_body(
+    _py: &crate::PyToken<'_>,
+    path_bits: u64,
+    flag_bits: u64,
+    _mode_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let path = match string_obj_to_owned(obj_from_bits(path_bits)) {
             Some(s) => s,
             None => {
@@ -292,9 +296,12 @@ pub extern "C" fn molt_dbm_dumb_open(path_bits: u64, flag_bits: u64, _mode_bits:
 }
 
 /// Get a value by key. Returns bytes.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dbm_dumb_getitem(handle_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dbm_dumb_getitem_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid handle"),
@@ -326,9 +333,13 @@ pub extern "C" fn molt_dbm_dumb_getitem(handle_bits: u64, key_bits: u64) -> u64 
 }
 
 /// Set a key-value pair.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dbm_dumb_setitem(handle_bits: u64, key_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dbm_dumb_setitem_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    key_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid handle"),
@@ -370,9 +381,12 @@ pub extern "C" fn molt_dbm_dumb_setitem(handle_bits: u64, key_bits: u64, value_b
 }
 
 /// Delete a key.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dbm_dumb_delitem(handle_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dbm_dumb_delitem_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid handle"),
@@ -408,9 +422,12 @@ pub extern "C" fn molt_dbm_dumb_delitem(handle_bits: u64, key_bits: u64) -> u64 
 }
 
 /// Check if a key exists.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dbm_dumb_contains(handle_bits: u64, key_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dbm_dumb_contains_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    key_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid handle"),
@@ -437,9 +454,8 @@ pub extern "C" fn molt_dbm_dumb_contains(handle_bits: u64, key_bits: u64) -> u64
 }
 
 /// Return a list of all keys (as bytes).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dbm_dumb_keys(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dbm_dumb_keys_attached_body(_py: &crate::PyToken<'_>, handle_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid handle"),
@@ -471,9 +487,8 @@ pub extern "C" fn molt_dbm_dumb_keys(handle_bits: u64) -> u64 {
 }
 
 /// Sync the database to disk.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dbm_dumb_sync(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dbm_dumb_sync_attached_body(_py: &crate::PyToken<'_>, handle_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid handle"),
@@ -499,9 +514,8 @@ pub extern "C" fn molt_dbm_dumb_sync(handle_bits: u64) -> u64 {
 }
 
 /// Close the database (sync + release handle).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dbm_dumb_close(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_dbm_dumb_close_attached_body(_py: &crate::PyToken<'_>, handle_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid handle"),
@@ -528,16 +542,21 @@ pub extern "C" fn molt_dbm_dumb_close(handle_bits: u64) -> u64 {
 mod tests {
     use super::*;
     use crate::builtins::exceptions::{
-        exception_matches_kind, format_exception_message, molt_exception_clear,
-        molt_exception_last_pending,
+        exception_matches_kind, format_exception_message, molt_exception_clear_attached_body,
+        molt_exception_last_pending_attached_body,
     };
 
     fn open_modified(py: &PyToken<'_>, path: &std::path::Path) -> u64 {
         let inputs = [path.to_str().unwrap(), "n", "key", "value"]
             .map(|text| MoltObject::from_ptr(crate::alloc_string(py, text.as_bytes())).bits());
-        let handle = molt_dbm_dumb_open(inputs[0], inputs[1], MoltObject::from_int(0o600).bits());
+        let handle = molt_dbm_dumb_open_attached_body(
+            py,
+            inputs[0],
+            inputs[1],
+            MoltObject::from_int(0o600).bits(),
+        );
         assert!(!crate::exception_pending(py));
-        molt_dbm_dumb_setitem(handle, inputs[2], inputs[3]);
+        molt_dbm_dumb_setitem_attached_body(py, handle, inputs[2], inputs[3]);
         for bits in inputs {
             crate::dec_ref_bits(py, bits);
         }
@@ -547,14 +566,14 @@ mod tests {
 
     fn take_os_error(py: &PyToken<'_>) -> String {
         assert!(crate::exception_pending(py));
-        let error = molt_exception_last_pending();
+        let error = molt_exception_last_pending_attached_body(py);
         assert!(exception_matches_kind(
             py,
             error,
             crate::BuiltinExc::OSError
         ));
         let message = format_exception_message(py, obj_from_bits(error).as_ptr().unwrap());
-        molt_exception_clear();
+        molt_exception_clear_attached_body(py);
         crate::dec_ref_bits(py, error);
         message
     }
@@ -573,17 +592,17 @@ mod tests {
             // including privileged test users; no permission-bit mock is used.
             fs::remove_file(&index).unwrap();
             fs::create_dir(&index).unwrap();
-            molt_dbm_dumb_sync(handle);
+            molt_dbm_dumb_sync_attached_body(py, handle);
             let sync_error = take_os_error(py);
             assert!(sync_error.starts_with(&format!("cannot write {}:", index.display())));
             DBM_HANDLES.with(|map| assert!(map.borrow().get(&id).unwrap().modified));
-            molt_dbm_dumb_close(handle);
+            molt_dbm_dumb_close_attached_body(py, handle);
             assert_eq!(take_os_error(py), sync_error);
             DBM_HANDLES.with(|map| assert!(!map.borrow().contains_key(&id)));
             assert_eq!(fs::read(path.with_extension("dat")).unwrap(), b"value");
             assert!(index.is_dir());
             // Repeated close consumes no second owner and does not retry I/O.
-            molt_dbm_dumb_close(handle);
+            molt_dbm_dumb_close_attached_body(py, handle);
             assert!(!crate::exception_pending(py));
             assert!(index.is_dir());
         });
@@ -598,7 +617,7 @@ mod tests {
             let path = directory.path().join("database");
             let handle = open_modified(py, &path);
             let id = to_i64(obj_from_bits(handle)).unwrap();
-            molt_dbm_dumb_sync(handle);
+            molt_dbm_dumb_sync_attached_body(py, handle);
             assert!(!crate::exception_pending(py));
             DBM_HANDLES.with(|map| assert!(!map.borrow().get(&id).unwrap().modified));
             assert_eq!(
@@ -606,10 +625,10 @@ mod tests {
                 "'key', (0, 5)\n"
             );
             let key = MoltObject::from_ptr(crate::alloc_string(py, b"key")).bits();
-            molt_dbm_dumb_delitem(handle, key);
+            molt_dbm_dumb_delitem_attached_body(py, handle, key);
             crate::dec_ref_bits(py, key);
             assert!(!crate::exception_pending(py));
-            molt_dbm_dumb_close(handle);
+            molt_dbm_dumb_close_attached_body(py, handle);
             assert!(!crate::exception_pending(py));
             DBM_HANDLES.with(|map| assert!(!map.borrow().contains_key(&id)));
             assert_eq!(fs::read(path.with_extension("dir")).unwrap(), b"");
@@ -620,3 +639,5 @@ mod tests {
         });
     }
 }
+
+include!("../attached_exports_generated/builtins/dbm_dumb.rs");

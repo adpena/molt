@@ -276,7 +276,7 @@ fn shared_boxed_text_calls_reach_actual_native_dispatch() {
             .unwrap_or_else(|errors| panic!("{name}: {errors}\n{}", function.display()));
         let calls = import_calls(function, &ids, symbol);
         assert_eq!(calls.len(), 1, "{name}: {}", function.display());
-        let arguments = function.dfg.inst_args(calls[0]);
+        let arguments = attached_arguments(function, calls[0]);
         assert_eq!(arguments.len(), *arity, "{name}");
         let releases = import_calls(function, &ids, "molt_dec_ref_obj");
         if *wide {
@@ -317,7 +317,7 @@ fn shared_boxed_text_calls_reach_actual_native_dispatch() {
                 .filter(|&&release| {
                     function
                         .dfg
-                        .resolve_aliases(function.dfg.inst_args(release)[0])
+                        .resolve_aliases(attached_arguments(function, release)[0])
                         == result
                 })
                 .count();

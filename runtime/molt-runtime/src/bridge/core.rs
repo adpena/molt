@@ -11,9 +11,10 @@ pub fn raise_exception<T: ExceptionSentinel>(
     kind: impl Into<ExcKind>,
     msg: &str,
 ) -> T {
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         T::from_bits(crate::raise_exception::<u64>(py, kind, msg))
-    })
+    }
 }
 
 #[cfg(any(
@@ -22,7 +23,10 @@ pub fn raise_exception<T: ExceptionSentinel>(
     not(feature = "stdlib_path")
 ))]
 pub fn exception_pending(_py: &CoreGilToken) -> bool {
-    crate::with_gil_entry_nopanic!(py, { crate::exception_pending(py) })
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
+        crate::exception_pending(py)
+    }
 }
 
 #[cfg(not(feature = "stdlib_path"))]
@@ -31,16 +35,18 @@ pub fn raise_os_error<T: ExceptionSentinel>(
     err: std::io::Error,
     ctx: &str,
 ) -> T {
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         T::from_bits(crate::raise_os_error::<u64>(py, err, ctx))
-    })
+    }
 }
 
 #[cfg(not(feature = "stdlib_path"))]
 pub fn raise_os_error_errno<T: ExceptionSentinel>(_py: &CoreGilToken, errno: i64, ctx: &str) -> T {
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         T::from_bits(crate::raise_os_error_errno::<u64>(py, errno, ctx))
-    })
+    }
 }
 
 pub trait ExceptionSentinel {
@@ -72,17 +78,26 @@ impl ExceptionSentinel for () {
 
 #[cfg(any(not(feature = "stdlib_itertools"), not(feature = "stdlib_path")))]
 pub fn alloc_tuple(_py: &CoreGilToken, elems: &[u64]) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(py, { crate::alloc_tuple(py, elems) })
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
+        crate::alloc_tuple(py, elems)
+    }
 }
 
 #[cfg(any(not(feature = "stdlib_itertools"), not(feature = "stdlib_path")))]
 pub fn alloc_list(_py: &CoreGilToken, elems: &[u64]) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(py, { crate::alloc_list(py, elems) })
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
+        crate::alloc_list(py, elems)
+    }
 }
 
 #[cfg(any(not(feature = "stdlib_http"), not(feature = "stdlib_path")))]
 pub fn alloc_string(_py: &CoreGilToken, data: &[u8]) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(py, { crate::alloc_string(py, data) })
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
+        crate::alloc_string(py, data)
+    }
 }
 
 #[cfg(not(feature = "stdlib_http"))]
@@ -97,7 +112,10 @@ pub fn alloc_string_bits(_py: &CoreGilToken, value: &str) -> Option<u64> {
 
 #[cfg(not(feature = "stdlib_path"))]
 pub fn alloc_bytes(_py: &CoreGilToken, data: &[u8]) -> *mut u8 {
-    crate::with_gil_entry_nopanic!(py, { crate::alloc_bytes(py, data) })
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
+        crate::alloc_bytes(py, data)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -124,7 +142,10 @@ pub fn string_obj_bytes(obj: MoltObject) -> Option<Vec<u8>> {
 
 #[cfg(any(not(feature = "stdlib_itertools"), not(feature = "stdlib_path")))]
 pub fn is_truthy(_py: &CoreGilToken, obj: MoltObject) -> bool {
-    crate::with_gil_entry_nopanic!(py, { crate::is_truthy(py, obj) })
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
+        crate::is_truthy(py, obj)
+    }
 }
 
 /// # Safety
@@ -141,16 +162,18 @@ pub unsafe fn bytes_like_slice(ptr: *mut u8) -> Option<&'static [u8]> {
 // ---------------------------------------------------------------------------
 
 pub fn dec_ref_bits(_py: &CoreGilToken, bits: u64) {
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         crate::dec_ref_bits(py, bits);
-    })
+    }
 }
 
 #[cfg(not(feature = "stdlib_itertools"))]
 pub fn inc_ref_bits(_py: &CoreGilToken, bits: u64) {
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         crate::inc_ref_bits(py, bits);
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -159,17 +182,19 @@ pub fn inc_ref_bits(_py: &CoreGilToken, bits: u64) {
 
 #[cfg(not(feature = "stdlib_path"))]
 pub fn index_c_int_from_obj(_py: &CoreGilToken, bits: u64) -> Option<i32> {
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         crate::builtins::numbers::index_c_int_from_obj(py, bits)
-    })
+    }
 }
 
 /// CPython's `Py_off_t` argument converter (lseek pos, truncate length).
 #[cfg(not(feature = "stdlib_path"))]
 pub fn index_off_t_from_obj(_py: &CoreGilToken, bits: u64) -> Option<i64> {
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         crate::builtins::numbers::index_off_t_from_obj(py, bits)
-    })
+    }
 }
 
 #[cfg(any(not(feature = "stdlib_http"), not(feature = "stdlib_path")))]
@@ -192,10 +217,11 @@ pub unsafe fn dict_get_in_place(
     ptr: *mut u8,
     key_bits: u64,
 ) -> Result<Option<u64>, molt_runtime_core::ErrorIndicatorSet> {
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         unsafe { crate::dict_get_in_place(py, ptr, key_bits) }
             .map_err(|()| molt_runtime_core::ErrorIndicatorSet)
-    })
+    }
 }
 
 #[cfg(not(feature = "stdlib_http"))]
@@ -224,15 +250,19 @@ pub fn type_id_dict() -> u32 {
 /// # Safety
 ///
 /// `ptr` must identify a live Molt list or tuple for this call.
-pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
+pub unsafe fn seq_snapshot(
+    _py: &molt_runtime_core::PyToken,
+    ptr: *mut u8,
+) -> OwnedBridgeHandleSnapshot<'_> {
     let mut out_ptr = std::ptr::null();
     let mut out_len = 0usize;
-    let exported = crate::with_gil_entry_nopanic!(py, {
+    let exported = {
+        let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
         unsafe { crate::seq_snapshot_bridge::export(py, ptr, &mut out_ptr, &mut out_len) }
-    });
+    };
     if exported == 0 {
         out_ptr = std::ptr::null();
         out_len = 0;
     }
-    unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) }
+    unsafe { bridge_owned_handle_snapshot(_py, out_ptr, out_len) }
 }

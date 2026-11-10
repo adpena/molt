@@ -319,7 +319,7 @@ pub(crate) fn pickle_buffer_value_to_memoryview(
     value_bits: u64,
     context: &str,
 ) -> Result<u64, u64> {
-    let view_bits = crate::molt_memoryview_new(value_bits);
+    let view_bits = crate::molt_memoryview_new_attached_body(_py, value_bits);
     if exception_pending(_py) {
         let msg = format!("pickle.loads: {context} must provide a bytes-like payload");
         return Err(PickleError::Unpickling.raise(_py, &msg));
@@ -712,7 +712,7 @@ fn pickle_dump_reduce_value(
         ));
     }
     let callable_bits = fields[0];
-    let callable_check = molt_is_callable(callable_bits);
+    let callable_check = molt_is_callable_attached_body(_py, callable_bits);
     if !is_truthy(_py, obj_from_bits(callable_check)) {
         return Err(PickleError::Pickling.raise(
             _py,
@@ -748,7 +748,7 @@ fn pickle_dump_reduce_value(
         }
     }
     if fields.len() >= 6 && !obj_from_bits(fields[5]).is_none() {
-        let setter_check = molt_is_callable(fields[5]);
+        let setter_check = molt_is_callable_attached_body(_py, fields[5]);
         if !is_truthy(_py, obj_from_bits(setter_check)) {
             let value_type = type_name(_py, obj_from_bits(fields[5]));
             let msg = format!(
@@ -933,7 +933,7 @@ fn pickle_default_instance_state(
         return Ok(Some(state_bits));
     }
     if unsafe { crate::object::object_has_class_shape(ptr) } {
-        let state = crate::object::ops_builtins::molt_object_getstate(obj_bits);
+        let state = crate::object::ops_builtins::molt_object_getstate_attached_body(_py, obj_bits);
         if exception_pending(_py) {
             dec_ref_bits(_py, state);
             return Err(MoltObject::none().bits());

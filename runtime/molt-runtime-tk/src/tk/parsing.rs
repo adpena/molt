@@ -149,7 +149,7 @@ pub(super) fn alloc_tuple_bits(
     alloc_context: &str,
 ) -> Result<u64, u64> {
     let _ = py;
-    alloc_tuple_result(elems, alloc_context)
+    alloc_tuple_result(py, elems, alloc_context)
 }
 
 pub(super) fn alloc_tuple_from_strings(
@@ -314,7 +314,7 @@ pub(super) fn parse_bool_arg(
     if let Some(value) = to_i64(obj) {
         return Ok(value != 0);
     }
-    if let Some(text) = unsafe { string_obj_to_owned(obj) }
+    if let Some(text) = unsafe { string_obj_to_owned(py, obj) }
         && let Some(value) = parse_bool_text(&text)
     {
         return Ok(value);
@@ -412,12 +412,16 @@ pub(super) fn tk_widget_class_name(widget_command: &str) -> String {
     }
 }
 
-pub(super) fn value_bits_to_i64_default(bits: u64, default: i64) -> i64 {
+pub(super) fn value_bits_to_i64_default(
+    py: &molt_runtime_core::PyToken,
+    bits: u64,
+    default: i64,
+) -> i64 {
     let obj = obj_from_bits(bits);
     if let Some(value) = to_i64(obj) {
         return value;
     }
-    if let Some(text) = unsafe { string_obj_to_owned(obj) }
+    if let Some(text) = unsafe { string_obj_to_owned(py, obj) }
         && let Ok(value) = text.trim().parse::<i64>()
     {
         return value;
@@ -426,6 +430,7 @@ pub(super) fn value_bits_to_i64_default(bits: u64, default: i64) -> i64 {
 }
 
 pub(super) fn widget_option_i64_default(
+    py: &molt_runtime_core::PyToken,
     options: &HashMap<String, u64>,
     key: &str,
     default: i64,
@@ -433,7 +438,7 @@ pub(super) fn widget_option_i64_default(
     options
         .get(key)
         .copied()
-        .map(|bits| value_bits_to_i64_default(bits, default))
+        .map(|bits| value_bits_to_i64_default(py, bits, default))
         .unwrap_or(default)
 }
 
@@ -589,16 +594,25 @@ pub(super) fn parse_simple_end_or_int_index(spec: &str, upper: usize) -> Option<
         .map(|value| clamp_index_i64(value, upper))
 }
 
-pub(super) fn parse_simple_end_or_int_index_bits(bits: u64, upper: usize) -> Option<usize> {
+pub(super) fn parse_simple_end_or_int_index_bits(
+    py: &molt_runtime_core::PyToken,
+    bits: u64,
+    upper: usize,
+) -> Option<usize> {
     let obj = obj_from_bits(bits);
     if let Some(value) = to_i64(obj) {
         return Some(clamp_index_i64(value, upper));
     }
-    let spec = unsafe { string_obj_to_owned(obj) }?;
+    let spec = unsafe { string_obj_to_owned(py, obj) }?;
     parse_simple_end_or_int_index(&spec, upper)
 }
 
-pub(super) fn parse_listbox_index_bits(bits: u64, len: usize, for_insert: bool) -> Option<usize> {
+pub(super) fn parse_listbox_index_bits(
+    py: &molt_runtime_core::PyToken,
+    bits: u64,
+    len: usize,
+    for_insert: bool,
+) -> Option<usize> {
     let obj = obj_from_bits(bits);
     if let Some(value) = to_i64(obj) {
         let upper = if for_insert {
@@ -608,7 +622,7 @@ pub(super) fn parse_listbox_index_bits(bits: u64, len: usize, for_insert: bool) 
         };
         return Some(clamp_index_i64(value, upper));
     }
-    let spec = unsafe { string_obj_to_owned(obj) }?;
+    let spec = unsafe { string_obj_to_owned(py, obj) }?;
     let trimmed = spec.trim();
     if trimmed.eq_ignore_ascii_case("end") {
         return if for_insert {
@@ -632,6 +646,7 @@ pub(super) fn parse_listbox_index_bits(bits: u64, len: usize, for_insert: bool) 
 }
 
 pub(super) fn parse_menu_existing_index_bits(
+    py: &molt_runtime_core::PyToken,
     bits: u64,
     len: usize,
     active_index: Option<usize>,
@@ -643,7 +658,7 @@ pub(super) fn parse_menu_existing_index_bits(
     if let Some(value) = to_i64(obj) {
         return Some(clamp_index_i64(value, len - 1));
     }
-    let spec = unsafe { string_obj_to_owned(obj) }?;
+    let spec = unsafe { string_obj_to_owned(py, obj) }?;
     let trimmed = spec.trim();
     if trimmed.eq_ignore_ascii_case("end") || trimmed.eq_ignore_ascii_case("last") {
         return Some(len - 1);
@@ -660,12 +675,16 @@ pub(super) fn parse_menu_existing_index_bits(
         .map(|value| clamp_index_i64(value, len - 1))
 }
 
-pub(super) fn parse_menu_insert_index_bits(bits: u64, len: usize) -> Option<usize> {
+pub(super) fn parse_menu_insert_index_bits(
+    py: &molt_runtime_core::PyToken,
+    bits: u64,
+    len: usize,
+) -> Option<usize> {
     let obj = obj_from_bits(bits);
     if let Some(value) = to_i64(obj) {
         return Some(clamp_index_i64(value, len));
     }
-    let spec = unsafe { string_obj_to_owned(obj) }?;
+    let spec = unsafe { string_obj_to_owned(py, obj) }?;
     let trimmed = spec.trim();
     if trimmed.eq_ignore_ascii_case("end") {
         return Some(len);
@@ -704,15 +723,16 @@ pub(super) fn run_tk_word_commands(
 }
 
 pub(super) fn parse_entry_like_index_bits(
+    py: &molt_runtime_core::PyToken,
     bits: u64,
     text_len: usize,
     insert_cursor: usize,
     selection_anchor: Option<usize>,
 ) -> Option<usize> {
-    if let Some(index) = parse_simple_end_or_int_index_bits(bits, text_len) {
+    if let Some(index) = parse_simple_end_or_int_index_bits(py, bits, text_len) {
         return Some(index.min(text_len));
     }
-    let spec = unsafe { string_obj_to_owned(obj_from_bits(bits)) }?;
+    let spec = unsafe { string_obj_to_owned(py, obj_from_bits(bits)) }?;
     let normalized = spec.trim().to_ascii_lowercase();
     match normalized.as_str() {
         "insert" => Some(insert_cursor.min(text_len)),
@@ -786,12 +806,16 @@ pub(super) fn parse_text_index_spec(spec: &str, text: &str) -> Option<usize> {
     parse_text_line_column_index(trimmed, text)
 }
 
-pub(super) fn parse_text_index_bits(bits: u64, text: &str) -> Option<usize> {
+pub(super) fn parse_text_index_bits(
+    py: &molt_runtime_core::PyToken,
+    bits: u64,
+    text: &str,
+) -> Option<usize> {
     let obj = obj_from_bits(bits);
     if let Some(value) = to_i64(obj) {
         return Some(clamp_index_i64(value, text_char_count(text)));
     }
-    let spec = unsafe { string_obj_to_owned(obj) }?;
+    let spec = unsafe { string_obj_to_owned(py, obj) }?;
     parse_text_index_spec(&spec, text)
 }
 
@@ -801,7 +825,7 @@ pub(super) fn parse_treeview_item_list_arg(
     bits: u64,
     label: &str,
 ) -> Result<Vec<String>, u64> {
-    if let Some(raw_items) = decode_value_list(obj_from_bits(bits)) {
+    if let Some(raw_items) = decode_value_list(py, obj_from_bits(bits)) {
         let mut out = Vec::with_capacity(raw_items.len());
         for &item_bits in raw_items.iter() {
             out.push(get_string_arg(py, handle, item_bits, label)?);
@@ -811,21 +835,24 @@ pub(super) fn parse_treeview_item_list_arg(
     Ok(vec![get_string_arg(py, handle, bits, label)?])
 }
 
-pub(super) fn parse_treeview_tags(item: &TkTreeviewItem) -> Vec<String> {
+pub(super) fn parse_treeview_tags(
+    py: &molt_runtime_core::PyToken,
+    item: &TkTreeviewItem,
+) -> Vec<String> {
     let Some(tags_bits) = item.options.get("-tags").copied() else {
         return Vec::new();
     };
-    if let Some(raw) = decode_value_list(obj_from_bits(tags_bits)) {
+    if let Some(raw) = decode_value_list(py, obj_from_bits(tags_bits)) {
         let mut out = Vec::with_capacity(raw.len());
         for &tag_bits in raw.iter() {
-            if let Some(tag) = unsafe { string_obj_to_owned(obj_from_bits(tag_bits)) } {
+            if let Some(tag) = unsafe { string_obj_to_owned(py, obj_from_bits(tag_bits)) } {
                 out.push(tag);
             }
         }
         return out;
     }
     let value = obj_from_bits(tags_bits);
-    if let Some(tag) = unsafe { string_obj_to_owned(value) } {
+    if let Some(tag) = unsafe { string_obj_to_owned(py, value) } {
         if tag.trim().is_empty() {
             return Vec::new();
         }

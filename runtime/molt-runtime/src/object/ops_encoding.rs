@@ -1699,7 +1699,7 @@ mod encode_tests {
                 let (start, end, reason) = initial.unwrap_or(latest);
                 let failure = decode_bytes_text(encoding, errors, input).unwrap_err();
                 let _: u64 = failure.raise(py, input);
-                let error = molt_exception_last_pending();
+                let error = molt_exception_last_pending_attached_body(py);
                 assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     error,
@@ -1760,7 +1760,7 @@ mod encode_tests {
                     dec_ref_bits(py, bits);
                 }
                 drop(args);
-                molt_exception_clear();
+                molt_exception_clear_attached_body(py);
                 dec_ref_bits(py, error);
                 assert!(!exception_pending(py));
             }
@@ -1768,13 +1768,13 @@ mod encode_tests {
             let _: u64 = decode_bytes_text("ascii", "missing-handler", b"\xff")
                 .unwrap_err()
                 .raise(py, b"\xff");
-            let error = molt_exception_last_pending();
+            let error = molt_exception_last_pending_attached_body(py);
             assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
                 crate::BuiltinExc::LookupError
             ));
-            molt_exception_clear();
+            molt_exception_clear_attached_body(py);
             dec_ref_bits(py, error);
         });
     }

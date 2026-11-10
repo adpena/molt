@@ -2,14 +2,20 @@ use super::*;
 use crate::BuiltinExc;
 use crate::runtime_flags::{self, RuntimeFlag};
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_join(sep_bits: u64, items_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { bytes_join(py, sep_bits, items_bits, false) })
+pub(crate) fn molt_bytes_join_attached_body(
+    _py: &crate::PyToken<'_>,
+    sep_bits: u64,
+    items_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { bytes_join(py, sep_bits, items_bits, false) })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_join(sep_bits: u64, items_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, { bytes_join(py, sep_bits, items_bits, true) })
+pub(crate) fn molt_bytearray_join_attached_body(
+    _py: &crate::PyToken<'_>,
+    sep_bits: u64,
+    items_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, { bytes_join(py, sep_bits, items_bits, true) })
 }
 
 fn bytes_join(py: &PyToken<'_>, sep_bits: u64, items_bits: u64, mutable: bool) -> u64 {
@@ -206,12 +212,16 @@ fn bytes_join(py: &PyToken<'_>, sep_bits: u64, items_bits: u64, mutable: bool) -
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_find(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_find_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let none_bits = MoltObject::none().bits();
         let false_bits = MoltObject::from_bool(false).bits();
-        molt_bytes_find_slice(
+        molt_bytes_find_slice_attached_body(
+            _py,
             hay_bits,
             needle_bits,
             none_bits,
@@ -227,14 +237,19 @@ pub extern "C" fn molt_bytes_find(hay_bits: u64, needle_bits: u64) -> u64 {
 // sentinel → has_start/has_end conversion.
 
 macro_rules! bytes_slice_method_wrapper {
-    ($name:ident, $delegate:ident) => {
-        #[unsafe(no_mangle)]
-        pub extern "C" fn $name(
+    ($name:ident, $symbol:tt, $delegate:ident) => {
+        #[unsafe(export_name = molt_codegen_abi::attached_symbol!($symbol))]
+        /// # Safety
+        ///
+        /// `__context` must be the attached runtime context that the compiled caller received.
+        pub unsafe extern "C" fn $name(
+            __context: u64,
             hay_bits: u64,
             needle_bits: u64,
             start_bits: u64,
             end_bits: u64,
         ) -> u64 {
+            let py = unsafe { crate::PyToken::from_attached_context(__context) };
             let has_start = obj_from_bits(start_bits).is_none() as u64 ^ 1;
             let has_end = obj_from_bits(end_bits).is_none() as u64 ^ 1;
             let start = if has_start != 0 {
@@ -248,6 +263,7 @@ macro_rules! bytes_slice_method_wrapper {
                 MoltObject::from_int(0).bits()
             };
             $delegate(
+                py,
                 hay_bits,
                 needle_bits,
                 start,
@@ -259,28 +275,78 @@ macro_rules! bytes_slice_method_wrapper {
     };
 }
 
-bytes_slice_method_wrapper!(molt_bytes_find_method, molt_bytes_find_slice);
-bytes_slice_method_wrapper!(molt_bytes_rfind_method, molt_bytes_rfind_slice);
-bytes_slice_method_wrapper!(molt_bytes_index_method, molt_bytes_index_slice);
-bytes_slice_method_wrapper!(molt_bytes_rindex_method, molt_bytes_rindex_slice);
-bytes_slice_method_wrapper!(molt_bytes_count_method, molt_bytes_count_slice);
-bytes_slice_method_wrapper!(molt_bytes_startswith_method, molt_bytes_startswith_slice);
-bytes_slice_method_wrapper!(molt_bytes_endswith_method, molt_bytes_endswith_slice);
+bytes_slice_method_wrapper!(
+    molt_bytes_find_method,
+    "molt_bytes_find_method",
+    molt_bytes_find_slice_attached_body
+);
+bytes_slice_method_wrapper!(
+    molt_bytes_rfind_method,
+    "molt_bytes_rfind_method",
+    molt_bytes_rfind_slice_attached_body
+);
+bytes_slice_method_wrapper!(
+    molt_bytes_index_method,
+    "molt_bytes_index_method",
+    molt_bytes_index_slice_attached_body
+);
+bytes_slice_method_wrapper!(
+    molt_bytes_rindex_method,
+    "molt_bytes_rindex_method",
+    molt_bytes_rindex_slice_attached_body
+);
+bytes_slice_method_wrapper!(
+    molt_bytes_count_method,
+    "molt_bytes_count_method",
+    molt_bytes_count_slice_attached_body
+);
+bytes_slice_method_wrapper!(
+    molt_bytes_startswith_method,
+    "molt_bytes_startswith_method",
+    molt_bytes_startswith_slice_attached_body
+);
+bytes_slice_method_wrapper!(
+    molt_bytes_endswith_method,
+    "molt_bytes_endswith_method",
+    molt_bytes_endswith_slice_attached_body
+);
 
 // bytearray reuses the same runtime functions as bytes, so these wrappers
 // delegate to the bytes _slice variants directly.
-bytes_slice_method_wrapper!(molt_bytearray_find_method, molt_bytearray_find_slice);
-bytes_slice_method_wrapper!(molt_bytearray_rfind_method, molt_bytearray_rfind_slice);
-bytes_slice_method_wrapper!(molt_bytearray_index_method, molt_bytearray_index_slice);
-bytes_slice_method_wrapper!(molt_bytearray_rindex_method, molt_bytearray_rindex_slice);
-bytes_slice_method_wrapper!(molt_bytearray_count_method, molt_bytearray_count_slice);
+bytes_slice_method_wrapper!(
+    molt_bytearray_find_method,
+    "molt_bytearray_find_method",
+    molt_bytearray_find_slice_attached_body
+);
+bytes_slice_method_wrapper!(
+    molt_bytearray_rfind_method,
+    "molt_bytearray_rfind_method",
+    molt_bytearray_rfind_slice_attached_body
+);
+bytes_slice_method_wrapper!(
+    molt_bytearray_index_method,
+    "molt_bytearray_index_method",
+    molt_bytearray_index_slice_attached_body
+);
+bytes_slice_method_wrapper!(
+    molt_bytearray_rindex_method,
+    "molt_bytearray_rindex_method",
+    molt_bytearray_rindex_slice_attached_body
+);
+bytes_slice_method_wrapper!(
+    molt_bytearray_count_method,
+    "molt_bytearray_count_method",
+    molt_bytearray_count_slice_attached_body
+);
 bytes_slice_method_wrapper!(
     molt_bytearray_startswith_method,
-    molt_bytearray_startswith_slice
+    "molt_bytearray_startswith_method",
+    molt_bytearray_startswith_slice_attached_body
 );
 bytes_slice_method_wrapper!(
     molt_bytearray_endswith_method,
-    molt_bytearray_endswith_slice
+    "molt_bytearray_endswith_method",
+    molt_bytearray_endswith_slice_attached_body
 );
 
 #[derive(Clone, Copy)]
@@ -455,7 +521,8 @@ fn byte_search(
             Ok(value) => value,
             Err(error) => {
                 if tail && exception_pending(py) {
-                    let pending = crate::builtins::exceptions::molt_exception_last_pending();
+                    let pending =
+                        crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                     let type_error = crate::builtins::exceptions::exception_matches_kind(
                         py,
                         pending,
@@ -490,8 +557,8 @@ fn byte_search(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_find_slice(
+pub(crate) fn molt_bytes_find_slice_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -499,7 +566,7 @@ pub extern "C" fn molt_bytes_find_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         byte_search(
             py,
             hay_bits,
@@ -516,12 +583,16 @@ pub extern "C" fn molt_bytes_find_slice(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_rfind(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_rfind_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let none_bits = MoltObject::none().bits();
         let false_bits = MoltObject::from_bool(false).bits();
-        molt_bytes_rfind_slice(
+        molt_bytes_rfind_slice_attached_body(
+            _py,
             hay_bits,
             needle_bits,
             none_bits,
@@ -532,8 +603,8 @@ pub extern "C" fn molt_bytes_rfind(hay_bits: u64, needle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_rfind_slice(
+pub(crate) fn molt_bytes_rfind_slice_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -541,7 +612,7 @@ pub extern "C" fn molt_bytes_rfind_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         byte_search(
             py,
             hay_bits,
@@ -558,12 +629,16 @@ pub extern "C" fn molt_bytes_rfind_slice(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_startswith(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_startswith_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let none_bits = MoltObject::none().bits();
         let false_bits = MoltObject::from_bool(false).bits();
-        molt_bytes_startswith_slice(
+        molt_bytes_startswith_slice_attached_body(
+            _py,
             hay_bits,
             needle_bits,
             none_bits,
@@ -574,12 +649,16 @@ pub extern "C" fn molt_bytes_startswith(hay_bits: u64, needle_bits: u64) -> u64 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_endswith(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_endswith_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let none_bits = MoltObject::none().bits();
         let false_bits = MoltObject::from_bool(false).bits();
-        molt_bytes_endswith_slice(
+        molt_bytes_endswith_slice_attached_body(
+            _py,
             hay_bits,
             needle_bits,
             none_bits,
@@ -590,8 +669,8 @@ pub extern "C" fn molt_bytes_endswith(hay_bits: u64, needle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_startswith_slice(
+pub(crate) fn molt_bytes_startswith_slice_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -599,7 +678,7 @@ pub extern "C" fn molt_bytes_startswith_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         byte_search(
             py,
             hay_bits,
@@ -616,8 +695,8 @@ pub extern "C" fn molt_bytes_startswith_slice(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_endswith_slice(
+pub(crate) fn molt_bytes_endswith_slice_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -625,7 +704,7 @@ pub extern "C" fn molt_bytes_endswith_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         byte_search(
             py,
             hay_bits,
@@ -642,9 +721,13 @@ pub extern "C" fn molt_bytes_endswith_slice(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_count(hay_bits: u64, needle_bits: u64) -> u64 {
-    molt_bytes_count_slice(
+pub(crate) fn molt_bytes_count_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+) -> u64 {
+    molt_bytes_count_slice_attached_body(
+        _py,
         hay_bits,
         needle_bits,
         MoltObject::none().bits(),
@@ -654,8 +737,8 @@ pub extern "C" fn molt_bytes_count(hay_bits: u64, needle_bits: u64) -> u64 {
     )
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_count_slice(
+pub(crate) fn molt_bytes_count_slice_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -663,7 +746,7 @@ pub extern "C" fn molt_bytes_count_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         byte_search(
             py,
             hay_bits,
@@ -680,12 +763,16 @@ pub extern "C" fn molt_bytes_count_slice(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_find(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_find_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let none_bits = MoltObject::none().bits();
         let false_bits = MoltObject::from_bool(false).bits();
-        molt_bytearray_find_slice(
+        molt_bytearray_find_slice_attached_body(
+            _py,
             hay_bits,
             needle_bits,
             none_bits,
@@ -696,12 +783,16 @@ pub extern "C" fn molt_bytearray_find(hay_bits: u64, needle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_rfind(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_rfind_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let none_bits = MoltObject::none().bits();
         let false_bits = MoltObject::from_bool(false).bits();
-        molt_bytearray_rfind_slice(
+        molt_bytearray_rfind_slice_attached_body(
+            _py,
             hay_bits,
             needle_bits,
             none_bits,
@@ -712,12 +803,16 @@ pub extern "C" fn molt_bytearray_rfind(hay_bits: u64, needle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_startswith(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_startswith_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let none_bits = MoltObject::none().bits();
         let false_bits = MoltObject::from_bool(false).bits();
-        molt_bytearray_startswith_slice(
+        molt_bytearray_startswith_slice_attached_body(
+            _py,
             hay_bits,
             needle_bits,
             none_bits,
@@ -728,12 +823,16 @@ pub extern "C" fn molt_bytearray_startswith(hay_bits: u64, needle_bits: u64) -> 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_endswith(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_endswith_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let none_bits = MoltObject::none().bits();
         let false_bits = MoltObject::from_bool(false).bits();
-        molt_bytearray_endswith_slice(
+        molt_bytearray_endswith_slice_attached_body(
+            _py,
             hay_bits,
             needle_bits,
             none_bits,
@@ -744,8 +843,8 @@ pub extern "C" fn molt_bytearray_endswith(hay_bits: u64, needle_bits: u64) -> u6
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_find_slice(
+pub(crate) fn molt_bytearray_find_slice_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -753,7 +852,7 @@ pub extern "C" fn molt_bytearray_find_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         byte_search(
             py,
             hay_bits,
@@ -770,8 +869,8 @@ pub extern "C" fn molt_bytearray_find_slice(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_rfind_slice(
+pub(crate) fn molt_bytearray_rfind_slice_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -779,7 +878,7 @@ pub extern "C" fn molt_bytearray_rfind_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         byte_search(
             py,
             hay_bits,
@@ -796,8 +895,8 @@ pub extern "C" fn molt_bytearray_rfind_slice(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_startswith_slice(
+pub(crate) fn molt_bytearray_startswith_slice_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -805,7 +904,7 @@ pub extern "C" fn molt_bytearray_startswith_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         byte_search(
             py,
             hay_bits,
@@ -822,8 +921,8 @@ pub extern "C" fn molt_bytearray_startswith_slice(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_endswith_slice(
+pub(crate) fn molt_bytearray_endswith_slice_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -831,7 +930,7 @@ pub extern "C" fn molt_bytearray_endswith_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         byte_search(
             py,
             hay_bits,
@@ -848,9 +947,13 @@ pub extern "C" fn molt_bytearray_endswith_slice(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_count(hay_bits: u64, needle_bits: u64) -> u64 {
-    molt_bytearray_count_slice(
+pub(crate) fn molt_bytearray_count_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+) -> u64 {
+    molt_bytearray_count_slice_attached_body(
+        _py,
         hay_bits,
         needle_bits,
         MoltObject::none().bits(),
@@ -860,8 +963,8 @@ pub extern "C" fn molt_bytearray_count(hay_bits: u64, needle_bits: u64) -> u64 {
     )
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_count_slice(
+pub(crate) fn molt_bytearray_count_slice_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -869,7 +972,7 @@ pub extern "C" fn molt_bytearray_count_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+    crate::with_attached_entry_nopanic!(_py, py, {
         byte_search(
             py,
             hay_bits,
@@ -886,9 +989,12 @@ pub extern "C" fn molt_bytearray_count_slice(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_splitlines(hay_bits: u64, keepends_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_splitlines_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    keepends_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let keepends = is_truthy(_py, obj_from_bits(keepends_bits));
         let Some(hay_ptr) = hay.as_ptr() else {
@@ -906,9 +1012,12 @@ pub extern "C" fn molt_bytes_splitlines(hay_bits: u64, keepends_bits: u64) -> u6
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_splitlines(hay_bits: u64, keepends_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_splitlines_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    keepends_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let keepends = is_truthy(_py, obj_from_bits(keepends_bits));
         let Some(hay_ptr) = hay.as_ptr() else {
@@ -1029,16 +1138,22 @@ fn bytes_partition_protocol(py: &PyToken<'_>, hay_bits: u64, sep_bits: u64, righ
     .unwrap_or_else(|| MoltObject::none().bits())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_partition(hay_bits: u64, sep_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_bytes_partition_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    sep_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         bytes_partition_protocol(py, hay_bits, sep_bits, false)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_rpartition(hay_bits: u64, sep_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_bytes_rpartition_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    sep_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         bytes_partition_protocol(py, hay_bits, sep_bits, true)
     })
 }
@@ -1083,16 +1198,22 @@ fn bytearray_partition_protocol(
     .unwrap_or_else(|| MoltObject::none().bits())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_partition(hay_bits: u64, sep_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_bytearray_partition_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    sep_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         bytearray_partition_protocol(py, hay_bits, sep_bits, false)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_rpartition(hay_bits: u64, sep_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_bytearray_rpartition_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    sep_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         bytearray_partition_protocol(py, hay_bits, sep_bits, true)
     })
 }
@@ -1176,17 +1297,24 @@ fn bytes_split_impl(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_split(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_split_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let maxsplit_bits = MoltObject::from_int(-1).bits();
-        molt_bytes_split_max(hay_bits, needle_bits, maxsplit_bits)
+        molt_bytes_split_max_attached_body(_py, hay_bits, needle_bits, maxsplit_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_split_max(hay_bits: u64, needle_bits: u64, maxsplit_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_split_max_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+    maxsplit_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_split_impl(
             _py,
             hay_bits,
@@ -1198,21 +1326,24 @@ pub extern "C" fn molt_bytes_split_max(hay_bits: u64, needle_bits: u64, maxsplit
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_rsplit(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_rsplit_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let maxsplit_bits = MoltObject::from_int(-1).bits();
-        molt_bytes_rsplit_max(hay_bits, needle_bits, maxsplit_bits)
+        molt_bytes_rsplit_max_attached_body(_py, hay_bits, needle_bits, maxsplit_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_rsplit_max(
+pub(crate) fn molt_bytes_rsplit_max_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     maxsplit_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_split_impl(
             _py,
             hay_bits,
@@ -1291,9 +1422,12 @@ where
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_strip(hay_bits: u64, chars_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_strip_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    chars_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if trace_bytes_strip() {
             let hay = obj_from_bits(hay_bits);
             let info = hay
@@ -1313,9 +1447,12 @@ pub extern "C" fn molt_bytes_strip(hay_bits: u64, chars_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_lstrip(hay_bits: u64, chars_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_lstrip_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    chars_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_strip_impl(
             _py,
             hay_bits,
@@ -1328,9 +1465,12 @@ pub extern "C" fn molt_bytes_lstrip(hay_bits: u64, chars_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_rstrip(hay_bits: u64, chars_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_rstrip_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    chars_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_strip_impl(
             _py,
             hay_bits,
@@ -1343,21 +1483,24 @@ pub extern "C" fn molt_bytes_rstrip(hay_bits: u64, chars_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_split(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_split_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let maxsplit_bits = MoltObject::from_int(-1).bits();
-        molt_bytearray_split_max(hay_bits, needle_bits, maxsplit_bits)
+        molt_bytearray_split_max_attached_body(_py, hay_bits, needle_bits, maxsplit_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_split_max(
+pub(crate) fn molt_bytearray_split_max_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     maxsplit_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_split_impl(
             _py,
             hay_bits,
@@ -1369,21 +1512,24 @@ pub extern "C" fn molt_bytearray_split_max(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_rsplit(hay_bits: u64, needle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_rsplit_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    needle_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let maxsplit_bits = MoltObject::from_int(-1).bits();
-        molt_bytearray_rsplit_max(hay_bits, needle_bits, maxsplit_bits)
+        molt_bytearray_rsplit_max_attached_body(_py, hay_bits, needle_bits, maxsplit_bits)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_rsplit_max(
+pub(crate) fn molt_bytearray_rsplit_max_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     maxsplit_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_split_impl(
             _py,
             hay_bits,
@@ -1395,9 +1541,12 @@ pub extern "C" fn molt_bytearray_rsplit_max(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_strip(hay_bits: u64, chars_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_strip_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    chars_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_strip_impl(
             _py,
             hay_bits,
@@ -1410,9 +1559,12 @@ pub extern "C" fn molt_bytearray_strip(hay_bits: u64, chars_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_lstrip(hay_bits: u64, chars_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_lstrip_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    chars_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_strip_impl(
             _py,
             hay_bits,
@@ -1425,9 +1577,12 @@ pub extern "C" fn molt_bytearray_lstrip(hay_bits: u64, chars_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_rstrip(hay_bits: u64, chars_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_rstrip_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    chars_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_strip_impl(
             _py,
             hay_bits,
@@ -1440,8 +1595,8 @@ pub extern "C" fn molt_bytearray_rstrip(hay_bits: u64, chars_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_index_slice(
+pub(crate) fn molt_bytes_index_slice_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -1449,8 +1604,9 @@ pub extern "C" fn molt_bytes_index_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let idx_bits = molt_bytes_find_slice(
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let idx_bits = molt_bytes_find_slice_attached_body(
+            _py,
             hay_bits,
             needle_bits,
             start_bits,
@@ -1468,8 +1624,8 @@ pub extern "C" fn molt_bytes_index_slice(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_rindex_slice(
+pub(crate) fn molt_bytes_rindex_slice_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -1477,8 +1633,9 @@ pub extern "C" fn molt_bytes_rindex_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let idx_bits = molt_bytes_rfind_slice(
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let idx_bits = molt_bytes_rfind_slice_attached_body(
+            _py,
             hay_bits,
             needle_bits,
             start_bits,
@@ -1496,8 +1653,8 @@ pub extern "C" fn molt_bytes_rindex_slice(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_index_slice(
+pub(crate) fn molt_bytearray_index_slice_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -1505,8 +1662,9 @@ pub extern "C" fn molt_bytearray_index_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let idx_bits = molt_bytearray_find_slice(
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let idx_bits = molt_bytearray_find_slice_attached_body(
+            _py,
             hay_bits,
             needle_bits,
             start_bits,
@@ -1524,8 +1682,8 @@ pub extern "C" fn molt_bytearray_index_slice(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_rindex_slice(
+pub(crate) fn molt_bytearray_rindex_slice_attached_body(
+    _py: &crate::PyToken<'_>,
     hay_bits: u64,
     needle_bits: u64,
     start_bits: u64,
@@ -1533,8 +1691,9 @@ pub extern "C" fn molt_bytearray_rindex_slice(
     has_start_bits: u64,
     has_end_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let idx_bits = molt_bytearray_rfind_slice(
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let idx_bits = molt_bytearray_rfind_slice_attached_body(
+            _py,
             hay_bits,
             needle_bits,
             start_bits,
@@ -1551,6 +1710,8 @@ pub extern "C" fn molt_bytearray_rindex_slice(
         idx_bits
     })
 }
+
+include!("../../attached_exports_generated/object/ops_bytes/sequence_methods.rs");
 
 #[cfg(test)]
 mod partition_contract_tests {
@@ -1583,14 +1744,14 @@ mod partition_contract_tests {
                 (
                     TYPE_ID_BYTES,
                     [
-                        molt_bytes_partition as extern "C" fn(u64, u64) -> u64,
+                        molt_bytes_partition as unsafe extern "C" fn(u64, u64, u64) -> u64,
                         molt_bytes_rpartition,
                     ],
                 ),
                 (
                     TYPE_ID_BYTEARRAY,
                     [
-                        molt_bytearray_partition as extern "C" fn(u64, u64) -> u64,
+                        molt_bytearray_partition as unsafe extern "C" fn(u64, u64, u64) -> u64,
                         molt_bytearray_rpartition,
                     ],
                 ),
@@ -1598,7 +1759,7 @@ mod partition_contract_tests {
                     TYPE_ID_STRING,
                     [
                         crate::object::ops_string::molt_string_partition
-                            as extern "C" fn(u64, u64) -> u64,
+                            as unsafe extern "C" fn(u64, u64, u64) -> u64,
                         crate::object::ops_string::molt_string_rpartition,
                     ],
                 ),
@@ -1609,7 +1770,7 @@ mod partition_contract_tests {
                 let hay_refs = refs(hay);
                 let sep_refs = refs(sep);
                 for (right, partition) in functions.into_iter().enumerate() {
-                    let result = partition(hay, sep);
+                    let result = unsafe { partition(py.attached_context(), hay, sep) };
                     assert!(!exception_pending(py));
                     let parts = unsafe {
                         with_immutable_tuple_slice(
@@ -1629,7 +1790,7 @@ mod partition_contract_tests {
                     }
                     dec_ref_bits(py, result);
                     assert_eq!(refs(sep), sep_refs);
-                    let result = partition(hay, absent);
+                    let result = unsafe { partition(py.attached_context(), hay, absent) };
                     assert!(!exception_pending(py));
                     let whole = unsafe {
                         with_immutable_tuple_slice(
@@ -1661,11 +1822,12 @@ mod partition_contract_tests {
         crate::with_gil_entry_nopanic!(py, {
             let hay = value(py, TYPE_ID_BYTES, b"left<>right");
             let storage = value(py, TYPE_ID_BYTEARRAY, b"<>");
-            let view = crate::object::ops_memoryview::molt_memoryview_new(storage);
+            let view =
+                crate::object::ops_memoryview::molt_memoryview_new_attached_body(py, storage);
             assert!(!exception_pending(py));
             let count = refs(view);
             for partition in [molt_bytes_partition, molt_bytes_rpartition] {
-                let result = partition(hay, view);
+                let result = unsafe { partition(py.attached_context(), hay, view) };
                 assert!(!exception_pending(py));
                 assert_eq!(
                     unsafe {
@@ -1680,7 +1842,7 @@ mod partition_contract_tests {
                 dec_ref_bits(py, result);
                 assert_eq!(refs(view), count);
             }
-            crate::object::ops_memoryview::molt_memoryview_release(view);
+            crate::object::ops_memoryview::molt_memoryview_release_attached_body(py, view);
             assert!(!exception_pending(py));
             for bits in [view, storage, hay] {
                 dec_ref_bits(py, bits);

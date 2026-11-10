@@ -395,7 +395,7 @@ fn extract_dt_components(_py: &CoreGilToken, bits: u64) -> Option<Vec<i64>> {
         if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
             return None;
         }
-        let elems = seq_snapshot(ptr);
+        let elems = seq_snapshot(_py, ptr);
         let result: Vec<i64> = elems
             .iter()
             .filter_map(|&b| to_i64(obj_from_bits(b)))
@@ -406,9 +406,8 @@ fn extract_dt_components(_py: &CoreGilToken, bits: u64) -> Option<Vec<i64>> {
 
 // ── Public intrinsics ─────────────────────────────────────────────────────
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zoneinfo_new(key_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_zoneinfo_new_attached_body(_py: &molt_runtime_core::PyToken, key_bits: u64) -> u64 {
+    with_attached_entry!(_py, _py, {
         let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
             Some(k) => k,
             None => {
@@ -430,9 +429,8 @@ pub extern "C" fn molt_zoneinfo_new(key_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zoneinfo_key(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_zoneinfo_key_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
+    with_attached_entry!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -458,9 +456,12 @@ pub extern "C" fn molt_zoneinfo_key(handle_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zoneinfo_utcoffset(handle_bits: u64, dt_components_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_zoneinfo_utcoffset_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    dt_components_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -495,9 +496,12 @@ pub extern "C" fn molt_zoneinfo_utcoffset(handle_bits: u64, dt_components_bits: 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zoneinfo_tzname(handle_bits: u64, dt_components_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_zoneinfo_tzname_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    dt_components_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -549,9 +553,12 @@ pub extern "C" fn molt_zoneinfo_tzname(handle_bits: u64, dt_components_bits: u64
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zoneinfo_dst(handle_bits: u64, dt_components_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_zoneinfo_dst_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    handle_bits: u64,
+    dt_components_bits: u64,
+) -> u64 {
+    with_attached_entry!(_py, _py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -589,9 +596,8 @@ pub extern "C" fn molt_zoneinfo_dst(handle_bits: u64, dt_components_bits: u64) -
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zoneinfo_available_timezones() -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_zoneinfo_available_timezones_attached_body(_py: &molt_runtime_core::PyToken) -> u64 {
+    with_attached_entry!(_py, _py, {
         let names = available_timezones_set();
         let mut str_bits = Vec::with_capacity(names.len());
         for name in &names {
@@ -609,12 +615,13 @@ pub extern "C" fn molt_zoneinfo_available_timezones() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zoneinfo_drop(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
+pub fn molt_zoneinfo_drop_attached_body(_py: &molt_runtime_core::PyToken, handle_bits: u64) -> u64 {
+    with_attached_entry!(_py, _py, {
         if let Some(id) = to_i64(obj_from_bits(handle_bits)) {
             ZONE_MAP.with(|m| m.borrow_mut().remove(&id));
         }
         MoltObject::none().bits()
     })
 }
+
+include!("attached_exports_generated/zoneinfo.rs");

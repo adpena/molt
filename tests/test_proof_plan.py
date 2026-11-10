@@ -3247,7 +3247,6 @@ def test_actual_wasm_linker_fixtures_have_one_provisioned_lane() -> None:
         "test_primary_runtime_fixture_passes_actual_relocatable_admission",
         "test_run_wasm_ld_rejects_shared_primary_before_publication",
         "test_wasm_module_identity_survives_distinct_staging_paths",
-        "test_existing_alias_binding_controls_actual_llvm_resolution",
     }
     selectors = {f"tests/test_wasm_link_validation.py::{name}" for name in names}
     assert set(arg for arg in actual.argv if "::" in arg) == selectors

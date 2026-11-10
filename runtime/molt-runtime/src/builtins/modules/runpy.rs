@@ -362,14 +362,14 @@ fn init_globals_bits(init_globals_bits: u64) -> Result<Option<u64>, &'static str
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_runpy_run_module(
+pub(crate) fn molt_runpy_run_module_attached_body(
+    _py: &crate::PyToken<'_>,
     mod_name_bits: u64,
     run_name_bits: u64,
     init_globals_bits_value: u64,
     alter_sys_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let mod_name = match string_obj_to_owned(obj_from_bits(mod_name_bits)) {
             Some(value) => value,
             None => {
@@ -426,13 +426,13 @@ pub extern "C" fn molt_runpy_run_module(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_runpy_run_path(
+pub(crate) fn molt_runpy_run_path_attached_body(
+    _py: &crate::PyToken<'_>,
     path_bits: u64,
     run_name_bits: u64,
     init_globals_bits_value: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision("runpy.run_path", "fs.read", AuditArgs::None, allowed);
         if !allowed {
@@ -518,6 +518,8 @@ pub extern "C" fn molt_runpy_run_path(
         }
     })
 }
+
+include!("../../attached_exports_generated/builtins/modules/runpy.rs");
 
 #[cfg(test)]
 mod tests {

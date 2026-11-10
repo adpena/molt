@@ -29,7 +29,7 @@ impl LirWasmAbi {
                 if func.return_types.len() > 1 {
                     return None;
                 }
-                let param_types: Vec<ValType> = func
+                let mut param_types: Vec<ValType> = func
                     .blocks
                     .get(&func.entry_block)
                     .map(|entry| {
@@ -40,6 +40,7 @@ impl LirWasmAbi {
                             .collect()
                     })
                     .unwrap_or_default();
+                param_types.insert(0, ValType::I64);
                 let result_types: Vec<ValType> = func
                     .return_types
                     .iter()
@@ -49,7 +50,7 @@ impl LirWasmAbi {
                 Some(LirWasmAbiPlan {
                     param_types,
                     result_types,
-                    ctx_local_base: 0,
+                    ctx_local_base: 1,
                     local_decl_start,
                     return_abi: LirReturnAbi::Native(
                         func.return_types.first().map(LirRepr::for_type),
@@ -74,10 +75,10 @@ impl LirWasmAbi {
 
                 let param_count = entry.args.len() as u32;
                 Some(LirWasmAbiPlan {
-                    param_types: vec![ValType::I64; param_count as usize],
+                    param_types: vec![ValType::I64; param_count as usize + 1],
                     result_types: vec![ValType::I64],
-                    ctx_local_base: param_count,
-                    local_decl_start: param_count,
+                    ctx_local_base: param_count + 1,
+                    local_decl_start: param_count + 1,
                     return_abi: LirReturnAbi::BoxedI64,
                 })
             }
@@ -91,7 +92,7 @@ impl LirWasmAbi {
             LirWasmAbi::BoxedI64 => {
                 if let Some(entry) = ctx.func.blocks.get(&ctx.func.entry_block) {
                     for (idx, arg) in entry.args.iter().enumerate() {
-                        emit_unbox_i64(ctx, idx as u32);
+                        emit_unbox_i64(ctx, idx as u32 + 1);
                         ctx.emit_set(arg.id);
                     }
                 }

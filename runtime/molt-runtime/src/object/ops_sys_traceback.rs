@@ -624,14 +624,14 @@ mod traceback_format_tests {
             frame.colno = 2;
             frame.end_colno = 9;
             assert!(traceback_payload_to_formatted_entries(py, &[frame]).is_err());
-            let error = crate::molt_exception_last();
+            let error = crate::molt_exception_last_attached_body(py);
             assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
                 crate::BuiltinExc::UnicodeEncodeError
             ));
-            crate::molt_exception_clear();
-            let rendered = crate::molt_str_from_obj(error);
+            crate::molt_exception_clear_attached_body(py);
+            let rendered = crate::molt_str_from_obj_attached_body(py, error);
             assert_eq!(crate::object::ops_format::string_obj_bytes(crate::obj_from_bits(rendered)).unwrap(),
                 b"'utf-8' codec can't encode character '\\ud800' in position 7: surrogates not allowed");
             crate::dec_ref_bits(py, rendered);

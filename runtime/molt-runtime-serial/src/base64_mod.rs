@@ -51,12 +51,20 @@ fn bytes_from_decode_data(py: &PyToken, bits: u64) -> Result<Vec<u8>, u64> {
 // base32/base85 algorithms. Reuse the existing strided memoryview traversal.
 fn snapshot_decode_buffer(py: &PyToken, bits: u64) -> Result<Vec<u8>, u64> {
     use molt_runtime_core::{OwnedRuntimeValue, ffi};
-    let view = unsafe { OwnedRuntimeValue::from_owned_bits(py, ffi::molt_memoryview_new(bits)) };
+    let view = unsafe {
+        OwnedRuntimeValue::from_owned_bits(
+            py,
+            ffi::molt_memoryview_new(py.attached_context(), bits),
+        )
+    };
     if exception_pending(py) {
         return Err(MoltObject::none().bits());
     }
     let bytes = unsafe {
-        OwnedRuntimeValue::from_owned_bits(py, ffi::molt_memoryview_tobytes(view.bits()))
+        OwnedRuntimeValue::from_owned_bits(
+            py,
+            ffi::molt_memoryview_tobytes(py.attached_context(), view.bits()),
+        )
     };
     if exception_pending(py) {
         return Err(MoltObject::none().bits());
@@ -795,9 +803,12 @@ fn b85_decode(input: &[u8]) -> Result<Vec<u8>, String> {
 
 // ─── public intrinsics ──────────────────────────────────────────────────────
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_b64encode(data_bits: u64, altchars_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_base64_b64encode_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+    altchars_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let raw = match encode_bytes_like_arg(_py, data_bits, PyBUF_SIMPLE) {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -830,13 +841,13 @@ pub extern "C" fn molt_base64_b64encode(data_bits: u64, altchars_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_b64decode(
+pub fn molt_base64_b64decode_attached_body(
+    _py: &molt_runtime_core::PyToken,
     data_bits: u64,
     altchars_bits: u64,
     validate_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let mut raw = match bytes_from_decode_data(_py, data_bits) {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -876,9 +887,11 @@ pub extern "C" fn molt_base64_b64decode(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_standard_b64encode(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_base64_standard_b64encode_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let raw = match encode_bytes_like_arg(_py, data_bits, PyBUF_SIMPLE) {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -888,9 +901,11 @@ pub extern "C" fn molt_base64_standard_b64encode(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_standard_b64decode(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_base64_standard_b64decode_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let raw = match bytes_from_decode_data(_py, data_bits) {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -903,9 +918,11 @@ pub extern "C" fn molt_base64_standard_b64decode(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_urlsafe_b64encode(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_base64_urlsafe_b64encode_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let raw = match encode_bytes_like_arg(_py, data_bits, PyBUF_SIMPLE) {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -915,9 +932,11 @@ pub extern "C" fn molt_base64_urlsafe_b64encode(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_urlsafe_b64decode(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_base64_urlsafe_b64decode_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let mut raw = match bytes_from_decode_data(_py, data_bits) {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -938,9 +957,11 @@ pub extern "C" fn molt_base64_urlsafe_b64decode(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_b32encode(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_base64_b32encode_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let raw = match encode_bytes_like_arg(_py, data_bits, PyBUF_FULL_RO) {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -950,9 +971,12 @@ pub extern "C" fn molt_base64_b32encode(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_b32decode(data_bits: u64, casefold_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_base64_b32decode_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+    casefold_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let raw = match bytes_from_decode_data(_py, data_bits) {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -966,9 +990,11 @@ pub extern "C" fn molt_base64_b32decode(data_bits: u64, casefold_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_b32hexencode(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_base64_b32hexencode_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let raw = match encode_bytes_like_arg(_py, data_bits, PyBUF_FULL_RO) {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -978,9 +1004,12 @@ pub extern "C" fn molt_base64_b32hexencode(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_b32hexdecode(data_bits: u64, casefold_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_base64_b32hexdecode_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+    casefold_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let raw = match bytes_from_decode_data(_py, data_bits) {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -994,9 +1023,11 @@ pub extern "C" fn molt_base64_b32hexdecode(data_bits: u64, casefold_bits: u64) -
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_b16encode(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_base64_b16encode_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let raw = match encode_bytes_like_arg(_py, data_bits, PyBUF_SIMPLE) {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1006,9 +1037,12 @@ pub extern "C" fn molt_base64_b16encode(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_b16decode(data_bits: u64, casefold_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_base64_b16decode_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+    casefold_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let raw = match bytes_from_decode_data(_py, data_bits) {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1022,15 +1056,15 @@ pub extern "C" fn molt_base64_b16decode(data_bits: u64, casefold_bits: u64) -> u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_a85encode(
+pub fn molt_base64_a85encode_attached_body(
+    _py: &molt_runtime_core::PyToken,
     data_bits: u64,
     foldspaces_bits: u64,
     wrapcol_bits: u64,
     pad_bits: u64,
     adobe_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let raw = match encode_bytes_like_arg(_py, data_bits, PyBUF_FULL_RO) {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1044,13 +1078,13 @@ pub extern "C" fn molt_base64_a85encode(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_a85decode(
+pub fn molt_base64_a85decode_attached_body(
+    _py: &molt_runtime_core::PyToken,
     data_bits: u64,
     foldspaces_bits: u64,
     adobe_bits: u64,
 ) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let raw = match bytes_from_decode_data(_py, data_bits) {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1065,9 +1099,12 @@ pub extern "C" fn molt_base64_a85decode(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_b85encode(data_bits: u64, pad_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_base64_b85encode_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+    pad_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let raw = match encode_bytes_like_arg(_py, data_bits, PyBUF_FULL_RO) {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1078,9 +1115,11 @@ pub extern "C" fn molt_base64_b85encode(data_bits: u64, pad_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_b85decode(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_base64_b85decode_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let raw = match bytes_from_decode_data(_py, data_bits) {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1093,9 +1132,11 @@ pub extern "C" fn molt_base64_b85decode(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_encodebytes(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_base64_encodebytes_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         let raw = match encode_bytes_like_arg(_py, data_bits, PyBUF_SIMPLE) {
             Ok(v) => v,
             Err(bits) => return bits,
@@ -1115,9 +1156,11 @@ pub extern "C" fn molt_base64_encodebytes(data_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_base64_decodebytes(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
+pub fn molt_base64_decodebytes_attached_body(
+    _py: &molt_runtime_core::PyToken,
+    data_bits: u64,
+) -> u64 {
+    molt_runtime_core::with_attached_entry!(_py, _py, {
         crate::binascii::a2b_base64(
             _py,
             data_bits,
@@ -1125,3 +1168,5 @@ pub extern "C" fn molt_base64_decodebytes(data_bits: u64) -> u64 {
         )
     })
 }
+
+include!("attached_exports_generated/base64_mod.rs");

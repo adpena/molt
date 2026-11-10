@@ -142,8 +142,8 @@ def test_memoryview_contains_streams_shared_iterator_and_scalar_access() -> None
     search_body = _rust_function_body(subscript_source, "iterable_contains")
 
     for entry, builtin in (
-        ("molt_contains", "false"),
-        ("molt_contains_builtin", "true"),
+        ("molt_contains_attached_body", "false"),
+        ("molt_contains_builtin_attached_body", "true"),
     ):
         assert f"contains_impl(container_bits, item_bits, {builtin})" in (
             _rust_function_body(subscript_source, entry)
@@ -159,7 +159,7 @@ def test_memoryview_contains_streams_shared_iterator_and_scalar_access() -> None
     # The status ABI normalizes exhaustion; public next() without a default
     # preserves it. ops_iter_generic_tests independently checks exception
     # identity and completion-payload ownership for both behaviors.
-    pair_body = _rust_function_body(iter_source, "molt_iter_next")
+    pair_body = _rust_function_body(iter_source, "molt_iter_next_attached_body")
     assert (
         rust_token_range(
             pair_body,
@@ -172,7 +172,7 @@ def test_memoryview_contains_streams_shared_iterator_and_scalar_access() -> None
         _rust_function_body(iter_source, "sequence_iterator_next"),
         "TYPE_ID_MEMORYVIEW =>",
     )
-    assert "molt_getitem_builtin(" in step_body
+    assert "molt_getitem_builtin_attached_body(" in step_body
     for body in (contains_body, search_body, step_body):
         for materialization in ("Vec::", ".collect(", ".to_vec(", "memoryview_tobytes"):
             assert materialization not in body
@@ -269,7 +269,7 @@ def test_molt_buffer_backing_capacity_is_runtime_admission_authority() -> None:
     assert "ScopedBufferExport" not in scoped_owner
     assert "storage.owner_bits" in scoped_owner
     assert "source_storage.kind" in _rust_function_body(
-        c_api_source, "molt_memoryview_from_buffer"
+        c_api_source, "molt_memoryview_from_buffer_attached_body"
     )
     alloc_body = _rust_function_body(builders_source, "allocate", owner=owner)
     # The existing runtime null/span/capacity cases own behavior. These guards
@@ -278,7 +278,9 @@ def test_molt_buffer_backing_capacity_is_runtime_admission_authority() -> None:
     assert "std::ptr::NonNull::<u8>::dangling().as_ptr()" in alloc_body
     assert "storage.fits_in_base_len(base_slice.len())" in alloc_body
 
-    from_buffer_body = _rust_function_body(c_api_source, "molt_memoryview_from_buffer")
+    from_buffer_body = _rust_function_body(
+        c_api_source, "molt_memoryview_from_buffer_attached_body"
+    )
     assert "usize::try_from(view.backing_capacity)" in from_buffer_body
     source_body = _rust_block_body(from_buffer_body, "if source_owner != 0")
     assert "TypedStridedStorage::from_object_bits(source_owner)" in source_body
@@ -302,7 +304,9 @@ def test_c_heap_buffer_export_admission_uses_memoryview_format_authority() -> No
     view_body = _rust_function_body(c_api_source, "c_heap_buffer_view_is_valid")
     format_body = _rust_function_body(c_api_source, "c_heap_buffer_format_is_valid")
     readonly_body = _rust_function_body(c_api_source, "buffer_readonly_from_flag")
-    from_buffer_body = _rust_function_body(c_api_source, "molt_memoryview_from_buffer")
+    from_buffer_body = _rust_function_body(
+        c_api_source, "molt_memoryview_from_buffer_attached_body"
+    )
 
     assert "c_heap_buffer_format_is_valid(view, itemsize)" in view_body
     assert "view.format.iter().position" in format_body

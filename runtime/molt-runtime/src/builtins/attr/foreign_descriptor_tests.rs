@@ -100,7 +100,7 @@ fn native_descriptor_reentry_retains_original_type_and_namespace_entry() {
         refcount::Py_DECREF(receiver.ob_type.cast());
         refcount::Py_DECREF(original.tp_dict);
         refcount::Py_DECREF(name);
-        assert!(!exception_pending(&py));
+        assert!(!exception_pending(py));
         assert!(errors::PyErr_Occurred().is_null());
     });
 }
@@ -207,11 +207,25 @@ unsafe extern "C" fn mutation_failure_without_error(
     -1
 }
 
-extern "C" fn subclass_truth(_self_bits: u64) -> u64 {
+extern "C" fn subclass_truth(__context: u64, _self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::from_bool(true).bits()
 }
 
-extern "C" fn subclass_length(_self_bits: u64) -> u64 {
+extern "C" fn subclass_length(__context: u64, _self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     MoltObject::from_int(13).bits()
 }
 
@@ -219,12 +233,12 @@ extern "C" fn subclass_length(_self_bits: u64) -> u64 {
 fn native_storage_does_not_bypass_subclass_truth_or_specialized_length() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
-        let classes = builtin_classes(&py);
-        let name = dynamic_attr_name_bits(&py, b"NativeProtocolChild").unwrap();
-        let bool_name = dynamic_attr_name_bits(&py, b"__bool__").unwrap();
-        let len_name = dynamic_attr_name_bits(&py, b"__len__").unwrap();
+        let classes = builtin_classes(py);
+        let name = dynamic_attr_name_bits(py, b"NativeProtocolChild").unwrap();
+        let bool_name = dynamic_attr_name_bits(py, b"__bool__").unwrap();
+        let len_name = dynamic_attr_name_bits(py, b"__len__").unwrap();
         let truth = MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
-            &py,
+            py,
             crate::builtins::functions::runtime_fn_addr(
                 "subclass_truth",
                 subclass_truth as *const (),
@@ -233,7 +247,7 @@ fn native_storage_does_not_bypass_subclass_truth_or_specialized_length() {
         ))
         .bits();
         let length = MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
-            &py,
+            py,
             crate::builtins::functions::runtime_fn_addr(
                 "subclass_length",
                 subclass_length as *const (),
@@ -241,7 +255,7 @@ fn native_storage_does_not_bypass_subclass_truth_or_specialized_length() {
             1,
         ))
         .bits();
-        type Length = extern "C" fn(u64) -> u64;
+        type Length = unsafe extern "C" fn(u64, u64) -> u64;
         let families: [(u64, Option<Length>); 11] = [
             (classes.str, Some(crate::object::ops_sys::molt_len_str)),
             (classes.tuple, Some(crate::object::ops_sys::molt_len_tuple)),
@@ -259,27 +273,30 @@ fn native_storage_does_not_bypass_subclass_truth_or_specialized_length() {
             (classes.complex, None),
         ];
         for (base, specialized_len) in families {
-            let class = crate::molt_class_new(name);
-            let status = crate::molt_class_set_base(class, base);
-            dec_ref_bits(&py, status);
-            crate::object::class_finish_definition(&py, obj_from_bits(class).as_ptr().unwrap())
+            let class = crate::molt_class_new_attached_body(py, name);
+            let status = crate::molt_class_set_base_attached_body(py, class, base);
+            dec_ref_bits(py, status);
+            crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap())
                 .unwrap();
-            let status = crate::molt_set_attr_name(class, bool_name, truth);
-            dec_ref_bits(&py, status);
-            let status = crate::molt_set_attr_name(class, len_name, length);
-            dec_ref_bits(&py, status);
-            let instance = crate::call_callable0(&py, class);
-            assert!(!exception_pending(&py));
-            assert!(crate::object::ops::is_truthy(&py, obj_from_bits(instance)));
+            let status = crate::molt_set_attr_name_attached_body(py, class, bool_name, truth);
+            dec_ref_bits(py, status);
+            let status = crate::molt_set_attr_name_attached_body(py, class, len_name, length);
+            dec_ref_bits(py, status);
+            let instance = crate::call_callable0(py, class);
+            assert!(!exception_pending(py));
+            assert!(crate::object::ops::is_truthy(py, obj_from_bits(instance)));
             if let Some(length) = specialized_len {
-                assert_eq!(obj_from_bits(length(instance)).as_int(), Some(13));
+                assert_eq!(
+                    obj_from_bits(length(py.attached_context(), instance)).as_int(),
+                    Some(13)
+                );
             }
-            assert!(!exception_pending(&py));
-            dec_ref_bits(&py, instance);
-            dec_ref_bits(&py, class);
+            assert!(!exception_pending(py));
+            dec_ref_bits(py, instance);
+            dec_ref_bits(py, class);
         }
         for value in [name, bool_name, len_name, truth, length] {
-            dec_ref_bits(&py, value);
+            dec_ref_bits(py, value);
         }
     });
 }
@@ -308,7 +325,7 @@ fn native_descriptor_completion_uses_explicit_status_and_rejects_silent_failure(
             .unwrap();
         let descriptor_owner =
             molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), bits);
-        let owner = builtin_classes(&py).object;
+        let owner = builtin_classes(py).object;
         let none = MoltObject::none().bits();
         // CPython object.c returns tp_descr_get/tp_descr_set completion directly.
         // Only actual generic calls apply _Py_CheckFunctionResult validation.
@@ -328,15 +345,15 @@ fn native_descriptor_completion_uses_explicit_status_and_rejects_silent_failure(
         ] {
             (*descriptor.object.ob_type).tp_descr_get = Some(get_slot);
             (*descriptor.object.ob_type).tp_descr_set = Some(set_slot);
-            let result = descriptor_bind(&py, bits, Some(owner), Some(none));
+            let result = descriptor_bind(py, bits, Some(owner), Some(none));
             assert_eq!(result, if succeeds { Ok(Some(none)) } else { Err(()) });
             if let Ok(Some(value)) = result {
-                dec_ref_bits(&py, value);
+                dec_ref_bits(py, value);
             }
             assert_eq!(errors::PyErr_ExceptionMatches(expected_error.cast()), 1);
             errors::PyErr_Clear();
             assert_eq!(
-                descriptor_mutate(&py, bits, none, DescriptorMutation::Set(none)),
+                descriptor_mutate(py, bits, none, DescriptorMutation::Set(none)),
                 if succeeds {
                     DescriptorMutationOutcome::Applied
                 } else {
@@ -410,14 +427,14 @@ fn native_generic_lookup_preserves_descriptor_precedence_and_optional_errors() {
             1
         );
         errors::PyErr_Clear();
-        crate::clear_exception(&py);
+        crate::clear_exception(py);
         (*descriptor.object.ob_type).tp_descr_get = Some(missing_attribute);
         assert!(
             object::_PyObject_GenericGetAttrWithDict(&raw mut receiver, name, instance_dict, 1)
                 .is_null()
         );
         assert!(errors::PyErr_Occurred().is_null());
-        assert!(!exception_pending(&py));
+        assert!(!exception_pending(py));
 
         refcount::Py_DECREF(value);
         refcount::Py_DECREF(instance_dict);
@@ -447,20 +464,20 @@ fn physical_descriptor_get_set_delete_preserve_absence_and_exact_values() {
         let bits = GLOBAL_BRIDGE
             .molt_value_for_pyobj(&raw mut descriptor.object)
             .unwrap();
-        let owner = builtin_classes(&py).object;
-        let value = MoltObject::from_ptr(alloc_string(&py, b"receiver")).bits();
+        let owner = builtin_classes(py).object;
+        let value = MoltObject::from_ptr(alloc_string(py, b"receiver")).bits();
         let none = MoltObject::none().bits();
-        assert!(descriptor_is_data(&py, bits).expect("operation succeeds"));
+        assert!(descriptor_is_data(py, bits).expect("operation succeeds"));
 
         // Class access has an absent receiver; an explicit None receiver does not.
-        let class_access = descriptor_bind(&py, bits, Some(owner), None)
+        let class_access = descriptor_bind(py, bits, Some(owner), None)
             .expect("operation succeeds")
             .unwrap();
         assert_eq!(class_access, owner);
         assert!(descriptor.receiver.is_null());
         assert!(!descriptor.operand.is_null());
-        dec_ref_bits(&py, class_access);
-        let none_access = descriptor_bind(&py, bits, Some(owner), Some(none))
+        dec_ref_bits(py, class_access);
+        let none_access = descriptor_bind(py, bits, Some(owner), Some(none))
             .expect("operation succeeds")
             .unwrap();
         assert_eq!(none_access, none);
@@ -468,15 +485,15 @@ fn physical_descriptor_get_set_delete_preserve_absence_and_exact_values() {
             descriptor.receiver,
             &raw mut molt_cpython_abi::abi_types::Py_None
         );
-        dec_ref_bits(&py, none_access);
-        let instance_access = descriptor_bind(&py, bits, Some(owner), Some(value))
+        dec_ref_bits(py, none_access);
+        let instance_access = descriptor_bind(py, bits, Some(owner), Some(value))
             .expect("operation succeeds")
             .unwrap();
         assert_eq!(instance_access, value);
-        dec_ref_bits(&py, instance_access);
+        dec_ref_bits(py, instance_access);
 
         assert_eq!(
-            descriptor_mutate(&py, bits, value, DescriptorMutation::Set(none)),
+            descriptor_mutate(py, bits, value, DescriptorMutation::Set(none)),
             DescriptorMutationOutcome::Applied
         );
         assert_eq!(
@@ -485,7 +502,7 @@ fn physical_descriptor_get_set_delete_preserve_absence_and_exact_values() {
         );
         let zero = MoltObject::from_float(0.0).bits();
         assert_eq!(
-            descriptor_mutate(&py, bits, value, DescriptorMutation::Set(zero)),
+            descriptor_mutate(py, bits, value, DescriptorMutation::Set(zero)),
             DescriptorMutationOutcome::Applied
         );
         assert!(
@@ -493,7 +510,7 @@ fn physical_descriptor_get_set_delete_preserve_absence_and_exact_values() {
             "float zero is a value, never missing"
         );
         assert_eq!(
-            descriptor_mutate(&py, bits, value, DescriptorMutation::Delete),
+            descriptor_mutate(py, bits, value, DescriptorMutation::Delete),
             DescriptorMutationOutcome::Applied
         );
         assert!(descriptor.operand.is_null());
@@ -502,24 +519,24 @@ fn physical_descriptor_get_set_delete_preserve_absence_and_exact_values() {
         // Native slot replacement is observed live; there is no name/cache proxy.
         (*descriptor.object.ob_type).tp_descr_get = None;
         (*descriptor.object.ob_type).tp_descr_set = None;
-        assert!(!descriptor_is_data(&py, bits).expect("operation succeeds"));
-        let unbound = descriptor_bind(&py, bits, Some(owner), Some(value))
+        assert!(!descriptor_is_data(py, bits).expect("operation succeeds"));
+        let unbound = descriptor_bind(py, bits, Some(owner), Some(value))
             .expect("operation succeeds")
             .unwrap();
         assert_eq!(unbound, bits);
-        dec_ref_bits(&py, unbound);
+        dec_ref_bits(py, unbound);
         assert_eq!(
-            descriptor_mutate(&py, bits, value, DescriptorMutation::Delete),
+            descriptor_mutate(py, bits, value, DescriptorMutation::Delete),
             DescriptorMutationOutcome::NotDescriptor
         );
         assert_eq!(descriptor.calls, 6);
-        dec_ref_bits(&py, value);
-        dec_ref_bits(&py, bits);
+        dec_ref_bits(py, value);
+        dec_ref_bits(py, bits);
         assert_eq!(
             descriptor.object.ob_refcnt, 1,
             "all crossing owners released"
         );
-        assert!(!exception_pending(&py));
+        assert!(!exception_pending(py));
         assert!(errors::PyErr_Occurred().is_null());
     });
 }
@@ -595,9 +612,9 @@ fn native_descriptor_operations_use_their_own_status_and_exact_selected_error() 
             .unwrap();
         let descriptor_owner =
             molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), bits);
-        let owner = builtin_classes(&py).object;
+        let owner = builtin_classes(py).object;
         let none = MoltObject::none().bits();
-        descriptor_bind(&py, bits, Some(owner), Some(none))
+        descriptor_bind(py, bits, Some(owner), Some(none))
             .expect_err("the callback's explicit failure propagates");
         assert_eq!(descriptor.descriptor.calls, 1);
         assert!(descriptor.observed.is_null());
@@ -606,7 +623,7 @@ fn native_descriptor_operations_use_their_own_status_and_exact_selected_error() 
         // Each direct slot operation is independent. A successful setter runs
         // with the pending error and leaves that exact owner selected.
         assert_eq!(
-            descriptor_mutate(&py, bits, none, DescriptorMutation::Set(none)),
+            descriptor_mutate(py, bits, none, DescriptorMutation::Set(none)),
             DescriptorMutationOutcome::Applied
         );
         assert_eq!(descriptor.descriptor.calls, 2);
@@ -615,7 +632,7 @@ fn native_descriptor_operations_use_their_own_status_and_exact_selected_error() 
         (*descriptor.descriptor.object.ob_type).tp_descr_set = Some(selected_failure_set);
         descriptor.failure = second.as_ptr();
         assert_eq!(
-            descriptor_mutate(&py, bits, none, DescriptorMutation::Delete),
+            descriptor_mutate(py, bits, none, DescriptorMutation::Delete),
             DescriptorMutationOutcome::Error
         );
         assert_eq!(
@@ -628,7 +645,7 @@ fn native_descriptor_operations_use_their_own_status_and_exact_selected_error() 
 
         descriptor.failure = first.as_ptr();
         assert_eq!(
-            descriptor_mutate(&py, bits, none, DescriptorMutation::Set(none)),
+            descriptor_mutate(py, bits, none, DescriptorMutation::Set(none)),
             DescriptorMutationOutcome::Error
         );
         assert_eq!(descriptor.descriptor.calls, 4);
@@ -646,8 +663,8 @@ fn capi_native_family_checks_distinguish_semantic_subclasses_from_storage() {
     type Check = unsafe extern "C" fn(*mut PyObject) -> std::os::raw::c_int;
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
-        let classes = builtin_classes(&py);
-        let name = dynamic_attr_name_bits(&py, b"NativePredicateChild").unwrap();
+        let classes = builtin_classes(py);
+        let name = dynamic_attr_name_bits(py, b"NativePredicateChild").unwrap();
         let families: [(u64, Check, Check, Option<u64>); 12] = [
             (
                 classes.list,
@@ -723,22 +740,22 @@ fn capi_native_family_checks_distinguish_semantic_subclasses_from_storage() {
             ),
         ];
         for (base, inclusive, exact, argument) in families {
-            let class = crate::molt_class_new(name);
-            let status = crate::molt_class_set_base(class, base);
-            dec_ref_bits(&py, status);
-            crate::object::class_finish_definition(&py, obj_from_bits(class).as_ptr().unwrap())
+            let class = crate::molt_class_new_attached_body(py, name);
+            let status = crate::molt_class_set_base_attached_body(py, class, base);
+            dec_ref_bits(py, status);
+            crate::object::class_finish_definition(py, obj_from_bits(class).as_ptr().unwrap())
                 .unwrap();
-            assert!(!exception_pending(&py));
+            assert!(!exception_pending(py));
             for (constructor, expected_exact) in [(base, 1), (class, 0)] {
                 let instance = match argument {
-                    Some(argument) => crate::call_callable1(&py, constructor, argument),
-                    None => crate::call_callable0(&py, constructor),
+                    Some(argument) => crate::call_callable1(py, constructor, argument),
+                    None => crate::call_callable0(py, constructor),
                 };
                 assert!(
-                    !exception_pending(&py),
+                    !exception_pending(py),
                     "native family construction must succeed"
                 );
-                assert_eq!(type_of_bits(&py, instance), constructor);
+                assert_eq!(type_of_bits(py, instance), constructor);
                 let view = GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(instance);
                 assert!(!view.is_null());
                 if let Some(pointer) = obj_from_bits(instance).as_ptr() {
@@ -759,9 +776,9 @@ fn capi_native_family_checks_distinguish_semantic_subclasses_from_storage() {
                 assert_eq!(inclusive(ptr::null_mut()), 0);
                 assert_eq!(exact(ptr::null_mut()), 0);
                 refcount::Py_DECREF(view);
-                dec_ref_bits(&py, instance);
+                dec_ref_bits(py, instance);
             }
-            dec_ref_bits(&py, class);
+            dec_ref_bits(py, class);
         }
         // bool inherits int but is never an exact int.
         let boolean =
@@ -769,8 +786,8 @@ fn capi_native_family_checks_distinguish_semantic_subclasses_from_storage() {
         assert_eq!(numbers::PyLong_Check(boolean), 1);
         assert_eq!(numbers::PyLong_CheckExact(boolean), 0);
         refcount::Py_DECREF(boolean);
-        dec_ref_bits(&py, name);
-        assert!(!exception_pending(&py));
+        dec_ref_bits(py, name);
+        assert!(!exception_pending(py));
         assert!(errors::PyErr_Occurred().is_null());
     });
 }

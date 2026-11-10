@@ -35,6 +35,16 @@ impl WasmBackend {
         self.emit_import_audit();
         emit_wasm_numeric_lane_audit(stage_audit, self.numeric_lane_stats);
         self.append_ordered_sections(&callable_table_elements);
+        self.module.section(&CustomSection {
+            name: Cow::Borrowed(
+                molt_ir::runtime_callable_abi_generated::ATTACHED_EXECUTION_CONTEXT_ABI_SECTION,
+            ),
+            data: Cow::Owned(
+                molt_ir::runtime_callable_abi_generated::ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT
+                    .to_le_bytes()
+                    .to_vec(),
+            ),
+        });
 
         let unused_imports = if self.options.wasm_profile != WasmProfile::Full {
             self.import_ids.unused_names().into_iter().collect()

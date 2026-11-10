@@ -1,8 +1,9 @@
 use super::payload::emit_register_cancel_token;
+use crate::wasm_binary::Function;
 use molt_tir::trampolines::{
     TaskCompletion, TaskConstructorLayout, TaskRuntimeKind, TrampolineTaskKind,
 };
-use wasm_encoder::{Function, Instruction, ValType};
+use wasm_encoder::{Instruction, ValType};
 
 use crate::wasm_abi::{
     GEN_CONTROL_SIZE, TASK_KIND_COROUTINE, TASK_KIND_FUTURE, TASK_KIND_GENERATOR, WasmRuntimeImport,

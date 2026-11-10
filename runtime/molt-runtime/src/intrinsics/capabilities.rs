@@ -5,9 +5,8 @@ use crate::{
     string_obj_to_owned,
 };
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_capabilities_list() -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_capabilities_list_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let _ = has_capability(py, "_init");
         let mut names: Vec<&str> = crate::runtime_state(py)
             .capabilities
@@ -17,7 +16,8 @@ pub extern "C" fn molt_capabilities_list() -> u64 {
             .map(String::as_str)
             .collect();
         names.sort_unstable();
-        let mut values = Vec::with_capacity(names.len());
+        let mut values =
+            molt_runtime_core::RuntimeValueCollection::with_capacity(py.core_token(), names.len());
         for name in names {
             let pointer = crate::alloc_string(py, name.as_bytes());
             if pointer.is_null() {
@@ -30,10 +30,7 @@ pub extern "C" fn molt_capabilities_list() -> u64 {
                 )
             });
         }
-        let list = crate::alloc_list(
-            py,
-            molt_runtime_core::OwnedRuntimeValue::as_bits_slice(&values),
-        );
+        let list = crate::alloc_list(py, values.as_bits_slice());
         if list.is_null() {
             MoltObject::none().bits()
         } else {
@@ -42,14 +39,12 @@ pub extern "C" fn molt_capabilities_list() -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_capabilities_trusted() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(is_trusted(_py)).bits() })
+pub(crate) fn molt_capabilities_trusted_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, { MoltObject::from_bool(is_trusted(_py)).bits() })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_capabilities_has(name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_capabilities_has_attached_body(_py: &crate::PyToken<'_>, name_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let name = match string_obj_to_owned(crate::obj_from_bits(name_bits)) {
             Some(val) => val,
             None => {
@@ -81,9 +76,11 @@ pub extern "C" fn molt_capabilities_has(name_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_capabilities_require(name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_capabilities_require_attached_body(
+    _py: &crate::PyToken<'_>,
+    name_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let name = match string_obj_to_owned(crate::obj_from_bits(name_bits)) {
             Some(val) => val,
             None => {
@@ -125,9 +122,11 @@ pub extern "C" fn molt_capabilities_require(name_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_capabilities_require_operation(name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_capabilities_require_operation_attached_body(
+    _py: &crate::PyToken<'_>,
+    name_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         // The intrinsic caller owns its argument until this call returns. Borrow
         // the operation identifier rather than allocating on successful checks.
         let outcome = unsafe {
@@ -167,10 +166,10 @@ mod tests {
 
     fn take_error(py: &PyToken<'_>) -> (String, String) {
         assert!(exception_pending(py));
-        let error = crate::molt_exception_last();
-        crate::molt_exception_clear();
+        let error = crate::molt_exception_last_attached_body(py);
+        crate::molt_exception_clear_attached_body(py);
         let kind = crate::type_name(py, obj_from_bits(error)).to_string();
-        let message = crate::builtins::exceptions::molt_exception_message(error);
+        let message = crate::builtins::exceptions::molt_exception_message_attached_body(py, error);
         let text = string_obj_to_owned(obj_from_bits(message)).unwrap();
         dec_ref_bits(py, message);
         dec_ref_bits(py, error);
@@ -201,7 +200,7 @@ mod tests {
                         "concurrent.processpool.default",
                     ] {
                         let name = name_bits(py, operation);
-                        let result = molt_capabilities_require_operation(name);
+                        let result = molt_capabilities_require_operation_attached_body(py, name);
                         dec_ref_bits(py, name);
                         assert_eq!(result, MoltObject::none().bits());
                         if missing.is_empty() {
@@ -231,7 +230,7 @@ mod tests {
         ] {
             crate::test_support::RuntimeTestTransaction::with_explicit_capabilities(grants, |py| {
                 let name = name_bits(py, "multiprocessing.spawn");
-                let result = molt_capabilities_require_operation(name);
+                let result = molt_capabilities_require_operation_attached_body(py, name);
                 dec_ref_bits(py, name);
                 assert_eq!(result, MoltObject::none().bits());
                 if let Some(missing) = missing {
@@ -255,11 +254,15 @@ mod tests {
             "thread.spawn,thread.shared",
             |py| {
                 assert!(!crate::has_capability(py, "os.cpu_count"));
-                let handle = crate::builtins::concurrent::molt_concurrent_threadpool_new(
-                    MoltObject::from_int(1).bits(),
-                );
+                let handle =
+                    crate::builtins::concurrent::molt_concurrent_threadpool_new_attached_body(
+                        py,
+                        MoltObject::from_int(1).bits(),
+                    );
                 assert!(!exception_pending(py));
-                crate::builtins::concurrent::molt_concurrent_threadpool_drop(handle);
+                crate::builtins::concurrent::molt_concurrent_threadpool_drop_attached_body(
+                    py, handle,
+                );
                 assert!(!exception_pending(py));
             },
         );
@@ -269,7 +272,7 @@ mod tests {
     fn named_operation_validation_is_fail_closed() {
         crate::test_support::RuntimeTestTransaction::with_explicit_capabilities("", |py| {
             let name = name_bits(py, "unknown.operation");
-            molt_capabilities_require_operation(name);
+            molt_capabilities_require_operation_attached_body(py, name);
             dec_ref_bits(py, name);
             assert_eq!(
                 take_error(py),
@@ -278,7 +281,7 @@ mod tests {
                     "unknown host operation 'unknown.operation'".into()
                 )
             );
-            molt_capabilities_require_operation(MoltObject::from_int(1).bits());
+            molt_capabilities_require_operation_attached_body(py, MoltObject::from_int(1).bits());
             assert_eq!(
                 take_error(py),
                 ("TypeError".into(), "host operation name must be str".into())
@@ -286,3 +289,5 @@ mod tests {
         });
     }
 }
+
+include!("../attached_exports_generated/intrinsics/capabilities.rs");

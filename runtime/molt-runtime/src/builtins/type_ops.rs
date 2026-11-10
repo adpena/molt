@@ -814,8 +814,16 @@ mod tests {
 
     // Ordinary attributes supply abstract protocol facts; this hook also lets
     // the failure tests distinguish original exceptions from synthetic errors.
-    extern "C" fn protocol_attribute(receiver: u64, name: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn protocol_attribute(__context: u64, receiver: u64, name: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             unsafe {
                 let pointer = obj_from_bits(receiver).as_ptr().unwrap();
                 let dictionary = obj_from_bits(instance_dict_bits(pointer)).as_ptr().unwrap();
@@ -824,7 +832,7 @@ mod tests {
                 if let Some(failure) = dict_get_in_place(py, dictionary, failure_name.bits())
                     .expect("dictionary lookup succeeds")
                 {
-                    return crate::molt_raise(failure);
+                    return crate::molt_raise_attached_body(py, failure);
                 }
                 let field = match string_obj_to_owned(obj_from_bits(name)).as_deref() {
                     Some("__bases__") => b"bases_result".as_slice(),
@@ -850,7 +858,7 @@ mod tests {
                     }
                 }
             }
-        })
+        }
     }
 
     fn protocol_class<'a, 'py>(py: &'a PyToken<'py>) -> ExceptionValue<'a, 'py> {
@@ -863,16 +871,18 @@ mod tests {
         let function = alloc_function_obj(py, fn_addr!(protocol_attribute), 2);
         assert!(!function.is_null());
         let function = ExceptionValue::adopt(py, MoltObject::from_ptr(function).bits());
-        let namespace = ExceptionValue::adopt(py, crate::molt_dict_new(0));
+        let namespace = ExceptionValue::adopt(py, crate::molt_dict_new_attached_body(py, 0));
         assert_eq!(
-            crate::c_api::molt_mapping_setitem(
+            crate::c_api::molt_mapping_setitem_attached_body(
+                py,
                 namespace.bits(),
                 method_name.bits(),
                 function.bits()
             ),
             0
         );
-        let class = crate::builtins::types::molt_type_new(
+        let class = crate::builtins::types::molt_type_new_attached_body(
+            py,
             builtin_classes(py).type_obj,
             name.bits(),
             MoltObject::none().bits(),
@@ -893,7 +903,7 @@ mod tests {
             unsafe { alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap()) };
         let object = ExceptionValue::adopt(py, object);
         let field = ExceptionValue::adopt(py, dynamic_attr_name_bits(py, field).unwrap());
-        crate::molt_set_attr_name(object.bits(), field.bits(), value);
+        crate::molt_set_attr_name_attached_body(py, object.bits(), field.bits(), value);
         assert!(!exception_pending(py));
         object
     }
@@ -936,7 +946,8 @@ mod tests {
 
     fn assert_original_error(py: &PyToken<'_>, expected: u64) {
         assert!(exception_pending(py));
-        let raised = ExceptionValue::adopt(py, crate::molt_exception_last_pending());
+        let raised =
+            ExceptionValue::adopt(py, crate::molt_exception_last_pending_attached_body(py));
         assert_eq!(raised.bits(), expected);
         clear_exception(py);
     }
@@ -996,7 +1007,8 @@ mod tests {
                     subclasscheck_default(py, malformed.bits(), root.bits()),
                     None
                 );
-                let raised = ExceptionValue::adopt(py, crate::molt_exception_last_pending());
+                let raised =
+                    ExceptionValue::adopt(py, crate::molt_exception_last_pending_attached_body(py));
                 assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     raised.bits(),

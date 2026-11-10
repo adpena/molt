@@ -13,8 +13,9 @@ use crate::builtins::type_ops::type_of_bits;
 use crate::call::class_init::alloc_instance_for_class;
 use crate::{
     TYPE_ID_STRING, TYPE_ID_WEAKREF, alloc_string, dec_ref_bits, exception_pending, inc_ref_bits,
-    int_bits_from_i64, molt_weakref_find_nocallback, molt_weakref_register, obj_from_bits,
-    object_type_id, raise_exception, string_obj_to_owned, type_name,
+    int_bits_from_i64, molt_weakref_find_nocallback_attached_body,
+    molt_weakref_register_attached_body, obj_from_bits, object_type_id, raise_exception,
+    string_obj_to_owned, type_name,
 };
 
 fn referent_name(_py: &crate::PyToken<'_>, target_ptr: *mut u8) -> Result<Option<String>, ()> {
@@ -47,17 +48,18 @@ fn weakref_receiver(_py: &crate::PyToken<'_>, self_bits: u64, method: &str) -> O
     None
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakref_reference_type() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_weakref_reference_type_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let bits = builtin_classes(_py).reference_type;
         inc_ref_bits(_py, bits);
         bits
     })
 }
 
-pub(crate) extern "C" fn weakref_new_method(args: u64, kwargs: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) extern "C" fn weakref_new_method(__context: u64, args: u64, kwargs: u64) -> u64 {
+    let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::with_attached_entry_nopanic!(__attached_py, py, {
         let Some(call) =
             crate::builtins::native_arguments::NativeArguments::read(py, "__new__", args, kwargs)
         else {
@@ -86,7 +88,8 @@ pub(crate) extern "C" fn weakref_new_method(args: u64, kwargs: u64) -> u64 {
             );
         }
         // weakref.__new__ ignores kwargs; the published __init__ rejects them.
-        molt_weakref_new(
+        molt_weakref_new_attached_body(
+            py,
             class,
             values[0],
             values
@@ -97,9 +100,13 @@ pub(crate) extern "C" fn weakref_new_method(args: u64, kwargs: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakref_new(class_bits: u64, target_bits: u64, callback_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_weakref_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    class_bits: u64,
+    target_bits: u64,
+    callback_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let builtins = builtin_classes(_py);
         let Some((_, class_ptr)) = crate::builtins::type_ops::native_constructor_receiver(
             _py,
@@ -110,7 +117,7 @@ pub extern "C" fn molt_weakref_new(class_bits: u64, target_bits: u64, callback_b
             return MoltObject::none().bits();
         };
         if class_bits == builtins.reference_type && obj_from_bits(callback_bits).is_none() {
-            let cached = molt_weakref_find_nocallback(target_bits);
+            let cached = molt_weakref_find_nocallback_attached_body(_py, target_bits);
             if !obj_from_bits(cached).is_none() || exception_pending(_py) {
                 return cached;
             }
@@ -127,7 +134,8 @@ pub extern "C" fn molt_weakref_new(class_bits: u64, target_bits: u64, callback_b
                 "ReferenceType allocation did not produce the WEAKREF heap kind",
             );
         }
-        let registered = molt_weakref_register(instance_bits, target_bits, callback_bits);
+        let registered =
+            molt_weakref_register_attached_body(_py, instance_bits, target_bits, callback_bits);
         if exception_pending(_py) || obj_from_bits(registered).as_bool() != Some(true) {
             dec_ref_bits(_py, instance_bits);
             if exception_pending(_py) {
@@ -143,9 +151,8 @@ pub extern "C" fn molt_weakref_new(class_bits: u64, target_bits: u64, callback_b
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakref_call(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_weakref_call_attached_body(_py: &crate::PyToken<'_>, self_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if weakref_receiver(_py, self_bits, "__call__").is_none() {
             return MoltObject::none().bits();
         }
@@ -154,9 +161,13 @@ pub extern "C" fn molt_weakref_call(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakref_init(self_bits: u64, _target_bits: u64, _callback_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_weakref_init_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    _target_bits: u64,
+    _callback_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if weakref_receiver(_py, self_bits, "__init__").is_none() {
             return MoltObject::none().bits();
         }
@@ -164,9 +175,12 @@ pub extern "C" fn molt_weakref_init(self_bits: u64, _target_bits: u64, _callback
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakref_callback_get(_descriptor_bits: u64, self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_weakref_callback_get_attached_body(
+    _py: &crate::PyToken<'_>,
+    _descriptor_bits: u64,
+    self_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if weakref_receiver(_py, self_bits, "__callback__").is_none() {
             return MoltObject::none().bits();
         }
@@ -174,16 +188,22 @@ pub extern "C" fn molt_weakref_callback_get(_descriptor_bits: u64, self_bits: u6
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakref_eq(self_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_weakref_eq_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    other_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         weakref_richcompare(_py, self_bits, other_bits, false)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakref_ne(self_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_weakref_ne_attached_body(
+    _py: &crate::PyToken<'_>,
+    self_bits: u64,
+    other_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         weakref_richcompare(_py, self_bits, other_bits, true)
     })
 }
@@ -241,9 +261,8 @@ fn weakref_richcompare(
     result
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakref_hash(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_weakref_hash_attached_body(_py: &crate::PyToken<'_>, self_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         if weakref_receiver(_py, self_bits, "__hash__").is_none() {
             return MoltObject::none().bits();
         }
@@ -256,9 +275,8 @@ pub extern "C" fn molt_weakref_hash(self_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_weakref_repr(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_weakref_repr_attached_body(_py: &crate::PyToken<'_>, self_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(self_ptr) = weakref_receiver(_py, self_bits, "__repr__") else {
             return MoltObject::none().bits();
         };
@@ -306,3 +324,5 @@ pub extern "C" fn molt_weakref_repr(self_bits: u64) -> u64 {
         }
     })
 }
+
+include!("../attached_exports_generated/builtins/weakref_type.rs");

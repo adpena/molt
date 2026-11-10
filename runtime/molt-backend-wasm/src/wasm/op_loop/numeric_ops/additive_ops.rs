@@ -8,6 +8,7 @@ use crate::OpIR;
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::{WasmFrameLocals, WasmNumericLaneStats};
 use crate::wasm_abi_generated::{WasmNumericOpLoopKind, WasmNumericRuntimeSelection};
+use crate::wasm_binary::Function;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_plan::{
     WasmScalarDirectNumericLane, wasm_scalar_direct_numeric_lane_for_op,
@@ -15,7 +16,7 @@ use crate::wasm_plan::{
 };
 use crate::wasm_values::{ConstantCache, IntFastLane};
 use std::collections::BTreeMap;
-use wasm_encoder::{Function, Instruction};
+use wasm_encoder::Instruction;
 
 fn emit_i64_additive(func: &mut Function, op_loop_kind: WasmNumericOpLoopKind) {
     match op_loop_kind {

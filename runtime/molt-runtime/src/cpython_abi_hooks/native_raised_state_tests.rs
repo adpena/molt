@@ -80,7 +80,8 @@ fn public_render(py: &PyToken<'_>, value: u64) -> String {
     let none = MoltObject::none().bits();
     let rendered = ExceptionValue::adopt(
         py,
-        crate::molt_traceback_format_exception(
+        crate::object::ops_sys::molt_traceback_format_exception_attached_body(
+            py,
             none,
             value,
             none,
@@ -160,10 +161,13 @@ fn native_and_managed_chain_renderers_share_cause_suppression_and_cycle_policy()
             "mixed cycles retain each physical exception exactly once"
         );
 
-        crate::molt_exception_set_last(native.bits());
+        crate::molt_exception_set_last_attached_body(py, native.bits());
         let formatted = ExceptionValue::adopt(
             py,
-            crate::molt_traceback_format_exc(MoltObject::none().bits()),
+            crate::object::ops_sys::molt_traceback_format_exc_attached_body(
+                py,
+                MoltObject::none().bits(),
+            ),
         );
         assert!(
             crate::exception_pending(py),
@@ -324,7 +328,8 @@ fn native_classinfo_preserves_hooks_tuple_order_and_throw_failure_identity() {
                 "throw injects the exact subclass-hook failure"
             );
             assert!(!crate::exception_pending(py));
-            crate::builtins::contextlib::molt_contextlib_suppress_match(
+            crate::builtins::contextlib::molt_contextlib_suppress_match_attached_body(
+                py,
                 actual.bits(),
                 tuple.bits(),
             );
@@ -500,12 +505,15 @@ fn native_context_exit_owns_actual_exception_class_and_mutated_traceback() {
             let cm_bits =
                 ExceptionValue::adopt(py, GLOBAL_BRIDGE.molt_value_for_pyobj(cm.as_ptr()).unwrap());
             drop(cm);
-            let entered = ExceptionValue::adopt(py, crate::molt_context_enter(cm_bits.bits()));
+            let entered = ExceptionValue::adopt(
+                py,
+                crate::molt_context_enter_attached_body(py, cm_bits.bits()),
+            );
             assert!(!crate::exception_pending(py));
             drop(entered);
             let result = ExceptionValue::adopt(
                 py,
-                crate::molt_context_exit(cm_bits.bits(), exception.bits()),
+                crate::molt_context_exit_attached_body(py, cm_bits.bits(), exception.bits()),
             );
             assert!(!crate::exception_pending(py));
             assert!(!crate::is_truthy(py, crate::obj_from_bits(result.bits())));

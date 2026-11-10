@@ -421,11 +421,11 @@ unsafe fn mutate_cell_descriptor(
 /// Canonical type defaults use one exact string while normal overrides and
 /// raw generic storage keep their original name. Use the admitted string bytes;
 /// the caller already owns the diagnostic text and need not convert it again.
-unsafe fn canonical_type_mutation_name(
-    py: &PyToken<'_>,
+unsafe fn canonical_type_mutation_name<'guard>(
+    py: &'guard PyToken<'guard>,
     name: u64,
     access: AttributeMutation,
-) -> Option<(u64, Option<crate::PtrDropGuard>)> {
+) -> Option<(u64, Option<crate::PtrDropGuard<'guard>>)> {
     unsafe {
         if access == AttributeMutation::Generic || type_of_bits(py, name) == builtin_classes(py).str
         {
@@ -441,7 +441,7 @@ unsafe fn canonical_type_mutation_name(
         }
         Some((
             MoltObject::from_ptr(pointer).bits(),
-            Some(crate::PtrDropGuard::preserving(pointer)),
+            Some(crate::PtrDropGuard::preserving(py, pointer)),
         ))
     }
 }
@@ -530,15 +530,15 @@ unsafe fn mutate_class_physical_dictionary(
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_set_attr_generic(
+pub(crate) unsafe fn molt_set_attr_generic_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_ptr: *mut u8,
     attr_name_ptr: *const u8,
     attr_name_len_bits: u64,
     val_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(py, {
+        crate::with_attached_entry_nopanic!(_py, py, {
             if obj_ptr.is_null() {
                 return raise_exception::<u64>(
                     py,
@@ -1417,30 +1417,36 @@ pub(crate) unsafe fn object_delattr_raw(
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_set_attr_ptr(
+pub(crate) unsafe fn molt_set_attr_ptr_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_ptr: *mut u8,
     attr_name_ptr: *const u8,
     attr_name_len_bits: u64,
     val_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            molt_set_attr_generic(obj_ptr, attr_name_ptr, attr_name_len_bits, val_bits)
+        crate::with_attached_entry_nopanic!(_py, _py, {
+            molt_set_attr_generic_attached_body(
+                _py,
+                obj_ptr,
+                attr_name_ptr,
+                attr_name_len_bits,
+                val_bits,
+            )
         })
     }
 }
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_del_attr_generic(
+pub(crate) unsafe fn molt_del_attr_generic_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_ptr: *mut u8,
     attr_name_ptr: *const u8,
     attr_name_len_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(py, {
+        crate::with_attached_entry_nopanic!(_py, py, {
             if obj_ptr.is_null() {
                 return raise_exception::<u64>(
                     py,
@@ -1461,30 +1467,30 @@ pub unsafe extern "C" fn molt_del_attr_generic(
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_del_attr_ptr(
+pub(crate) unsafe fn molt_del_attr_ptr_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_ptr: *mut u8,
     attr_name_ptr: *const u8,
     attr_name_len_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            molt_del_attr_generic(obj_ptr, attr_name_ptr, attr_name_len_bits)
+        crate::with_attached_entry_nopanic!(_py, _py, {
+            molt_del_attr_generic_attached_body(_py, obj_ptr, attr_name_ptr, attr_name_len_bits)
         })
     }
 }
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_set_attr_object(
+pub(crate) unsafe fn molt_set_attr_object_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     attr_name_ptr: *const u8,
     attr_name_len_bits: u64,
     val_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(py, {
+        crate::with_attached_entry_nopanic!(_py, py, {
             mutate_attr_bytes(
                 py,
                 obj_bits,
@@ -1502,8 +1508,8 @@ pub unsafe extern "C" fn molt_set_attr_object(
 ///
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_set_attr_object_ic(
+pub(crate) unsafe fn molt_set_attr_object_ic_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     attr_name_ptr: *const u8,
     attr_name_len_bits: u64,
@@ -1511,7 +1517,7 @@ pub unsafe extern "C" fn molt_set_attr_object_ic(
     site_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(py, {
+        crate::with_attached_entry_nopanic!(_py, py, {
             let mutation = DescriptorMutation::Set(val_bits);
             let Some(site_id) = ic_site_from_bits(site_bits) else {
                 return mutate_attr_bytes(
@@ -1555,14 +1561,14 @@ pub unsafe extern "C" fn molt_set_attr_object_ic(
 
 /// # Safety
 /// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_del_attr_object(
+pub(crate) unsafe fn molt_del_attr_object_attached_body(
+    _py: &crate::PyToken<'_>,
     obj_bits: u64,
     attr_name_ptr: *const u8,
     attr_name_len_bits: u64,
 ) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(py, {
+        crate::with_attached_entry_nopanic!(_py, py, {
             mutate_attr_bytes(
                 py,
                 obj_bits,
@@ -1621,7 +1627,7 @@ pub(crate) fn mutate_attr_name(
             return Err(());
         }
         inc_ref_bits(py, name);
-        let _name_owner = crate::PtrDropGuard::new(name_ptr);
+        let _name_owner = crate::PtrDropGuard::new(py, name_ptr);
         let attribute =
             string_obj_to_owned(obj_from_bits(name)).unwrap_or_else(|| "<attr>".to_string());
         let Some(object_ptr) = maybe_ptr_from_bits(object) else {
@@ -1644,9 +1650,13 @@ pub(crate) fn mutate_attr_name(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_set_attr_name(object: u64, name: u64, value: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_set_attr_name_attached_body(
+    _py: &crate::PyToken<'_>,
+    object: u64,
+    name: u64,
+    value: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let _ = mutate_attr_name(
             py,
             object,
@@ -1658,9 +1668,12 @@ pub extern "C" fn molt_set_attr_name(object: u64, name: u64, value: u64) -> u64 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_del_attr_name(object: u64, name: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+pub(crate) fn molt_del_attr_name_attached_body(
+    _py: &crate::PyToken<'_>,
+    object: u64,
+    name: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
         let _ = mutate_attr_name(
             py,
             object,
@@ -1718,7 +1731,7 @@ fn explicit_mutation_admitted(
             dec_ref_bits(py, class);
             return false;
         };
-        let _class_owner = crate::PtrDropGuard::new(class_ptr);
+        let _class_owner = crate::PtrDropGuard::new(py, class_ptr);
         let foreign = object_type_id(class_ptr) == TYPE_ID_FOREIGN
             || (object_type_id(class_ptr) == TYPE_ID_TYPE
                 && class_mro_view(py, class_ptr).iter().any(|base| {
@@ -1863,6 +1876,8 @@ pub(crate) fn type_mutate_attr_name(object: u64, name: u64, value: Option<u64>) 
     })
 }
 
+include!("../../attached_exports_generated/builtins/attributes/mutation.rs");
+
 #[cfg(test)]
 mod function_metadata_tests {
     use super::*;
@@ -1875,21 +1890,44 @@ mod function_metadata_tests {
     static BINDER: AtomicU64 = AtomicU64::new(0);
     static REENTRY: AtomicU64 = AtomicU64::new(0);
 
-    extern "C" fn echo(value: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn echo(__context: u64, value: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             inc_ref_bits(py, value);
             value
-        })
+        }
     }
 
-    extern "C" fn add_pair(first: u64, second: u64) -> u64 {
+    extern "C" fn add_pair(__context: u64, first: u64, second: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
         let first = obj_from_bits(first).as_int().unwrap();
         let second = obj_from_bits(second).as_int().unwrap();
         MoltObject::from_int(first + second).bits()
     }
 
-    extern "C" fn observe_metadata_release(_self: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn observe_metadata_release(__context: u64, _self: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             unsafe {
                 let target = TARGET.load(Ordering::SeqCst);
                 let ptr = obj_from_bits(target).as_ptr().unwrap();
@@ -1907,7 +1945,7 @@ mod function_metadata_tests {
                 dec_ref_bits(py, result);
                 MoltObject::none().bits()
             }
-        })
+        }
     }
 
     unsafe fn runtime_function(py: &PyToken<'_>, name: &str, target: *const (), arity: u64) -> u64 {
@@ -1946,7 +1984,8 @@ mod function_metadata_tests {
                 let original_trampoline = function_trampoline_ptr(target_ptr);
                 let original_arity = function_arity(target_ptr);
                 let original_call_target = function_call_target_ptr(target_ptr);
-                let result = molt_set_attr_generic(
+                let result = molt_set_attr_generic_attached_body(
+                    py,
                     target_ptr,
                     b"__code__".as_ptr(),
                     b"__code__".len() as u64,
@@ -2028,7 +2067,8 @@ mod function_metadata_tests {
                     defaults_bits
                 ));
 
-                let result = molt_set_attr_generic(
+                let result = molt_set_attr_generic_attached_body(
+                    py,
                     target_ptr,
                     b"__code__".as_ptr(),
                     b"__code__".len() as u64,
@@ -2089,8 +2129,8 @@ mod function_metadata_tests {
                 let target_ptr = obj_from_bits(target).as_ptr().unwrap();
                 TARGET.store(target, Ordering::SeqCst);
                 let name = dynamic_attr_name_bits(py, b"MetadataFinalizerProbe").unwrap();
-                let class = crate::molt_class_new(name);
-                crate::molt_class_set_base(class, builtin_classes(py).object);
+                let class = crate::molt_class_new_attached_body(py, name);
+                crate::molt_class_set_base_attached_body(py, class, builtin_classes(py).object);
                 let class_ptr = obj_from_bits(class).as_ptr().unwrap();
                 crate::object::class_finish_definition(py, class_ptr).unwrap();
                 let finalizer = runtime_function(
@@ -2100,7 +2140,7 @@ mod function_metadata_tests {
                     1,
                 );
                 let del_name = dynamic_attr_name_bits(py, b"__del__").unwrap();
-                molt_set_attr_name(class, del_name, finalizer);
+                molt_set_attr_name_attached_body(py, class, del_name, finalizer);
                 assert!(!exception_pending(py));
 
                 let mut version = 0;
@@ -2133,9 +2173,14 @@ mod function_metadata_tests {
                         dec_ref_bits(py, value);
                         assert_eq!(CALLS.load(Ordering::SeqCst), calls);
                         if delete {
-                            molt_del_attr_name(target, key_bits);
+                            molt_del_attr_name_attached_body(py, target, key_bits);
                         } else {
-                            molt_set_attr_name(target, key_bits, MoltObject::none().bits());
+                            molt_set_attr_name_attached_body(
+                                py,
+                                target,
+                                key_bits,
+                                MoltObject::none().bits(),
+                            );
                         }
                         assert!(!exception_pending(py));
                         calls += 1;

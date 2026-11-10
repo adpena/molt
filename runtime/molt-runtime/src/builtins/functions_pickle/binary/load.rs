@@ -33,7 +33,7 @@ fn pickle_apply_dict_state(
     let Some(name) = crate::NameId::DunderDict.owned_bits(_py) else {
         return Err(MoltObject::none().bits());
     };
-    let dictionary = crate::molt_get_attr_name(inst_bits, name);
+    let dictionary = crate::molt_get_attr_name_attached_body(_py, inst_bits, name);
     molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, name));
     if exception_pending(_py) {
         dec_ref_bits(_py, dictionary);
@@ -107,7 +107,7 @@ pub(crate) fn pickle_vm_append_items(
         });
     if exact_list {
         for &item in items {
-            let _ = crate::molt_list_append(target_bits, item);
+            let _ = crate::molt_list_append_attached_body(_py, target_bits, item);
             if exception_pending(_py) {
                 return Err(MoltObject::none().bits());
             }
@@ -164,7 +164,7 @@ pub(crate) fn pickle_vm_setitems(
         return Err(PickleError::Unpickling.raise(_py, "odd number of items for SETITEMS"));
     }
     for &[key, value] in pairs.as_chunks::<2>().0 {
-        let _ = crate::molt_store_index(target_bits, key, value);
+        let _ = crate::molt_store_index_attached_body(_py, target_bits, key, value);
         if exception_pending(_py) {
             return Err(MoltObject::none().bits());
         }
@@ -190,7 +190,7 @@ pub(crate) fn pickle_resolve_global_bits(
     let Some(module_bits) = alloc_string_bits(_py, module) else {
         return Err(MoltObject::none().bits());
     };
-    let imported_bits = crate::molt_module_import(module_bits);
+    let imported_bits = crate::molt_module_import_attached_body(_py, module_bits);
     dec_ref_bits(_py, module_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
@@ -201,7 +201,7 @@ pub(crate) fn pickle_resolve_global_bits(
         }
         return Err(MoltObject::none().bits());
     };
-    let value_bits = crate::molt_object_getattribute(imported_bits, name_bits);
+    let value_bits = crate::molt_object_getattribute_attached_body(_py, imported_bits, name_bits);
     dec_ref_bits(_py, name_bits);
     if !obj_from_bits(imported_bits).is_none() {
         dec_ref_bits(_py, imported_bits);
@@ -420,7 +420,7 @@ pub(crate) fn pickle_apply_build(
         while idx + 1 < pairs.len() {
             let key_bits = pairs[idx];
             let value_bits = pairs[idx + 1];
-            let _ = crate::molt_set_attr_name(inst_bits, key_bits, value_bits);
+            let _ = crate::molt_set_attr_name_attached_body(_py, inst_bits, key_bits, value_bits);
             if exception_pending(_py) {
                 return Err(MoltObject::none().bits());
             }

@@ -127,9 +127,8 @@ fn alloc_release_tuple_bits(_py: &PyToken<'_>, rel: FutureRelease) -> Option<u64
     Some(MoltObject::from_ptr(tuple_ptr).bits())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_keyword_lists() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_keyword_lists_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(kwlist_bits) = alloc_str_list_bits(_py, HARD_KEYWORDS) else {
             return MoltObject::none().bits();
         };
@@ -163,23 +162,26 @@ pub(crate) fn keyword_contains(value_bits: u64, keywords: &[&str]) -> bool {
     keywords.contains(&value.as_str())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_keyword_iskeyword(value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_keyword_iskeyword_attached_body(
+    _py: &crate::PyToken<'_>,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         MoltObject::from_bool(keyword_contains(value_bits, HARD_KEYWORDS)).bits()
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_keyword_issoftkeyword(value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_keyword_issoftkeyword_attached_body(
+    _py: &crate::PyToken<'_>,
+    value_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         MoltObject::from_bool(keyword_contains(value_bits, SOFT_KEYWORDS)).bits()
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_future_features() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_future_features_attached_body(_py: &crate::PyToken<'_>) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let mut rows: Vec<u64> = Vec::with_capacity(FUTURE_FEATURES.len());
         for feature in FUTURE_FEATURES {
             let name_ptr = alloc_string(_py, feature.name.as_bytes());
@@ -245,3 +247,5 @@ pub extern "C" fn molt_future_features() -> u64 {
         MoltObject::from_ptr(list_ptr).bits()
     })
 }
+
+include!("../../attached_exports_generated/builtins/types/keyword_metadata.rs");

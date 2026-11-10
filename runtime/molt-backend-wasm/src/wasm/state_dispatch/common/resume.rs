@@ -3,9 +3,10 @@ use super::super::plan::NonLinearControlPlan;
 use super::super::state_remap::{build_sparse_state_remap_entries, emit_sparse_state_remap_lookup};
 use crate::wasm::WasmFrameLocals;
 use crate::wasm::frame_locals::WasmDispatchFrameLocals;
+use crate::wasm_binary::Function;
 use crate::wasm_binary::emit_call;
 use crate::wasm_values::POINTER_MASK;
-use wasm_encoder::{BlockType, Function, Instruction};
+use wasm_encoder::{BlockType, Instruction};
 
 pub(in crate::wasm::state_dispatch) fn emit_stateful_resume_prelude(
     func: &mut Function,

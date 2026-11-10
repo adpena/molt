@@ -20,7 +20,7 @@ pub use cpython_compat_test_support::*;
 pub use molt_api::*;
 
 use self::molt_api::molt_capi_method_dispatch;
-use crate::builtins::exceptions::molt_exception_new_from_class;
+use crate::builtins::exceptions::molt_exception_new_from_class_attached_body;
 use crate::concurrency::gil::gil_held;
 use crate::object::layout::{function_call_target_ptr, function_set_call_target_ptr};
 use crate::state::runtime_state::{
@@ -240,12 +240,12 @@ fn set_exception_from_message(_py: &PyToken<'_>, exc_type_bits: u64, message: &[
     } else {
         exc_type_bits
     };
-    let exc_bits = molt_exception_new_from_class(class_bits, msg_bits);
+    let exc_bits = molt_exception_new_from_class_attached_body(_py, class_bits, msg_bits);
     dec_ref_bits(_py, msg_bits);
     if obj_from_bits(exc_bits).is_none() {
         return -1;
     }
-    let _ = molt_exception_set_last(exc_bits);
+    let _ = molt_exception_set_last_attached_body(_py, exc_bits);
     dec_ref_bits(_py, exc_bits);
     if exception_pending(_py) { 0 } else { -1 }
 }
@@ -333,7 +333,7 @@ fn module_add_object_impl(
     if require_string_handle(_py, name_bits, "module attribute name").is_err() {
         return -1;
     }
-    let set_out = molt_module_set_attr(module_bits, name_bits, value_bits);
+    let set_out = molt_module_set_attr_attached_body(_py, module_bits, name_bits, value_bits);
     if set_out != 0 {
         dec_ref_bits(_py, set_out);
     }
@@ -349,7 +349,7 @@ fn module_get_object_impl(
     if require_string_handle(_py, name_bits, "module attribute name").is_err() {
         return none_bits();
     }
-    molt_module_get_attr(module_bits, name_bits)
+    molt_module_get_attr_attached_body(_py, module_bits, name_bits)
 }
 
 #[inline]
@@ -520,13 +520,16 @@ pub(crate) unsafe fn c_api_module_visit_native_edges(
         0
     }
     let mut context = Context { visit };
-    unsafe {
+    let foreign = molt_cpython_abi::hooks::ForeignExecutionGuard::capture();
+    let result = unsafe {
         callback(
             object,
             edge as *const () as *mut std::ffi::c_void,
             std::ptr::from_mut(&mut context).cast(),
         )
-    }
+    };
+    foreign.validate();
+    result
 }
 
 /// Run the extension clear before changing the runtime namespace, as CPython's
@@ -564,7 +567,10 @@ pub(crate) fn c_api_module_clear_native_edges(py: &PyToken<'_>, module_ptr: *mut
     if object.is_null() {
         return -1;
     }
-    unsafe { callback(object) }
+    let foreign = molt_cpython_abi::hooks::ForeignExecutionGuard::capture();
+    let result = unsafe { callback(object) };
+    foreign.validate();
+    result
 }
 
 /// The terminal caller has closed resurrection and still owns the canonical C
@@ -606,7 +612,11 @@ pub(crate) fn c_api_module_prepare_terminal(py: &PyToken<'_>, module_ptr: *mut u
     let object = module_callback_object(module_ptr);
     if !object.is_null() {
         molt_cpython_abi::api::errors::with_preserved_error(|| unsafe {
-            callback(object.cast());
+            {
+                let foreign = molt_cpython_abi::hooks::ForeignExecutionGuard::capture();
+                callback(object.cast());
+                foreign.validate();
+            }
             // m_free runs after committed death. A Python-visible diagnostic
             // must not turn its borrowed C view back into an owning reference.
             // Formatted unraisable reporting carries the callback context as
@@ -781,7 +791,7 @@ fn c_api_method_build_function(
     }
     dec_ref_bits(_py, closure_bits);
     let func_bits = MoltObject::from_ptr(func_ptr).bits();
-    let _ = crate::molt_function_set_builtin(func_bits);
+    let _ = crate::molt_function_set_builtin_attached_body(_py, func_bits);
     if exception_pending(_py) {
         dec_ref_bits(_py, func_bits);
         return Err(-1);
@@ -987,13 +997,13 @@ fn callargs_builder_for_call(
         }
     };
 
-    let builder_bits = molt_callargs_new(pos.len() as u64, 0);
+    let builder_bits = molt_callargs_new_attached_body(_py, pos.len() as u64, 0);
     if builder_bits == 0 || obj_from_bits(builder_bits).is_none() {
         return none_bits();
     }
 
     for &val in pos {
-        let _ = unsafe { molt_callargs_push_pos(builder_bits, val) };
+        let _ = unsafe { molt_callargs_push_pos_attached_body(_py, builder_bits, val) };
         if exception_pending(_py) {
             dec_ref_bits(_py, builder_bits);
             return none_bits();
@@ -1001,14 +1011,15 @@ fn callargs_builder_for_call(
     }
 
     if !obj_from_bits(kwargs_bits).is_none() {
-        let _ = unsafe { molt_callargs_expand_kwstar(builder_bits, kwargs_bits) };
+        let _ =
+            unsafe { molt_callargs_expand_kwstar_attached_body(_py, builder_bits, kwargs_bits) };
         if exception_pending(_py) {
             dec_ref_bits(_py, builder_bits);
             return none_bits();
         }
     }
 
-    molt_call_bind(callable_bits, builder_bits)
+    molt_call_bind_attached_body(_py, callable_bits, builder_bits)
 }
 
 #[inline]

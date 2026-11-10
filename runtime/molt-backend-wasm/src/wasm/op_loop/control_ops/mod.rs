@@ -2,12 +2,12 @@ use super::super::control_flow::{ControlKind, dispatch_control_panic};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm::function_frame::WasmFunctionFrame;
+use crate::wasm_binary::Function;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_plan::is_shared_drop_fact_marker;
 use crate::wasm_values::ConstantCache;
 use crate::{FunctionIR, OpIR};
 use std::collections::BTreeMap;
-use wasm_encoder::Function;
 
 mod branches;
 mod exceptions;

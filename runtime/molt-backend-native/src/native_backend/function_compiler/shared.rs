@@ -44,7 +44,7 @@ fn bind_runtime_import_result_name(
     import_refs: &NativeFunctionImports,
     vars: &BTreeMap<String, Variable>,
 ) {
-    use molt_ir::runtime_boxed_abi_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
+    use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
     let contract = runtime_boxed_abi(symbol, arity)
         .unwrap_or_else(|| panic!("runtime result has no canonical boxed ABI: {symbol}/{arity}"))
         .result;
@@ -619,12 +619,7 @@ pub(in crate::native_backend::function_compiler) fn emit_contract_runtime_call(
         Some(call)
     );
     let args = op.args.as_deref().unwrap_or(&[]);
-    assert_eq!(
-        args.len(),
-        function.boxed_abi().arity,
-        "{} contract arity",
-        op.kind
-    );
+    assert_eq!(args.len(), function.params(), "{} contract arity", op.kind);
     emit_operand_transaction_call(
         op,
         args,
@@ -665,7 +660,7 @@ pub(in crate::native_backend::function_compiler) fn emit_operand_transaction_cal
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
 ) {
-    use molt_ir::runtime_boxed_abi_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
+    use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
     let contract = runtime_boxed_abi(symbol, args.len())
         .unwrap_or_else(|| {
             panic!(

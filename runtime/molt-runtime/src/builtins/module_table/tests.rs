@@ -96,11 +96,15 @@ fn publish_test_module(name: &str, supplied_spec: Option<u64>) -> u64 {
         let name_ptr = alloc_string(_py, name.as_bytes());
         assert!(!name_ptr.is_null());
         let name_bits = MoltObject::from_ptr(name_ptr).bits();
-        let module_bits = crate::builtins::modules::molt_module_new(name_bits);
+        let module_bits = crate::builtins::modules::molt_module_new_attached_body(_py, name_bits);
         let set_bits = if name == "sys" {
             publish_interpreter_sys_for_test(_py, module_bits)
         } else {
-            crate::builtins::modules::molt_module_cache_set(name_bits, module_bits)
+            crate::builtins::modules::molt_module_cache_set_attached_body(
+                _py,
+                name_bits,
+                module_bits,
+            )
         };
         if !is_none_bits(set_bits) {
             dec_ref_bits(_py, set_bits);
@@ -122,7 +126,7 @@ fn publish_test_module(name: &str, supplied_spec: Option<u64>) -> u64 {
                 .expect("fixture uses actual runtime ModuleSpec producer"),
             ),
         };
-        molt_module_initialization_spec(module_bits, spec.bits());
+        molt_module_initialization_spec_attached_body(_py, module_bits, spec.bits());
         assert!(!exception_pending(_py));
         drop(spec);
         dec_ref_bits(_py, name_bits);
@@ -133,21 +137,30 @@ fn publish_test_module(name: &str, supplied_spec: Option<u64>) -> u64 {
 // Model a linked builtin initializer, including explicit loader reimports.
 // Publication alone is insufficient: a loader can remove its public cache
 // entry, after which the actual registry initializer owns reconstruction.
-extern "C" fn init_test_sys() -> u64 {
+extern "C" fn init_test_sys(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     SYS_INIT_RUNS.fetch_add(1, Ordering::SeqCst);
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = __py;
         let name = crate::dynamic_attr_name_bits(py, b"sys").unwrap();
         let module = if let Some(module) = crate::builtins::modules::interpreter_sys_module(py) {
             inc_ref_bits(py, module);
             module
         } else {
-            crate::builtins::modules::molt_module_new(name)
+            crate::builtins::modules::molt_module_new_attached_body(py, name)
         };
-        let result = crate::builtins::modules::molt_module_cache_set(name, module);
+        let result =
+            crate::builtins::modules::molt_module_cache_set_attached_body(py, name, module);
         dec_ref_bits(py, module);
         dec_ref_bits(py, name);
         result
-    })
+    }
 }
 
 static PRIVATE_BODY_SPEC: AtomicU64 = AtomicU64::new(0);
@@ -172,9 +185,17 @@ impl Drop for PrivateSelfScope<'_, '_> {
     }
 }
 
-extern "C" fn init_g4_src() -> u64 {
+extern "C" fn init_g4_src(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     INIT_RUNS.fetch_add(1, Ordering::SeqCst);
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = __py;
         let spec = PRIVATE_BODY_SPEC.load(Ordering::SeqCst);
         let supplied_spec = (spec != 0 && executing_private_body(_py, "g4_src")).then_some(spec);
         let bits = publish_test_module("g4_src", supplied_spec);
@@ -186,97 +207,170 @@ extern "C" fn init_g4_src() -> u64 {
             }
         }
         dec_ref_bits(_py, bits);
-    });
+    };
     0
 }
 
-extern "C" fn init_g4_fail() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn init_g4_fail(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         raise_exception::<u64>(_py, BuiltinExc::ValueError, "g4 init failure")
-    })
+    }
 }
 
-extern "C" fn init_g4_z_static_ext_fail() -> u64 {
+extern "C" fn init_g4_z_static_ext_fail(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     EXT_FAIL_RUNS.fetch_add(1, Ordering::SeqCst);
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = __py;
         raise_exception::<u64>(
             _py,
             BuiltinExc::ImportError,
             "g4_z_static_ext_fail: static-link PyModuleDef Py_mod_exec slot \
                  returned non-zero",
         )
-    })
+    }
 }
 
-extern "C" fn init_g4_pkg() -> u64 {
+extern "C" fn init_g4_pkg(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     let bits = publish_test_module("g4_pkg", None);
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = __py;
         let replacement = PARENT_CHILD_OVERRIDE.load(Ordering::Relaxed);
         if replacement != 0 {
             let sys = publication_for_test(_py, "sys").unwrap();
             let modules_bits = crate::builtins::modules::sys_modules_dict_bits(_py, sys).unwrap();
             let modules = obj_from_bits(modules_bits).as_ptr().unwrap();
-            let _modules_owner = crate::PtrDropGuard::new(modules);
+            let _modules_owner = crate::PtrDropGuard::new(_py, modules);
             let child = crate::dynamic_attr_name_bits(_py, b"g4_pkg.sub").unwrap();
             unsafe { assert!(crate::dict_set_in_place(_py, modules, child, replacement)) };
             dec_ref_bits(_py, child);
         }
         dec_ref_bits(_py, bits);
-    });
+    };
     0
 }
 
-extern "C" fn init_g4_pkg_sub() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+extern "C" fn init_g4_pkg_sub(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let _py = __py;
         // Parent-first must have completed g4_pkg before this body runs.
         assert!(publication_for_test(_py, "g4_pkg").is_some());
-    });
+    };
     let bits = publish_test_module("g4_pkg.sub", None);
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = __py;
         dec_ref_bits(_py, bits);
-    });
+    };
     0
 }
 
-extern "C" fn init_g4_target() -> u64 {
+extern "C" fn init_g4_target(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     let bits = publish_test_module("g4_target", None);
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = __py;
         dec_ref_bits(_py, bits);
-    });
+    };
     0
 }
 
-extern "C" fn init_g4_tomb() -> u64 {
+extern "C" fn init_g4_tomb(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     let bits = publish_test_module("g4_tomb", None);
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = __py;
         dec_ref_bits(_py, bits);
-    });
+    };
     0
 }
 
-extern "C" fn init_g4_tomb_ext() -> u64 {
+extern "C" fn init_g4_tomb_ext(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     let bits = publish_test_module("g4_tomb_ext", None);
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = __py;
         dec_ref_bits(_py, bits);
-    });
+    };
     0
 }
 
-extern "C" fn init_g4_cycle_a() -> u64 {
+extern "C" fn init_g4_cycle_a(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     let bits = publish_test_module("g4_cycle_a", None);
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = __py;
         dec_ref_bits(_py, bits);
         // Body imports g4_cycle_b, whose body re-imports g4_cycle_a.
         let b = module_ensure(_py, test_registry_id("g4_cycle_b"));
         assert!(!exception_pending(_py));
         dec_ref_bits(_py, b);
-    });
+    };
     0
 }
 
-extern "C" fn init_g4_cycle_b() -> u64 {
+extern "C" fn init_g4_cycle_b(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     let bits = publish_test_module("g4_cycle_b", None);
-    crate::with_gil_entry_nopanic!(_py, {
+    {
+        let _py = __py;
         dec_ref_bits(_py, bits);
         // Same-thread circular import: must observe the PARTIAL g4_cycle_a
         // (publish-before-exec, invariant I6) without re-entering its init.
@@ -285,7 +379,7 @@ extern "C" fn init_g4_cycle_b() -> u64 {
         assert!(!is_none_bits(a));
         CYCLE_OBSERVED_PARTIAL.fetch_add(1, Ordering::SeqCst);
         dec_ref_bits(_py, a);
-    });
+    };
     0
 }
 
@@ -484,8 +578,16 @@ impl Drop for ModuleTestRestore<'_, '_> {
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
 fn raw_module_body_dispatch_preserves_caller_exception_baseline_and_error() {
-    extern "C" fn changes_baseline_and_raises() -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
+    extern "C" fn changes_baseline_and_raises(__context: u64) -> u64 {
+        assert_eq!(
+            __context,
+            crate::state::molt_attached_context(),
+            "Python callback context identity"
+        );
+        let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+        {
+            let py = __py;
             crate::exception_stack_baseline_set(0);
             let exception = crate::builtins::exceptions::ExceptionValue::adopt(
                 py,
@@ -496,8 +598,8 @@ fn raw_module_body_dispatch_preserves_caller_exception_baseline_and_error() {
                 ))
                 .bits(),
             );
-            crate::builtins::exceptions::molt_raise(exception.bits())
-        })
+            crate::builtins::exceptions::molt_raise_attached_body(py, exception.bits())
+        }
     }
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     install_test_registry();
@@ -514,7 +616,7 @@ fn raw_module_body_dispatch_preserves_caller_exception_baseline_and_error() {
         assert!(exception_pending(py));
         let exception = crate::builtins::exceptions::ExceptionValue::adopt(
             py,
-            crate::molt_exception_last_pending(),
+            crate::molt_exception_last_pending_attached_body(py),
         );
         assert!(crate::builtins::exceptions::exception_matches_kind(
             py,
@@ -584,7 +686,7 @@ fn completed_public_false_probe_bypasses_execution_lock_admission() {
                 crate::call_callable0(py, crate::builtins::types::simplenamespace_class(py))
             };
             let key = crate::dynamic_attr_name_bits(py, b"__spec__").unwrap();
-            crate::builtins::modules::molt_module_set_attr(module, key, spec);
+            crate::builtins::modules::molt_module_set_attr_attached_body(py, module, key, spec);
             set_spec_initializing(py, spec, false);
             let dictionary = module_dictionary(py).unwrap();
             let table = runtime_state(py).module_table.get().unwrap();
@@ -742,8 +844,16 @@ impl Drop for BusyObservationScope {
     }
 }
 
-extern "C" fn replace_busy_observation(_self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn replace_busy_observation(__context: u64, _self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         let dictionary = module_dictionary(py).unwrap();
         assert!(unsafe {
             crate::dict_set_in_place(
@@ -754,11 +864,19 @@ extern "C" fn replace_busy_observation(_self_bits: u64) -> u64 {
             )
         });
         MoltObject::from_bool(true).bits()
-    })
+    }
 }
 
-extern "C" fn finalize_busy_observation(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
+extern "C" fn finalize_busy_observation(__context: u64, self_bits: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    {
+        let py = __py;
         if self_bits == BUSY_OBSERVATION_TARGET.load(Ordering::SeqCst) {
             BUSY_OBSERVATION_FINALIZED.fetch_add(1, Ordering::SeqCst);
             let table = runtime_state(py).module_table.get().unwrap();
@@ -771,7 +889,7 @@ extern "C" fn finalize_busy_observation(self_bits: u64) -> u64 {
             );
         }
         none_bits()
-    })
+    }
 }
 
 #[test]
@@ -785,8 +903,12 @@ fn python_busy_reobservation_retires_old_value_under_first_execution_lock() {
             py,
             crate::dynamic_attr_name_bits(py, b"_molt_busy_observation").unwrap(),
         );
-        let class = ExceptionValue::adopt(py, crate::molt_class_new(name.bits()));
-        crate::molt_class_set_base(class.bits(), crate::builtin_classes(py).object);
+        let class = ExceptionValue::adopt(py, crate::molt_class_new_attached_body(py, name.bits()));
+        crate::molt_class_set_base_attached_body(
+            py,
+            class.bits(),
+            crate::builtin_classes(py).object,
+        );
         for (method, symbol, target) in [
             (
                 b"__bool__".as_slice(),
@@ -809,7 +931,7 @@ fn python_busy_reobservation_retires_old_value_under_first_execution_lock() {
                 ))
                 .bits(),
             );
-            crate::molt_set_attr_name(class.bits(), key.bits(), function.bits());
+            crate::molt_set_attr_name_attached_body(py, class.bits(), key.bits(), function.bits());
         }
         let pointer = obj_from_bits(class.bits()).as_ptr().unwrap();
         unsafe {
@@ -837,7 +959,7 @@ fn python_busy_reobservation_retires_old_value_under_first_execution_lock() {
         ] {
             let key =
                 ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, spelling).unwrap());
-            crate::molt_set_attr_name(receiver, key.bits(), value);
+            crate::molt_set_attr_name_attached_body(py, receiver, key.bits(), value);
         }
         let dictionary = module_dictionary(py).unwrap();
         assert!(unsafe {
@@ -891,7 +1013,10 @@ fn deadlock_exception_payload_projects_one_internal_runtime_error_identity() {
             crate::dynamic_attr_name_bits(py, b"_DeadlockError").unwrap(),
         );
         for _ in 0..2 {
-            let payload = ExceptionValue::adopt(py, crate::molt_importlib_frozen_payload());
+            let payload = ExceptionValue::adopt(
+                py,
+                crate::builtins::platform::molt_importlib_frozen_payload_attached_body(py),
+            );
             assert!(!exception_pending(py));
             assert_eq!(
                 unsafe {
@@ -930,7 +1055,10 @@ fn deadlock_exception_payload_projects_one_internal_runtime_error_identity() {
                 crate::dynamic_attr_name_bits(py, internal.name().as_bytes()).unwrap(),
             );
             let expected = crate::builtins::exceptions::exception_class_bits(py, internal);
-            let lookup = ExceptionValue::adopt(py, crate::molt_builtin_class_lookup(name.bits()));
+            let lookup = ExceptionValue::adopt(
+                py,
+                crate::builtins::classes::molt_builtin_class_lookup_attached_body(py, name.bits()),
+            );
             assert_eq!(
                 lookup.bits(),
                 expected,
@@ -971,7 +1099,12 @@ fn cached_cycle_policy_propagates_python_and_accepts_c_entry_partials() {
         });
         let spec_key =
             ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, b"__spec__").unwrap());
-        crate::builtins::modules::molt_module_set_attr(module.bits(), spec_key.bits(), spec.bits());
+        crate::builtins::modules::molt_module_set_attr_attached_body(
+            py,
+            module.bits(),
+            spec_key.bits(),
+            spec.bits(),
+        );
         set_spec_initializing(py, spec.bits(), true);
         assert!(!exception_pending(py));
         assert!(unsafe {
@@ -1047,7 +1180,7 @@ fn cached_cycle_policy_propagates_python_and_accepts_c_entry_partials() {
                                 let pending = exception_pending(py);
                                 let error = ExceptionValue::adopt(
                                     py,
-                                    crate::builtins::exceptions::molt_exception_last_pending(),
+                                    crate::builtins::exceptions::molt_exception_last_pending_attached_body(py),
                                 );
                                 let expected = crate::builtins::exceptions::exception_class_bits(
                                     py,
@@ -1181,10 +1314,18 @@ impl Drop for RecursiveFixtureOwners<'_, '_> {
     }
 }
 
-extern "C" fn init_g4_z_recursive() -> u64 {
+extern "C" fn init_g4_z_recursive(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     let generation = RECURSIVE_RUNS.fetch_add(1, Ordering::SeqCst) + 1;
     let original = publish_test_module("g4_z_recursive", None);
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = __py;
         let mode = RECURSIVE_MODE.load(Ordering::SeqCst);
         if generation == 1 {
             // Transfer the allocation owner to the bounded fixture scope,
@@ -1229,7 +1370,7 @@ extern "C" fn init_g4_z_recursive() -> u64 {
             if exception_pending(py) {
                 let expected = RECURSIVE_FAILURE.load(Ordering::SeqCst);
                 crate::builtins::exceptions::exception_context_set(py, expected);
-                let active = crate::builtins::exceptions::molt_exception_active();
+                let active = crate::builtins::exceptions::molt_exception_active_attached_body(py);
                 assert_eq!(
                     active, expected,
                     "a caller can bare-reraise a failed nested import"
@@ -1256,7 +1397,10 @@ extern "C" fn init_g4_z_recursive() -> u64 {
                             ));
                         }
                     }
-                    crate::molt_exception_set_last(RECURSIVE_FAILURE.load(Ordering::SeqCst));
+                    crate::molt_exception_set_last_attached_body(
+                        py,
+                        RECURSIVE_FAILURE.load(Ordering::SeqCst),
+                    );
                 }
             }
             crate::builtins::exceptions::exception_stack_pop(py);
@@ -1269,18 +1413,29 @@ extern "C" fn init_g4_z_recursive() -> u64 {
             if matches!(mode, 2 | 3) {
                 // Execute the compiled RAISE cleanup contract rather than
                 // bypassing it by setting only the pending exception.
-                crate::builtins::exceptions::molt_exception_stack_clear();
-                crate::molt_exception_set_last(RECURSIVE_FAILURE.load(Ordering::SeqCst));
+                crate::builtins::exceptions::molt_exception_stack_clear_attached_body(py);
+                crate::molt_exception_set_last_attached_body(
+                    py,
+                    RECURSIVE_FAILURE.load(Ordering::SeqCst),
+                );
             }
             dec_ref_bits(py, original);
         }
-    });
+    };
     0
 }
 
-extern "C" fn init_g4_z_success_mutation() -> u64 {
+extern "C" fn init_g4_z_success_mutation(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     let original = publish_test_module("g4_z_success_mutation", None);
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = __py;
         let dictionary = module_dictionary(py).unwrap();
         let pointer = crate::ptr_from_bits(dictionary);
         let name = crate::dynamic_attr_name_bits(py, b"g4_z_success_mutation").unwrap();
@@ -1307,15 +1462,23 @@ extern "C" fn init_g4_z_success_mutation() -> u64 {
         for bits in [original, name, nested] {
             dec_ref_bits(py, bits);
         }
-    });
+    };
     0
 }
 
-extern "C" fn init_test_io() -> u64 {
+extern "C" fn init_test_io(__context: u64) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
     let module = publish_test_module("_io", None);
-    crate::with_gil_entry_nopanic!(py, {
+    {
+        let py = __py;
         dec_ref_bits(py, module);
-    });
+    };
     0
 }
 
@@ -1459,7 +1622,7 @@ fn synthetic_initializer_scope_restores_cache_and_row_after_unwind() {
     crate::with_gil_entry_nopanic!(py, {
         let _outer = ModuleTestRestore::capture(py, "g4_src");
         let module = publish_test_module("g4_src", None);
-        let _module_owner = crate::PtrDropGuard::new(obj_from_bits(module).as_ptr().unwrap());
+        let _module_owner = crate::PtrDropGuard::new(py, obj_from_bits(module).as_ptr().unwrap());
         let index = test_registry_id("g4_src") as usize;
         let table = module_table(py).unwrap();
         let state = table.initialization().states[index].load(Ordering::Acquire);
@@ -1604,9 +1767,11 @@ fn explicit_private_body_self_import_reads_public_missing_present_and_none() {
             }
             let before = INIT_RUNS.load(Ordering::SeqCst);
             PRIVATE_SELF_IMPORT.store(1, Ordering::SeqCst);
-            let loader = crate::builtins::types::molt_importlib_compiled_loader();
+            let loader = crate::builtins::types::molt_importlib_compiled_loader_attached_body(py);
             let outcome =
-                crate::builtins::types::molt_importlib_compiled_loader_exec_module(loader, target);
+                crate::builtins::types::molt_importlib_compiled_loader_exec_module_attached_body(
+                    py, loader, target,
+                );
             assert!(is_none_bits(outcome));
             let failed = exception_pending(py);
             let nested = PRIVATE_SELF_RESULT.load(Ordering::SeqCst);
@@ -1657,11 +1822,13 @@ fn compiled_load_module_preseeds_exact_namespace_under_ordinary_owner() {
         let _self_scope = PrivateSelfScope(py);
         remove_for_test(py, "g4_src");
         let name = crate::dynamic_attr_name_bits(py, b"g4_src").unwrap();
-        let loader = crate::builtins::types::molt_importlib_compiled_loader();
+        let loader = crate::builtins::types::molt_importlib_compiled_loader_attached_body(py);
         let before = INIT_RUNS.load(Ordering::SeqCst);
         PRIVATE_SELF_IMPORT.store(1, Ordering::SeqCst);
         let loaded =
-            crate::builtins::types::molt_importlib_compiled_loader_load_module(loader, name);
+            crate::builtins::types::molt_importlib_compiled_loader_load_module_attached_body(
+                py, loader, name,
+            );
         assert!(!exception_pending(py));
         assert_eq!(
             INIT_RUNS.load(Ordering::SeqCst),
@@ -1835,14 +2002,14 @@ fn explicit_spec_producer_owns_original_through_snapshot_and_metadata_replacemen
             unsafe { crate::call_callable0(py, crate::builtins::types::simplenamespace_class(py)) };
         let key = crate::dynamic_attr_name_bits(py, b"__spec__").unwrap();
         let flag = crate::dynamic_attr_name_bits(py, b"_initializing").unwrap();
-        crate::builtins::modules::molt_module_set_attr(module, key, replacement);
+        crate::builtins::modules::molt_module_set_attr_attached_body(py, module, key, replacement);
         assert_eq!(
             table.initialization().specs[index].load(Ordering::Acquire),
             0,
             "generic attribute spelling cannot acquire compiler provenance"
         );
         let _context = InitializerContext::enter(py, id, InitializerKind::Import);
-        molt_module_initialization_spec(module, spec);
+        molt_module_initialization_spec_attached_body(py, module, spec);
         assert!(!exception_pending(py));
         assert_eq!(
             table.initialization().specs[index].load(Ordering::Acquire),
@@ -1859,7 +2026,7 @@ fn explicit_spec_producer_owns_original_through_snapshot_and_metadata_replacemen
         );
         assert_eq!(snapshot.spec, spec);
         restore_module_execution(py, Some(snapshot));
-        crate::builtins::modules::molt_module_set_attr(module, key, replacement);
+        crate::builtins::modules::molt_module_set_attr_attached_body(py, module, key, replacement);
         set_spec_initializing(py, replacement, true);
         finish_initializing_spec(py, table, id);
         assert!(!exception_pending(py));
@@ -1908,15 +2075,19 @@ fn foreign_wait_uses_observed_public_spec_and_preserves_completed_replacements()
                 0 => (module, true), // pre-metadata bootstrap phase
                 1 | 2 => {
                     set_spec_initializing(py, spec, mode == 1);
-                    crate::builtins::modules::molt_module_set_attr(module, key, spec);
+                    crate::builtins::modules::molt_module_set_attr_attached_body(
+                        py, module, key, spec,
+                    );
                     inc_ref_bits(py, spec);
                     table.initialization().specs[index].store(spec, Ordering::Release);
                     (module, mode == 1)
                 }
                 3 => {
-                    let nested = crate::builtins::modules::molt_module_new(name);
+                    let nested = crate::builtins::modules::molt_module_new_attached_body(py, name);
                     set_spec_initializing(py, spec, false);
-                    crate::builtins::modules::molt_module_set_attr(nested, key, spec);
+                    crate::builtins::modules::molt_module_set_attr_attached_body(
+                        py, nested, key, spec,
+                    );
                     (nested, false)
                 }
                 4 => (MoltObject::from_int(42).bits(), false),
@@ -2020,7 +2191,7 @@ fn recursive_public_deletion_reenters_initializer_and_restores_outer_custody() {
             RECURSIVE_RUNS.store(0, Ordering::SeqCst);
             RECURSIVE_RESTORED.store(0, Ordering::SeqCst);
             raise_exception::<()>(py, BuiltinExc::ValueError, "recursive initializer failure");
-            let error = crate::builtins::exceptions::molt_exception_last_pending();
+            let error = crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
             let error = crate::builtins::exceptions::ExceptionValue::adopt(py, error);
             crate::clear_exception(py);
             let _owners = RecursiveFixtureOwners(py);
@@ -2047,7 +2218,8 @@ fn recursive_public_deletion_reenters_initializer_and_restores_outer_custody() {
             } else {
                 assert!(is_none_bits(result));
                 assert!(exception_pending(py));
-                let observed = crate::builtins::exceptions::molt_exception_last_pending();
+                let observed =
+                    crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
                 if mode == 2 {
                     assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
@@ -2167,7 +2339,7 @@ fn sys_bootstrap_exposes_existing_dictionary_without_replay() {
         let before = module_dictionary(py).unwrap();
         let module = publish_test_module("g4_src", None);
         let sys_name = crate::dynamic_attr_name_bits(py, b"sys").unwrap();
-        let sys = crate::molt_module_new(sys_name);
+        let sys = crate::molt_module_new_attached_body(py, sys_name);
         publish_interpreter_sys_for_test(py, sys);
         let exposed = crate::builtins::modules::sys_modules_dict_bits(py, sys).unwrap();
         assert_eq!(
@@ -2220,9 +2392,9 @@ fn interpreter_sys_publication_requires_initializer_and_rejects_dictionary_paylo
     crate::with_gil_entry_nopanic!(py, {
         let name = crate::dynamic_attr_name_bits(py, b"sys").unwrap();
         remove_for_test(py, "sys");
-        let module = crate::molt_module_new(name);
-        let unrelated = crate::molt_module_new(name);
-        crate::molt_module_cache_set(name, unrelated);
+        let module = crate::molt_module_new_attached_body(py, name);
+        let unrelated = crate::molt_module_new_attached_body(py, name);
+        crate::molt_module_cache_set_attached_body(py, name, unrelated);
         assert!(runtime_state(py).interpreter_sys.module(py).is_none());
         let table = module_table(py).unwrap();
         let index = module_id_of("sys").unwrap() as usize;
@@ -2230,7 +2402,7 @@ fn interpreter_sys_publication_requires_initializer_and_rejects_dictionary_paylo
         let _owner_fixture_2 =
             TestExecutionOwner::set(table, index, crate::concurrency::current_thread_id());
         let dictionary = MoltObject::from_ptr(crate::alloc_dict_with_pairs(py, &[])).bits();
-        crate::molt_module_cache_set(name, dictionary);
+        crate::molt_module_cache_set_attached_body(py, name, dictionary);
         assert!(exception_pending(py));
         assert!(runtime_state(py).interpreter_sys.module(py).is_none());
         assert_eq!(
@@ -2239,7 +2411,7 @@ fn interpreter_sys_publication_requires_initializer_and_rejects_dictionary_paylo
         );
         assert_eq!(publication_for_test(py, "sys"), Some(unrelated));
         crate::clear_exception(py);
-        crate::molt_module_cache_set(name, module);
+        crate::molt_module_cache_set_attached_body(py, name, module);
         assert!(!exception_pending(py));
         assert_eq!(runtime_state(py).interpreter_sys.module(py), Some(module));
         assert_eq!(
@@ -2295,7 +2467,7 @@ fn interpreter_sys_republication_and_version_setup_preserve_user_namespace() {
         }
         assert!(!exception_pending(py));
 
-        crate::molt_module_cache_set(name, sys);
+        crate::molt_module_cache_set_attached_body(py, name, sys);
         assert!(!exception_pending(py));
         let table = module_table(py).unwrap();
         assert_eq!(
@@ -2343,7 +2515,8 @@ fn interpreter_sys_republication_and_version_setup_preserve_user_namespace() {
         // replace finalized Python shapes or recreate deleted public keys.
         let (info, _) = crate::object::ops_sys::current_sys_version_info(runtime_state(py));
         let release = MoltObject::from_ptr(alloc_string(py, info.releaselevel.as_bytes())).bits();
-        crate::molt_sys_set_version_info(
+        crate::object::ops_sys::molt_sys_set_version_info_attached_body(
+            py,
             MoltObject::from_int(info.major).bits(),
             MoltObject::from_int(info.minor).bits(),
             MoltObject::from_int(info.micro).bits(),
@@ -2406,7 +2579,7 @@ fn extension_publication_retires_ready_owner_and_preserves_foreign_custody() {
             STATE_READY
         );
         let name = crate::dynamic_attr_name_bits(py, b"g4_src").unwrap();
-        let new = crate::builtins::modules::molt_module_new(name);
+        let new = crate::builtins::modules::molt_module_new_attached_body(py, name);
         crate::builtins::modules::module_cache_publish(
             name,
             new,
@@ -2491,7 +2664,7 @@ fn import_outcome_registered_cache_refresh_preserves_initializer_custody() {
         let sys = publish_test_module("sys", None);
         let modules_bits = crate::builtins::modules::sys_modules_dict_bits(py, sys).unwrap();
         let modules = obj_from_bits(modules_bits).as_ptr().unwrap();
-        let _modules_owner = crate::PtrDropGuard::new(modules);
+        let _modules_owner = crate::PtrDropGuard::new(py, modules);
         let name = crate::dynamic_attr_name_bits(py, b"g4_src").unwrap();
         let id = test_registry_id("g4_src");
         unsafe {
@@ -2572,7 +2745,7 @@ fn import_outcome_registered_cache_refresh_preserves_initializer_custody() {
 
 fn pending_exception_text(_py: &PyToken<'_>, expected_kind: crate::BuiltinExc) -> String {
     assert!(exception_pending(_py), "expected a pending exception");
-    let exc_bits = crate::builtins::exceptions::molt_exception_last_pending();
+    let exc_bits = crate::builtins::exceptions::molt_exception_last_pending_attached_body(_py);
     assert!(
         crate::builtins::exceptions::exception_matches_kind(_py, exc_bits, expected_kind),
         "expected {expected_kind:?} before clearing its owned exception"
@@ -2582,7 +2755,7 @@ fn pending_exception_text(_py: &PyToken<'_>, expected_kind: crate::BuiltinExc) -
         .map(|ptr| crate::format_exception_with_traceback(_py, ptr))
         .unwrap_or_default();
     dec_ref_bits(_py, exc_bits);
-    let _ = crate::molt_exception_clear();
+    let _ = crate::molt_exception_clear_attached_body(_py);
     text
 }
 
@@ -2593,7 +2766,11 @@ fn lookup_test_global(
     through_frame: bool,
 ) -> u64 {
     if !through_frame {
-        return crate::builtins::modules::molt_module_get_global(module_bits, name_bits);
+        return crate::builtins::modules::molt_module_get_global_attached_body(
+            _py,
+            module_bits,
+            name_bits,
+        );
     }
     let module_ptr = obj_from_bits(module_bits).as_ptr().expect("test module");
     let globals_bits = unsafe { crate::object::layout::module_dict_bits(module_ptr) };
@@ -2604,7 +2781,8 @@ fn lookup_test_global(
     crate::builtins::frames::frame_stack_push_owned(_py, 0, globals_bits, builtins_bits, 0);
     // A conflicting module argument proves the active-frame dictionary is
     // the authority for this sibling of the direct-module lookup path.
-    let result = crate::builtins::modules::molt_module_get_global(none_bits(), name_bits);
+    let result =
+        crate::builtins::modules::molt_module_get_global_attached_body(_py, none_bits(), name_bits);
     crate::builtins::frames::frame_stack_pop(_py);
     result
 }
@@ -2620,7 +2798,7 @@ fn builtin_bootstrap_publication_precedes_recursive_python_and_preserves_deletio
         let idx = test_registry_id("builtins") as usize;
         let table = module_table(py).expect("table");
         let name = MoltObject::from_ptr(alloc_string(py, b"builtins")).bits();
-        let module = crate::molt_module_new(name);
+        let module = crate::molt_module_new_attached_body(py, name);
         let ptr = obj_from_bits(module).as_ptr().expect("module");
         let dict = obj_from_bits(unsafe { crate::module_dict_bits(ptr) })
             .as_ptr()
@@ -2639,7 +2817,7 @@ fn builtin_bootstrap_publication_precedes_recursive_python_and_preserves_deletio
         let _owner_fixture_8 =
             TestExecutionOwner::set(table, idx, crate::concurrency::current_thread_id());
         assert!(module_initialization_awaits_publication(py, "builtins"));
-        let result = crate::molt_module_cache_set(name, module);
+        let result = crate::molt_module_cache_set_attached_body(py, name, module);
         assert!(
             !exception_pending(py),
             "builtins first publication: {}",
@@ -2684,7 +2862,7 @@ fn builtin_bootstrap_publication_precedes_recursive_python_and_preserves_deletio
         );
         dec_ref_bits(py, open_name);
         dec_ref_bits(py, io);
-        let unrelated = crate::molt_module_new(name);
+        let unrelated = crate::molt_module_new_attached_body(py, name);
         for builtin in [
             "property",
             "globals",
@@ -2694,7 +2872,7 @@ fn builtin_bootstrap_publication_precedes_recursive_python_and_preserves_deletio
             "ValueError",
         ] {
             let key = MoltObject::from_ptr(alloc_string(py, builtin.as_bytes())).bits();
-            let value = crate::molt_module_get_global(unrelated, key);
+            let value = crate::molt_module_get_global_attached_body(py, unrelated, key);
             assert!(!exception_pending(py), "recursive importer: {builtin}");
             assert!(!is_none_bits(value));
             dec_ref_bits(py, value);
@@ -2719,11 +2897,11 @@ fn builtin_bootstrap_publication_precedes_recursive_python_and_preserves_deletio
                 crate::dict_del_in_place(py, dict, key).expect("operation succeeds")
             });
             // Republication is not permission to repair a user mutation.
-            let result = crate::molt_module_cache_set(name, module);
+            let result = crate::molt_module_cache_set_attached_body(py, name, module);
             if !is_none_bits(result) {
                 dec_ref_bits(py, result);
             }
-            let value = crate::molt_module_get_global(unrelated, key);
+            let value = crate::molt_module_get_global_attached_body(py, unrelated, key);
             assert!(is_none_bits(value));
             assert!(pending_exception_text(py, crate::BuiltinExc::NameError).contains("NameError"));
             assert!(
@@ -2834,7 +3012,7 @@ fn builtin_bootstrap_lookup_is_exact_namespace_and_execution_owned() {
                     inc_ref_bits(_py, bits);
                 }
                 crate::builtins::frames::frame_stack_push_owned(_py, 0, dict_bits, dict_bits, 0);
-                crate::builtins::frames::molt_frame_locals_set(dict_bits);
+                crate::builtins::frames::molt_frame_locals_set_attached_body(_py, dict_bits);
                 assert!(!exception_pending(_py));
                 let key = MoltObject::from_ptr(alloc_string(_py, b"__builtins__")).bits();
                 assert!(
@@ -2992,12 +3170,12 @@ fn builtin_bootstrap_lookup_is_exact_namespace_and_execution_owned() {
 
 fn assert_g4_ensure_state_machine_transitions(public_cache: bool) {
     crate::with_gil_entry_nopanic!(_py, {
-        let _ = crate::molt_exception_clear();
+        let _ = crate::molt_exception_clear_attached_body(_py);
         let sys = public_cache.then(|| publish_test_module("sys", None));
         let modules_bits = module_dictionary(_py).unwrap();
         inc_ref_bits(_py, modules_bits);
         let modules = Some(crate::ptr_from_bits(modules_bits));
-        let _modules_owner = crate::PtrDropGuard::new(crate::ptr_from_bits(modules_bits));
+        let _modules_owner = crate::PtrDropGuard::new(_py, crate::ptr_from_bits(modules_bits));
         let src_name = crate::dynamic_attr_name_bits(_py, b"g4_src").unwrap();
 
         // ── Uninit → Initializing → Ready; init exactly once (I5) ──
@@ -3106,7 +3284,8 @@ fn assert_g4_ensure_state_machine_transitions(public_cache: bool) {
         let pkg = module_ensure(_py, test_registry_id("g4_pkg"));
         let leaf_ptr = alloc_string(_py, b"sub");
         let leaf_bits = MoltObject::from_ptr(leaf_ptr).bits();
-        let bound = crate::builtins::modules::molt_module_get_attr(pkg, leaf_bits);
+        let bound =
+            crate::builtins::modules::molt_module_get_attr_attached_body(_py, pkg, leaf_bits);
         assert!(!exception_pending(_py));
         assert_eq!(bound, sub, "child must be bound as parent attribute");
         dec_ref_bits(_py, bound);
@@ -3235,7 +3414,7 @@ fn r0_static_extension_init_failure_unwinds_initializing() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     install_test_registry();
     crate::with_gil_entry_nopanic!(_py, {
-        let _ = crate::molt_exception_clear();
+        let _ = crate::molt_exception_clear_attached_body(_py);
 
         let ext_fail_id = test_registry_id("g4_z_static_ext_fail");
         let runs_before = EXT_FAIL_RUNS.load(Ordering::SeqCst);
@@ -3452,7 +3631,7 @@ fn import_catalog_perf_attestation() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     install_test_registry();
     crate::with_gil_entry_nopanic!(_py, {
-        let _ = crate::molt_exception_clear();
+        let _ = crate::molt_exception_clear_attached_body(_py);
         let registry = module_registry().expect("registry");
         let src_id = test_registry_id("g4_src");
         let warm = module_ensure(_py, src_id);

@@ -1,4 +1,5 @@
-use wasm_encoder::{Function, Instruction, MemArg};
+use crate::wasm_binary::Function;
+use wasm_encoder::{Instruction, MemArg};
 
 use crate::wasm_abi::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;

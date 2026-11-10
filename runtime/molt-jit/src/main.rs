@@ -128,7 +128,7 @@ impl RunnerSignals {
 /// runtime starts. The runtime image imports the symbol from this executable.
 static PROGRAM_ISOLATE_BOOTSTRAP: AtomicUsize = AtomicUsize::new(0);
 
-unsafe extern "C" fn program_isolate_bootstrap() -> u64 {
+unsafe extern "C" fn program_isolate_bootstrap(context: u64) -> u64 {
     let address = PROGRAM_ISOLATE_BOOTSTRAP.load(Ordering::Acquire);
     if address == 0 {
         report(format_args!(
@@ -137,9 +137,9 @@ unsafe extern "C" fn program_isolate_bootstrap() -> u64 {
         std::process::abort();
     }
     // SAFETY: the address is the finalized `molt_isolate_bootstrap` of the
-    // loaded program, an `extern "C" fn() -> u64`.
-    let bootstrap: unsafe extern "C" fn() -> u64 = unsafe { std::mem::transmute(address) };
-    unsafe { bootstrap() }
+    // loaded program, an `extern "C" fn(context) -> u64`.
+    let bootstrap: unsafe extern "C" fn(u64) -> u64 = unsafe { std::mem::transmute(address) };
+    unsafe { bootstrap(context) }
 }
 
 // The runtime image leaves `molt_isolate_bootstrap` for this executable to
@@ -165,7 +165,7 @@ pub unsafe extern "C" fn process_entry(
 ) -> libc::c_int {
     // Keep the exported bootstrap in the executable: the linker strips
     // unreferenced functions, and the runtime image binds it at load.
-    std::hint::black_box(molt_isolate_bootstrap as unsafe extern "C" fn() -> u64);
+    std::hint::black_box(molt_isolate_bootstrap as unsafe extern "C" fn(u64) -> u64);
     // SAFETY: the caller passes `argc` valid NUL-terminated strings.
     #[cfg_attr(not(target_os = "macos"), expect(unused_mut))]
     let mut arguments = unsafe { process_arguments(argc, argv) };

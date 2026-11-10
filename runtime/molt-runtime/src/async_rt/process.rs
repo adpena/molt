@@ -20,14 +20,28 @@ mod stdio;
 mod wasm_host;
 
 pub use stdio::molt_asyncio_subprocess_stdio_normalize;
+#[cfg(test)]
+pub(crate) use stdio::molt_asyncio_subprocess_stdio_normalize_attached_body;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use wasm_host::{ProcessRegistry, ProcessState};
 #[cfg(target_arch = "wasm32")]
-pub use wasm_host::{
-    molt_process_drop, molt_process_host_notify, molt_process_kill, molt_process_pid,
-    molt_process_poll, molt_process_returncode, molt_process_spawn, molt_process_spawn_ex,
-    molt_process_stderr, molt_process_stdin, molt_process_stdout, molt_process_terminate,
-    molt_process_wait_future,
+pub use {
+    wasm_host::molt_process_drop, wasm_host::molt_process_host_notify,
+    wasm_host::molt_process_kill, wasm_host::molt_process_pid, wasm_host::molt_process_poll,
+    wasm_host::molt_process_returncode, wasm_host::molt_process_spawn,
+    wasm_host::molt_process_spawn_ex, wasm_host::molt_process_stderr,
+    wasm_host::molt_process_stdin, wasm_host::molt_process_stdout,
+    wasm_host::molt_process_terminate, wasm_host::molt_process_wait_future,
+};
+#[cfg(target_arch = "wasm32")]
+pub(crate) use {
+    wasm_host::molt_process_drop_attached_body, wasm_host::molt_process_host_notify_attached_body,
+    wasm_host::molt_process_kill_attached_body, wasm_host::molt_process_pid_attached_body,
+    wasm_host::molt_process_poll_attached_body, wasm_host::molt_process_returncode_attached_body,
+    wasm_host::molt_process_spawn_attached_body, wasm_host::molt_process_spawn_ex_attached_body,
+    wasm_host::molt_process_stderr_attached_body, wasm_host::molt_process_stdin_attached_body,
+    wasm_host::molt_process_stdout_attached_body, wasm_host::molt_process_terminate_attached_body,
+    wasm_host::molt_process_wait_future_attached_body,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -248,8 +262,8 @@ impl SpawnRequest {
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// Arguments must be runtime-encoded objects from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_spawn(
+pub(crate) unsafe fn molt_process_spawn_attached_body(
+    _py: &crate::PyToken<'_>,
     args: u64,
     env: u64,
     cwd: u64,
@@ -268,8 +282,12 @@ pub unsafe extern "C" fn molt_process_spawn(
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// Arguments must be runtime-encoded objects from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_spawn_ex(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the body takes the intrinsic ABI's parameters one for one"
+)]
+pub(crate) unsafe fn molt_process_spawn_ex_attached_body(
+    _py: &crate::PyToken<'_>,
     args: u64,
     env: u64,
     cwd: u64,
@@ -300,8 +318,12 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
 
 /// # Safety
 /// Arguments must be runtime-encoded objects from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_ipc_spawn(args: u64, env: u64, cwd: u64) -> u64 {
+pub(crate) unsafe fn molt_process_ipc_spawn_attached_body(
+    _py: &crate::PyToken<'_>,
+    args: u64,
+    env: u64,
+    cwd: u64,
+) -> u64 {
     #[cfg(not(target_arch = "wasm32"))]
     unsafe {
         spawn_native(SpawnRequest::with_default_options(
@@ -569,10 +591,12 @@ unsafe fn spawn_native(request: SpawnRequest) -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_wait_future(proc_bits: u64) -> u64 {
+pub(crate) unsafe fn molt_process_wait_future_attached_body(
+    _py: &crate::PyToken<'_>,
+    proc_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -584,7 +608,7 @@ pub unsafe extern "C" fn molt_process_wait_future(proc_bits: u64) -> u64 {
                 inc_ref_bits(_py, bits);
                 return bits;
             }
-            let future_bits = molt_future_new(process_poll_fn_addr(), 0);
+            let future_bits = molt_future_new_attached_body(_py, process_poll_fn_addr(), 0);
             let Some(future_ptr) = resolve_obj_ptr(future_bits) else {
                 return MoltObject::none().bits();
             };
@@ -623,9 +647,11 @@ pub unsafe extern "C" fn molt_process_wait_future(proc_bits: u64) -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `obj_bits` must be a valid process wait future object from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_poll(obj_bits: u64) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) unsafe fn molt_process_poll_attached_body(
+    _py: &crate::PyToken<'_>,
+    obj_bits: u64,
+) -> i64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let obj_ptr = ptr_from_bits(obj_bits);
         if obj_ptr.is_null() {
             return MoltObject::none().bits() as i64;
@@ -651,10 +677,12 @@ pub unsafe extern "C" fn molt_process_poll(obj_bits: u64) -> i64 {
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_pid(proc_bits: u64) -> u64 {
+pub(crate) unsafe fn molt_process_pid_attached_body(
+    _py: &crate::PyToken<'_>,
+    proc_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::from_int(0).bits();
@@ -668,10 +696,12 @@ pub unsafe extern "C" fn molt_process_pid(proc_bits: u64) -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_returncode(proc_bits: u64) -> u64 {
+pub(crate) unsafe fn molt_process_returncode_attached_body(
+    _py: &crate::PyToken<'_>,
+    proc_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -690,10 +720,12 @@ pub unsafe extern "C" fn molt_process_returncode(proc_bits: u64) -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_kill(proc_bits: u64) -> u64 {
+pub(crate) unsafe fn molt_process_kill_attached_body(
+    _py: &crate::PyToken<'_>,
+    proc_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -713,10 +745,12 @@ pub unsafe extern "C" fn molt_process_kill(proc_bits: u64) -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_terminate(proc_bits: u64) -> u64 {
+pub(crate) unsafe fn molt_process_terminate_attached_body(
+    _py: &crate::PyToken<'_>,
+    proc_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -736,10 +770,12 @@ pub unsafe extern "C" fn molt_process_terminate(proc_bits: u64) -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_stdin(proc_bits: u64) -> u64 {
+pub(crate) unsafe fn molt_process_stdin_attached_body(
+    _py: &crate::PyToken<'_>,
+    proc_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -748,7 +784,7 @@ pub unsafe extern "C" fn molt_process_stdin(proc_bits: u64) -> u64 {
             if handle.state.stdin_stream == 0 {
                 return MoltObject::none().bits();
             }
-            molt_stream_clone(handle.state.stdin_stream)
+            molt_stream_clone_attached_body(_py, handle.state.stdin_stream)
         })
     }
 }
@@ -756,10 +792,12 @@ pub unsafe extern "C" fn molt_process_stdin(proc_bits: u64) -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_stdout(proc_bits: u64) -> u64 {
+pub(crate) unsafe fn molt_process_stdout_attached_body(
+    _py: &crate::PyToken<'_>,
+    proc_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -768,7 +806,7 @@ pub unsafe extern "C" fn molt_process_stdout(proc_bits: u64) -> u64 {
             if handle.state.stdout_stream == 0 {
                 return MoltObject::none().bits();
             }
-            molt_stream_clone(handle.state.stdout_stream)
+            molt_stream_clone_attached_body(_py, handle.state.stdout_stream)
         })
     }
 }
@@ -776,10 +814,12 @@ pub unsafe extern "C" fn molt_process_stdout(proc_bits: u64) -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_stderr(proc_bits: u64) -> u64 {
+pub(crate) unsafe fn molt_process_stderr_attached_body(
+    _py: &crate::PyToken<'_>,
+    proc_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -788,18 +828,20 @@ pub unsafe extern "C" fn molt_process_stderr(proc_bits: u64) -> u64 {
             if handle.state.stderr_stream == 0 {
                 return MoltObject::none().bits();
             }
-            molt_stream_clone(handle.state.stderr_stream)
+            molt_stream_clone_attached_body(_py, handle.state.stderr_stream)
         })
     }
 }
 
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_ipc_streams(proc_bits: u64) -> u64 {
+pub(crate) unsafe fn molt_process_ipc_streams_attached_body(
+    _py: &crate::PyToken<'_>,
+    proc_bits: u64,
+) -> u64 {
     #[cfg(not(target_arch = "wasm32"))]
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let pointer = ptr_from_bits(proc_bits);
             if pointer.is_null() {
                 return raise_exception::<u64>(
@@ -816,12 +858,12 @@ pub unsafe extern "C" fn molt_process_ipc_streams(proc_bits: u64) -> u64 {
                     "process has no dedicated IPC channel",
                 );
             }
-            let reader = molt_stream_clone(state.ipc_recv_stream);
-            let writer = molt_stream_clone(state.ipc_send_stream);
+            let reader = molt_stream_clone_attached_body(_py, state.ipc_recv_stream);
+            let writer = molt_stream_clone_attached_body(_py, state.ipc_send_stream);
             let tuple = alloc_tuple(_py, &[reader, writer]);
             if tuple.is_null() {
-                molt_stream_drop(reader);
-                molt_stream_drop(writer);
+                molt_stream_drop_attached_body(_py, reader);
+                molt_stream_drop_attached_body(_py, writer);
                 return MoltObject::none().bits();
             }
             MoltObject::from_ptr(tuple).bits()
@@ -835,11 +877,10 @@ pub unsafe extern "C" fn molt_process_ipc_streams(proc_bits: u64) -> u64 {
 }
 
 /// Claim the dedicated bootstrap pipes, closing partial initialization on error.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_process_ipc_child() -> u64 {
+pub(crate) fn molt_process_ipc_child_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             if require_process_capability::<u64>(_py, crate::OperationId::ProcessExec).is_err() {
                 return MoltObject::none().bits();
             }
@@ -873,10 +914,12 @@ pub extern "C" fn molt_process_ipc_child() -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 /// # Safety
 /// `proc_bits` must reference a live process handle from this runtime.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_process_drop(proc_bits: u64) -> u64 {
+pub(crate) unsafe fn molt_process_drop_attached_body(
+    _py: &crate::PyToken<'_>,
+    proc_bits: u64,
+) -> u64 {
     unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
+        crate::with_attached_entry_nopanic!(_py, _py, {
             let proc_ptr = ptr_from_bits(proc_bits);
             if proc_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -1064,7 +1107,7 @@ impl ProcessRegistry {
         let mut inner = self.inner.lock().unwrap();
         if inner.closed {
             drop(inner);
-            stdio.drop_streams();
+            stdio.drop_streams(py);
             return Err(std::io::Error::other("runtime process admission is closed"));
         }
         let registry_id = inner.next_id;
@@ -1075,7 +1118,7 @@ impl ProcessRegistry {
             Ok(id) => id,
             Err(error) => {
                 drop(inner);
-                stdio.drop_streams();
+                stdio.drop_streams(py);
                 return Err(error);
             }
         };
@@ -1083,7 +1126,7 @@ impl ProcessRegistry {
             Ok(child) => child,
             Err(error) => {
                 drop(inner);
-                stdio.drop_streams();
+                stdio.drop_streams(py);
                 return Err(error);
             }
         };
@@ -1275,7 +1318,7 @@ impl ProcessRegistry {
         all_closed
     }
 
-    pub(crate) fn drain_for_teardown(&self) {
+    pub(crate) fn drain_for_teardown(&self, _py: &PyToken<'_>) {
         self.drain_with_deadlines(self.term_grace, self.join_timeout);
     }
 
@@ -1362,18 +1405,18 @@ impl ProcessState {
         }
     }
 
-    fn release_owned_streams(&self) {
+    fn release_owned_streams(&self, py: &PyToken<'_>) {
         if self.streams_released.swap(true, AtomicOrdering::AcqRel) {
             return;
         }
-        self.close_and_drop_stream(self.stdin_stream);
-        self.close_and_drop_stream(self.stdout_stream);
-        self.close_and_drop_stream(self.stderr_stream);
-        self.close_and_drop_stream(self.ipc_recv_stream);
-        self.close_and_drop_stream(self.ipc_send_stream);
+        self.close_and_drop_stream(py, self.stdin_stream);
+        self.close_and_drop_stream(py, self.stdout_stream);
+        self.close_and_drop_stream(py, self.stderr_stream);
+        self.close_and_drop_stream(py, self.ipc_recv_stream);
+        self.close_and_drop_stream(py, self.ipc_send_stream);
     }
 
-    fn close_and_drop_stream(&self, stream_bits: u64) {
+    fn close_and_drop_stream(&self, py: &PyToken<'_>, stream_bits: u64) {
         if stream_bits == 0 {
             return;
         }
@@ -1383,7 +1426,7 @@ impl ProcessState {
             super::channels::stream_close_local(stream);
         }
         unsafe {
-            molt_stream_drop(stream_bits);
+            molt_stream_drop_attached_body(py, stream_bits);
         }
     }
 
@@ -1482,7 +1525,8 @@ impl Drop for MoltProcessHandle {
 impl Drop for ProcessState {
     fn drop(&mut self) {
         self.request_kill_for_drop();
-        self.release_owned_streams();
+        let execution = crate::concurrency::RuntimeExecutionGuard::enter();
+        self.release_owned_streams(execution.token());
     }
 }
 
@@ -1586,11 +1630,11 @@ impl ProcessState {
             let py = execution.token();
             if !self.teardown_draining.load(AtomicOrdering::Acquire) {
                 assert_eq!(
-                    (runtime_state(&py) as *const RuntimeState).expose_provenance(),
+                    (runtime_state(py) as *const RuntimeState).expose_provenance(),
                     self.origin_runtime,
                     "process callback resolved a different runtime"
                 );
-                wake(&py);
+                wake(py);
             }
             // WorkerEnd performs the canonical runtime/C TLS fixed point.
             // If cleanup panics, origin TLS remains and the retained join
@@ -2191,7 +2235,7 @@ mod process_registry_tests {
         let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
         let py = execution.token();
         let stdio = configure_native_stdio(
-            &py,
+            py,
             cmd,
             stdio::PROCESS_STDIO_DEVNULL,
             stdio::PROCESS_STDIO_DEVNULL,
@@ -2199,7 +2243,7 @@ mod process_registry_tests {
         )
         .unwrap();
         registry
-            .spawn(&py, cmd, stdio, owns_process_group)
+            .spawn(py, cmd, stdio, owns_process_group)
             .expect("spawn test child")
     }
 
@@ -2251,7 +2295,7 @@ mod process_registry_tests {
             state: Arc::clone(&state),
         });
         assert!(state.wait_for_exit(Duration::from_secs(2)));
-        registry.drain_for_teardown();
+        crate::with_gil(|py| registry.drain_for_teardown(py));
         assert_eq!(registry.live_count(), 0);
         assert_process_exits(pid);
     }
@@ -2353,7 +2397,7 @@ mod process_worker_lifetime_tests {
         let registry = ProcessRegistry::new();
         let (reader, mut inherited_writer) = os_pipe::pipe().unwrap();
         let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
-        let state = reader_state(&execution.token(), &registry, reader);
+        let state = reader_state(execution.token(), &registry, reader);
         let stream_bits = state.stdout_stream;
         let stream_ptr = ptr_from_bits(stream_bits);
         // Observe real pipe I/O before retaining the write endpoint across the
@@ -2407,7 +2451,7 @@ mod process_worker_lifetime_tests {
         let child = inert_command().spawn().unwrap();
         let state = Arc::new(ProcessState {
             registry_id: 1,
-            origin_runtime: runtime_state(&py).identity(),
+            origin_runtime: runtime_state(py).identity(),
             pid: child.id(),
             child: Mutex::new(child),
             #[cfg(unix)]
@@ -2426,12 +2470,12 @@ mod process_worker_lifetime_tests {
         let handle = opaque_handle_bits(Box::into_raw(Box::new(MoltProcessHandle {
             state: Arc::clone(&state),
         })) as *mut u8);
-        let original = unsafe { molt_process_wait_future(handle) };
+        let original = unsafe { molt_process_wait_future_attached_body(py, handle) };
         let original_ptr = resolve_obj_ptr(original).unwrap();
-        let original_task = process_task_state(&py, original_ptr).unwrap();
-        let observer = molt_future_new(0, 0);
+        let original_task = process_task_state(py, original_ptr).unwrap();
+        let observer = molt_future_new_attached_body(py, 0, 0);
         let observer_ptr = resolve_obj_ptr(observer).unwrap();
-        await_waiter_register(&py, observer_ptr, original_ptr);
+        await_waiter_register(py, observer_ptr, original_ptr);
         let (ready_tx, ready_rx) = mpsc::channel();
         let (proceed_tx, proceed_rx) = mpsc::channel();
         let worker_state = Arc::clone(&state);
@@ -2469,7 +2513,7 @@ mod process_worker_lifetime_tests {
         );
         assert_eq!(state.wait_future(), None);
         assert_eq!(
-            task_waiting_on_future(&py, observer_ptr),
+            task_waiting_on_future(py, observer_ptr),
             Some(original_ptr),
             "cancellation must leave the observer edge available to detect stale dispatch"
         );
@@ -2497,20 +2541,20 @@ mod process_worker_lifetime_tests {
                 .all(|worker| worker.panic.is_none())
         );
         assert_eq!(
-            task_waiting_on_future(&py, observer_ptr),
+            task_waiting_on_future(py, observer_ptr),
             Some(original_ptr),
             "cancelled process completion consumed the observer's await edge"
         );
         assert_eq!(state.wait_future(), None);
-        await_waiter_clear(&py, observer_ptr);
+        await_waiter_clear(py, observer_ptr);
         unsafe {
             assert_eq!((*header_from_obj_ptr(original_ptr)).ref_count_snapshot(), 1);
         }
-        dec_ref_bits(&py, original);
-        assert!(process_task_state(&py, original_ptr).is_none());
-        dec_ref_bits(&py, observer);
+        dec_ref_bits(py, original);
+        assert!(process_task_state(py, original_ptr).is_none());
+        dec_ref_bits(py, observer);
         unsafe {
-            molt_process_drop(handle);
+            molt_process_drop_attached_body(py, handle);
         }
         registry.reap_finished();
         assert_eq!(registry.live_count(), 0);
@@ -2525,7 +2569,7 @@ mod process_worker_lifetime_tests {
         // The self-image fixture prints a libtest prelude. Keep its unused
         // streams private; INHERIT would overwrite the builder's null defaults.
         let stdio = configure_native_stdio(
-            &execution.token(),
+            execution.token(),
             &mut command,
             stdio::PROCESS_STDIO_DEVNULL,
             stdio::PROCESS_STDIO_DEVNULL,
@@ -2533,7 +2577,7 @@ mod process_worker_lifetime_tests {
         )
         .unwrap();
         let state = registry
-            .spawn(&execution.token(), &mut command, stdio, false)
+            .spawn(execution.token(), &mut command, stdio, false)
             .unwrap();
         let (ready_tx, ready_rx) = mpsc::channel();
         let (proceed_tx, proceed_rx) = mpsc::channel();
@@ -2576,7 +2620,7 @@ mod process_worker_lifetime_tests {
         let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
         let mut command = native_process_fixture::command("pipes");
         let stdio = configure_native_stdio(
-            &execution.token(),
+            execution.token(),
             &mut command,
             stdio::PROCESS_STDIO_PIPE,
             stdio::PROCESS_STDIO_PIPE,
@@ -2584,7 +2628,7 @@ mod process_worker_lifetime_tests {
         )
         .unwrap();
         let state = registry
-            .spawn(&execution.token(), &mut command, stdio, false)
+            .spawn(execution.token(), &mut command, stdio, false)
             .unwrap();
         let stdout = native_process_fixture::collect_to_eof(state.stdout_stream);
         let stderr = native_process_fixture::collect_to_eof(state.stderr_stream);
@@ -2606,7 +2650,7 @@ mod process_worker_lifetime_tests {
         let _cleanup = native_process_fixture::CleanupOnFailure(&registry);
         let mut command = native_process_fixture::command("stdin-copy");
         let stdio = configure_native_stdio(
-            &execution.token(),
+            execution.token(),
             &mut command,
             stdio::PROCESS_STDIO_PIPE,
             stdio::PROCESS_STDIO_PIPE,
@@ -2623,7 +2667,7 @@ mod process_worker_lifetime_tests {
         // implementation which discards queued bytes on ordinary close.
         super::super::channels::stream_close_local(input);
         let state = registry
-            .spawn(&execution.token(), &mut command, stdio, false)
+            .spawn(execution.token(), &mut command, stdio, false)
             .unwrap();
         let actual = native_process_fixture::collect_to_eof(state.stdout_stream);
         native_process_fixture::assert_payload(&actual, true, expected);
@@ -2641,8 +2685,8 @@ mod process_worker_lifetime_tests {
         registry.drain_with_deadlines(Duration::ZERO, Duration::ZERO);
         let mut command =
             std::process::Command::new("molt-does-not-exist-process-admission-oracle");
-        let stdio = configure_native_stdio(&execution.token(), &mut command, 0, 0, 0).unwrap();
-        let error = match registry.spawn(&execution.token(), &mut command, stdio, false) {
+        let stdio = configure_native_stdio(execution.token(), &mut command, 0, 0, 0).unwrap();
+        let error = match registry.spawn(execution.token(), &mut command, stdio, false) {
             Ok(_) => panic!("closed registry spawned a child"),
             Err(error) => error,
         };
@@ -2658,7 +2702,7 @@ mod process_worker_lifetime_tests {
         let registry = ProcessRegistry::new();
         let mut command =
             std::process::Command::new("molt-does-not-exist-process-admission-oracle");
-        let mut stdio = configure_native_stdio(&execution.token(), &mut command, 1, 1, 1).unwrap();
+        let mut stdio = configure_native_stdio(execution.token(), &mut command, 1, 1, 1).unwrap();
         stdio.set_ipc(ipc::PreparedIpc::new(&mut command).unwrap(), 4096);
         let streams = [
             stdio.stdin_stream,
@@ -2669,7 +2713,7 @@ mod process_worker_lifetime_tests {
         ];
         assert!(
             registry
-                .spawn(&execution.token(), &mut command, stdio, false)
+                .spawn(execution.token(), &mut command, stdio, false)
                 .is_err()
         );
         assert_eq!(registry.live_count(), 0);
@@ -2688,7 +2732,7 @@ mod process_worker_lifetime_tests {
             let registry = ProcessRegistry::new();
             let mut command = inert_command();
             let stdio = configure_native_stdio(
-                &execution.token(),
+                execution.token(),
                 &mut command,
                 stdio::PROCESS_STDIO_PIPE,
                 stdio::PROCESS_STDIO_PIPE,
@@ -2698,7 +2742,7 @@ mod process_worker_lifetime_tests {
             let streams = [stdio.stdin_stream, stdio.stdout_stream, stdio.stderr_stream];
             PROCESS_WORKER_SPAWN_FAILURE_AFTER
                 .with(|remaining| remaining.set(Some(started_workers)));
-            let error = match registry.spawn(&execution.token(), &mut command, stdio, false) {
+            let error = match registry.spawn(execution.token(), &mut command, stdio, false) {
                 Ok(_) => panic!("injected worker-start failure was not reached"),
                 Err(error) => error,
             };
@@ -2732,7 +2776,7 @@ mod process_worker_lifetime_tests {
         // The self-image fixture prints a libtest prelude. Keep its unused
         // streams private; INHERIT would overwrite the builder's null defaults.
         let stdio = configure_native_stdio(
-            &execution.token(),
+            execution.token(),
             &mut command,
             stdio::PROCESS_STDIO_DEVNULL,
             stdio::PROCESS_STDIO_DEVNULL,
@@ -2740,7 +2784,7 @@ mod process_worker_lifetime_tests {
         )
         .unwrap();
         let state = registry
-            .spawn(&execution.token(), &mut command, stdio, false)
+            .spawn(execution.token(), &mut command, stdio, false)
             .unwrap();
         {
             let mut inner = registry.inner.lock().unwrap();
@@ -2904,7 +2948,7 @@ mod process_worker_lifetime_tests {
     fn process_callback_uses_captured_runtime_and_cleans_worker_attachment() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
-        assert_origin_wake(&execution.token());
+        assert_origin_wake(execution.token());
     }
 }
 
@@ -2912,3 +2956,5 @@ mod process_worker_lifetime_tests {
 pub(crate) use process_worker_lifetime_tests::{
     assert_origin_wake as assert_process_origin_wake, install_process_service_timeout_fixture,
 };
+
+include!("../attached_exports_generated/async_rt/process.rs");

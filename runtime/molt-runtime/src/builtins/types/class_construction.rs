@@ -337,7 +337,7 @@ fn prepare_class_impl(
         bits
     } else if is_truthy(_py, obj_from_bits(bases_bits)) {
         let index_zero = MoltObject::from_int(0).bits();
-        let first_base_bits = molt_index(bases_bits, index_zero);
+        let first_base_bits = molt_index_attached_body(_py, bases_bits, index_zero);
         if exception_pending(_py) {
             dec_ref_bits(_py, kwds_copy_bits);
             return None;
@@ -396,6 +396,7 @@ fn prepare_class_impl(
                 return None;
             }
             let _base_meta_owner = crate::PtrDropGuard::new(
+                _py,
                 obj_from_bits(base_meta_bits)
                     .as_ptr()
                     .expect("owned actual type"),
@@ -522,12 +523,14 @@ fn prepare_class_impl(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_get_original_bases(cls_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_get_original_bases_attached_body(
+    _py: &crate::PyToken<'_>,
+    cls_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         use crate::builtins::exceptions::{
             ExceptionFieldSlot, ExceptionStackScope, ExceptionValue, exception_context_set,
-            exception_replace_field_bits, molt_exception_last_pending,
+            exception_replace_field_bits, molt_exception_last_pending_attached_body,
         };
         let _input = ExceptionValue::pin(_py, cls_bits);
         // Lib/types.py uses the normal namespace protocol, not an inherited
@@ -560,7 +563,7 @@ pub extern "C" fn molt_types_get_original_bases(cls_bits: u64) -> u64 {
         if let Some(result) = result {
             return result;
         }
-        let original = ExceptionValue::adopt(_py, molt_exception_last_pending());
+        let original = ExceptionValue::adopt(_py, molt_exception_last_pending_attached_body(_py));
         if !crate::builtins::attr::exception_is_attribute_error(_py, original.bits()) {
             return MoltObject::none().bits();
         }
@@ -611,9 +614,12 @@ pub extern "C" fn molt_types_get_original_bases(cls_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_prepare_class(args_bits: u64, kwargs_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_prepare_class_attached_body(
+    _py: &crate::PyToken<'_>,
+    args_bits: u64,
+    kwargs_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(positional) = call_vararg_args(_py, "prepare_class", args_bits) else {
             return MoltObject::none().bits();
         };
@@ -722,9 +728,12 @@ pub extern "C" fn molt_types_prepare_class(args_bits: u64, kwargs_bits: u64) -> 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_resolve_bases(args_bits: u64, kwargs_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_resolve_bases_attached_body(
+    _py: &crate::PyToken<'_>,
+    args_bits: u64,
+    kwargs_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(positional) = call_vararg_args(_py, "resolve_bases", args_bits) else {
             return MoltObject::none().bits();
         };
@@ -773,9 +782,12 @@ pub extern "C" fn molt_types_resolve_bases(args_bits: u64, kwargs_bits: u64) -> 
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_types_new_class(args_bits: u64, kwargs_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_types_new_class_attached_body(
+    _py: &crate::PyToken<'_>,
+    args_bits: u64,
+    kwargs_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let Some(positional) = call_vararg_args(_py, "new_class", args_bits) else {
             return MoltObject::none().bits();
         };
@@ -910,7 +922,12 @@ pub extern "C" fn molt_types_new_class(args_bits: u64, kwargs_bits: u64) -> u64 
                 }
                 return MoltObject::none().bits();
             };
-            let _ = molt_setitem_method(state.namespace_bits, orig_bases_name_bits, bases_bits);
+            let _ = molt_setitem_method_attached_body(
+                _py,
+                state.namespace_bits,
+                orig_bases_name_bits,
+                bases_bits,
+            );
             dec_ref_bits(_py, orig_bases_name_bits);
             if exception_pending(_py) {
                 dec_ref_bits(_py, state.metaclass_bits);
@@ -1027,7 +1044,7 @@ mod native_base_tests {
                     let child_name = dynamic_attr_name_bits(py, b"NativeChild").unwrap();
                     let count = (*native.as_ptr()).ob_refcnt;
                     for _ in 0..2 {
-                        let original_bases = molt_types_get_original_bases(class);
+                        let original_bases = molt_types_get_original_bases_attached_body(py, class);
                         assert!(!exception_pending(py));
                         assert_eq!(
                             with_immutable_tuple_slice(
@@ -1047,7 +1064,8 @@ mod native_base_tests {
                         assert_eq!(state.metaclass_bits, builtin_classes(py).type_obj);
                         assert!(!exception_pending(py));
                         if flags & Py_TPFLAGS_BASETYPE == 0 {
-                            let result = molt_type_new(
+                            let result = molt_type_new_attached_body(
+                                py,
                                 state.metaclass_bits,
                                 child_name,
                                 bases,
@@ -1092,3 +1110,5 @@ mod native_base_tests {
         });
     }
 }
+
+include!("../../attached_exports_generated/builtins/types/class_construction.rs");

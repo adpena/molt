@@ -679,7 +679,7 @@ pub(super) unsafe fn readlines(py: &PyToken<'_>, bits: u64, hint: u64) -> u64 {
         return MoltObject::none().bits();
     }
     let result = owned(py, MoltObject::from_ptr(list).bits());
-    let iterator = owned(py, molt_iter(bits));
+    let iterator = owned(py, molt_iter_attached_body(py, bits));
     if exception_pending(py) {
         return MoltObject::none().bits();
     }
@@ -701,12 +701,12 @@ pub(super) unsafe fn readlines(py: &PyToken<'_>, bits: u64, hint: u64) -> u64 {
             }
             Err(()) => return MoltObject::none().bits(),
         };
-        molt_list_append(result.bits(), line.bits());
+        molt_list_append_attached_body(py, result.bits(), line.bits());
         if exception_pending(py) {
             return MoltObject::none().bits();
         }
         if hint > 0 {
-            let length = owned(py, molt_len(line.bits()));
+            let length = owned(py, molt_len_attached_body(py, line.bits()));
             if exception_pending(py) {
                 return MoltObject::none().bits();
             }
@@ -912,7 +912,10 @@ pub(super) unsafe fn seek(
         return MoltObject::none().bits();
     };
     let _name = owned(py, name);
-    let method = owned(py, molt_getattr_builtin(raw.bits(), name, missing_bits(py)));
+    let method = owned(
+        py,
+        molt_getattr_builtin_attached_body(py, raw.bits(), name, missing_bits(py)),
+    );
     if exception_pending(py) {
         return MoltObject::none().bits();
     }

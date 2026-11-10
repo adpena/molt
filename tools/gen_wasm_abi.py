@@ -39,6 +39,15 @@ from tools.generator_io import (  # noqa: E402
 )
 
 from tools.op_kinds.render_wire import variant as _wire_kind_variant  # noqa: E402
+from tools.wasm_abi_gen.attached_entries import render_attached_entries  # noqa: E402
+from tools.wasm_abi_gen.execution_context import (  # noqa: E402
+    render_rust_context_abi,
+    render_context_storage,
+    render_python_context_abi,
+    render_physical_symbol_macro,
+    context_json,
+    runtime_execution_specs,
+)
 from tools.wasm_abi_gen import render_python as _render_python  # noqa: E402
 from tools.wasm_abi_gen.manifest import (  # noqa: E402
     CONTAINER_RUNTIME_SELECTOR_FACTS,
@@ -54,7 +63,7 @@ from tools.wasm_abi_gen.manifest import (  # noqa: E402
     generator_runtime_export_signature_rows,
     load_manifest,
     reserved_runtime_callable_base,
-    runtime_boxed_call_specs,
+    runtime_fn_specs,
     runtime_boxed_op_specs,
     runtime_import_return_specs,
     runtime_export_name,
@@ -77,8 +86,7 @@ from tools.wasm_abi_gen.paths import (  # noqa: E402
     OUT_RS_FILES,
     OUT_RUNTIME_CALLABLES_RS,
     OUT_RUNTIME_CALLABLE_ABI_RS,
-    OUT_RUNTIME_BOXED_ABI_RS,
-    OUT_RUNTIME_RAW_ABI_RS,
+    OUT_RUNTIME_FN_RS,
     OUT_SYNTHETIC_ERRNO_RS,
     OUT_NATIVE_ERROR_NAMES_RS,
     OUT_JS_SYNTHETIC_ERRNO,
@@ -98,14 +106,31 @@ NATIVE_RUNTIME_CALLABLE_KEY_BASE = 0xFFFF_FF00_0000_0000
 NATIVE_RUNTIME_POLL_KEY_OFFSET = 0x100
 
 GENERATOR_CACHE_VERSION = "wasm-abi-render-v8"
+
+
+def _attached_entry_output_paths() -> tuple[Path, ...]:
+    from tools.wasm_abi_gen.attached_entries import typed_bodies
+
+    paths = set()
+    for path, _text, _function in typed_bodies(ROOT):
+        crate = next(
+            parent for parent in path.parents if (parent / "Cargo.toml").is_file()
+        )
+        paths.add(
+            crate / "src/attached_exports_generated" / path.relative_to(crate / "src")
+        )
+    return tuple(sorted(paths))
+
+
 # Every path this generator renders; the render cache holds exactly these.
 OUTPUT_PATHS: tuple[Path, ...] = (
+    ROOT / "runtime/molt-codegen-abi/src/attached_context_generated.rs",
+    *_attached_entry_output_paths(),
     *OUT_RS_FILES.values(),
     OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
     OUT_RUNTIME_CALLABLES_RS,
     OUT_RUNTIME_CALLABLE_ABI_RS,
-    OUT_RUNTIME_BOXED_ABI_RS,
-    OUT_RUNTIME_RAW_ABI_RS,
+    OUT_RUNTIME_FN_RS,
     OUT_PYTHON_BUILTIN_CALLABLES_RS,
     OUT_WASM_FACTS_CALLABLE_TABLE_RS,
     OUT_PY,
@@ -159,6 +184,7 @@ def _cache_input_files() -> tuple[Path, ...]:
         BUILTIN_CALLABLES.resolve(),
         ROOT / "tools/gen_runtime_names.py",
         ROOT / "runtime/molt-ir/src/tir/runtime_names.toml",
+        ROOT / "include/molt/molt.h",
         *(path.resolve() for path in generator_pkg.glob("*.py")),
         *(path.resolve() for path in op_kinds_pkg.glob("*.py")),
         *(path.resolve() for path in generator_input_files()),
@@ -198,6 +224,24 @@ def _render_cache_key(rustfmt_version: str) -> str:
             ).encode()
         )
         digest.update(b"\n")
+    from tools.wasm_abi_gen.attached_entries import typed_bodies, exported_macro_symbols
+
+    for path, _text, function in typed_bodies(ROOT):
+        digest.update(
+            json.dumps(
+                (
+                    str(path.relative_to(ROOT)),
+                    function.name,
+                    function.params,
+                    function.result,
+                    function.unsafe,
+                    function.attrs,
+                ),
+                separators=(",", ":"),
+            ).encode()
+        )
+        digest.update(b"\n")
+    digest.update(json.dumps(sorted(exported_macro_symbols(ROOT))).encode())
     for name, symbol_kind in generator_cpython_abi_link_import_kinds():
         digest.update(
             json.dumps(
@@ -336,6 +380,7 @@ def _render_rs_mod() -> str:
             "mod numeric_runtime_selector;\n",
             "mod pure_profile;\n",
             "mod runtime_callables;\n",
+            "#[cfg(test)]\n",
             "mod runtime_surface;\n",
             "mod static_types;\n\n",
             "pub(crate) use call_indirect::CALL_INDIRECT_IMPORTS;\n",
@@ -349,11 +394,12 @@ def _render_rs_mod() -> str:
             "    WasmConstRawIntEffect, WasmConstScalarValue,\n",
             "};\n",
             "pub(crate) use import_registry::{\n",
-            "    wasm_runtime_export_name, wasm_runtime_import, IMPORT_REGISTRY,\n",
+            "    wasm_runtime_import, IMPORT_REGISTRY,\n",
             "    RuntimeImportSpec,\n",
             "};\n",
+            "#[cfg(test)]\n",
+            "pub(crate) use import_registry::wasm_runtime_export_name;\n",
             "pub(crate) use import_tokens::WasmRuntimeImport;\n",
-            "pub(crate) use import_metadata::WasmRuntimeReturn;\n",
             "pub(crate) use lir_runtime_calls::{\n",
             "    lir_fixed_runtime_call, op_loop_runtime_call, LirFixedRuntimeCall,\n",
             "    LirRuntimeCall, OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec,\n",
@@ -667,16 +713,16 @@ def _render_rs_import_metadata(data: dict, import_variants: Mapping[str, str]) -
     contracts = runtime_import_return_specs(data)
     lines.extend(
         [
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) enum WasmRuntimeReturn {\n",
-            *(f"    {variant},\n" for variant in RUNTIME_RETURN_CONTRACTS.values()),
-            "}\n\n",
-        ]
-    )
-    lines.extend(
-        [
-            "use super::import_tokens::WasmRuntimeImport;\n\n",
+            "use super::import_tokens::WasmRuntimeImport;\n",
+            "use molt_ir::runtime_fn_generated::RuntimeReturnContract;\n\n",
             "impl WasmRuntimeImport {\n",
+            "    #[cfg(test)]\n",
+            "    pub(crate) const ALL: &'static [Self] = &[\n",
+            *(
+                f"        Self::{import_variants[entry['name']]},\n"
+                for entry in data["import"]
+            ),
+            "    ];\n\n",
             "    pub(crate) const fn name(self) -> &'static str {\n",
             "        match self {\n",
         ]
@@ -702,6 +748,9 @@ def _render_rs_import_metadata(data: dict, import_variants: Mapping[str, str]) -
         [
             "        }\n",
             "    }\n\n",
+            "    pub(crate) fn execution_abi(self) -> molt_ir::runtime_callable_abi_generated::RuntimeExecutionAbi {\n",
+            '        molt_ir::runtime_callable_abi_generated::runtime_execution_abi(self.runtime_export_name()).expect("generated runtime import lacks its execution ABI")\n',
+            "    }\n\n",
             "    pub(crate) fn machine_signature(self) -> (&'static [wasm_encoder::ValType], &'static [wasm_encoder::ValType]) {\n",
             "        let signature = &super::STATIC_FUNC_TYPES[match self {\n",
         ]
@@ -715,14 +764,14 @@ def _render_rs_import_metadata(data: dict, import_variants: Mapping[str, str]) -
             "        }];\n",
             "        (signature.params, signature.results)\n",
             "    }\n\n",
-            "    pub(crate) const fn return_contract(self) -> WasmRuntimeReturn {\n",
+            "    pub(crate) const fn return_contract(self) -> RuntimeReturnContract {\n",
             "        match self {\n",
         ]
     )
     for entry in data["import"]:
         variant = RUNTIME_RETURN_CONTRACTS[contracts[entry["name"]]]
         lines.append(
-            f"            Self::{import_variants[entry['name']]} => WasmRuntimeReturn::{variant},\n"
+            f"            Self::{import_variants[entry['name']]} => RuntimeReturnContract::{variant},\n"
         )
     lines.extend(
         [
@@ -739,6 +788,7 @@ def _render_rs_import_registry(data: dict, import_variants: Mapping[str, str]) -
     lines.extend(
         [
             "use super::import_tokens::WasmRuntimeImport;\n",
+            "#[cfg(test)]\n",
             "use super::runtime_surface::RUNTIME_HOST_EXPORTS;\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct RuntimeImportSpec {\n",
@@ -785,6 +835,7 @@ def _render_rs_import_registry(data: dict, import_variants: Mapping[str, str]) -
     lines.extend(["        _ => None,\n", "    }\n", "}\n\n"])
     lines.extend(
         [
+            "#[cfg(test)]\n",
             "#[inline]\n",
             "pub(crate) fn wasm_runtime_export_name(name: &str) -> Option<&'static str> {\n",
             "    if let Some(import) = wasm_runtime_import(name) {\n",
@@ -954,8 +1005,8 @@ def _render_rs_lir_runtime_calls(data: dict, import_variants: Mapping[str, str])
     if shared:
         lines.extend(
             [
-                "    if let Some(abi) = molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(kind) {\n",
-                "        return Some(match abi.symbol {\n",
+                "    if let Some(abi) = molt_ir::runtime_fn_generated::runtime_boxed_op_abi(kind) {\n",
+                "        return Some(match abi.function {\n",
             ]
         )
         by_symbol = {entry["runtime_name"]: entry for entry in shared}
@@ -964,7 +1015,7 @@ def _render_rs_lir_runtime_calls(data: dict, import_variants: Mapping[str, str])
             args = ", ".join(_render_op_loop_arg(arg) for arg in entry["args"])
             lines.extend(
                 [
-                    f'            "{entry["runtime_name"]}" => OpLoopRuntimeCallSpec {{\n',
+                    f"            molt_ir::runtime_fn_generated::RuntimeFn::{_wire_kind_variant(entry['runtime_name'].removeprefix('molt_'))} => OpLoopRuntimeCallSpec {{\n",
                     f"                import: {token},\n",
                     f"                args: &[{args}],\n",
                     f"                required_imports: &[{token}],\n",
@@ -1313,73 +1364,137 @@ def _render_rs_runtime_surface(data: dict) -> str:
     return "".join(lines)
 
 
-def render_runtime_boxed_abi_rs(data: dict) -> str:
+_RUNTIME_BOXED_RETURNS = {
+    "owned_object": "OwnedValue",
+    "borrowed_object": "BorrowedValue",
+    "poll_result": "PollValue",
+    "void": "Void",
+}
+
+
+def render_runtime_fn_rs(data: dict) -> str:
+    specs = runtime_fn_specs(data)
     lines = [
         _header("//"),
-        "//! Target-neutral direct runtime calls whose operands are object values.\n",
-        "//! Returns carry owned, borrowed, or pending-or-owned semantics; raw entrypoints are excluded.\n",
-        "//! Machine i64 signatures alone never authorize this contract.\n\n",
+        "//! Closed identities of the runtime entries compiled code calls by name.\n",
+        "//! Every backend names a runtime entry by `RuntimeFn`, never by spelling its\n",
+        "//! symbol. Each identity has one all-word machine signature on every target\n",
+        "//! (64-bit words in, at most one word out) and one return contract.\n",
+        "//! Machine i64 signatures alone never authorize object semantics: only the\n",
+        "//! `Boxed` form promises Python-value operands and results.\n\n",
+        "/// What a runtime entry's result word means, from the manifest's one return authority.\n",
+        "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+        "pub enum RuntimeReturnContract {\n",
+        *(f"    {variant},\n" for variant in RUNTIME_RETURN_CONTRACTS.values()),
+        "}\n\n",
+        "/// How a boxed call's result word is bound.\n",
         "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
         "pub enum RuntimeBoxedReturn { OwnedValue, BorrowedValue, PollValue, Void }\n\n",
+        "/// Who may call a runtime entry.\n",
+        "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+        "pub enum RuntimeCallForm {\n",
+        "    /// A generic call target whose operands and result are Python values.\n",
+        "    Boxed(RuntimeBoxedReturn),\n",
+        "    /// A generic call target whose raw result is bound as-is, never released.\n",
+        "    RawCall,\n",
+        "    /// A machine helper that only a backend's own lowering calls.\n",
+        "    Helper,\n",
+        "}\n\n",
+        "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+        "pub struct RuntimeFnAbi {\n",
+        "    pub symbol: &'static str,\n",
+        "    pub params: u8,\n",
+        "    pub result: RuntimeReturnContract,\n",
+        "    pub form: RuntimeCallForm,\n",
+        "}\n\n",
+        "/// A boxed call: a `RuntimeFn` whose form is `Boxed`, with its result binding.\n",
         "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
         "pub struct RuntimeBoxedAbi {\n",
-        "    pub symbol: &'static str,\n",
-        "    pub arity: usize,\n",
+        "    pub function: RuntimeFn,\n",
         "    pub result: RuntimeBoxedReturn,\n",
         "}\n\n",
+        "impl RuntimeBoxedAbi {\n",
+        "    pub const fn symbol(self) -> &'static str { self.function.symbol() }\n",
+        "    pub const fn arity(self) -> usize { self.function.params() }\n",
+        "}\n\n",
+        "/// Closed identities from the runtime-function ABI authority, in symbol order.\n",
+        "#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]\n",
+        "#[repr(u16)]\npub enum RuntimeFn {\n",
     ]
-    specs = runtime_boxed_call_specs(data)
-    lines.extend(
-        [
-            "/// Closed identities from the runtime-function ABI authority.\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]\n",
-            "#[repr(u16)]\npub enum RuntimeFn {\n",
-        ]
-    )
     # Implicit discriminants follow declaration order, which is the table's
-    # symbol order: adding one intrinsic adds lines instead of renumbering
-    # every later variant (2,632 ids; 2026-11-07).
-    for spec in specs:
-        lines.append(
-            f"    {_wire_kind_variant(spec['runtime_name'].removeprefix('molt_'))},\n"
-        )
+    # symbol order: adding one entry adds lines instead of renumbering every
+    # later variant (2,788 ids; 2026-11-09).
+    variants = [
+        _wire_kind_variant(spec["runtime_name"].removeprefix("molt_")) for spec in specs
+    ]
+    if len(set(variants)) != len(variants):
+        raise ValueError("RuntimeFn variant spellings collide")
+    lines.extend(f"    {variant},\n" for variant in variants)
     lines.extend(
         [
-            "}\nimpl RuntimeFn {\n",
-            "    pub const fn boxed_abi(self) -> &'static RuntimeBoxedAbi { &RUNTIME_BOXED_ABIS[self as usize] }\n",
-            "    pub const fn symbol(self) -> &'static str { self.boxed_abi().symbol }\n",
             "}\n\n",
-            "pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[\n",
+            "impl RuntimeFn {\n",
+            "    pub const ALL: &'static [Self] = &[\n",
+            *(f"        Self::{variant},\n" for variant in variants),
+            "    ];\n\n",
+            "    pub const fn abi(self) -> &'static RuntimeFnAbi { &RUNTIME_FN_ABIS[self as usize] }\n",
+            "    pub const fn symbol(self) -> &'static str { self.abi().symbol }\n",
+            "    /// Word parameters on every target.\n",
+            "    pub const fn params(self) -> usize { self.abi().params as usize }\n",
+            "    pub const fn result(self) -> RuntimeReturnContract { self.abi().result }\n",
+            "    /// Whether the entry returns one word; a void entry returns nothing.\n",
+            "    pub const fn returns_word(self) -> bool {\n",
+            "        !matches!(self.abi().result, RuntimeReturnContract::Void)\n",
+            "    }\n",
+            "    pub const fn form(self) -> RuntimeCallForm { self.abi().form }\n",
+            "    pub const fn boxed_abi(self) -> Option<RuntimeBoxedAbi> {\n",
+            "        match self.abi().form {\n",
+            "            RuntimeCallForm::Boxed(result) => Some(RuntimeBoxedAbi { function: self, result }),\n",
+            "            RuntimeCallForm::RawCall | RuntimeCallForm::Helper => None,\n",
+            "        }\n",
+            "    }\n",
+            "    pub fn from_symbol(symbol: &str) -> Option<Self> {\n",
+            "        RUNTIME_FN_ABIS\n",
+            "            .binary_search_by_key(&symbol, |abi| abi.symbol)\n",
+            "            .ok()\n",
+            "            .map(|index| Self::ALL[index])\n",
+            "    }\n",
+            "}\n\n",
+            "pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[\n",
         ]
     )
     for spec in specs:
-        result = (
-            "Void"
-            if spec["result"] == "void"
-            else "BorrowedValue"
-            if spec.get("ownership") == "borrowed_object"
-            else "PollValue"
-            if spec.get("ownership") == "poll_result"
-            else "OwnedValue"
-        )
+        result = RUNTIME_RETURN_CONTRACTS[spec["result"]]
+        if spec["form"] == "boxed":
+            form = f"RuntimeCallForm::Boxed(RuntimeBoxedReturn::{_RUNTIME_BOXED_RETURNS[spec['result']]})"
+        elif spec["form"] == "raw_call":
+            form = "RuntimeCallForm::RawCall"
+        else:
+            form = "RuntimeCallForm::Helper"
         lines.append(
-            "    RuntimeBoxedAbi { "
-            f'symbol: "{spec["runtime_name"]}", arity: {spec["arity"]}, '
-            f"result: RuntimeBoxedReturn::{result}"
+            "    RuntimeFnAbi { "
+            f'symbol: "{spec["runtime_name"]}", params: {spec["params"]}, '
+            f"result: RuntimeReturnContract::{result}, form: {form}"
             " },\n"
         )
     lines.extend(
         [
             "];\n\n",
-            "pub fn runtime_boxed_abi(symbol: &str, arity: usize) -> Option<&'static RuntimeBoxedAbi> {\n",
-            "    let index = RUNTIME_BOXED_ABIS.binary_search_by_key(&symbol, |abi| abi.symbol).ok()?;\n",
-            "    let abi = &RUNTIME_BOXED_ABIS[index];\n",
-            "    (abi.arity == arity).then_some(abi)\n",
+            "/// The boxed call `symbol` with exactly `arity` operands.\n",
+            "pub fn runtime_boxed_abi(symbol: &str, arity: usize) -> Option<RuntimeBoxedAbi> {\n",
+            "    let abi = RuntimeFn::from_symbol(symbol)?.boxed_abi()?;\n",
+            "    (abi.arity() == arity).then_some(abi)\n",
+            "}\n\n",
+            "/// The raw direct call `symbol` with exactly `arity` operands.\n",
+            "pub fn runtime_raw_abi(symbol: &str, arity: usize) -> Option<RuntimeFn> {\n",
+            "    let function = RuntimeFn::from_symbol(symbol)?;\n",
+            "    (function.form() == RuntimeCallForm::RawCall && function.params() == arity)\n",
+            "        .then_some(function)\n",
             "}\n",
         ]
     )
     shared = runtime_boxed_op_specs(data)
-    symbols = {spec["runtime_name"] for spec in specs}
+    boxed = {spec["runtime_name"] for spec in specs if spec["form"] == "boxed"}
     lines.append(
         "\n/// Explicitly admitted positional op calls; every target consumes this mapping.\n"
     )
@@ -1389,16 +1504,16 @@ def render_runtime_boxed_abi_rs(data: dict) -> str:
     lines.extend(
         [
             "];\n\n",
-            "pub fn runtime_boxed_op_abi(kind: molt_ir::OpKind) -> Option<&'static RuntimeBoxedAbi> {\n",
+            "pub const fn runtime_boxed_op_abi(kind: molt_ir::OpKind) -> Option<RuntimeBoxedAbi> {\n",
             "    match kind {\n",
         ]
     )
     for entry in shared:
-        if entry["runtime_name"] not in symbols:
+        if entry["runtime_name"] not in boxed:
             raise ValueError(f"{entry['runtime_name']} has no boxed runtime ABI")
         variant = _wire_kind_variant(entry["runtime_name"].removeprefix("molt_"))
         lines.append(
-            f"        {_rust_op_kind(entry['kind'])} => Some(RuntimeFn::{variant}.boxed_abi()),\n"
+            f"        {_rust_op_kind(entry['kind'])} => RuntimeFn::{variant}.boxed_abi(),\n"
         )
     lines.extend(["        _ => None,\n", "    }\n", "}\n"])
     return "".join(lines).replace("molt_ir::OpKind", "crate::OpKind")
@@ -1426,7 +1541,7 @@ def render_runtime_callable_abi_rs(data: dict) -> str:
         _header("//"),
         "//! Target-neutral ABI for runtime functions exposed as Python callables.\n",
         "//! Arguments and results use the boxed i64 machine carrier.\n",
-        "//! Ownership and poll-result refinements remain in runtime_boxed_abi_generated.\n",
+        "//! Ownership and poll-result refinements remain in runtime_fn_generated.\n",
         "//! Raw i64 entrypoints are not Python callables.\n\n",
         "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
         "pub enum RuntimeCallableTrampolineAbi { UnpackArgs, CallFrame }\n\n",
@@ -1466,40 +1581,7 @@ def render_runtime_callable_abi_rs(data: dict) -> str:
     for slot, import_name in _runtime_poll_imports(data):
         lines.append(f'        "molt_{import_name}" => Some(BASE + {slot}),\n')
     lines.extend(["        _ => None,\n", "    }\n", "}\n"])
-    return "".join(lines)
-
-
-def render_runtime_raw_abi_rs(data: dict) -> str:
-    lines = [
-        _header("//"),
-        "//! Target-neutral ABI for runtime entrypoints whose result is raw bits.\n",
-        "//! Only rows whose machine signature is all i64 words are projected;\n",
-        "//! wasm32 pointer and length words do not prove a native signature.\n",
-        "//! A raw result carries no ownership: bound as-is, never released.\n\n",
-        "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-        "pub struct RuntimeRawAbi {\n",
-        "    pub symbol: &'static str,\n",
-        "    pub arity: usize,\n",
-        "}\n\n",
-        "pub const RUNTIME_RAW_ABIS: &[RuntimeRawAbi] = &[\n",
-    ]
-    for spec in data["runtime_raw_abi"]:
-        lines.append(
-            "    RuntimeRawAbi { "
-            f'symbol: "{spec["runtime_name"]}", arity: {spec["arity"]}'
-            " },\n"
-        )
-    lines.extend(
-        [
-            "];\n\n",
-            "pub fn runtime_raw_abi(symbol: &str, arity: usize) -> Option<&'static RuntimeRawAbi> {\n",
-            "    let index = RUNTIME_RAW_ABIS.binary_search_by_key(&symbol, |abi| abi.symbol).ok()?;\n",
-            "    let abi = &RUNTIME_RAW_ABIS[index];\n",
-            "    (abi.arity == arity).then_some(abi)\n",
-            "}\n",
-        ]
-    )
-    return "".join(lines)
+    return "".join(lines) + render_rust_context_abi(data)
 
 
 def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str]) -> str:
@@ -2324,8 +2406,11 @@ def render_table_layout_inc(data: dict) -> str:
 
 def render_allowed_imports(data: dict) -> str:
     lines = [_header("#")]
+    physical = {
+        row["symbol"]: row["physical_symbol"] for row in runtime_execution_specs(data)
+    }
     for entry in data.get("link_allowed_import", []):
-        lines.append(f"{entry['name']}\n")
+        lines.append(f"{physical.get(entry['name'], entry['name'])}\n")
     return "".join(lines)
 
 
@@ -2352,7 +2437,29 @@ def render_js_abi(data: dict) -> str:
         runtime_export_by_import.setdefault(name, split_export_name)
         runtime_export_by_import.setdefault(split_export_name, split_export_name)
 
+    execution_abis = {
+        row["symbol"]: {
+            "context": row["context"],
+            "physical_symbol": row["physical_symbol"],
+        }
+        for row in runtime_execution_specs(data)
+    }
+    runtime_export_by_import = {
+        name: execution_abis.get(symbol, {}).get("physical_symbol", symbol)
+        for name, symbol in runtime_export_by_import.items()
+    }
+    from tools.wasm_abi_gen.manifest import _public_c_api_signatures
+
+    runtime_export_by_import.update({name: name for name in _public_c_api_signatures()})
+    runtime_export_by_import.update(
+        {
+            row["physical_symbol"]: row["physical_symbol"]
+            for row in runtime_execution_specs(data)
+        }
+    )
     payload = {
+        "execution_context_abi": context_json(data),
+        "runtime_execution_abis": execution_abis,
         "execution_manifest_version": data["deployment_manifest"]["version"],
         "execution_manifest_required_environment": data["deployment_manifest"][
             "launch_environment_required_names"
@@ -2373,6 +2480,9 @@ def render_js_abi(data: dict) -> str:
 def _js_runtime_callable_abi(data: dict) -> dict[str, object]:
     """The reserved runtime callable layout, in the manifest browser_embed shape."""
     reserved_callables = _shared_runtime_callables(data)
+    physical = {
+        row["symbol"]: row["physical_symbol"] for row in runtime_execution_specs(data)
+    }
     return {
         "table_layout": {
             "default_app_table_base": data["table_layout"]["default_app_table_base"],
@@ -2382,7 +2492,7 @@ def _js_runtime_callable_abi(data: dict) -> dict[str, object]:
         "reserved_runtime_callables": [
             {
                 "index": entry["index"],
-                "runtime_export": entry["runtime_name"],
+                "runtime_export": physical[entry["runtime_name"]],
                 "import_name": entry["import_name"],
                 "arity": entry["callable_arity"],
                 "dispatch": entry.get("callable_dispatch", "direct"),
@@ -2402,6 +2512,14 @@ def render_js_callable_table_abi(data: dict) -> str:
                 "launch_environment_required_names"
             ],
             "runtime_callables": _js_runtime_callable_abi(data),
+            "execution_context_abi": context_json(data),
+            "runtime_execution_abis": {
+                row["symbol"]: {
+                    "context": row["context"],
+                    "physical_symbol": row["physical_symbol"],
+                }
+                for row in runtime_execution_specs(data)
+            },
         },
         sort_keys=True,
     )
@@ -2739,11 +2857,8 @@ def render_outputs(data: dict) -> dict[Path, str]:
     outputs[OUT_RUNTIME_CALLABLE_ABI_RS] = rustfmt_source(
         render_runtime_callable_abi_rs(data), label="runtime_callable_abi_generated.rs"
     )
-    outputs[OUT_RUNTIME_BOXED_ABI_RS] = rustfmt_source(
-        render_runtime_boxed_abi_rs(data), label="runtime_boxed_abi_generated.rs"
-    )
-    outputs[OUT_RUNTIME_RAW_ABI_RS] = rustfmt_source(
-        render_runtime_raw_abi_rs(data), label="runtime_raw_abi_generated.rs"
+    outputs[OUT_RUNTIME_FN_RS] = rustfmt_source(
+        render_runtime_fn_rs(data), label="runtime_fn_generated.rs"
     )
     outputs[OUT_PYTHON_BUILTIN_CALLABLES_RS] = rustfmt_source(
         render_python_builtin_callables_rs(data),
@@ -2753,7 +2868,18 @@ def render_outputs(data: dict) -> dict[Path, str]:
         _render_rs_callable_table(data, include_active_element_role=False),
         label="callable_table_generated.rs",
     )
-    outputs[OUT_PY] = render_py(data)
+    outputs[ROOT / "runtime/molt-codegen-abi/src/attached_context_generated.rs"] = (
+        rustfmt_source(
+            render_context_storage(data) + render_physical_symbol_macro(data),
+            label="attached_context_generated.rs",
+        )
+    )
+    outputs.update(
+        rustfmt_sources(
+            render_attached_entries(data, ROOT), label="attached runtime entries"
+        )
+    )
+    outputs[OUT_PY] = render_py(data) + render_python_context_abi(data)
     outputs[OUT_JS_ABI] = render_js_abi(data)
     outputs[OUT_JS_CALLABLE_TABLE_ABI] = render_js_callable_table_abi(data)
     outputs[OUT_JS_WASI_ERRNO] = render_js_wasi_errno(data)
@@ -2802,6 +2928,12 @@ def _stale_generated_files() -> list[Path]:
         path for path in (LEGACY_OUT_RS, *REMOVED_GENERATED_FILES) if path.exists()
     ]
     stale.extend(_unexpected_rs_files())
+    expected_attached = set(_attached_entry_output_paths())
+    stale.extend(
+        path
+        for path in ROOT.glob("runtime/*/src/attached_exports_generated/**/*.rs")
+        if path not in expected_attached
+    )
     return stale
 
 

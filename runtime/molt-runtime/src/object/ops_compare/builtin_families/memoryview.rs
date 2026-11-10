@@ -112,7 +112,7 @@ pub(super) fn compare(
             crate::builtins::exceptions::exception_clear_reason_set(
                 "memoryview comparison exporter refusal",
             );
-            molt_exception_clear();
+            molt_exception_clear_attached_body(py);
             return CompareValueOutcome::NotComparable;
         }
         Err(BufferAccessError::Invalid) => return CompareValueOutcome::NotComparable,

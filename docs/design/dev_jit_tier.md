@@ -155,12 +155,13 @@ function into a `cranelift_module::Module`; only the module that owns the code d
    image defines exactly what an AOT link resolves against. It is content-addressed beside
    the generation's callable-symbol file. This replaces the earlier plan of a symbol table
    generated from the runtime-callable ABI manifest, for two measured reasons: the
-   manifest projections (`runtime_callable_abi_generated.rs`,
-   `runtime_boxed_abi_generated.rs`) omit 124 of the 359 `molt_*` helper names the
+   manifest projections (`runtime_callable_abi_generated.rs` and the boxed-call table,
+   now `runtime_fn_generated.rs`) omitted 124 of the 359 `molt_*` helper names the
    Cranelift backend spells as literals, so a generated table cannot be complete; and a
    Rust executable dead-strips every unreferenced `#[no_mangle]` runtime function, so the
-   runtime cannot be linked into the runner and found by name. A closed, generated
-   registry of backend runtime imports remains the structural fix for the first gap.
+   runtime cannot be linked into the runner and found by name. The closed, generated
+   `RuntimeFn` registry (`runtime_fn_generated.rs`) now names every all-word runtime
+   entry, helpers included; HF-384 tracks the helper names backends still spell.
 4. **Lazy compilation.** Not implemented. It is the structural fix for the per-start
    cost ("Costs"). The runner compiles the whole program, its stdlib closure included,
    before it runs it, as cg_clif's current JIT mode does. `import os, sys` lowers to 832

@@ -38,6 +38,7 @@ from molt._wasm_abi_generated import (
     WASM_IMPORT_REGISTRY,
     WASM_RUNTIME_HOST_EXPORTS,
     WASM_RESERVED_RUNTIME_CALLABLES,
+    runtime_execution_abi,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -49,7 +50,9 @@ _EXTERN_C_FN_RE = re.compile(r'pub\s+(?:unsafe\s+)?extern\s+"C"\s+fn\s+(molt_\w+
 
 # Lines that may legally sit between a `#[no_mangle]` attribute and the function
 # signature: other attributes, doc/line comments, block-comment bodies, blanks.
-_ATTR_OR_DOC_RE = re.compile(r"^\s*(#\[|///|//!|//|\*|/\*|\*/)|^\s*$")
+_ATTR_OR_DOC_RE = re.compile(
+    r"^\s*(#\[|export_name\s*=|\)\]|///|//!|//|\*|/\*|\*/)|^\s*$"
+)
 
 
 def _required_export_symbols() -> set[str]:
@@ -66,7 +69,7 @@ def _attributes_above(lines: list[str], def_idx: int) -> str:
     idx = def_idx - 1
     attributes = []
     while idx >= 0 and _ATTR_OR_DOC_RE.match(lines[idx]):
-        if lines[idx].strip().startswith("#["):
+        if lines[idx].strip() and not lines[idx].lstrip().startswith(("//", "/*", "*")):
             attributes.append(lines[idx].strip())
         idx -= 1
     return "\n".join(reversed(attributes))
@@ -78,8 +81,30 @@ class ExportDefinition:
     path: Path
     line: int
     attributes: str
+    symbol: str
+    parameters: str
+
+    @property
+    def module_owner(self) -> Path:
+        return Path(str(self.path).replace("/src/attached_exports_generated/", "/src/"))
 
     def exports_in(self, cell: str) -> bool:
+        abi = runtime_execution_abi(self.symbol)
+        if abi is not None and abi.context == "Attached":
+            if not re.match(r"\s*\w+\s*:\s*u64\s*(?:,|$)", self.parameters):
+                return False
+            exact = f'export_name = "{abi.physical_symbol}"'
+            closed = f'attached_symbol!("{self.symbol}")'
+            normalized = re.sub(r"\s+", "", self.attributes)
+            unconditional = (
+                f"#[unsafe({exact})]".replace(" ", "") in normalized
+                or f"#[unsafe(export_name={closed})]" in normalized
+            )
+            return unconditional or (
+                cell.endswith("/wasm32")
+                and f'#[cfg_attr(target_arch = "wasm32", unsafe({exact}))]'
+                in self.attributes.splitlines()
+            )
         if self.no_mangle:
             return True
         # This current source form supplies an exact C symbol only on WASM.
@@ -148,14 +173,14 @@ def _owner_cells(
     # infer a native C-export requirement for every Rust callable in the set.
     target_cells = (
         ("native", "wasm32")
-        if any(definition.path in targets for definition in definitions)
+        if any(definition.module_owner in targets for definition in definitions)
         else ("wasm32",)
     )
     cells = {
         f"feature-enabled/{target}": [
             definition
             for definition in enabled
-            if targets.get(definition.path, target) == target
+            if targets.get(definition.module_owner, target) == target
         ]
         for target in target_cells
     }
@@ -192,9 +217,30 @@ def _extern_c_fn_definitions() -> dict[str, list[ExportDefinition]]:
                         path,
                         line_idx + 1,
                         _attributes_above(lines, line_idx),
+                        match.group(1),
+                        "\n".join(lines[line_idx:]).split("(", 1)[1].split(")", 1)[0],
                     )
                 )
     return found
+
+
+def _fixture_attribute(symbol: str, *, conditional: bool = False) -> str:
+    abi = runtime_execution_abi(symbol)
+    assert abi is not None and abi.context == "Attached"
+    name = f'export_name = "{abi.physical_symbol}"'
+    return (
+        f'#[cfg_attr(target_arch = "wasm32", unsafe({name}))]'
+        if conditional
+        else f"#[unsafe({name})]"
+    )
+
+
+def _fixture_entry(symbol: str, arguments: str = "") -> str:
+    parameters = "context: u64" + (", " + arguments if arguments else "")
+    return (
+        _fixture_attribute(symbol)
+        + f'\npub extern "C" fn {symbol}({parameters}) -> u64 {{ 0 }}\n'
+    )
 
 
 def _is_molt_runtime_crate_source(path: Path) -> bool:
@@ -270,15 +316,15 @@ def export_owner_sources(
         ),
         "raw": (
             "molt-runtime-compression/src/zlib.rs",
-            '#[unsafe(no_mangle)]\npub extern "C" fn molt_deflate_raw(a: u64, b: u64) -> u64 { 0 }\n',
+            _fixture_entry("molt_deflate_raw", "a: u64, b: u64"),
         ),
         "native-lzma": (
             "molt-runtime-compression/src/lzma.rs",
-            '#[unsafe(no_mangle)]\npub extern "C" fn molt_lzma_format_auto() -> u64 { 0 }\n',
+            _fixture_entry("molt_lzma_format_auto"),
         ),
         "wasm-lzma": (
             "molt-runtime/src/builtins/lzma_wasm.rs",
-            '#[unsafe(no_mangle)]\npub extern "C" fn molt_lzma_format_auto() -> u64 { 0 }\n',
+            _fixture_entry("molt_lzma_format_auto"),
         ),
     }
     paths = {}
@@ -306,7 +352,7 @@ def test_export_owner_guard_does_not_borrow_incompatible_providers(
     test_extracted_runtime_crates_do_not_duplicate_wrapper_exports()
     path = export_owner_sources[role]
     path.write_text(
-        path.read_text(encoding="utf-8").replace("#[unsafe(no_mangle)]\n", ""),
+        path.read_text(encoding="utf-8").replace(_fixture_attribute(symbol) + "\n", ""),
         encoding="utf-8",
     )
     with pytest.raises(AssertionError) as missing:
@@ -320,8 +366,8 @@ def test_export_owner_guard_rejects_feature_off_stand_ins(
     export_owner_sources: dict[str, Path],
 ) -> None:
     export_owner_sources["wasm-lzma"].with_name("stand_in.rs").write_text(
-        '#[cfg(not(feature = "stdlib_compression"))]\n#[unsafe(no_mangle)]\n'
-        'pub extern "C" fn molt_deflate_raw(a: u64, b: u64) -> u64 { 0 }\n',
+        '#[cfg(not(feature = "stdlib_compression"))]\n'
+        + _fixture_entry("molt_deflate_raw", "a: u64, b: u64"),
         encoding="utf-8",
     )
     with pytest.raises(AssertionError, match="feature-off stand-in owner"):
@@ -348,8 +394,8 @@ def test_export_owner_guard_rejects_real_wrapper_duplicate(
 ) -> None:
     path = export_owner_sources["wasm-lzma"].with_name("wrapper.rs")
     path.write_text(
-        '#[cfg(feature = "stdlib_compression")]\n#[unsafe(no_mangle)]\n'
-        'pub extern "C" fn molt_deflate_raw(a: u64, b: u64) -> u64 { 0 }\n',
+        '#[cfg(feature = "stdlib_compression")]\n'
+        + _fixture_entry("molt_deflate_raw", "a: u64, b: u64"),
         encoding="utf-8",
     )
     with pytest.raises(AssertionError, match="creating duplicate symbols") as duplicate:
@@ -363,8 +409,8 @@ def test_export_owner_guard_honors_wasm_conditional_symbol_name(
     path = export_owner_sources["raw"]
     path.write_text(
         path.read_text(encoding="utf-8").replace(
-            "#[unsafe(no_mangle)]",
-            '#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]',
+            _fixture_attribute("molt_deflate_raw"),
+            _fixture_attribute("molt_deflate_raw", conditional=True),
         ),
         encoding="utf-8",
     )
@@ -388,8 +434,8 @@ def test_export_owner_guard_does_not_promote_conditional_name_to_native(
     path = export_owner_sources["native-lzma"]
     path.write_text(
         path.read_text(encoding="utf-8").replace(
-            "#[unsafe(no_mangle)]",
-            '#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]',
+            _fixture_attribute("molt_lzma_format_auto"),
+            _fixture_attribute("molt_lzma_format_auto", conditional=True),
         ),
         encoding="utf-8",
     )

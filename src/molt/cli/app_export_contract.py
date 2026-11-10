@@ -15,7 +15,11 @@ from collections.abc import Mapping, Sequence
 from typing import Literal, NotRequired, TypedDict, TYPE_CHECKING
 from pathlib import Path
 
-from molt._wasm_abi_generated import WASM_OUTPUT_EXPORT_ALIAS_PREFIX
+from molt._wasm_abi_generated import (
+    WASM_OUTPUT_EXPORT_ALIAS_PREFIX,
+    compiled_execution_symbol,
+    ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT,
+)
 from molt.exact_json import string_keyed_object
 
 if TYPE_CHECKING:
@@ -23,7 +27,7 @@ if TYPE_CHECKING:
 
 
 APP_EXPORT_CONTRACT_SCHEMA = 2
-APP_EXPORT_CALL_ABI_SCHEMA = 3
+APP_EXPORT_CALL_ABI_SCHEMA = 4
 
 AppBindingKind = Literal["sync", "async", "gen", "asyncgen"]
 AppBindingDisposition = Literal["export", "excluded"]
@@ -67,6 +71,11 @@ def _canonical_call_abi() -> dict[str, object]:
     return {
         "schema": APP_EXPORT_CALL_ABI_SCHEMA,
         "name": "molt.wasm.app-call",
+        "execution_context": {
+            "position": 0,
+            "representation": "i64",
+            "fingerprint": str(ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT),
+        },
         "parameters": {
             "representation": "tagged-i64",
             "ownership": "transferred",
@@ -353,7 +362,7 @@ def exported_app_symbols(contract: Mapping[str, object]) -> tuple[str, ...]:
         row = string_keyed_object(binding, context="validated app export binding")
         symbol = row.get("symbol")
         if row.get("disposition") == "export" and isinstance(symbol, str):
-            exported.append(symbol)
+            exported.append(compiled_execution_symbol(symbol))
     return tuple(exported)
 
 
@@ -374,8 +383,12 @@ def excluded_app_symbols(contract: Mapping[str, object]) -> tuple[str, ...]:
         if binding.get("disposition") == "excluded":
             symbol = binding.get("symbol")
             if isinstance(symbol, str):
-                excluded.append(symbol)
+                excluded.append(compiled_execution_symbol(symbol))
         superseded = binding.get("superseded_symbols")
         if isinstance(superseded, list):
-            excluded.extend(item for item in superseded if isinstance(item, str))
+            excluded.extend(
+                compiled_execution_symbol(item)
+                for item in superseded
+                if isinstance(item, str)
+            )
     return tuple(symbol for symbol in dict.fromkeys(excluded) if symbol not in exported)

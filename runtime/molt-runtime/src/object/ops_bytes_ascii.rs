@@ -5,9 +5,9 @@ use super::super::ops::{
 };
 use super::*;
 use crate::BuiltinExc;
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_upper(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+
+pub(crate) fn molt_bytes_upper_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
             return MoltObject::none().bits();
@@ -27,9 +27,8 @@ pub extern "C" fn molt_bytes_upper(hay_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_lower(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_lower_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         let hay = obj_from_bits(hay_bits);
         let Some(hay_ptr) = hay.as_ptr() else {
             return MoltObject::none().bits();
@@ -551,100 +550,92 @@ fn bytes_remove_affix_impl(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_capitalize(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_capitalize_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTES, bytes_ascii_capitalize)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_capitalize(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_capitalize_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_capitalize)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_swapcase(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_swapcase_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTES, bytes_ascii_swapcase)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_swapcase(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_swapcase_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_swapcase)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_title(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_title_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTES, bytes_ascii_title)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_title(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_title_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_title)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_isalpha(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_isalpha_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, simd_is_all_ascii_alpha)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_isalpha(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_isalpha_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, simd_is_all_ascii_alpha)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_isalnum(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_isalnum_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, simd_is_all_ascii_alnum)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_isalnum(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_isalnum_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, simd_is_all_ascii_alnum)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_isdigit(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_isdigit_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, simd_is_all_ascii_digit)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_isdigit(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_isdigit_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, simd_is_all_ascii_digit)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_isspace(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_isspace_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, simd_is_all_ascii_whitespace)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_isspace(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_isspace_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_predicate(
             _py,
             hay_bits,
@@ -654,83 +645,77 @@ pub extern "C" fn molt_bytearray_isspace(hay_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_islower(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_islower_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, bytes_ascii_islower)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_islower(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_islower_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_islower)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_isupper(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_isupper_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, bytes_ascii_isupper)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_isupper(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_isupper_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_isupper)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_istitle(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_istitle_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, bytes_ascii_istitle)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_istitle(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_istitle_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_istitle)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_isascii(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_isascii_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTES, |bytes| {
             bytes.iter().all(|b| b.is_ascii())
         })
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_isascii(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_isascii_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_predicate(_py, hay_bits, TYPE_ID_BYTEARRAY, |bytes| {
             bytes.iter().all(|b| b.is_ascii())
         })
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_upper(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_upper_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_upper)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_lower(hay_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_lower_attached_body(_py: &crate::PyToken<'_>, hay_bits: u64) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_like_ascii_transform(_py, hay_bits, TYPE_ID_BYTEARRAY, bytes_ascii_lower)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_center(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_center_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    width_bits: u64,
+    fill_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_align_impl(
             _py,
             hay_bits,
@@ -743,9 +728,13 @@ pub extern "C" fn molt_bytes_center(hay_bits: u64, width_bits: u64, fill_bits: u
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_center(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_center_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    width_bits: u64,
+    fill_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_align_impl(
             _py,
             hay_bits,
@@ -758,9 +747,13 @@ pub extern "C" fn molt_bytearray_center(hay_bits: u64, width_bits: u64, fill_bit
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_ljust(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_ljust_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    width_bits: u64,
+    fill_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_align_impl(
             _py,
             hay_bits,
@@ -773,9 +766,13 @@ pub extern "C" fn molt_bytes_ljust(hay_bits: u64, width_bits: u64, fill_bits: u6
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_ljust(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_ljust_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    width_bits: u64,
+    fill_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_align_impl(
             _py,
             hay_bits,
@@ -788,9 +785,13 @@ pub extern "C" fn molt_bytearray_ljust(hay_bits: u64, width_bits: u64, fill_bits
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_rjust(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_rjust_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    width_bits: u64,
+    fill_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_align_impl(
             _py,
             hay_bits,
@@ -803,9 +804,13 @@ pub extern "C" fn molt_bytes_rjust(hay_bits: u64, width_bits: u64, fill_bits: u6
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_rjust(hay_bits: u64, width_bits: u64, fill_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_rjust_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    width_bits: u64,
+    fill_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_align_impl(
             _py,
             hay_bits,
@@ -818,58 +823,84 @@ pub extern "C" fn molt_bytearray_rjust(hay_bits: u64, width_bits: u64, fill_bits
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_zfill(hay_bits: u64, width_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_zfill_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    width_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_zfill_impl(_py, hay_bits, width_bits, TYPE_ID_BYTES)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_zfill(hay_bits: u64, width_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_zfill_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    width_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_zfill_impl(_py, hay_bits, width_bits, TYPE_ID_BYTEARRAY)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_expandtabs(hay_bits: u64, tabsize_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_expandtabs_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    tabsize_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_expandtabs_impl(_py, hay_bits, tabsize_bits, TYPE_ID_BYTES)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_expandtabs(hay_bits: u64, tabsize_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_expandtabs_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    tabsize_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_expandtabs_impl(_py, hay_bits, tabsize_bits, TYPE_ID_BYTEARRAY)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_removeprefix(hay_bits: u64, prefix_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_removeprefix_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    prefix_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_remove_affix_impl(_py, hay_bits, prefix_bits, TYPE_ID_BYTES, false)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_removeprefix(hay_bits: u64, prefix_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_removeprefix_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    prefix_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_remove_affix_impl(_py, hay_bits, prefix_bits, TYPE_ID_BYTEARRAY, false)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytes_removesuffix(hay_bits: u64, suffix_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytes_removesuffix_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    suffix_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_remove_affix_impl(_py, hay_bits, suffix_bits, TYPE_ID_BYTES, true)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bytearray_removesuffix(hay_bits: u64, suffix_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+pub(crate) fn molt_bytearray_removesuffix_attached_body(
+    _py: &crate::PyToken<'_>,
+    hay_bits: u64,
+    suffix_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
         bytes_remove_affix_impl(_py, hay_bits, suffix_bits, TYPE_ID_BYTEARRAY, true)
     })
 }
+
+include!("../attached_exports_generated/object/ops_bytes_ascii.rs");

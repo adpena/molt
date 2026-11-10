@@ -203,7 +203,10 @@ def _validate_linked(
         for fact in imports
         if fact.module == "env"
         and fact.kind == 0
-        and _format.is_call_indirect_import_name(fact.name)
+        and (
+            _format.is_call_indirect_import_name(fact.name)
+            or _format.is_obsolete_call_indirect_import_name(fact.name)
+        )
     ]
     if call_indirect:
         print(
