@@ -82,10 +82,21 @@ instructions; NaN-box primitives come from one shared primitive generator in mol
 SimpleIR rebuild, the re-lift sites and the name-keyed representation plan that Cranelift and the
 WASM op loop read are deleted as each backend moves.
 
-Order: (0) typed runtime calls: one generated `RuntimeFn` per runtime entry (done); (A) land the
-finished slices; (B) design the late lowering stage of TIR; (C) the integer lane through late TIR on LLVM and
-WASM, measured; (D) the remaining fast paths as late-TIR expansions, deleting backend copies, with
-Cranelift moving to final TIR; (E) stages 4, 6 and 7 on TIR only.
+Order: (0) typed runtime calls: one generated `RuntimeFn` per runtime entry (landed 3cbf168b9);
+(A) land the finished slices; (B) design the late lowering stage of TIR (settled 2026-11-10);
+(C) the integer lane through late TIR on LLVM and WASM, measured; (D) the remaining fast paths as
+late-TIR expansions, deleting backend copies, with Cranelift moving to final TIR; (E) stages 4, 6
+and 7 on TIR only.
+
+Status (2026-11-10): C1 landed (229180b0b): one set of NaN-box word generators in molt-codegen-abi
+(`word.rs`, `boxed_word.rs`), LLVM's copies deleted. C2 landed (077d6de6b): the stage
+(`run_late_lowering`, spec 0100) expands integer `+`/`-` on boxed words for LLVM; LLVM's seven
+string runtime-name matches for numeric fallbacks are deleted. `bench_fib`, LLVM release, macOS
+arm64: 8.77 to 8.53 billion instructions retired (-2.7%, VERIFIED, three interleaved runs per
+binary, output identical); molt_diff on 13 integer programs passes native 13/13, LLVM 13/13, WASM
+12/13 (the one failure was HF-826, fixed on main). Next: C3 truthiness (also settles HF-829), C4
+comparisons, C5 `Mul` with a cheap exact test; WASM moves once the stage covers its lane parity
+checklist.
 
 ## Whole-pipeline structure (mapped 2026-11-10)
 
