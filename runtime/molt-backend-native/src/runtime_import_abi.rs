@@ -2,14 +2,18 @@
 //! arity and return contract come from the generated `RuntimeFn` table
 //! (`molt_ir::runtime_fn_generated`); this module only projects them.
 
+#[cfg(any(test, feature = "llvm"))]
 use molt_ir::runtime_fn_generated::RuntimeFn;
 
+/// Only the LLVM backend declares imports by machine return shape.
+#[cfg(feature = "llvm")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeReturnAbi {
     I64,
     Void,
 }
 
+#[cfg(feature = "llvm")]
 impl RuntimeReturnAbi {
     pub(crate) const fn of(function: RuntimeFn) -> Self {
         if function.returns_word() {
